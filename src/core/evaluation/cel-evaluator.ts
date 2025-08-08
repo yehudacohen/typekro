@@ -1,0 +1,194 @@
+/**
+ * CEL Expression Evaluator for Compile-time Resolution
+ * 
+ * This module evaluates CEL expressions at compile time when possible,
+ * resolving known properties and optimizing expressions for Kro compatibility.
+ */
+
+import type { CelExpression, KubernetesResource, KubernetesRef } from '../types.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { getInnerCelPath } from '../../utils/helpers.js';
+
+export interface EvaluationContext {
+  resources: Record<string, KubernetesResource>;
+  schema?: any;
+}
+
+export interface EvaluationResult {
+  expression: string;
+  wasOptimized: boolean;
+  optimizations: string[];
+}
+
+/**
+ * Attempts to resolve a resource reference to its actual value if known at compile time
+ */
+function resolveResourceReference(ref: KubernetesRef<unknown>, context: EvaluationContext): string | null {
+  const { resourceId, fieldPath } = ref;
+  
+  // Handle schema references
+  if (resourceId === '__schema__') {
+    return `schema.${fieldPath}`;
+  }
+  
+  // Find the resource
+  const resource = Object.values(context.resources).find(r => r.id === resourceId);
+  if (!resource) {
+    return null;
+  }
+  
+  // Try to resolve the field path to a known value
+  const pathParts = fieldPath.split('.');
+  let current: any = resource;
+  
+  for (const part of pathParts) {
+    if (current && typeof current === 'object' && part in current) {
+      current = current[part];
+    } else {
+      // Can't resolve further, return the CEL reference
+      return `${resourceId}.${fieldPath}`;
+    }
+  }
+  
+  // If we resolved to a concrete value, return it
+  if (typeof current === 'string') {
+    return `"${current}"`;
+  } else if (typeof current === 'number' || typeof current === 'boolean') {
+    return String(current);
+  }
+  
+  // Otherwise, return the CEL reference
+  return `${resourceId}.${fieldPath}`;
+}
+
+/**
+ * Evaluates a CEL expression, optimizing it when possible
+ */
+export function evaluateCelExpression(
+  expression: CelExpression<unknown> | string,
+  context: EvaluationContext
+): EvaluationResult {
+  const optimizations: string[] = [];
+  let wasOptimized = false;
+  
+  if (typeof expression === 'string') {
+    return {
+      expression,
+      wasOptimized: false,
+      optimizations: []
+    };
+  }
+  
+  if (!isCelExpression(expression)) {
+    return {
+      expression: String(expression),
+      wasOptimized: false,
+      optimizations: []
+    };
+  }
+  
+  let optimizedExpression = expression.expression;
+  
+  // Pattern 1: Simple string concatenation with known values
+  // Example: "http://" + resourceName where resourceName is known
+  const concatPattern = /"([^"]*)" \+ ([a-zA-Z][a-zA-Z0-9]*\.metadata\.name)/g;
+  optimizedExpression = optimizedExpression.replace(concatPattern, (match, prefix, resourceRef) => {
+    // Extract resource ID from the reference
+    const resourceId = resourceRef.split('.')[0];
+    const resource = Object.values(context.resources).find(r => r.id === resourceId);
+    
+    if (resource?.metadata?.name) {
+      optimizations.push(`Resolved ${resourceRef} to "${resource.metadata.name}"`);
+      wasOptimized = true;
+      return `"${prefix}${resource.metadata.name}"`;
+    }
+    
+    return match;
+  });
+  
+  // Pattern 2: Conditional expressions with known boolean values
+  // Example: condition ? "value1" : "value2" where condition can be evaluated
+  const conditionalPattern = /([a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z0-9.]*) ([><=!]+) (\d+) \? "([^"]*)" : "([^"]*)"/g;
+  optimizedExpression = optimizedExpression.replace(conditionalPattern, (match, leftSide, _operator, _rightSide, _trueValue, _falseValue) => {
+    // For now, we can't evaluate the condition at compile time without actual resource status
+    // But we can validate that the reference exists
+    const resourceId = leftSide.split('.')[0];
+    const resource = Object.values(context.resources).find(r => r.id === resourceId);
+    
+    if (!resource) {
+      optimizations.push(`Warning: Referenced resource '${resourceId}' not found`);
+    }
+    
+    return match; // Return unchanged for now
+  });
+  
+  return {
+    expression: optimizedExpression,
+    wasOptimized,
+    optimizations
+  };
+}
+
+/**
+ * Evaluates all CEL expressions in a status mapping object
+ */
+export function evaluateStatusMappings(
+  statusMappings: Record<string, any>,
+  context: EvaluationContext
+): { mappings: Record<string, any>; optimizations: string[] } {
+  const optimizedMappings: Record<string, any> = {};
+  const allOptimizations: string[] = [];
+  
+  function evaluateValue(value: any, path: string): any {
+    if (isKubernetesRef(value)) {
+      const resolved = resolveResourceReference(value, context);
+      if (resolved) {
+        allOptimizations.push(`Resolved reference at ${path}: ${getInnerCelPath(value)} -> ${resolved}`);
+        // For status field serialization, preserve KubernetesRef objects instead of converting to strings
+        // The serializeStatusMappingsToCel function expects KubernetesRef objects to generate proper CEL expressions
+        if (resolved === `${value.resourceId}.${value.fieldPath}`) {
+          // If the resolved value is the same as the original reference, preserve the KubernetesRef
+          return value;
+        } else {
+          // If the resolved value is different (e.g., a concrete value), convert to CelExpression
+          return {
+            __brand: 'CelExpression',
+            expression: resolved.startsWith('"') ? resolved.slice(1, -1) : resolved
+          } as CelExpression<unknown>;
+        }
+      }
+      return value;
+    }
+    
+    if (isCelExpression(value)) {
+      const result = evaluateCelExpression(value, context);
+      if (result.wasOptimized) {
+        allOptimizations.push(`Optimized CEL expression at ${path}: ${value.expression} -> ${result.expression}`);
+        allOptimizations.push(...result.optimizations.map(opt => `  ${opt}`));
+      }
+      return {
+        __brand: 'CelExpression',
+        expression: result.expression
+      } as CelExpression<unknown>;
+    }
+    
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const optimizedObject: Record<string, any> = {};
+      for (const [key, nestedValue] of Object.entries(value)) {
+        optimizedObject[key] = evaluateValue(nestedValue, `${path}.${key}`);
+      }
+      return optimizedObject;
+    }
+    
+    return value;
+  }
+  
+  for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+    optimizedMappings[fieldName] = evaluateValue(fieldValue, fieldName);
+  }
+  
+  return {
+    mappings: optimizedMappings,
+    optimizations: allOptimizations
+  };
+}
