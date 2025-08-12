@@ -1,4 +1,5 @@
 import { getInnerCelPath, isCelExpression, isKubernetesRef } from '../../utils/index.js';
+import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
 
 function expr<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T;
@@ -50,7 +51,7 @@ function expr<T = unknown>(
   const expression = celParts.join('');
 
   return {
-    __brand: 'CelExpression',
+    [CEL_EXPRESSION_BRAND]: true,
     expression,
   } as CelExpression<T> & T;
 }
@@ -178,14 +179,13 @@ function math<T = unknown>(
 }
 
 /**
- * Creates a CEL expression for string interpolation with explicit concatenation
+ * Creates a mixed string template that combines literal strings with CEL expressions
  * 
- * This function creates proper CEL string concatenation expressions using the + operator.
- * String literals are automatically quoted, while references and expressions are used as-is.
+ * This function creates YAML strings with embedded CEL expressions.
  * 
  * Examples:
- * - template('"http://" + %s', serviceName) -> "http://" + serviceName
- * - template('"%s-%s"', prefix, suffix) -> prefix + "-" + suffix
+ * - template('http://%s', schema.spec.name) -> "http://${schema.spec.name}"
+ * - template('%s-%s', prefix, suffix) -> "${prefix}-${suffix}"
  */
 function template(
   templateString: string,
@@ -219,31 +219,30 @@ function template(
   let result = templateString;
   let valueIndex = 0;
 
-  // Replace %s placeholders with values
+  // Replace %s placeholders with ${...} CEL expressions
   result = result.replace(/%s/g, () => {
     if (valueIndex < actualValues.length) {
       const value = actualValues[valueIndex++];
       if (isKubernetesRef(value)) {
-        return getInnerCelPath(value);
+        // For KubernetesRef, create a ${...} placeholder
+        return `\${${getInnerCelPath(value)}}`;
       }
-      if (
-        value &&
-        typeof value === 'object' &&
-        '__brand' in value &&
-        value.__brand === 'CelExpression'
-      ) {
-        return (value as CelExpression<unknown>).expression;
+      if (isCelExpression(value)) {
+        // For CEL expressions, wrap in ${...}
+        return `\${${value.expression}}`;
       }
-      // For string literals, don't add quotes here - they should be in the template
+      // For literal values, just insert them directly
       return String(value);
     }
     return '%s';
   });
 
+  // Mark this as a special template expression that should not be wrapped in ${...}
   return {
-    __brand: 'CelExpression',
+    [CEL_EXPRESSION_BRAND]: true,
     expression: result,
-  } as CelExpression<string> & string;
+    __isTemplate: true, // Special flag to indicate this is a mixed template
+  } as unknown as CelExpression<string> & string;
 }
 
 /**
@@ -304,7 +303,7 @@ function concat(
   const expression = celParts.join(' + ');
 
   return {
-    __brand: 'CelExpression',
+    [CEL_EXPRESSION_BRAND]: true,
     expression,
   } as CelExpression<string> & string;
 }

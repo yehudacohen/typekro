@@ -22,7 +22,7 @@ export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceS
         if (hasIngress) {
           return {
             ready: true,
-            message: `LoadBalancer service has external endpoint: ${ingress![0]?.ip || ingress![0]?.hostname}`
+            message: `LoadBalancer service has external endpoint: ${ingress?.[0]?.ip || ingress?.[0]?.hostname}`
           };
         } else {
           return {
@@ -38,7 +38,7 @@ export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceS
         if (hasExternalName) {
           return {
             ready: true,
-            message: `ExternalName service configured with: ${liveResource.spec!.externalName}`
+            message: `ExternalName service configured with: ${liveResource.spec?.externalName}`
           };
         } else {
           return {

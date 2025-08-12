@@ -6,8 +6,10 @@
  * CEL Expression Builder - Provides an escape hatch for complex CEL expressions
  * while maintaining type safety with KubernetesRef types.
  */
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
+
 export interface CelExpression<T = unknown> {
-  __brand: 'CelExpression';
+  [CEL_EXPRESSION_BRAND]: true;
   expression: string;
   _type?: T;
 }
@@ -55,7 +57,7 @@ declare global {
 
 // Forward declaration for types that depend on each other
 export interface KubernetesRef<T = unknown> {
-  readonly __brand: 'KubernetesRef';
+  readonly [KUBERNETES_REF_BRAND]: true;
   readonly resourceId: string;
   readonly fieldPath: string;
   readonly _type?: T;

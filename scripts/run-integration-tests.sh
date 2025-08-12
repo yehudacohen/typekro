@@ -1,9 +1,12 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
-echo "🚀 TypeKro Integration Test Suite"
-echo "=================================="
+# Check if debug mode is enabled
+DEBUG_MODE=${DEBUG_MODE:-false}
+
+echo "🚀 Starting Integration Test Suite..."
+echo "====================================="
 
 # Check if we're in the right directory
 if [ ! -f "package.json" ]; then
@@ -47,31 +50,39 @@ fi
 
 echo ""
 
-# Run YAML generation tests (these don't require a cluster)
-echo "📄 Running YAML Generation Tests..."
-echo "-----------------------------------"
-bun test test/integration/yaml-generation.test.ts
+cleanup() {
+  echo "\n🧹 Cleaning up integration test environment..."
+  if [ "${SKIP_CLUSTER_TESTS:-false}" != "true" ] && [ "$DEBUG_MODE" != "true" ]; then
+    bun run scripts/e2e-cleanup.ts || true
+  fi
+}
+trap cleanup EXIT
 
-echo ""
-
-# Run E2E cluster tests if dependencies are available
-if [ "$SKIP_CLUSTER_TESTS" != "true" ]; then
-    echo "🎯 Running End-to-End Cluster Tests..."
-    echo "-------------------------------------"
-    echo "⚠️  This will create a temporary kind cluster and may take several minutes"
-    read -p "Continue? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        bun test test/integration/e2e-cluster.test.ts
-    else
-        echo "⏭️  Skipping E2E cluster tests"
-    fi
-else
-    echo "⏭️  Skipping E2E cluster tests (missing dependencies)"
+# Setup cluster for integration tests
+if [ "${SKIP_CLUSTER_TESTS:-false}" != "true" ]; then
+  echo "🔧 Setting up kind cluster for integration tests..."
+  bun run scripts/e2e-setup.ts
+  # Signal tests to skip any per-test cluster setup/teardown
+  export SKIP_CLUSTER_SETUP=true
 fi
 
-echo ""
-echo "🎉 Integration tests completed!"
+# Run all integration tests with increased timeout
+echo "🧪 Running Integration Tests..."
+echo "==============================="
+bun test test/integration/ --timeout 300000 # 5 minutes
+
+# Cleanup only if not in debug mode
+if [ "$DEBUG_MODE" != "true" ]; then
+  echo "🧹 Cleaning up integration test environment..."
+  bun run scripts/e2e-cleanup.ts
+  echo "✅ Integration test suite completed!"
+else
+  echo "🔍 Debug mode enabled - cluster left running for inspection"
+  echo "   Use 'kubectl config use-context kind-typekro-e2e-test' to connect"
+  echo "   Run 'bun run scripts/e2e-cleanup.ts' manually when done debugging"
+  echo "   Cluster will NOT be automatically cleaned up on script exit"
+fi
+
 echo ""
 echo "📊 Test Summary:"
 echo "✅ YAML Generation: Comprehensive resource graph generation and validation"
@@ -83,7 +94,7 @@ fi
 
 echo ""
 echo "📁 Generated files can be found in:"
-echo "   - packages/typekro/temp/"
+echo "   - temp/"
 echo ""
 echo "🔍 To inspect generated YAML:"
 echo "   cat packages/typekro/temp/*.yaml"

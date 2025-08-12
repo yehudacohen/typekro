@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { KroCompatibleType, KubernetesRef } from '../../src/index';
 import { createSchemaProxy } from '../../src/index';
+import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Kro Schema Constraints', () => {
   describe('KroCompatibleType validation', () => {
@@ -75,15 +76,15 @@ describe('Kro Schema Constraints', () => {
       const endpointsRef = schema.status.endpoints.web;
 
       // All should be KubernetesRef objects
-      expect(nameRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(replicasRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(ingressEnabledRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(envRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(portsRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(phaseRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(availableRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(conditionsRef).toHaveProperty('__brand', 'KubernetesRef');
-      expect(endpointsRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(nameRef)).toBe(true);
+      expect(isKubernetesRef(replicasRef)).toBe(true);
+      expect(isKubernetesRef(ingressEnabledRef)).toBe(true);
+      expect(isKubernetesRef(envRef)).toBe(true);
+      expect(isKubernetesRef(portsRef)).toBe(true);
+      expect(isKubernetesRef(phaseRef)).toBe(true);
+      expect(isKubernetesRef(availableRef)).toBe(true);
+      expect(isKubernetesRef(conditionsRef)).toBe(true);
+      expect(isKubernetesRef(endpointsRef)).toBe(true);
 
       // Check field paths
       expect((nameRef as unknown as KubernetesRef<string>).fieldPath).toBe('spec.appName');

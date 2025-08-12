@@ -28,7 +28,7 @@ describe('Fluent Builder Pattern', () => {
       status: {}
     });
 
-    const evaluator = (liveResource: any): ResourceStatus => ({
+    const evaluator = (_liveResource: any): ResourceStatus => ({
       ready: true,
       message: 'Test deployment is ready'
     });
@@ -66,7 +66,7 @@ describe('Fluent Builder Pattern', () => {
       status: {}
     });
 
-    const evaluator = (liveResource: any): ResourceStatus => ({
+    const evaluator = (_liveResource: any): ResourceStatus => ({
       ready: true,
       message: 'Test deployment is ready'
     });
@@ -91,7 +91,7 @@ describe('Fluent Builder Pattern', () => {
       status: {}
     });
 
-    const evaluator = (liveResource: any): ResourceStatus => ({
+    const evaluator = (_liveResource: any): ResourceStatus => ({
       ready: true,
       message: 'Test deployment is ready'
     });

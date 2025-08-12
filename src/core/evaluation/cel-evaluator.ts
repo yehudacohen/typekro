@@ -8,6 +8,7 @@
 import type { CelExpression, KubernetesResource, KubernetesRef } from '../types.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { getInnerCelPath } from '../../utils/helpers.js';
+import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 
 export interface EvaluationContext {
   resources: Record<string, KubernetesResource>;
@@ -152,7 +153,7 @@ export function evaluateStatusMappings(
         } else {
           // If the resolved value is different (e.g., a concrete value), convert to CelExpression
           return {
-            __brand: 'CelExpression',
+            [CEL_EXPRESSION_BRAND]: true,
             expression: resolved.startsWith('"') ? resolved.slice(1, -1) : resolved
           } as CelExpression<unknown>;
         }
@@ -167,8 +168,9 @@ export function evaluateStatusMappings(
         allOptimizations.push(...result.optimizations.map(opt => `  ${opt}`));
       }
       return {
-        __brand: 'CelExpression',
-        expression: result.expression
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: result.expression,
+        ...(((value as any).__isTemplate) && { __isTemplate: true })
       } as CelExpression<unknown>;
     }
     

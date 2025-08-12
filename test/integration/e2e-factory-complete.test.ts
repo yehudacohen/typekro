@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'bun:test';
 import { execSync } from 'node:child_process';
 import { type } from 'arktype';
 import * as k8s from '@kubernetes/client-node';
+import { getIntegrationTestKubeConfig } from './shared-kubeconfig';
 
 import { 
   Cel, 
@@ -22,30 +23,26 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
   beforeAll(async () => {
     console.log('🚀 SETUP: Starting factory e2e test environment setup...');
 
-    // Use the existing e2e setup script
-    console.log('� SETUP:: Running e2e setup script...');
-    try {
-      execSync('bun run scripts/e2e-setup.ts', { 
-        stdio: 'inherit',
-        timeout: 300000 // 5 minute timeout
-      });
-      console.log('✅ SETUP: E2E environment setup completed');
-    } catch (error) {
-      throw new Error(`❌ SETUP: Failed to run e2e setup script: ${error}`);
+    // Global integration harness sets up the cluster; skip if signaled
+    if (!process.env.SKIP_CLUSTER_SETUP) {
+      console.log('� SETUP:: Running e2e setup script...');
+      try {
+        execSync('bun run scripts/e2e-setup.ts', { 
+          stdio: 'inherit',
+          timeout: 300000 // 5 minute timeout
+        });
+        console.log('✅ SETUP: E2E environment setup completed');
+      } catch (error) {
+        throw new Error(`❌ SETUP: Failed to run e2e setup script: ${error}`);
+      }
+    } else {
+      console.log('⏭️  Using pre-existing cluster from integration harness');
     }
 
-    // Initialize Kubernetes clients
-    kubeConfig = new k8s.KubeConfig();
-    kubeConfig.loadFromDefault();
+    // Use shared kubeconfig helper for consistent TLS configuration
+    kubeConfig = getIntegrationTestKubeConfig();
     
-    // Configure to skip TLS verification for test environment
-    const cluster = kubeConfig.getCurrentCluster();
-    if (cluster) {
-      const modifiedCluster = { ...cluster, skipTLSVerify: true };
-      kubeConfig.clusters = kubeConfig.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-    }
-    
-    k8sApi = k8s.KubernetesObjectApi.makeApiClient(kubeConfig);
+    k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
     _customApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
 
     console.log('✅ Factory e2e test environment ready!');

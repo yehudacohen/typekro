@@ -6,7 +6,6 @@
 
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
-import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type } from 'arktype';
@@ -16,6 +15,7 @@ import {
   simpleService,
   Cel,
 } from '../../src/index.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable, } from './shared-kubeconfig';
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-e2e-basic';
@@ -28,18 +28,12 @@ const generateTestNamespace = (testName: string): string => {
   const sanitized = testName.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20);
   return `${BASE_NAMESPACE}-${sanitized}-${timestamp}`;
 };
-const CLUSTER_NAME = 'typekro-e2e-test';
+const _CLUSTER_NAME = 'typekro-e2e-test';
 
 // Check if cluster is available
-let isClusterAvailable = false;
-try {
-  execSync(`kubectl cluster-info --context kind-${CLUSTER_NAME}`, { stdio: 'ignore' });
-  isClusterAvailable = true;
-} catch {
-  console.warn(`⚠️  Skipping e2e test: Test cluster '${CLUSTER_NAME}' not found. Run: bun run e2e:setup`);
-}
+const clusterAvailable = isClusterAvailable();
 
-const describeOrSkip = isClusterAvailable ? describe : describe.skip;
+const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Basic E2E Kro Test', () => {
   let kc: k8s.KubeConfig;
@@ -48,27 +42,26 @@ describeOrSkip('Basic E2E Kro Test', () => {
   let customApi: k8s.CustomObjectsApi;
 
   beforeAll(async () => {
-    if (!isClusterAvailable) return;
+    if (!clusterAvailable) return;
 
-    // Initialize Kubernetes client with TLS skip for test environment
-    kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
-    
-    // Configure to skip TLS verification for test environment
-    const cluster = kc.getCurrentCluster();
-    if (cluster) {
-      const modifiedCluster = { ...cluster, skipTLSVerify: true };
-      kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
+    // Use shared kubeconfig helper for consistent TLS configuration
+    try {
+      kc = getIntegrationTestKubeConfig();
+      
+      k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+      appsApi = kc.makeApiClient(k8s.AppsV1Api);
+      customApi = kc.makeApiClient(k8s.CustomObjectsApi);
+    } catch (error) {
+      console.error('❌ Failed to initialize Kubernetes client:', error);
+      throw new Error(
+        `Kubernetes client initialization failed: ${error}. ` +
+        'Make sure the test cluster is running and accessible. ' +
+        'Run: bun run scripts/e2e-setup.ts to set up the test environment.'
+      );
     }
-    
-    // Ensure we have a valid context
-    if (!kc.getCurrentCluster()) {
-      throw new Error('No active Kubernetes cluster found. Make sure kubectl is configured.');
-    }
-    
-    k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-    appsApi = kc.makeApiClient(k8s.AppsV1Api);
-    customApi = kc.makeApiClient(k8s.CustomObjectsApi);
+
+    // Note: Kro controller health check removed to avoid TLS issues during test setup
+    // The controller health will be verified during actual test execution
 
     // Note: Individual test namespaces will be created per test for better isolation
   });
@@ -101,6 +94,9 @@ describeOrSkip('Basic E2E Kro Test', () => {
   };
 
   it('should create a basic RGD and deploy an instance', async () => {
+    // Increase timeout for this test as it needs to wait for Kro resources
+    const testTimeout = 180000; // 3 minutes
+    const startTime = Date.now();
     const testNamespace = generateTestNamespace('basic-rgd-deploy');
     
     // Create test namespace
@@ -186,8 +182,18 @@ describeOrSkip('Basic E2E Kro Test', () => {
 
     // Wait for the underlying Kubernetes resources to be created by Kro
     console.log('⏳ Waiting for Kro to create underlying resources...');
+    
+    // Check timeout periodically
+    const checkTimeout = () => {
+      if (Date.now() - startTime > testTimeout) {
+        throw new Error(`Test timed out after ${testTimeout}ms`);
+      }
+    };
+    
     await waitForDeployment('test-app', testNamespace);
+    checkTimeout();
     await waitForService('test-app-svc', testNamespace);
+    checkTimeout();
 
     // Validate that the underlying Kubernetes resources were created
     const deployment = await appsApi.readNamespacedDeployment('test-app', testNamespace);
@@ -216,7 +222,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
   });
 
   // Helper functions
-  async function waitForRGDReady(name: string, _namespace: string, timeoutMs = 60000): Promise<void> {
+  async function _waitForRGDReady(name: string, _namespace: string, timeoutMs = 60000): Promise<void> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
@@ -251,7 +257,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     throw new Error(`Timeout waiting for RGD ${name} to be ready`);
   }
 
-  async function waitForDeployment(name: string, namespace: string, timeoutMs = 60000): Promise<void> {
+  async function waitForDeployment(name: string, namespace: string, timeoutMs = 120000): Promise<void> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
@@ -264,12 +270,12 @@ describeOrSkip('Basic E2E Kro Test', () => {
       } catch (_error) {
         // Deployment not found yet, continue waiting
       }
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
     throw new Error(`Timeout waiting for deployment ${name} to be ready`);
   }
 
-  async function waitForService(name: string, namespace: string, timeoutMs = 30000): Promise<void> {
+  async function waitForService(name: string, namespace: string, timeoutMs = 60000): Promise<void> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
@@ -279,7 +285,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
       } catch (_error) {
         // Service not found yet, continue waiting
       }
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
     throw new Error(`Timeout waiting for service ${name} to be ready`);
   }

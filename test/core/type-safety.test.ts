@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Cel, simpleDeployment } from '../../src/index';
+import { isCelExpression } from '../../src/utils/type-guards.js';
 
 describe('Type Safety', () => {
   it('should prevent KubernetesRef<number> assignment to environment variables', () => {
@@ -51,7 +52,7 @@ describe('Type Safety', () => {
     const celExpr = Cel.string(database.status?.readyReplicas);
 
     expect(celExpr).toBeDefined();
-    expect(celExpr.__brand).toBe('CelExpression');
+    expect(isCelExpression(celExpr)).toBe(true);
     expect(celExpr.expression).toContain('string(');
     expect(celExpr.expression).toContain('deploymentPostgres.status.readyReplicas');
   });
@@ -79,7 +80,7 @@ describe('Type Safety', () => {
     });
 
     expect(webapp1).toBeDefined();
-    expect(stringExpr.__brand).toBe('CelExpression');
-    expect(intExpr.__brand).toBe('CelExpression');
+    expect(isCelExpression(stringExpr)).toBe(true);
+    expect(isCelExpression(intExpr)).toBe(true);
   });
 });

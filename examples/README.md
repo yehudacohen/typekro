@@ -75,28 +75,73 @@ The comprehensive example demonstrates:
 - ArkType schema integration with type inference
 - Factory pattern with direct and Kro modes
 - Type-safe instance creation and management
-- Alchemy integration concepts (commented out due to import issues)
 - External references with full type safety
 - CEL expressions for computed values
 
+## Alchemy Integration Examples
+
+### Direct Mode Integration (`direct-mode-alchemy-integration.ts`)
+
+Comprehensive example showing individual resource registration where each Kubernetes resource gets its own Alchemy resource type:
+
+```typescript
+const directFactory = await webappGraph.factory('direct', {
+    namespace: 'webapp-demo',
+    alchemyScope: alchemyScope,
+});
+
+await alchemyScope.run(async () => {
+    const instance = await directFactory.deploy({
+        name: 'my-webapp',
+        image: 'nginx:latest',
+    });
+    
+    // Creates separate Alchemy resources:
+    // - kubernetes::ConfigMap
+    // - kubernetes::Deployment  
+    // - kubernetes::Service
+});
+```
+
+**Demonstrates:**
+- Individual resource registration pattern
+- Resource type naming (`kubernetes::{Kind}`)
+- Error handling and debugging
+- State inspection techniques
+
+### Kro Mode Integration (`kro-status-fields-and-alchemy-integration.ts`)
+
+Shows ResourceGraphDefinition deployment with proper CEL status expressions:
+
+**Demonstrates:**
+- RGD registration (`kro::ResourceGraphDefinition`)
+- Instance registration (`kro::{Kind}`)
+- CEL expressions for status fields
+- Infrastructure integration patterns
+
+### Dynamic Registration (`alchemy-dynamic-registration.ts`)
+
+Shows the underlying registration system:
+
+**Demonstrates:**
+- Automatic type inference from Kubernetes kinds
+- Conflict prevention with `ensureResourceTypeRegistered`
+- Deterministic resource ID generation
+
 ## Implementation Status
 
-### ✅ Completed (Task 3.1)
+### ✅ Completed
 - `toResourceGraph` API with ArkType integration
 - TypedResourceGraph interface
 - YAML generation for ResourceGraphDefinition
 - Schema proxy integration
 - Unit tests for new API
-
-### 🚧 In Progress
-- Factory creation methods (tasks 3.5 and 3.6)
-- Direct deployment engine integration
-- Kro deployment mode implementation
+- Alchemy integration with individual resource registration
+- Direct and Kro deployment modes
+- Comprehensive error handling
 
 ### 📋 Planned
-- Alchemy integration
 - Static resource graph support
-- Enhanced error handling
 - Performance optimizations
 
 ## Running Examples
@@ -124,8 +169,6 @@ bun test
 
 ## Next Steps
 
-1. Complete factory implementation (tasks 3.5 and 3.6)
-2. Resolve TypeScript configuration issues for examples
-3. Add alchemy integration
-4. Implement static resource graph support
-5. Add comprehensive error handling and validation
+1. Resolve TypeScript configuration issues for examples
+2. Implement static resource graph support
+3. Add performance optimizations

@@ -197,12 +197,36 @@ async function setupE2EEnvironment() {
     const manifestFile = join(tempDir, 'kro-controller.yaml');
     writeFileSync(manifestFile, helmManifests);
 
-    execSync(`kubectl apply -f "${manifestFile}"`, {
-      stdio: 'inherit',
-      timeout: 120000,
-    });
-
-    console.log('✅ Kro controller manifests applied');
+    // Apply manifests with better error handling
+    try {
+      execSync(`kubectl apply -f "${manifestFile}"`, {
+        stdio: 'inherit',
+        timeout: 120000,
+      });
+      console.log('✅ Kro controller manifests applied');
+    } catch (error) {
+      console.error('❌ Failed to apply Kro controller manifests:', error);
+      // Try to apply individual resources as fallback
+      console.log('🔄 Trying to apply resources individually...');
+      try {
+        const resources = helmManifests.split('---').filter(r => r.trim());
+        for (const resource of resources) {
+          if (resource.trim()) {
+            const tempFile = join(tempDir, `kro-resource-${Date.now()}.yaml`);
+            writeFileSync(tempFile, resource);
+            try {
+              execSync(`kubectl apply -f "${tempFile}"`, { stdio: 'pipe' });
+            } catch (applyError) {
+              console.warn('⚠️  Failed to apply individual resource:', applyError);
+            }
+          }
+        }
+        console.log('✅ Kro controller resources applied (with some warnings)');
+      } catch (fallbackError) {
+        console.error('❌ Fallback application also failed:', fallbackError);
+        throw error; // Throw original error
+      }
+    }
 
     // Wait for the Kro controller to be ready
     console.log('⏳ Waiting for Kro controller to be ready...');

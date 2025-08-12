@@ -68,7 +68,7 @@ describe('Status Field Integration', () => {
     // Should contain user-defined status fields as CEL expressions
     expect(yaml).toContain('readyReplicas: ${webappDeployment.status.readyReplicas}');
     expect(yaml).toContain('conditions: ${webappDeployment.status.conditions.map(c, c.type)}');
-    expect(yaml).toContain('url: ${http://schema.spec.name.webappService.metadata.namespace.svc.cluster.local}');
+    expect(yaml).toContain('url: http://${schema.spec.name}.${webappService.metadata.namespace}.svc.cluster.local');
     
     // Verify resources section
     expect(yaml).toContain('resources:');

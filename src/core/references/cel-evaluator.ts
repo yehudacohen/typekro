@@ -7,6 +7,7 @@
 
 import { evaluate, parse } from 'cel-js';
 import { isKubernetesRef } from '../../utils/index.js';
+import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import { CelEvaluationError } from '../types/references.js';
 import type { CelExpression, KubernetesRef } from '../types.js';
@@ -186,7 +187,7 @@ export class CelEvaluator {
     });
 
     return {
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression,
     };
   }
@@ -209,7 +210,7 @@ export class CelEvaluator {
         .join(', ');
 
       return {
-        __brand: 'CelExpression',
+        [CEL_EXPRESSION_BRAND]: true,
         expression: `concat(${args})`,
       };
     },
@@ -227,7 +228,7 @@ export class CelEvaluator {
         : condition;
 
       return {
-        __brand: 'CelExpression',
+        [CEL_EXPRESSION_BRAND]: true,
         expression: `${conditionExpr} ? ${JSON.stringify(trueValue)} : ${JSON.stringify(falseValue)}`,
       };
     },
@@ -236,7 +237,7 @@ export class CelEvaluator {
      * Check if a field exists: has(resource.field)
      */
     has: (ref: KubernetesRef): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `has(${ref.resourceId}.${ref.fieldPath})`,
     }),
 
@@ -244,7 +245,7 @@ export class CelEvaluator {
      * Get size/length: size(resource.field)
      */
     size: (ref: KubernetesRef): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `size(${ref.resourceId}.${ref.fieldPath})`,
     }),
 
@@ -252,7 +253,7 @@ export class CelEvaluator {
      * String contains check: resource.field.contains("substring")
      */
     contains: (ref: KubernetesRef, substring: string): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `${ref.resourceId}.${ref.fieldPath}.contains("${substring}")`,
     }),
 
@@ -260,7 +261,7 @@ export class CelEvaluator {
      * String starts with check: resource.field.startsWith("prefix")
      */
     startsWith: (ref: KubernetesRef, prefix: string): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `${ref.resourceId}.${ref.fieldPath}.startsWith("${prefix}")`,
     }),
 
@@ -268,7 +269,7 @@ export class CelEvaluator {
      * String ends with check: resource.field.endsWith("suffix")
      */
     endsWith: (ref: KubernetesRef, suffix: string): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `${ref.resourceId}.${ref.fieldPath}.endsWith("${suffix}")`,
     }),
 
@@ -276,7 +277,7 @@ export class CelEvaluator {
      * List/array operations: resource.field.all(x, x > 0)
      */
     all: (ref: KubernetesRef, predicate: string): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `${ref.resourceId}.${ref.fieldPath}.all(x, ${predicate})`,
     }),
 
@@ -284,7 +285,7 @@ export class CelEvaluator {
      * List/array operations: resource.field.exists(x, x > 0)
      */
     exists: (ref: KubernetesRef, predicate: string): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `${ref.resourceId}.${ref.fieldPath}.exists(x, ${predicate})`,
     }),
 
@@ -292,7 +293,7 @@ export class CelEvaluator {
      * List/array filter: resource.field.filter(x, x > 0)
      */
     filter: (ref: KubernetesRef, predicate: string): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `${ref.resourceId}.${ref.fieldPath}.filter(x, ${predicate})`,
     }),
 
@@ -300,7 +301,7 @@ export class CelEvaluator {
      * List/array map: resource.field.map(x, x * 2)
      */
     map: (ref: KubernetesRef, transform: string): CelExpression => ({
-      __brand: 'CelExpression',
+      [CEL_EXPRESSION_BRAND]: true,
       expression: `${ref.resourceId}.${ref.fieldPath}.map(x, ${transform})`,
     }),
   };

@@ -21,6 +21,15 @@ interface KubernetesApiClientConfig {
    * Environment variable: KUBERNETES_CA_CERT
    */
   caCert?: string; // This remains optional
+  /**
+   * SECURITY WARNING: Only set to true in non-production environments.
+   * This disables TLS certificate verification and makes connections vulnerable
+   * to man-in-the-middle attacks.
+   * Environment variable: KUBERNETES_SKIP_TLS_VERIFY
+   * 
+   * @default false (secure by default)
+   */
+  skipTLSVerify?: boolean;
 }
 
 /**
@@ -40,7 +49,9 @@ export class KubernetesApi {
     const cluster: k8s.Cluster = {
       name: 'default-cluster',
       server: config.apiServer,
-      skipTLSVerify: !config.caCert, // Skip TLS if no CA cert provided
+      // SECURITY: Never automatically disable TLS verification
+      // Users must explicitly opt-in to insecure connections
+      skipTLSVerify: config.skipTLSVerify === true,
       ...(config.caCert && { caData: config.caCert }), // Conditionally add caData
     };
 
@@ -67,7 +78,7 @@ export class KubernetesApi {
     // Correct instantiation for KubernetesObjectApi
     // You typically get this client via makeApiClient or by accessing specific API groups (e.g., k8s.AppsV1Api)
     // For KubernetesObjectApi, you create an instance passing the KubeConfig
-    this.k8sApi = k8s.KubernetesObjectApi.makeApiClient(this.kc);
+    this.k8sApi = this.kc.makeApiClient(k8s.KubernetesObjectApi);
   }
 
   /**
@@ -78,6 +89,7 @@ export class KubernetesApi {
     const apiServer = process.env.KUBERNETES_API_SERVER;
     const apiToken = process.env.KUBERNETES_API_TOKEN;
     const caCert = process.env.KUBERNETES_CA_CERT;
+    const skipTLSVerify = process.env.KUBERNETES_SKIP_TLS_VERIFY === 'true';
 
     if (!apiServer) {
       throw new Error('KUBERNETES_API_SERVER environment variable is not set.');
@@ -86,11 +98,60 @@ export class KubernetesApi {
       throw new Error('KUBERNETES_API_TOKEN environment variable is not set.');
     }
 
+    // Log security warning when TLS is disabled
+    if (skipTLSVerify) {
+      this.logger.warn('TLS verification disabled via environment variable - this is insecure and should only be used in development', {
+        component: 'kubernetes-api',
+        security: 'tls-disabled',
+        envVar: 'KUBERNETES_SKIP_TLS_VERIFY'
+      });
+    }
+
+    // Validate TLS configuration
+    this.validateTLSConfiguration(apiServer, caCert, skipTLSVerify);
+
     return {
       apiServer,
       apiToken,
       ...(caCert && { caCert }),
+      skipTLSVerify,
     };
+  }
+
+  /**
+   * Validate TLS configuration and provide actionable error messages
+   */
+  private validateTLSConfiguration(apiServer: string, caCert?: string, skipTLSVerify?: boolean): void {
+    // Check if connecting to HTTPS endpoint without proper TLS configuration
+    if (apiServer.startsWith('https://')) {
+      if (skipTLSVerify && !caCert) {
+        this.logger.warn('Connecting to HTTPS endpoint with TLS verification disabled and no CA certificate', {
+          component: 'kubernetes-api',
+          security: 'tls-configuration-warning',
+          apiServer,
+          recommendation: 'Provide KUBERNETES_CA_CERT environment variable for secure connections'
+        });
+      } else if (!skipTLSVerify && !caCert) {
+        this.logger.info('Connecting to HTTPS endpoint without custom CA certificate - using system trust store', {
+          component: 'kubernetes-api',
+          security: 'tls-configuration-info',
+          apiServer
+        });
+      } else if (!skipTLSVerify && caCert) {
+        this.logger.info('Secure TLS connection configured with custom CA certificate', {
+          component: 'kubernetes-api',
+          security: 'tls-configuration-secure',
+          apiServer
+        });
+      }
+    } else if (apiServer.startsWith('http://')) {
+      this.logger.warn('Connecting to HTTP endpoint - connection is not encrypted', {
+        component: 'kubernetes-api',
+        security: 'insecure-connection',
+        apiServer,
+        recommendation: 'Use HTTPS endpoint for secure connections'
+      });
+    }
   }
 
   /**
@@ -147,11 +208,11 @@ export class KubernetesApi {
           },
         };
         await this.k8sApi.replace(mergedManifest);
-        resourceLogger.info('Resource updated');
+        resourceLogger.debug('Resource updated');
       } else {
         // Resource does not exist, create it
         await this.k8sApi.create(manifest);
-        resourceLogger.info('Resource created');
+        resourceLogger.debug('Resource created');
       }
     } catch (error: any) {
       resourceLogger.error('Error applying Kubernetes manifest', error);
@@ -209,7 +270,7 @@ export class KubernetesApi {
         kind,
         metadata: { name, namespace },
       } as any);
-      deleteLogger.info('Resource deleted');
+      deleteLogger.debug('Resource deleted');
     } catch (error: any) {
       // Don't throw if resource is already not found during deletion
       if (error.statusCode === 404) {

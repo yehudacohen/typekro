@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
+import { getIntegrationTestKubeConfig } from './shared-kubeconfig';
 import {
   secret
 } from '../../src/factories/index'
@@ -16,7 +17,7 @@ import {
 import { type } from 'arktype';
 
 // Test configuration
-const CLUSTER_NAME = 'typekro-e2e-test';
+const _CLUSTER_NAME = 'typekro-e2e-test';
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
@@ -35,73 +36,25 @@ describe('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
   beforeAll(async () => {
     console.log('🚀 SETUP: Starting end-to-end test environment setup...');
 
-    // Check if Docker is running
-    console.log('🔍 SETUP: Checking if Docker is running...');
-    try {
-      execSync('docker info', { stdio: 'pipe', timeout: 10000 });
-      console.log('✅ SETUP: Docker is running');
-    } catch (_error) {
-      throw new Error(
-        '❌ SETUP: Docker is not running or not responding. Please start Docker and try again.'
-      );
+    // Global integration harness sets up the cluster; skip if signaled
+    if (!process.env.SKIP_CLUSTER_SETUP) {
+      console.log('🔧 SETUP: Running e2e setup script...');
+      try {
+        execSync('bun run scripts/e2e-setup.ts', { 
+          stdio: 'inherit',
+          timeout: 300000 // 5 minute timeout
+        });
+        console.log('✅ SETUP: E2E environment setup completed');
+      } catch (error) {
+        throw new Error(`❌ SETUP: Failed to run e2e setup script: ${error}`);
+      }
+    } else {
+      console.log('⏭️  Using pre-existing cluster from integration harness');
     }
 
-    // Check if kind is available
-    console.log('🔍 SETUP: Checking if kind is available...');
-    try {
-      const kindVersion = execSync('kind version', { stdio: 'pipe', timeout: 5000 }).toString();
-      console.log(`✅ SETUP: kind is available - ${kindVersion.trim()}`);
-    } catch (_error) {
-      throw new Error(
-        '❌ SETUP: kind is required for integration tests. Install it from https://kind.sigs.k8s.io/docs/user/quick-start/'
-      );
-    }
-
-    // Delete existing cluster if it exists
-    console.log('🧹 SETUP: Checking for existing cluster...');
-    try {
-      execSync(`kind delete cluster --name ${CLUSTER_NAME}`, {
-        stdio: 'pipe',
-        timeout: 30000, // 30 second timeout
-      });
-      console.log('🧹 SETUP: Cleaned up existing cluster');
-    } catch (_error) {
-      console.log('ℹ️  SETUP: No existing cluster to clean up');
-    }
-
-    // Create kind cluster
-    console.log('📦 SETUP: Creating kind cluster (this may take a few minutes)...');
-    const clusterStartTime = Date.now();
-    try {
-      execSync(`kind create cluster --name ${CLUSTER_NAME} --wait 5m`, {
-        stdio: 'inherit',
-        timeout: 300000,
-      });
-      const clusterTime = Date.now() - clusterStartTime;
-      console.log(`✅ SETUP: Kind cluster created successfully in ${clusterTime}ms`);
-    } catch (error) {
-      const clusterTime = Date.now() - clusterStartTime;
-      throw new Error(`❌ SETUP: Failed to create kind cluster after ${clusterTime}ms: ${error}`);
-    }
-
-    // Set up kubectl context
-    execSync(`kind export kubeconfig --name ${CLUSTER_NAME}`, {
-      stdio: 'pipe',
-      timeout: 15000, // 15 second timeout
-    });
-
-    // Initialize Kubernetes client
-    kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
-
-    // Configure to skip TLS verification for test environment
-    const cluster = kc.getCurrentCluster();
-    if (cluster) {
-      // Create a new cluster object with skipTLSVerify set to true
-      const modifiedCluster = { ...cluster, skipTLSVerify: true };
-      kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-    }
-
+    // Use shared kubeconfig helper for consistent TLS configuration
+    kc = getIntegrationTestKubeConfig();
+    
     k8sApi = kc.makeApiClient(k8s.CoreV1Api);
     appsApi = kc.makeApiClient(k8s.AppsV1Api);
     customApi = kc.makeApiClient(k8s.CustomObjectsApi);

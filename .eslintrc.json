@@ -16,7 +16,14 @@
     "@typescript-eslint/explicit-function-return-type": "warn",
     "@typescript-eslint/no-explicit-any": "error",
     "@typescript-eslint/prefer-const": "error",
-    "@typescript-eslint/no-non-null-assertion": "warn"
+    "@typescript-eslint/no-non-null-assertion": "warn",
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "ImportExpression",
+        "message": "Dynamic imports are not allowed. Use static ESM imports instead. If dynamic import is absolutely necessary, add eslint-disable-next-line comment with justification."
+      }
+    ]
   },
   "ignorePatterns": ["dist/", "node_modules/", "*.js"]
 }

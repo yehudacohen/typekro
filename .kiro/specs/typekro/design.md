@@ -181,7 +181,7 @@ import { V1ObjectMeta } from '@kubernetes/client-node';
 // =============================================================================
 
 export interface KubernetesRef<T = unknown> {
-  readonly __brand: 'KubernetesRef';
+  readonly [Symbol.for('TypeKro.KubernetesRef')]: true;
   readonly resourceId: string;
   readonly fieldPath: string;
   readonly _type?: T;

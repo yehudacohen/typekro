@@ -20,6 +20,7 @@ import { execSync } from 'node:child_process';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { File } from 'alchemy/fs';
+import { getIntegrationTestKubeConfig } from './shared-kubeconfig';
 
 import {
   toResourceGraph,
@@ -30,7 +31,7 @@ import {
 } from '../../src/index.js';
 
 // Test configuration - use e2e-setup script
-const CLUSTER_NAME = 'typekro-e2e-test';
+const _CLUSTER_NAME = 'typekro-e2e-test';
 const BASE_NAMESPACE = 'typekro-comprehensive';
 const _TEST_TIMEOUT = 300000; // 5 minutes
 
@@ -111,7 +112,7 @@ const createTestResourceGraph = (testPrefix = '') => {
     }),
     (_schema, resources) => ({
       url: Cel.template('http://%s', resources.service?.metadata?.name),
-      readyReplicas: resources.deployment?.status.readyReplicas,
+      readyReplicas: Cel.expr<number>('has(webappDeployment.status.readyReplicas) ? webappDeployment.status.readyReplicas : 0'),
       phase: Cel.expr<string>('"running"'),
       configReady: Cel.expr<boolean>('true'),
     })
@@ -128,59 +129,37 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
   beforeAll(async () => {
     console.log('🚀 Setting up comprehensive E2E test environment...');
 
-    // Check if cluster already exists, if not run e2e-setup script
-    console.log('🔧 Checking if cluster exists...');
-    try {
-      execSync(`kind get clusters | grep ${CLUSTER_NAME}`, { stdio: 'pipe' });
-      console.log('✅ Cluster already exists, skipping setup');
-    } catch (_error) {
-      console.log('🔧 Cluster not found, running e2e-setup script...');
+    // Global integration harness sets up the cluster; skip if signaled
+    if (!process.env.SKIP_CLUSTER_SETUP) {
+      console.log('🔧 SETUP: Running e2e setup script...');
       try {
-        execSync('bun run scripts/e2e-setup.ts', {
+        execSync('bun run scripts/e2e-setup.ts', { 
           stdio: 'inherit',
           timeout: 300000 // 5 minute timeout
         });
-        console.log('✅ E2E setup completed successfully');
+        console.log('✅ SETUP: E2E environment setup completed');
       } catch (error) {
-        console.error('❌ E2E setup failed:', error);
-        throw new Error('Failed to set up E2E environment. Please check the setup script.');
+        throw new Error(`❌ SETUP: Failed to run e2e setup script: ${error}`);
       }
+    } else {
+      console.log('⏭️  Using pre-existing cluster from integration harness');
     }
 
-    // Initialize Kubernetes client
-    kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
-
-    // Verify we have a valid cluster
-    const cluster = kc.getCurrentCluster();
-    if (!cluster) {
-      throw new Error('No active Kubernetes cluster found. Please ensure the cluster is running and kubeconfig is properly set.');
-    }
-
-    console.log(`✅ Connected to cluster: ${cluster.name} at ${cluster.server}`);
-
-    // Configure to skip TLS verification for test environment
-    const modifiedCluster = { ...cluster, skipTLSVerify: true };
-    kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-
-    // Ensure we're using the correct context and export kubeconfig
+        // Use shared kubeconfig helper for consistent TLS configuration
     try {
-      execSync(`kind export kubeconfig --name ${CLUSTER_NAME}`, { stdio: 'pipe' });
-      console.log('✅ Kubeconfig exported successfully');
+      kc = getIntegrationTestKubeConfig();
+      
+      k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+      appsApi = kc.makeApiClient(k8s.AppsV1Api);
+      _customApi = kc.makeApiClient(k8s.CustomObjectsApi);
     } catch (error) {
-      console.warn('Failed to export kubeconfig:', error);
-      // Try to set context manually
-      try {
-        execSync(`kubectl config use-context kind-${CLUSTER_NAME}`, { stdio: 'pipe' });
-        console.log('✅ Kubectl context set successfully');
-      } catch (contextError) {
-        console.warn('Failed to set kubectl context:', contextError);
-      }
+      console.error('❌ Failed to initialize Kubernetes client:', error);
+      throw new Error(
+        `Kubernetes client initialization failed: ${error}. ` +
+        'Make sure the test cluster is running and accessible. ' +
+        'Run: bun run scripts/e2e-setup.ts to set up the test environment.'
+      );
     }
-
-    k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-    appsApi = kc.makeApiClient(k8s.AppsV1Api);
-    _customApi = kc.makeApiClient(k8s.CustomObjectsApi);
 
     // Note: Individual test namespaces will be created per test for better isolation
 
@@ -331,6 +310,8 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
   describe('DirectResourceFactory without Alchemy', () => {
     it('should deploy, manage, and cleanup resources directly to Kubernetes', async () => {
+    // Increase timeout for this test as it involves multiple resource operations
+    const _testTimeout = 180000; // 3 minutes
       await withTestNamespace('direct-without-alchemy', async (testNamespace) => {
         console.log('🧪 Testing DirectResourceFactory without alchemy...');
 
@@ -529,6 +510,8 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
   describe('KroResourceFactory without Alchemy', () => {
     it('should deploy ResourceGraphDefinition and create instances', async () => {
+    // Increase timeout for this test as it involves Kro RGD deployment
+    const _testTimeout = 180000; // 3 minutes
       await withTestNamespace('kro-without-alchemy', async (testNamespace) => {
         console.log('🧪 Testing KroResourceFactory without alchemy...');
 

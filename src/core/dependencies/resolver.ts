@@ -8,6 +8,7 @@
 import { isCelExpression, isKubernetesRef } from '../../utils/index.js';
 import { CircularDependencyError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
+import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
@@ -120,7 +121,7 @@ export class DependencyResolver {
       const [, resourceId, section, field] = match;
 
       refs.push({
-        __brand: 'KubernetesRef',
+        [KUBERNETES_REF_BRAND]: true,
         resourceId,
         fieldPath: `${section}.${field}`,
       } as KubernetesRef);

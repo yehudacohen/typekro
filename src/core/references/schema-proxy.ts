@@ -5,6 +5,7 @@
  * KubernetesRef objects for field access, specifically marked as schema references.
  */
 
+import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import type { KroCompatibleType, KubernetesRef, SchemaMagicProxy, SchemaProxy, } from '../types.js';
 
 /**
@@ -15,14 +16,14 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
   const proxyTarget = () => {
     // Empty function used as proxy target
   };
-  Object.defineProperty(proxyTarget, '__brand', { value: 'KubernetesRef', enumerable: false });
+  Object.defineProperty(proxyTarget, KUBERNETES_REF_BRAND, { value: true, enumerable: false });
   Object.defineProperty(proxyTarget, 'resourceId', { value: '__schema__', enumerable: false });
   Object.defineProperty(proxyTarget, 'fieldPath', { value: fieldPath, enumerable: false });
 
   return new Proxy(proxyTarget, {
     get(target, prop) {
       // Check for our defined properties first
-      if (prop === '__brand' || prop === 'resourceId' || prop === 'fieldPath') {
+      if (prop === KUBERNETES_REF_BRAND || prop === 'resourceId' || prop === 'fieldPath') {
         return target[prop as keyof typeof target];
       }
 
@@ -163,14 +164,14 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
   const proxyTarget = () => {
     // Empty function used as proxy target
   };
-  Object.defineProperty(proxyTarget, '__brand', { value: 'KubernetesRef', enumerable: false });
+  Object.defineProperty(proxyTarget, KUBERNETES_REF_BRAND, { value: true, enumerable: false });
   Object.defineProperty(proxyTarget, 'resourceId', { value: resourceId, enumerable: false });
   Object.defineProperty(proxyTarget, 'fieldPath', { value: fieldPath, enumerable: false });
 
   return new Proxy(proxyTarget, {
     get(target, prop) {
       // Check for our defined properties first
-      if (prop === '__brand' || prop === 'resourceId' || prop === 'fieldPath') {
+      if (prop === KUBERNETES_REF_BRAND || prop === 'resourceId' || prop === 'fieldPath') {
         return target[prop as keyof typeof target];
       }
 

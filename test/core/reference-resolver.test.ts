@@ -5,9 +5,12 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { ReferenceResolver } from '../../src/core.js';
+import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../src/core/constants/brands.js';
 
 // Mock the Kubernetes client
-const mockKubeConfig = {} as k8s.KubeConfig;
+const mockKubeConfig = {
+  makeApiClient: mock(() => mockK8sApi),
+} as unknown as k8s.KubeConfig;
 const mockK8sApi = {
   read: mock(() => Promise.resolve({ body: {} })),
   create: mock(() => Promise.resolve({ body: {} })),
@@ -20,7 +23,7 @@ describe('ReferenceResolver', () => {
   let context: any;
 
   beforeEach(() => {
-    resolver = new ReferenceResolver(mockKubeConfig, mockK8sApi as any);
+    resolver = new ReferenceResolver(mockKubeConfig, 'direct', mockK8sApi as any);
     context = {
       deployedResources: [],
       kubeClient: mockKubeConfig,
@@ -60,7 +63,7 @@ describe('ReferenceResolver', () => {
                 {
                   name: 'DB_HOST',
                   value: {
-                    __brand: 'KubernetesRef',
+                    [KUBERNETES_REF_BRAND]: true,
                     resourceId: 'database',
                     fieldPath: 'status.podIP',
                   },
@@ -102,7 +105,7 @@ describe('ReferenceResolver', () => {
             service: {
               port: {
                 number: {
-                  __brand: 'KubernetesRef',
+                  [KUBERNETES_REF_BRAND]: true,
                   resourceId: 'service',
                   fieldPath: 'spec.ports[0].port',
                 },
@@ -142,7 +145,7 @@ describe('ReferenceResolver', () => {
                 {
                   name: 'DATABASE_URL',
                   value: {
-                    __brand: 'CelExpression',
+                    [CEL_EXPRESSION_BRAND]: true,
                     expression: 'concat("postgresql://", database.status.endpoint, ":5432/mydb")',
                   },
                 },
@@ -183,7 +186,7 @@ describe('ReferenceResolver', () => {
             {
               name: 'CONFIG_KEY1',
               value: {
-                __brand: 'KubernetesRef',
+                [KUBERNETES_REF_BRAND]: true,
                 resourceId: 'config',
                 fieldPath: 'data.key1',
               },
@@ -191,7 +194,7 @@ describe('ReferenceResolver', () => {
             {
               name: 'CONFIG_KEY2',
               value: {
-                __brand: 'KubernetesRef',
+                [KUBERNETES_REF_BRAND]: true,
                 resourceId: 'config',
                 fieldPath: 'data.key2',
               },
@@ -340,7 +343,7 @@ describe('ReferenceResolver', () => {
                 {
                   name: 'DATABASE_URL',
                   value: {
-                    __brand: 'CelExpression',
+                    [CEL_EXPRESSION_BRAND]: true,
                     expression:
                       'concat("postgresql://", database.status.endpoint, ":", string(database.status.port), "/mydb")',
                   },
@@ -382,7 +385,7 @@ describe('ReferenceResolver', () => {
             {
               name: 'LOG_LEVEL',
               value: {
-                __brand: 'CelExpression',
+                [CEL_EXPRESSION_BRAND]: true,
                 expression: 'config.data.debug == "true" ? config.data.logLevel : "info"',
               },
             },
@@ -415,7 +418,7 @@ describe('ReferenceResolver', () => {
       const resource = {
         spec: {
           maxReplicas: {
-            __brand: 'CelExpression',
+            [CEL_EXPRESSION_BRAND]: true,
             expression: 'deployment.spec.replicas * 2',
           },
         },
@@ -444,7 +447,7 @@ describe('ReferenceResolver', () => {
       context.deployedResources = [deployedResource];
 
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true as const,
         resourceId: 'database',
         fieldPath: 'status.podIP',
       };
@@ -480,7 +483,7 @@ describe('ReferenceResolver', () => {
       context.deployedResources = [deployedResource];
 
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true as const,
         resourceId: 'database',
         fieldPath: 'status.podIP',
       };
@@ -498,10 +501,17 @@ describe('ReferenceResolver', () => {
 
   describe('error handling', () => {
     it('should throw ReferenceResolutionError for invalid references', async () => {
+      // Mock the k8s API to throw a 404 error for nonexistent resources
+      mockK8sApi.read.mockImplementationOnce(() => {
+        const error = new Error('Resource not found') as any;
+        error.statusCode = 404;
+        return Promise.reject(error);
+      });
+
       const resource = {
         spec: {
           value: {
-            __brand: 'KubernetesRef',
+            [KUBERNETES_REF_BRAND]: true,
             resourceId: 'nonexistent',
             fieldPath: 'status.value',
           },
@@ -509,7 +519,7 @@ describe('ReferenceResolver', () => {
       };
 
       await expect(resolver.resolveReferences(resource, context)).rejects.toThrow(
-        'Cluster resource querying not yet implemented'
+        'Failed to resolve reference nonexistent.status.value'
       );
     });
 
@@ -517,7 +527,7 @@ describe('ReferenceResolver', () => {
       const resource = {
         spec: {
           value: {
-            __brand: 'CelExpression',
+            [CEL_EXPRESSION_BRAND]: true,
             expression: 'nonexistent.resource.field',
           },
         },

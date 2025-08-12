@@ -14,7 +14,7 @@ import type {
   KroResourceFactory,
   RGDStatus,
 } from '../types/deployment.js';
-import type { Enhanced, KubernetesResource } from '../types/kubernetes.js';
+import type { Enhanced, KubernetesResource, DeployableK8sResource } from '../types/kubernetes.js';
 import type { KroCompatibleType } from '../types/serialization.js';
 import type { SchemaDefinition, SchemaProxy } from '../types/serialization.js';
 // Alchemy integration
@@ -23,8 +23,11 @@ import { createSchemaProxy } from '../references/index.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
 import { DirectDeploymentEngine } from './engine.js';
+import { DeploymentMode } from '../references/index.js';
 import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
 import { kroCustomResourceDefinition } from '../../factories/kro/kro-crd.js';
+import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
+import { ensureResourceTypeRegistered, KroTypeKroDeployer, createAlchemyResourceId } from '../../alchemy/deployment.js';
 
 
 /**
@@ -108,12 +111,18 @@ export class KroResourceFactoryImpl<
    * Get or create the Kubernetes config
    */
   private getKubeConfig(): k8s.KubeConfig {
-    let kubeConfig = this.factoryOptions.kubeConfig || this.kubeConfig;
-    if (!kubeConfig) {
-      kubeConfig = new k8s.KubeConfig();
-      kubeConfig.loadFromDefault();
+    // Prefer the factory-provided kubeconfig and cache it for reuse
+    if (this.factoryOptions.kubeConfig) {
+      this.kubeConfig = this.factoryOptions.kubeConfig;
+      return this.kubeConfig;
     }
-    return kubeConfig;
+
+    if (!this.kubeConfig) {
+      const cfg = new k8s.KubeConfig();
+      cfg.loadFromDefault();
+      this.kubeConfig = cfg;
+    }
+    return this.kubeConfig;
   }
 
 
@@ -136,56 +145,70 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Deploy directly to Kubernetes
+   * Deploy directly to Kubernetes using DirectDeploymentEngine
    */
   private async deployDirect(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
     // Ensure RGD is deployed first
     await this.ensureRGDDeployed();
 
+    // Create DirectDeploymentEngine with KRO mode for CEL string conversion
+    const deploymentEngine = new DirectDeploymentEngine(this.getKubeConfig(), undefined, undefined, DeploymentMode.KRO);
+
     // Create custom resource instance
     const instanceName = this.generateInstanceName(spec);
-    const customResource = this.createCustomResourceInstance(instanceName, spec);
+    const customResourceData = this.createCustomResourceInstance(instanceName, spec);
 
-    // Deploy the custom resource using CustomObjectsApi
-    const customApi = this.getKubeConfig().makeApiClient(k8s.CustomObjectsApi);
+    // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
+    const enhancedCustomResource = kroCustomResource({
+      apiVersion: customResourceData.apiVersion,
+      kind: customResourceData.kind,
+      metadata: {
+        name: customResourceData.metadata.name,
+        namespace: customResourceData.metadata.namespace,
+      },
+      spec: customResourceData.spec,
+    });
 
-    // Extract API group and version from the custom resource
-    const apiVersionParts = customResource.apiVersion.split('/');
-    const group: string = apiVersionParts.length > 1 ? (apiVersionParts[0] || 'kro.run') : 'kro.run';
-    const version: string = apiVersionParts.length > 1 ? (apiVersionParts[1] || 'v1alpha1') : (apiVersionParts[0] || 'v1alpha1');
-    const plural = `${this.schemaDefinition.kind.toLowerCase()}s`; // Simple pluralization
+    // Deploy using DirectDeploymentEngine with built-in waitForReady logic
+    const deployableResource: DeployableK8sResource<typeof enhancedCustomResource> = {
+      ...enhancedCustomResource,
+      id: instanceName,
+      metadata: {
+        ...enhancedCustomResource.metadata,
+        name: instanceName,
+        namespace: this.namespace,
+      },
+      spec: customResourceData.spec, // Use spec directly from customResourceData to ensure it's preserved
+    };
 
-    try {
-      await customApi.createNamespacedCustomObject(
-        group,
-        version,
-        this.namespace,
-        plural,
-        customResource
-      );
-    } catch (error) {
-      const k8sError = error as { statusCode?: number; message?: string };
-      if (k8sError.statusCode === 409) {
-        // Resource already exists, update it
-        await customApi.patchNamespacedCustomObject(
-          group,
-          version,
-          this.namespace,
-          plural,
-          customResource.metadata.name,
-          customResource
-        );
-      } else {
-        throw new Error(`Failed to create custom resource instance: ${k8sError.message || String(error)}`);
+    // Preserve the readiness evaluator (non-enumerable property)
+    const readinessEvaluator = (enhancedCustomResource as any).readinessEvaluator;
+    if (readinessEvaluator) {
+      Object.defineProperty(deployableResource, 'readinessEvaluator', {
+        value: readinessEvaluator,
+        enumerable: false,
+        configurable: false,
+        writable: false
+      });
+    }
+
+    // Deploy without waiting for readiness - we'll handle that ourselves
+    const _deployedResource = await deploymentEngine.deployResource(
+      deployableResource,
+      {
+        mode: 'kro',
+        namespace: this.namespace,
+        waitForReady: false, // We'll handle Kro-specific readiness ourselves
+        timeout: this.factoryOptions.timeout || 300000,
       }
+    );
+
+    // Handle Kro-specific readiness checking if requested
+    if (this.factoryOptions.waitForReady ?? true) {
+      await this.waitForKroInstanceReady(instanceName, this.factoryOptions.timeout || 600000); // 10 minutes
     }
 
-    // Wait for the instance to be ready if requested
-    if (this.factoryOptions.waitForReady) {
-      await this.waitForInstanceReady(instanceName);
-    }
-
-    // Create Enhanced proxy for the instance
+    // Create Enhanced proxy for the deployed instance
     return await this.createEnhancedProxy(spec, instanceName);
   }
 
@@ -199,12 +222,10 @@ export class KroResourceFactoryImpl<
       throw new Error('Alchemy scope is required for alchemy deployment');
     }
 
-    // Import dynamic registration functions
-    const { ensureResourceTypeRegistered, KroTypeKroDeployer, createAlchemyResourceId } = await import('../../alchemy/deployment.js');
-    const { KroDeploymentEngine } = await import('../../factories/kro/deployment-engine.js');
+    // Use static registration functions
 
-    // Create deployer instance
-    const kroEngine = new KroDeploymentEngine(this.getKubeConfig());
+    // Create deployer instance using DirectDeploymentEngine with KRO mode
+    const kroEngine = new DirectDeploymentEngine(this.getKubeConfig(), undefined, undefined, DeploymentMode.KRO);
     const deployer = new KroTypeKroDeployer(kroEngine);
 
     // 1. Ensure RGD is deployed via alchemy (once per factory)
@@ -309,7 +330,7 @@ export class KroResourceFactoryImpl<
    * Delete a specific instance by name
    */
   async deleteInstance(name: string): Promise<void> {
-    const k8sApi = k8s.KubernetesObjectApi.makeApiClient(this.getKubeConfig());
+    const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
 
     const apiVersion = this.schemaDefinition.apiVersion.includes('/')
       ? this.schemaDefinition.apiVersion
@@ -354,7 +375,7 @@ export class KroResourceFactoryImpl<
    * Get ResourceGraphDefinition status
    */
   async getRGDStatus(): Promise<RGDStatus> {
-    const k8sApi = k8s.KubernetesObjectApi.makeApiClient(this.getKubeConfig());
+    const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
 
     try {
       const response = await k8sApi.read({
@@ -443,8 +464,8 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
    * Ensure the ResourceGraphDefinition is deployed using DirectDeploymentEngine
    */
   private async ensureRGDDeployed(): Promise<void> {
-    // Create DirectDeploymentEngine instance
-    const deploymentEngine = new DirectDeploymentEngine(this.getKubeConfig());
+    // Create DirectDeploymentEngine instance with KRO mode for CEL string generation
+    const deploymentEngine = new DirectDeploymentEngine(this.getKubeConfig(), undefined, undefined, DeploymentMode.KRO);
 
     // Create the RGD using the same serialization logic as toYaml()
     const kroSchema = generateKroSchemaFromArktype(this.name, this.schemaDefinition, this.resources, this.statusMappings);
@@ -483,48 +504,14 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     }
   }
 
-  /**
-   * Wait for RGD to be ready using DirectDeploymentEngine
-   * This method is now handled by DirectDeploymentEngine.deployResource() with waitForReady: true
-   */
-  private async waitForRGDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
-    // Create Enhanced RGD for readiness checking
-    const rgdManifest = {
-      apiVersion: 'kro.run/v1alpha1',
-      kind: 'ResourceGraphDefinition',
-      metadata: {
-        name: this.rgdName,
-        namespace: this.namespace,
-      },
-    };
 
-    const enhancedRGD = resourceGraphDefinition(rgdManifest);
-
-    // Use DirectDeploymentEngine to wait for RGD readiness
-    const deployedRGD = {
-      id: this.rgdName,
-      kind: 'ResourceGraphDefinition',
-      name: this.rgdName,
-      namespace: this.namespace,
-      manifest: enhancedRGD,
-      status: 'deployed' as const,
-      deployedAt: new Date(),
-    };
-
-    // This will use the custom readiness evaluator from resourceGraphDefinition()
-    await deploymentEngine.waitForResourceReadiness(deployedRGD, {
-      mode: 'direct',
-      namespace: this.namespace,
-      timeout: this.factoryOptions.timeout || 60000,
-    });
-  }
 
   /**
    * Wait for the CRD to be created by Kro using DirectDeploymentEngine
    */
   private async waitForCRDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
     const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
-    
+
     // Create Enhanced CRD for readiness checking
     const crdManifest = {
       apiVersion: 'apiextensions.k8s.io/v1',
@@ -556,102 +543,7 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     });
   }
 
-  /**
-   * Wait for instance to be ready
-   */
-  private async waitForInstanceReady(instanceName: string): Promise<void> {
-    const timeout = this.factoryOptions.timeout || 60000;
-    const startTime = Date.now();
-    const readinessLogger = this.logger.child({ instanceName, rgdName: this.name });
 
-    while (Date.now() - startTime < timeout) {
-      try {
-        const apiVersion = this.schemaDefinition.apiVersion.includes('/')
-          ? this.schemaDefinition.apiVersion
-          : `kro.run/${this.schemaDefinition.apiVersion}`;
-
-        const k8sApi = k8s.KubernetesObjectApi.makeApiClient(this.getKubeConfig());
-        const response = await k8sApi.read({
-          apiVersion,
-          kind: this.schemaDefinition.kind,
-          metadata: {
-            name: instanceName,
-            namespace: this.namespace,
-          },
-        });
-
-        const instance = response.body as k8s.KubernetesObject & {
-          status?: {
-            state?: string;
-            phase?: string;
-            ready?: boolean;
-            message?: string;
-            conditions?: Array<{
-              type: string;
-              status: string;
-              reason?: string;
-              message?: string;
-            }>;
-          };
-        };
-
-        // Check if instance is ready using Kro's status structure
-        const isActive = instance.status?.state === 'ACTIVE';
-        const isSynced = instance.status?.conditions?.some(c =>
-          c.type === 'InstanceSynced' && c.status === 'True'
-        );
-
-        if (isActive && isSynced) {
-          return;
-        }
-
-        // Only fail if the state is definitively ERROR (not transient failures)
-        if (instance.status?.state === 'ERROR') {
-          const errorMessage = instance.status?.conditions?.find(c => c.status === 'False')?.message ||
-            instance.status?.message ||
-            'Unknown error';
-          throw new Error(`Instance deployment failed: ${errorMessage}`);
-        }
-
-        // Log current status for debugging
-        readinessLogger.info('Instance not ready yet', { 
-          state: instance.status?.state, 
-          synced: isSynced 
-        });
-
-        // Check RGD status to see if that's the issue
-        try {
-          const rgdStatus = await this.getRGDStatus();
-          readinessLogger.debug('RGD status check', { phase: rgdStatus.phase });
-          if (rgdStatus.phase === 'failed') {
-            throw new Error(`RGD failed: ${rgdStatus.conditions?.find(c => c.status === 'False')?.message || 'Unknown error'}`);
-          }
-        } catch (error) {
-          readinessLogger.debug('Could not check RGD status', { error: (error as Error).message });
-        }
-
-        // Check for specific reconciliation failures that might resolve
-        const failedCondition = instance.status?.conditions?.find(c => c.status === 'False');
-        if (failedCondition) {
-          readinessLogger.info('Reconciliation issue detected', { 
-            reason: failedCondition.reason, 
-            message: failedCondition.message 
-          });
-        }
-      } catch (error) {
-        const k8sError = error as { statusCode?: number };
-        if (k8sError.statusCode !== 404) {
-          throw error;
-        }
-        // Instance not found yet, continue waiting
-      }
-
-      // Wait before checking again
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-
-    throw new Error(`Timeout waiting for instance ${instanceName} to be ready after ${timeout}ms`);
-  }
 
   /**
    * Separate static and dynamic status fields
@@ -712,7 +604,7 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
    */
   private async createEnhancedProxyWithMixedHydration(spec: TSpec, instanceName: string): Promise<Enhanced<TSpec, TStatus>> {
     const hydrationLogger = this.logger.child({ instanceName });
-    
+
     // Separate static and dynamic status fields
     const { staticFields, dynamicFields } = this.separateStatusFields();
 
@@ -749,15 +641,18 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     // Hydrate dynamic status fields if enabled and there are dynamic fields
     if (this.factoryOptions.hydrateStatus !== false && Object.keys(dynamicFields).length > 0) {
       try {
+
         const hydratedDynamicFields = await this.hydrateDynamicStatusFields(instanceName, dynamicFields);
-        
+
+
+
         // Merge dynamic fields with static fields
         // Dynamic fields from Kro take precedence over static fields with same names
         const mergedStatus = {
           ...staticFields, // Static fields first
           ...hydratedDynamicFields, // Dynamic fields from Kro override
         };
-        
+
         // Update the status using object assignment to avoid type issues
         Object.assign(enhancedProxy.status, mergedStatus);
       } catch (error) {
@@ -777,17 +672,123 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
   }
 
   /**
+   * Wait for Kro instance to be ready with Kro-specific logic
+   */
+  private async waitForKroInstanceReady(instanceName: string, timeout: number): Promise<void> {
+    const startTime = Date.now();
+    const readinessLogger = this.logger.child({ instanceName, rgdName: this.name });
+
+    while (Date.now() - startTime < timeout) {
+      try {
+        const apiVersion = this.schemaDefinition.apiVersion.includes('/')
+          ? this.schemaDefinition.apiVersion
+          : `kro.run/${this.schemaDefinition.apiVersion}`;
+
+        const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
+        const response = await k8sApi.read({
+          apiVersion,
+          kind: this.schemaDefinition.kind,
+          metadata: {
+            name: instanceName,
+            namespace: this.namespace,
+          },
+        });
+
+        const instance = response.body as k8s.KubernetesObject & {
+          status?: {
+            state?: string;
+            phase?: string;
+            ready?: boolean;
+            message?: string;
+            conditions?: Array<{
+              type: string;
+              status: string;
+              reason?: string;
+              message?: string;
+            }>;
+          };
+        };
+
+        // Kro-specific readiness logic
+        const status = instance.status;
+        if (!status) {
+          readinessLogger.debug('No status found yet, continuing to wait', { instanceName });
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+
+        const state = status.state;
+        const conditions = status.conditions || [];
+        const syncedCondition = conditions.find(c => c.type === 'InstanceSynced');
+        
+        // Check if status has fields beyond the basic Kro fields (conditions, state)
+        const statusKeys = Object.keys(status);
+        const basicKroFields = ['conditions', 'state'];
+        const hasCustomStatusFields = statusKeys.some(key => !basicKroFields.includes(key));
+
+        const isActive = state === 'ACTIVE';
+        const isSynced = syncedCondition?.status === 'True';
+
+        readinessLogger.debug('Kro instance status check', {
+          instanceName,
+          state,
+          isActive,
+          isSynced,
+          hasCustomStatusFields,
+          statusKeys
+        });
+
+        // Resource is ready when it's active, synced, and has custom status fields populated
+        if (isActive && isSynced && hasCustomStatusFields) {
+          readinessLogger.info('Kro instance is ready', { instanceName });
+          return;
+        }
+
+        // Check for failure states
+        if (state === 'FAILED') {
+          const failedCondition = conditions.find(c => c.status === 'False');
+          const errorMessage = failedCondition?.message || 'Unknown error';
+          throw new Error(`Kro instance deployment failed: ${errorMessage}`);
+        }
+
+        readinessLogger.debug('Kro instance not ready yet, continuing to wait', {
+          instanceName,
+          state,
+          isSynced,
+          hasCustomStatusFields
+        });
+
+      } catch (error) {
+        const k8sError = error as { statusCode?: number };
+        if (k8sError.statusCode !== 404) {
+          throw error;
+        }
+        // Instance not found yet, continue waiting
+        readinessLogger.debug('Instance not found yet, continuing to wait', { instanceName });
+      }
+
+      // Wait before checking again - use shorter intervals for faster response
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    const elapsed = Date.now() - startTime;
+    throw new Error(`Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms). This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro`);
+  }
+
+  /**
    * Hydrate dynamic status fields by evaluating CEL expressions against live Kro resource data
    */
   private async hydrateDynamicStatusFields(instanceName: string, dynamicFields: Record<string, any>): Promise<Record<string, any>> {
     const dynamicLogger = this.logger.child({ instanceName });
     
+
+
     // Get the live custom resource to extract dynamic status fields
     const apiVersion = this.schemaDefinition.apiVersion.includes('/')
       ? this.schemaDefinition.apiVersion
       : `kro.run/${this.schemaDefinition.apiVersion}`;
 
-    const k8sApi = k8s.KubernetesObjectApi.makeApiClient(this.getKubeConfig());
+    const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
     const response = await k8sApi.read({
       apiVersion,
       kind: this.schemaDefinition.kind,
@@ -798,7 +799,7 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     });
 
     const liveInstance = response.body as any;
-    
+
     if (!liveInstance.status) {
       dynamicLogger.warn('No status found in live instance, returning empty dynamic fields');
       return {};
@@ -807,16 +808,15 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     // For now, return the live instance status directly
     // In a full implementation, this would evaluate CEL expressions in dynamicFields
     // against the live Kro resource data and return the evaluated results
-    
+
     // Extract only the fields that were marked as dynamic
     const hydratedFields: Record<string, any> = {};
-    
+
     for (const [fieldName, _fieldValue] of Object.entries(dynamicFields)) {
       if (liveInstance.status[fieldName] !== undefined) {
         hydratedFields[fieldName] = liveInstance.status[fieldName];
       }
     }
-    
     return hydratedFields;
   }
 }

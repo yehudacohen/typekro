@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { CelEvaluationError, CelEvaluator } from '../../src/core.js';
+import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../src/core/constants/brands.js';
 
 describe('CelEvaluator', () => {
   let evaluator: CelEvaluator;
@@ -21,7 +22,7 @@ describe('CelEvaluator', () => {
   describe('evaluate', () => {
     it('should evaluate simple arithmetic expressions', async () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: '2 + 3 * 4',
       };
 
@@ -31,7 +32,7 @@ describe('CelEvaluator', () => {
 
     it('should evaluate string operations', async () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: '"hello" + " " + "world"',
       };
 
@@ -41,7 +42,7 @@ describe('CelEvaluator', () => {
 
     it('should evaluate boolean expressions', async () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'true && false || true',
       };
 
@@ -53,7 +54,7 @@ describe('CelEvaluator', () => {
       context.variables = { x: 10, y: 5 };
 
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'x > y',
       };
 
@@ -72,7 +73,7 @@ describe('CelEvaluator', () => {
       context.resources.set('database', resource);
 
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'database.status.podIP + ":" + string(database.status.port)',
       };
 
@@ -93,7 +94,7 @@ describe('CelEvaluator', () => {
       context.resources.set('cache', cache);
 
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression:
           'database.status.ready && cache.status.ready && (database.status.replicas + cache.status.replicas) >= 5',
       };
@@ -106,7 +107,7 @@ describe('CelEvaluator', () => {
       context.variables = { env: 'production' };
 
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'env == "production" ? "prod-config" : "dev-config"',
       };
 
@@ -118,7 +119,7 @@ describe('CelEvaluator', () => {
       context.variables = { numbers: [1, 2, 3, 4, 5] };
 
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'numbers.all(x, x > 0)',
       };
 
@@ -130,7 +131,7 @@ describe('CelEvaluator', () => {
       context.variables = { config: { debug: true, port: 8080 } };
 
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'has(config.debug) && config.port > 8000',
       };
 
@@ -145,12 +146,12 @@ describe('CelEvaluator', () => {
       };
 
       const expression1 = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'double(21)',
       };
 
       const expression2 = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'greet("World")',
       };
 
@@ -163,7 +164,7 @@ describe('CelEvaluator', () => {
 
     it('should throw error for undefined resources', async () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'nonexistent.status.ready',
       };
 
@@ -174,7 +175,7 @@ describe('CelEvaluator', () => {
 
     it('should throw error for invalid expressions', async () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'invalid syntax here !!!',
       };
 
@@ -185,7 +186,7 @@ describe('CelEvaluator', () => {
   describe('parse', () => {
     it('should parse and reuse expressions', async () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'x + y',
       };
 
@@ -200,7 +201,7 @@ describe('CelEvaluator', () => {
 
     it('should throw error for invalid syntax during parsing', () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'invalid syntax !!!',
       };
 
@@ -211,7 +212,7 @@ describe('CelEvaluator', () => {
   describe('validate', () => {
     it('should validate correct expressions', () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: '2 + 2',
       };
 
@@ -222,7 +223,7 @@ describe('CelEvaluator', () => {
 
     it('should invalidate incorrect expressions', () => {
       const expression = {
-        __brand: 'CelExpression' as const,
+        [CEL_EXPRESSION_BRAND]: true,
         expression: 'invalid syntax !!!',
       };
 
@@ -274,7 +275,7 @@ describe('CelEvaluator', () => {
   describe('static expression builders', () => {
     it('should create concat expressions', () => {
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'database',
         fieldPath: 'status.endpoint',
       };
@@ -288,7 +289,7 @@ describe('CelEvaluator', () => {
 
     it('should create conditional expressions', () => {
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'config',
         fieldPath: 'data.debug',
       };
@@ -300,7 +301,7 @@ describe('CelEvaluator', () => {
 
     it('should create has expressions', () => {
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'secret',
         fieldPath: 'data.password',
       };
@@ -312,7 +313,7 @@ describe('CelEvaluator', () => {
 
     it('should create size expressions', () => {
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'spec.replicas',
       };
@@ -324,7 +325,7 @@ describe('CelEvaluator', () => {
 
     it('should create string method expressions', () => {
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'service',
         fieldPath: 'metadata.name',
       };
@@ -340,7 +341,7 @@ describe('CelEvaluator', () => {
 
     it('should create list operation expressions', () => {
       const ref = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'spec.template.spec.containers',
       };
@@ -366,13 +367,13 @@ describe('CelEvaluator', () => {
   describe('createExpression', () => {
     it('should create expressions with placeholders', () => {
       const ref1 = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'database',
         fieldPath: 'status.host',
       };
 
       const ref2 = {
-        __brand: 'KubernetesRef' as const,
+        [KUBERNETES_REF_BRAND]: true,
         resourceId: 'database',
         fieldPath: 'status.port',
       };

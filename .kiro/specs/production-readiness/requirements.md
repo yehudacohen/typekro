@@ -2,23 +2,28 @@
 
 ## Introduction
 
-This spec focuses on preparing the TypeKro codebase for production readiness by implementing professional logging, code quality improvements, comprehensive documentation, and contributor guidelines. The goal is to transform TypeKro from a development-stage library into a production-ready open source project that follows industry best practices.
+This spec focuses on preparing the TypeKro codebase for production readiness by completing unfinished core functionality, implementing code quality improvements, comprehensive documentation, and contributor guidelines. The goal is to transform TypeKro from a development-stage library into a production-ready open source project that follows industry best practices.
+
+**Current Status**: Professional logging has been completed with a sophisticated Pino-based system. The primary focus is now on completing core functionality gaps including cluster resource querying, health checking, CEL evaluation, and alchemy integration.
 
 ## Requirements
 
-### Requirement 1: Professional Logging System
+### Requirement 1: Professional Logging System ✅ COMPLETED
 
 **User Story:** As a developer using TypeKro in production, I want structured, configurable logging so that I can monitor, debug, and troubleshoot issues effectively.
 
 #### Acceptance Criteria
 
-1. WHEN the codebase is audited THEN all console.log, console.warn, and console.error statements SHALL be identified and catalogued
-2. WHEN a logging framework is selected THEN it SHALL be Pino for its performance and structured logging capabilities
-3. WHEN console statements are replaced THEN each SHALL be evaluated for necessity, appropriate log level, and message clarity
-4. WHEN logging is implemented THEN it SHALL support configurable log levels (trace, debug, info, warn, error, fatal)
-5. WHEN logging is implemented THEN it SHALL produce structured JSON output suitable for production log aggregation
-6. WHEN logging is implemented THEN it SHALL include contextual information (timestamps, request IDs, resource names)
-7. WHEN the logging migration is complete THEN no console.* statements SHALL remain in the production codebase
+1. ✅ WHEN the codebase is audited THEN all console.log, console.warn, and console.error statements SHALL be identified and catalogued
+2. ✅ WHEN a logging framework is selected THEN it SHALL be Pino for its performance and structured logging capabilities
+3. ✅ WHEN console statements are replaced THEN each SHALL be evaluated for necessity, appropriate log level, and message clarity
+4. ✅ WHEN logging is implemented THEN it SHALL support configurable log levels (trace, debug, info, warn, error, fatal)
+5. ✅ WHEN logging is implemented THEN it SHALL produce structured JSON output suitable for production log aggregation
+6. ✅ WHEN logging is implemented THEN it SHALL include contextual information (timestamps, request IDs, resource names)
+7. ✅ WHEN the logging migration is complete THEN no console.* statements SHALL remain in the production codebase
+8. 🔄 WHEN log levels are reviewed THEN each log statement SHALL use the appropriate level for its purpose and context
+
+**Status**: This requirement is mostly implemented with a sophisticated Pino-based logging system. **Remaining work**: Review all log levels to ensure they are appropriately set for production use.
 
 ### Requirement 2: Code Quality and Linting
 
@@ -108,3 +113,163 @@ This spec focuses on preparing the TypeKro codebase for production readiness by 
 3. WHEN test reliability is assessed THEN flaky tests SHALL be identified and fixed
 4. WHEN test performance is measured THEN the full test suite SHALL complete in reasonable time
 5. WHEN test documentation is created THEN it SHALL explain testing patterns and how to add new tests
+
+### Requirement 9: Core Deployment Engine Completion
+
+**User Story:** As a developer using TypeKro in production, I want complete deployment engine functionality so that all resource references and cluster interactions work reliably.
+
+#### Acceptance Criteria
+
+1. WHEN cluster resource querying is needed THEN the queryResourceFromCluster function SHALL be fully implemented with proper resource discovery
+2. WHEN arbitrary Kubernetes objects are accessed THEN the system SHALL use sophisticated resource discovery methods instead of generic client assumptions
+3. WHEN resource readiness is checked THEN the waitForResourceReady function SHALL perform actual readiness checks on cluster resources instead of simulation
+4. WHEN reference resolution fails THEN the system SHALL provide meaningful error messages and fallback strategies
+5. WHEN the deployment engine queries cluster resources THEN it SHALL handle authentication, authorization, and network failures gracefully
+
+### Requirement 10: Alchemy Integration Completion
+
+**User Story:** As a developer using TypeKro with Alchemy, I want complete integration functionality so that resource management works seamlessly across both systems.
+
+#### Acceptance Criteria
+
+1. WHEN TypeKro references are resolved THEN the resolveTypeKroReferencesOnly function SHALL use the actual ReferenceResolver instead of simplified implementation
+2. WHEN alchemy resource types are inferred THEN the inferAlchemyResourceType function SHALL handle all resource types without fallback to basic inference
+3. WHEN alchemy reference resolver is created THEN it SHALL use KubeConfig from the alchemy scope instead of hardcoded empty configurations
+4. WHEN alchemy deployment strategies are used THEN they SHALL be fully implemented instead of placeholder logic
+5. WHEN alchemy resources are registered THEN the system SHALL handle type conflicts and registration errors appropriately
+
+### Requirement 11: Kro Resource Factory Robustness
+
+**User Story:** As a developer deploying resources via Kro, I want robust factory functionality so that resource creation and management works reliably in all scenarios.
+
+#### Acceptance Criteria
+
+1. WHEN Kubernetes kinds are pluralized THEN the system SHALL use consistent simple pluralization following Kro's convention (kind.toLowerCase() + "s")
+2. WHEN CEL expressions are evaluated THEN the hydrateDynamicStatusFields function SHALL evaluate actual CEL expressions instead of returning raw status
+3. WHEN custom resource definitions are created THEN the system SHALL validate resource names and handle naming conflicts
+4. WHEN resource graph definitions are deployed THEN the system SHALL wait for actual readiness instead of assuming success
+5. WHEN factory instances are managed THEN the system SHALL track instance lifecycle and handle cleanup properly
+
+### Requirement 12: Direct Resource Factory Enhancement
+
+**User Story:** As a developer using direct deployment mode, I want complete factory functionality so that YAML generation and resource management works for all Kubernetes resource types.
+
+#### Acceptance Criteria
+
+1. WHEN YAML is serialized THEN the toYaml method SHALL handle all valid Kubernetes resource properties instead of limited top-level properties
+2. WHEN resource health is checked THEN the getStatus method SHALL perform real health checks instead of assuming "healthy" status
+3. WHEN resources are deployed directly THEN the system SHALL validate resource specifications before deployment
+4. WHEN direct deployment fails THEN the system SHALL provide detailed error information and rollback capabilities
+5. WHEN resource dependencies are resolved THEN the system SHALL handle complex dependency graphs and circular dependency detection
+6. WHEN getStatus is called THEN the system SHALL return actual resource health status instead of assumed "healthy" status
+
+### Requirement 13: CEL Evaluation System Completion
+
+**User Story:** As a developer using CEL expressions in TypeKro, I want complete expression evaluation so that all conditional logic and dynamic references work correctly.
+
+#### Acceptance Criteria
+
+1. WHEN conditional CEL expressions are evaluated THEN the evaluateCelExpression function SHALL evaluate them at runtime instead of returning unchanged
+2. WHEN CEL expressions reference cluster resources THEN the system SHALL resolve those references using the Kubernetes API
+3. WHEN CEL evaluation fails THEN the system SHALL provide meaningful error messages with expression context
+4. WHEN CEL expressions are parsed THEN the system SHALL validate syntax and provide helpful error messages for invalid expressions
+5. WHEN CEL expressions are optimized THEN the system SHALL cache evaluation results and avoid redundant API calls
+
+### Requirement 14: Backward Compatibility and Migration
+
+**User Story:** As a maintainer of TypeKro, I want clean module structure so that the codebase is maintainable and technical debt is minimized.
+
+#### Acceptance Criteria
+
+1. WHEN backward compatibility bridges exist THEN they SHALL be documented with clear migration paths and removal timelines
+2. WHEN the core/direct-deployment.ts bridge is removed THEN all imports SHALL be updated to use the new module structure
+3. WHEN placeholder ecosystem support exists THEN it SHALL be clearly documented as future functionality with implementation plans
+4. WHEN hardcoded configurations are found THEN they SHALL be replaced with proper configuration management
+5. WHEN migration is complete THEN the system SHALL have no remaining TODO comments for production-critical functionality
+
+### Requirement 15: Configuration and Environment Management
+
+**User Story:** As a developer deploying TypeKro in different environments, I want proper configuration management so that the system works reliably across development, staging, and production environments.
+
+#### Acceptance Criteria
+
+1. WHEN KubeConfig is loaded THEN the system SHALL support multiple configuration sources instead of defaulting to hardcoded locations
+2. WHEN environment-specific settings are needed THEN the system SHALL provide TypeKro configuration validation and environment detection
+3. WHEN authentication fails THEN the system SHALL provide clear error messages and configuration guidance
+4. WHEN network connectivity is limited THEN the system SHALL handle timeouts and retries appropriately
+5. WHEN multiple clusters are accessed THEN the system SHALL support cluster context switching and configuration isolation
+6. WHEN alchemy integration is used THEN TypeKro SHALL accept alchemy scope configuration externally without tight coupling
+
+### Requirement 16: Test Suite Stabilization
+
+**User Story:** As a developer working on TypeKro, I want a reliable test suite that consistently passes so that I can confidently make changes and deploy to production.
+
+#### Acceptance Criteria
+
+1. WHEN integration tests run THEN they SHALL complete within reasonable timeouts without hanging
+2. WHEN testing deployment failures THEN error scenarios SHALL fail fast instead of timing out
+3. WHEN testing resource readiness THEN readiness checks SHALL have appropriate timeouts and fallback behavior
+4. WHEN Kro controller is not available THEN ResourceGraphDefinition tests SHALL handle the absence gracefully
+5. WHEN running e2e tests THEN they SHALL clean up resources properly and not interfere with each other
+6. WHEN deployment engines encounter errors THEN they SHALL provide clear error messages and fail fast
+7. WHEN testing alchemy integration THEN scope management SHALL be handled correctly to prevent "Not running within an Alchemy Scope" errors
+
+### Requirement 17: Security and TLS Configuration
+
+**User Story:** As a developer deploying TypeKro in production, I want secure TLS configuration by default so that my deployments are protected from man-in-the-middle attacks.
+
+#### Acceptance Criteria
+
+1. WHEN kubeconfig is extracted THEN TLS verification SHALL be enabled by default
+2. WHEN TLS verification is disabled THEN users SHALL explicitly opt-in with a skipTLSVerify: true flag
+3. WHEN factory options are provided THEN skipTLSVerify SHALL be clearly documented as non-production only
+4. WHEN TLS configuration is invalid THEN the system SHALL provide clear error messages
+5. WHEN connecting to clusters THEN certificate validation SHALL be performed unless explicitly disabled
+
+### Requirement 18: Code Architecture and Encapsulation
+
+**User Story:** As a maintainer of TypeKro, I want proper encapsulation and clean architecture so that the codebase is maintainable and predictable.
+
+#### Acceptance Criteria
+
+1. WHEN accessing internal APIs THEN private member access SHALL be eliminated in favor of public getter methods
+2. WHEN KroTypeKroDeployer needs Kubernetes API access THEN it SHALL use a public getter method on DirectDeploymentEngine
+3. WHEN internal brand properties are used THEN they SHALL use Symbol.for() instead of magic strings
+4. WHEN brand checks are performed THEN they SHALL be consistent across the codebase
+5. WHEN encapsulation is violated THEN the code SHALL be refactored to use proper public interfaces
+
+### Requirement 19: Performance and Deployment Optimization
+
+**User Story:** As a developer deploying complex resource graphs, I want optimized deployment performance so that my deployments complete quickly and efficiently.
+
+#### Acceptance Criteria
+
+1. WHEN resources have dependencies THEN the system SHALL analyze deployment order using DependencyResolver
+2. WHEN deploying resources THEN independent resources SHALL be deployed in parallel using Promise.all()
+3. WHEN deployment stages are identified THEN each stage SHALL process resources concurrently
+4. WHEN deployment performance is measured THEN parallel deployment SHALL show significant improvement over sequential
+5. WHEN errors occur during parallel deployment THEN they SHALL be properly aggregated and reported
+
+### Requirement 20: Alchemy Integration Architecture
+
+**User Story:** As a developer using TypeKro with Alchemy, I want clean, maintainable integration code so that the system is reliable and easy to debug.
+
+#### Acceptance Criteria
+
+1. WHEN alchemy deployment is executed THEN the executeDeployment method SHALL be broken into smaller, focused helper functions
+2. WHEN kubeconfig is extracted THEN dedicated helper functions SHALL handle different configuration sources
+3. WHEN alchemy integration code is reviewed THEN it SHALL be easily testable and maintainable
+4. WHEN kubeconfig extraction fails THEN error handling SHALL be clear and actionable
+5. WHEN alchemy deployment logic is complex THEN it SHALL be decomposed into single-responsibility functions
+
+### Requirement 21: Configuration Flexibility
+
+**User Story:** As a developer using TypeKro in different environments, I want flexible configuration options so that I can easily adapt to various deployment scenarios.
+
+#### Acceptance Criteria
+
+1. WHEN KubernetesApi is initialized THEN it SHALL support loading from standard kubeconfig files (~/.kube/config)
+2. WHEN kubeconfig is not found in standard locations THEN environment variables SHALL serve as override options
+3. WHEN multiple kubeconfig sources are available THEN the system SHALL follow a clear precedence order
+4. WHEN kubeconfig loading fails THEN error messages SHALL guide users to proper configuration
+5. WHEN file-based configuration is used THEN it SHALL be the default for better developer experience

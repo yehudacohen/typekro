@@ -4,6 +4,7 @@
 
 import type { KubeConfig } from '@kubernetes/client-node';
 
+import type { DependencyGraph } from '../dependencies/index.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
 import type { KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
 
@@ -19,6 +20,8 @@ export interface DeployedResource {
   status: 'deployed' | 'ready' | 'failed';
   deployedAt: Date;
   error?: Error;
+  alchemyResourceId?: string;
+  alchemyResourceType?: string;
 }
 
 // =============================================================================
@@ -47,6 +50,15 @@ export interface AlchemyDeploymentOptions {
   rollbackOnFailure?: boolean;
   retryPolicy?: RetryPolicy;
   progressCallback?: (event: DeploymentEvent) => void;
+  
+  /**
+   * SECURITY WARNING: Only set to true in non-production environments.
+   * This disables TLS certificate verification and makes connections vulnerable
+   * to man-in-the-middle attacks.
+   * 
+   * @default false (secure by default)
+   */
+  skipTLSVerify?: boolean;
 }
 
 export interface RetryPolicy {
@@ -79,6 +91,15 @@ export interface DeploymentResult {
   duration: number;
   status: 'success' | 'partial' | 'failed';
   errors: DeploymentError[];
+  alchemyMetadata?: AlchemyDeploymentMetadata;
+}
+
+export interface AlchemyDeploymentMetadata {
+  scope: string;
+  registeredTypes: string[]; // All unique resource types registered
+  resourceIds: string[]; // All individual resource IDs
+  totalResources: number; // Total number of individual resources
+  resourceIdToType: Record<string, string>; // Mapping for debugging
 }
 
 export interface ResourceGraphResource {
@@ -89,7 +110,7 @@ export interface ResourceGraphResource {
 export interface ResourceGraph {
   name: string;
   resources: ResourceGraphResource[];
-  dependencyGraph: any; // TODO: Import proper DependencyGraph type
+  dependencyGraph: DependencyGraph;
 }
 
 // New typed ResourceGraph interface for the factory pattern
@@ -125,6 +146,15 @@ export interface FactoryOptions {
   // Alchemy integration - if provided, factory will use alchemy for deployment
   alchemyScope?: Scope;
   kubeConfig?: KubeConfig;
+  
+  /**
+   * SECURITY WARNING: Only set to true in non-production environments.
+   * This disables TLS certificate verification and makes connections vulnerable
+   * to man-in-the-middle attacks.
+   * 
+   * @default false (secure by default)
+   */
+  skipTLSVerify?: boolean;
 }
 
 // Type mapping for factory selection
@@ -277,4 +307,5 @@ export interface ResolutionContext {
   namespace?: string;
   timeout?: number;
   cache?: Map<string, unknown>;
+  deploymentId?: string;
 }

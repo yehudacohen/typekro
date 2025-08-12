@@ -271,7 +271,7 @@ describe('CEL Expression Serialization Pipeline', () => {
 
       // Complex template should be properly serialized
       expect(yaml).toContain('Database postgres is');
-      expect(yaml).toContain('deploymentPostgres.status.readyReplicas replicas');
+      expect(yaml).toContain('${deploymentPostgres.status.readyReplicas} replicas');
     });
 
     it('should preserve type safety in serialized output', () => {

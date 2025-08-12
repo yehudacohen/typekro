@@ -7,6 +7,8 @@
 
 import type { CelExpression, KubernetesRef, ResourceReference } from '../core/types.js';
 
+import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND, MIXED_TEMPLATE_BRAND } from '../core/constants/brands.js';
+
 /**
  * Type guard to check if a value is a compile-time KubernetesRef.
  * Note: At runtime, these are the objects created by the proxy.
@@ -18,7 +20,7 @@ export function isKubernetesRef(obj: unknown): obj is KubernetesRef<unknown> {
   return (
     (typeof obj === 'object' || typeof obj === 'function') &&
     obj !== null &&
-    (obj as { __brand?: string }).__brand === 'KubernetesRef'
+    KUBERNETES_REF_BRAND in obj
   );
 }
 
@@ -40,8 +42,19 @@ export function isCelExpression<T = unknown>(value: unknown): value is CelExpres
     value &&
       typeof value === 'object' &&
       value !== null &&
-      '__brand' in value &&
-      (value as { __brand: string }).__brand === 'CelExpression'
+      CEL_EXPRESSION_BRAND in value
+  );
+}
+
+/**
+ * Type guard to check if a value is a mixed template (literal string with embedded CEL)
+ */
+export function isMixedTemplate(value: unknown): value is { [MIXED_TEMPLATE_BRAND]: true; expression: string } {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      value !== null &&
+      MIXED_TEMPLATE_BRAND in value
   );
 }
 

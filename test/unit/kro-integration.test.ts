@@ -4,7 +4,6 @@
 
 import { describe, expect, it } from 'bun:test';
 import { resourceGraphDefinition, kroCustomResource, kroCustomResourceDefinition } from '../../src/factories/kro/index.js';
-import type { V1CustomResourceDefinition } from '@kubernetes/client-node';
 
 describe('Kro Factory Integration', () => {
   it('should demonstrate complete Kro workflow with all factory types', () => {

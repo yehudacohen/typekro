@@ -8,6 +8,7 @@
 // Phase 4 alchemy integration
 import type * as k8s from '@kubernetes/client-node';
 import type { ResolutionContext } from '../core/types/deployment.js';
+import { isCelExpression, isKubernetesRef } from '../utils/type-guards.js';
 import type { KubernetesResource } from '../core/types/kubernetes.js';
 import { generateDeterministicResourceId } from '../utils/helpers.js';
 
@@ -392,15 +393,33 @@ export function hasMixedDependencies(resources: Record<string, unknown>): boolea
       hasAlchemyPromises = true;
     }
 
-    // Check for TypeKro references (simplified check)
-    const hasTypeKroRefs = JSON.stringify(resource).includes('"__brand":"KubernetesRef"') ||
-      JSON.stringify(resource).includes('"__brand":"CelExpression"');
+    // Check for TypeKro references using proper type guards
+    const hasTypeKroRefs = hasTypeKroReferencesRecursive(resource);
     if (hasTypeKroRefs) {
       hasTypeKroReferences = true;
     }
   }
 
   return hasAlchemyPromises && hasTypeKroReferences;
+}
+
+/**
+ * Recursively check if an object contains TypeKro references
+ */
+function hasTypeKroReferencesRecursive(obj: any): boolean {
+  if (isKubernetesRef(obj) || isCelExpression(obj)) {
+    return true;
+  }
+  
+  if (Array.isArray(obj)) {
+    return obj.some(item => hasTypeKroReferencesRecursive(item));
+  }
+  
+  if (obj && typeof obj === 'object') {
+    return Object.values(obj).some(value => hasTypeKroReferencesRecursive(value));
+  }
+  
+  return false;
 }
 
 /**

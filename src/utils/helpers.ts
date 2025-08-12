@@ -7,6 +7,7 @@
  */
 
 import type { Type } from 'arktype';
+import { isKubernetesRef, isCelExpression } from './type-guards.js';
 import type {
   CelExpression,
   KroSimpleSchema,
@@ -146,7 +147,12 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   }
 
   if (isCelExpression(obj)) {
-    // CEL expressions need to be wrapped with ${} for Kro
+    // Check if this is a template expression (mixed string with embedded CEL)
+    if ((obj as any).__isTemplate) {
+      // Template expressions already contain ${...} placeholders, don't wrap again
+      return obj.expression;
+    }
+    // Regular CEL expressions need to be wrapped with ${} for Kro
     return `\${${obj.expression}}`;
   }
 
@@ -276,12 +282,17 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
   
   function serializeValue(value: any): string {
     // Handle KubernetesRef objects (can be functions due to proxy)
-    if (value && (typeof value === 'object' || typeof value === 'function') && value.__brand === 'KubernetesRef') {
+    if (isKubernetesRef(value)) {
       return `\${${value.resourceId}.${value.fieldPath}}`;
     }
     
     // Handle CelExpression objects
-    if (value && typeof value === 'object' && value.__brand === 'CelExpression') {
+    if (isCelExpression(value)) {
+      // Check if this is a template expression (mixed string with embedded CEL)
+      if (value.__isTemplate) {
+        // Template expressions already contain ${...} placeholders, don't wrap again
+        return value.expression;
+      }
       return `\${${value.expression}}`;
     }
     
@@ -320,18 +331,18 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
  * Determines if a status field value requires Kro resolution (contains Kubernetes references or CEL expressions)
  */
 function _requiresKroResolution(value: any): boolean {
-  if (value && (typeof value === 'object' || typeof value === 'function') && value.__brand === 'KubernetesRef') {
+  if (isKubernetesRef(value)) {
     return true;
   }
   
-  if (value && typeof value === 'object' && value.__brand === 'CelExpression') {
+  if (isCelExpression(value)) {
     // Check if the CEL expression contains resource references
     const expression = value.expression;
     const resourceRefPattern = /([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./;
     return resourceRefPattern.test(expression);
   }
   
-  if (value && typeof value === 'object' && !Array.isArray(value) && value.__brand !== 'CelExpression') {
+  if (value && typeof value === 'object' && !Array.isArray(value) && !isCelExpression(value)) {
     // Recursively check nested objects
     return Object.values(value).some(_requiresKroResolution);
   }
@@ -394,6 +405,5 @@ export function arktypeToKroSchema(
 
 // Function removed - status mappings are now user-defined via StatusBuilder
 
-// Import type guards from the type-guards module
-import { isCelExpression, isKubernetesRef } from './type-guards.js';
+// Import type guards from the type-guards module (removed duplicate import)
 import { separateStatusFields } from '../core/validation/cel-validator.js';

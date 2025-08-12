@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { KubernetesRef } from '../../src/index';
 import { createSchemaProxy, isSchemaReference } from '../../src/index';
+import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Schema Proxy Factory', () => {
   // Define test types - must be compatible with KroCompatibleType
@@ -48,11 +49,11 @@ describe('Schema Proxy Factory', () => {
       const replicasRef = schema.spec.replicas;
 
       // Should be KubernetesRef objects
-      expect(nameRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(nameRef)).toBe(true);
       expect(nameRef).toHaveProperty('resourceId', '__schema__');
       expect(nameRef).toHaveProperty('fieldPath', 'spec.name');
 
-      expect(replicasRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(replicasRef)).toBe(true);
       expect(replicasRef).toHaveProperty('resourceId', '__schema__');
       expect(replicasRef).toHaveProperty('fieldPath', 'spec.replicas');
     });
@@ -64,11 +65,11 @@ describe('Schema Proxy Factory', () => {
       const urlRef = schema.status.url;
 
       // Should be KubernetesRef objects
-      expect(readyRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(readyRef)).toBe(true);
       expect(readyRef).toHaveProperty('resourceId', '__schema__');
       expect(readyRef).toHaveProperty('fieldPath', 'status.ready');
 
-      expect(urlRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(urlRef)).toBe(true);
       expect(urlRef).toHaveProperty('resourceId', '__schema__');
       expect(urlRef).toHaveProperty('fieldPath', 'status.url');
     });
@@ -94,7 +95,7 @@ describe('Schema Proxy Factory', () => {
       // Access deeply nested properties that don't exist in the type
       const deepRef = (schema.spec as any).some.very.deep.nested.property;
 
-      expect(deepRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(deepRef)).toBe(true);
       expect(deepRef).toHaveProperty('resourceId', '__schema__');
       expect(deepRef).toHaveProperty('fieldPath', 'spec.some.very.deep.nested.property');
     });
@@ -117,7 +118,7 @@ describe('Schema Proxy Factory', () => {
 
       // Create a mock external reference (like what externalRef would create)
       const externalRef = {
-        __brand: 'KubernetesRef' as const,
+        [Symbol.for('TypeKro.KubernetesRef')]: true,
         resourceId: 'some-external-resource-id',
         fieldPath: 'status.someField',
       } as KubernetesRef<any>;
@@ -150,10 +151,10 @@ describe('Schema Proxy Factory', () => {
       const unknownSpecRef = (schema.spec as any).unknownProperty;
       const unknownStatusRef = (schema.status as any).anotherUnknownProperty;
 
-      expect(unknownSpecRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(unknownSpecRef)).toBe(true);
       expect(unknownSpecRef).toHaveProperty('fieldPath', 'spec.unknownProperty');
 
-      expect(unknownStatusRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(unknownStatusRef)).toBe(true);
       expect(unknownStatusRef).toHaveProperty('fieldPath', 'status.anotherUnknownProperty');
     });
   });
@@ -164,7 +165,7 @@ describe('Schema Proxy Factory', () => {
       const ref = schema.spec.name;
 
       // Should have all required KubernetesRef properties
-      expect(ref).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(ref)).toBe(true);
       expect(ref).toHaveProperty('resourceId');
       expect(ref).toHaveProperty('fieldPath');
 

@@ -12,9 +12,12 @@ import type { KroCompatibleType, SchemaDefinition } from '../types/serialization
 /**
  * Common spec validation logic used by all factories
  */
-export function validateSpec<TSpec extends KroCompatibleType>(
+export function validateSpec<
+    TSpec extends KroCompatibleType,
+    TStatus extends KroCompatibleType
+>(
     spec: TSpec,
-    schemaDefinition: SchemaDefinition<TSpec, any>
+    schemaDefinition: SchemaDefinition<TSpec, TStatus>
 ): void {
     const validationResult = schemaDefinition.spec(spec);
     if (validationResult instanceof Error) {
@@ -35,6 +38,7 @@ export function createDeploymentOptions(
         namespace,
         ...(factoryOptions.timeout && { timeout: factoryOptions.timeout }),
         waitForReady: factoryOptions.waitForReady ?? true,
+        hydrateStatus: factoryOptions.hydrateStatus ?? true,
         ...(factoryOptions.retryPolicy && { retryPolicy: factoryOptions.retryPolicy }),
         ...(factoryOptions.progressCallback && { progressCallback: factoryOptions.progressCallback }),
     };
@@ -68,7 +72,7 @@ export function createEnhancedMetadata(
     namespace: string,
     factoryName: string,
     mode: 'direct' | 'kro'
-): Enhanced<any, any>['metadata'] {
+): Enhanced<unknown, unknown>['metadata'] {
     return {
         name: instanceName,
         namespace,
@@ -95,9 +99,14 @@ export function handleDeploymentError(error: unknown, context: string): never {
 /**
  * Common alchemy scope validation
  */
-export function validateAlchemyScope(alchemyScope: any, context: string): void {
+export function validateAlchemyScope(alchemyScope: unknown, context: string): void {
     if (!alchemyScope) {
         throw new Error(`${context}: Alchemy scope is required for alchemy deployment`);
+    }
+    // Ensure the provided scope looks like a valid Alchemy scope (has a run function)
+    const hasRunFunction = typeof (alchemyScope as any)?.run === 'function';
+    if (!hasRunFunction) {
+        throw new Error(`${context}: Alchemy scope is invalid (missing run function)`);
     }
 }
 

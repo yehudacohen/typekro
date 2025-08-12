@@ -3,6 +3,7 @@ import { type } from 'arktype';
 import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
 import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
 import { hydrateStatus } from '../../src/core/deployment/status-hydrator.js';
+import { isCelExpression } from '../../src/utils/type-guards.js';
 
 describe('Factory Pattern Status Hydration', () => {
   describe('Field Separation Logic', () => {
@@ -39,11 +40,12 @@ describe('Factory Pattern Status Hydration', () => {
 
       // Verify dynamic fields
       expect(Object.keys(dynamicFields)).toEqual(['phase', 'replicas', 'metadata']);
-      expect(dynamicFields.phase).toHaveProperty('__brand', 'CelExpression');
-      expect(dynamicFields.replicas).toHaveProperty('__brand', 'CelExpression');
+      expect(isCelExpression(dynamicFields.phase)).toBe(true);
+      expect(isCelExpression(dynamicFields.replicas)).toBe(true);
       expect(dynamicFields.metadata).toEqual({ 
-        namespace: expect.objectContaining({ __brand: 'CelExpression' })
+        namespace: expect.any(Object)
       });
+      expect(isCelExpression(dynamicFields.metadata.namespace)).toBe(true);
     });
 
     it('should handle purely static status mappings', () => {
@@ -73,9 +75,9 @@ describe('Factory Pattern Status Hydration', () => {
 
       expect(Object.keys(staticFields)).toEqual([]);
       expect(Object.keys(dynamicFields)).toEqual(['phase', 'replicas', 'ready']);
-      expect(dynamicFields.phase).toHaveProperty('__brand', 'CelExpression');
-      expect(dynamicFields.replicas).toHaveProperty('__brand', 'CelExpression');
-      expect(dynamicFields.ready).toHaveProperty('__brand', 'CelExpression');
+      expect(isCelExpression(dynamicFields.phase)).toBe(true);
+      expect(isCelExpression(dynamicFields.replicas)).toBe(true);
+      expect(isCelExpression(dynamicFields.ready)).toBe(true);
     });
   });
 
@@ -337,7 +339,7 @@ describe('Factory Pattern Status Hydration', () => {
       const { staticFields, dynamicFields } = separateStatusFields(invalidStatusMappings);
       
       expect(staticFields.validField).toBe('static-value');
-      expect(dynamicFields.invalidRef).toHaveProperty('__brand', 'CelExpression');
+      expect(isCelExpression(dynamicFields.invalidRef)).toBe(true);
       
       // The validation should catch the invalid reference later
       // (This would be caught by validateResourceGraphDefinition)
@@ -415,17 +417,17 @@ describe('Factory Pattern Status Hydration', () => {
       // LIMITATION: Arrays with mixed content are currently treated as static
       // This is a known limitation - arrays containing CEL expressions should be dynamic
       expect(staticFields.dynamicArray).toBeDefined();
-      expect(staticFields.dynamicArray).toEqual([
-        expect.objectContaining({ __brand: 'CelExpression' }),
-        'static-item',
-        expect.objectContaining({ __brand: 'CelExpression' }),
-      ]);
+      expect(staticFields.dynamicArray).toHaveLength(3);
+      expect(isCelExpression(staticFields.dynamicArray[0])).toBe(true);
+      expect(staticFields.dynamicArray[1]).toBe('static-item');
+      expect(isCelExpression(staticFields.dynamicArray[2])).toBe(true);
       
       // Mixed objects should be split appropriately
       expect(staticFields.mixedObject).toEqual({ staticItems: ['a', 'b', 'c'] });
       expect(dynamicFields.mixedObject).toEqual({ 
-        dynamicCount: expect.objectContaining({ __brand: 'CelExpression' })
+        dynamicCount: expect.any(Object)
       });
+      expect(isCelExpression(dynamicFields.mixedObject.dynamicCount)).toBe(true);
     });
   });
 });

@@ -16,4 +16,4 @@ export { createKroResourceFactory } from './kro-factory.js';
 // Shared utilities and strategies
 export * from './shared-utilities.js';
 export * from './deployment-strategies.js';
-export { ResourceRollbackManager, RollbackManagerFactory } from './rollback-manager.js';
+export { ResourceRollbackManager, createRollbackManager, createRollbackManagerWithKubeConfig } from './rollback-manager.js';

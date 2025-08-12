@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Builder Function Support', () => {
   // Define ArkType schemas for testing
@@ -164,7 +165,7 @@ describe('Builder Function Support', () => {
 
       // Schema references should be KubernetesRef objects
       const nameRef = (capturedSchema as any).spec.name;
-      expect(nameRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(nameRef)).toBe(true);
       expect(nameRef).toHaveProperty('resourceId', '__schema__');
       expect(nameRef).toHaveProperty('fieldPath', 'spec.name');
     });

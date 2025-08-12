@@ -15,6 +15,7 @@ import type {
   TypedResourceGraphFactory,
 } from '../../src/index';
 import { externalRef, simpleDeployment, simpleService } from '../../src/index';
+import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Kro Factory Pattern - Types Only (Task 1)', () => {
   // Define test types - must be compatible with KroCompatibleType
@@ -231,7 +232,7 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
       expect(portRef).toBeDefined();
 
       // Should have KubernetesRef properties
-      expect(connectionRef).toHaveProperty('__brand', 'KubernetesRef');
+      expect(isKubernetesRef(connectionRef)).toBe(true);
       expect(connectionRef).toHaveProperty('resourceId');
       expect(connectionRef).toHaveProperty('fieldPath');
     });

@@ -5,7 +5,6 @@
 import { describe, expect, it } from 'bun:test';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
-import { serializeResourceGraphToYaml } from '../../src/core/serialization/index.js';
 import type { V1Deployment, V1Service } from '@kubernetes/client-node';
 
 describe('Serialization Protection for Readiness Evaluators', () => {

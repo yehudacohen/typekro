@@ -13,7 +13,8 @@ export { CelEvaluator } from './cel-evaluator.js';
 // External references
 export { externalRef } from './external-refs.js';
 // Reference resolution
-export { ReferenceResolver } from './resolver.js';
+export { ReferenceResolver, DeploymentMode } from './resolver.js';
+export type { DeploymentMode as DeploymentModeType } from './resolver.js';
 // Alchemy-aware reference resolution
 export { createAlchemyReferenceResolver, isAlchemyPromise, hasMixedDependencies, resolveReferencesWithAlchemy, buildResourceGraphWithDeferredResolution, resolveAllReferencesInAlchemyContext, containsAlchemyPromises, extractAlchemyPromises } from '../../alchemy/resolver.js';
 // Schema proxy

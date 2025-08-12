@@ -8,8 +8,8 @@ import {
   inferAlchemyTypeFromTypeKroResource,
   DirectTypeKroDeployer,
   clearRegisteredTypes,
-} from '../../src/alchemy/deployment.js';
-import type { Enhanced } from '../../src/core/types/kubernetes.js';
+} from '../../../src/alchemy/deployment.js';
+import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 
 // Mock Enhanced resource for testing
 const mockDeployment: Enhanced<any, any> = {
@@ -74,6 +74,46 @@ describe('Dynamic Alchemy Resource Registration', () => {
       
       const type = inferAlchemyTypeFromTypeKroResource(mockCRD);
       expect(type).toBe('kro::WebApp');
+    });
+
+    it('should validate resource kind is present', () => {
+      const invalidResource: Enhanced<any, any> = {
+        ...mockDeployment,
+        kind: undefined as any,
+      };
+      
+      expect(() => inferAlchemyTypeFromTypeKroResource(invalidResource))
+        .toThrow('Resource must have a kind field for Alchemy type inference');
+    });
+
+    it('should validate resource kind naming patterns', () => {
+      const invalidResource: Enhanced<any, any> = {
+        ...mockDeployment,
+        kind: 'Invalid-Kind-Name',
+      };
+      
+      expect(() => inferAlchemyTypeFromTypeKroResource(invalidResource))
+        .toThrow('contains invalid characters');
+    });
+
+    it('should reject reserved resource type names', () => {
+      const reservedResource: Enhanced<any, any> = {
+        ...mockDeployment,
+        kind: 'Resource',
+      };
+      
+      expect(() => inferAlchemyTypeFromTypeKroResource(reservedResource))
+        .toThrow('is a reserved name and cannot be used');
+    });
+
+    it('should reject resource kinds that are too long', () => {
+      const longKindResource: Enhanced<any, any> = {
+        ...mockDeployment,
+        kind: 'A'.repeat(101), // Exceeds 100 character limit
+      };
+      
+      expect(() => inferAlchemyTypeFromTypeKroResource(longKindResource))
+        .toThrow('exceeds maximum length');
     });
   });
 

@@ -10,6 +10,7 @@ import {
   type DeployableK8sResource,
   type Enhanced,
 } from '../../src/core.js';
+import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../src/core/constants/brands.js';
 
 // Helper function to create properly typed test resources
 function createMockResource(
@@ -66,7 +67,7 @@ describe('DependencyResolver', () => {
                       {
                         name: 'DB_HOST',
                         value: {
-                          __brand: 'KubernetesRef',
+                          [KUBERNETES_REF_BRAND]: true,
                           resourceId: 'db',
                           fieldPath: 'status.podIP',
                         },
@@ -104,7 +105,7 @@ describe('DependencyResolver', () => {
                       {
                         name: 'DATABASE_URL',
                         value: {
-                          __brand: 'CelExpression',
+                          [CEL_EXPRESSION_BRAND]: true,
                           expression: 'concat("postgresql://", db.status.endpoint, ":5432/mydb")',
                         },
                       },
@@ -142,7 +143,7 @@ describe('DependencyResolver', () => {
                       backend: {
                         service: {
                           name: {
-                            __brand: 'KubernetesRef',
+                            [KUBERNETES_REF_BRAND]: true,
                             resourceId: 'service',
                             fieldPath: 'metadata.name',
                           },
@@ -175,7 +176,7 @@ describe('DependencyResolver', () => {
           metadata: { name: 'app' },
           spec: {
             replicas: {
-              __brand: 'KubernetesRef',
+              [KUBERNETES_REF_BRAND]: true,
               resourceId: '__schema__',
               fieldPath: 'spec.replicas',
             },

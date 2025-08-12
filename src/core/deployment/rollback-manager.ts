@@ -260,15 +260,16 @@ export class ResourceRollbackManager {
 }
 
 /**
- * Factory for creating rollback managers
+ * Factory function for creating rollback managers
  */
-export class RollbackManagerFactory {
-  static create(k8sApi: k8s.KubernetesObjectApi): ResourceRollbackManager {
-    return new ResourceRollbackManager(k8sApi);
-  }
+export function createRollbackManager(k8sApi: k8s.KubernetesObjectApi): ResourceRollbackManager {
+  return new ResourceRollbackManager(k8sApi);
+}
 
-  static createWithKubeConfig(kubeConfig: k8s.KubeConfig): ResourceRollbackManager {
-    const k8sApi = k8s.KubernetesObjectApi.makeApiClient(kubeConfig);
-    return new ResourceRollbackManager(k8sApi);
-  }
+/**
+ * Factory function for creating rollback managers with KubeConfig
+ */
+export function createRollbackManagerWithKubeConfig(kubeConfig: k8s.KubeConfig): ResourceRollbackManager {
+  const k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
+  return new ResourceRollbackManager(k8sApi);
 }

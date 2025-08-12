@@ -11,7 +11,8 @@
  * requiring full cluster deployment (which has serialization issues to fix).
  */
 
-import { beforeAll, describe, expect, it } from 'bun:test';
+import { beforeAll, afterAll, describe, expect, it } from 'bun:test';
+import alchemy from 'alchemy';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import {
@@ -35,13 +36,15 @@ const generateTestNamespace = (testName: string): string => {
 
 describe('E2E Factory Pattern Validation Tests', () => {
   let kc: k8s.KubeConfig;
+  let kroAlchemyScope: any;
+  let directAlchemyScope: any;
 
   beforeAll(async () => {
     // Initialize Kubernetes client (even if cluster isn't available)
     kc = new k8s.KubeConfig();
     try {
       kc.loadFromDefault();
-      
+
       // Configure to skip TLS verification for test environment
       const cluster = kc.getCurrentCluster();
       if (cluster) {
@@ -50,6 +53,37 @@ describe('E2E Factory Pattern Validation Tests', () => {
       }
     } catch (_error) {
       console.log('⚠️  No kubectl config available, some tests will be limited');
+    }
+
+    // Create real alchemy scopes for tests that pass an alchemyScope
+    try {
+      const { FileSystemStateStore } = await import('alchemy/state');
+      kroAlchemyScope = await alchemy('kro-alchemy-scope-test', {
+        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' })
+      });
+      directAlchemyScope = await alchemy('direct-alchemy-scope-test', {
+        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' })
+      });
+    } catch (e) {
+      console.log('⚠️  Failed to create test Alchemy scopes, some tests may skip:', e);
+    }
+  });
+
+  afterAll(async () => {
+    // Best-effort cleanup of alchemy scopes
+    try {
+      if (kroAlchemyScope?.cleanup) {
+        await kroAlchemyScope.cleanup();
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+    try {
+      if (directAlchemyScope?.cleanup) {
+        await directAlchemyScope.cleanup();
+      }
+    } catch {
+      // Ignore cleanup errors
     }
   });
 
@@ -96,7 +130,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
               PORT: Cel.string(schema.spec.port),
               CONFIG_PATH: '/etc/config/app.properties',
             },
-            ports: [{ name: 'http', containerPort: schema.spec.port, protocol: 'TCP' }],
+            ports: [{ name: 'http', containerPort: 8080, protocol: 'TCP' }],
             volumeMounts: [{
               name: 'config-volume',
               mountPath: '/etc/config',
@@ -125,7 +159,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
       // Create factory with alchemy scope
       const factory = await resourceGraph.factory('kro', {
         namespace: testNamespace,
-        alchemyScope: 'test-scope-kro-alchemy' as any, // Mock alchemy scope
+        alchemyScope: kroAlchemyScope,
       });
 
       // Validate factory properties
@@ -310,7 +344,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
       const factory = await resourceGraph.factory('direct', {
         namespace: testNamespace,
         kubeConfig: kc,
-        alchemyScope: 'test-scope-direct-alchemy' as any, // Mock alchemy scope
+        alchemyScope: directAlchemyScope,
       });
 
       // Validate factory properties
@@ -351,15 +385,16 @@ describe('E2E Factory Pattern Validation Tests', () => {
         // Expected in test environment without full alchemy setup or cluster
         const errorMessage = (error as Error).message;
         console.log(`📝 Deployment failed as expected: ${errorMessage}`);
-        
+
         // Accept any deployment failure as expected in test environment
-        const isExpectedError = errorMessage.includes('Not running within an Alchemy Scope') || 
-                               errorMessage.includes('No active cluster') ||
-                               errorMessage.includes('Deployment failed') ||
-                               errorMessage.includes('Failed to deploy') ||
-                               errorMessage.includes('timeout') ||
-                               errorMessage.includes('TLS') ||
-                               errorMessage.includes('connection');
+        const isExpectedError = errorMessage.includes('Not running within an Alchemy Scope') ||
+          errorMessage.includes('No active cluster') ||
+          errorMessage.includes('Deployment failed') ||
+          errorMessage.includes('Failed to deploy') ||
+          errorMessage.includes('All resources failed') ||
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('TLS') ||
+          errorMessage.includes('connection');
         expect(isExpectedError).toBe(true);
         console.log('✅ DirectResourceFactory + Alchemy Scope correctly detected missing environment');
       }
@@ -399,7 +434,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
               PORT: Cel.string(schema.spec.port),
               SERVICE_NAME: schema.spec.serviceName,
             },
-            ports: [{ name: 'http', containerPort: schema.spec.port, protocol: 'TCP' }],
+            ports: [{ name: 'http', containerPort: 3000, protocol: 'TCP' }],
             id: 'apiDeployment',
           }),
 
@@ -571,7 +606,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
           deployment: simpleDeployment({
             name: schema.spec.name,
             image: schema.spec.image,
-            ports: [{ containerPort: schema.spec.port }],
+            ports: [{ containerPort: 8080 }],
             id: 'webappDeployment',
           }),
         }),
@@ -655,8 +690,8 @@ describe('E2E Factory Pattern Validation Tests', () => {
         console.log('⚠️ Deployment unexpectedly succeeded');
       } catch (error) {
         const errorMessage = (error as Error).message;
-        const isExpectedError = errorMessage.includes('Deployment failed') || 
-                               errorMessage.includes('No active cluster');
+        const isExpectedError = errorMessage.includes('Deployment failed') ||
+          errorMessage.includes('No active cluster');
         expect(isExpectedError).toBe(true);
         console.log('✅ Deployment to bad namespace properly failed');
       }

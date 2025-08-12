@@ -16,7 +16,7 @@ import {
     simpleService,
     simpleConfigMap,
     Cel,
-} from '../../src/index.js';
+} from '../../../src/index.js';
 import { File } from 'alchemy/fs';
 
 const _TEST_TIMEOUT = 120000; // 2 minutes
@@ -575,7 +575,7 @@ data:
             expect(yaml).toContain('name: ${schema.spec.appName}');
 
             // Status fields that could flow back to Alchemy - now with intelligent CEL expressions
-            expect(yaml).toContain('appUrl: ${http://');
+            expect(yaml).toContain('appUrl: http://${');
             // Static status fields should NOT be in YAML (they're hydrated directly by TypeKro)
             expect(yaml).not.toContain('databaseStatus:');
             expect(yaml).not.toContain('storageStatus:');
@@ -1034,7 +1034,7 @@ resource "aws_s3_bucket" "webapp_assets" {
             expect(yaml).toContain('name: ${schema.spec.name}');
 
             // Verify status fields that could flow back to Alchemy - now with intelligent CEL expressions
-            expect(yaml).toContain('appUrl: ${http://');
+            expect(yaml).toContain('appUrl: http://${');
             // Static status fields should NOT be in YAML (they're hydrated directly by TypeKro)
             expect(yaml).not.toContain('databaseConnected:');
             expect(yaml).not.toContain('healthStatus:');

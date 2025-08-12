@@ -7,6 +7,8 @@
 
 import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { getComponentLogger } from '../core/logging/index.js';
+import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
+import { isCelExpression } from '../utils/type-guards.js';
 import type { Enhanced, EnhancedBuilder, KubernetesResource, MagicProxy, ReadinessEvaluator } from '../core/types.js';
 import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index.js';
 import { validateResourceId } from '../core/validation/cel-validator.js';
@@ -25,7 +27,7 @@ function createRefFactory(resourceId: string, basePath: string): any {
   const proxyTarget = () => {
     // Empty function used as proxy target
   };
-  Object.defineProperty(proxyTarget, '__brand', { value: 'KubernetesRef' });
+  Object.defineProperty(proxyTarget, KUBERNETES_REF_BRAND, { value: true });
   Object.defineProperty(proxyTarget, 'resourceId', { value: resourceId });
   Object.defineProperty(proxyTarget, 'fieldPath', { value: basePath });
 
@@ -152,7 +154,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
         // This ensures that JSON.stringify can access the metadata fields
         if (metadata && typeof metadata === 'object') {
           for (const [key, value] of Object.entries(metadata)) {
-            if (!metadataProxy.hasOwnProperty(key)) {
+            if (!Object.hasOwn(metadataProxy, key)) {
               Object.defineProperty(metadataProxy, key, {
                 value: value,
                 enumerable: true,
@@ -270,12 +272,7 @@ export function processPodSpec(podSpec?: V1PodSpec): V1PodSpec | undefined {
         return { name: envVar.name, value: envVar.value as any };
       }
       // Check if it's a CelExpression - preserve it as-is
-      if (
-        envVar.value &&
-        typeof envVar.value === 'object' &&
-        '__brand' in envVar.value &&
-        (envVar.value as any).__brand === 'CelExpression'
-      ) {
+      if (isCelExpression(envVar.value)) {
         return { name: envVar.name, value: envVar.value as any };
       }
       if (envVar.value !== undefined) {
