@@ -266,6 +266,6 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     // The deployment should fail because the only resource failed to deploy
     expect(result.status).toBe('failed');
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0].error.message).toMatch(/Timeout waiting for CRD.*to be established/);
+    expect(result.errors?.[0]?.error.message).toMatch(/Timeout waiting for CRD.*to be established/);
   });
 });

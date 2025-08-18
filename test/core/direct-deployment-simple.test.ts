@@ -115,7 +115,7 @@ describe('DirectDeploymentEngine Simple', () => {
 
       // Mock resource doesn't exist initially, then exists after creation
       let readCallCount = 0;
-      mockK8sApi.read.mockImplementation(() => {
+      (mockK8sApi.read as any).mockImplementation(() => {
         readCallCount++;
         if (readCallCount === 1) {
           // First call during deployment - resource doesn't exist yet
@@ -174,7 +174,7 @@ describe('DirectDeploymentEngine Simple', () => {
       });
 
       // Mock existing resource - first call finds it, subsequent calls return updated version
-      mockK8sApi.read.mockResolvedValue({
+      (mockK8sApi.read as any).mockResolvedValue({
         body: {
           metadata: {
             name: 'existing-config',
@@ -212,7 +212,7 @@ describe('DirectDeploymentEngine Simple', () => {
 
       // Mock resource doesn't exist initially, then exists after creation
       let readCallCount = 0;
-      mockK8sApi.read.mockImplementation(() => {
+      (mockK8sApi.read as any).mockImplementation(() => {
         readCallCount++;
         if (readCallCount === 1) {
           return Promise.reject({ statusCode: 404 });
@@ -254,7 +254,7 @@ describe('DirectDeploymentEngine Simple', () => {
 
       // Mock resource doesn't exist initially, then exists after creation
       let readCallCount = 0;
-      mockK8sApi.read.mockImplementation(() => {
+      (mockK8sApi.read as any).mockImplementation(() => {
         readCallCount++;
         if (readCallCount === 1) {
           return Promise.reject({ statusCode: 404 });
@@ -372,7 +372,7 @@ describe('DirectDeploymentEngine Simple', () => {
       };
 
       // Mock the k8s API to return different statuses
-      mockK8sApi.read.mockImplementation((resource: any) => {
+      (mockK8sApi.read as any).mockImplementation((resource: any) => {
         const name = resource.metadata?.name;
         if (name === 'ready-deployment') {
           return Promise.resolve({
@@ -427,7 +427,7 @@ describe('DirectDeploymentEngine Simple', () => {
       };
 
       // Mock the k8s API to return the service with status
-      mockK8sApi.read.mockResolvedValue({
+      (mockK8sApi.read as any).mockResolvedValue({
         body: {
           apiVersion: 'v1',
           kind: 'Service',
@@ -459,7 +459,7 @@ describe('DirectDeploymentEngine Simple', () => {
       };
 
       // Mock the k8s API to return the configmap without status
-      mockK8sApi.read.mockResolvedValue({
+      (mockK8sApi.read as any).mockResolvedValue({
         body: {
           apiVersion: 'v1',
           kind: 'ConfigMap',
