@@ -13,5 +13,27 @@ export function persistentVolumeClaim(
     apiVersion: 'v1',
     kind: 'PersistentVolumeClaim',
     metadata: resource.metadata ?? { name: 'unnamed-pvc' },
+  }).withReadinessEvaluator((liveResource: V1PersistentVolumeClaim) => {
+    try {
+      const status = liveResource.status;
+      
+      if (!status) {
+        return { ready: false, reason: 'No status available' };
+      }
+
+      const ready = status.phase === 'Bound';
+      
+      return {
+        ready,
+        reason: ready 
+          ? 'PVC is bound to a volume'
+          : `PVC is in ${status.phase} phase, expected Bound`
+      };
+    } catch (error) {
+      return { 
+        ready: false, 
+        reason: `Error checking PVC status: ${error instanceof Error ? error.message : String(error)}` 
+      };
+    }
   });
 }

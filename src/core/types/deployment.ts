@@ -2,11 +2,12 @@
  * Deployment-related types
  */
 
-import type { KubeConfig } from '@kubernetes/client-node';
+import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
 import type { KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
+import type { KubernetesRef } from './common.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status
@@ -25,6 +26,61 @@ export interface DeployedResource {
 }
 
 // =============================================================================
+// YAML CLOSURE TYPES
+// =============================================================================
+
+/**
+ * Represents a resource applied by a deployment closure
+ */
+export interface AppliedResource {
+  kind: string;
+  name: string;
+  namespace?: string | undefined;
+  apiVersion: string;
+}
+
+/**
+ * Context provided to YAML closures during deployment execution
+ */
+export interface DeploymentContext {
+  kubernetesApi?: KubernetesObjectApi;
+  alchemyScope?: Scope;
+  namespace?: string;
+  // Level-based execution context - enables future closure extensibility
+  deployedResources: Map<string, DeployedResource>; // Resources available at this level
+  resolveReference: (ref: KubernetesRef) => Promise<unknown>; // Resolve cross-resource references
+}
+
+/**
+ * A closure that executes deployment operations during the deployment phase
+ * Generic type that can be used for YAML, Terraform, Pulumi, or any other deployment operations
+ */
+export type DeploymentClosure<T = AppliedResource[]> = (deploymentContext: DeploymentContext) => Promise<T>;
+
+/**
+ * Information about a closure's dependencies for level-based execution
+ */
+export interface ClosureDependencyInfo {
+  name: string;
+  closure: DeploymentClosure;
+  dependencies: string[]; // Resource IDs that this closure depends on
+  level: number; // Execution level determined by dependency analysis
+}
+
+/**
+ * Enhanced deployment plan that includes both resources and closures organized by execution level
+ */
+export interface EnhancedDeploymentPlan {
+  levels: Array<{
+    resources: string[];
+    closures: ClosureDependencyInfo[];
+  }>;
+  totalResources: number;
+  totalClosures: number;
+  maxParallelism: number;
+}
+
+// =============================================================================
 // DEPLOYMENT OPTIONS AND CONFIGURATION
 // =============================================================================
 
@@ -37,7 +93,7 @@ export interface DeploymentOptions {
   rollbackOnFailure?: boolean;
   retryPolicy?: RetryPolicy;
   progressCallback?: (event: DeploymentEvent) => void;
-  
+
   /** Hydrate Enhanced proxy status fields with live cluster data (default: true) */
   hydrateStatus?: boolean;
 }
@@ -50,7 +106,7 @@ export interface AlchemyDeploymentOptions {
   rollbackOnFailure?: boolean;
   retryPolicy?: RetryPolicy;
   progressCallback?: (event: DeploymentEvent) => void;
-  
+
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
    * This disables TLS certificate verification and makes connections vulnerable
@@ -87,7 +143,7 @@ export interface DeploymentError {
 export interface DeploymentResult {
   deploymentId: string;
   resources: DeployedResource[];
-  dependencyGraph: any; // TODO: Import proper DependencyGraph type
+  dependencyGraph: DependencyGraph;
   duration: number;
   status: 'success' | 'partial' | 'failed';
   errors: DeploymentError[];
@@ -115,18 +171,19 @@ export interface ResourceGraph {
 
 // New typed ResourceGraph interface for the factory pattern
 export interface TypedResourceGraph<
-  TSpec extends KroCompatibleType = any, 
+  TSpec extends KroCompatibleType = any,
   TStatus extends KroCompatibleType = any
 > {
   name: string;
   resources: KubernetesResource[];
-  
+  closures?: Record<string, DeploymentClosure>; // Deployment closures for direct mode
+
   // Factory creation with mode selection
   factory<TMode extends 'kro' | 'direct'>(
-    mode: TMode, 
+    mode: TMode,
     options?: FactoryOptions
   ): Promise<FactoryForMode<TMode, TSpec, TStatus>>;
-  
+
   // Utility methods
   toYaml(): string;
   schema?: SchemaProxy<TSpec, TStatus>; // Only for typed graphs from builder functions
@@ -139,14 +196,17 @@ export interface FactoryOptions {
   waitForReady?: boolean;
   retryPolicy?: RetryPolicy;
   progressCallback?: (event: DeploymentEvent) => void;
-  
+
   // Status hydration - if false, Enhanced proxy status fields won't be populated with live data
   hydrateStatus?: boolean;
-  
+
   // Alchemy integration - if provided, factory will use alchemy for deployment
   alchemyScope?: Scope;
   kubeConfig?: KubeConfig;
-  
+
+  // Deployment closures - for direct mode factories
+  closures?: Record<string, DeploymentClosure>;
+
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
    * This disables TLS certificate verification and makes connections vulnerable
@@ -159,27 +219,27 @@ export interface FactoryOptions {
 
 // Type mapping for factory selection
 export type FactoryForMode<
-  TMode, 
-  TSpec extends KroCompatibleType, 
+  TMode,
+  TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType
-> = 
+> =
   TMode extends 'kro' ? KroResourceFactory<TSpec, TStatus> :
   TMode extends 'direct' ? DirectResourceFactory<TSpec, TStatus> :
   never;
 
 // Unified factory interface - all modes implement this
 export interface ResourceFactory<
-  TSpec extends KroCompatibleType, 
+  TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType
 > {
   // Core deployment - single method handles all cases
   deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>>;
-  
+
   // Instance management
   getInstances(): Promise<Enhanced<TSpec, TStatus>[]>;
   deleteInstance(name: string): Promise<void>;
   getStatus(): Promise<FactoryStatus>;
-  
+
   // Metadata
   readonly mode: 'kro' | 'direct';
   readonly name: string;
@@ -189,11 +249,11 @@ export interface ResourceFactory<
 
 // Mode-specific factories extend the base interface
 export interface DirectResourceFactory<
-  TSpec extends KroCompatibleType, 
+  TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType
 > extends ResourceFactory<TSpec, TStatus> {
   mode: 'direct';
-  
+
   // Direct-specific features
   rollback(): Promise<RollbackResult>;
   toDryRun(spec: TSpec): Promise<DeploymentResult>;
@@ -201,17 +261,17 @@ export interface DirectResourceFactory<
 }
 
 export interface KroResourceFactory<
-  TSpec extends KroCompatibleType, 
+  TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType
 > extends ResourceFactory<TSpec, TStatus> {
   mode: 'kro';
-  
+
   // Kro-specific features
   readonly rgdName: string;
   getRGDStatus(): Promise<RGDStatus>;
   toYaml(): string; // Generate RGD YAML (no args needed)
   toYaml(spec: TSpec): string; // Generate CRD instance YAML
-  
+
   // Schema proxy for type-safe instance creation
   schema: SchemaProxy<TSpec, TStatus>;
 }
@@ -267,7 +327,7 @@ export interface DeploymentOperationStatus {
 export interface DeploymentStateRecord {
   deploymentId: string;
   resources: DeployedResource[];
-  dependencyGraph: any; // TODO: Import proper DependencyGraph type
+  dependencyGraph: DependencyGraph;
   startTime: Date;
   endTime?: Date;
   status: 'running' | 'completed' | 'failed';

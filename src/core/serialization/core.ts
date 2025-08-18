@@ -17,6 +17,7 @@ import type {
   ResourceGraphResource,
   ResourceGraph,
   TypedResourceGraph,
+  DeploymentClosure,
 } from '../types/deployment.js';
 import type {
   MagicAssignableShape,
@@ -34,7 +35,32 @@ import type {
 import { generateKroSchemaFromArktype } from './schema.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
-import { evaluateStatusMappings } from '../evaluation/cel-evaluator.js';
+import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
+
+/**
+ * Separate Enhanced<> resources from deployment closures in the builder result
+ */
+function separateResourcesAndClosures<T extends Record<string, Enhanced<any, any> | DeploymentClosure>>(
+  builderResult: T
+): { resources: Record<string, Enhanced<any, any>>; closures: Record<string, DeploymentClosure> } {
+  const resources: Record<string, Enhanced<any, any>> = {};
+  const closures: Record<string, DeploymentClosure> = {};
+  
+  for (const [key, value] of Object.entries(builderResult)) {
+    if (typeof value === 'function') {
+      // This is a deployment closure
+      closures[key] = value as DeploymentClosure;
+    } else if (value && typeof value === 'object' && 'kind' in value && 'apiVersion' in value) {
+      // This is an Enhanced<> resource
+      resources[key] = value as Enhanced<any, any>;
+    } else {
+      // Unknown type, treat as resource for backward compatibility
+      resources[key] = value as Enhanced<any, any>;
+    }
+  }
+  
+  return { resources, closures };
+}
 
 /**
  * Create a ResourceGraph from resources for deployment
@@ -75,8 +101,8 @@ function _createResourceGraph(name: string, resources: Record<string, Kubernetes
 export function toResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  // This new generic captures the exact shape of your resources
-  TResources extends Record<string, Enhanced<any, any>>
+  // This new generic captures the exact shape of your resources - can be Enhanced<> resources or DeploymentClosures
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   // The resourceBuilder is now defined as returning that specific shape
@@ -95,7 +121,7 @@ export function toResourceGraph<
 function createTypedResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any>>
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   resourceBuilder: (schema: SchemaProxy<TSpec, TStatus>) => TResources,
@@ -140,10 +166,13 @@ function createTypedResourceGraph<
   };
   
   const schema = createSchemaProxy<TSpec, TStatus>();
-  const resourcesWithKeys = resourceBuilder(schema);
+  const builderResult = resourceBuilder(schema);
+  
+  // Separate Enhanced<> resources from deployment closures
+  const { resources: resourcesWithKeys, closures } = separateResourcesAndClosures(builderResult);
   
   // Pass Enhanced resources directly to StatusBuilder - they already have proper MagicProxy types
-  const statusMappings = statusBuilder(schema, resourcesWithKeys);
+  const statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
   
   // Validate resource IDs and CEL expressions
   const validation = validateResourceGraphDefinition(resourcesWithKeys, statusMappings);
@@ -165,7 +194,7 @@ function createTypedResourceGraph<
   
   // Evaluate and optimize CEL expressions
   const evaluationContext = { resources: resourcesWithKeys, schema };
-  const { mappings: optimizedStatusMappings, optimizations } = evaluateStatusMappings(statusMappings, evaluationContext);
+  const { mappings: optimizedStatusMappings, optimizations } = optimizeStatusMappings(statusMappings, evaluationContext);
   
   // Log optimizations if any
   if (optimizations.length > 0) {
@@ -178,6 +207,8 @@ function createTypedResourceGraph<
     name: definition.name,
     resources: Object.values(resourcesWithKeys),
     schema,
+    // Store closures for access during factory creation
+    closures,
 
     async factory<TMode extends 'kro' | 'direct'>(
       mode: TMode,
@@ -188,7 +219,7 @@ function createTypedResourceGraph<
           definition.name,
           resourcesWithKeys,
           schemaDefinition,
-          factoryOptions || {}
+          { ...factoryOptions, closures } // Pass closures to factory
         );
         return directFactory as FactoryForMode<TMode, TSpec, TStatus>;
       } else if (mode === 'kro') {
@@ -197,7 +228,7 @@ function createTypedResourceGraph<
           resourcesWithKeys,
           schemaDefinition,
           statusMappings,
-          factoryOptions || {}
+          { ...factoryOptions, closures } // Pass closures to Kro factory for validation and execution
         );
         return kroFactory as FactoryForMode<TMode, TSpec, TStatus>;
       } else {

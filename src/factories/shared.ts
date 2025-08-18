@@ -9,7 +9,7 @@ import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { getComponentLogger } from '../core/logging/index.js';
 import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
 import { isCelExpression } from '../utils/type-guards.js';
-import type { Enhanced, EnhancedBuilder, KubernetesResource, MagicProxy, ReadinessEvaluator } from '../core/types.js';
+import type { Enhanced, KubernetesResource, MagicProxy, ReadinessEvaluator } from '../core/types.js';
 import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index.js';
 import { validateResourceId } from '../core/validation/cel-validator.js';
 
@@ -219,9 +219,86 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
   }) as Enhanced<TSpec, TStatus>;
 }
 
+/**
+ * Default readiness evaluator for resources that don't have custom logic
+ */
+function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
+  return (liveResource: any) => {
+    try {
+      // For resources that are immediately ready when they exist
+      const immediatelyReadyKinds = [
+        'ConfigMap', 'Secret', 'Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding',
+        'ServiceAccount', 'StorageClass', 'NetworkPolicy', 'LimitRange', 'CSIDriver',
+        'CSINode', 'IngressClass', 'RuntimeClass', 'Lease', 'ComponentStatus'
+      ];
+
+      if (immediatelyReadyKinds.includes(kind)) {
+        return {
+          ready: true,
+          message: `${kind} is ready when it exists`
+        };
+      }
+
+      // For resources with status conditions, check for common readiness patterns
+      const status = liveResource.status;
+      if (!status) {
+        return {
+          ready: false,
+          reason: 'StatusMissing',
+          message: `${kind} status not available yet`
+        };
+      }
+
+      // Check for common readiness conditions
+      if (status.conditions && Array.isArray(status.conditions)) {
+        const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
+        if (readyCondition) {
+          return {
+            ready: readyCondition.status === 'True',
+            reason: readyCondition.reason,
+            message: readyCondition.message || `${kind} readiness: ${readyCondition.status}`
+          };
+        }
+
+        const availableCondition = status.conditions.find((c: any) => c.type === 'Available');
+        if (availableCondition) {
+          return {
+            ready: availableCondition.status === 'True',
+            reason: availableCondition.reason,
+            message: availableCondition.message || `${kind} availability: ${availableCondition.status}`
+          };
+        }
+      }
+
+      // For resources with phase, check if it's active/bound/running
+      if (status.phase) {
+        const readyPhases = ['Active', 'Bound', 'Running', 'Succeeded'];
+        const ready = readyPhases.includes(status.phase);
+        return {
+          ready,
+          reason: ready ? 'PhaseReady' : 'PhaseNotReady',
+          message: `${kind} phase: ${status.phase}`
+        };
+      }
+
+      // Default: assume ready if status exists
+      return {
+        ready: true,
+        message: `${kind} has status, assuming ready`
+      };
+    } catch (error) {
+      return {
+        ready: false,
+        reason: 'EvaluationError',
+        message: `Error evaluating ${kind} readiness: ${error}`
+      };
+    }
+  };
+}
+
 export function createResource<TSpec extends object, TStatus extends object>(
   resource: KubernetesResource<TSpec, TStatus>
-): EnhancedBuilder<TSpec, TStatus> {
+): Enhanced<TSpec, TStatus> {
   let resourceId: string;
 
   // Check for id field on the resource itself
@@ -242,6 +319,15 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
   const enhanced = createGenericProxyResource(resourceId, resource);
 
+  // Always provide a readiness evaluator for factory-created resources
+  const defaultEvaluator = createDefaultReadinessEvaluator(resource.kind);
+  Object.defineProperty(enhanced, 'readinessEvaluator', {
+    value: defaultEvaluator,
+    enumerable: false,    // Prevents serialization - key requirement
+    configurable: true,   // Allow withReadinessEvaluator to override
+    writable: false       // Cannot be overwritten directly
+  });
+
   // Add fluent builder method for readiness evaluator with serialization protection
   Object.defineProperty(enhanced, 'withReadinessEvaluator', {
     value: function (evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus> {
@@ -249,8 +335,8 @@ export function createResource<TSpec extends object, TStatus extends object>(
       Object.defineProperty(this, 'readinessEvaluator', {
         value: evaluator,
         enumerable: false,    // Prevents serialization - key requirement
-        configurable: false,  // Cannot be modified after creation
-        writable: false       // Cannot be overwritten
+        configurable: true,   // Allow reconfiguration for withReadinessEvaluator
+        writable: false       // Cannot be overwritten directly
       });
 
       return this as Enhanced<TSpec, TStatus>;
@@ -260,7 +346,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
     writable: false       // Cannot be overwritten
   });
 
-  return enhanced as EnhancedBuilder<TSpec, TStatus>;
+  return enhanced as Enhanced<TSpec, TStatus>;
 }
 
 export function processPodSpec(podSpec?: V1PodSpec): V1PodSpec | undefined {

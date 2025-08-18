@@ -21,17 +21,22 @@ import type {
   ResolutionContext,
   ResourceGraph,
   RollbackResult,
+  DeploymentClosure,
+  DeploymentContext,
+  ClosureDependencyInfo,
+  EnhancedDeploymentPlan,
 } from '../types/deployment.js';
+import type { Scope } from '../types/serialization.js';
 import { ResourceDeploymentError } from '../types/deployment.js';
 import type {
   DeployableK8sResource,
   DeployedResource,
-  DeploymentResource,
   Enhanced,
   KubernetesResource,
 } from '../types.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { StatusHydrator } from './status-hydrator.js';
+import { ensureReadinessEvaluator } from '../../utils/helpers.js';
 
 export class DirectDeploymentEngine {
   private dependencyResolver: DependencyResolver;
@@ -40,6 +45,7 @@ export class DirectDeploymentEngine {
   private readinessChecker: ResourceReadinessChecker;
   private statusHydrator: StatusHydrator;
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
+  private readyResources: Set<string> = new Set(); // Track resources that are already ready
   private logger = getComponentLogger('deployment-engine');
 
   constructor(
@@ -53,6 +59,16 @@ export class DirectDeploymentEngine {
     this.k8sApi = k8sApi || kubeClient.makeApiClient(k8s.KubernetesObjectApi);
     this.readinessChecker = new ResourceReadinessChecker(this.k8sApi);
     this.statusHydrator = new StatusHydrator(this.k8sApi);
+
+    // Set up callback to track ready resources
+    this.readinessChecker.setOnResourceReady((resource) => {
+      const resourceKey = `${resource.kind}/${resource.name}/${resource.namespace}`;
+      this.readyResources.add(resourceKey);
+      this.logger.debug('Resource marked as ready via generic readiness checker', {
+        resourceKey,
+        totalReady: this.readyResources.size
+      });
+    });
   }
 
   /**
@@ -64,6 +80,76 @@ export class DirectDeploymentEngine {
   }
 
   /**
+   * Check if a deployed resource is ready using the factory-provided readiness evaluator
+   */
+  public async isDeployedResourceReady(deployedResource: DeployedResource): Promise<boolean> {
+    try {
+      // Check if the deployed resource has a factory-provided readiness evaluator
+      const readinessEvaluator = (deployedResource.manifest as Enhanced<any, any>).readinessEvaluator;
+
+      if (readinessEvaluator) {
+        // Use the factory-provided readiness evaluator
+        // Create a resource reference for the API call
+        const resourceRef = {
+          apiVersion: deployedResource.manifest.apiVersion || '',
+          kind: deployedResource.kind,
+          metadata: {
+            name: deployedResource.name,
+            namespace: deployedResource.namespace,
+          },
+        };
+
+        // Get the live resource from the cluster
+        const liveResource = await this.k8sApi.read(resourceRef);
+
+        // Use the factory-provided readiness evaluator
+        const result = readinessEvaluator(liveResource.body);
+
+        if (typeof result === 'boolean') {
+          return result;
+        } else if (result && typeof result === 'object' && 'ready' in result) {
+          return result.ready;
+        } else {
+          this.logger.warn('Readiness evaluator returned unexpected result', {
+            resourceId: deployedResource.id,
+            result
+          });
+          return false;
+        }
+      } else {
+        // Fallback to generic readiness checker
+        const resourceRef = {
+          apiVersion: deployedResource.manifest.apiVersion || '',
+          kind: deployedResource.kind,
+          metadata: {
+            name: deployedResource.name,
+            namespace: deployedResource.namespace,
+          },
+        };
+
+        const liveResource = await this.k8sApi.read(resourceRef);
+        return this.readinessChecker.isResourceReady(liveResource.body);
+      }
+    } catch (error) {
+      this.logger.debug('Failed to check resource readiness', {
+        error: error as Error,
+        resourceId: deployedResource.id,
+        kind: deployedResource.kind,
+        name: deployedResource.name,
+        namespace: deployedResource.namespace
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Get all deployment states for health checking
+   */
+  public getAllDeploymentStates(): DeploymentStateRecord[] {
+    return Array.from(this.deploymentState.values());
+  }
+
+  /**
    * Deploy a resource graph to the Kubernetes cluster
    */
   async deploy(graph: ResourceGraph, options: DeploymentOptions): Promise<DeploymentResult> {
@@ -71,7 +157,6 @@ export class DirectDeploymentEngine {
     const startTime = Date.now();
     const deployedResources: DeployedResource[] = [];
     const errors: DeploymentError[] = [];
-
     const deploymentLogger = this.logger.child({ deploymentId, resourceCount: graph.resources.length });
     deploymentLogger.info('Starting deployment', { options });
 
@@ -86,10 +171,14 @@ export class DirectDeploymentEngine {
       deploymentLogger.debug('Validating dependency graph', { dependencyGraph: graph.dependencyGraph });
       this.dependencyResolver.validateNoCycles(graph.dependencyGraph);
 
-      // 2. Get deployment order
-      deploymentLogger.debug('Computing topological order');
-      const deploymentOrder = this.dependencyResolver.getTopologicalOrder(graph.dependencyGraph);
-      deploymentLogger.debug('Deployment order determined', { deploymentOrder });
+      // 2. Analyze deployment order and identify parallel stages
+      deploymentLogger.debug('Analyzing deployment order for parallel execution');
+      const deploymentPlan = this.dependencyResolver.analyzeDeploymentOrder(graph.dependencyGraph);
+      deploymentLogger.debug('Deployment plan determined', {
+        levels: deploymentPlan.levels.length,
+        totalResources: deploymentPlan.totalResources,
+        maxParallelism: deploymentPlan.maxParallelism
+      });
 
       // 3. Create resolution context
       const context: ResolutionContext = {
@@ -99,100 +188,181 @@ export class DirectDeploymentEngine {
         timeout: options.timeout || 30000,
       };
 
-      // 4. Deploy resources in dependency order
-      for (const resourceId of deploymentOrder) {
-        const resourceLogger = deploymentLogger.child({ resourceId });
-        resourceLogger.debug('Starting resource deployment');
-        resourceLogger.debug('Available resources in graph', { 
-          availableResources: graph.resources.map(r => ({ 
-            id: r.id, 
-            kind: r.manifest?.kind, 
-            name: r.manifest?.metadata?.name 
-          }))
-        });
-
-        const resource = graph.resources.find((r) => r.id === resourceId);
-        if (!resource) {
-          resourceLogger.error('Resource not found in graph');
-          const error = new Error(`Resource with id '${resourceId}' not found in graph`);
-          errors.push({
-            resourceId,
-            phase: 'validation',
-            error,
-            timestamp: new Date(),
-          });
+      // 4. Deploy resources in parallel stages
+      for (let levelIndex = 0; levelIndex < deploymentPlan.levels.length; levelIndex++) {
+        const currentLevel = deploymentPlan.levels[levelIndex];
+        if (!currentLevel) {
           continue;
         }
 
-        resourceLogger.debug('Found resource in graph', { 
-          resourceId: resource.id, 
-          kind: resource.manifest?.kind,
-          name: resource.manifest?.metadata?.name 
+        const levelLogger = deploymentLogger.child({
+          level: levelIndex + 1,
+          resourceCount: currentLevel.length
         });
+        levelLogger.debug(`Deploying level ${levelIndex + 1} with ${currentLevel.length} resources in parallel`);
 
-        try {
-          resourceLogger.debug('Calling deploySingleResource');
-          const deployedResource = await this.deploySingleResource(
-            resource.manifest,
-            context,
-            options
-          );
-          resourceLogger.debug('Resource deployed successfully');
-          deployedResources.push(deployedResource);
-        } catch (error) {
-          resourceLogger.error('Resource deployment failed', error as Error);
-          const deploymentError = {
-            resourceId,
-            phase: 'deployment' as const,
-            error: error as Error,
-            timestamp: new Date(),
-          };
-          errors.push(deploymentError);
+        // Track performance metrics for this level
+        const levelStartTime = Date.now();
 
-          // Add failed resource to deployed resources list
-          const failedResource: DeployedResource = {
-            id: resourceId,
-            kind: resource.manifest.kind,
-            name: resource.manifest.metadata?.name || 'unknown',
-            namespace: resource.manifest.metadata?.namespace || 'default',
-            manifest: resource.manifest,
-            status: 'failed',
-            deployedAt: new Date(),
-            error: error as Error,
-          };
-          deployedResources.push(failedResource);
+        // Deploy all resources in this level in parallel
+        const levelPromises = currentLevel.map(async (resourceId) => {
+          const resourceLogger = deploymentLogger.child({ resourceId });
+          resourceLogger.debug('Starting resource deployment');
 
-          if (options.rollbackOnFailure) {
-            await this.rollbackDeployedResources(deployedResources, options);
-
-            // Return failed status immediately after rollback
-            const duration = Date.now() - startTime;
-            this.emitEvent(options, {
-              type: 'rollback',
-              message: `Deployment failed and rolled back in ${duration}ms`,
-              timestamp: new Date(),
-            });
-
+          const resource = graph.resources.find((r) => r.id === resourceId);
+          if (!resource) {
+            resourceLogger.error('Resource not found in graph');
+            const error = new Error(`Resource with id '${resourceId}' not found in graph`);
             return {
-              deploymentId,
-              resources: deployedResources,
-              dependencyGraph: graph.dependencyGraph,
-              duration,
-              status: 'failed',
-              errors,
+              success: false,
+              resourceId,
+              error: {
+                resourceId,
+                phase: 'validation' as const,
+                error,
+                timestamp: new Date(),
+              }
             };
           }
+
+          resourceLogger.debug('Found resource in graph', {
+            resourceId: resource.id,
+            kind: resource.manifest?.kind,
+            name: resource.manifest?.metadata?.name
+          });
+
+          try {
+            resourceLogger.debug('Calling deploySingleResource');
+
+            // Wait for CRD establishment if this is a custom resource
+            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger);
+
+            // FIX: Unconditionally ensure the readiness evaluator is attached just before deployment.
+            const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
+            const deployedResource = await this.deploySingleResource(
+              resourceWithEvaluator,
+              context,
+              options
+            );
+            resourceLogger.debug('Resource deployed successfully');
+
+            return {
+              success: true,
+              resourceId,
+              deployedResource
+            };
+          } catch (error) {
+            resourceLogger.error('Resource deployment failed', error as Error);
+            const failedResource: DeployedResource = {
+              id: resourceId,
+              kind: resource.manifest.kind,
+              name: resource.manifest.metadata?.name || 'unknown',
+              namespace: resource.manifest.metadata?.namespace || 'default',
+              manifest: resource.manifest,
+              status: 'failed',
+              deployedAt: new Date(),
+              error: error as Error,
+            };
+            return {
+              success: false,
+              resourceId,
+              deployedResource: failedResource,
+              error: {
+                resourceId,
+                phase: 'deployment' as const,
+                error: error as Error,
+                timestamp: new Date(),
+              }
+            };
+          }
+        });
+
+        // Wait for all resources in this level to complete
+        const levelResults = await Promise.allSettled(levelPromises);
+
+        // Process results and handle errors
+        let levelHasFailures = false;
+        for (const result of levelResults) {
+          if (result.status === 'fulfilled') {
+            const deploymentResult = result.value;
+            if (deploymentResult.success && deploymentResult.deployedResource) {
+              deployedResources.push(deploymentResult.deployedResource);
+            } else {
+              levelHasFailures = true;
+              if (deploymentResult.error) {
+                errors.push(deploymentResult.error);
+              }
+              if (deploymentResult.deployedResource) {
+                deployedResources.push(deploymentResult.deployedResource);
+              }
+            }
+          } else {
+            // Promise was rejected
+            levelHasFailures = true;
+            levelLogger.error('Unexpected promise rejection in parallel deployment', result.reason);
+          }
         }
+
+        // Handle rollback if there are failures and rollback is enabled
+        if (levelHasFailures && options.rollbackOnFailure) {
+          levelLogger.warn('Level deployment failed, initiating rollback');
+          await this.rollbackDeployedResources(deployedResources, options);
+
+          const duration = Date.now() - startTime;
+          this.emitEvent(options, {
+            type: 'rollback',
+            message: `Deployment failed and rolled back in ${duration}ms`,
+            timestamp: new Date(),
+          });
+          return {
+            deploymentId,
+            resources: deployedResources,
+            dependencyGraph: graph.dependencyGraph,
+            duration,
+            status: 'failed',
+            errors,
+          };
+        }
+
+        // Calculate level performance metrics
+        const levelDuration = Date.now() - levelStartTime;
+        const successfulCount = levelResults.filter(r => r.status === 'fulfilled' && r.value.success).length;
+        const failedCount = levelResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
+        const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+        // Use debug level in test environments to reduce noise, info level in production
+        const logLevel = isTestEnvironment ? 'debug' : 'info';
+        levelLogger[logLevel](`Level ${levelIndex + 1} deployment completed`, {
+          successful: successfulCount,
+          failed: failedCount,
+          duration: levelDuration,
+          parallelism: currentLevel.length,
+          averageTimePerResource: Math.round(levelDuration / currentLevel.length)
+        });
       }
 
       const duration = Date.now() - startTime;
       const successfulResources = deployedResources.filter((r) => r.status !== 'failed');
-      const status =
-        errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
+      const status = errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
+
+      // Log comprehensive performance metrics
+      const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+      // Use debug level in test environments to reduce noise, info level in production
+      const logLevel = isTestEnvironment ? 'debug' : 'info';
+      deploymentLogger[logLevel]('Parallel deployment performance metrics', {
+        totalDuration: duration,
+        totalResources: deploymentPlan.totalResources,
+        parallelLevels: deploymentPlan.levels.length,
+        maxParallelism: deploymentPlan.maxParallelism,
+        averageTimePerResource: Math.round(duration / deploymentPlan.totalResources),
+        successfulResources: successfulResources.length,
+        failedResources: errors.length,
+        parallelismEfficiency: Math.round((deploymentPlan.totalResources / deploymentPlan.levels.length) / deploymentPlan.maxParallelism * 100),
+        status
+      });
 
       this.emitEvent(options, {
         type: status === 'success' ? 'completed' : 'failed',
-        message: `Deployment ${status} in ${duration}ms`,
+        message: `Deployment ${status} in ${duration}ms (${deploymentPlan.levels.length} parallel levels, max ${deploymentPlan.maxParallelism} concurrent)`,
         timestamp: new Date(),
       });
 
@@ -222,7 +392,6 @@ export class DirectDeploymentEngine {
       }
 
       const duration = Date.now() - startTime;
-
       this.emitEvent(options, {
         type: 'failed',
         message: `Deployment failed: ${error}`,
@@ -260,6 +429,505 @@ export class DirectDeploymentEngine {
   }
 
   /**
+   * Analyze closure dependencies to determine execution levels
+   */
+  private analyzeClosureDependencies<TSpec>(
+    closures: Record<string, DeploymentClosure>,
+    spec: TSpec,
+    dependencyGraph: import('../dependencies/index.js').DependencyGraph
+  ): ClosureDependencyInfo[] {
+    const closureDependencies: ClosureDependencyInfo[] = [];
+
+    for (const [name, closure] of Object.entries(closures)) {
+      // For now, analyze dependencies by examining the closure's configuration
+      // This is a simplified implementation - in practice, we would need to analyze
+      // the closure's arguments to detect resource references
+      const dependencies = this.extractClosureDependencies(closure, spec);
+
+      // Determine execution level based on dependencies
+      // For now, assign all closures to level -1 to ensure they run before all resources
+      // This is especially important for closures that install CRDs (like fluxSystem)
+      let level = -1;
+      if (dependencies.length > 0) {
+        // Find the maximum level of any dependency + 1
+        for (const depId of dependencies) {
+          const depLevel = this.getResourceLevel(depId, dependencyGraph);
+          level = Math.max(level, depLevel + 1);
+        }
+      }
+
+      closureDependencies.push({
+        name,
+        closure,
+        dependencies,
+        level,
+      });
+    }
+
+    return closureDependencies;
+  }
+
+  /**
+   * Extract dependencies from a closure by analyzing its configuration
+   * This is a simplified implementation - in practice, we would need more sophisticated analysis
+   */
+  private extractClosureDependencies<TSpec>(
+    closure: DeploymentClosure,
+    spec: TSpec
+  ): string[] {
+    // For now, return empty dependencies since closures typically don't depend on Enhanced<> resources
+    // In the future, this could analyze closure arguments for resource references
+    return [];
+  }
+
+  /**
+   * Get the execution level of a resource in the dependency graph
+   */
+  private getResourceLevel(resourceId: string, dependencyGraph: import('../dependencies/index.js').DependencyGraph): number {
+    // Find the level where this resource appears in the deployment plan
+    const deploymentPlan = this.dependencyResolver.analyzeDeploymentOrder(dependencyGraph);
+
+    for (let levelIndex = 0; levelIndex < deploymentPlan.levels.length; levelIndex++) {
+      const level = deploymentPlan.levels[levelIndex];
+      if (level && level.includes(resourceId)) {
+        return levelIndex;
+      }
+    }
+
+    return 0; // Default to level 0 if not found
+  }
+
+  /**
+   * Integrate closures into the deployment plan based on their dependencies
+   */
+  private integrateClosuresIntoPlan(
+    deploymentPlan: { levels: string[][]; totalResources: number; maxParallelism: number },
+    closureDependencies: ClosureDependencyInfo[]
+  ): EnhancedDeploymentPlan {
+    // Create enhanced levels with both resources and closures
+    const enhancedLevels: Array<{ resources: string[]; closures: ClosureDependencyInfo[] }> = [];
+
+    // Check if we have any closures at level -1 (pre-resource level)
+    const preResourceClosures = closureDependencies.filter(c => c.level === -1);
+
+    // If we have pre-resource closures, add them as level 0 and shift everything else
+    if (preResourceClosures.length > 0) {
+      enhancedLevels.push({
+        resources: [],
+        closures: preResourceClosures,
+      });
+    }
+
+    // Initialize levels with existing resources (shifted if we added a pre-resource level)
+    for (let i = 0; i < deploymentPlan.levels.length; i++) {
+      enhancedLevels.push({
+        resources: deploymentPlan.levels[i] || [],
+        closures: [],
+      });
+    }
+
+    // Add closures to their appropriate levels (excluding level -1 which we already handled)
+    for (const closureInfo of closureDependencies) {
+      if (closureInfo.level === -1) {
+        continue; // Already handled above
+      }
+
+      // Adjust level index if we added a pre-resource level
+      const adjustedLevel = preResourceClosures.length > 0 ? closureInfo.level + 1 : closureInfo.level;
+
+      // Ensure we have enough levels
+      while (enhancedLevels.length <= adjustedLevel) {
+        enhancedLevels.push({ resources: [], closures: [] });
+      }
+
+      const targetLevel = enhancedLevels[adjustedLevel];
+      if (targetLevel) {
+        targetLevel.closures.push(closureInfo);
+      }
+    }
+
+    return {
+      levels: enhancedLevels,
+      totalResources: deploymentPlan.totalResources,
+      totalClosures: closureDependencies.length,
+      maxParallelism: Math.max(
+        deploymentPlan.maxParallelism,
+        Math.max(...enhancedLevels.map(level => level.closures.length))
+      ),
+    };
+  }
+
+  /**
+   * Deploy a resource graph with deployment closures integrated into level-based execution
+   */
+  async deployWithClosures<TSpec>(
+    graph: ResourceGraph,
+    closures: Record<string, DeploymentClosure>,
+    options: DeploymentOptions,
+    spec: TSpec,
+    alchemyScope?: Scope
+  ): Promise<DeploymentResult> {
+    const deploymentId = this.generateDeploymentId();
+    const startTime = Date.now();
+    const deployedResources: DeployedResource[] = [];
+    const errors: DeploymentError[] = [];
+    const deploymentLogger = this.logger.child({
+      deploymentId,
+      resourceCount: graph.resources.length,
+      closureCount: Object.keys(closures).length
+    });
+
+    deploymentLogger.info('Starting deployment with closures', {
+      options,
+      closures: Object.keys(closures)
+    });
+
+    try {
+      this.emitEvent(options, {
+        type: 'started',
+        message: `Starting deployment of ${graph.resources.length} resources and ${Object.keys(closures).length} closures`,
+        timestamp: new Date(),
+      });
+
+      // 1. Validate no cycles in dependency graph
+      deploymentLogger.debug('Validating dependency graph', { dependencyGraph: graph.dependencyGraph });
+      this.dependencyResolver.validateNoCycles(graph.dependencyGraph);
+
+      // 2. Analyze deployment order and identify parallel stages
+      deploymentLogger.debug('Analyzing deployment order for parallel execution');
+      const deploymentPlan = this.dependencyResolver.analyzeDeploymentOrder(graph.dependencyGraph);
+      deploymentLogger.debug('Deployment plan determined', {
+        levels: deploymentPlan.levels.length,
+        totalResources: deploymentPlan.totalResources,
+        maxParallelism: deploymentPlan.maxParallelism
+      });
+
+      // 3. Analyze closure dependencies and integrate into deployment plan
+      const closureDependencies = this.analyzeClosureDependencies(closures, spec, graph.dependencyGraph);
+      const enhancedPlan = this.integrateClosuresIntoPlan(deploymentPlan, closureDependencies);
+
+      deploymentLogger.debug('Enhanced deployment plan with closures', {
+        levels: enhancedPlan.levels.length,
+        totalResources: enhancedPlan.totalResources,
+        totalClosures: enhancedPlan.totalClosures,
+        maxParallelism: enhancedPlan.maxParallelism
+      });
+
+      // 4. Create resolution context
+      const context: ResolutionContext = {
+        deployedResources,
+        kubeClient: this.kubeClient,
+        ...(options.namespace && { namespace: options.namespace }),
+        timeout: options.timeout || 30000,
+      };
+
+      // 5. Deploy resources and closures level by level with proper dependency handling
+      for (let levelIndex = 0; levelIndex < enhancedPlan.levels.length; levelIndex++) {
+        const currentLevel = enhancedPlan.levels[levelIndex];
+        if (!currentLevel) {
+          continue;
+        }
+
+        const levelLogger = deploymentLogger.child({
+          level: levelIndex + 1,
+          resourceCount: currentLevel.resources.length,
+          closureCount: currentLevel.closures.length
+        });
+        levelLogger.debug(`Deploying level ${levelIndex + 1} with ${currentLevel.resources.length} resources and ${currentLevel.closures.length} closures in parallel`);
+
+        const levelStartTime = Date.now();
+
+        // Create deployment context for closures at this level
+        const deployedResourcesMap = new Map<string, DeployedResource>();
+        // Populate with resources from previous levels
+        for (const resource of deployedResources) {
+          deployedResourcesMap.set(resource.id, resource);
+        }
+
+        const deploymentContext: DeploymentContext = {
+          kubernetesApi: this.k8sApi,
+          ...(alchemyScope && { alchemyScope }),
+          ...(options.namespace && { namespace: options.namespace }),
+          deployedResources: deployedResourcesMap,
+          resolveReference: async (ref: unknown): Promise<unknown> => {
+            // Enhanced reference resolution - will be improved in future tasks
+            return ref;
+          },
+        };
+
+        // Prepare promises for both resources and closures
+        const levelPromises: Promise<any>[] = [];
+
+        // Add resource deployment promises
+        const resourcePromises = currentLevel.resources.map(async (resourceId) => {
+          const resourceLogger = deploymentLogger.child({ resourceId });
+          resourceLogger.debug('Starting resource deployment');
+
+          const resource = graph.resources.find((r) => r.id === resourceId);
+          if (!resource) {
+            resourceLogger.error('Resource not found in graph');
+            const error = new Error(`Resource with id '${resourceId}' not found in graph`);
+            return {
+              success: false,
+              resourceId,
+              error: {
+                resourceId,
+                phase: 'validation' as const,
+                error,
+                timestamp: new Date(),
+              }
+            };
+          }
+
+          resourceLogger.debug('Found resource in graph', {
+            resourceId: resource.id,
+            kind: resource.manifest?.kind,
+            name: resource.manifest?.metadata?.name
+          });
+
+          try {
+            resourceLogger.debug('Calling deploySingleResource');
+            const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
+            const deployedResource = await this.deploySingleResource(
+              resourceWithEvaluator,
+              context,
+              options
+            );
+            resourceLogger.debug('Resource deployed successfully');
+
+            return {
+              success: true,
+              resourceId,
+              deployedResource
+            };
+          } catch (error) {
+            resourceLogger.error('Resource deployment failed', error as Error);
+            const failedResource: DeployedResource = {
+              id: resourceId,
+              kind: resource.manifest.kind,
+              name: resource.manifest.metadata?.name || 'unknown',
+              namespace: resource.manifest.metadata?.namespace || 'default',
+              manifest: resource.manifest,
+              status: 'failed',
+              deployedAt: new Date(),
+              error: error as Error,
+            };
+            return {
+              success: false,
+              resourceId,
+              deployedResource: failedResource,
+              error: {
+                resourceId,
+                phase: 'deployment' as const,
+                error: error as Error,
+                timestamp: new Date(),
+              }
+            };
+          }
+        });
+
+        // Add closure execution promises
+        const closurePromises = currentLevel.closures.map(async (closureInfo) => {
+          const closureLogger = levelLogger.child({ closureName: closureInfo.name });
+          closureLogger.debug('Executing closure at level', { level: levelIndex + 1 });
+
+          try {
+            const result = await closureInfo.closure(deploymentContext);
+            closureLogger.debug('Closure executed successfully', { resultCount: result?.length || 0 });
+            return {
+              success: true,
+              type: 'closure' as const,
+              name: closureInfo.name,
+              result
+            };
+          } catch (error) {
+            closureLogger.error('Closure execution failed', error as Error);
+            return {
+              success: false,
+              type: 'closure' as const,
+              name: closureInfo.name,
+              error: {
+                resourceId: `closure-${closureInfo.name}`,
+                phase: 'deployment' as const,
+                error: error as Error,
+                timestamp: new Date(),
+              }
+            };
+          }
+        });
+
+        // Combine all promises for this level
+        levelPromises.push(...resourcePromises, ...closurePromises);
+
+        // Wait for all resources and closures in this level to complete
+        const levelResults = await Promise.allSettled(levelPromises);
+
+        // Process results and handle errors
+        let levelHasFailures = false;
+        let successfulResources = 0;
+        let successfulClosures = 0;
+        let failedResources = 0;
+        let failedClosures = 0;
+
+        for (const result of levelResults) {
+          if (result.status === 'fulfilled') {
+            const deploymentResult = result.value;
+
+            if (deploymentResult.type === 'closure') {
+              // Handle closure result
+              if (deploymentResult.success) {
+                successfulClosures++;
+              } else {
+                levelHasFailures = true;
+                failedClosures++;
+                if (deploymentResult.error) {
+                  errors.push(deploymentResult.error);
+                }
+              }
+            } else {
+              // Handle resource result
+              if (deploymentResult.success && deploymentResult.deployedResource) {
+                deployedResources.push(deploymentResult.deployedResource);
+                successfulResources++;
+              } else {
+                levelHasFailures = true;
+                failedResources++;
+                if (deploymentResult.error) {
+                  errors.push(deploymentResult.error);
+                }
+                if (deploymentResult.deployedResource) {
+                  deployedResources.push(deploymentResult.deployedResource);
+                }
+              }
+            }
+          } else {
+            levelHasFailures = true;
+            levelLogger.error('Unexpected promise rejection in parallel deployment', result.reason);
+          }
+        }
+
+        // Handle rollback if there are failures and rollback is enabled
+        if (levelHasFailures && options.rollbackOnFailure) {
+          levelLogger.warn('Level deployment failed, initiating rollback');
+          await this.rollbackDeployedResources(deployedResources, options);
+
+          const duration = Date.now() - startTime;
+          this.emitEvent(options, {
+            type: 'rollback',
+            message: `Deployment failed and rolled back in ${duration}ms`,
+            timestamp: new Date(),
+          });
+          return {
+            deploymentId,
+            resources: deployedResources,
+            dependencyGraph: graph.dependencyGraph,
+            duration,
+            status: 'failed',
+            errors,
+          };
+        }
+
+        // Calculate level performance metrics
+        const levelDuration = Date.now() - levelStartTime;
+        const totalOperations = currentLevel.resources.length + currentLevel.closures.length;
+        const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+        const logLevel = isTestEnvironment ? 'debug' : 'info';
+        levelLogger[logLevel](`Level ${levelIndex + 1} deployment completed`, {
+          resources: { successful: successfulResources, failed: failedResources },
+          closures: { successful: successfulClosures, failed: failedClosures },
+          duration: levelDuration,
+          parallelism: totalOperations,
+          averageTimePerOperation: totalOperations > 0 ? Math.round(levelDuration / totalOperations) : 0
+        });
+      }
+
+      const duration = Date.now() - startTime;
+      const successfulResources = deployedResources.filter((r) => r.status !== 'failed');
+      const status = errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
+
+      // Log comprehensive performance metrics
+      const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+      const logLevel = isTestEnvironment ? 'debug' : 'info';
+      deploymentLogger[logLevel]('Parallel deployment with closures performance metrics', {
+        totalDuration: duration,
+        totalResources: enhancedPlan.totalResources,
+        totalClosures: enhancedPlan.totalClosures,
+        parallelLevels: enhancedPlan.levels.length,
+        maxParallelism: enhancedPlan.maxParallelism,
+        averageTimePerResource: enhancedPlan.totalResources > 0 ? Math.round(duration / enhancedPlan.totalResources) : 0,
+        successfulResources: successfulResources.length,
+        failedResources: errors.length,
+        status
+      });
+
+      this.emitEvent(options, {
+        type: status === 'success' ? 'completed' : 'failed',
+        message: `Deployment with closures ${status} in ${duration}ms (${enhancedPlan.totalClosures} closures + ${enhancedPlan.totalResources} resources across ${enhancedPlan.levels.length} levels)`,
+        timestamp: new Date(),
+      });
+
+      // Store deployment state for rollback
+      this.deploymentState.set(deploymentId, {
+        deploymentId,
+        resources: deployedResources,
+        dependencyGraph: graph.dependencyGraph,
+        startTime: new Date(startTime),
+        endTime: new Date(),
+        status: status === 'success' ? 'completed' : status === 'partial' ? 'completed' : 'failed',
+        options,
+      });
+
+      return {
+        deploymentId,
+        resources: deployedResources,
+        dependencyGraph: graph.dependencyGraph,
+        duration,
+        status,
+        errors,
+      };
+    } catch (error) {
+      // Re-throw circular dependency errors immediately - these are configuration errors
+      if (error instanceof CircularDependencyError) {
+        throw error;
+      }
+
+      const duration = Date.now() - startTime;
+      this.emitEvent(options, {
+        type: 'failed',
+        message: `Deployment with closures failed: ${error}`,
+        timestamp: new Date(),
+        error: error as Error,
+      });
+
+      // Store deployment state even for failed deployments (for rollback)
+      this.deploymentState.set(deploymentId, {
+        deploymentId,
+        resources: deployedResources,
+        dependencyGraph: graph.dependencyGraph,
+        startTime: new Date(startTime),
+        endTime: new Date(),
+        status: 'failed',
+        options,
+      });
+
+      return {
+        deploymentId,
+        resources: deployedResources,
+        dependencyGraph: graph.dependencyGraph,
+        duration,
+        status: 'failed',
+        errors: [
+          {
+            resourceId: 'deployment',
+            phase: 'deployment',
+            error: error as Error,
+            timestamp: new Date(),
+          },
+        ],
+      };
+    }
+  }  /**
+
    * Deploy a single resource
    */
   private async deploySingleResource(
@@ -268,12 +936,11 @@ export class DirectDeploymentEngine {
     options: DeploymentOptions
   ): Promise<DeployedResource> {
     const resourceId = resource.id || (resource as any).__resourceId || resource.metadata?.name || 'unknown';
-    const resourceLogger = this.logger.child({ 
-      resourceId, 
-      kind: resource.kind, 
-      name: resource.metadata?.name 
+    const resourceLogger = this.logger.child({
+      resourceId,
+      kind: resource.kind,
+      name: resource.metadata?.name
     });
-
     resourceLogger.debug('Starting single resource deployment');
 
     this.emitEvent(options, {
@@ -286,10 +953,9 @@ export class DirectDeploymentEngine {
     // 1. Resolve all references in the resource
     let resolvedResource: KubernetesResource;
     try {
-      resourceLogger.debug('Resolving resource references', { 
-        originalMetadata: resource.metadata 
+      resourceLogger.debug('Resolving resource references', {
+        originalMetadata: resource.metadata
       });
-
       const resolveTimeout = options.timeout || 30000;
       resolvedResource = (await Promise.race([
         this.referenceResolver.resolveReferences(resource, context),
@@ -297,429 +963,323 @@ export class DirectDeploymentEngine {
           setTimeout(() => reject(new Error('Reference resolution timeout')), resolveTimeout)
         ),
       ])) as KubernetesResource;
-
-      resourceLogger.debug('References resolved successfully', { 
+      resourceLogger.debug('References resolved successfully', {
         resolvedMetadata: resolvedResource.metadata,
         hasReadinessEvaluator: !!(resolvedResource as any).readinessEvaluator
       });
     } catch (error) {
-      // If reference resolution fails, use the original resource
-      // This allows deployment to continue even if some references can't be resolved
       resourceLogger.warn('Reference resolution failed, using original resource', error as Error);
       resolvedResource = resource;
     }
 
-    // 2. Apply namespace if specified
-    if (options.namespace && resolvedResource.metadata) {
-      resolvedResource.metadata.namespace = options.namespace;
-    }
-    
+    // 2. Apply namespace if specified, but only if resource doesn't already have one
+    if (options.namespace && resolvedResource.metadata && typeof resolvedResource.metadata.namespace !== 'string') {
+      resourceLogger.debug('Applying namespace from deployment options', {
+        targetNamespace: options.namespace,
+        currentNamespace: resolvedResource.metadata.namespace,
+        currentNamespaceType: typeof resolvedResource.metadata.namespace
+      });
 
-
-    // 3. Handle dry run
-    if (options.dryRun) {
-      return {
-        id: resourceId,
-        kind: resource.kind,
-        name: resource.metadata?.name || 'unknown',
-        namespace: resolvedResource.metadata?.namespace || 'default',
-        manifest: resolvedResource,
-        status: 'deployed',
-        deployedAt: new Date(),
+      // Create a completely new metadata object to avoid proxy issues
+      const newMetadata = {
+        ...resolvedResource.metadata,
+        namespace: options.namespace,
       };
-    }
 
-    // 4. Deploy to cluster with retry logic
-    const deployedManifest: KubernetesResource = await this.deployToCluster(
-      resolvedResource,
-      options
-    );
+      // Preserve the readiness evaluator when creating the new resource
+      const newResolvedResource = {
+        ...resolvedResource,
+        metadata: newMetadata,
+      };
 
-    // 5. Create deployed resource record
-    // Use the original Enhanced proxy object as the manifest, but update its metadata
-    // to reflect the deployed state from the Kubernetes API response
-    const enhancedManifest = resolvedResource as Enhanced<any, any>;
-
-    // Update the metadata to reflect the actual deployed state
-    if (deployedManifest.metadata) {
-      Object.assign(enhancedManifest.metadata || {}, deployedManifest.metadata);
-    }
-
-    const deployedResource: DeployedResource = {
-      id: resourceId,
-      kind: resource.kind,
-      name: resource.metadata?.name || 'unknown',
-      namespace: deployedManifest.metadata?.namespace || 'default',
-      manifest: enhancedManifest,
-      status: 'deployed',
-      deployedAt: new Date(),
-    };
-
-    // 6. Wait for readiness if requested
-    if (options.waitForReady) {
-      resourceLogger.info('Waiting for resource readiness');
-      await this.waitForResourceReady(deployedResource, options);
-      resourceLogger.info('Resource is ready');
-      deployedResource.status = 'ready';
-    }
-
-    this.emitEvent(options, {
-      type: 'progress',
-      resourceId,
-      message: `Successfully deployed ${resource.kind}/${resource.metadata?.name}`,
-      timestamp: new Date(),
-    });
-
-    return deployedResource;
-  }
-
-  /**
-   * Deploy a single resource (public method for testing)
-   */
-  async deployResource(
-    resource: DeployableK8sResource<Enhanced<unknown, unknown>>,
-    options: DeploymentOptions = { mode: 'direct' }
-  ): Promise<DeployedResource> {
-    const context: ResolutionContext = {
-      deployedResources: [],
-      kubeClient: this.kubeClient,
-      ...(options.namespace && { namespace: options.namespace }),
-      timeout: options.timeout || 30000,
-    };
-
-    return this.deploySingleResource(resource, context, options);
-  }
-
-  /**
-   * Wait for a resource to be ready (public method for KroResourceFactory integration)
-   */
-  async waitForResourceReadiness(
-    deployedResource: DeployedResource,
-    options: DeploymentOptions
-  ): Promise<void> {
-    return this.waitForResourceReady(deployedResource, options);
-  }
-
-  /**
-   * Deploy a resource to the Kubernetes cluster
-   */
-  private async deployToCluster(
-    resource: KubernetesResource,
-    options: DeploymentOptions
-  ): Promise<KubernetesResource> {
-    const deployLogger = this.logger.child({ 
-      kind: resource.kind, 
-      name: resource.metadata?.name,
-      namespace: resource.metadata?.namespace 
-    });
-    const retryPolicy = options.retryPolicy || {
-      maxRetries: 3,
-      backoffMultiplier: 2,
-      initialDelay: 1000,
-      maxDelay: 10000,
-    };
-
-    let lastError: Error | undefined;
-    let delay = retryPolicy.initialDelay;
-
-    for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
-      try {
-        // Check if resource already exists
-        let existingResource: k8s.KubernetesObject | undefined;
-        try {
-          const apiTimeout = options.timeout || 30000;
-          const { body } = await Promise.race([
-            this.k8sApi.read({
-              apiVersion: resource.apiVersion,
-              kind: resource.kind,
-              metadata: {
-                name: resource.metadata.name || resource.id || 'unknown',
-                namespace: resource.metadata.namespace || 'default',
-              },
-            }),
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('API read timeout')), apiTimeout)
-            ),
-          ]) as { body: k8s.KubernetesObject };
-          existingResource = body;
-        } catch (error: unknown) {
-          const k8sError = error as { statusCode?: number };
-          if (k8sError.statusCode !== 404) {
-            throw error;
-          }
-          // Resource doesn't exist, which is expected for creation
-        }
-
-        if (existingResource) {
-          // Resource exists, update it
-          // Create merged resource with proper metadata handling
-          const mergedResource: k8s.KubernetesObject = {
-            ...resource,
-            metadata: {
-              ...existingResource.metadata,
-              ...resource.metadata,
-              ...(existingResource.metadata?.resourceVersion && {
-                resourceVersion: existingResource.metadata.resourceVersion,
-              }),
-            },
-          };
-
-          const apiTimeout = options.timeout || 30000;
-          const { body } = await Promise.race([
-            this.k8sApi.replace(mergedResource),
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('API replace timeout')), apiTimeout)
-            ),
-          ]) as { body: k8s.KubernetesObject };
-          return this.convertK8sObjectToKubernetesResource(body);
-        } else {
-          // Resource doesn't exist, create it
-          // Use JSON serialization to correctly handle the Enhanced proxy and convert it to a plain object.
-          // This ensures all properties, including metadata from proxied objects, are correctly resolved before the API call.
-          const plainResource: k8s.KubernetesObject = JSON.parse(JSON.stringify(resource));
-
-
-          
-          const apiTimeout = options.timeout || 30000;
-          const { body } = await Promise.race([
-            this.k8sApi.create(plainResource),
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error('API create timeout')), apiTimeout)
-            ),
-          ]) as { body: k8s.KubernetesObject };
-          return this.convertK8sObjectToKubernetesResource(body);
-        }
-      } catch (error) {
-        // Enhanced error handling with detailed information
-        const k8sError = error as any;
-        let errorMessage = 'Unknown error';
-        let errorDetails: any = {};
-
-        if (k8sError.response) {
-          // HTTP response error
-          errorMessage = `HTTP ${k8sError.response.statusCode || 'unknown'}: ${k8sError.response.statusMessage || 'Request failed'}`;
-          errorDetails = {
-            statusCode: k8sError.response.statusCode,
-            statusMessage: k8sError.response.statusMessage,
-            body: k8sError.response.body,
-            url: k8sError.response.url,
-          };
-        } else if (k8sError.statusCode) {
-          // Kubernetes API error
-          errorMessage = `Kubernetes API error ${k8sError.statusCode}: ${k8sError.message || 'Request failed'}`;
-          errorDetails = {
-            statusCode: k8sError.statusCode,
-            message: k8sError.message,
-            body: k8sError.body,
-          };
-        } else if (k8sError.code) {
-          // Network/connection error
-          errorMessage = `Network error ${k8sError.code}: ${k8sError.message || 'Connection failed'}`;
-          errorDetails = {
-            code: k8sError.code,
-            errno: k8sError.errno,
-            syscall: k8sError.syscall,
-            hostname: k8sError.hostname,
-            port: k8sError.port,
-          };
-        } else {
-          // Generic error
-          errorMessage = k8sError.message || String(error);
-          errorDetails = {
-            name: k8sError.name,
-            stack: k8sError.stack,
-          };
-        }
-
-        // Create enhanced error with details
-        const enhancedError = new Error(errorMessage);
-        (enhancedError as any).details = errorDetails;
-        (enhancedError as any).originalError = error;
-        (enhancedError as any).attempt = attempt + 1;
-        (enhancedError as any).resourceInfo = {
-          kind: resource.kind,
-          name: resource.metadata?.name,
-          namespace: resource.metadata?.namespace,
-          apiVersion: resource.apiVersion,
-        };
-
-        lastError = enhancedError;
-
-        // Log detailed error information for debugging
-        deployLogger.error('Deployment attempt failed', error as Error, {
-          attempt: attempt + 1,
-          errorMessage,
-          details: errorDetails,
-          apiVersion: resource.apiVersion,
+      // Copy the non-enumerable readiness evaluator if it exists
+      const readinessEvaluator = (resolvedResource as any).readinessEvaluator;
+      if (readinessEvaluator) {
+        Object.defineProperty(newResolvedResource, 'readinessEvaluator', {
+          value: readinessEvaluator,
+          enumerable: false,
+          configurable: true,
+          writable: false
         });
+      }
 
-        // Check for errors that should not be retried (fast-fail conditions)
-        const shouldFailFast = this.shouldFailFast(error, errorMessage);
-        if (shouldFailFast) {
-          deployLogger.warn('Fast-failing due to non-retryable error', {
-            errorMessage,
-            reason: shouldFailFast
+      resolvedResource = newResolvedResource;
+    }
+
+    // 3. Apply the resource to the cluster (or simulate for dry run)
+    let appliedResource: k8s.KubernetesObject;
+
+    if (options.dryRun) {
+      // In dry run mode, don't actually create the resource
+      resourceLogger.debug('Dry run mode: simulating resource creation');
+      appliedResource = {
+        ...resolvedResource,
+        metadata: {
+          ...resolvedResource.metadata,
+          uid: 'dry-run-uid',
+        },
+      } as k8s.KubernetesObject;
+    } else {
+      // Apply resource with retry logic
+      const retryPolicy = options.retryPolicy || {
+        maxRetries: 3,
+        backoffMultiplier: 2,
+        initialDelay: 1000,
+        maxDelay: 30000,
+      };
+
+      let lastError: Error | undefined;
+      for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
+        try {
+          resourceLogger.debug('Applying resource to cluster', { attempt });
+
+          // Check if resource already exists
+          let existing: k8s.KubernetesObject | undefined;
+          try {
+            const readResult = await this.k8sApi.read({
+              apiVersion: resolvedResource.apiVersion,
+              kind: resolvedResource.kind,
+              metadata: {
+                name: resolvedResource.metadata?.name || '',
+                namespace: resolvedResource.metadata?.namespace || 'default',
+              },
+            });
+            existing = readResult.body;
+          } catch (error: any) {
+            // If it's a 404, the resource doesn't exist, which is expected for creation
+            if (error.statusCode !== 404) {
+              resourceLogger.error('Error checking resource existence', error);
+              throw error;
+            }
+          }
+
+          if (existing) {
+            // Resource exists, use patch for safer updates
+            resourceLogger.debug('Resource exists, patching');
+            const patchResult = await this.k8sApi.patch(resolvedResource);
+            appliedResource = patchResult.body;
+          } else {
+            // Resource does not exist, create it
+            resourceLogger.debug('Resource does not exist, creating');
+            const createResult = await this.k8sApi.create(resolvedResource);
+            appliedResource = createResult.body;
+          }
+
+          resourceLogger.debug('Resource applied successfully', {
+            appliedName: appliedResource.metadata?.name,
+            appliedNamespace: appliedResource.metadata?.namespace,
+            operation: existing ? 'patched' : 'created',
+            attempt
           });
-          break; // Exit retry loop immediately
-        }
 
-        if (attempt < retryPolicy.maxRetries) {
-          deployLogger.info('Retrying deployment', { delayMs: delay, attempt: attempt + 1 });
-          await new Promise((resolve) => setTimeout(resolve, delay));
-          delay = Math.min(delay * retryPolicy.backoffMultiplier, retryPolicy.maxDelay);
+          // Success - break out of retry loop
+          break;
+        } catch (error) {
+          lastError = error as Error;
+          resourceLogger.error('Failed to apply resource to cluster', lastError, { attempt });
+
+          // If this was the last attempt, throw the error
+          if (attempt >= retryPolicy.maxRetries) {
+            throw new ResourceDeploymentError(
+              resolvedResource.metadata?.name || 'unknown',
+              resolvedResource.kind || 'Unknown',
+              lastError
+            );
+          }
+
+          // Calculate delay for next attempt
+          const delay = Math.min(
+            retryPolicy.initialDelay * retryPolicy.backoffMultiplier ** attempt,
+            retryPolicy.maxDelay
+          );
+
+          resourceLogger.debug('Retrying resource deployment', {
+            attempt: attempt + 1,
+            maxRetries: retryPolicy.maxRetries,
+            delay
+          });
+
+          // Wait before retrying
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
     }
 
-    throw new ResourceDeploymentError(
-      resource.metadata?.name || 'unknown',
-      resource.kind,
-      lastError || new Error('Unknown deployment error')
-    );
+    // 4. Create deployed resource record
+    const deployedResource: DeployedResource = {
+      id: resourceId,
+      kind: resolvedResource.kind || 'Unknown',
+      name: resolvedResource.metadata?.name || 'unknown',
+      namespace: resolvedResource.metadata?.namespace || 'default',
+      manifest: resolvedResource,
+      status: 'deployed',
+      deployedAt: new Date(),
+    };
+
+    // 5. Wait for resource to be ready if requested
+    if (options.waitForReady !== false) {
+      resourceLogger.debug('Waiting for resource to be ready');
+      await this.waitForResourceReady(deployedResource, options);
+      deployedResource.status = 'ready';
+    }
+
+    resourceLogger.debug('Single resource deployment completed');
+    return deployedResource;
   }
 
   /**
-   * Determine if an error should cause immediate failure without retries
+   * Wait for a resource to be ready
    */
-  private shouldFailFast(error: unknown, errorMessage: string): string | null {
-    const k8sError = error as { statusCode?: number; body?: any; message?: string };
-    
-    // Namespace not found - don't retry
-    if (k8sError.statusCode === 404 && k8sError.body?.message?.includes('namespaces') && k8sError.body?.message?.includes('not found')) {
-      return 'namespace-not-found';
+  private async waitForResourceReady(
+    deployedResource: DeployedResource,
+    options: DeploymentOptions
+  ): Promise<void> {
+    const resourceKey = `${deployedResource.kind}/${deployedResource.name}/${deployedResource.namespace}`;
+
+    // Check if already marked as ready
+    if (deployedResource.status === 'ready' || this.readyResources.has(resourceKey)) {
+      this.logger.debug('Resource already marked as ready', { resourceKey });
+      return;
     }
-    
-    // Authentication/authorization errors - don't retry
-    if (k8sError.statusCode === 401) {
-      return 'authentication-failed';
+
+    // Safety-first approach: check for readiness evaluator before starting the wait loop
+    const readinessEvaluator = (deployedResource.manifest as Enhanced<any, any>).readinessEvaluator;
+
+    // Debug logging removed
+
+    if (!readinessEvaluator) {
+      const errorMessage = `Resource ${deployedResource.kind}/${deployedResource.name} does not have a factory-provided readiness evaluator`;
+      this.logger.error('Missing factory-provided readiness evaluator');
+      throw new Error(errorMessage);
     }
-    
-    if (k8sError.statusCode === 403) {
-      return 'authorization-failed';
+
+    const startTime = Date.now();
+    const timeout = options.timeout || 300000; // 5 minutes default
+    let lastStatus: any = null;
+
+    while (Date.now() - startTime < timeout) {
+      try {
+        // Use custom readiness evaluator
+        const { body: liveResource } = await this.k8sApi.read({
+          apiVersion: deployedResource.manifest.apiVersion || '',
+          kind: deployedResource.kind,
+          metadata: {
+            name: deployedResource.name,
+            namespace: deployedResource.namespace,
+          },
+        });
+
+        const result = readinessEvaluator(liveResource);
+
+        if (typeof result === 'boolean') {
+          if (result) {
+            this.readyResources.add(resourceKey);
+
+            this.emitEvent(options, {
+              type: 'resource-ready',
+              resourceId: deployedResource.id,
+              message: `${deployedResource.kind}/${deployedResource.name} ready (custom evaluator)`,
+              timestamp: new Date(),
+            });
+
+            return;
+          }
+        } else if (result && typeof result === 'object' && 'ready' in result) {
+          lastStatus = result;
+          if (result.ready) {
+            this.readyResources.add(resourceKey);
+
+            this.emitEvent(options, {
+              type: 'resource-ready',
+              resourceId: deployedResource.id,
+              message: result.message || `${deployedResource.kind}/${deployedResource.name} ready (custom evaluator)`,
+              timestamp: new Date(),
+            });
+
+            return;
+          }
+        }
+
+        // Emit status update if we have status information
+        if (lastStatus && typeof lastStatus === 'object' && 'message' in lastStatus) {
+          this.emitEvent(options, {
+            type: 'resource-status',
+            resourceId: deployedResource.id,
+            message: `${deployedResource.kind}/${deployedResource.name}: ${lastStatus.message}`,
+            timestamp: new Date(),
+          });
+        }
+
+        // Wait before next check
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+      } catch (error) {
+        // Emit error status event
+        this.emitEvent(options, {
+          type: 'resource-status',
+          resourceId: deployedResource.id,
+          message: `Unable to read resource status: ${error instanceof Error ? error.message : String(error)}`,
+          timestamp: new Date(),
+        });
+
+        // If we can't read the resource, it's not ready yet
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
-    
-    // Invalid resource definition - don't retry
-    if (k8sError.statusCode === 422) {
-      return 'invalid-resource-definition';
-    }
-    
-    // API version not supported - don't retry
-    if (k8sError.statusCode === 404 && errorMessage.includes('the server could not find the requested resource')) {
-      return 'api-version-not-supported';
-    }
-    
-    return null; // Should retry
+
+    // Timeout reached
+    const timeoutMessage = lastStatus
+      ? `Timeout waiting for ${deployedResource.kind}/${deployedResource.name}: ${lastStatus.message}`
+      : `Timeout waiting for ${deployedResource.kind}/${deployedResource.name} to be ready`;
+
+    throw new Error(timeoutMessage);
   }
 
   /**
-   * Convert Kubernetes API object to our KubernetesResource type
-   */
-  private convertK8sObjectToKubernetesResource(
-    k8sObject: k8s.KubernetesObject
-  ): KubernetesResource {
-    // Use our type-safe approach to extract spec and status
-    const spec = this.extractFieldFromK8sObject(k8sObject, 'spec');
-    const status = this.extractFieldFromK8sObject(k8sObject, 'status');
-
-    return {
-      apiVersion: k8sObject.apiVersion || '',
-      kind: k8sObject.kind || '',
-      metadata: k8sObject.metadata || {},
-      spec,
-      status,
-      ...k8sObject, // Include any additional fields
-    } as KubernetesResource;
-  }
-
-  /**
-   * Type-safe field extraction from Kubernetes objects
-   */
-  private extractFieldFromK8sObject(obj: k8s.KubernetesObject, field: string): unknown {
-    return (obj as Record<string, unknown>)[field];
-  }
-
-  /**
-   * Rollback deployed resources in reverse order
+   * Rollback deployed resources
    */
   private async rollbackDeployedResources(
     deployedResources: DeployedResource[],
     options: DeploymentOptions
-  ): Promise<void> {
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
     this.emitEvent(options, {
       type: 'rollback',
-      message: `Rolling back ${deployedResources.length} deployed resources`,
+      message: 'Starting rollback of deployed resources',
       timestamp: new Date(),
     });
+
+    const rolledBackResources: string[] = [];
+    const errors: DeploymentError[] = [];
 
     // Rollback in reverse order
     const reversedResources = [...deployedResources].reverse();
 
     for (const resource of reversedResources) {
+      // Only try to rollback resources that were actually deployed (not failed)
+      if (resource.status === 'failed') {
+        continue; // Skip resources that failed to deploy
+      }
+
       try {
         await this.k8sApi.delete({
-          apiVersion: resource.manifest.apiVersion,
+          apiVersion: resource.manifest.apiVersion || '',
           kind: resource.kind,
           metadata: {
             name: resource.name,
             namespace: resource.namespace,
           },
-        });
+        } as k8s.KubernetesObject);
 
-        this.emitEvent(options, {
-          type: 'rollback',
-          resourceId: resource.id,
-          message: `Rolled back ${resource.kind}/${resource.name}`,
-          timestamp: new Date(),
-        });
+        rolledBackResources.push(`${resource.kind}/${resource.name}`);
       } catch (error) {
-        this.emitEvent(options, {
-          type: 'rollback',
-          resourceId: resource.id,
-          message: `Failed to rollback ${resource.kind}/${resource.name}: ${error}`,
-          timestamp: new Date(),
+        // Log and collect errors for individual resource deletion failures
+        this.logger.warn('Failed to delete resource during rollback', {
           error: error as Error,
+          resourceId: resource.id,
+          kind: resource.kind,
+          name: resource.name
         });
-      }
-    }
-  }
 
-  /**
-   * Rollback a deployment by ID
-   */
-  async rollbackDeployment(deploymentId: string): Promise<RollbackResult> {
-    const startTime = Date.now();
-    const deploymentRecord = this.deploymentState.get(deploymentId);
-
-    if (!deploymentRecord) {
-      throw new Error(`Deployment ${deploymentId} not found. Cannot rollback.`);
-    }
-
-    const rolledBackResources: string[] = [];
-    const errors: DeploymentError[] = [];
-
-    // Only rollback successfully deployed resources
-    const resourcesToRollback = deploymentRecord.resources.filter(
-      (r) => r.status === 'deployed' || r.status === 'ready'
-    );
-
-    if (resourcesToRollback.length === 0) {
-      return {
-        deploymentId,
-        rolledBackResources: [],
-        duration: Date.now() - startTime,
-        status: 'success',
-        errors: [],
-      };
-    }
-
-    // Rollback in reverse order
-    const reversedResources = [...resourcesToRollback].reverse();
-
-    for (const resource of reversedResources) {
-      try {
-        await this.deleteResource(resource);
-        rolledBackResources.push(resource.id);
-      } catch (error) {
         errors.push({
           resourceId: resource.id,
           phase: 'rollback',
@@ -729,153 +1289,14 @@ export class DirectDeploymentEngine {
       }
     }
 
-    const duration = Date.now() - startTime;
-    const status =
-      errors.length === 0 ? 'success' : rolledBackResources.length > 0 ? 'partial' : 'failed';
-
-    return {
-      deploymentId,
-      rolledBackResources,
-      duration,
-      status,
-      errors,
-    };
-  }
-
-  /**
-   * Get deployment status by ID
-   */
-  getDeploymentStatus(deploymentId: string): DeploymentOperationStatus | undefined {
-    const deploymentRecord = this.deploymentState.get(deploymentId);
-
-    if (!deploymentRecord) {
-      return undefined;
-    }
-
-    return {
-      deploymentId,
-      status: deploymentRecord.status,
-      startTime: deploymentRecord.startTime,
-      ...(deploymentRecord.endTime && { endTime: deploymentRecord.endTime }),
-      resources: deploymentRecord.resources,
-    };
-  }
-
-  /**
-   * Get deployment status by ID (alias for getDeploymentStatus)
-   */
-  async getStatus(deploymentId: string): Promise<DeploymentOperationStatus> {
-    const status = this.getDeploymentStatus(deploymentId);
-
-    if (!status) {
-      return {
-        deploymentId,
-        status: 'unknown',
-        startTime: new Date(),
-        duration: 0,
-        resources: [],
-      };
-    }
-
-    return {
-      ...status,
-      duration: status.endTime
-        ? status.endTime.getTime() - status.startTime.getTime()
-        : Date.now() - status.startTime.getTime(),
-    };
-  }
-
-  /**
-   * Rollback a deployment by ID (alias for rollbackDeployment)
-   */
-  async rollback(deploymentId: string): Promise<RollbackResult> {
-    return this.rollbackDeployment(deploymentId);
-  }
-
-  /**
-   * Check if a resource is ready (exposed for testing)
-   */
-  isResourceReady(resource: DeploymentResource): boolean {
-    return this.readinessChecker.isResourceReady(resource);
-  }
-
-  /**
-   * Delete a resource with graceful handling of finalizers
-   */
-  private async deleteResource(resource: DeployedResource): Promise<void> {
-    const deleteLogger = this.logger.child({ 
-      kind: resource.kind, 
-      name: resource.name,
-      namespace: resource.namespace 
-    });
-    
-    try {
-      // First attempt normal deletion
-      await this.k8sApi.delete({
-        apiVersion: resource.manifest.apiVersion,
-        kind: resource.manifest.kind,
-        metadata: {
-          name: resource.name,
-          namespace: resource.namespace,
-        },
-      } as k8s.KubernetesObject);
-
-      // Wait for deletion to complete (with timeout)
-      const timeout = 30000; // 30 seconds
-      const startTime = Date.now();
-
-      while (Date.now() - startTime < timeout) {
-        try {
-          // Type assertion needed for Kubernetes client API boundary
-          const readRequest = {
-            apiVersion: resource.manifest.apiVersion,
-            kind: resource.manifest.kind,
-            metadata: {
-              name: resource.name,
-              namespace: resource.namespace,
-            },
-          };
-          await this.k8sApi.read(readRequest as Parameters<typeof this.k8sApi.read>[0]);
-
-          // Resource still exists, wait a bit more
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        } catch (_error) {
-          // Resource not found - deletion successful
-          return;
-        }
-      }
-
-      // If we get here, deletion timed out - might have finalizers
-      deleteLogger.warn('Resource deletion timed out - may have finalizers');
-    } catch (error) {
-      // If the resource doesn't exist, that's fine for rollback
-      if (this.isNotFoundError(error)) {
-        return;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Type-safe check for 404 Not Found errors
-   */
-  private isNotFoundError(error: unknown): boolean {
-    return !!(
-      error &&
-      typeof error === 'object' &&
-      'response' in error &&
-      error.response &&
-      typeof error.response === 'object' &&
-      'statusCode' in error.response &&
-      error.response.statusCode === 404
-    );
+    return { rolledBackResources, errors };
   }
 
   /**
    * Generate a unique deployment ID
    */
   private generateDeploymentId(): string {
-    return `deployment-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    return `deployment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
   /**
@@ -888,175 +1309,355 @@ export class DirectDeploymentEngine {
   }
 
   /**
-   * Enhanced waitForResourceReady that checks for custom readiness evaluators
-   * and integrates status hydration
+   * Deploy a single resource (legacy method for compatibility)
    */
-  private async waitForResourceReady(
-    deployedResource: DeployedResource,
+  async deployResource(
+    resource: DeployableK8sResource<Enhanced<unknown, unknown>>,
     options: DeploymentOptions
-  ): Promise<void> {
-    const readinessLogger = this.logger.child({ 
-      resourceId: deployedResource.id,
-      kind: deployedResource.kind,
-      name: deployedResource.name 
-    });
-    
-    readinessLogger.debug('Starting resource readiness check');
+  ): Promise<DeployedResource> {
+    const context: ResolutionContext = {
+      deployedResources: [],
+      kubeClient: this.kubeClient,
+      ...(options.namespace && { namespace: options.namespace }),
+      timeout: options.timeout || 30000,
+    };
 
-    // Check if resource has factory-provided readiness evaluator
-    const readinessEvaluator = (deployedResource.manifest as Enhanced<any, any>).readinessEvaluator;
-    readinessLogger.debug('Checking for custom readiness evaluator', { 
-      hasCustomEvaluator: !!readinessEvaluator 
-    });
-
-    if (readinessEvaluator) {
-      try {
-        readinessLogger.debug('Using custom readiness evaluator');
-        return await this.waitForResourceReadyWithCustomEvaluator(
-          deployedResource,
-          readinessEvaluator,
-          options
-        );
-      } catch (error) {
-        // If custom readiness fails, fall back to generic checking
-        readinessLogger.warn('Custom readiness evaluation failed, falling back to generic checking', error as Error);
-        this.emitEvent(options, {
-          type: 'resource-warning',
-          resourceId: deployedResource.id,
-          message: `Custom readiness evaluation failed, using generic checking: ${error}`,
-          timestamp: new Date(),
-        });
-      }
-    }
-
-    // Use existing ResourceReadinessChecker as fallback
-    readinessLogger.debug('Using generic readiness checker');
-    return this.readinessChecker.waitForResourceReady(deployedResource, options, (event) =>
-      this.emitEvent(options, event)
-    );
+    return this.deploySingleResource(resource, context, options);
   }
 
   /**
-   * Use factory-provided readiness evaluator with integrated status hydration
+   * Delete a resource from the cluster
    */
-  private async waitForResourceReadyWithCustomEvaluator(
-    deployedResource: DeployedResource,
-    readinessEvaluator: (liveResource: any) => any,
+  async deleteResource(resource: DeployedResource): Promise<void> {
+    const deleteLogger = this.logger.child({
+      resourceId: resource.id,
+      kind: resource.kind,
+      name: resource.name
+    });
+
+    try {
+      await this.k8sApi.delete({
+        apiVersion: resource.manifest.apiVersion || '',
+        kind: resource.kind,
+        metadata: {
+          name: resource.name,
+          namespace: resource.namespace,
+        },
+      } as k8s.KubernetesObject);
+
+      // Wait for resource to be deleted
+      const timeout = 30000; // 30 seconds
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < timeout) {
+        try {
+          await this.k8sApi.read({
+            apiVersion: resource.manifest.apiVersion || '',
+            kind: resource.kind,
+            metadata: {
+              name: resource.name!,
+              namespace: resource.namespace!,
+            },
+          });
+
+          // Resource still exists, wait and try again
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } catch (error) {
+          // Resource not found, deletion successful
+          if (this.isNotFoundError(error)) {
+            deleteLogger.debug('Resource successfully deleted');
+            return;
+          }
+          throw error;
+        }
+      }
+
+      throw new Error(`Timeout waiting for resource ${resource.kind}/${resource.name} to be deleted`);
+    } catch (error) {
+      deleteLogger.error('Failed to delete resource', error as Error);
+      throw error;
+    }
+  }
+
+  /**
+   * Wait for resource readiness (legacy method for compatibility)
+   */
+  async waitForResourceReadiness(
+    resource: DeployedResource,
     options: DeploymentOptions
   ): Promise<void> {
+    return this.waitForResourceReady(resource, options);
+  }
+
+  /**
+   * Rollback a deployment by ID
+   */
+  async rollback(deploymentId: string): Promise<RollbackResult> {
     const startTime = Date.now();
+    const deploymentRecord = this.deploymentState.get(deploymentId);
+
+    if (!deploymentRecord) {
+      throw new Error(`Deployment ${deploymentId} not found. Cannot rollback.`);
+    }
+
+    try {
+      const { rolledBackResources, errors } = await this.rollbackDeployedResources(
+        deploymentRecord.resources,
+        deploymentRecord.options
+      );
+
+      const status = errors.length === 0 ? 'success' :
+        rolledBackResources.length > 0 ? 'partial' : 'failed';
+
+      return {
+        deploymentId,
+        rolledBackResources,
+        duration: Date.now() - startTime,
+        status,
+        errors,
+      };
+    } catch (error) {
+      // This shouldn't happen now since rollbackDeployedResources handles its own errors
+      return {
+        deploymentId,
+        rolledBackResources: [],
+        duration: Date.now() - startTime,
+        status: 'failed',
+        errors: [{
+          resourceId: deploymentId,
+          phase: 'rollback',
+          error: error as Error,
+          timestamp: new Date(),
+        }],
+      };
+    }
+  }
+
+  /**
+   * Get deployment status by ID
+   */
+  async getStatus(deploymentId: string): Promise<DeploymentOperationStatus> {
+    const deploymentRecord = this.deploymentState.get(deploymentId);
+
+    if (!deploymentRecord) {
+      return {
+        deploymentId,
+        status: 'unknown',
+        startTime: new Date(),
+        resources: [],
+      };
+    }
+
+    const result: DeploymentOperationStatus = {
+      deploymentId,
+      status: deploymentRecord.status === 'completed' ? 'completed' :
+        deploymentRecord.status === 'failed' ? 'failed' : 'running',
+      startTime: deploymentRecord.startTime,
+      resources: deploymentRecord.resources,
+    };
+
+    if (deploymentRecord.endTime) {
+      result.endTime = deploymentRecord.endTime;
+      result.duration = deploymentRecord.endTime.getTime() - deploymentRecord.startTime.getTime();
+    }
+
+    return result;
+  }
+
+  /**
+   * Check if an error is a "not found" error
+   */
+  private isNotFoundError(error: unknown): boolean {
+    if (error && typeof error === 'object') {
+      const k8sError = error as { statusCode?: number; body?: { code?: number } };
+      return k8sError.statusCode === 404 || k8sError.body?.code === 404;
+    }
+    return false;
+  }
+
+  /**
+   * Wait for CRD establishment if the resource is a custom resource
+   */
+  private async waitForCRDIfCustomResource(
+    resource: any,
+    options: DeploymentOptions,
+    logger: any
+  ): Promise<void> {
+    // Skip if this is not a custom resource
+    if (!this.isCustomResource(resource)) {
+      return;
+    }
+
+    const crdName = await this.getCRDNameForResource(resource);
+    if (!crdName) {
+      logger.warn('Could not determine CRD name for custom resource', {
+        kind: resource.kind,
+        apiVersion: resource.apiVersion
+      });
+      return;
+    }
+
+    logger.debug('Custom resource detected, waiting for CRD establishment', {
+      resourceKind: resource.kind,
+      crdName
+    });
+
+    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger);
+
+    logger.debug('CRD established, proceeding with custom resource deployment', {
+      resourceKind: resource.kind,
+      crdName
+    });
+  }
+
+  /**
+   * Check if a resource is a CustomResourceDefinition
+   */
+  private isCRD(resource: any): boolean {
+    return resource.kind === 'CustomResourceDefinition' &&
+      resource.apiVersion?.includes('apiextensions.k8s.io');
+  }
+
+  /**
+   * Check if a resource is a custom resource (not a built-in Kubernetes resource)
+   */
+  private isCustomResource(resource: any): boolean {
+    if (!resource.apiVersion || !resource.kind) {
+      return false;
+    }
+
+    // Built-in Kubernetes API groups that are NOT custom resources
+    const builtInApiGroups = [
+      'v1', // Core API group
+      'apps/v1',
+      'extensions/v1beta1',
+      'networking.k8s.io/v1',
+      'policy/v1',
+      'rbac.authorization.k8s.io/v1',
+      'storage.k8s.io/v1',
+      'apiextensions.k8s.io/v1', // CRDs themselves
+      'admissionregistration.k8s.io/v1',
+      'apiregistration.k8s.io/v1',
+      'authentication.k8s.io/v1',
+      'authorization.k8s.io/v1',
+      'autoscaling/v1',
+      'autoscaling/v2',
+      'batch/v1',
+      'certificates.k8s.io/v1',
+      'coordination.k8s.io/v1',
+      'discovery.k8s.io/v1',
+      'events.k8s.io/v1',
+      'flowcontrol.apiserver.k8s.io/v1beta3',
+      'node.k8s.io/v1',
+      'scheduling.k8s.io/v1'
+    ];
+
+    return !builtInApiGroups.includes(resource.apiVersion);
+  }
+
+  /**
+   * Get the CRD name for a custom resource
+   */
+  private async getCRDNameForResource(resource: any): Promise<string | null> {
+    if (!resource.apiVersion || !resource.kind) {
+      return null;
+    }
+
+    // Only return CRD name for custom resources
+    if (!this.isCustomResource(resource)) {
+      return null;
+    }
+
+    // Extract group from apiVersion (e.g., "example.com/v1" -> "example.com")
+    const apiVersionParts = resource.apiVersion.split('/');
+    const group = apiVersionParts.length > 1 ? apiVersionParts[0] : '';
+
+    if (!group) {
+      return null; // Core API resources don't have CRDs
+    }
+
+    try {
+      // Try to find the CRD by querying the API
+      const crds = await this.k8sApi.list(
+        'apiextensions.k8s.io/v1',
+        'CustomResourceDefinition'
+      );
+
+      // Look for a CRD that matches our group and kind
+      const matchingCrd = (crds.body as any)?.items?.find((crd: any) => {
+        const crdSpec = crd.spec;
+        return crdSpec?.group === group &&
+          crdSpec?.names?.kind === resource.kind;
+      });
+
+      if (matchingCrd) {
+        return matchingCrd.metadata?.name;
+      }
+    } catch (error) {
+      // If we can't query CRDs, fall back to heuristic
+      console.warn('Failed to query CRDs, using heuristic for CRD name generation:', error);
+    }
+
+    // Fallback: Convert Kind to plural lowercase (simple heuristic)
+    const kind = resource.kind.toLowerCase();
+    const plural = kind.endsWith('s') ? kind : `${kind}s`;
+
+    return `${plural}.${group}`;
+  }
+
+  /**
+   * Wait for a CRD to be established in the cluster
+   */
+  private async waitForCRDEstablishment(
+    crd: any,
+    options: DeploymentOptions,
+    logger: any
+  ): Promise<void> {
+    const crdName = crd.metadata?.name;
     const timeout = options.timeout || 300000; // 5 minutes default
-    let lastStatus: any = null;
+    const startTime = Date.now();
+    const pollInterval = 2000; // 2 seconds
+
+    logger.debug('Waiting for CRD to exist and be established', { crdName, timeout });
 
     while (Date.now() - startTime < timeout) {
       try {
-        // Get current resource state
-        const liveResource = await this.k8sApi.read({
-          apiVersion: deployedResource.manifest.apiVersion,
-          kind: deployedResource.kind,
-          metadata: {
-            name: deployedResource.name,
-            namespace: deployedResource.namespace,
-          },
+        // Check if CRD is established by reading its status
+        const crdStatus = await this.k8sApi.read({
+          apiVersion: 'apiextensions.k8s.io/v1',
+          kind: 'CustomResourceDefinition',
+          metadata: { name: crdName } // CRDs are cluster-scoped, no namespace needed
         } as any);
 
-        // Use factory-provided evaluator to get structured status
-        const status = readinessEvaluator(liveResource.body);
+        const conditions = (crdStatus.body as any)?.status?.conditions || [];
+        const establishedCondition = conditions.find((c: any) => c.type === 'Established');
 
-        // Emit status updates when status changes
-        if (!lastStatus || lastStatus.message !== status.message) {
-          this.emitEvent(options, {
-            type: status.ready ? 'resource-ready' : 'resource-status',
-            resourceId: deployedResource.id,
-            message: status.message || (status.ready ? 'Resource is ready' : 'Resource not ready'),
-            timestamp: new Date(),
-            ...(status.details && { details: status.details }),
-          });
-          lastStatus = status;
-        }
-
-        // Check for conditions that indicate we should stop waiting
-        if (status.reason === 'StatusPending' && Date.now() - startTime > 10000) {
-          // If we've been waiting more than 10 seconds for Kro controller to initialize status,
-          // it's likely the controller is not available - treat existence as readiness for tests
-          this.logger.warn('Kro controller not initializing status, treating ResourceGraphDefinition existence as readiness', {
-            resourceId: deployedResource.id,
-            kind: deployedResource.kind,
-            name: deployedResource.name,
-            waitTime: Date.now() - startTime
-          });
-          
-          // For ResourceGraphDefinition, existence is sufficient readiness when Kro controller is not available
-          if (deployedResource.kind === 'ResourceGraphDefinition') {
-            this.emitEvent(options, {
-              type: 'resource-ready',
-              resourceId: deployedResource.id,
-              message: 'ResourceGraphDefinition exists (Kro controller status not available)',
-              timestamp: new Date(),
-            });
-            return; // Treat as ready
-          }
-          
-          throw new Error(`Timeout waiting for ${deployedResource.kind}/${deployedResource.name}: ${status.message}`);
-        }
-
-        if (status.ready) {
-          // Resource is ready - now hydrate status fields using the same live resource data
-          if (options.hydrateStatus !== false) {
-            await this.hydrateResourceStatus(deployedResource, liveResource.body);
-          }
+        if (establishedCondition?.status === 'True') {
+          logger.debug('CRD exists and is established', { crdName });
           return;
         }
 
-        // Wait before next check (existing polling interval)
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        logger.debug('CRD exists but not yet established, waiting...', {
+          crdName,
+          establishedStatus: establishedCondition?.status || 'unknown'
+        });
 
       } catch (error) {
-        // If we can't read the resource, it's not ready yet
-        this.emitEvent(options, {
-          type: 'resource-status',
-          resourceId: deployedResource.id,
-          message: `Unable to read resource status: ${error}`,
-          timestamp: new Date(),
+        // CRD might not exist yet (e.g., being installed by a closure)
+        // This is expected in scenarios where closures install CRDs
+        logger.debug('CRD not found yet, waiting for it to be created...', {
+          crdName,
+          error: (error as Error).message
         });
-        await new Promise(resolve => setTimeout(resolve, 2000));
       }
+
+      // Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
 
-    // Provide detailed timeout error with last known status
-    const timeoutMessage = lastStatus
-      ? `Timeout waiting for ${deployedResource.kind}/${deployedResource.name}: ${lastStatus.message}`
-      : `Timeout waiting for ${deployedResource.kind}/${deployedResource.name} to be ready`;
-
-    throw new Error(timeoutMessage);
+    // Timeout reached
+    throw new Error(`Timeout waiting for CRD ${crdName} to be established after ${timeout}ms`);
   }
 
-  /**
-   * Hydrate status fields using already-fetched live resource data
-   * This eliminates duplicate API calls by reusing data from readiness checking
-   */
-  private async hydrateResourceStatus(deployedResource: DeployedResource, liveResourceData: any): Promise<void> {
-    const hydrationLogger = this.logger.child({ 
-      resourceName: deployedResource.name,
-      kind: deployedResource.kind 
-    });
-    
-    try {
-      hydrationLogger.debug('Starting status hydration');
 
-      const enhanced = deployedResource.manifest as Enhanced<any, any>;
-      hydrationLogger.debug('Status hydration details', {
-        isProxy: enhanced.constructor.name,
-        hasStatus: !!enhanced.status
-      });
-
-      // Use StatusHydrator with already-fetched live data
-      const result = await this.statusHydrator.hydrateStatusFromLiveData(enhanced, liveResourceData, deployedResource);
-      hydrationLogger.debug('Status hydration completed', { result });
-
-    } catch (error) {
-      hydrationLogger.warn('Status hydration failed', error as Error);
-      // Don't fail the deployment if status hydration fails
-    }
-  }
 }

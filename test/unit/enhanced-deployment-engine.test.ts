@@ -105,7 +105,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
     expect(readyEvent?.message).toContain('2/2 available replicas');
   });
 
-  it('should fall back to generic readiness checker when no custom evaluator', async () => {
+  it('should reject resources without factory-provided readiness evaluators', async () => {
     const mockK8sApi = createMockK8sApi();
     const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
     
@@ -118,12 +118,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
     };
 
     // Mock the deployment flow:
-    // 1. First read call - resource doesn't exist (404)
-    const notFoundError = new Error('Not found') as any;
-    notFoundError.statusCode = 404;
-    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
-    
-    // 2. Create call - resource is created successfully
+    // 1. Create call - resource is created successfully
     mockK8sApi.create.mockResolvedValueOnce({
       body: {
         ...plainResource,
@@ -138,14 +133,10 @@ describe('Enhanced DirectDeploymentEngine', () => {
       progressCallback: (event: any) => events.push(event)
     };
 
-    // Deploy the resource - should use fallback readiness checking
-    const result = await engine.deployResource(plainResource as any, options);
-    
-    expect(result.status).toBe('ready');
-    
-    // Should have used the generic readiness checker (no custom messages)
-    // Generic readiness checker might not emit events the same way, so we just verify deployment succeeded
-    expect(result).toBeDefined();
+    // Deploy the resource - should fail because no factory-provided evaluator
+    await expect(engine.deployResource(plainResource as any, options)).rejects.toThrow(
+      'Resource ConfigMap/test-config does not have a factory-provided readiness evaluator'
+    );
   });
 
   it('should handle custom evaluator errors gracefully', async () => {
@@ -167,22 +158,12 @@ describe('Enhanced DirectDeploymentEngine', () => {
     const enhanced = service(serviceResource);
     
     // Mock the deployment flow:
-    // 1. First read call - resource doesn't exist (404)
-    const notFoundError = new Error('Not found') as any;
-    notFoundError.statusCode = 404;
-    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
-    
-    // 2. Create call - resource is created successfully
-    mockK8sApi.create.mockResolvedValueOnce({
-      body: {
-        ...serviceResource,
-        metadata: { ...serviceResource.metadata, uid: 'test-uid' }
-      }
-    });
-
-    // 3. Read call for readiness checking - fail initially, then succeed
+    // 1. First read call (existence check) - resource doesn't exist (404)
+    // 2. Create call - resource is created successfully  
+    // 3. Read calls for readiness checking - fail initially, then succeed
     mockK8sApi.read
-      .mockRejectedValueOnce(new Error('API error'))
+      .mockRejectedValueOnce({ statusCode: 404 }) // Resource doesn't exist initially
+      .mockRejectedValueOnce(new Error('API error')) // First readiness check fails
       .mockResolvedValueOnce({
         body: {
           ...serviceResource,
@@ -193,6 +174,13 @@ describe('Enhanced DirectDeploymentEngine', () => {
           }
         }
       });
+
+    mockK8sApi.create.mockResolvedValueOnce({
+      body: {
+        ...serviceResource,
+        metadata: { ...serviceResource.metadata, uid: 'test-uid' }
+      }
+    });
 
     const events: any[] = [];
     const options = {
@@ -298,21 +286,11 @@ describe('Enhanced DirectDeploymentEngine', () => {
     const enhanced = deployment(deploymentResource);
     
     // Mock the k8s API
-    // 1. First read call - resource doesn't exist (404)
-    const notFoundError = new Error('Not found') as any;
-    notFoundError.statusCode = 404;
-    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
-    
+    // 1. First read call (existence check) - resource doesn't exist (404)
     // 2. Create call - resource is created successfully
-    mockK8sApi.create.mockResolvedValueOnce({
-      body: {
-        ...deploymentResource,
-        metadata: { ...deploymentResource.metadata, uid: 'test-uid' }
-      }
-    });
-
     // 3. Mock progression: not ready -> ready
     mockK8sApi.read
+      .mockRejectedValueOnce({ statusCode: 404 }) // Resource doesn't exist initially
       .mockResolvedValueOnce({
         body: {
           ...deploymentResource,
@@ -333,6 +311,13 @@ describe('Enhanced DirectDeploymentEngine', () => {
           }
         }
       });
+
+    mockK8sApi.create.mockResolvedValueOnce({
+      body: {
+        ...deploymentResource,
+        metadata: { ...deploymentResource.metadata, uid: 'test-uid' }
+      }
+    });
 
     const events: any[] = [];
     const options = {

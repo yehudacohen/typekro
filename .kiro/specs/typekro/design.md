@@ -233,7 +233,7 @@ The library provides a clean, intuitive API that hides complexity while maintain
 import { 
   simpleDeployment, simpleService, simpleIngress, simpleConfigMap, simpleSecret, 
   simplePvc, simpleHpa, simpleNetworkPolicy, customResource, toKroResourceGraph 
-} from '@yehudacohen/typekro';
+} from 'typekro';
 
 // Configuration and secrets
 const appConfig = simpleConfigMap({
@@ -906,7 +906,7 @@ The TypeKro library is designed to integrate seamlessly with Alchemy.run for com
 
 ```typescript
 // alchemy.run.ts - Developer defines infrastructure in pure TypeScript
-import { simpleDeployment, simpleService, toKroResourceGraph } from '@yehudacohen/typekro';
+import { simpleDeployment, simpleService, toKroResourceGraph } from 'typekro';
 
 // Define infrastructure using TypeKro
 const database = simpleDeployment({

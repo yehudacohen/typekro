@@ -12,8 +12,8 @@ import type {
   DeploymentResult, 
   DeploymentOperationStatus, 
   RollbackResult,
-  AlchemyDeploymentOptions 
-} from './deployment.js';
+  AlchemyDeploymentOptions,
+} from './resource-graph.js';
 
 // Re-export alchemy Scope type for compatibility
 export type { Scope } from 'alchemy';

@@ -72,6 +72,13 @@ export interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
   __externalRef?: boolean;
 }
 
+export type KubernetesResourceHeader<T extends KubernetesResource> = Pick<T, 'apiVersion' | 'kind'> & {
+  metadata: {
+      name: string;
+      namespace: string;
+  };
+};
+
 /**
  * A Kubernetes resource with required ID for deployment tracking
  */
@@ -104,7 +111,7 @@ export type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
   readonly status: MagicProxy<NonOptional<TStatus>>; // Required for better type safety, no undefined
   readonly spec: MagicProxy<NonOptional<TSpec>>; // No undefined fields
   readonly metadata: MagicProxy<V1ObjectMeta>; // Keep metadata fields optional as they should be
-  readonly id?: string; // Explicit resource ID for Kro serialization
+  readonly id?: string; // Optional resource ID for deployment tracking
   // Common Kubernetes resource fields that appear at root level
   readonly data?: MagicProxy<{ [key: string]: string }>; // ConfigMap, Secret
   readonly stringData?: MagicProxy<{ [key: string]: string }>; // Secret (write-only)
@@ -117,6 +124,9 @@ export type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
   
   // Optional readiness evaluator that returns structured status
   readonly readinessEvaluator?: ReadinessEvaluator;
+  
+  // Fluent builder method for setting readiness evaluator
+  withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
 };
 
 // =============================================================================

@@ -93,7 +93,7 @@ The primary API for creating typed resource graphs is `toResourceGraph`, which u
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment } from '@yehudacohen/typekro';
+import { toResourceGraph, simpleDeployment } from 'typekro';
 
 const WebAppSpecSchema = type({
   name: 'string',

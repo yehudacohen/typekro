@@ -1,0 +1,773 @@
+/**
+ * Customize default theme styling by overriding CSS variables:
+ * https://github.com/vuejs/vitepress/blob/main/src/client/theme-default/styles/vars.css
+ */
+
+/* Import coding fonts */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap');
+
+:root {
+  --vp-c-brand-1: #646cff;
+  --vp-c-brand-2: #747bff;
+  --vp-c-brand-3: #535bf2;
+  --vp-c-brand-soft: rgba(100, 108, 255, 0.14);
+  --vp-c-brand-softer: rgba(100, 108, 255, 0.07);
+  --vp-c-brand-softest: rgba(100, 108, 255, 0.04);
+
+  /* Coding font variables */
+  --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  --vp-font-family-base: 'JetBrains Mono', 'Fira Code', system-ui, -apple-system, sans-serif;
+}
+
+.dark {
+  --vp-c-brand-1: #747bff;
+  --vp-c-brand-2: #646cff;
+  --vp-c-brand-3: #535bf2;
+  --vp-c-brand-soft: rgba(116, 123, 255, 0.16);
+  --vp-c-brand-softer: rgba(116, 123, 255, 0.12);
+  --vp-c-brand-softest: rgba(116, 123, 255, 0.08);
+}
+
+/* Apply coding font to the entire site */
+body {
+  font-family: var(--vp-font-family-base);
+}
+
+/* Custom Hero Section */
+.custom-hero {
+  min-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 4rem 2rem;
+  background: var(--vp-c-bg);
+}
+
+.logo-section {
+  margin-bottom: 3rem;
+}
+
+.hero-logo {
+  max-width: 400px;
+  width: 100%;
+  height: auto;
+  transition: transform 0.3s ease;
+}
+
+.hero-logo:hover {
+  transform: scale(1.05);
+}
+
+.hero-content {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.hero-title {
+  font-family: var(--vp-font-family-mono);
+  font-size: 3.5rem;
+  font-weight: 700;
+  color: var(--vp-c-text-1);
+  margin: 0 0 2rem 0;
+  line-height: 1.2;
+}
+
+.hero-tagline {
+  font-family: var(--vp-font-family-mono);
+  font-size: 1.4rem;
+  font-weight: 400;
+  color: var(--vp-c-text-2);
+  margin: 0 0 3rem 0;
+  line-height: 1.6;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.hero-button {
+  padding: 0.75rem 2rem;
+  border-radius: 6px;
+  font-family: var(--vp-font-family-mono);
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  display: inline-block;
+}
+
+.hero-button.primary {
+  background: var(--vp-c-brand-1);
+  color: white;
+}
+
+.hero-button.primary:hover {
+  background: var(--vp-c-brand-2);
+  transform: translateY(-2px);
+}
+
+.hero-button.secondary {
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1);
+  border: 1px solid var(--vp-c-divider);
+}
+
+.hero-button.secondary:hover {
+  background: var(--vp-c-bg-mute);
+  transform: translateY(-2px);
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .custom-hero {
+    min-height: 70vh;
+    padding: 2rem 1rem;
+  }
+
+  .hero-logo {
+    max-width: 280px;
+  }
+
+  .hero-title {
+    font-size: 2.5rem;
+  }
+
+  .hero-tagline {
+    font-size: 1.2rem;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .hero-button {
+    width: 200px;
+    text-align: center;
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .VPHero .name {
+    width: 200px !important;
+    height: 85px !important;
+  }
+
+  .VPHero .text {
+    font-size: 1.5rem !important;
+  }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .hero-logo {
+    max-width: 200px;
+  }
+
+  .hero-title {
+    font-size: 2rem;
+  }
+}
+
+.VPHero .text {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 600;
+  margin-top: 1rem;
+}
+
+.VPHero .tagline {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 400;
+  font-size: 1.2rem;
+}
+
+/* Responsive adjustments for logo */
+@media (max-width: 768px) {
+  .VPHero .name {
+    width: 200px;
+    height: 85px;
+  }
+}
+
+.VPHero .name {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 700;
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  line-height: 1.2;
+  text-align: center !important;
+  margin: 0 auto !important;
+}
+
+.VPHero .text {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 600;
+  text-align: center !important;
+  margin: 0 auto !important;
+}
+
+.VPHero .tagline {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 400;
+  max-width: 800px;
+  margin: 0 auto !important;
+  text-align: center !important;
+}
+
+.VPHero .actions {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  gap: 1rem !important;
+  flex-wrap: wrap !important;
+  margin: 0 auto !important;
+}
+
+/* Desktop actions - horizontal layout */
+@media (min-width: 768px) {
+  .VPHero .actions {
+    flex-wrap: nowrap !important;
+  }
+}
+
+/* Mobile actions - allow stacking on small screens */
+@media (max-width: 767px) {
+  .VPHero .actions {
+    flex-direction: column !important;
+    gap: 0 !important;
+  }
+}
+
+/* Responsive hero adjustments */
+@media (max-width: 960px) {
+  .VPHero .VPImage {
+    max-width: 300px;
+    max-height: 150px;
+  }
+}
+
+@media (max-width: 640px) {
+  .VPHero .VPImage {
+    max-width: 250px;
+    max-height: 125px;
+  }
+
+  .VPHero .name {
+    font-size: clamp(1.5rem, 4vw, 2.5rem);
+  }
+}
+
+.typekro-hero {
+  text-align: center;
+  padding: 48px 24px;
+}
+
+.typekro-logo {
+  width: 200px;
+  height: 200px;
+  margin: 0 auto 32px;
+  display: block;
+}
+
+.typekro-tagline {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--vp-c-text-1);
+  margin-bottom: 16px;
+}
+
+.typekro-description {
+  font-size: 1.1rem;
+  color: var(--vp-c-text-2);
+  max-width: 600px;
+  margin: 0 auto 32px;
+  line-height: 1.6;
+}
+
+.typekro-features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 24px;
+  margin-top: 48px;
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.typekro-feature {
+  padding: 24px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background: var(--vp-c-bg-soft);
+}
+
+.typekro-feature h3 {
+  margin: 0 0 12px 0;
+  font-size: 1.2rem;
+  color: var(--vp-c-brand-1);
+}
+
+.typekro-feature p {
+  margin: 0;
+  color: var(--vp-c-text-2);
+  line-height: 1.5;
+}
+
+/* Code block enhancements */
+.vp-code-group {
+  margin: 16px 0;
+}
+
+/* Comparison table styling */
+.vp-doc table {
+  font-size: 0.9rem;
+  margin: 2rem 0;
+}
+
+.vp-doc table th {
+  background: var(--vp-c-bg-soft);
+  font-weight: 600;
+  text-align: center;
+  padding: 12px 8px;
+}
+
+.vp-doc table td {
+  text-align: center;
+  padding: 10px 8px;
+  vertical-align: middle;
+}
+
+.vp-doc table td:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+
+/* Emoji and status indicators */
+.vp-doc table td {
+  line-height: 1.4;
+}
+
+/* Responsive table */
+@media (max-width: 768px) {
+  .vp-doc table {
+    font-size: 0.8rem;
+  }
+
+  .vp-doc table th,
+  .vp-doc table td {
+    padding: 8px 4px;
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .typekro-features {
+    grid-template-columns: 1fr;
+  }
+
+  .typekro-logo {
+    width: 150px;
+    height: 150px;
+  }
+
+  .typekro-tagline {
+    font-size: 1.3rem;
+  }
+
+  .typekro-description {
+    font-size: 1rem;
+  }
+
+  .VPHero .name {
+    width: 200px;
+    height: 85px;
+  }
+}
+
+/* Hero section - responsive approach */
+.VPHero {
+  padding: 60px 24px !important;
+}
+
+.VPHero .container {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  text-align: center !important;
+  max-width: 1000px !important;
+  margin: 0 auto !important;
+  gap: 3rem !important;
+  width: 100% !important;
+}
+
+.VPHero .image {
+  order: 1 !important;
+  max-width: 200px !important;
+}
+
+.VPHero .main {
+  order: 2 !important;
+}
+
+/* Wide viewport - vertical centering and larger content */
+@media (min-width: 960px) {
+  .VPHero {
+    min-height: 90vh !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 24px !important;
+  }
+
+  .VPHero .container {
+    transform: translateY(60px) !important;
+  }
+
+  .VPHero.has-image .container {
+    flex-direction: column !important;
+    text-align: center !important;
+  }
+
+  .VPHero .image {
+    max-width: 280px !important;
+  }
+}
+
+/* Mobile adjustments - left aligned, full width */
+@media (max-width: 768px) {
+  .VPHero {
+    min-height: 100vh !important;
+    padding: 20px 24px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  .VPHero .container {
+    max-width: none !important;
+    width: 100% !important;
+    align-items: flex-start !important;
+    text-align: left !important;
+    gap: 1.5rem !important;
+    margin: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  .VPHero .image {
+    max-width: 140px !important;
+    align-self: flex-start !important;
+    order: 1 !important;
+    margin: 0 !important;
+    height: auto !important;
+    display: block !important;
+  }
+
+  .VPHero .image-container {
+    max-width: 140px !important;
+    margin: 0 !important;
+    height: auto !important;
+    min-height: auto !important;
+    display: flex !important;
+    justify-content: flex-start !important;
+  }
+
+  .VPHero .main {
+    text-align: left !important;
+    width: 100% !important;
+    order: 2 !important;
+  }
+
+  .VPHero .name {
+    text-align: left !important;
+    font-size: clamp(1.8rem, 6vw, 2.5rem) !important;
+    line-height: 1.2 !important;
+    margin: 0 0 1rem 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .VPHero .tagline {
+    text-align: left !important;
+    max-width: none !important;
+    width: 100% !important;
+    font-size: 1.1rem !important;
+    line-height: 1.4 !important;
+    margin: 0 0 1.5rem 0 !important;
+  }
+
+  .VPHero .actions {
+    justify-content: flex-start !important;
+    text-align: left !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 1rem !important;
+  }
+}
+
+/* Tutorial Carousel Styles */
+.tutorial-carousel {
+  --tutorial-brand: var(--vp-c-brand-1);
+  --tutorial-brand-dark: var(--vp-c-brand-2);
+  --tutorial-brand-soft: var(--vp-c-brand-soft);
+}
+
+/* Dark mode adjustments */
+.dark .tutorial-carousel {
+  --tutorial-brand: var(--vp-c-brand-1);
+  --tutorial-brand-dark: var(--vp-c-brand-2);
+  --tutorial-brand-soft: var(--vp-c-brand-soft);
+}
+
+/* Ensure proper spacing in documentation */
+.vp-doc .tutorial-carousel {
+  margin: 2rem 0;
+}
+
+/* Mobile optimizations */
+@media (max-width: 768px) {
+  .vp-doc .tutorial-carousel {
+    margin: 1rem -1.5rem;
+    border-radius: 0;
+  }
+}
+
+/* Tutorial Carousel Syntax Highlighting Enhancements */
+.tutorial-carousel .code-block {
+  /* Ensure proper integration with VitePress theme */
+  --vp-code-bg: #0d1117;
+  --vp-code-color: #e6edf3;
+}
+
+.dark .tutorial-carousel .code-block {
+  --vp-code-bg: #0d1117;
+  --vp-code-color: #e6edf3;
+}
+
+.light .tutorial-carousel .code-block {
+  --vp-code-bg: #f6f8fa;
+  --vp-code-color: #24292f;
+}
+
+/* Ensure syntax highlighting tokens are properly styled */
+.tutorial-carousel .code-block .token-keyword {
+  font-weight: 600;
+}
+
+.tutorial-carousel .code-block .token-function {
+  font-weight: 500;
+}
+
+/* Better focus states for accessibility */
+.tutorial-carousel .copy-button:focus {
+  outline: 2px solid var(--vp-c-brand);
+  outline-offset: 2px;
+}
+
+.tutorial-carousel .nav-button:focus {
+  outline: 2px solid var(--vp-c-brand);
+  outline-offset: 2px;
+}
+
+.tutorial-carousel .step-dot:focus {
+  outline: 2px solid var(--vp-c-brand);
+  outline-offset: 2px;
+}
+
+/* Tutorial Carousel Layout Enhancements */
+.tutorial-carousel {
+  /* Ensure the carousel takes up good screen real estate */
+  min-height: 750px;
+}
+
+/* Better spacing for larger screens */
+@media (min-width: 1200px) {
+  .tutorial-carousel {
+    max-width: 1500px;
+    padding: 3rem;
+  }
+
+  .tutorial-carousel .step-content {
+    gap: 3rem;
+  }
+}
+
+/* Ensure consistent proportions across different screen sizes */
+@media (min-width: 769px) and (max-width: 1199px) {
+  .tutorial-carousel {
+    max-width: 1200px;
+    padding: 2rem;
+  }
+}
+
+/* Better visual hierarchy */
+.tutorial-carousel .step-title {
+  line-height: 1.3;
+}
+
+.tutorial-carousel .step-description {
+  line-height: 1.5;
+  max-width: 80%;
+  margin: 0 auto;
+}
+
+/* Ensure code blocks are visually balanced */
+.tutorial-carousel .code-section {
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.tutorial-carousel .explanation-section {
+  padding: 0.5rem;
+}
+
+/* Centered section headings for home page */
+.vp-doc .content-container h2 {
+  text-align: center;
+  margin-bottom: 2rem;
+  font-size: 2.5rem;
+  font-weight: 700;
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Specific styling for home page sections */
+.vp-doc h2:has(+ p:contains("Because developing in YAML")),
+.vp-doc h2:has(+ p:contains("Kubernetes Resource Orchestrator")),
+.vp-doc h2:has(+ p:contains("Here's a complete web application")),
+.vp-doc h2:has(+ p:contains("TypeKro combines the best")) {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+/* Alternative approach using specific text matching */
+.vp-doc h2:nth-of-type(1),
+/* Why TypeKro? */
+.vp-doc h2:nth-of-type(2),
+/* What is KRO? */
+.vp-doc h2:nth-of-type(3),
+/* Quick Example */
+.vp-doc h2:nth-of-type(4)
+
+/* Key Benefits */
+  {
+  text-align: center;
+  margin-bottom: 2rem;
+  font-size: 2.5rem;
+  font-weight: 700;
+}
+
+/* Ensure the gradient effect works in both light and dark modes */
+.dark .vp-doc .content-container h2 {
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-light));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Centered section headings for home page */
+.centered-heading {
+  text-align: center !important;
+  margin-bottom: 2rem !important;
+  font-size: 2.5rem !important;
+  font-weight: 700 !important;
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-2)) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  background-clip: text !important;
+  margin-top: 3rem !important;
+}
+
+/* Ensure the gradient effect works in both light and dark modes */
+.dark .centered-heading {
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-light)) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  background-clip: text !important;
+}
+
+/* Fix heading colors on home page */
+.vp-doc h2.centered-heading {
+  color: var(--vp-c-text-1) !important;
+  text-align: center;
+}
+
+/* Ensure tutorial carousel heading is visible */
+.tutorial-carousel .carousel-title {
+  color: var(--vp-c-text-1) !important;
+}
+
+/* Add consistent padding to sections to match tutorial carousel */
+.home-section {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 2.5rem;
+  background: var(--vp-c-bg);
+  border-radius: 1rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  margin-bottom: 2rem;
+}
+
+/* Mobile responsive for home sections */
+@media (max-width: 768px) {
+  .home-section {
+    padding: 1rem;
+    border-radius: 0.5rem;
+    margin-bottom: 1.5rem;
+  }
+}
+
+/* BETA badge positioned below header */
+.beta-badge {
+  position: fixed;
+  top: 5rem;
+  right: 2rem;
+  background: #fef3cd;
+  color: #856404;
+  padding: 0.4rem 1rem;
+  border-radius: 16px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--vp-font-family-mono);
+  border: 1px solid #ffeaa7;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  transition: all 0.3s ease;
+}
+
+.beta-badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+/* Dark mode adjustments for BETA badge */
+.dark .beta-badge {
+  background: #2d1b00;
+  color: #fbbf24;
+  border: 1px solid #92400e;
+}
+
+/* Make the hero section relative positioned to contain the badge */
+.VPHero {
+  position: relative;
+}
+
+/* Responsive adjustments for BETA badge */
+@media (max-width: 768px) {
+  .beta-badge {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    font-size: 0.7rem;
+    padding: 0.3rem 0.8rem;
+  }
+}

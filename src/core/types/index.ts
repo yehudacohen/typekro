@@ -32,6 +32,15 @@ export * from './references.js';
 // =============================================================================
 export type * from './serialization.js';
 export * from './serialization.js';
+// =============================================================================
+// Resource Graph Types (selective export to avoid conflicts)
+// =============================================================================
+export type { ResourceGraph } from './resource-graph.js';
+// =============================================================================
+// YAML Types
+// =============================================================================
+export type * from './yaml.js';
+export * from './yaml.js';
 
 // =============================================================================
 // Backward Compatibility - Re-export serialization types

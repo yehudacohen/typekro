@@ -25,19 +25,17 @@ const WebAppStatusSchema = type({
 async function main() {
   console.log('🚀 Starting interactive Kro debugging...');
   
-  // Set up Kubernetes client with TLS verification disabled for kind
-  const kubeConfig = new k8s.KubeConfig();
-  kubeConfig.loadFromDefault();
+  // Set up Kubernetes client with TLS verification disabled for kind using centralized provider
+  const { getKubeConfig, getKubernetesApi } = await import('../src/core/kubernetes/client-provider.js');
   
-  // Disable TLS verification for kind clusters
+  const kubeConfig = getKubeConfig({ skipTLSVerify: true });
+  const k8sApi = getKubernetesApi({ skipTLSVerify: true });
+  const customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+  
   const cluster = kubeConfig.getCurrentCluster();
   if (cluster) {
-    // Note: skipTLSVerify is read-only, would need to modify cluster config
     console.log('Using cluster:', cluster.name);
   }
-  
-  const k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
-  const customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
   
   console.log('📋 Current cluster context:', kubeConfig.getCurrentContext());
   

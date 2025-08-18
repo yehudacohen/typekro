@@ -10,9 +10,10 @@ import {
   clearRegisteredTypes,
 } from '../../../src/alchemy/deployment.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
+import { deployment } from '../../../src/factories/kubernetes/workloads/deployment.js';
 
-// Mock Enhanced resource for testing
-const mockDeployment: Enhanced<any, any> = {
+// Mock Enhanced resource for testing - using proper factory function
+const mockDeployment = deployment({
   apiVersion: 'apps/v1',
   kind: 'Deployment',
   metadata: {
@@ -33,7 +34,7 @@ const mockDeployment: Enhanced<any, any> = {
     },
   },
   status: {},
-} as Enhanced<any, any>;
+});
 
 const mockRGD: Enhanced<any, any> = {
   apiVersion: 'kro.run/v1alpha1',
@@ -184,7 +185,14 @@ describe('Dynamic Alchemy Resource Registration', () => {
         timeout: 30000,
       });
       
-      expect(result).toBe(mockDeployment);
+      // The result should have the same properties as the original deployment
+      expect(result.kind).toBe(mockDeployment.kind);
+      expect(result.metadata?.name).toBe(mockDeployment.metadata?.name as any);
+      expect(result.spec?.replicas).toBe(mockDeployment.spec?.replicas);
+      
+      // The result should now have a readiness evaluator
+      expect(result).toHaveProperty('readinessEvaluator');
+      expect(typeof (result as any).readinessEvaluator).toBe('function');
     });
   });
 

@@ -1,6 +1,7 @@
 // kubernetes-api.ts
 import * as k8s from '@kubernetes/client-node';
 import { getComponentLogger } from '../logging/index.js';
+import { createKubernetesClientProvider, type KubernetesClientConfig } from './client-provider.js';
 
 /**
  * Configuration for the Kubernetes API client, sourced from environment variables.
@@ -43,42 +44,25 @@ export class KubernetesApi {
 
   constructor() {
     const config = this.loadConfigFromEnv();
-    this.kc = new k8s.KubeConfig();
-
-    // Dynamically build the cluster object to conditionally include caData
-    const cluster: k8s.Cluster = {
-      name: 'default-cluster',
-      server: config.apiServer,
-      // SECURITY: Never automatically disable TLS verification
-      // Users must explicitly opt-in to insecure connections
-      skipTLSVerify: config.skipTLSVerify === true,
-      ...(config.caCert && { caData: config.caCert }), // Conditionally add caData
-    };
-
-    this.kc.clusters = [cluster];
-
-    // Set user
-    this.kc.users = [
-      {
+    
+    // Use the centralized KubernetesClientProvider
+    const clientConfig: KubernetesClientConfig = {
+      cluster: {
+        name: 'default-cluster',
+        server: config.apiServer,
+        skipTLSVerify: config.skipTLSVerify === true,
+        ...(config.caCert && { caData: config.caCert }),
+      },
+      user: {
         name: 'default-user',
         token: config.apiToken,
       },
-    ];
+      context: 'default-context',
+    };
 
-    // Set context
-    this.kc.contexts = [
-      {
-        name: 'default-context',
-        user: 'default-user',
-        cluster: 'default-cluster',
-      },
-    ];
-    this.kc.setCurrentContext('default-context');
-
-    // Correct instantiation for KubernetesObjectApi
-    // You typically get this client via makeApiClient or by accessing specific API groups (e.g., k8s.AppsV1Api)
-    // For KubernetesObjectApi, you create an instance passing the KubeConfig
-    this.k8sApi = this.kc.makeApiClient(k8s.KubernetesObjectApi);
+    const clientProvider = createKubernetesClientProvider(clientConfig);
+    this.kc = clientProvider.getKubeConfig();
+    this.k8sApi = clientProvider.getKubernetesApi();
   }
 
   /**
@@ -198,17 +182,10 @@ export class KubernetesApi {
       }
 
       if (existing) {
-        // Resource exists, apply update
-        // Merge with existing metadata to preserve fields like resourceVersion
-        const mergedManifest = {
-          ...manifest,
-          metadata: {
-            ...existing.metadata, // Preserve existing metadata fields like resourceVersion
-            ...manifest.metadata,
-          },
-        };
-        await this.k8sApi.replace(mergedManifest);
-        resourceLogger.debug('Resource updated');
+        // Resource exists, apply update using patch for safety
+        // Patch only updates the fields we specify, preserving other fields
+        await this.k8sApi.patch(manifest);
+        resourceLogger.debug('Resource patched');
       } else {
         // Resource does not exist, create it
         await this.k8sApi.create(manifest);

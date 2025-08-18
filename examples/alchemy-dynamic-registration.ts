@@ -50,12 +50,12 @@ console.log('Registered types after: (types registered dynamically)');
 
 // Example: Create a deployer (mock for this example)
 class ExampleDeployer implements TypeKroDeployer {
-  async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
+  async deploy<T extends Enhanced<unknown, unknown>>(resource: T, options: DeploymentOptions): Promise<T> {
     console.log(`Deploying ${resource.kind} to namespace ${options.namespace}`);
     return resource;
   }
   
-  async delete<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<void> {
+  async delete<T extends Enhanced<unknown, unknown>>(resource: T, options: DeploymentOptions): Promise<void> {
     console.log(`Deleting ${resource.kind} from namespace ${options.namespace}`);
   }
 }

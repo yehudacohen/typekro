@@ -10,6 +10,8 @@ export { CelEvaluationError } from '../types/references.js';
 export * from './cel.js';
 // CEL evaluation
 export { CelEvaluator } from './cel-evaluator.js';
+// Compile-time CEL optimization
+export { optimizeCelExpression, optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 // External references
 export { externalRef } from './external-refs.js';
 // Reference resolution

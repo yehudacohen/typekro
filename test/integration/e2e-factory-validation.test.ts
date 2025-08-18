@@ -488,7 +488,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
         console.log('✅ DirectResourceFactory without Alchemy deployment succeeded');
       } catch (error) {
         // Expected deployment failure due to cluster connectivity or resource issues
-        expect((error as Error).message).toContain('Deployment failed');
+        expect((error as Error).message).toContain('deployment failed');
         console.log('✅ DirectResourceFactory without Alchemy correctly handled deployment failure');
       }
 
@@ -690,7 +690,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
         console.log('⚠️ Deployment unexpectedly succeeded');
       } catch (error) {
         const errorMessage = (error as Error).message;
-        const isExpectedError = errorMessage.includes('Deployment failed') ||
+        const isExpectedError = errorMessage.includes('deployment failed') ||
           errorMessage.includes('No active cluster');
         expect(isExpectedError).toBe(true);
         console.log('✅ Deployment to bad namespace properly failed');

@@ -286,7 +286,7 @@ This complete example demonstrates the end-to-end workflow, from defining a fact
 
 ```typescript
 import alchemy from 'alchemy';
-import { toKroResourceGraph, simpleDeployment, simpleService, externalRef } from '@yehudacohen/typekro';
+import { toKroResourceGraph, simpleDeployment, simpleService, externalRef } from 'typekro';
 
 // 1. Define TypeScript interfaces for the CRD schemas
 interface DatabaseSpec { name: string; storage: string; }

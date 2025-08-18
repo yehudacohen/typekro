@@ -182,7 +182,7 @@ getInstance: (spec: TSpec): Enhanced<TSpec, TStatus> => {
 ### 6.1. Working Example ✅ IMPLEMENTED
 
 ```typescript
-import { toKroResourceGraph, simpleDeployment, simpleService, externalRef } from '@yehudacohen/typekro';
+import { toKroResourceGraph, simpleDeployment, simpleService, externalRef } from 'typekro';
 
 // 1. Define Kro-compatible TypeScript interfaces
 interface DatabaseSpec extends KroCompatibleType {

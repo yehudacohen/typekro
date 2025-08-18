@@ -1,5 +1,5 @@
 /**
- * @yehudacohen/typekro - Define Kro resource graphs with full TypeScript safety.
+ * typekro - Define Kro resource graphs with full TypeScript safety.
  */
 
 

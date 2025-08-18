@@ -82,18 +82,9 @@ async function setupE2EEnvironment() {
   // Set up kubectl context
   execSync(`kind export kubeconfig --name ${CLUSTER_NAME}`, { stdio: 'pipe' });
 
-  // Initialize Kubernetes client
-  const kc = new k8s.KubeConfig();
-  kc.loadFromDefault();
-
-  // Configure to skip TLS verification for test environment
-  const cluster = kc.getCurrentCluster();
-  if (cluster) {
-    // Create a new cluster object with skipTLSVerify set to true
-    const modifiedCluster = { ...cluster, skipTLSVerify: true };
-    kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-  }
-
+  // Initialize Kubernetes client using centralized provider with TLS skip for test environment
+  const { getKubeConfig } = await import('../src/core/kubernetes/client-provider.js');
+  const kc = getKubeConfig({ skipTLSVerify: true });
   const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
 
   // Install complete Kro system (CRDs + Controller)
@@ -266,14 +257,9 @@ async function waitForDeployment(
   name: string,
   timeoutMs: number
 ): Promise<void> {
-  const kc = new k8s.KubeConfig();
-  kc.loadFromDefault();
-  const cluster = kc.getCurrentCluster();
-  if (cluster) {
-    // Create a new cluster object with skipTLSVerify set to true
-    const modifiedCluster = { ...cluster, skipTLSVerify: true };
-    kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-  }
+  // Use centralized provider with TLS skip for test environment
+  const { getKubeConfig } = await import('../src/core/kubernetes/client-provider.js');
+  const kc = getKubeConfig({ skipTLSVerify: true });
   const appsApi = kc.makeApiClient(k8s.AppsV1Api);
 
   const startTime = Date.now();

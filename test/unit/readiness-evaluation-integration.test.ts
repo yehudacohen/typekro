@@ -238,16 +238,17 @@ describe('Readiness Evaluation Integration', () => {
     expect(readyEvent.message).toContain('3/3 available replicas');
   });
 
-  it('should fall back to generic readiness checker when no custom evaluator', async () => {
+  it('should use default readiness evaluator for ConfigMap resources', async () => {
     const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
     
-    // Create a plain resource without custom readiness evaluator
-    const plainResource = {
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
+    // Import the configMap factory to get a resource with default readiness evaluator
+    const { configMap } = await import('../../src/factories/kubernetes/config/config-map.js');
+    
+    // Create a ConfigMap using the factory (which provides a default readiness evaluator)
+    const configMapResource = configMap({
       metadata: { name: 'test-config', namespace: 'default' },
       data: { key: 'value' }
-    };
+    });
 
     // Create a mock deployed resource
     const deployedResource: DeployedResource = {
@@ -255,7 +256,7 @@ describe('Readiness Evaluation Integration', () => {
       kind: 'ConfigMap',
       name: 'test-config',
       namespace: 'default',
-      manifest: plainResource as any,
+      manifest: configMapResource,
       status: 'deployed',
       deployedAt: new Date(),
     };
@@ -267,16 +268,17 @@ describe('Readiness Evaluation Integration', () => {
       progressCallback: (event: any) => events.push(event)
     };
 
-    // Test the readiness evaluation - should use fallback
+    // Test the readiness evaluation - should use default evaluator
     await (engine as any).waitForResourceReady(
       deployedResource,
       options,
       (event: any) => events.push(event)
     );
     
-    // Should complete without errors (using generic readiness checker)
-    // The exact events depend on the generic checker implementation
-    expect(true).toBe(true); // Test passes if no errors thrown
+    // Should complete without errors using the default ConfigMap readiness evaluator
+    const readyEvent = events.find(e => e.type === 'resource-ready');
+    expect(readyEvent).toBeDefined();
+    expect(readyEvent.message).toContain('ConfigMap is ready when created');
   });
 
   it('should handle custom evaluator errors gracefully', async () => {

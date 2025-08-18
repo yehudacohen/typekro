@@ -310,8 +310,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
   describe('DirectResourceFactory without Alchemy', () => {
     it('should deploy, manage, and cleanup resources directly to Kubernetes', async () => {
-    // Increase timeout for this test as it involves multiple resource operations
-    const _testTimeout = 180000; // 3 minutes
+      // Increase timeout for this test as it involves multiple resource operations
       await withTestNamespace('direct-without-alchemy', async (testNamespace) => {
         console.log('🧪 Testing DirectResourceFactory without alchemy...');
 
@@ -378,8 +377,19 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         expect(instances.length).toBe(1);
         expect(instances[0]?.spec.name).toBe(`direct-app-${uniqueSuffix}`);
 
+        // Poll for factory health to be ready (resources may need time to stabilize)
+        let status = await factory.getStatus();
+        let attempts = 0;
+        const maxAttempts = 10;
+        
+        while (status.health !== 'healthy' && attempts < maxAttempts) {
+          console.log(`⏳ Factory health: ${status.health} (attempt ${attempts + 1}/${maxAttempts})`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          status = await factory.getStatus();
+          attempts++;
+        }
+
         // Test factory status
-        const status = await factory.getStatus();
         expect(status.mode).toBe('direct');
         expect(status.instanceCount).toBe(1);
         expect(status.health).toBe('healthy');

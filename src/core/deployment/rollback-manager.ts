@@ -7,8 +7,8 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { getComponentLogger } from '../logging/index.js';
-import type { DeploymentEvent, RollbackResult } from '../types/deployment.js';
-import type { Enhanced } from '../types/kubernetes.js';
+import type { DeploymentError, DeploymentEvent, RollbackResult } from '../types/deployment.js';
+import type { Enhanced, KubernetesResource, KubernetesResourceHeader } from '../types/kubernetes.js';
 
 /**
  * Configuration for rollback operations
@@ -25,19 +25,19 @@ export interface RollbackConfig {
  */
 export class ResourceRollbackManager {
   private logger = getComponentLogger('rollback-manager');
-  
-  constructor(private k8sApi: k8s.KubernetesObjectApi) {}
+
+  constructor(private k8sApi: k8s.KubernetesObjectApi) { }
 
   /**
    * Rollback a list of resources in reverse dependency order
    */
   async rollbackResources(
-    resources: Enhanced<any, any>[],
+    resources: Enhanced<unknown, unknown>[],
     config: RollbackConfig = {}
   ): Promise<RollbackResult> {
     const startTime = Date.now();
     const rolledBackResources: string[] = [];
-    const errors: any[] = [];
+    const errors: DeploymentError[] = [];
 
     // Emit rollback started event
     this.emitEvent(config, {
@@ -53,7 +53,7 @@ export class ResourceRollbackManager {
       try {
         await this.rollbackSingleResource(resource, config);
         rolledBackResources.push(this.getResourceIdentifier(resource));
-        
+
         this.emitEvent(config, {
           type: 'progress',
           resourceId: this.getResourceIdentifier(resource),
@@ -104,7 +104,7 @@ export class ResourceRollbackManager {
    * Rollback a single resource
    */
   private async rollbackSingleResource(
-    resource: Enhanced<any, any>,
+    resource: Enhanced<unknown, unknown>,
     config: RollbackConfig
   ): Promise<void> {
     // Extract string values from metadata
@@ -117,16 +117,16 @@ export class ResourceRollbackManager {
 
     try {
       // Attempt graceful deletion first
-      const deleteObject: any = {
+      const deleteObject: { apiVersion: string; kind: string; metadata: { name: string; namespace?: string } } = {
         apiVersion: resource.apiVersion,
         kind: resource.kind,
         metadata: { name },
       };
-      
+
       if (namespace) {
         deleteObject.metadata.namespace = namespace;
       }
-      
+
       await this.k8sApi.delete(deleteObject, undefined, undefined, config.gracePeriod);
 
       // Wait for deletion to complete if timeout is specified
@@ -135,7 +135,7 @@ export class ResourceRollbackManager {
       }
     } catch (error) {
       const k8sError = error as { statusCode?: number; message?: string };
-      
+
       // If resource is already gone (404), consider it successful
       if (k8sError.statusCode === 404) {
         return;
@@ -159,7 +159,7 @@ export class ResourceRollbackManager {
   /**
    * Force delete a resource (sets gracePeriod to 0)
    */
-  private async forceDeleteResource(resource: Enhanced<any, any>): Promise<void> {
+  private async forceDeleteResource(resource: Enhanced<unknown, unknown>): Promise<void> {
     const name = this.extractStringValue(resource.metadata?.name);
     const namespace = this.extractStringValue(resource.metadata?.namespace);
 
@@ -167,16 +167,16 @@ export class ResourceRollbackManager {
       throw new Error(`Resource name is required for force deletion: ${this.getResourceIdentifier(resource)}`);
     }
 
-    const deleteObject: any = {
+    const deleteObject: { apiVersion: string; kind: string; metadata: { name: string; namespace?: string }; spec?: { gracePeriodSeconds: number } } = {
       apiVersion: resource.apiVersion,
       kind: resource.kind,
       metadata: { name },
     };
-    
+
     if (namespace) {
       deleteObject.metadata.namespace = namespace;
     }
-    
+
     await this.k8sApi.delete(deleteObject, undefined, undefined, 0); // gracePeriod = 0 for force deletion
   }
 
@@ -184,7 +184,7 @@ export class ResourceRollbackManager {
    * Wait for a resource to be deleted
    */
   private async waitForResourceDeletion(
-    resource: Enhanced<any, any>,
+    resource: Enhanced<unknown, unknown>,
     timeout: number
   ): Promise<void> {
     const startTime = Date.now();
@@ -198,17 +198,20 @@ export class ResourceRollbackManager {
         if (!name) {
           throw new Error(`Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`);
         }
+        if (!namespace) {
+          throw new Error(`Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`);
+        }
 
-        const readObject: any = {
+        const readObject: KubernetesResourceHeader<KubernetesResource> = {
           apiVersion: resource.apiVersion,
           kind: resource.kind,
-          metadata: { name },
+          metadata: { name, namespace },
         };
-        
+
         if (namespace) {
           readObject.metadata.namespace = namespace;
         }
-        
+
         await this.k8sApi.read(readObject);
 
         // Resource still exists, wait and try again
@@ -230,7 +233,7 @@ export class ResourceRollbackManager {
   /**
    * Extract string value from potentially complex metadata field
    */
-  private extractStringValue(value: any): string | undefined {
+  private extractStringValue(value: unknown): string | undefined {
     if (typeof value === 'string') {
       return value;
     }
@@ -243,7 +246,7 @@ export class ResourceRollbackManager {
   /**
    * Get a human-readable identifier for a resource
    */
-  private getResourceIdentifier(resource: Enhanced<any, any>): string {
+  private getResourceIdentifier(resource: Enhanced<unknown, unknown>): string {
     const name = this.extractStringValue(resource.metadata?.name) || 'unknown';
     const namespace = this.extractStringValue(resource.metadata?.namespace) || 'default';
     return `${resource.kind}/${name} (${namespace})`;

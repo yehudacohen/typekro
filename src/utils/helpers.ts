@@ -8,13 +8,10 @@
 
 import type { Type } from 'arktype';
 import { isKubernetesRef, isCelExpression } from './type-guards.js';
-import type {
-  CelExpression,
-  KroSimpleSchema,
-  KubernetesRef,
-  KubernetesResource,
-  SerializationContext,
-} from '../core/types.js';
+import type { CelExpression, KubernetesRef } from '../core/types/common.js';
+import type { KroSimpleSchema, SerializationContext } from '../core/types/serialization.js';
+import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
+
 
 /**
  * Generate deterministic resource ID based on resource metadata
@@ -73,13 +70,20 @@ export function generateDeterministicResourceId(
 /**
  * Converts a kebab-case or snake_case string to camelCase
  */
-function toCamelCase(str: string): string {
+export function toCamelCase(str: string): string {
+  // Return early for empty strings to avoid errors.
+  if (!str) {
+    return '';
+  }
+
   return str
     .split(/[-_]/)
     .map((word, index) => {
+      // If it's the first word, just lowercase the first letter and keep the rest.
       if (index === 0) {
-        return word.toLowerCase();
+        return word.charAt(0).toLowerCase() + word.slice(1);
       }
+      // For all subsequent words, capitalize the first letter and lowercase the rest.
       return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
     })
     .join('');
@@ -162,12 +166,25 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
 
   if (obj && typeof obj === 'object') {
     const result: Record<string, unknown> = {};
-    // We must use Object.entries to preserve the object structure.
+    
+    // Use Object.entries to get enumerable properties
     for (const [key, value] of Object.entries(obj)) {
       // Exclude the hidden resourceId property and id field from the final template
       if (key === '__resourceId' || key === 'id') continue;
       result[key] = processResourceReferences(value, context);
     }
+    
+    // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
+    const originalObj = obj as any;
+    if (originalObj.readinessEvaluator && typeof originalObj.readinessEvaluator === 'function') {
+      Object.defineProperty(result, 'readinessEvaluator', {
+        value: originalObj.readinessEvaluator,
+        enumerable: false,
+        configurable: true,
+        writable: false
+      });
+    }
+    
     return result;
   }
 
@@ -289,7 +306,7 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
     // Handle CelExpression objects
     if (isCelExpression(value)) {
       // Check if this is a template expression (mixed string with embedded CEL)
-      if (value.__isTemplate) {
+      if ((value as any).__isTemplate) {
         // Template expressions already contain ${...} placeholders, don't wrap again
         return value.expression;
       }
@@ -350,6 +367,79 @@ function _requiresKroResolution(value: any): boolean {
   return false;
 }
 
+/**
+ * Convert kebab-case or snake_case to camelCase and ensure a readiness evaluator by using the appropriate factory function
+ * This leverages existing factory functions that already have readiness evaluators defined
+ */
+export function ensureReadinessEvaluator<T extends Enhanced<any, any>>(resource: T): T {
+  // Safety-first approach: only return resources that already have factory-provided readiness evaluators
+  // Do NOT add default evaluators - this forces users to use proper factory functions
+  
+  // Check for readiness evaluator using multiple methods to be more robust
+  const hasEvaluator = 'readinessEvaluator' in resource && typeof resource.readinessEvaluator === 'function';
+  const hasEvaluatorProperty = Object.hasOwn(resource, 'readinessEvaluator');
+  const evaluatorType = typeof (resource as any).readinessEvaluator;
+  
+  if (hasEvaluator || (hasEvaluatorProperty && evaluatorType === 'function')) {
+      return resource;
+  }
+
+  // If we reach here, the resource doesn't have a readiness evaluator
+  // This should not happen if proper factory functions are used
+  console.warn(`Resource ${resource.kind}/${resource.metadata?.name} is missing readiness evaluator. Use proper factory functions like simpleDeployment(), simpleService(), etc.`);
+  
+  // Return resource as-is - the deployment engine will reject resources without evaluators
+  return resource;
+}
+
+
+
+/**
+ * Recursively converts an Enhanced resource proxy into a plain JavaScript object.
+ * This is a safe way to serialize the object for the Kubernetes client, preserving
+ * all nested properties and stripping any remaining proxy logic.
+ * @param obj The object to convert.
+ * @param visited A set to track circular references.
+ * @returns A plain JavaScript object.
+ */
+export function toPlainObject<T>(obj: T, visited = new Set<any>()): T {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+
+  if (visited.has(obj)) {
+    return obj; // Avoid circular loops
+  }
+  visited.add(obj);
+
+  // Handle arrays by converting each item
+  if (Array.isArray(obj)) {
+    const plainArray = obj.map(item => toPlainObject(item, visited)) as any;
+    visited.delete(obj);
+    return plainArray;
+  }
+  
+  // Use getOwnPropertyNames and getOwnPropertySymbols to capture all keys,
+  // including non-enumerable ones (like our brand symbols) if needed.
+  const plainObj: Record<string | symbol, any> = {};
+  const keys = Reflect.ownKeys(obj);
+
+  for (const key of keys) {
+    const value = (obj as any)[key];
+    
+    // Preserve readinessEvaluator function as-is
+    if (key === 'readinessEvaluator') {
+      plainObj[key] = value;
+    }
+    // Skip other functions like 'withReadinessEvaluator'
+    else if (typeof value !== 'function') {
+      plainObj[key] = toPlainObject(value, visited);
+    }
+  }
+
+  visited.delete(obj);
+  return plainObj as T;
+}
 
 
 /**

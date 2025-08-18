@@ -10,5 +10,11 @@ export function secret(resource: V1Secret): Enhanced<V1SecretData, unknown> {
     apiVersion: 'v1',
     kind: 'Secret',
     metadata: resource.metadata ?? { name: 'unnamed-secret' },
+  }).withReadinessEvaluator((liveResource: V1Secret) => {
+    // Secrets are ready when they exist - they're just data storage
+    return {
+      ready: true,
+      message: 'Secret is ready when created',
+    };
   });
 }

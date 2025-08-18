@@ -1,5 +1,5 @@
 {
-  "name": "@yehudacohen/typekro",
+  "name": "typekro",
   "version": "0.1.0",
   "description": "TypeScript-native library for defining Kro resource graphs with full type safety",
   "type": "module",
@@ -21,7 +21,7 @@
     "build:examples": "bun tsc --project tsconfig.examples.json",
     "dev": "bun tsc --watch",
     "test": "./scripts/run-unit-tests.sh",
-    "test:watch": "bun test --watch $(find test -name '*.test.ts' | grep -v integration)",
+    "test:watch": "bun test --watch --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:all": "bun run test && bun run test:integration:all",
     "test:integration": "./scripts/run-integration-tests.sh",
     "test:integration:debug": "DEBUG_MODE=true ./scripts/run-integration-tests.sh",
@@ -46,14 +46,17 @@
     "clean": "rm -rf dist examples-dist && find src -name '*.js' -o -name '*.d.ts' -o -name '*.js.map' -o -name '*.d.ts.map' | xargs rm -f",
     "example:basic": "bun run build:lib && bun run examples-dist/basic-webapp.js",
     "test:integration:all": "./scripts/run-integration-tests.sh",
-    "test:integration:yaml": "bun test test/core/yaml-generation.test.ts",
-    "test:integration:e2e": "bun test test/integration/e2e-cluster.test.ts",
-    "test:integration:e2e-only": "bun test test/integration/e2e-test-only.test.ts",
-    "test:integration:e2e-comprehensive": "bun test test/integration/e2e-factory-validation.test.ts",
+    "test:integration:yaml": "bun test --timeout 10000 test/core/yaml-generation.test.ts",
+    "test:integration:e2e": "bun test --timeout 60000 test/integration/e2e-cluster.test.ts",
+    "test:integration:e2e-only": "bun test --timeout 60000 test/integration/e2e-test-only.test.ts",
+    "test:integration:e2e-comprehensive": "bun test --timeout 60000 test/integration/e2e-factory-comprehensive.test.ts",
     "e2e:setup": "bun run scripts/e2e-setup.ts",
     "e2e:cleanup": "bun run scripts/e2e-cleanup.ts",
     "e2e:test": "bun run e2e:setup && bun run test:integration:e2e-comprehensive && bun run e2e:cleanup",
-    "prepare": "husky"
+    "prepare": "husky",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "lint-staged": {
     "*.{ts,js,json,md}": [
@@ -80,7 +83,8 @@
     "cel-js": "^0.8.2",
     "js-yaml": "^4.1.0",
     "pino": "^9.8.0",
-    "pino-pretty": "^13.1.1"
+    "pino-pretty": "^13.1.1",
+    "prismjs": "^1.30.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.1.3",
@@ -92,7 +96,10 @@
     "eslint": "^8.54.0",
     "husky": "^9.0.0",
     "lint-staged": "^15.0.0",
-    "typescript": "^5.3.0"
+    "madge": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitepress": "^1.6.4",
+    "vue": "^3.5.18"
   },
   "peerDependencies": {
     "typescript": ">=5.0.0"

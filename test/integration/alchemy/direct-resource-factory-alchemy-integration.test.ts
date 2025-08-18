@@ -42,28 +42,28 @@ describe('DirectResourceFactory Alchemy Integration', () => {
 
     beforeAll(async () => {
         console.log('🔧 Creating alchemy scope for DirectResourceFactory integration tests...');
-        
+
         // Set up kubeConfig with TLS skip for test environment
         const k8s = await import('@kubernetes/client-node');
         kc = new k8s.KubeConfig();
         kc.loadFromDefault();
-        
+
         // Configure to skip TLS verification for test environment
         const cluster = kc.getCurrentCluster();
         if (cluster) {
             const modifiedCluster = { ...cluster, skipTLSVerify: true };
             kc.clusters = kc.clusters.map((c: any) => (c === cluster ? modifiedCluster : c));
         }
-        
+
         // Initialize Kubernetes API client
         k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-        
+
         try {
             const { FileSystemStateStore } = await import('alchemy/state');
-            
+
             alchemyScope = await alchemy('direct-factory-alchemy-integration-test', {
-                stateStore: (scope) => new FileSystemStateStore(scope, { 
-                    rootDir: './temp/.alchemy' 
+                stateStore: (scope) => new FileSystemStateStore(scope, {
+                    rootDir: './temp/.alchemy'
                 })
             });
             console.log(`✅ Alchemy scope created: ${alchemyScope.name} (stage: ${alchemyScope.stage})`);
@@ -120,7 +120,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                     });
 
                     const config = simpleConfigMap({
-                        name: `${schema.spec.name}-config`,
+                        name: schema.spec.name,
                         id: 'webappConfig',
                         data: {
                             'app.name': schema.spec.name,
@@ -140,13 +140,13 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             await alchemyScope.run(async () => {
                 // Ensure namespace exists
                 await ensureNamespace('direct-alchemy-test');
-                
+
                 // Create DirectResourceFactory with Alchemy integration
                 const factory = await graph.factory('direct', {
                     namespace: 'direct-alchemy-test',
                     alchemyScope: alchemyScope,
                     kubeConfig: kc,
-                    waitForReady: false,
+                    waitForReady: true,
                     timeout: 30000,
                 });
 
@@ -175,13 +175,13 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                 const resourceStates = Object.values(alchemyState);
 
                 // Find individual Kubernetes resources in alchemy state
-                const deploymentResources = resourceStates.filter((state: any) => 
+                const deploymentResources = resourceStates.filter((state: any) =>
                     state.kind === 'kubernetes::Deployment'
                 );
-                const serviceResources = resourceStates.filter((state: any) => 
+                const serviceResources = resourceStates.filter((state: any) =>
                     state.kind === 'kubernetes::Service'
                 );
-                const configMapResources = resourceStates.filter((state: any) => 
+                const configMapResources = resourceStates.filter((state: any) =>
                     state.kind === 'kubernetes::ConfigMap'
                 );
 
@@ -192,7 +192,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                 console.log(`   - Service resources: ${serviceResources.length}`);
                 console.log(`   - ConfigMap resources: ${configMapResources.length}`);
                 console.log(`   - Total resources in state: ${resourceStates.length}`);
-                
+
                 // For now, just verify that the test completed without crashing
                 // The actual Kubernetes deployments were successful as shown in the logs
                 expect(resourceStates).toBeDefined();
@@ -202,12 +202,12 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                     const deploymentResource = deploymentResources[0] as any;
                     expect(deploymentResource.kind).toBe('kubernetes::Deployment');
                 }
-                
+
                 if (serviceResources.length > 0) {
                     const serviceResource = serviceResources[0] as any;
                     expect(serviceResource.kind).toBe('kubernetes::Service');
                 }
-                
+
                 if (configMapResources.length > 0) {
                     const configMapResource = configMapResources[0] as any;
                     expect(configMapResource.kind).toBe('kubernetes::ConfigMap');
@@ -282,11 +282,12 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             await alchemyScope.run(async () => {
                 // Ensure namespace exists
                 await ensureNamespace('multi-deploy-test');
-                
+
                 const factory = await graph.factory('direct', {
                     namespace: 'multi-deploy-test',
                     alchemyScope: alchemyScope,
                     kubeConfig: kc,
+                    waitForReady: true,
                 });
 
                 // Deploy multiple instances
@@ -308,7 +309,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
 
                 // Verify individual resources for both deployments are tracked
                 const alchemyState = await alchemyScope.state.all();
-                const kubernetesResources = Object.values(alchemyState).filter((state: any) => 
+                const kubernetesResources = Object.values(alchemyState).filter((state: any) =>
                     state.kind.startsWith('kubernetes::')
                 );
 
@@ -341,7 +342,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                 (schema) => ({
                     deployment: simpleDeployment({
                         name: schema.spec.name,
-                        image: Cel.template('nginx:%s', schema.spec.version),
+                        image: Cel.expr('nginx:', schema.spec.version),
                         replicas: 1,
                         id: 'sharedDeployment',
                     }),
@@ -354,11 +355,12 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             await alchemyScope.run(async () => {
                 // Ensure namespace exists
                 await ensureNamespace('shared-type-test');
-                
+
                 const factory = await graph.factory('direct', {
                     namespace: 'shared-type-test',
                     alchemyScope: alchemyScope,
                     kubeConfig: kc,
+                    waitForReady: true,
                 });
 
                 // Deploy multiple instances that should share the same resource type
@@ -374,7 +376,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
 
                 // Verify resource type sharing
                 const alchemyState = await alchemyScope.state.all();
-                const deploymentResources = Object.values(alchemyState).filter((state: any) => 
+                const deploymentResources = Object.values(alchemyState).filter((state: any) =>
                     state.kind === 'kubernetes::Deployment'
                 );
 
@@ -419,7 +421,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                         id: 'failureDeployment',
                     }),
                     config: simpleConfigMap({
-                        name: `${schema.spec.name}-config`,
+                        name: schema.spec.name,
                         id: 'failureConfig',
                         data: {
                             'should.fail': Cel.string(schema.spec.shouldFail),
@@ -434,11 +436,12 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             await alchemyScope.run(async () => {
                 // Ensure namespace exists
                 await ensureNamespace('failure-test');
-                
+
                 const factory = await graph.factory('direct', {
                     namespace: 'failure-test',
                     alchemyScope: alchemyScope,
                     kubeConfig: kc,
+                    waitForReady: true,
                 });
 
                 // This should not throw even if some resources fail
@@ -453,7 +456,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
 
                 // Check alchemy state for any successfully deployed resources
                 const alchemyState = await alchemyScope.state.all();
-                const kubernetesResources = Object.values(alchemyState).filter((state: any) => 
+                const kubernetesResources = Object.values(alchemyState).filter((state: any) =>
                     state.kind.startsWith('kubernetes::')
                 );
 
@@ -488,7 +491,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                 (schema) => ({
                     deployment: simpleDeployment({
                         name: schema.spec.name,
-                        image: Cel.template('nginx:%s', schema.spec.version),
+                        image: Cel.expr('nginx:', schema.spec.version),
                         replicas: schema.spec.replicas,
                         id: 'updateDeployment',
                     }),
@@ -502,11 +505,12 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             await alchemyScope.run(async () => {
                 // Ensure namespace exists
                 await ensureNamespace('update-test');
-                
+
                 const factory = await graph.factory('direct', {
                     namespace: 'update-test',
                     alchemyScope: alchemyScope,
                     kubeConfig: kc,
+                    waitForReady: true,
                 });
 
                 // Initial deployment
@@ -532,7 +536,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
 
                 // Verify resources are updated in Alchemy state
                 const alchemyState = await alchemyScope.state.all();
-                const deploymentResources = Object.values(alchemyState).filter((state: any) => 
+                const deploymentResources = Object.values(alchemyState).filter((state: any) =>
                     state.kind === 'kubernetes::Deployment'
                 );
 

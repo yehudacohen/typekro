@@ -1,4 +1,4 @@
-/**
+    /**
  * Error handling tests for AlchemyDeploymentStrategy individual resource failures
  * 
  * This test validates the enhanced error handling implementation that:
@@ -19,6 +19,7 @@ import {
     DirectDeploymentStrategy,
 } from '../../src/core/deployment/deployment-strategies.js';
 import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
+import { DependencyGraph } from '../../src/core/dependencies/graph.js';
 
 const TEST_TIMEOUT = 30000; // 30 seconds - reduced for faster test execution
 const _CLUSTER_NAME = 'typekro-e2e-test';
@@ -39,10 +40,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
         console.log('🔧 Creating alchemy scope for error handling tests...');
         try {
             const { FileSystemStateStore } = await import('alchemy/state');
-            
+
             alchemyScope = await alchemy('alchemy-error-handling-test', {
-                stateStore: (scope) => new FileSystemStateStore(scope, { 
-                    rootDir: './temp/.alchemy' 
+                stateStore: (scope) => new FileSystemStateStore(scope, {
+                    rootDir: './temp/.alchemy'
                 })
             });
             console.log(`✅ Alchemy scope created: ${alchemyScope.name}`);
@@ -76,8 +77,8 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                     resourceId: resource.id,
                     error: new Error(`Simulated deployment failure for ${resource.manifest.kind}/${resource.manifest.metadata.name}`),
                 }));
-                
-                throw new Error(`Deployment failed: ${errors.map(e => e.error.message).join(', ')}`);
+
+                throw new Error(`Deployment failed: ${errors.map((e: any) => e.error.message).join(', ')}`);
             },
             deployResource: async (resource: any, _options: any) => {
                 // Simulate individual resource deployment failure
@@ -87,13 +88,13 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             rollback: async () => ({ success: true }),
             getDeploymentStatus: async () => ({ status: 'failed' }),
         } as any;
-        
+
         console.log('✅ AlchemyDeploymentStrategy error handling test setup complete with mocked engine');
     });
 
     afterAll(async () => {
         console.log('🧹 Cleaning up alchemy scope...');
-        
+
         // Clean up test namespace
         if (testNamespace && testNamespace !== 'default') {
             try {
@@ -110,6 +111,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             // Create a resource resolver that simulates mixed success/failure
             const mixedResultResourceResolver = {
                 createResourceGraphForInstance: (_spec: any) => ({
+                    name: 'mixed-result-test',
                     resources: [
                         {
                             id: 'successfulResource',
@@ -118,7 +120,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 kind: 'ConfigMap',
                                 metadata: { name: 'successful-config' },
                                 data: { key: 'value' },
-                            },
+                            } as any,
                         },
                         {
                             id: 'failingResource',
@@ -126,7 +128,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 apiVersion: 'apps/v1',
                                 kind: 'Deployment',
                                 metadata: { name: 'failing-deployment' },
-                                spec: { 
+                                spec: {
                                     replicas: 1,
                                     selector: { matchLabels: { app: 'test' } },
                                     template: {
@@ -134,7 +136,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                         spec: { containers: [{ name: 'test', image: 'nginx' }] }
                                     }
                                 },
-                            },
+                            } as any,
                         },
                         {
                             id: 'anotherSuccessfulResource',
@@ -146,13 +148,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                     selector: { app: 'test' },
                                     ports: [{ port: 80, targetPort: 80 }],
                                 },
-                            },
+                            } as any,
                         },
                     ],
-                    dependencyGraph: {
-                        nodes: ['successfulResource', 'failingResource', 'anotherSuccessfulResource'],
-                        edges: [],
-                    },
+                    dependencyGraph: new DependencyGraph(),
                 }),
             };
 
@@ -165,8 +164,8 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                     spec: type({ name: 'string' }),
                     status: type({ status: 'string' }),
                 },
-                { 
-                    kubeConfig: kubeConfig, 
+                {
+                    kubeConfig: kubeConfig,
                     timeout: 5000,
                     waitForReady: false // Disable waiting for readiness to speed up error tests
                 },
@@ -208,6 +207,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             // Create a resource resolver that simulates multiple failures
             const multipleFailureResourceResolver = {
                 createResourceGraphForInstance: (_spec: any) => ({
+                    name: 'multiple-failure-test',
                     resources: [
                         {
                             id: 'firstFailingResource',
@@ -216,7 +216,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 kind: 'Deployment',
                                 metadata: { name: 'first-failing-deployment' },
                                 spec: { invalid: 'spec' },
-                            },
+                            } as any,
                         },
                         {
                             id: 'secondFailingResource',
@@ -225,7 +225,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 kind: 'Service',
                                 metadata: { name: 'second-failing-service' },
                                 spec: { invalid: 'spec' },
-                            },
+                            } as any,
                         },
                         {
                             id: 'thirdFailingResource',
@@ -234,13 +234,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 kind: 'ConfigMap',
                                 metadata: { name: 'third-failing-config' },
                                 data: null, // Invalid data
-                            },
+                            } as any,
                         },
                     ],
-                    dependencyGraph: {
-                        nodes: ['firstFailingResource', 'secondFailingResource', 'thirdFailingResource'],
-                        edges: [],
-                    },
+                    dependencyGraph: new DependencyGraph(),
                 }),
             };
 
@@ -290,6 +287,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             // This test verifies the partial deployment status logic
             const partialSuccessResourceResolver = {
                 createResourceGraphForInstance: (_spec: any) => ({
+                    name: 'partial-success-test',
                     resources: [
                         {
                             id: 'workingResource',
@@ -298,7 +296,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 kind: 'ConfigMap',
                                 metadata: { name: 'working-config' },
                                 data: { key: 'value' },
-                            },
+                            } as any,
                         },
                         {
                             id: 'brokenResource',
@@ -307,13 +305,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 kind: 'Deployment',
                                 metadata: { name: 'broken-deployment' },
                                 spec: { invalid: 'configuration' },
-                            },
+                            } as any,
                         },
                     ],
-                    dependencyGraph: {
-                        nodes: ['workingResource', 'brokenResource'],
-                        edges: [],
-                    },
+                    dependencyGraph: new DependencyGraph(),
                 }),
             };
 
@@ -363,6 +358,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
         it('should include resource kind, name, and Alchemy resource type in error messages', async () => {
             const contextTestResourceResolver = {
                 createResourceGraphForInstance: (_spec: any) => ({
+                    name: 'context-test',
                     resources: [
                         {
                             id: 'contextTestResource',
@@ -370,7 +366,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 apiVersion: 'apps/v1',
                                 kind: 'Deployment',
                                 metadata: { name: 'context-test-deployment' },
-                                spec: { 
+                                spec: {
                                     replicas: 1,
                                     selector: { matchLabels: { app: 'context-test' } },
                                     template: {
@@ -378,13 +374,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                         spec: { containers: [{ name: 'test', image: 'nginx' }] }
                                     }
                                 },
-                            },
+                            } as any,
                         },
                     ],
-                    dependencyGraph: {
-                        nodes: ['contextTestResource'],
-                        edges: [],
-                    },
+                    dependencyGraph: new DependencyGraph(),
                 }),
             };
 
@@ -432,6 +425,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
         it('should add resource ID and namespace information to error context', async () => {
             const namespaceTestResourceResolver = {
                 createResourceGraphForInstance: (_spec: any) => ({
+                    name: 'namespace-test',
                     resources: [
                         {
                             id: 'namespaceTestResource',
@@ -443,13 +437,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                     selector: { app: 'namespace-test' },
                                     ports: [{ port: 80, targetPort: 80 }],
                                 },
-                            },
+                            } as any,
                         },
                     ],
-                    dependencyGraph: {
-                        nodes: ['namespaceTestResource'],
-                        edges: [],
-                    },
+                    dependencyGraph: new DependencyGraph(),
                 }),
             };
 
@@ -499,6 +490,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
         it('should handle resource type inference failures gracefully', async () => {
             const invalidResourceResolver = {
                 createResourceGraphForInstance: (_spec: any) => ({
+                    name: 'invalid-resource-test',
                     resources: [
                         {
                             id: 'invalidResource',
@@ -506,13 +498,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                                 // Missing apiVersion and kind - should cause inference issues
                                 metadata: { name: 'invalid-resource' },
                                 spec: { some: 'data' },
-                            },
+                            } as any,
                         },
                     ],
-                    dependencyGraph: {
-                        nodes: ['invalidResource'],
-                        edges: [],
-                    },
+                    dependencyGraph: new DependencyGraph(),
                 }),
             };
 
@@ -574,8 +563,9 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                 mockDeploymentEngine,
                 {
                     createResourceGraphForInstance: () => ({
+                        name: 'scope-validation-test',
                         resources: [],
-                        dependencyGraph: { nodes: [], edges: [] },
+                        dependencyGraph: new DependencyGraph(),
                     }),
                 }
             );

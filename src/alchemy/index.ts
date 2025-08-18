@@ -11,5 +11,12 @@
 export * from './wrapper.js';
 export * from './resolver.js';
 
-// Export dynamic registration implementation
+// Export main deployment functionality
 export * from './deployment.js';
+
+// Export focused modules
+export * from './types.js';
+export * from './resource-registration.js';
+export * from './type-inference.js';
+export * from './deployers.js';
+export * from './utilities.js';

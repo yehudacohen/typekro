@@ -14,7 +14,7 @@ The TypeKro logging system provides professional, structured logging capabilitie
 ## Basic Usage
 
 ```typescript
-import { logger, createLogger, getComponentLogger } from '@yehudacohen/typekro';
+import { logger, createLogger, getComponentLogger } from 'typekro';
 
 // Use the default logger
 logger.info('Application started');
@@ -56,7 +56,7 @@ export TYPEKRO_LOG_PID=false
 Create loggers with specific context for better traceability:
 
 ```typescript
-import { getResourceLogger, getDeploymentLogger, createContextLogger } from '@yehudacohen/typekro';
+import { getResourceLogger, getDeploymentLogger, createContextLogger } from 'typekro';
 
 // Resource-specific logging
 const resourceLogger = getResourceLogger('webapp-deployment');

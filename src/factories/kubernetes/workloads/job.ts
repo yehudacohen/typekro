@@ -1,18 +1,11 @@
 import type { V1Job } from '@kubernetes/client-node';
 import type { Enhanced } from '../../../core/types/index.js';
-import { createResource, processPodSpec } from '../../shared.js';
+import { createResource } from '../../shared.js';
 
 export type V1JobSpec = NonNullable<V1Job['spec']>;
 export type V1JobStatus = NonNullable<V1Job['status']>;
 
 export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
-  if (resource.spec?.template?.spec) {
-    const processed = processPodSpec(resource.spec.template.spec);
-    if (processed) {
-      resource.spec.template.spec = processed;
-    }
-  }
-
   // Capture configuration in closure for Job-specific readiness logic
   const expectedCompletions = resource.spec?.completions || 1;
   const parallelism = resource.spec?.parallelism || 1;

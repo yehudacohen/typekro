@@ -4,13 +4,23 @@
  * This factory handles direct deployment of Kubernetes resources using TypeKro's
  * internal dependency resolution engine, without requiring the Kro controller.
  */
-
-import * as k8s from '@kubernetes/client-node';
-
 import { DependencyResolver } from '../dependencies/index.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
+import {
+    type KubernetesClientProvider,
+    createKubernetesClientProvider,
+    createKubernetesClientProviderWithKubeConfig,
+    type KubernetesClientConfig
+} from '../kubernetes/client-provider.js';
+import {
+    DirectDeploymentStrategy,
+    AlchemyDeploymentStrategy,
+} from './strategies/index.js';
+import { ResourceReadinessChecker } from './readiness.js';
+import { generateInstanceName } from './shared-utilities.js';
+import { toCamelCase } from '../../utils/helpers.js';
 import type {
     DeploymentResult,
     DirectResourceFactory,
@@ -20,8 +30,10 @@ import type {
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../types/serialization.js';
+import type { DeploymentError, ResourceGraph, DeploymentClosure } from '../types/deployment.js';
 // Alchemy integration
 import type { Scope } from '../types/serialization.js';
+import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
 
 /**
  * DirectResourceFactory implementation
@@ -39,12 +51,14 @@ export class DirectResourceFactoryImpl<
     readonly isAlchemyManaged: boolean;
 
     private readonly resources: Record<string, KubernetesResource>;
+    private readonly closures: Record<string, DeploymentClosure>;
     private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
     private deploymentEngine?: DirectDeploymentEngine;
     private readonly alchemyScope: Scope | undefined;
     private readonly factoryOptions: FactoryOptions;
     private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
     private readonly logger = getComponentLogger('direct-factory');
+    private clientProvider?: KubernetesClientProvider;
 
     constructor(
         name: string,
@@ -57,29 +71,65 @@ export class DirectResourceFactoryImpl<
         this.alchemyScope = options.alchemyScope;
         this.isAlchemyManaged = !!options.alchemyScope;
         this.resources = resources;
+        this.closures = options.closures || {};
         this.schemaDefinition = schemaDefinition;
         this.factoryOptions = options;
 
-        // Don't initialize deployment engine in constructor - do it lazily
+        // Don't initialize client provider in constructor - do it lazily when needed
+        // This allows tests to create factories without requiring a kubeconfig
     }
 
     /**
-     * Get or create the deployment engine
+     * Get or create the Kubernetes client provider (lazy initialization)
+     */
+    private getClientProvider(): KubernetesClientProvider {
+        if (!this.clientProvider) {
+            this.clientProvider = this.createClientProvider(this.factoryOptions);
+        }
+        return this.clientProvider;
+    }
+
+    /**
+     * Create and configure the Kubernetes client provider
+     */
+    private createClientProvider(options: FactoryOptions): KubernetesClientProvider {
+        // If a pre-configured kubeConfig is provided, use it directly
+        if (options.kubeConfig) {
+            this.logger.debug('Using pre-configured KubeConfig from factory options');
+            return createKubernetesClientProviderWithKubeConfig(options.kubeConfig);
+        }
+
+        // Create client provider with configuration from factory options
+        const clientConfig: KubernetesClientConfig = {
+            ...(options.skipTLSVerify !== undefined && { skipTLSVerify: options.skipTLSVerify }),
+            // Add other configuration options as needed
+        };
+
+        this.logger.debug('Creating new KubernetesClientProvider with configuration', {
+            skipTLSVerify: clientConfig.skipTLSVerify,
+        });
+
+        return createKubernetesClientProvider(clientConfig);
+    }
+
+    /**
+     * Get or create the deployment engine using the centralized client provider
      */
     private getDeploymentEngine(): DirectDeploymentEngine {
         if (!this.deploymentEngine) {
-            const kubeConfig = this.factoryOptions.kubeConfig;
-            if (kubeConfig) {
-                // Use the provided kubeConfig as-is (preserves TLS settings)
-                this.deploymentEngine = new DirectDeploymentEngine(kubeConfig, undefined, undefined, 'direct');
-            } else {
-                // Create and cache a kubeconfig only if none was provided
-                const fallbackKubeConfig = new k8s.KubeConfig();
-                fallbackKubeConfig.loadFromDefault();
-                // Cache on factory options to ensure cohesive reuse across engine/rollback/hydration
-                (this.factoryOptions as any).kubeConfig = fallbackKubeConfig;
-                this.deploymentEngine = new DirectDeploymentEngine(fallbackKubeConfig, undefined, undefined, 'direct');
-            }
+            this.logger.debug('Creating DirectDeploymentEngine with KubernetesClientProvider');
+
+            // Get the KubeConfig from the centralized provider (lazy initialization)
+            const clientProvider = this.getClientProvider();
+            const kubeConfig = clientProvider.getKubeConfig();
+
+            // Create the deployment engine with the provider's KubeConfig
+            this.deploymentEngine = new DirectDeploymentEngine(kubeConfig, undefined, undefined, 'direct');
+
+            this.logger.debug('DirectDeploymentEngine created successfully', {
+                currentContext: kubeConfig.getCurrentContext(),
+                server: kubeConfig.getCurrentCluster()?.server,
+            });
         }
         return this.deploymentEngine;
     }
@@ -103,31 +153,25 @@ export class DirectResourceFactoryImpl<
      * Get the appropriate deployment strategy based on configuration
      */
     private getDeploymentStrategy() {
-        // Import the strategy functions
-        const { createDeploymentStrategy, wrapStrategyWithAlchemy } = require('./deployment-strategies.js');
-
         // Create base strategy
-        const baseStrategy = createDeploymentStrategy(
-            'direct',
+        const baseStrategy = new DirectDeploymentStrategy(
             this.name,
             this.namespace,
             this.schemaDefinition,
             this.factoryOptions,
-            {
-                deploymentEngine: this.getDeploymentEngine(),
-                resourceResolver: this, // This factory acts as the resource resolver
-            }
+            this.getDeploymentEngine(),
+            this // This factory acts as the resource resolver
         );
 
         // Wrap with alchemy if needed
         if (this.isAlchemyManaged && this.alchemyScope) {
-            return wrapStrategyWithAlchemy(
-                baseStrategy,
+            return new AlchemyDeploymentStrategy(
                 this.name,
                 this.namespace,
                 this.schemaDefinition,
                 this.factoryOptions,
-                this.alchemyScope
+                this.alchemyScope,
+                baseStrategy
             );
         }
 
@@ -167,13 +211,18 @@ export class DirectResourceFactoryImpl<
     }
 
     /**
-     * Get factory status
+     * Get factory status with real health checking using readiness evaluators
      */
     async getStatus(): Promise<FactoryStatus> {
         const instances = await this.getInstances();
 
-        // For test environments, assume healthy unless explicitly configured otherwise
-        const health: 'healthy' | 'degraded' | 'failed' = 'healthy';
+        // If no instances, we're healthy by definition
+        let health: 'healthy' | 'degraded' | 'failed' = 'healthy';
+
+        if (instances.length > 0) {
+            // Only perform cluster health checking if we have deployed instances
+            health = await this.checkFactoryHealth();
+        }
 
         return {
             name: this.name,
@@ -186,25 +235,243 @@ export class DirectResourceFactoryImpl<
     }
 
     /**
+     * Check the overall health of the factory by leveraging existing ResourceReadinessChecker
+     */
+    private async checkFactoryHealth(): Promise<'healthy' | 'degraded' | 'failed'> {
+        const healthLogger = this.logger.child({ method: 'checkFactoryHealth' });
+
+        try {
+            const engine = this.getDeploymentEngine();
+
+            // Get all deployment states from the engine
+            const deploymentStates = engine.getAllDeploymentStates();
+
+            if (deploymentStates.length === 0) {
+                healthLogger.debug('No deployments found, factory is healthy');
+                return 'healthy';
+            }
+
+            let healthyCount = 0;
+            let degradedCount = 0;
+            let failedCount = 0;
+            let totalResources = 0;
+            const healthErrors: DeploymentError[] = [];
+
+            // Check health of all resources across all deployments
+            for (const deploymentState of deploymentStates) {
+                for (const deployedResource of deploymentState.resources) {
+                    totalResources++;
+
+                    try {
+                        // Use the deployment engine's readiness logic (includes custom evaluators + fallback)
+                        const engine = this.getDeploymentEngine();
+                        const isReady = await engine.isDeployedResourceReady(deployedResource);
+
+                        if (isReady) {
+                            healthyCount++;
+                        } else {
+                            // Resource exists but not ready - consider degraded
+                            degradedCount++;
+                            healthLogger.info('Resource not ready', {
+                                resourceId: deployedResource.id,
+                                kind: deployedResource.kind,
+                                name: deployedResource.name,
+                                namespace: deployedResource.namespace
+                            });
+                        }
+                    } catch (error) {
+                        // Resource not found or API error - consider it failed
+                        failedCount++;
+                        const healthError: DeploymentError = {
+                            resourceId: deployedResource.id,
+                            phase: 'readiness',
+                            error: error instanceof Error ? error : new Error(String(error)),
+                            timestamp: new Date(),
+                        };
+                        healthErrors.push(healthError);
+
+                        healthLogger.error('Failed to check resource health', error as Error, {
+                            resourceId: deployedResource.id
+                        });
+                    }
+                }
+            }
+
+            // Log health errors for debugging
+            if (healthErrors.length > 0) {
+                healthLogger.debug('Health check errors encountered', {
+                    errorCount: healthErrors.length,
+                    errors: healthErrors.map(e => ({
+                        resourceId: e.resourceId,
+                        phase: e.phase,
+                        message: e.error.message
+                    }))
+                });
+            }
+
+            // Determine overall health based on resource status distribution
+            if (failedCount > 0) {
+                healthLogger.info('Factory health: failed', {
+                    healthy: healthyCount,
+                    degraded: degradedCount,
+                    failed: failedCount,
+                    total: totalResources,
+                    errorCount: healthErrors.length
+                });
+                return 'failed';
+            } else if (degradedCount > 0) {
+                healthLogger.info('Factory health: degraded', {
+                    healthy: healthyCount,
+                    degraded: degradedCount,
+                    failed: failedCount,
+                    total: totalResources
+                });
+                return 'degraded';
+            } else {
+                healthLogger.info('Factory health: healthy', {
+                    healthy: healthyCount,
+                    degraded: degradedCount,
+                    failed: failedCount,
+                    total: totalResources
+                });
+                return 'healthy';
+            }
+        } catch (error) {
+            healthLogger.error('Error checking factory health', error as Error);
+            return 'failed';
+        }
+    }
+
+    /**
+     * Get detailed health information including any errors encountered
+     * Useful for debugging and monitoring
+     */
+    async getHealthDetails(): Promise<{
+        health: 'healthy' | 'degraded' | 'failed';
+        resourceCounts: {
+            healthy: number;
+            degraded: number;
+            failed: number;
+            total: number;
+        };
+        errors: DeploymentError[];
+    }> {
+        const healthLogger = this.logger.child({ method: 'getHealthDetails' });
+
+        // Check if we have any instances first to avoid initializing engine unnecessarily
+        const instances = await this.getInstances();
+        if (instances.length === 0) {
+            return {
+                health: 'healthy',
+                resourceCounts: { healthy: 0, degraded: 0, failed: 0, total: 0 },
+                errors: []
+            };
+        }
+
+        try {
+            const engine = this.getDeploymentEngine();
+            const deploymentStates = engine.getAllDeploymentStates();
+
+            if (deploymentStates.length === 0) {
+                return {
+                    health: 'healthy',
+                    resourceCounts: { healthy: 0, degraded: 0, failed: 0, total: 0 },
+                    errors: []
+                };
+            }
+
+            const k8sApi = engine.getKubernetesApi();
+            const readinessChecker = new ResourceReadinessChecker(k8sApi);
+
+            let healthyCount = 0;
+            let degradedCount = 0;
+            let failedCount = 0;
+            let totalResources = 0;
+            const healthErrors: DeploymentError[] = [];
+
+            // Check health of all resources across all deployments
+            for (const deploymentState of deploymentStates) {
+                for (const deployedResource of deploymentState.resources) {
+                    totalResources++;
+
+                    try {
+                        const resourceRef = {
+                            apiVersion: deployedResource.manifest.apiVersion || '',
+                            kind: deployedResource.kind,
+                            metadata: {
+                                name: deployedResource.name,
+                                namespace: deployedResource.namespace,
+                            },
+                        };
+                        const liveResource = await k8sApi.read(resourceRef);
+
+                        const isReady = readinessChecker.isResourceReady(liveResource.body);
+
+                        if (isReady) {
+                            healthyCount++;
+                        } else {
+                            degradedCount++;
+                        }
+                    } catch (error) {
+                        failedCount++;
+                        const healthError: DeploymentError = {
+                            resourceId: deployedResource.id,
+                            phase: 'readiness',
+                            error: error instanceof Error ? error : new Error(String(error)),
+                            timestamp: new Date(),
+                        };
+                        healthErrors.push(healthError);
+                    }
+                }
+            }
+
+            const health = failedCount > 0 ? 'failed' : (degradedCount > 0 ? 'degraded' : 'healthy');
+
+            return {
+                health,
+                resourceCounts: {
+                    healthy: healthyCount,
+                    degraded: degradedCount,
+                    failed: failedCount,
+                    total: totalResources
+                },
+                errors: healthErrors
+            };
+        } catch (error) {
+            healthLogger.error('Error getting health details', error as Error);
+            return {
+                health: 'failed',
+                resourceCounts: { healthy: 0, degraded: 0, failed: 0, total: 0 },
+                errors: [{
+                    resourceId: 'factory',
+                    phase: 'readiness',
+                    error: error instanceof Error ? error : new Error(String(error)),
+                    timestamp: new Date(),
+                }]
+            };
+        }
+    }
+
+    /**
      * Rollback all deployments made by this factory
      */
     async rollback(): Promise<RollbackResult> {
-        // Use the consolidated rollback manager
+        this.logger.debug('Starting rollback for all deployed instances');
 
-        // Get kubeConfig from factory options or create default
-        const kubeConfig = this.factoryOptions.kubeConfig || (() => {
-            const config = new k8s.KubeConfig();
-            config.loadFromDefault();
-            // Cache so subsequent operations use the same config
-            (this.factoryOptions as any).kubeConfig = config;
-            return config;
-        })();
+        // Get kubeConfig from the centralized provider (lazy initialization)
+        const clientProvider = this.getClientProvider();
+        const kubeConfig = clientProvider.getKubeConfig();
 
-        // Create rollback manager
+        // Create rollback manager with the provider's KubeConfig
         const rollbackManager = createRollbackManagerWithKubeConfig(kubeConfig);
 
         // Get all deployed instances as Enhanced resources
         const resourcesToRollback = Array.from(this.deployedInstances.values());
+
+        this.logger.debug('Rolling back resources', {
+            resourceCount: resourcesToRollback.length,
+            instanceNames: Array.from(this.deployedInstances.keys()),
+        });
 
         // Perform rollback using consolidated logic
         const result = await rollbackManager.rollbackResources(resourcesToRollback, {
@@ -214,6 +481,11 @@ export class DirectResourceFactoryImpl<
 
         // Clear all tracked instances after rollback
         this.deployedInstances.clear();
+
+        this.logger.info('Rollback completed', {
+            status: result.status,
+            resourceCount: result.rolledBackResources.length,
+        });
 
         return result;
     }
@@ -247,8 +519,8 @@ export class DirectResourceFactoryImpl<
         // Generate individual Kubernetes resource YAML manifests (not RGD)
         const yamlParts = Object.values(resolvedResources).map((resource) => {
             // Remove TypeKro-specific fields and generate clean Kubernetes YAML
-            const cleanResource = { ...resource };
-            delete (cleanResource as any).id; // Remove TypeKro id field
+            const cleanResource = { ...resource } as KubernetesResource & { id?: string };
+            delete cleanResource.id; // Remove TypeKro id field
 
             // Simple YAML serialization for Kubernetes resources
             let yamlContent = `apiVersion: ${cleanResource.apiVersion}
@@ -263,12 +535,14 @@ metadata:
             }
 
             // Handle different resource types
-            if ((cleanResource as any).spec) {
-                yamlContent += `\nspec:\n${Object.entries((cleanResource as any).spec).map(([key, value]) => `  ${key}: ${typeof value === 'object' ? JSON.stringify(value, null, 2).split('\n').map((line, i) => i === 0 ? line : `  ${line}`).join('\n') : value}`).join('\n')}`;
+            const resourceWithSpec = cleanResource as KubernetesResource & { spec?: Record<string, unknown> };
+            if (resourceWithSpec.spec) {
+                yamlContent += `\nspec:\n${Object.entries(resourceWithSpec.spec).map(([key, value]) => `  ${key}: ${typeof value === 'object' ? JSON.stringify(value, null, 2).split('\n').map((line, i) => i === 0 ? line : `  ${line}`).join('\n') : value}`).join('\n')}`;
             }
 
-            if ((cleanResource as any).data) {
-                yamlContent += `\ndata:\n${Object.entries((cleanResource as any).data).map(([key, value]) => `  ${key}: ${typeof value === 'string' ? JSON.stringify(value) : value}`).join('\n')}`;
+            const resourceWithData = cleanResource as KubernetesResource & { data?: Record<string, string | unknown> };
+            if (resourceWithData.data) {
+                yamlContent += `\ndata:\n${Object.entries(resourceWithData.data).map(([key, value]) => `  ${key}: ${typeof value === 'string' ? JSON.stringify(value) : value}`).join('\n')}`;
             }
 
             return yamlContent;
@@ -280,15 +554,31 @@ metadata:
     /**
      * Create a resource graph for a specific instance
      */
-    private createResourceGraphForInstance(spec: TSpec) {
+    public createResourceGraphForInstance(spec: TSpec): ResourceGraph {
         const dependencyResolver = new DependencyResolver();
         const resolvedResources = this.resolveResourcesForSpec(spec);
 
         const instanceName = this.generateInstanceName(spec);
-        const resourceArray = Object.values(resolvedResources).map((resource, index) => ({
-            ...resource,
-            id: `${instanceName}-resource-${index}-${resource.id || resource.kind?.toLowerCase() || 'unknown'}`,
-        }));
+        const resourceArray = Object.values(resolvedResources).map((resource, index) => {
+            const baseId = `${instanceName}-resource-${index}-${resource.id || resource.kind?.toLowerCase() || 'unknown'}`
+            const resourceWithId = {
+                ...resource,
+                id: toCamelCase(baseId),
+            };
+
+            // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
+            const originalResource = resource as any;
+            if (originalResource.readinessEvaluator && typeof originalResource.readinessEvaluator === 'function') {
+                Object.defineProperty(resourceWithId, 'readinessEvaluator', {
+                    value: originalResource.readinessEvaluator,
+                    enumerable: false,
+                    configurable: true,
+                    writable: false
+                });
+            }
+
+            return resourceWithId;
+        });
 
         // Convert to DeployableK8sResource format expected by dependency resolver
         const deployableResources = resourceArray as DeployableK8sResource<Enhanced<unknown, unknown>>[];
@@ -312,25 +602,13 @@ metadata:
      * This uses the existing processResourceReferences system to handle schema references
      */
     private resolveResourcesForSpec(spec: TSpec): Record<string, KubernetesResource> {
-        // Import the reference processing utilities
-        const { processResourceReferences } = require('../../utils/helpers.js');
-
-        // Create a resolution context for schema references
-        const context = {
-            celPrefix: 'schema',
-            resources: {},
-            schema: { spec, status: {} as TStatus },
-        };
-
-        // Process all resources to resolve references
         const resolvedResources: Record<string, KubernetesResource> = {};
-
         for (const [key, resource] of Object.entries(this.resources)) {
             try {
-                // Use the existing reference processing system, but then resolve schema references to actual values
-                const processedResource = processResourceReferences(resource, context);
-                const resolvedResource = this.resolveSchemaReferencesToValues(processedResource, spec);
-                resolvedResources[key] = resolvedResource;
+                // CORRECTED: Go directly from the resource template (with proxy objects)
+                // to resolving the values from the provided spec.
+                const resolvedResource = this.resolveSchemaReferencesToValues(resource, spec);
+                resolvedResources[key] = resolvedResource as KubernetesResource;
             } catch (error) {
                 // If resolution fails, use the original resource
                 this.logger.warn('Failed to resolve references for resource', error as Error);
@@ -342,47 +620,100 @@ metadata:
     }
 
     /**
-     * Resolve schema CEL expressions to actual values for direct deployment
+     * Resolve schema references and CEL expressions to actual values for direct deployment.
+     * This is the final, corrected version that handles both direct proxies and Cel.expr wrappers.
      */
-    private resolveSchemaReferencesToValues(resource: any, spec: TSpec): any {
-        if (typeof resource === 'string') {
-            // Check if this is a simple schema reference like "${schema.spec.replicas}"
-            const simpleRefMatch = resource.match(/^\$\{schema\.spec\.(\w+)\}$/);
-            if (simpleRefMatch) {
-                const fieldName = simpleRefMatch[1];
-                if (fieldName) {
-                    const value = (spec as any)[fieldName];
-                    return value !== undefined ? value : resource; // Return the actual value with its original type
+    private resolveSchemaReferencesToValues(resource: unknown, spec: TSpec, path = 'root'): unknown {
+        this.logger.trace('Resolving schema references', { path, type: typeof resource, isObject: resource !== null && typeof resource === 'object' });
+
+        // Case 1: Handle direct schema proxy objects (e.g., schema.spec.replicas)
+        if (isKubernetesRef(resource) && resource.resourceId === '__schema__') {
+            this.logger.trace('Found schema KubernetesRef', { path, fieldPath: resource.fieldPath });
+            const pathParts = resource.fieldPath.split('.');
+            let currentValue: any = spec;
+            // Skip the first part ('spec') and traverse the spec object
+            this.logger.trace('Traversing spec with path parts', { pathParts: pathParts.slice(1) });
+            for (const part of pathParts.slice(1)) {
+                if (currentValue && typeof currentValue === 'object' && part in currentValue) {
+                    const oldValue = currentValue;
+                    currentValue = currentValue[part];
+                    this.logger.trace('Successfully traversed spec part', { part, oldValue: JSON.stringify(oldValue), newValue: JSON.stringify(currentValue) });
+                } else {
+                    this.logger.warn('Path part not found in spec, returning original reference', { path, part, spec: JSON.stringify(spec) });
+                    return resource;
+                    // Path not found, return original
                 }
             }
-            
-            // Handle complex expressions with multiple references
-            return resource.replace(/\$\{([^}]+)\}/g, (_match, expression) => {
-                // Parse the expression to extract schema references
-                const resolvedExpression = expression.replace(/schema\.spec\.(\w+)/g, (schemaMatch: string, fieldName: string) => {
-                    const value = (spec as any)[fieldName];
-                    return value !== undefined ? String(value) : schemaMatch;
-                });
-                return resolvedExpression;
+            this.logger.trace('Resolved schema KubernetesRef to value', { path, resolvedValue: currentValue });
+            return currentValue;
+        }
+
+        // Case 2: Handle CelExpression objects (e.g., Cel.expr(schema.spec.name, '-db'))
+        if (isCelExpression(resource)) {
+            this.logger.trace('Found CEL Expression', { path, expression: resource.expression });
+            // The .expression property holds a string like "schema.spec.name-db-config"
+            let expressionString = resource.expression;
+            // Use regex to find all `schema.spec.fieldName` placeholders in the string
+            // and replace them with the corresponding values from the spec object.
+            // The 'g' flag ensures all occurrences are replaced.
+            expressionString = expressionString.replace(/schema\.spec\.(\w+)/g, (_match, fieldName) => {
+                const value = (spec as Record<string, unknown>)[fieldName];
+                this.logger.trace('Replacing CEL placeholder', { fieldName, value });
+                // If the value exists in the spec, convert it to a string for concatenation.
+                // Otherwise, keep the original placeholder (though this shouldn't happen in valid cases).
+
+                return value !== undefined ? String(value) : _match;
             });
-        } else if (Array.isArray(resource)) {
-            return resource.map(item => this.resolveSchemaReferencesToValues(item, spec));
-        } else if (resource && typeof resource === 'object') {
-            const resolved: any = {};
+            this.logger.trace('Resolved CEL expression to value', { path, resolvedValue: expressionString });
+            // The result is the final, resolved string.
+            return expressionString;
+        }
+
+        // Case 3: Recursively traverse arrays and plain objects (no changes here)
+        if (Array.isArray(resource)) {
+            this.logger.trace('Traversing array', { path });
+            return resource.map((item, index) => this.resolveSchemaReferencesToValues(item, spec, `${path}[${index}]`));
+        }
+
+        if (resource && typeof resource === 'object') {
+            this.logger.trace('Traversing object', { path, keys: Object.keys(resource) });
+            const resolved: Record<string, unknown> = {};
             for (const [key, value] of Object.entries(resource)) {
-                resolved[key] = this.resolveSchemaReferencesToValues(value, spec);
+                resolved[key] = this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`);
             }
+
+            // FIX: Explicitly check for and preserve the non-enumerable readinessEvaluator property.
+            const evaluator = (resource as any).readinessEvaluator;
+            if (typeof evaluator === 'function') {
+                this.logger.trace('Preserving readiness evaluator for resource', { path });
+                Object.defineProperty(resolved, 'readinessEvaluator', {
+                    value: evaluator,
+                    enumerable: false,
+                    configurable: false,
+                    writable: false
+                });
+            }
+
             return resolved;
         }
+
+        this.logger.trace('Returning primitive value as-is', { path, value: resource });
+        // Return primitives and other types as-is.
         return resource;
     }
+
+
+
+
+
+
+
 
     /**
      * Generate instance name from spec
      */
     private generateInstanceName(spec: TSpec): string {
-        // Use the shared utility
-        const { generateInstanceName } = require('./shared-utilities.js');
+        // Use the imported shared utility
         return generateInstanceName(spec);
     }
 }

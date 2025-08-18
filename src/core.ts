@@ -124,6 +124,23 @@ export type * from './factories/kubernetes/types.js';
 // =============================================================================
 export { createResource } from './factories/shared.js';
 // =============================================================================
+// Kubernetes Client Provider (Single Source of Truth)
+// =============================================================================
+export {
+  KubernetesClientProvider,
+  getKubernetesClientProvider,
+  createKubernetesClientProvider,
+  createKubernetesClientProviderWithKubeConfig,
+  getKubernetesApi,
+  getKubeConfig,
+} from './core/kubernetes/client-provider.js';
+export type {
+  KubernetesClientConfig,
+  KubernetesApiConsumer,
+  KubeConfigConsumer,
+} from './core/kubernetes/client-provider.js';
+
+// =============================================================================
 // Core Utilities
 // =============================================================================
 export {
@@ -139,3 +156,19 @@ export {
   pascalCase,
   processResourceReferences,
 } from './utils/index.js';
+
+// =============================================================================
+// YAML Processing Module
+// =============================================================================
+export {
+  PathResolver,
+  pathResolver,
+  YamlPathResolutionError,
+  GitContentError,
+  YamlProcessingError,
+} from './core/yaml/index.js';
+export type {
+  GitPathInfo,
+  ResolvedContent,
+  DiscoveredFile,
+} from './core/yaml/index.js';

@@ -1,0 +1,27 @@
+<svg width="32" height="32" viewBox="70 20 85 70" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bodyGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#7C3AED;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#DB2777;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="wingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#059669;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0891B2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3B82F6;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="beakGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#EF4444;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Simplified crow for favicon -->
+  <ellipse cx="88" cy="42" rx="18" ry="8" fill="url(#wingGradient)" transform="rotate(-8 88 42)"/>
+  <ellipse cx="122" cy="42" rx="18" ry="8" fill="url(#wingGradient)" transform="rotate(8 122 42)"/>
+  <circle cx="105" cy="35" r="8" fill="url(#bodyGradient)"/>
+  <ellipse cx="105" cy="50" rx="6" ry="15" fill="url(#bodyGradient)"/>
+  <polygon points="98,33 90,35 99,37" fill="url(#beakGradient)"/>
+  <circle cx="102" cy="33" r="1.5" fill="#FFFFFF"/>
+  <ellipse cx="105" cy="65" rx="4" ry="6" fill="url(#wingGradient)"/>
+</svg>

@@ -1,0 +1,74 @@
+<svg width="85" height="70" viewBox="70 20 85 70" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bodyGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#7C3AED;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#DB2777;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="wingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#059669;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0891B2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3B82F6;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="beakGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#EF4444;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="eyeGradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#FBBF24;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#F59E0B;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#D97706;stop-opacity:1" />
+    </radialGradient>
+    <linearGradient id="textGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1F2937;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#4B5563;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <ellipse cx="88" cy="42" rx="22" ry="10" fill="url(#wingGradient)" transform="rotate(-8 88 42)"/>
+  <ellipse cx="85" cy="44" rx="16" ry="6" fill="url(#bodyGradient)" opacity="0.6" transform="rotate(-8 85 44)"/>
+  <ellipse cx="122" cy="42" rx="22" ry="10" fill="url(#wingGradient)" transform="rotate(8 122 42)"/>
+  <ellipse cx="125" cy="44" rx="16" ry="6" fill="url(#bodyGradient)" opacity="0.6" transform="rotate(8 125 44)"/>
+  <circle cx="105" cy="35" r="10" fill="url(#bodyGradient)"/>
+  <ellipse cx="105" cy="52" rx="7" ry="18" fill="url(#bodyGradient)"/>
+  <ellipse cx="105" cy="43" rx="5" ry="5" fill="url(#bodyGradient)"/>
+  <polygon points="97,33 88,35 98,37" fill="url(#beakGradient)"/>
+  <circle cx="102" cy="33" r="2.2" fill="url(#eyeGradient)"/>
+  <circle cx="102" cy="33" r="1.3" fill="#1F2937"/>
+  <circle cx="102.5" cy="32.5" r="0.7" fill="#FFFFFF"/>
+  <ellipse cx="98" cy="45" rx="3" ry="4" fill="url(#wingGradient)" transform="rotate(-8 98 45)"/>
+  <ellipse cx="112" cy="45" rx="3" ry="4" fill="url(#wingGradient)" transform="rotate(8 112 45)"/>
+  <ellipse cx="105" cy="67" rx="5" ry="8" fill="url(#wingGradient)"/>
+  <ellipse cx="102" cy="69" rx="3" ry="5" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(-5 102 69)"/>
+  <ellipse cx="108" cy="69" rx="3" ry="5" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(5 108 69)"/>
+  <g transform="translate(102, 65)">
+    <line x1="0" y1="0" x2="-2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="0" y2="4" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(108, 65)">
+    <line x1="0" y1="0" x2="-2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="0" y2="4" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+  <g opacity="0.4" stroke="url(#wingGradient)" stroke-width="2" stroke-linecap="round" fill="none">
+    <path d="M90,65 Q95,67 100,70" />
+    <path d="M88,70 Q93,72 98,75" />
+    <path d="M110,70 Q115,67 120,65" />
+    <path d="M112,75 Q117,72 122,70" />
+    <path d="M95,72 Q100,74 105,76" />
+    <path d="M105,76 Q110,74 115,72" />
+  </g>
+  <g opacity="0.5">
+    <ellipse cx="80" cy="30" rx="5" ry="2.5" fill="#FFFFFF" transform="rotate(-12 80 30)"/>
+    <ellipse cx="85" cy="34" rx="4" ry="2" fill="#FFFFFF" transform="rotate(-6 85 34)"/>
+    <ellipse cx="88" cy="38" rx="3.5" ry="1.8" fill="url(#wingGradient)" transform="rotate(-18 88 38)"/>
+    <ellipse cx="130" cy="30" rx="5" ry="2.5" fill="#FFFFFF" transform="rotate(12 130 30)"/>
+    <ellipse cx="125" cy="34" rx="4" ry="2" fill="#FFFFFF" transform="rotate(6 125 34)"/>
+    <ellipse cx="122" cy="38" rx="3.5" ry="1.8" fill="url(#wingGradient)" transform="rotate(18 122 38)"/>
+    <ellipse cx="75" cy="35" rx="3" ry="1.5" fill="url(#wingGradient)" transform="rotate(-25 75 35)"/>
+    <ellipse cx="135" cy="35" rx="3" ry="1.5" fill="url(#wingGradient)" transform="rotate(25 135 35)"/>
+    <ellipse cx="92" cy="32" rx="2.5" ry="1.2" fill="#FFFFFF" transform="rotate(-8 92 32)"/>
+    <ellipse cx="118" cy="32" rx="2.5" ry="1.2" fill="#FFFFFF" transform="rotate(8 118 32)"/>
+  </g>
+</svg>

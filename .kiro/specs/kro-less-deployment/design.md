@@ -107,7 +107,7 @@ type FactoryForMode<TMode, TSpec, TStatus> =
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from '@yehudacohen/typekro';
+import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
 
 // 1. Define ArkType schemas with automatic type inference
 const WebAppSpecSchema = type({
@@ -351,7 +351,7 @@ console.log(`Production URL: ${prodInstance.status.url}`);
 ### Example 6: External References with Type Safety
 
 ```typescript
-import { externalRef } from '@yehudacohen/typekro';
+import { externalRef } from 'typekro';
 
 // Define schemas for external database
 const DatabaseSpecSchema = type({

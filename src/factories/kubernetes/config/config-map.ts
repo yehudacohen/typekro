@@ -10,5 +10,11 @@ export function configMap(resource: V1ConfigMap): Enhanced<V1ConfigMapData, unkn
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: resource.metadata ?? { name: 'unnamed-configmap' },
+  }).withReadinessEvaluator((liveResource: V1ConfigMap) => {
+    // ConfigMaps are ready when they exist - they're just data storage
+    return {
+      ready: true,
+      message: 'ConfigMap is ready when created',
+    };
   });
 }

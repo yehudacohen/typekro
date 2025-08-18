@@ -11,5 +11,44 @@ export function namespace(resource: V1Namespace): Enhanced<V1NamespaceSpec, V1Na
     apiVersion: 'v1',
     kind: 'Namespace',
     metadata: resource.metadata ?? { name: 'unnamed-namespace' },
+  }).withReadinessEvaluator((liveResource: V1Namespace) => {
+    try {
+      const status = liveResource.status;
+      
+      // Handle missing status gracefully
+      if (!status) {
+        return {
+          ready: false,
+          reason: 'StatusMissing',
+          message: 'Namespace status not available yet'
+        };
+      }
+      
+      const phase = status.phase;
+      
+      // Namespace is ready when phase is Active
+      const ready = phase === 'Active';
+      
+      if (ready) {
+        return {
+          ready: true,
+          message: 'Namespace is active and ready'
+        };
+      } else {
+        return {
+          ready: false,
+          reason: 'NotActive',
+          message: `Namespace phase is ${phase || 'unknown'}, waiting for Active phase`,
+          details: { phase }
+        };
+      }
+    } catch (error) {
+      return {
+        ready: false,
+        reason: 'EvaluationError',
+        message: `Error evaluating namespace readiness: ${error}`,
+        details: { error: String(error) }
+      };
+    }
   });
 }

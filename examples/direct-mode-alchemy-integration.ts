@@ -34,6 +34,7 @@ import {
     simpleConfigMap,
     Cel,
 } from '../src/index.js';
+import type { AlchemyResourceState } from '../src/alchemy/types.js';
 
 // Define schemas for our web application
 const WebAppSpecSchema = type({
@@ -186,7 +187,7 @@ async function demonstrateDirectModeAlchemyIntegration() {
 
         const alchemyState = await alchemyScope.state.all();
         const kubernetesResources = Object.entries(alchemyState).filter(
-            ([_id, state]: [string, any]) => 
+            ([_id, state]: [string, AlchemyResourceState]) => 
                 state.kind?.startsWith('kubernetes::')
         );
 
@@ -194,14 +195,14 @@ async function demonstrateDirectModeAlchemyIntegration() {
         console.log(`   Total resources: ${kubernetesResources.length}`);
         console.log('');
 
-        kubernetesResources.forEach(([resourceId, resourceState]: [string, any], index) => {
+        kubernetesResources.forEach(([resourceId, resourceState]: [string, AlchemyResourceState], index) => {
             console.log(`   ${index + 1}. Resource ID: ${resourceId}`);
             console.log(`      Alchemy Type: ${resourceState.kind}`);
             console.log(`      Kubernetes Kind: ${resourceState.resource?.kind || 'Unknown'}`);
             console.log(`      Resource Name: ${resourceState.resource?.metadata?.name || 'unnamed'}`);
             console.log(`      Namespace: ${resourceState.namespace}`);
             console.log(`      Status: ${resourceState.ready ? '✅ Ready' : '⏳ Pending'}`);
-            console.log(`      Deployed At: ${new Date(resourceState.deployedAt).toISOString()}`);
+            console.log(`      Deployed At: ${new Date(resourceState.deployedAt as string).toISOString()}`);
             console.log('');
         });
 
@@ -209,7 +210,7 @@ async function demonstrateDirectModeAlchemyIntegration() {
         console.log('6️⃣ Resource Type Patterns');
         console.log('=========================');
 
-        const resourceTypes = [...new Set(kubernetesResources.map(([_id, state]: [string, any]) => state.kind))];
+        const resourceTypes = [...new Set(kubernetesResources.map(([_id, state]: [string, AlchemyResourceState]) => state.kind))];
         console.log('🏷️  Alchemy resource types registered:');
         resourceTypes.forEach((type, index) => {
             console.log(`   ${index + 1}. ${type}`);
@@ -239,27 +240,27 @@ async function demonstrateDirectModeAlchemyIntegration() {
 
         // Show how to find specific resources
         const deploymentResources = kubernetesResources.filter(
-            ([_id, state]: [string, any]) => state.kind === 'kubernetes::Deployment'
+            ([_id, state]: [string, AlchemyResourceState]) => state.kind === 'kubernetes::Deployment'
         );
         const serviceResources = kubernetesResources.filter(
-            ([_id, state]: [string, any]) => state.kind === 'kubernetes::Service'
+            ([_id, state]: [string, AlchemyResourceState]) => state.kind === 'kubernetes::Service'
         );
         const configMapResources = kubernetesResources.filter(
-            ([_id, state]: [string, any]) => state.kind === 'kubernetes::ConfigMap'
+            ([_id, state]: [string, AlchemyResourceState]) => state.kind === 'kubernetes::ConfigMap'
         );
 
         console.log(`   Deployments: ${deploymentResources.length} found`);
-        deploymentResources.forEach(([id, state]: [string, any]) => {
+        deploymentResources.forEach(([id, state]: [string, AlchemyResourceState]) => {
             console.log(`     - ${id}: ${state.resource?.metadata?.name} (${state.ready ? 'Ready' : 'Pending'})`);
         });
 
         console.log(`   Services: ${serviceResources.length} found`);
-        serviceResources.forEach(([id, state]: [string, any]) => {
+        serviceResources.forEach(([id, state]: [string, AlchemyResourceState]) => {
             console.log(`     - ${id}: ${state.resource?.metadata?.name} (${state.ready ? 'Ready' : 'Pending'})`);
         });
 
         console.log(`   ConfigMaps: ${configMapResources.length} found`);
-        configMapResources.forEach(([id, state]: [string, any]) => {
+        configMapResources.forEach(([id, state]: [string, AlchemyResourceState]) => {
             console.log(`     - ${id}: ${state.resource?.metadata?.name} (${state.ready ? 'Ready' : 'Pending'})`);
         });
         console.log('');
@@ -403,11 +404,11 @@ async function demonstrateErrorHandling() {
             // Check Alchemy state to see partial deployment
             const state = await alchemyScope.state.all();
             const resources = Object.entries(state).filter(
-                ([_id, s]: [string, any]) => s.kind?.startsWith('kubernetes::')
+                ([_id, s]: [string, AlchemyResourceState]) => s.kind?.startsWith('kubernetes::')
             );
             
             console.log(`   Resources in Alchemy state: ${resources.length}`);
-            resources.forEach(([id, resourceState]: [string, any]) => {
+            resources.forEach(([id, resourceState]: [string, AlchemyResourceState]) => {
                 console.log(`   - ${id}: ${resourceState.kind} (${resourceState.ready ? 'Ready' : 'Failed/Pending'})`);
             });
             

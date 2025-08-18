@@ -1,6 +1,6 @@
 import type { V1StatefulSet } from '@kubernetes/client-node';
 import type { Enhanced } from '../../../core/types/index.js';
-import { createResource, processPodSpec } from '../../shared.js';
+import { createResource } from '../../shared.js';
 
 export type V1StatefulSetSpec = NonNullable<V1StatefulSet['spec']>;
 export type V1StatefulSetStatus = NonNullable<V1StatefulSet['status']>;
@@ -8,13 +8,6 @@ export type V1StatefulSetStatus = NonNullable<V1StatefulSet['status']>;
 export function statefulSet(
   resource: V1StatefulSet
 ): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus> {
-  if (resource.spec?.template?.spec) {
-    const processed = processPodSpec(resource.spec.template.spec);
-    if (processed) {
-      resource.spec.template.spec = processed;
-    }
-  }
-
   // Capture configuration in closure for StatefulSet-specific readiness logic
   const expectedReplicas = resource.spec?.replicas || 1;
   const updateStrategy = resource.spec?.updateStrategy?.type || 'RollingUpdate';

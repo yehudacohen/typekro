@@ -52,6 +52,7 @@ export function simpleDeployment(config: SimpleDeploymentConfig): Enhanced<V1Dep
   const env: V1EnvVar[] = config.env
     ? Object.entries(config.env).map(([name, value]) => ({ name, value }))
     : [];
+    
   return deployment({
     ...(config.id && { id: config.id }),
     metadata: {
@@ -276,6 +277,8 @@ export function simpleService(config: {
       selector: config.selector,
       ports: config.ports,
       ...(config.type && { type: config.type }),
+      ipFamilies: ['IPv4'],
+      ipFamilyPolicy: 'SingleStack',
     },
   });
 }

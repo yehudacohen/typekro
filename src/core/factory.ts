@@ -11,6 +11,6 @@
 // Re-export all factory functions from the organized structure
 export * from '../factories/index.js';
 // Re-export the shared utilities from the new location
-export { createResource, processPodSpec } from '../factories/shared.js';
+export { createResource } from '../factories/shared.js';
 // Re-export types from the centralized location
 export type * from './types/kubernetes.js';

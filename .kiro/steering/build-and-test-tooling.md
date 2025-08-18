@@ -46,19 +46,17 @@ bun run <script-name>
 bun vitest
 
 # Run all tests (when using bun's built-in test runner)
-bun test
+bun run test:all
 
-# Run tests in watch mode
-bun vitest --watch
+# Run unit tests:
+bun run test
 
-# Run specific test file
-bun vitest path/to/test.ts
+# Run integration tests
+bun run test:integration
 
-# Run tests with coverage
-bun vitest --coverage
+# Run integration tests leaving the kind cluster around after for interactive debugging
+bun run test:integration:debug
 
-# Run tests with UI
-bun vitest --ui
 ```
 
 ### Project Configuration

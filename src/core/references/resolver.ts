@@ -90,31 +90,31 @@ export class ReferenceResolver {
   async resolveReferences(resource: any, context: ResolutionContext): Promise<any> {
     // Quick check - if there are no references, return the resource as-is
     if (!this.hasReferences(resource)) {
+      this.logger.trace('No references found in resource, returning as-is', { resourceId: resource.id });
       return resource;
-    }
+}
 
+    this.logger.trace('Cloning resource and resolving references', { resourceId: resource.id });
     // Deep clone the resource to avoid modifying the original
     // JSON.stringify/parse properly handles Enhanced proxies by triggering all getters
     const resolved = JSON.parse(JSON.stringify(resource));
-
-    // Restore Symbol brands that were lost during JSON serialization
+// Restore Symbol brands that were lost during JSON serialization
     this.restoreBrands(resolved);
 
-    // Preserve non-enumerable properties like readiness evaluators
+// FIX: Preserve the non-enumerable readinessEvaluator which is lost during JSON serialization.
     if (resource.readinessEvaluator && typeof resource.readinessEvaluator === 'function') {
+      this.logger.trace('Preserving readiness evaluator on cloned resource', { resourceId: resource.id });
       Object.defineProperty(resolved, 'readinessEvaluator', {
         value: resource.readinessEvaluator,
         enumerable: false,
         configurable: false,
         writable: false
       });
-    }
+}
 
     await this.traverseAndResolve(resolved, context);
     return resolved;
   }
-
-
 
   /**
    * Quick check if a resource has any references
@@ -319,7 +319,13 @@ export class ReferenceResolver {
   }
 
   /**
-   * Evaluate a CEL expression using the proper CEL evaluator
+   * Evaluate a CEL expression using runtime CEL evaluation
+   * 
+   * This method performs ACTUAL CEL expression evaluation using the cel-js library.
+   * It's only used in Direct mode deployment where TypeKro must resolve CEL expressions
+   * to concrete values before creating Kubernetes manifests.
+   * 
+   * In Kro mode, CEL expressions are converted to strings and evaluated by the Kro operator.
    */
   private async evaluateCelExpression<T = unknown>(
     expr: CelExpression<T>,

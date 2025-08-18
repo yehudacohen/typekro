@@ -1,6 +1,6 @@
-# @yehudacohen/typekro
+# typekro
 
-[![NPM Version](https://img.shields.io/npm/v/@yehudacohen/typekro.svg)](https://www.npmjs.com/package/@yehudacohen/typekro)
+[![NPM Version](https://img.shields.io/npm/v/typekro.svg)](https://www.npmjs.com/package/typekro)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 TypeKro is a hypermodern infrastructure-as-code library for Kubernetes that blends the type safety of TypeScript, the GitOps-friendly output of declarative YAML, and the runtime intelligence of continuous reconciliation.
@@ -45,7 +45,7 @@ Here's a complete web application with database in ~30 lines of TypeScript:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from '@yehudacohen/typekro';
+import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
 
 // Define your app's interface
 const WebAppSchema = {
@@ -401,7 +401,7 @@ env: {
 
 #### Complex Expressions
 ```typescript
-import { Cel } from '@yehudacohen/typekro';
+import { Cel } from 'typekro';
 
 env: {
   // Boolean logic
@@ -515,7 +515,7 @@ For comprehensive documentation, examples, and guides:
 ## Installation
 
 ```bash
-bun add @yehudacohen/typekro
+bun add typekro
 ```
 
 TypeKro automatically includes all necessary dependencies:
@@ -533,7 +533,7 @@ Create a complete web application stack with TypeKro's modern API.
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from '@yehudacohen/typekro';
+import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
 
 // 1. Define your application schema
 const WebAppSpecSchema = type({
@@ -771,7 +771,7 @@ This `$fieldName` syntax is the explicit way to override the default "eager valu
 TypeKro provides powerful CEL (Common Expression Language) support for complex runtime logic. CEL expressions are type-safe and can reference multiple resources.
 
 ```typescript
-import { simpleDeployment, Cel, toKroResourceGraph } from '@yehudacohen/typekro';
+import { simpleDeployment, Cel, toKroResourceGraph } from 'typekro';
 
 const database = simpleDeployment({
   name: 'postgres',
@@ -845,7 +845,7 @@ import {
   simpleIngress,
   simpleConfigMap,
   Cel 
-} from '@yehudacohen/typekro';
+} from 'typekro';
 
 const MicroservicesSpecSchema = type({
   environment: "'development' | 'staging' | 'production'",
@@ -991,7 +991,7 @@ const microservicesGraph = toResourceGraph(
 Secure database connections using Kubernetes secrets:
 
 ```typescript
-import { simpleSecret, simpleDeployment, simpleService } from '@yehudacohen/typekro';
+import { simpleSecret, simpleDeployment, simpleService } from 'typekro';
 
 const databaseGraph = toResourceGraph(
   {
@@ -1419,7 +1419,7 @@ const webapp = simpleDeployment({
 Define your own CRDs with `arktype` for execution-time and runtime validation.
 
 ```typescript
-import { customResource, Type } from '@yehudacohen/typekro';
+import { customResource, Type } from 'typekro';
 
 const DatabaseSpec = Type({
   engine: "'postgresql' | 'mysql'",
@@ -1560,7 +1560,7 @@ TypeKro integrates with [Alchemy](https://alchemy.js.org) to provide **resource 
 
 ```typescript
 import alchemy from 'alchemy';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from '@yehudacohen/typekro';
+import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
 
 // 1. Create your TypeKro resource graph
 const webappGraph = toResourceGraph(

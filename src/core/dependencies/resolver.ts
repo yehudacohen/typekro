@@ -5,7 +5,7 @@
  * topological ordering for deployment.
  */
 
-import { isCelExpression, isKubernetesRef } from '../../utils/index.js';
+import { isCelExpression, isKubernetesRef } from './type-guards.js';
 import { CircularDependencyError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';

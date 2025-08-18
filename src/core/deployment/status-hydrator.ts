@@ -34,7 +34,7 @@ interface StatusCacheEntry<T> {
  * after resources are confirmed ready by ResourceReadinessChecker
  */
 export class StatusHydrator {
-  private statusCache = new Map<string, StatusCacheEntry<any>>();
+  private statusCache = new Map<string, StatusCacheEntry<unknown>>();
   private readonly defaultOptions: Required<StatusHydrationOptions> = {
     enableCaching: true,
     cacheTtl: 30000, // 30 seconds
@@ -55,7 +55,7 @@ export class StatusHydrator {
   /**
    * Hydrate status fields for a single resource
    */
-  async hydrateStatus<TSpec, TStatus>(
+  async hydrateStatus<TSpec, TStatus extends Record<string, unknown>>(
     enhanced: Enhanced<TSpec, TStatus>,
     deployedResource?: DeployedResource
   ): Promise<{ success: boolean; resourceId: string; hydratedFields: string[]; error?: Error }> {
@@ -78,7 +78,7 @@ export class StatusHydrator {
 
       // Check cache first if enabled
       if (this.mergedOptions.enableCaching) {
-        const cached = this.getFromCache<any>(cacheKey);
+        const cached = this.getFromCache<TStatus>(cacheKey);
         if (cached) {
           // Populate Enhanced proxy with cached data
           this.populateEnhancedStatus(enhanced, cached, hydratedFields);
@@ -94,7 +94,7 @@ export class StatusHydrator {
       }
 
       // Extract status data
-      const status = liveStatus.status;
+      const status = liveStatus.status as TStatus;
 
       if (!status) {
         return { success: false, resourceId, hydratedFields: [], error: new Error('No status found') };
@@ -127,7 +127,7 @@ export class StatusHydrator {
    */
   async hydrateStatusFromLiveData<TSpec, TStatus>(
     enhanced: Enhanced<TSpec, TStatus>,
-    liveResourceData: any,
+    liveResourceData: KubernetesResource<TSpec, TStatus>,
     deployedResource: DeployedResource
   ): Promise<{ success: boolean; resourceId: string; hydratedFields: string[]; error?: Error }> {
     try {
@@ -165,12 +165,12 @@ export class StatusHydrator {
   /**
    * Populate Enhanced proxy status fields with live data
    */
-  private populateEnhancedStatus<TSpec, TStatus>(
+  private populateEnhancedStatus<TSpec, TStatus extends Record<string, unknown>>(
     enhanced: Enhanced<TSpec, TStatus>,
-    status: any,
+    status: TStatus,
     hydratedFields: string[]
   ): void {
-    const resourceId = (enhanced as any).__resourceId || enhanced.metadata?.name || 'unknown';
+    const resourceId = (enhanced as { __resourceId?: string }).__resourceId || enhanced.metadata?.name || 'unknown';
     const statusLogger = this.logger.child({ resourceId });
     
     statusLogger.debug('Populating enhanced status', {
@@ -179,37 +179,26 @@ export class StatusHydrator {
     });
     
     // Use type assertion to access the internal status object
-    const statusProxy = enhanced.status as any;
+    const statusProxy = enhanced.status as Record<string, unknown>;
 
-    // Common status fields that we try to hydrate
-    const commonFields = [
-      'replicas', 'readyReplicas', 'availableReplicas', 'updatedReplicas',
-      'podIP', 'hostIP', 'phase', 'conditions', 'loadBalancer', 'ingress',
-      'containerStatuses', 'initContainerStatuses'
-    ];
+    // Get all keys from the live status object
+    const allLiveStatusKeys = Object.keys(status || {});
 
-    for (const field of commonFields) {
-      if (status[field] !== undefined) {
-        try {
-          statusProxy[field] = status[field];
-          hydratedFields.push(field);
-          statusLogger.debug('Status field hydrated', { field, value: status[field] });
-        } catch (error) {
-          statusLogger.debug('Failed to set status field', { field, error: (error as Error).message });
-          // Ignore errors when setting proxy fields
+    for (const field of allLiveStatusKeys) {
+        // Check if the field exists on the live status
+        if (status[field] !== undefined) {
+            try {
+                // Assign the value directly to the proxy.
+                // The proxy's setter will handle it.
+                statusProxy[field] = status[field];
+                hydratedFields.push(field);
+                statusLogger.debug('Status field hydrated', { field, value: status[field] });
+            } catch (error) {
+                statusLogger.debug('Failed to set status field', { field, error: (error as Error).message });
+            }
         }
-      }
     }
 
-    // Try to set nested fields for LoadBalancer services
-    if (status.loadBalancer?.ingress?.length > 0) {
-      try {
-        statusProxy.loadBalancer = status.loadBalancer;
-        hydratedFields.push('loadBalancer');
-      } catch (_error) {
-        // Ignore errors when setting proxy fields
-      }
-    }
   }
 
   /**
@@ -272,11 +261,12 @@ export class StatusHydrator {
       });
 
       return response.body as KubernetesResource;
-    } catch (error: any) {
-      if (error.statusCode === 404) {
+    } catch (error: unknown) {
+      const apiError = error as { statusCode?: number };
+      if (apiError.statusCode === 404) {
         queryLogger.warn('Resource not found');
       } else {
-        queryLogger.error('Failed to query resource status', error);
+        queryLogger.error('Failed to query resource status', error as Error);
       }
       return null;
     }
@@ -339,12 +329,12 @@ export class StatusHydrator {
 /**
  * Hydrates status fields by combining Kro-resolved dynamic fields with static fields
  */
-export async function hydrateStatus<T extends Record<string, any>>(
-  kroStatus: Record<string, any>,
-  staticFields: Record<string, any>
+export async function hydrateStatus<T extends Record<string, unknown>>(
+  kroStatus: Record<string, unknown>,
+  staticFields: Record<string, unknown>
 ): Promise<T> {
   // Evaluate static fields (resolve any CEL expressions that don't require Kubernetes resources)
-  const evaluatedStaticFields: Record<string, any> = {};
+  const evaluatedStaticFields: Record<string, unknown> = {};
 
   for (const [fieldName, fieldValue] of Object.entries(staticFields)) {
     // For now, just use direct values since static fields shouldn't have CEL expressions

@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { KubernetesRef } from '../../src/index';
 import { createSchemaProxy, isSchemaReference } from '../../src/index';
+import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Schema Proxy Factory', () => {
@@ -118,7 +119,7 @@ describe('Schema Proxy Factory', () => {
 
       // Create a mock external reference (like what externalRef would create)
       const externalRef = {
-        [Symbol.for('TypeKro.KubernetesRef')]: true,
+        [KUBERNETES_REF_BRAND]: true as const,
         resourceId: 'some-external-resource-id',
         fieldPath: 'status.someField',
       } as KubernetesRef<any>;

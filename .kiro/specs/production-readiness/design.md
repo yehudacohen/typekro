@@ -1082,4 +1082,91 @@ const TEST_CONFIG: TestConfig = {
 4. **Medium Priority**: Enhance test cleanup and isolation
 5. **Low Priority**: Add comprehensive test configuration
 
+## 9. Architectural Improvements
+
+### Module Refactoring Strategy
+
+#### Current Issues
+- **Large Modules**: `alchemy/deployment.ts` (579 lines) and `core/deployment/deployment-strategies.ts` (1258 lines) are too large
+- **Circular Dependencies**: Multiple `require()` calls indicate circular dependency issues
+- **Inconsistent APIs**: Different deletion methods across components
+- **Poor Error Chaining**: `new Error(error.message)` patterns lose original error context
+
+#### Refactoring Plan
+
+**1. Break Down Large Modules**
+```
+alchemy/deployment.ts → 
+  alchemy/registration/
+    ├── resource-registry.ts      # REGISTERED_TYPES management
+    ├── type-inference.ts         # inferAlchemyTypeFromTypeKroResource
+    └── provider-factory.ts       # ensureResourceTypeRegistered
+  alchemy/deployers/
+    ├── direct-deployer.ts        # DirectTypeKroDeployer
+    ├── kro-deployer.ts          # KroTypeKroDeployer
+    └── deployer-interface.ts     # TypeKroDeployer interface
+  alchemy/config/
+    └── kubeconfig-options.ts     # SerializableKubeConfigOptions
+
+core/deployment/deployment-strategies.ts →
+  core/deployment/strategies/
+    ├── direct-strategy.ts        # DirectDeploymentStrategy
+    ├── kro-strategy.ts          # KroDeploymentStrategy
+    ├── alchemy-strategy.ts      # AlchemyDeploymentStrategy
+    └── strategy-factory.ts      # createDeploymentStrategy
+```
+
+**2. Eliminate Circular Dependencies**
+- Create joining modules that import and re-export without creating cycles
+- Move shared types to dedicated type-only modules
+- Use dependency injection instead of dynamic imports
+- Replace all `require()` calls with proper ES6 imports
+
+**3. Unify Engine APIs**
+```typescript
+// Make DirectDeploymentEngine.deleteResource() public
+export class DirectDeploymentEngine {
+  // Change from private to public
+  public async deleteResource(resource: DeployedResource): Promise<void> {
+    // Existing implementation
+  }
+}
+
+// Update all deployers to use consistent deletion
+class DirectTypeKroDeployer {
+  async delete(resource: T, options: DeploymentOptions): Promise<void> {
+    // Use engine.deleteResource() instead of custom logic
+    await this.engine.deleteResource(convertToDeployedResource(resource));
+  }
+}
+```
+
+**4. Improve Error Handling**
+```typescript
+// Replace this pattern:
+throw new Error(`Deployment failed: ${error.message}`);
+
+// With proper error chaining:
+throw new ResourceDeploymentError(
+  `Deployment failed for ${resource.kind}/${resource.name}`,
+  { cause: error, resourceId: resource.id, namespace: resource.namespace }
+);
+```
+
+### Benefits of Refactoring
+
+1. **Maintainability**: Smaller, focused modules are easier to understand and modify
+2. **Testability**: Single-responsibility modules are easier to unit test
+3. **Reusability**: Extracted utilities can be reused across the codebase
+4. **Debugging**: Proper error chaining preserves full error context
+5. **Build Performance**: Eliminating circular dependencies improves build times
+6. **API Consistency**: Unified deletion methods reduce cognitive load
+
+### Migration Strategy
+
+1. **Phase 1**: Extract utilities and interfaces (no breaking changes)
+2. **Phase 2**: Refactor internal implementations (maintain public APIs)
+3. **Phase 3**: Unify APIs and improve error handling
+4. **Phase 4**: Update documentation and examples
+
 This approach will make the test suite more reliable and faster, while providing better debugging information when tests do fail.
