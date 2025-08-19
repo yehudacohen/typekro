@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress';
+import { withMermaid } from 'vitepress-plugin-mermaid';
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: 'TypeKro',
   description: 'Hypermodern Infrastructure-as-Code for Kubernetes with TypeScript',
 
@@ -135,16 +136,14 @@ export default defineConfig({
     ],
   },
 
+  // Mermaid configuration
+  mermaid: {
+    theme: 'default',
+  },
+
   ignoreDeadLinks: [
-    // Ignore dead links for pages we haven't created yet
-    /\/microservices$/,
-    /\/multi-environment$/,
-    /\/cicd$/,
-    /\/monitoring$/,
-    /\/factories\/storage$/,
-    /\/factories\/config$/,
-    /\/factories\/rbac$/,
+    // Ignore dead links for external resources
     /typekro-examples$/,
     /discord\.gg\/typekro$/,
   ],
-});
+}));
