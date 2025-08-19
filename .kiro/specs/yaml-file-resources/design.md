@@ -1,12 +1,42 @@
 # Design Document
 
+## Glossary
+
+- **YAML Factory Functions**: Functions like `yamlFile()` and `yamlDirectory()` that return deployment closures
+- **Deployment Closures**: Functions returned by YAML factories that execute during deployment phase
+- **Enhanced Resources**: Traditional TypeKro resources created with `createResource()` that return Enhanced objects
+- **Direct Mode**: Deployment strategy that applies resources directly to Kubernetes cluster
+- **Kro Mode**: Deployment strategy that creates ResourceGraphDefinitions for Kro Controller to manage
+- **Bootstrap Compositions**: Pre-built compositions for deploying infrastructure controllers
+- **Path Resolution**: System for loading content from local files, Git repositories, or HTTP URLs
+
 ## Overview
 
-This design adds deployment closure functions for deploying YAML files and directories through both Direct and Kro factory modes. These closures execute during the deployment phase and work universally across TypeKro's deployment strategies, making them perfect for bootstrap scenarios and deploying static manifests.
+This design adds **YAML factory functions** that return **deployment closures** for deploying YAML files and directories through both Direct and Kro factory modes. These deployment closures execute during the deployment phase and work universally across TypeKro's deployment strategies, making them perfect for bootstrap scenarios and deploying static manifests.
 
 The design also includes proper TypeKro factories for Helm and Kustomize resources that integrate fully with TypeKro's composition patterns and reference system.
 
 ## Architecture
+
+### Fundamental Architecture Decision
+
+**YAML factory functions are NOT Enhanced resources**. Instead, they return **deployment closures** that execute during the deployment phase. This design choice enables:
+
+1. **Pre-resource execution**: CRDs and controllers can be installed before Enhanced resources that depend on them
+2. **Universal mode support**: Same YAML factory functions work in both Direct and Kro modes
+3. **Future extensibility**: Closure pattern supports non-YAML deployment operations (Terraform, Pulumi, etc.)
+
+### Enhanced Resources vs Deployment Closures
+
+| Aspect | Enhanced Resources | Deployment Closures |
+|--------|-------------------|-------------------|
+| **Created by** | `createResource()` | YAML factory functions |
+| **Returns** | `Enhanced<TSpec, TStatus>` | `DeploymentClosure<AppliedResource[]>` |
+| **When executed** | During resource deployment phase | Before resource deployment phase |
+| **Status hydration** | Yes, live cluster data | No, fire-and-forget |
+| **Dependency graph** | Full participation | Input dependencies only |
+| **Readiness evaluation** | Built-in support | External monitoring only |
+| **Use cases** | Application resources | Infrastructure bootstrap |
 
 ### Integration with Existing Domain Model
 
@@ -24,7 +54,7 @@ graph TB
         Readiness[Readiness System]
     end
     
-    subgraph "YAML Resources Extension"
+    subgraph "YAML File Resources Extension"
         YamlFactory[YAML Factory Functions]
         HelmFactory[Helm Factory Functions]
         KustomizeFactory[Kustomize Factory Functions]
@@ -45,14 +75,14 @@ graph TB
 
 ### Core Principles
 
-1. **Simple YAML Resources**: YAML functions apply static manifests with minimal configuration - no complex templating
-2. **Closure-Based Architecture**: Return closures during composition, execute during deployment phase - enables future closure types
+1. **Simple Static Manifests**: YAML factory functions apply static manifests with minimal configuration - no complex templating
+2. **Closure-Based Architecture**: Return deployment closures during composition, execute during deployment phase - enables future closure types
 3. **Universal Mode Support**: Work in both Direct and Kro factory modes with appropriate validation
 4. **Dynamic Namespace Support**: Support references to dynamically generated namespaces (Direct mode only)
 5. **Alchemy Integration**: Respect alchemy scope when deployment factory has it configured
 6. **Bootstrap-Friendly**: Perfect for installing CRDs, controllers, and infrastructure components
-7. **Level-Based Execution**: Execute closures when their dependencies become available
-8. **Consistent Failure Behavior**: YAML closures participate in the same failure and rollback semantics as Enhanced<> resources
+7. **Level-Based Execution**: Execute deployment closures when their dependencies become available
+8. **Consistent Failure Behavior**: Deployment closures participate in the same failure and rollback semantics as Enhanced resources
 9. **Unified Path Handling**: Support local files, directories, and Git repositories
 10. **Future Extensibility**: Closure pattern supports future non-YAML deployment operations
 
@@ -60,22 +90,23 @@ graph TB
 
 ### 1. YAML Factory Functions
 
-Factory-style functions that return closures during composition, executed during deployment based on dependency levels:
+YAML factory functions that return deployment closures during composition, executed during deployment based on dependency levels:
 
 ```typescript
 // src/factories/kubernetes/yaml/yaml-file.ts
 export interface YamlFileConfig {
   name: string;
-  path: string; // Supports: "./local/file.yaml", "git:github.com/org/repo/path/file.yaml"
+  path: string; // Supports: "./local/file.yaml", "git:github.com/owner/repo/path/file.yaml@ref"
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
+  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail'; // Default: 'replace'
 }
 
 /**
  * Deploy a YAML file during deployment phase
  * 
- * This looks like a factory function but returns a closure that executes during
+ * This YAML factory function returns a deployment closure that executes during
  * deployment. The closure receives deployment context (including alchemy scope)
- * and applies manifests directly to Kubernetes in parallel with Enhanced<> resources.
+ * and applies manifests directly to Kubernetes before Enhanced resources are deployed.
  * 
  * @example
  * ```typescript
@@ -88,14 +119,14 @@ export interface YamlFileConfig {
  *     status: type({ ready: 'boolean' })
  *   },
  *   (schema) => ({
- *     // This returns a closure, stored in composition context
- *     crds: yamlFile({
- *       name: 'flux-crds',
- *       path: 'git:github.com/fluxcd/flux2/manifests/crds@main'
- *     }),
- *     
- *     // This is a normal Enhanced<> resource
- *     webapp: helmRelease({
+  *     // This returns a deployment closure, stored in composition context
+  *     crds: yamlFile({
+  *       name: 'flux-crds',
+  *       path: 'git:github.com/fluxcd/flux2/manifests/crds@main'
+  *     }),
+  *     
+  *     // This is a normal Enhanced resource
+  *     webapp: helmRelease({
  *       name: 'nginx',
  *       chart: { repository: 'https://charts.bitnami.com/bitnami', name: 'nginx' },
  *       values: { replicas: schema.spec.replicas }
@@ -105,31 +136,40 @@ export interface YamlFileConfig {
  * );
  * ```
  */
-export function yamlFile(config: YamlFileConfig): YamlDeploymentClosure {
-  // Return a closure that will be executed during deployment when dependencies are ready
-  return async (deploymentContext: DeploymentContext) => {
+export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResource[]> {
+  // Return a deployment closure that will be executed during deployment when dependencies are ready
+  return async (deploymentContext: DeploymentContext): Promise<AppliedResource[]> => {
     const pathResolver = new PathResolver();
     
-    const yamlContent = await pathResolver.resolveContent(config.path);
-    const manifests = parseYamlManifests(yamlContent);
+    // Resolve any references in the config (e.g., namespace could reference another resource)
+    const resolvedNamespace = config.namespace && isKubernetesRef(config.namespace) 
+      ? await deploymentContext.resolveReference(config.namespace)
+      : config.namespace;
     
-    const results = [];
+    const resolvedContent = await pathResolver.resolveContent(config.path, config.name);
+    const manifests = parseYamlManifests(resolvedContent.content);
+    
+    const results: AppliedResource[] = [];
+    const strategy = config.deploymentStrategy || 'replace';
+    
     for (const manifest of manifests) {
-      // Simple namespace override - no complex templating
-      if (config.namespace && !manifest.metadata?.namespace) {
-        manifest.metadata = { ...manifest.metadata, namespace: config.namespace };
+      if (resolvedNamespace && !manifest.metadata?.namespace) {
+        manifest.metadata = { ...manifest.metadata, namespace: resolvedNamespace as string };
       }
       
       // Apply via alchemy if scope is configured, otherwise direct to Kubernetes
-      let result;
-      if (deploymentContext.alchemyScope) {
-        result = await deploymentContext.alchemyScope.apply(manifest);
+      if (deploymentContext.kubernetesApi) {
+        await deploymentContext.kubernetesApi.create(manifest);
       } else {
-        const kubernetesApi = deploymentContext.kubernetesApi || getDefaultKubernetesApi();
-        result = await kubernetesApi.apply(manifest);
+        throw new Error('No Kubernetes API available for YAML deployment');
       }
       
-      results.push(result);
+      results.push({
+        kind: manifest.kind || 'Unknown',
+        name: manifest.metadata?.name || 'unknown',
+        namespace: manifest.metadata?.namespace || undefined,
+        apiVersion: manifest.apiVersion || 'v1'
+      });
     }
     
     return results;
@@ -138,15 +178,19 @@ export function yamlFile(config: YamlFileConfig): YamlDeploymentClosure {
 
 export interface YamlDirectoryConfig {
   name: string;
-  path: string;
+  path: string; // Supports: "./local/dir", "git:github.com/owner/repo/path/dir@ref"
   recursive?: boolean;
-  include?: string[];
-  exclude?: string[];
+  include?: string[]; // Glob patterns
+  exclude?: string[]; // Glob patterns
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
+  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail'; // Default: 'replace'
 }
 
 /**
  * Deploy YAML files from a directory during deployment phase
+ * 
+ * This YAML factory function returns a deployment closure that processes all YAML files
+ * in a directory and executes during deployment before Enhanced resources are deployed.
  * @example
  * ```typescript
  * const graph = toResourceGraph(
@@ -158,15 +202,15 @@ export interface YamlDirectoryConfig {
  *     status: type({ ready: 'boolean' })
  *   },
  *   (schema) => ({
- *     // Returns closure for deployment-time execution
- *     controllers: yamlDirectory({
- *       name: 'flux-controllers',
- *       path: 'git:github.com/fluxcd/flux2/manifests/install@main',
- *       namespace: 'flux-system'
- *     }),
- *     
- *     // Enhanced<> resources deploy in parallel
- *     app: helmRelease({
+  *     // Returns deployment closure for deployment-time execution
+  *     controllers: yamlDirectory({
+  *       name: 'flux-controllers',
+  *       path: 'git:github.com/fluxcd/flux2/manifests/install@main',
+  *       namespace: 'flux-system'
+  *     }),
+  *     
+  *     // Enhanced resources deploy after closures
+  *     app: helmRelease({
  *       name: 'my-app',
  *       chart: { repository: 'https://charts.example.com', name: 'app' }
  *     })
@@ -175,20 +219,22 @@ export interface YamlDirectoryConfig {
  * );
  * ```
  */
-export function yamlDirectory(config: YamlDirectoryConfig): YamlDeploymentClosure {
-  // Return closure that will be executed during deployment
-  return async (deploymentContext: DeploymentContext) => {
+export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<AppliedResource[]> {
+  // Return deployment closure that will be executed during deployment
+  return async (deploymentContext: DeploymentContext): Promise<AppliedResource[]> => {
     const pathResolver = new PathResolver();
     const yamlFiles = await pathResolver.discoverYamlFiles(config.path, {
       recursive: config.recursive ?? true,
       include: config.include ?? ['**/*.yaml', '**/*.yml'],
       exclude: config.exclude ?? []
-    });
+    }, config.name);
     
-    const allResults = [];
-    for (const filePath of yamlFiles) {
-      const yamlContent = await pathResolver.resolveContent(filePath);
-      const manifests = parseYamlManifests(yamlContent);
+    const allResults: AppliedResource[] = [];
+    const strategy = config.deploymentStrategy || 'replace';
+    
+    for (const discoveredFile of yamlFiles) {
+      // Use the pre-fetched content from the discovered file
+      const manifests = parseYamlManifests(discoveredFile.content);
       
       for (const manifest of manifests) {
         // Resolve namespace references
@@ -197,22 +243,21 @@ export function yamlDirectory(config: YamlDirectoryConfig): YamlDeploymentClosur
           : config.namespace;
           
         if (resolvedNamespace && !manifest.metadata?.namespace) {
-          manifest.metadata = { ...manifest.metadata, namespace: resolvedNamespace };
+          manifest.metadata = { ...manifest.metadata, namespace: resolvedNamespace as string };
         }
         
-        // Apply via alchemy if scope is configured, otherwise direct to Kubernetes
-        let result;
-        if (deploymentContext.alchemyScope) {
-          result = await deploymentContext.alchemyScope.apply(manifest);
+        // Apply via Kubernetes API
+        if (deploymentContext.kubernetesApi) {
+          await deploymentContext.kubernetesApi.create(manifest);
         } else {
-          result = await deploymentContext.kubernetesApi!.create(manifest);
+          throw new Error('No Kubernetes API available for YAML deployment');
         }
         
         allResults.push({
-          kind: manifest.kind,
+          kind: manifest.kind || 'Unknown',
           name: manifest.metadata?.name || 'unknown',
-          namespace: manifest.metadata?.namespace,
-          apiVersion: manifest.apiVersion
+          namespace: manifest.metadata?.namespace || undefined,
+          apiVersion: manifest.apiVersion || 'v1'
         });
       }
     }
@@ -368,13 +413,39 @@ export function kustomization(config: KustomizationConfig): Enhanced<Kustomizati
 }
 ```
 
-### 3. Level-Based Closure Execution with CRD Establishment
+### 3. Deployment Execution Timeline
 
-YAML closures integrate with the existing level-based deployment architecture with a critical enhancement: **closures execute at level -1 (before all resources)** to ensure CRD-installing closures run before custom resources that depend on those CRDs.
+**Deployment closures execute before Enhanced resources** to ensure proper dependency ordering:
+
+```
+Deployment Timeline:
+┌─────────────────────────────────────────────────────────────┐
+│ Phase 1: Deployment Closure Execution (Level -1)           │
+│ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐           │
+│ │ YAML CRDs   │ │ Controllers │ │ Bootstrap   │           │
+│ │ yamlFile()  │ │ yamlDir()   │ │ Components  │           │
+│ └─────────────┘ └─────────────┘ └─────────────┘           │
+│                                                             │
+│ Phase 2: CRD Establishment Wait                            │
+│ ┌─────────────────────────────────────────────────────────┐ │
+│ │ TypeKro waits for custom resource CRDs to be ready     │ │
+│ └─────────────────────────────────────────────────────────┘ │
+│                                                             │
+│ Phase 3: Enhanced Resource Deployment (Level 0+)          │
+│ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐           │
+│ │ HelmRelease │ │ Application │ │ Custom      │           │
+│ │ Resources   │ │ Deployments │ │ Resources   │           │
+│ └─────────────┘ └─────────────┘ └─────────────┘           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Level-Based Closure Execution with CRD Establishment
+
+Deployment closures integrate with the existing level-based deployment architecture with a critical enhancement: **deployment closures execute at level -1 (before all resources)** to ensure CRD-installing closures run before custom resources that depend on those CRDs.
 
 #### Key Design Principles
 
-1. **Pre-Resource Execution**: All closures execute before any Enhanced<> resources to ensure CRDs are established first
+1. **Pre-Resource Execution**: All closures execute before any Enhanced resources to ensure CRDs are established first
 2. **CRD Establishment**: Custom resources automatically wait for their CRDs to be established before deployment
 3. **Parallel Closure Execution**: Multiple closures execute in parallel at the pre-resource level
 4. **Dependency-Aware**: Future enhancement will support closure dependency analysis for more sophisticated ordering
@@ -451,7 +522,7 @@ export class DirectDeploymentEngine {
     options: DeploymentOptions,
     spec: TSpec
   ): Promise<DeploymentResult> {
-    // 1. Analyze deployment plan for Enhanced<> resources
+    // 1. Analyze deployment plan for Enhanced resources
     const deploymentPlan = this.dependencyResolver.analyzeDeploymentOrder(graph.dependencyGraph);
     
     // 2. Analyze closure dependencies (currently assigns all to level -1)
@@ -465,7 +536,7 @@ export class DirectDeploymentEngine {
       const currentLevel = enhancedPlan.levels[levelIndex];
       
       // Level 0: Execute all closures in parallel (CRD installation, etc.)
-      // Level 1+: Execute Enhanced<> resources with automatic CRD establishment waiting
+      // Level 1+: Execute Enhanced resources with automatic CRD establishment waiting
       const levelPromises = [
         ...currentLevel.resources.map(resourceId => this.deployResourceWithCRDWait(resourceId)),
         ...currentLevel.closures.map(closureInfo => this.executeClosure(closureInfo, deploymentContext))
@@ -501,7 +572,7 @@ export class DirectDeploymentEngine {
       });
     }
     
-    // Level 1+: Enhanced<> resources (shifted if pre-resource level exists)
+    // Level 1+: Enhanced resources (shifted if pre-resource level exists)
     for (let i = 0; i < deploymentPlan.levels.length; i++) {
       enhancedLevels.push({
         resources: deploymentPlan.levels[i] || [],
@@ -526,32 +597,32 @@ export class DirectDeploymentStrategy<TSpec, TStatus> {
       // 1. Resolve Enhanced<> resources normally
       const resources = this.resourceResolver.resolveResourcesForSpec(spec);
       
-      // 2. Collect YAML closures from composition
-      const yamlClosures = this.collectYamlClosures();
+      // 2. Collect deployment closures from composition
+      const deploymentClosures = this.collectDeploymentClosures();
       
       // 3. Create deployment context
       const deploymentContext: DeploymentContext = {
         kubernetesApi: this.getKubernetesApi(),
         alchemyScope: this.getAlchemyScope(),
-        namespace: this.namespace
+        namespace: this.namespace,
+        deployedResources: new Map(),
+        resolveReference: (ref) => this.resolveReference(ref)
       };
       
-      // 4. Execute YAML closures in parallel with Enhanced<> resource deployment
-      const yamlPromises = yamlClosures.map(closure => closure(deploymentContext));
+      // 4. Execute deployment closures before Enhanced resource deployment
+      const closurePromises = deploymentClosures.map(closure => closure(deploymentContext));
       
       // 5. Create resource graph from Enhanced<> resources
       const resourceGraph = this.createResourceGraph(resources);
       
-      // 6. Deploy Enhanced<> resources in parallel with YAML closures
-      const [yamlResults, deploymentResult] = await Promise.all([
-        Promise.all(yamlPromises),
-        this.deploymentEngine.deploy(resourceGraph, deploymentOptions)
-      ]);
+      // 6. Execute deployment closures first, then deploy Enhanced resources
+      const closureResults = await Promise.all(closurePromises);
+      const deploymentResult = await this.deploymentEngine.deploy(resourceGraph, deploymentOptions);
       
       // 7. Combine results
       return {
         ...deploymentResult,
-        yamlResults: yamlResults.flat()
+        closureResults: closureResults.flat()
       };
     } catch (error) {
       throw new ResourceDeploymentError(
@@ -561,10 +632,10 @@ export class DirectDeploymentStrategy<TSpec, TStatus> {
     }
   }
 
-  private collectYamlClosures(): YamlDeploymentClosure[] {
-    // Collect YAML closures from the composition context
+  private collectDeploymentClosures(): DeploymentClosure[] {
+    // Collect deployment closures from the composition context
     // This would be implemented based on how closures are stored during composition
-    return this.compositionContext.yamlClosures || [];
+    return this.compositionContext.deploymentClosures || [];
   }
 }
 ```
@@ -574,31 +645,31 @@ export class DirectDeploymentStrategy<TSpec, TStatus> {
 export class DirectDeploymentStrategy<TSpec, TStatus> {
   protected async executeDeployment(spec: TSpec, instanceName: string): Promise<DeploymentResult> {
     try {
-      // 1. Resolve resources and collect YAML closures
-      const { resources, yamlClosures } = this.resourceResolver.resolveResourcesForSpec(spec);
+      // 1. Resolve resources and collect deployment closures
+      const { resources, deploymentClosures } = this.resourceResolver.resolveResourcesForSpec(spec);
       
-      // 2. Execute YAML closures in parallel
+      // 2. Execute deployment closures first
       const deploymentContext: DeploymentContext = {
         kubernetesApi: this.getKubernetesApi(),
         alchemyScope: this.getAlchemyScope(),
-        namespace: this.namespace
+        namespace: this.namespace,
+        deployedResources: new Map(),
+        resolveReference: (ref) => this.resolveReference(ref)
       };
       
-      const yamlPromises = yamlClosures.map(closure => closure(deploymentContext));
+      const closurePromises = deploymentClosures.map(closure => closure(deploymentContext));
       
       // 3. Create resource graph from Enhanced<> resources
       const resourceGraph = this.createResourceGraph(resources);
       
-      // 4. Deploy Enhanced<> resources in parallel with YAML closures
-      const [yamlResults, deploymentResult] = await Promise.all([
-        Promise.all(yamlPromises),
-        this.deploymentEngine.deploy(resourceGraph, deploymentOptions)
-      ]);
+      // 4. Execute closures first, then deploy Enhanced resources
+      const closureResults = await Promise.all(closurePromises);
+      const deploymentResult = await this.deploymentEngine.deploy(resourceGraph, deploymentOptions);
       
       // 5. Combine results
       return {
         ...deploymentResult,
-        yamlResults: yamlResults.flat()
+        closureResults: closureResults.flat()
       };
     } catch (error) {
       throw new ResourceDeploymentError(
@@ -615,9 +686,9 @@ export class DirectDeploymentStrategy<TSpec, TStatus> {
 Types for YAML factory functions that return deployment closures:
 
 ```typescript
-// Add to src/core/types/deployment.ts
+// Already defined in src/core/types/deployment.ts
 
-export type YamlDeploymentClosure = (deploymentContext: DeploymentContext) => Promise<AppliedResource[]>;
+export type DeploymentClosure<T = AppliedResource[]> = (deploymentContext: DeploymentContext) => Promise<T>;
 
 export interface AppliedResource {
   kind: string;
@@ -690,6 +761,30 @@ export class PathResolver {
 
 Utility functions for common bootstrap scenarios:
 
+#### Bootstrap Failure Scenarios
+
+Bootstrap workflows involve multiple dependent components and can fail at various stages:
+
+**Common Failure Points:**
+1. **Git Repository Access**: Network issues or authentication failures
+2. **CRD Installation**: Invalid YAML manifests or Kubernetes API errors  
+3. **Controller Readiness**: Controllers fail to start or become ready
+4. **Resource Dependencies**: Circular dependencies or missing prerequisites
+
+**Failure Handling Strategy:**
+- **Fail Fast**: If any deployment closure fails, stop the entire bootstrap process
+- **Clear Error Messages**: Include component name, failure reason, and recovery suggestions
+- **Partial State Recovery**: Allow retry of failed components without redeploying successful ones
+- **Dependency Validation**: Pre-validate Git URLs and manifest syntax before deployment
+
+**Recovery Procedures:**
+- **Network Issues**: Retry with exponential backoff, suggest local file alternatives
+- **Authentication**: Provide clear guidance on Git credentials and permissions
+- **Invalid Manifests**: Show YAML validation errors with line numbers and suggestions
+- **Controller Failures**: Include pod logs and status information in error messages
+
+*Note: Detailed failure handling will be implemented in bootstrap compositions (Tasks 6.1-6.5)*
+
 Pre-built compositions for common infrastructure patterns:
 
 ```typescript
@@ -697,20 +792,13 @@ Pre-built compositions for common infrastructure patterns:
 import { type } from 'arktype';
 import { toResourceGraph } from '../../core/factory.js';
 import { namespace } from '../../factories/kubernetes/core/namespace.js';
-import { yamlDirectory } from '../../factories/kubernetes/yaml/yaml-directory.js';
-import { deploymentReadyEvaluator } from '../../factories/kubernetes/yaml/readiness-evaluators.js';
+import { yamlFile } from '../../factories/kubernetes/yaml/yaml-file.js';
+import { helmResource } from '../../factories/helm/helm-resource.js';
 
 export function typeKroRuntimeBootstrap(config: {
   namespace?: string;
-  helmController?: {
-    version?: string;
-  };
-  kustomizeController?: {
-    version?: string;
-  };
-  kroController?: {
-    version?: string;
-  };
+  fluxVersion?: string;
+  kroVersion?: string;
 } = {}) {
   return toResourceGraph(
     {
@@ -723,8 +811,7 @@ export function typeKroRuntimeBootstrap(config: {
       status: type({
         phase: '"Pending" | "Installing" | "Ready" | "Failed"',
         components: {
-          helmController: 'boolean',
-          kustomizeController: 'boolean',
+          fluxControllers: 'boolean',
           kroController: 'boolean',
         },
       }),
@@ -737,22 +824,43 @@ export function typeKroRuntimeBootstrap(config: {
         },
       }),
 
-      // Helm Controller from GitHub - closure executes during deployment
-      helmController: yamlDirectory({
-        name: 'helm-controller',
-        path: `git:github.com/fluxcd/helm-controller/config/default@${config.helmController?.version ?? 'main'}`,
+      // Flux Controllers using yamlFile (similar to integration test approach)
+      fluxSystem: yamlFile({
+        name: 'flux-system',
+        path: `git:github.com/fluxcd/flux2/manifests/install@${config.fluxVersion ?? 'v2.4.0'}`,
         namespace: schema.spec.namespace,
       }),
 
-      // Kustomize Controller from GitHub - closure executes during deployment
-      kustomizeController: yamlDirectory({
-        name: 'kustomize-controller',
-        path: `git:github.com/fluxcd/kustomize-controller/config/default@${config.kustomizeController?.version ?? 'main'}`,
+      // Kro Controller using helmResource in Direct factory mode
+      kroController: helmResource({
+        name: 'kro',
         namespace: schema.spec.namespace,
+        chart: {
+          repository: 'https://charts.kro.run',
+          name: 'kro',
+          version: config.kroVersion ?? '0.1.0',
+        },
+        values: {
+          controller: {
+            replicas: 1,
+          },
+          webhook: {
+            enabled: true,
+          },
+        },
       }),
 
-      // Kro Controller from GitHub - closure executes during deployment
-      kroController: yamlDirectory({
+      // Status mapping showing readiness of all components
+      status: {
+        phase: 'Ready',
+        components: {
+          fluxControllers: true,
+          kroController: true,
+        },
+      },
+    })
+  );
+}
         name: 'kro-controller',
         path: `git:github.com/Azure/kro/config/default@${config.kroController?.version ?? 'main'}`,
         namespace: schema.spec.namespace,
@@ -816,6 +924,31 @@ export function webAppWithHelm(config: {
       url: `https://${schema.spec.hostname}`,
     })
   );
+}
+
+// Usage in e2e bootstrap script replacement
+// scripts/e2e-setup.ts
+export async function bootstrapE2EEnvironment() {
+  // Create bootstrap composition
+  const bootstrap = typeKroRuntimeBootstrap({
+    namespace: 'flux-system',
+    fluxVersion: 'v2.4.0',
+    kroVersion: '0.1.0',
+  });
+
+  // Deploy using Direct factory (replaces kubectl commands)
+  const factory = await bootstrap.factory('direct', {
+    namespace: 'flux-system',
+    waitForReady: true,
+    timeout: 300000, // 5 minutes
+  });
+
+  const instance = await factory.deploy({
+    namespace: 'flux-system',
+  });
+
+  console.log('TypeKro runtime bootstrap complete:', instance.status);
+  return instance;
 }
 ```
 
@@ -981,19 +1114,31 @@ const graph = toResourceGraph(
 
 ### Universal Mode Support
 
-YAML closures work in both Direct and Kro factory modes with different capabilities:
+Deployment closures work in both Direct and Kro factory modes with different capabilities:
 
-#### Direct Mode
-- **Full Feature Support**: All YAML closure features work including dynamic references
+#### Mode Compatibility Matrix
+
+| Feature | Direct Mode | Kro Mode | Notes |
+|---------|-------------|----------|-------|
+| **Static values** | ✅ Full support | ✅ Full support | Works identically |
+| **KubernetesRef inputs** | ✅ Full support | ❌ Validation error | Dynamic references not supported |
+| **Git URLs** | ✅ Full support | ✅ Full support | Works identically |
+| **Local files** | ✅ Full support | ⚠️ Limited | Must be available at RGD creation time |
+| **Namespace references** | ✅ Dynamic resolution | ❌ Static only | `schema.spec.namespace` won't work |
+| **Cross-resource refs** | ✅ Full support | ❌ Validation error | Cannot reference other Enhanced resources |
+| **Execution timing** | During deployment | Before RGD creation | Different execution context |
+
+#### Direct Mode (Recommended for Bootstrap)
+- **Full Feature Support**: All deployment closure features work including dynamic references
 - **Deployment Context**: Closures receive full deployment context with alchemy scope and Kubernetes API
 - **Reference Resolution**: KubernetesRef inputs are resolved at deployment time
-- **Parallel Execution**: Closures execute in parallel with Enhanced<> resource deployment
+- **Sequential Execution**: Closures execute before Enhanced resource deployment
 
-#### Kro Mode  
-- **Static Values Only**: YAML closures work with static configuration values
+#### Kro Mode (Limited Support)
+- **Static Values Only**: Deployment closures work with static configuration values
 - **Validation**: KubernetesRef inputs are detected and cause clear validation errors
 - **Pre-RGD Execution**: Closures execute before ResourceGraphDefinition creation
-- **Bootstrap Support**: Perfect for installing CRDs and controllers before RGD deployment
+- **Bootstrap Support**: Good for installing static controllers before RGD deployment
 
 #### Mode Selection Logic
 ```typescript
@@ -1222,18 +1367,25 @@ Following TypeKro's type safety testing guidelines:
 
 ```typescript
 describe('YAML Factory Type Safety', () => {
-  it('should provide type-safe access to YAML factory result properties', () => {
-    const yamlRes = yamlFile({
+  it('should return deployment closures with proper types', () => {
+    const yamlClosure = yamlFile({
       name: 'test-yaml',
       path: './test-manifests/configmap.yaml',
     });
 
-    // These should be properly typed without assertions
-    expect(yamlRes.name).toBe('test-yaml');
-    expect(yamlRes.path).toBe('./test-manifests/configmap.yaml');
+    // Should return a function (deployment closure)
+    expect(typeof yamlClosure).toBe('function');
     
-    // Should be thenable for dependency chains
-    expect(typeof yamlRes.then).toBe('function');
+    // Closure should be properly typed to return Promise<AppliedResource[]>
+    const mockContext: DeploymentContext = {
+      kubernetesApi: mockKubernetesApi,
+      deployedResources: new Map(),
+      resolveReference: jest.fn()
+    };
+    
+    // This should be properly typed without assertions
+    const result = yamlClosure(mockContext);
+    expect(result).toBeInstanceOf(Promise);
   });
 
   it('should support Helm releases with TypeKro references', () => {

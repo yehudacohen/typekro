@@ -2,29 +2,29 @@
 
 ## Introduction
 
-This feature enables TypeKro to represent YAML files and directories as intelligent first-class resources with automatic CRD dependency handling, readiness evaluator attachment, and seamless integration. The smart YAML system automatically detects CRDs, waits for establishment, finds appropriate readiness evaluators from a central registry, and handles complex deployment dependencies without requiring users to specify ordering or async operations. This capability works in both Direct and Kro factory modes, making it essential for deploying infrastructure components like Helm Controller and Kustomize Controller, and ultimately enables TypeKro to bootstrap its own runtime dependencies as a TypeScript-based package manager for Kubernetes clusters.
+This feature enables TypeKro to deploy YAML files and directories through **YAML factory functions** that return **deployment closures**. These deployment closures execute before Enhanced resources with automatic CRD dependency handling, path resolution for local/Git sources, and seamless integration with TypeKro's deployment strategies. The system automatically detects CRDs, waits for establishment, and handles complex deployment dependencies without requiring users to specify ordering or async operations. This capability works in both Direct and Kro factory modes, making it essential for deploying infrastructure components like Helm Controller and Kustomize Controller, and ultimately enables TypeKro to bootstrap its own runtime dependencies as a TypeScript-based package manager for Kubernetes clusters.
 
 ## Requirements
 
 ### Requirement 1
 
-**User Story:** As a platform engineer, I want to define YAML files as TypeKro resources, so that I can deploy static Kubernetes manifests alongside my composed resources.
+**User Story:** As a platform engineer, I want to use YAML factory functions to deploy static manifests via deployment closures, so that I can deploy static Kubernetes manifests alongside my composed Enhanced resources.
 
 #### Acceptance Criteria
 
-1. WHEN I define a YAML file resource THEN TypeKro SHALL create a resource that references the file path
+1. WHEN I use a YAML factory function THEN TypeKro SHALL create a deployment closure that references the file path
 2. WHEN I reference local or Git-based YAML files THEN TypeKro SHALL load the content at deployment time
-3. WHEN I deploy the resource graph THEN TypeKro SHALL apply the YAML content to the cluster
+3. WHEN I deploy the resource graph THEN TypeKro SHALL execute deployment closures to apply the YAML content to the cluster
 4. IF the YAML contains multiple documents THEN TypeKro SHALL handle each document as a separate Kubernetes resource
 5. WHEN the YAML file cannot be loaded THEN TypeKro SHALL provide clear path resolution errors
 
 ### Requirement 2
 
-**User Story:** As a platform engineer, I want to define directory structures containing YAML files as TypeKro resources, so that I can deploy entire Helm charts or Kustomize overlays.
+**User Story:** As a platform engineer, I want to use YAML factory functions for directory structures containing YAML files, so that I can deploy entire Helm charts or Kustomize overlays via deployment closures.
 
 #### Acceptance Criteria
 
-1. WHEN I define a directory resource THEN TypeKro SHALL recursively process all YAML files in the directory
+1. WHEN I use a directory YAML factory function THEN TypeKro SHALL create a deployment closure that recursively processes all YAML files in the directory
 2. WHEN I specify file patterns THEN TypeKro SHALL only include matching files
 3. WHEN I exclude certain files THEN TypeKro SHALL respect exclusion patterns
 4. WHEN the directory contains subdirectories THEN TypeKro SHALL maintain the directory structure in metadata
@@ -153,3 +153,16 @@ This feature enables TypeKro to represent YAML files and directories as intellig
 4. WHEN I need API reference THEN I SHALL find complete documentation for all YAML resource factory functions
 5. WHEN I encounter issues THEN I SHALL find troubleshooting guides with common problems and solutions
 6. WHEN I need to understand mode differences THEN I SHALL find clear guidance on Direct vs Kro mode capabilities
+
+### Requirement 13
+
+**User Story:** As a maintainer, I want the e2e bootstrap script to use TypeKro compositions instead of kubectl commands, so that our infrastructure deployment demonstrates TypeKro best practices and maintains consistency.
+
+#### Acceptance Criteria
+
+1. WHEN I run the e2e setup script THEN it SHALL use `typeKroRuntimeBootstrap()` composition instead of kubectl commands
+2. WHEN the bootstrap composition deploys THEN it SHALL use `yamlFile()` for Flux controllers (matching integration test patterns)
+3. WHEN the bootstrap composition deploys THEN it SHALL use `helmResource()` for Kro controller deployment
+4. WHEN bootstrap deployment completes THEN all controllers SHALL be ready and functional
+5. WHEN bootstrap fails THEN the script SHALL provide clear error messages and cleanup procedures
+6. WHEN I examine the bootstrap code THEN it SHALL serve as a reference example for infrastructure deployment patterns

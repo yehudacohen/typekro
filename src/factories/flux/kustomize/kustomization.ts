@@ -1,6 +1,4 @@
 import { createResource } from '../../shared.js';
-import type { Enhanced } from '../../../core/types/index.js';
-import type { KustomizationSpec, KustomizationStatus } from '../../../core/types/yaml.js';
 import { kustomizationReadinessEvaluator } from './readiness-evaluators.js';
 
 export interface KustomizationConfig {
@@ -55,12 +53,12 @@ export interface KustomizationConfig {
 
 /**
  * Deploy Kubernetes manifests using Flux CD's Kustomization
- * 
+ *
  * Creates a Kustomization resource that integrates with TypeKro's magic proxy system,
  * allowing schema references and CEL expressions in patches and configurations.
- * 
+ *
  * @param config - Configuration for the Kustomization
- * 
+ *
  * @example
  * Basic Kustomization:
  * ```typescript
@@ -73,7 +71,7 @@ export interface KustomizationConfig {
  *   path: './overlays/production'
  * })
  * ```
- * 
+ *
  * @example
  * With TypeKro schema references in patches:
  * ```typescript
@@ -114,7 +112,7 @@ export interface KustomizationConfig {
  *   }]
  * })
  * ```
- * 
+ *
  * @example
  * With strategic merge patches:
  * ```typescript
