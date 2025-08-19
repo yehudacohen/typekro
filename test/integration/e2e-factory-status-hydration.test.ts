@@ -4,8 +4,11 @@ import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src
 import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
 import { hydrateStatus } from '../../src/core/deployment/status-hydrator.js';
 import { isCelExpression } from '../../src/utils/type-guards.js';
+import { isClusterAvailable } from "./shared-kubeconfig";
+const clusterAvailable = isClusterAvailable();
+const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
-describe('Factory Pattern Status Hydration', () => {
+describeOrSkip('Factory Pattern Status Hydration', () => {
   describe('Field Separation Logic', () => {
     it('should correctly separate static and dynamic status fields', () => {
       const statusMappings = {

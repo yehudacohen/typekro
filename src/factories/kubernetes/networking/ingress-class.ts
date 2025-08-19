@@ -10,5 +10,11 @@ export function ingressClass(resource: V1IngressClass): Enhanced<V1IngressClassS
     apiVersion: 'networking.k8s.io/v1',
     kind: 'IngressClass',
     metadata: resource.metadata ?? { name: 'unnamed-ingressclass' },
+  }).withReadinessEvaluator(() => {
+    // IngressClass is a configuration resource - ready when it exists
+    return {
+      ready: true,
+      message: 'IngressClass is ready when created (configuration resource)',
+    };
   });
 }

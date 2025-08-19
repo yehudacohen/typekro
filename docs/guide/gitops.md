@@ -23,6 +23,43 @@ const yaml = webApp.toYaml(productionConfig);
 
 ## Basic GitOps Setup
 
+### Prerequisites: GitOps Controller
+
+Before setting up TypeKro GitOps workflows, you need a GitOps controller in your cluster. TypeKro works with any GitOps tool, but provides native bootstrap support for Flux CD:
+
+#### Option 1: Bootstrap with TypeKro (Recommended for Flux CD)
+
+```typescript
+import { typeKroRuntimeBootstrap } from 'typekro';
+
+async function setupFluxGitOps() {
+  const bootstrap = typeKroRuntimeBootstrap({
+    namespace: 'flux-system',
+    fluxVersion: 'v2.4.0',
+    kroVersion: '0.3.0'
+  });
+
+  const factory = await bootstrap.factory('direct', {
+    namespace: 'flux-system',
+    waitForReady: true
+  });
+
+  await factory.deploy({ namespace: 'flux-system' });
+  console.log('Flux CD ready for GitOps!');
+}
+```
+
+#### Option 2: Manual Installation
+
+```bash
+# Flux CD
+flux install
+
+# ArgoCD  
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+```
+
 ### Repository Structure
 
 ```

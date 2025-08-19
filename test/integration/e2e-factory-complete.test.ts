@@ -1,47 +1,34 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
-import { execSync } from 'node:child_process';
 import { type } from 'arktype';
 import * as k8s from '@kubernetes/client-node';
-import { getIntegrationTestKubeConfig } from './shared-kubeconfig';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
-import { 
-  Cel, 
-  simpleDeployment, 
-  simpleService, 
+import {
+  Cel,
+  simpleDeployment,
+  simpleService,
   simpleConfigMap,
-  toResourceGraph 
+  toResourceGraph,
 } from '../../src/index.js';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
 const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
+const clusterAvailable = isClusterAvailable();
+const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
-describe('End-to-End Factory Pattern with Status Hydration', () => {
+describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
   let kubeConfig: k8s.KubeConfig;
   let k8sApi: k8s.KubernetesObjectApi;
   let _customApi: k8s.CustomObjectsApi;
 
   beforeAll(async () => {
-    console.log('🚀 SETUP: Starting factory e2e test environment setup...');
+    if (!clusterAvailable) return;
 
-    // Global integration harness sets up the cluster; skip if signaled
-    if (!process.env.SKIP_CLUSTER_SETUP) {
-      console.log('� SETUP:: Running e2e setup script...');
-      try {
-        execSync('bun run scripts/e2e-setup.ts', { 
-          stdio: 'inherit',
-          timeout: 300000 // 5 minute timeout
-        });
-        console.log('✅ SETUP: E2E environment setup completed');
-      } catch (error) {
-        throw new Error(`❌ SETUP: Failed to run e2e setup script: ${error}`);
-      }
-    } else {
-      console.log('⏭️  Using pre-existing cluster from integration harness');
-    }
+    console.log('🚀 SETUP: Connecting to existing cluster...');
 
     // Use shared kubeconfig helper for consistent TLS configuration
     kubeConfig = getIntegrationTestKubeConfig();
-    
+
     k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
     _customApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
 
@@ -66,7 +53,7 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
   it('should deploy a complete factory with mixed static/dynamic status fields and hydrate from cluster', async () => {
     console.log('🎯 Starting complete factory e2e test with status hydration...');
     console.log('📋 This test proves API version separation:');
-    console.log('   - ResourceGraphDefinition uses: kro.run/v1alpha1 (Kro\'s own API)');
+    console.log("   - ResourceGraphDefinition uses: kro.run/v1alpha1 (Kro's own API)");
     console.log('   - Generated instances use: kro.run/v2beta1 (our custom version)');
 
     // Define schemas with mixed static/dynamic status fields
@@ -82,12 +69,12 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
       url: 'string',
       version: 'string',
       environment: 'string',
-      
+
       // Dynamic fields (will be resolved by Kro from Kubernetes resources)
       phase: '"pending" | "running" | "failed"',
       replicas: 'number',
       readyReplicas: 'number',
-      
+
       // Mixed nested object
       metadata: {
         name: 'string',
@@ -149,7 +136,7 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
         url: 'http://test-webapp-service.typekro-test.svc.cluster.local',
         version: '1.0.0',
         environment: 'e2e-test',
-        
+
         // Dynamic fields (with Kubernetes references - resolved by Kro)
         phase: Cel.conditional(
           Cel.expr('has(webapp.status.availableReplicas) && webapp.status.availableReplicas > 0'),
@@ -157,8 +144,10 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
           '"pending"'
         ) as 'pending' | 'running' | 'failed',
         replicas: Cel.expr('has(webapp.status.replicas) ? webapp.status.replicas : 0'),
-        readyReplicas: Cel.expr('has(webapp.status.availableReplicas) ? webapp.status.availableReplicas : 0'),
-        
+        readyReplicas: Cel.expr(
+          'has(webapp.status.availableReplicas) ? webapp.status.availableReplicas : 0'
+        ),
+
         // Mixed nested object
         metadata: {
           name: 'webapp-factory-e2e', // static
@@ -200,19 +189,23 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
     expect(deployedInstance.spec.environment).toBe('production');
 
     console.log('📝 STEP 4: Verifying static fields are hydrated directly...');
-    
+
     // Static fields should be available immediately (not dependent on Kubernetes resources)
-    expect(deployedInstance.status.url).toBe('http://test-webapp-service.typekro-test.svc.cluster.local');
+    expect(deployedInstance.status.url).toBe(
+      'http://test-webapp-service.typekro-test.svc.cluster.local'
+    );
     expect(deployedInstance.status.version).toBe('1.0.0');
     expect(deployedInstance.status.environment).toBe('e2e-test');
     expect(deployedInstance.status.metadata.name).toBe('webapp-factory-e2e');
     expect(deployedInstance.status.metadata.createdBy).toBe('typekro-factory-e2e');
-    expect(deployedInstance.status.metadata.deployedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(deployedInstance.status.metadata.deployedAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+    );
 
     console.log('✅ STEP 4: Static fields verified successfully');
 
     console.log('📝 STEP 5: Waiting for Kro to resolve dynamic fields...');
-    
+
     // Wait for the underlying Kubernetes resources to be created and become ready
     let dynamicFieldsResolved = false;
     let attempts = 0;
@@ -220,31 +213,35 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
 
     while (!dynamicFieldsResolved && attempts < maxAttempts) {
       attempts++;
-      console.log(`🔍 STEP 5: Checking dynamic field resolution (attempt ${attempts}/${maxAttempts})...`);
+      console.log(
+        `🔍 STEP 5: Checking dynamic field resolution (attempt ${attempts}/${maxAttempts})...`
+      );
 
       try {
         // Get fresh instance status from the cluster
         const instances = await kroFactory.getInstances();
-        const freshInstance = instances.find(i => i.spec.name === 'test-webapp');
+        const freshInstance = instances.find((i) => i.spec.name === 'test-webapp');
 
         if (freshInstance) {
-          console.log(`📊 Dynamic status check: phase=${freshInstance.status.phase}, replicas=${freshInstance.status.replicas}, readyReplicas=${freshInstance.status.readyReplicas}`);
-          
+          console.log(
+            `📊 Dynamic status check: phase=${freshInstance.status.phase}, replicas=${freshInstance.status.replicas}, readyReplicas=${freshInstance.status.readyReplicas}`
+          );
+
           // Check if dynamic fields are resolved
           if (
-            freshInstance.status.phase && 
+            freshInstance.status.phase &&
             freshInstance.status.phase !== 'pending' &&
             typeof freshInstance.status.replicas === 'number' &&
             typeof freshInstance.status.readyReplicas === 'number'
           ) {
             console.log('✅ STEP 5: Dynamic fields resolved by Kro');
-            
+
             // Verify dynamic fields
             expect(freshInstance.status.phase).toMatch(/^(pending|running|failed)$/);
             expect(typeof freshInstance.status.replicas).toBe('number');
             expect(typeof freshInstance.status.readyReplicas).toBe('number');
             expect(freshInstance.status.metadata.namespace).toBe(NAMESPACE);
-            
+
             // Update our reference to the fresh instance
             Object.assign(deployedInstance, freshInstance);
             dynamicFieldsResolved = true;
@@ -252,17 +249,24 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
           }
         }
       } catch (error) {
-        console.log(`⚠️  Dynamic field check attempt ${attempts} failed:`, error instanceof Error ? error.message : String(error));
+        console.log(
+          `⚠️  Dynamic field check attempt ${attempts} failed:`,
+          error instanceof Error ? error.message : String(error)
+        );
       }
 
       if (attempts < maxAttempts) {
-        console.log(`⏳ Waiting 2 seconds before next check (attempt ${attempts}/${maxAttempts})...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log(
+          `⏳ Waiting 2 seconds before next check (attempt ${attempts}/${maxAttempts})...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
 
     if (!dynamicFieldsResolved) {
-      console.log('⚠️  Dynamic fields not fully resolved within timeout, but continuing with verification...');
+      console.log(
+        '⚠️  Dynamic fields not fully resolved within timeout, but continuing with verification...'
+      );
     }
 
     console.log('📝 STEP 6: Verifying complete status hydration...');
@@ -333,13 +337,22 @@ describe('End-to-End Factory Pattern with Status Hydration', () => {
     console.log('✅ STEP 8: All underlying Kubernetes resources verified');
 
     console.log('🎉 STEP 9: Complete factory e2e test completed successfully!');
-    console.log('✅ TypeKro factory pattern with mixed static/dynamic status fields works end-to-end');
+    console.log(
+      '✅ TypeKro factory pattern with mixed static/dynamic status fields works end-to-end'
+    );
     console.log('✅ Static fields are hydrated directly by TypeKro');
     console.log('✅ Dynamic fields are resolved by Kro from live Kubernetes resources');
     console.log('✅ Factory instance management works correctly');
-    console.log('✅ Full end-to-end workflow from TypeScript → Factory → Kro → Kubernetes → Status Hydration works');
-
+    console.log(
+      '✅ Full end-to-end workflow from TypeScript → Factory → Kro → Kubernetes → Status Hydration works'
+    );
+    // Cleanup using factory-based resource destruction
+    console.log('🧹 Cleaning up factory complete test...');
+    try {
+      await kroFactory.deleteInstance('test-webapp');
+      console.log('✅ Factory complete cleanup completed');
+    } catch (error) {
+      console.warn('⚠️ Factory complete cleanup failed:', error);
+    }
   }, 300000); // 5 minute timeout for the test
-
-
 });

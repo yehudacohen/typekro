@@ -1,4 +1,12 @@
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Types specific to the composition module
  *
  * This file contains type definitions that are used exclusively
@@ -28,6 +36,14 @@ import type {
 import type { Enhanced } from '../types.js';
 
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Configuration for creating a simple deployment
  */
 export interface SimpleDeploymentConfig {
@@ -43,6 +59,14 @@ export interface SimpleDeploymentConfig {
   volumes?: V1Volume[];
 }
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Configuration for creating a simple StatefulSet
  */
 export interface SimpleStatefulSetConfig {
@@ -54,6 +78,14 @@ export interface SimpleStatefulSetConfig {
   env?: Record<string, string>;
   ports?: V1Container['ports'];
   volumeClaimTemplates?: V1PersistentVolumeClaim[];
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
 }
 
 /**
@@ -70,6 +102,14 @@ export interface SimpleJobConfig {
 }
 
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Configuration for creating a simple CronJob
  */
 export interface SimpleCronJobConfig {
@@ -78,6 +118,30 @@ export interface SimpleCronJobConfig {
   schedule: string;
   namespace?: string;
   command?: string[];
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
 }
 
 /**
@@ -91,12 +155,28 @@ export interface SimpleConfigMapConfig {
 }
 
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Configuration for creating a simple Secret
  */
 export interface SimpleSecretConfig {
   name: string;
   namespace?: string;
   stringData: Record<string, string>;
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
 }
 
 /**
@@ -108,6 +188,14 @@ export interface SimplePvcConfig {
   size: string;
   storageClass?: string;
   accessModes?: ('ReadWriteOnce' | 'ReadOnlyMany' | 'ReadWriteMany')[];
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
 }
 
 /**
@@ -123,6 +211,14 @@ export interface SimpleHpaConfig {
 }
 
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Configuration for creating a simple Service
  */
 export interface SimpleServiceConfig {
@@ -131,6 +227,14 @@ export interface SimpleServiceConfig {
   ports: V1ServicePort[];
   namespace?: string;
   type?: V1ServiceSpec['type'];
+  id?: string;
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
   id?: string;
 }
 
@@ -147,6 +251,14 @@ export interface SimpleIngressConfig {
 }
 
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Configuration for creating a simple NetworkPolicy
  */
 export interface SimpleNetworkPolicyConfig {
@@ -159,6 +271,14 @@ export interface SimpleNetworkPolicyConfig {
 }
 
 /**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
+}
+
+/**
  * Configuration for creating a web service (deployment + service)
  */
 export interface WebServiceConfig {
@@ -168,6 +288,14 @@ export interface WebServiceConfig {
   replicas?: number;
   port: number;
   targetPort?: number;
+}
+
+/**
+ * Configuration for creating a simple Namespace
+ */
+export interface SimpleNamespaceConfig {
+  name: string;
+  id?: string;
 }
 
 /**

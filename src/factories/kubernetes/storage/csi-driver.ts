@@ -10,5 +10,11 @@ export function csiDriver(resource: V1CSIDriver): Enhanced<V1CSIDriverSpec, unkn
     apiVersion: 'storage.k8s.io/v1',
     kind: 'CSIDriver',
     metadata: resource.metadata ?? { name: 'unnamed-csidriver' },
+  }).withReadinessEvaluator(() => {
+    // CSIDriver is a configuration resource - ready when it exists
+    return {
+      ready: true,
+      message: 'CSIDriver is ready when created (configuration resource)',
+    };
   });
 }

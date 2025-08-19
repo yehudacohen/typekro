@@ -58,6 +58,41 @@ kubectl auth can-i create services
 kubectl auth can-i get pods
 ```
 
+## Bootstrap Runtime (Optional)
+
+If you plan to use HelmRelease resources or want to set up a complete TypeKro runtime environment, you can use the bootstrap composition to install Flux CD and KRO:
+
+```typescript
+// bootstrap-cluster.ts
+import { typeKroRuntimeBootstrap } from 'typekro';
+
+async function setupCluster() {
+  const bootstrap = typeKroRuntimeBootstrap({
+    namespace: 'flux-system',
+    fluxVersion: 'v2.4.0',
+    kroVersion: '0.3.0'
+  });
+
+  const factory = await bootstrap.factory('direct', {
+    namespace: 'flux-system',
+    waitForReady: true,
+    timeout: 300000
+  });
+
+  console.log('Setting up TypeKro runtime...');
+  await factory.deploy({ namespace: 'flux-system' });
+  console.log('Runtime ready!');
+}
+
+setupCluster().catch(console.error);
+```
+
+This setup enables:
+- **HelmRelease support** for Helm chart deployments
+- **Advanced KRO features** like runtime dependencies  
+- **GitOps workflows** with Flux CD integration
+- **Production-ready** monitoring and management
+
 ## Basic Direct Deployment
 
 ### Simple Application Deployment

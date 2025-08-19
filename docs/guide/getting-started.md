@@ -12,8 +12,28 @@ Before you begin, make sure you have:
 - Basic familiarity with **Kubernetes** and **TypeScript**
 
 ::: tip KRO Mode Requirements
-If you plan to use **KRO mode** for advanced orchestration with runtime dependencies, you'll also need to install the Kubernetes Resource Orchestrator (KRO) controller in your cluster:
+If you plan to use **KRO mode** for advanced orchestration with runtime dependencies, you can install the Kubernetes Resource Orchestrator (KRO) controller using TypeKro's bootstrap composition:
 
+```typescript
+import { typeKroRuntimeBootstrap } from 'typekro';
+
+// Bootstrap TypeKro runtime with Flux and KRO
+const bootstrap = typeKroRuntimeBootstrap({
+  namespace: 'flux-system',
+  fluxVersion: 'v2.4.0',
+  kroVersion: '0.3.0'
+});
+
+const factory = await bootstrap.factory('direct', {
+  namespace: 'flux-system',
+  waitForReady: true,
+  timeout: 300000
+});
+
+await factory.deploy({ namespace: 'flux-system' });
+```
+
+Alternatively, you can still use kubectl directly:
 ```bash
 kubectl apply -f https://github.com/awslabs/kro/releases/latest/download/kro.yaml
 ```
@@ -142,6 +162,46 @@ export const webAppGraph = toResourceGraph(
   }
 );
 ```
+
+## Bootstrap TypeKro Runtime (Optional)
+
+If you want to use KRO mode or work with HelmRelease resources, you can bootstrap the complete TypeKro runtime environment using the built-in bootstrap composition:
+
+```typescript
+// bootstrap.ts
+import { typeKroRuntimeBootstrap } from 'typekro';
+
+async function setupTypeKroRuntime() {
+  // Create the bootstrap composition
+  const bootstrap = typeKroRuntimeBootstrap({
+    namespace: 'flux-system',      // Namespace for Flux controllers
+    fluxVersion: 'v2.4.0',         // Flux CD version
+    kroVersion: '0.3.0'            // KRO version
+  });
+
+  // Deploy using direct mode
+  const factory = await bootstrap.factory('direct', {
+    namespace: 'flux-system',
+    waitForReady: true,            // Wait for all components to be ready
+    timeout: 300000               // 5 minute timeout
+  });
+
+  console.log('Bootstrapping TypeKro runtime...');
+  const result = await factory.deploy({
+    namespace: 'flux-system'
+  });
+
+  console.log('Bootstrap complete!', result.status);
+}
+
+setupTypeKroRuntime().catch(console.error);
+```
+
+This bootstrap process:
+1. **Creates namespaces**: `flux-system` and `kro` 
+2. **Installs Flux CD**: Controllers for GitOps and Helm management
+3. **Installs KRO**: Via HelmRelease for advanced orchestration
+4. **Waits for readiness**: Ensures all components are operational
 
 ## Deployment Options
 

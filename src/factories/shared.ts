@@ -9,8 +9,14 @@ import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { getComponentLogger } from '../core/logging/index.js';
 import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
 import { isCelExpression } from '../utils/type-guards.js';
-import type { Enhanced, KubernetesResource, MagicProxy, ReadinessEvaluator } from '../core/types.js';
+import type {
+  Enhanced,
+  KubernetesResource,
+  MagicProxy,
+  ReadinessEvaluator,
+} from '../core/types.js';
 import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index.js';
+import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
 import { validateResourceId } from '../core/validation/cel-validator.js';
 
 // Check for the debug environment variable
@@ -60,6 +66,17 @@ function createPropertyProxy<T extends object>(
 
   return new Proxy(target, {
     get: (obj, prop) => {
+      // Handle toJSON specially to ensure proper serialization
+      if (prop === 'toJSON') {
+        return () => {
+          const result: Record<string, any> = {};
+          for (const key of Object.keys(obj)) {
+            result[key] = (obj as any)[key];
+          }
+          return result;
+        };
+      }
+
       // 1. Immediately handle non-string properties.
       if (typeof prop !== 'string') {
         return obj[prop as keyof T];
@@ -124,7 +141,11 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
           const result: Record<string, any> = {};
           const targetObj = target as Record<string, any>;
           for (const key of Object.keys(target)) {
-            if (key !== '__resourceId' && key !== 'withReadinessEvaluator' && key !== 'readinessEvaluator') {
+            if (
+              key !== '__resourceId' &&
+              key !== 'withReadinessEvaluator' &&
+              key !== 'readinessEvaluator'
+            ) {
               result[key] = targetObj[key];
             }
           }
@@ -159,7 +180,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
                 value: value,
                 enumerable: true,
                 configurable: true,
-                writable: true
+                writable: true,
               });
             }
           }
@@ -227,15 +248,28 @@ function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
     try {
       // For resources that are immediately ready when they exist
       const immediatelyReadyKinds = [
-        'ConfigMap', 'Secret', 'Role', 'ClusterRole', 'RoleBinding', 'ClusterRoleBinding',
-        'ServiceAccount', 'StorageClass', 'NetworkPolicy', 'LimitRange', 'CSIDriver',
-        'CSINode', 'IngressClass', 'RuntimeClass', 'Lease', 'ComponentStatus'
+        'ConfigMap',
+        'Secret',
+        'Role',
+        'ClusterRole',
+        'RoleBinding',
+        'ClusterRoleBinding',
+        'ServiceAccount',
+        'StorageClass',
+        'NetworkPolicy',
+        'LimitRange',
+        'CSIDriver',
+        'CSINode',
+        'IngressClass',
+        'RuntimeClass',
+        'Lease',
+        'ComponentStatus',
       ];
 
       if (immediatelyReadyKinds.includes(kind)) {
         return {
           ready: true,
-          message: `${kind} is ready when it exists`
+          message: `${kind} is ready when it exists`,
         };
       }
 
@@ -245,7 +279,7 @@ function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
         return {
           ready: false,
           reason: 'StatusMissing',
-          message: `${kind} status not available yet`
+          message: `${kind} status not available yet`,
         };
       }
 
@@ -256,7 +290,7 @@ function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
           return {
             ready: readyCondition.status === 'True',
             reason: readyCondition.reason,
-            message: readyCondition.message || `${kind} readiness: ${readyCondition.status}`
+            message: readyCondition.message || `${kind} readiness: ${readyCondition.status}`,
           };
         }
 
@@ -265,7 +299,8 @@ function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
           return {
             ready: availableCondition.status === 'True',
             reason: availableCondition.reason,
-            message: availableCondition.message || `${kind} availability: ${availableCondition.status}`
+            message:
+              availableCondition.message || `${kind} availability: ${availableCondition.status}`,
           };
         }
       }
@@ -277,20 +312,20 @@ function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
         return {
           ready,
           reason: ready ? 'PhaseReady' : 'PhaseNotReady',
-          message: `${kind} phase: ${status.phase}`
+          message: `${kind} phase: ${status.phase}`,
         };
       }
 
       // Default: assume ready if status exists
       return {
         ready: true,
-        message: `${kind} has status, assuming ready`
+        message: `${kind} has status, assuming ready`,
       };
     } catch (error) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ${kind} readiness: ${error}`
+        message: `Error evaluating ${kind} readiness: ${error}`,
       };
     }
   };
@@ -323,27 +358,34 @@ export function createResource<TSpec extends object, TStatus extends object>(
   const defaultEvaluator = createDefaultReadinessEvaluator(resource.kind);
   Object.defineProperty(enhanced, 'readinessEvaluator', {
     value: defaultEvaluator,
-    enumerable: false,    // Prevents serialization - key requirement
-    configurable: true,   // Allow withReadinessEvaluator to override
-    writable: false       // Cannot be overwritten directly
+    enumerable: false, // Prevents serialization - key requirement
+    configurable: true, // Allow withReadinessEvaluator to override
+    writable: false, // Cannot be overwritten directly
   });
 
   // Add fluent builder method for readiness evaluator with serialization protection
   Object.defineProperty(enhanced, 'withReadinessEvaluator', {
     value: function (evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus> {
-      // Use Object.defineProperty with enumerable: false to prevent serialization
+      // Register in global registry by KIND when factory defines evaluator
+      ReadinessEvaluatorRegistry.getInstance().registerForKind(
+        this.kind,
+        evaluator,
+        'factory-defined'
+      );
+      
+      // Still attach to individual resource instance (existing behavior)
       Object.defineProperty(this, 'readinessEvaluator', {
         value: evaluator,
-        enumerable: false,    // Prevents serialization - key requirement
-        configurable: true,   // Allow reconfiguration for withReadinessEvaluator
-        writable: false       // Cannot be overwritten directly
+        enumerable: false, // Prevents serialization - key requirement
+        configurable: true, // Allow reconfiguration for withReadinessEvaluator
+        writable: false, // Cannot be overwritten directly
       });
 
       return this as Enhanced<TSpec, TStatus>;
     },
-    enumerable: false,    // Prevents withReadinessEvaluator from being serialized
-    configurable: false,  // Cannot be modified
-    writable: false       // Cannot be overwritten
+    enumerable: false, // Prevents withReadinessEvaluator from being serialized
+    configurable: false, // Cannot be modified
+    writable: false, // Cannot be overwritten
   });
 
   return enhanced as Enhanced<TSpec, TStatus>;

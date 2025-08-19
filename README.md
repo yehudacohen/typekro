@@ -99,6 +99,13 @@ await factory.deploy({ name: 'my-app', image: 'nginx', replicas: 3 });
 
 *Note: You can also generate GitOps-ready YAML with `factory.toYaml()` instead of deploying directly.*
 
+**Need advanced features?** Bootstrap a complete runtime environment with Flux CD and KRO:
+```typescript
+import { typeKroRuntimeBootstrap } from 'typekro';
+const bootstrap = typeKroRuntimeBootstrap({ fluxVersion: 'v2.4.0', kroVersion: '0.3.0' });
+await bootstrap.factory('direct').deploy({ namespace: 'flux-system' });
+```
+
 ---
 
 ## Deployment Flexibility

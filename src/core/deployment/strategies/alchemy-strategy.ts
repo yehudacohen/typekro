@@ -1,6 +1,6 @@
 /**
  * Alchemy Deployment Strategy
- * 
+ *
  * This module provides the alchemy deployment strategy that wraps deployments
  * in alchemy resources with individual resource registration.
  */
@@ -18,45 +18,45 @@ import { ensureReadinessEvaluator } from '../../../utils/helpers.js';
 
 /**
  * Alchemy deployment strategy - wraps deployments in alchemy resources with individual resource registration
- * 
+ *
  * This strategy implements individual resource registration for Direct mode Alchemy integration.
- * Unlike Kro mode which registers RGDs and instances, Direct mode registers each individual 
+ * Unlike Kro mode which registers RGDs and instances, Direct mode registers each individual
  * Kubernetes resource (Deployment, Service, ConfigMap, etc.) as separate Alchemy resource types.
- * 
+ *
  * ## Resource Registration Pattern
- * 
+ *
  * **Direct Mode (this strategy):**
  * - Each individual Kubernetes resource gets its own Alchemy resource type registration
  * - Resource types are named using the pattern `kubernetes::{Kind}` (e.g., `kubernetes::Deployment`)
  * - Each instance of each resource gets a separate Alchemy resource registered
  * - Example: A webapp with Deployment + Service creates 2 Alchemy resource types and 2 resource instances
- * 
+ *
  * **Kro Mode (for comparison):**
  * - Each RGD gets one Alchemy resource type registered (`kro::ResourceGraphDefinition`)
  * - Each instance of each RGD gets a separate Alchemy resource registered (`kro::{Kind}`)
  * - Example: A webapp RGD creates 1 RGD type + 1 instance type = 2 Alchemy resources total
- * 
+ *
  * ## Error Handling
- * 
+ *
  * The strategy implements robust error handling for individual resource failures:
  * - Continues processing remaining resources when individual resources fail
  * - Collects all errors and includes them in the final DeploymentResult
  * - Sets deployment status to 'partial' when some resources succeed and others fail
  * - Provides resource-specific error context including kind, name, namespace, and Alchemy resource type
- * 
+ *
  * ## Integration with DirectTypeKroDeployer
- * 
+ *
  * This strategy integrates with DirectTypeKroDeployer for actual resource deployment:
  * - Extracts DirectDeploymentEngine from the base DirectDeploymentStrategy
  * - Creates DirectTypeKroDeployer instance for individual resource deployments
  * - Passes deployer to each Alchemy resource provider for deployment execution
- * 
+ *
  * @template TSpec - The specification type for the resource
  * @template TStatus - The status type for the resource
  */
 export class AlchemyDeploymentStrategy<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 > extends BaseDeploymentStrategy<TSpec, TStatus> {
   private logger = getComponentLogger('alchemy-deployment-strategy');
 
@@ -73,9 +73,9 @@ export class AlchemyDeploymentStrategy<
 
   /**
    * Execute deployment with individual resource registration for Alchemy integration
-   * 
+   *
    * This method implements the core logic for Direct mode Alchemy integration:
-   * 
+   *
    * ## Process Overview
    * 1. **Validation**: Validates the Alchemy scope is available and properly configured
    * 2. **Resource Graph Creation**: Gets the resource graph from the base strategy using createResourceGraphForInstance
@@ -83,31 +83,31 @@ export class AlchemyDeploymentStrategy<
    * 4. **Individual Registration**: Processes each resource in the resource graph individually for Alchemy registration
    * 5. **Error Collection**: Continues processing remaining resources when individual resources fail
    * 6. **Result Creation**: Creates comprehensive DeploymentResult with individual resource tracking
-   * 
+   *
    * ## Individual Resource Processing
-   * 
+   *
    * For each resource in the resource graph:
    * - **Type Inference**: Infers Alchemy resource type from Kubernetes kind (e.g., `kubernetes::Deployment`)
    * - **Type Registration**: Calls ensureResourceTypeRegistered to register the resource type (shared across instances)
    * - **ID Generation**: Creates unique resource ID using createAlchemyResourceId with namespace and resource info
    * - **Deployment**: Deploys the resource through Alchemy using the resource provider and DirectTypeKroDeployer
    * - **Tracking**: Tracks deployed resource with Alchemy metadata (resource ID, type, etc.)
-   * 
+   *
    * ## Error Handling Strategy
-   * 
+   *
    * The method implements robust error handling:
    * - **Continue on Failure**: Individual resource failures don't stop processing of remaining resources
    * - **Error Collection**: All errors are collected with detailed context about which resource failed
    * - **Resource Context**: Error messages include resource kind, name, namespace, and Alchemy resource type
    * - **Partial Status**: Deployment status is set to 'partial' when some resources succeed and others fail
-   * 
+   *
    * ## Resource Type Naming
-   * 
+   *
    * Resource types follow consistent naming patterns:
    * - **Kubernetes Resources**: `kubernetes::{Kind}` (e.g., `kubernetes::Deployment`, `kubernetes::Service`)
    * - **Shared Types**: Multiple instances of the same resource type share the same Alchemy resource type registration
    * - **Unique IDs**: Each resource instance gets a unique Alchemy resource ID for individual tracking
-   * 
+   *
    * @param spec - The resource specification to deploy
    * @param instanceName - The name of this specific instance
    * @returns Promise<DeploymentResult> - Comprehensive deployment result with individual resource tracking
@@ -119,21 +119,23 @@ export class AlchemyDeploymentStrategy<
       validateAlchemyScope(this.alchemyScope, 'Alchemy deployment');
 
       // Use static imports for registration functions
-      const { ensureResourceTypeRegistered, createAlchemyResourceId } = await import('../../../alchemy/deployment.js');
+      const { ensureResourceTypeRegistered, createAlchemyResourceId } = await import(
+        '../../../alchemy/deployment.js'
+      );
 
       // Get resource graph from base strategy using createResourceGraphForInstance
       // This provides the individual Kubernetes resources that need to be registered with Alchemy
       this.logger.info('About to create resource graph for instance', {
         instanceName,
         hasBaseStrategy: !!this.baseStrategy,
-        baseStrategyType: this.baseStrategy?.constructor?.name
+        baseStrategyType: this.baseStrategy?.constructor?.name,
       });
-      
+
       const resourceGraph = this.createResourceGraphForInstance(spec, instanceName);
-      
+
       this.logger.info('Resource graph created', {
         resourceCount: resourceGraph.resources.length,
-        graphName: resourceGraph.name
+        graphName: resourceGraph.name,
       });
 
       // No need to create deployer here - it will be created inside the Alchemy resource handler
@@ -165,8 +167,8 @@ export class AlchemyDeploymentStrategy<
 
       this.logger.info('Processing resource graph for alchemy deployment', {
         resourceCount: resourceGraph.resources.length,
-        resourceIds: resourceGraph.resources.map(r => r.id),
-        resourceKinds: resourceGraph.resources.map(r => r.manifest.kind)
+        resourceIds: resourceGraph.resources.map((r) => r.id),
+        resourceKinds: resourceGraph.resources.map((r) => r.manifest.kind),
       });
 
       // Continue processing remaining resources when individual resources fail
@@ -176,11 +178,11 @@ export class AlchemyDeploymentStrategy<
             resourceId: resource.id,
             resourceKind: resource.manifest.kind,
             resourceName: resource.manifest.metadata?.name,
-            hasReadinessEvaluator: 'readinessEvaluator' in resource.manifest
+            hasReadinessEvaluator: 'readinessEvaluator' in resource.manifest,
           });
-          
+
           const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
-          
+
           // Register resource type dynamically (shared across instances)
           const ResourceProvider = ensureResourceTypeRegistered(resourceWithEvaluator);
 
@@ -224,7 +226,6 @@ export class AlchemyDeploymentStrategy<
                 alchemyResourceId: resourceId,
                 alchemyResourceType: ResourceProvider.name,
               });
-
             } catch (deployError) {
               const error = deployError as Error;
               this.logger.error('Failed to deploy individual resource through Alchemy', error, {
@@ -247,7 +248,6 @@ export class AlchemyDeploymentStrategy<
               });
             }
           });
-
         } catch (registrationError) {
           const error = registrationError as Error;
           this.logger.error('Failed to register resource type with Alchemy', error, {
@@ -298,14 +298,13 @@ export class AlchemyDeploymentStrategy<
         resources: deployedResources,
         dependencyGraph: resourceGraph.dependencyGraph,
         duration,
-        errors: errors.map(e => ({
+        errors: errors.map((e) => ({
           resourceId: e.resourceId,
           error: e.error,
           phase: e.phase,
           timestamp: e.timestamp,
         })),
       };
-
     } catch (error) {
       this.logger.error('Alchemy deployment strategy failed', error as Error);
       throw error;
@@ -323,34 +322,44 @@ export class AlchemyDeploymentStrategy<
     // Delegate to the base strategy's resource resolution logic
     if (this.baseStrategy instanceof DirectDeploymentStrategy) {
       const baseStrategy = this.baseStrategy as DirectDeploymentStrategy<TSpec, TStatus>;
-      if (baseStrategy.resourceResolver && typeof baseStrategy.resourceResolver.createResourceGraphForInstance === 'function') {
+      if (
+        baseStrategy.resourceResolver &&
+        typeof baseStrategy.resourceResolver.createResourceGraphForInstance === 'function'
+      ) {
         this.logger.info('Calling createResourceGraphForInstance on resource resolver', {
           hasResourceResolver: !!baseStrategy.resourceResolver,
-          resolverType: baseStrategy.resourceResolver.constructor?.name
+          resolverType: baseStrategy.resourceResolver.constructor?.name,
         });
-        
+
         const resourceGraph = baseStrategy.resourceResolver.createResourceGraphForInstance(spec);
         this.logger.info('Created resource graph from base strategy', {
           resourceCount: resourceGraph.resources.length,
-          resourceIds: resourceGraph.resources.map(r => r.id),
-          resourceKinds: resourceGraph.resources.map(r => r.manifest?.kind)
+          resourceIds: resourceGraph.resources.map((r) => r.id),
+          resourceKinds: resourceGraph.resources.map((r) => r.manifest?.kind),
         });
         return resourceGraph;
       } else {
-        this.logger.warn('Base strategy does not have resourceResolver or createResourceGraphForInstance method', {
-          hasResourceResolver: !!baseStrategy.resourceResolver,
-          resolverType: baseStrategy.resourceResolver?.constructor?.name,
-          hasMethod: baseStrategy.resourceResolver ? typeof baseStrategy.resourceResolver.createResourceGraphForInstance : 'no resolver'
-        });
+        this.logger.warn(
+          'Base strategy does not have resourceResolver or createResourceGraphForInstance method',
+          {
+            hasResourceResolver: !!baseStrategy.resourceResolver,
+            resolverType: baseStrategy.resourceResolver?.constructor?.name,
+            hasMethod: baseStrategy.resourceResolver
+              ? typeof baseStrategy.resourceResolver.createResourceGraphForInstance
+              : 'no resolver',
+          }
+        );
       }
     } else {
       this.logger.warn('Base strategy is not DirectDeploymentStrategy', {
-        baseStrategyType: this.baseStrategy?.constructor?.name
+        baseStrategyType: this.baseStrategy?.constructor?.name,
       });
     }
 
     // Fallback implementation - this should not happen in normal operation
-    this.logger.error('Falling back to empty resource graph - this indicates a configuration issue');
+    this.logger.error(
+      'Falling back to empty resource graph - this indicates a configuration issue'
+    );
     return {
       name: instanceName,
       resources: [],
@@ -375,7 +384,7 @@ export class AlchemyDeploymentStrategy<
         clusterSkipTLS: cluster?.skipTLSVerify,
         clusterServer: cluster?.server,
         hasUser: !!user,
-        context
+        context,
       });
 
       // SECURITY: Prioritize user's explicit skipTLSVerify choice over cluster config
@@ -385,16 +394,20 @@ export class AlchemyDeploymentStrategy<
 
       // Log security warning when TLS is disabled
       if (finalSkipTLS) {
-        this.logger.warn('TLS verification disabled - this is insecure and should only be used in development', {
-          component: 'alchemy-deployment-strategy',
-          security: 'tls-disabled',
-          userExplicit: userSkipTLS === true,
-          fromClusterConfig: clusterSkipTLS === true,
-          server: cluster?.server,
-          recommendation: userSkipTLS === true
-            ? 'Remove skipTLSVerify: true from factory options for production'
-            : 'Update cluster configuration to enable TLS verification'
-        });
+        this.logger.warn(
+          'TLS verification disabled - this is insecure and should only be used in development',
+          {
+            component: 'alchemy-deployment-strategy',
+            security: 'tls-disabled',
+            userExplicit: userSkipTLS === true,
+            fromClusterConfig: clusterSkipTLS === true,
+            server: cluster?.server,
+            recommendation:
+              userSkipTLS === true
+                ? 'Remove skipTLSVerify: true from factory options for production'
+                : 'Update cluster configuration to enable TLS verification',
+          }
+        );
       }
 
       kubeConfigOptions = {
@@ -409,7 +422,7 @@ export class AlchemyDeploymentStrategy<
             skipTLSVerify: finalSkipTLS,
             ...(cluster.caData && { caData: cluster.caData }),
             ...(cluster.caFile && { caFile: cluster.caFile }),
-          }
+          },
         }),
         // Include complete user configuration
         ...(user && {
@@ -420,20 +433,24 @@ export class AlchemyDeploymentStrategy<
             ...(user.certFile && { certFile: user.certFile }),
             ...(user.keyData && { keyData: user.keyData }),
             ...(user.keyFile && { keyFile: user.keyFile }),
-          }
+          },
         }),
       };
 
       this.logger.debug('Extracted kubeconfig options', {
-        kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2)
+        kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2),
       });
     } else {
       // Try extracting from the base strategy's factory options (common in tests)
       try {
         if (this.baseStrategy instanceof DirectDeploymentStrategy) {
-          const bs = this.baseStrategy as DirectDeploymentStrategy<TSpec, TStatus> & { factoryOptions?: FactoryOptions };
+          const bs = this.baseStrategy as DirectDeploymentStrategy<TSpec, TStatus> & {
+            factoryOptions?: FactoryOptions;
+          };
           const baseFactoryOptions = bs?.factoryOptions as FactoryOptions | undefined;
-          const baseKc = baseFactoryOptions?.kubeConfig as import('@kubernetes/client-node').KubeConfig | undefined;
+          const baseKc = baseFactoryOptions?.kubeConfig as
+            | import('@kubernetes/client-node').KubeConfig
+            | undefined;
           const cluster = baseKc?.getCurrentCluster();
           const user = baseKc?.getCurrentUser();
           const context = baseKc?.getCurrentContext();
@@ -445,7 +462,7 @@ export class AlchemyDeploymentStrategy<
             clusterSkipTLS: cluster?.skipTLSVerify,
             clusterServer: cluster?.server,
             hasUser: !!user,
-            context
+            context,
           });
 
           if (baseKc && cluster) {
@@ -456,16 +473,20 @@ export class AlchemyDeploymentStrategy<
 
             // Log security warning when TLS is disabled
             if (finalSkipTLS) {
-              this.logger.warn('TLS verification disabled - this is insecure and should only be used in development', {
-                component: 'alchemy-deployment-strategy',
-                security: 'tls-disabled',
-                userExplicit: userSkipTLS === true,
-                fromClusterConfig: clusterSkipTLS === true,
-                server: cluster?.server,
-                recommendation: userSkipTLS === true
-                  ? 'Remove skipTLSVerify: true from factory options for production'
-                  : 'Update cluster configuration to enable TLS verification'
-              });
+              this.logger.warn(
+                'TLS verification disabled - this is insecure and should only be used in development',
+                {
+                  component: 'alchemy-deployment-strategy',
+                  security: 'tls-disabled',
+                  userExplicit: userSkipTLS === true,
+                  fromClusterConfig: clusterSkipTLS === true,
+                  server: cluster?.server,
+                  recommendation:
+                    userSkipTLS === true
+                      ? 'Remove skipTLSVerify: true from factory options for production'
+                      : 'Update cluster configuration to enable TLS verification',
+                }
+              );
             }
 
             kubeConfigOptions = {
@@ -492,13 +513,13 @@ export class AlchemyDeploymentStrategy<
             };
 
             this.logger.debug('Extracted kubeconfig options from base strategy', {
-              kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2)
+              kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2),
             });
           }
         }
       } catch (extractionError) {
         this.logger.debug('Could not extract kubeconfig from base strategy, using default', {
-          error: (extractionError as Error).message
+          error: (extractionError as Error).message,
         });
       }
     }

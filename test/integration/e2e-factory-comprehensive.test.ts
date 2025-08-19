@@ -1,12 +1,12 @@
 /**
  * Comprehensive End-to-End Factory Pattern Tests
- * 
+ *
  * This test suite validates all four deployment scenarios:
  * 1. DirectResourceFactory without alchemy
  * 2. DirectResourceFactory with alchemy
- * 3. KroResourceFactory without alchemy  
+ * 3. KroResourceFactory without alchemy
  * 4. KroResourceFactory with alchemy
- * 
+ *
  * Tests deploy to a real Kubernetes cluster and make assertions about:
  * - Resource creation and readiness
  * - Cross-resource references resolution
@@ -16,11 +16,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { execSync } from 'node:child_process';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { File } from 'alchemy/fs';
-import { getIntegrationTestKubeConfig } from './shared-kubeconfig';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 import {
   toResourceGraph,
@@ -38,7 +37,10 @@ const _TEST_TIMEOUT = 300000; // 5 minutes
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
   const timestamp = Date.now().toString().slice(-6); // Last 6 digits
-  const sanitized = testName.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20);
+  const sanitized = testName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .slice(0, 20);
   return `${BASE_NAMESPACE}-${sanitized}-${timestamp}`;
 };
 
@@ -64,8 +66,6 @@ const WebAppStatusSchema = type({
 // Infer TypeScript types from ArkType schemas
 type WebAppSpec = typeof WebAppSpecSchema.infer;
 // type WebAppStatus = typeof WebAppStatusSchema.infer; // Unused for now
-
-
 
 // Create a comprehensive resource graph for testing
 const createTestResourceGraph = (testPrefix = '') => {
@@ -112,14 +112,18 @@ const createTestResourceGraph = (testPrefix = '') => {
     }),
     (_schema, resources) => ({
       url: Cel.template('http://%s', resources.service?.metadata?.name),
-      readyReplicas: Cel.expr<number>('has(webappDeployment.status.readyReplicas) ? webappDeployment.status.readyReplicas : 0'),
+      readyReplicas: Cel.expr<number>(
+        'has(webappDeployment.status.readyReplicas) ? webappDeployment.status.readyReplicas : 0'
+      ),
       phase: Cel.expr<string>('"running"'),
       configReady: Cel.expr<boolean>('true'),
     })
   );
 };
 
-describe('Comprehensive E2E Factory Pattern Tests', () => {
+const clusterAvailable = isClusterAvailable();
+const describeOrSkip = clusterAvailable ? describe : describe.skip;
+describeOrSkip('Comprehensive E2E Factory Pattern Tests', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
@@ -127,28 +131,14 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
   let alchemyScope: any;
 
   beforeAll(async () => {
-    console.log('🚀 Setting up comprehensive E2E test environment...');
+    if (!clusterAvailable) return;
 
-    // Global integration harness sets up the cluster; skip if signaled
-    if (!process.env.SKIP_CLUSTER_SETUP) {
-      console.log('🔧 SETUP: Running e2e setup script...');
-      try {
-        execSync('bun run scripts/e2e-setup.ts', { 
-          stdio: 'inherit',
-          timeout: 300000 // 5 minute timeout
-        });
-        console.log('✅ SETUP: E2E environment setup completed');
-      } catch (error) {
-        throw new Error(`❌ SETUP: Failed to run e2e setup script: ${error}`);
-      }
-    } else {
-      console.log('⏭️  Using pre-existing cluster from integration harness');
-    }
+    console.log('🚀 SETUP: Connecting to existing cluster...');
 
-        // Use shared kubeconfig helper for consistent TLS configuration
+    // Use shared kubeconfig helper for consistent TLS configuration
     try {
       kc = getIntegrationTestKubeConfig();
-      
+
       k8sApi = kc.makeApiClient(k8s.CoreV1Api);
       appsApi = kc.makeApiClient(k8s.AppsV1Api);
       _customApi = kc.makeApiClient(k8s.CustomObjectsApi);
@@ -156,8 +146,8 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
       console.error('❌ Failed to initialize Kubernetes client:', error);
       throw new Error(
         `Kubernetes client initialization failed: ${error}. ` +
-        'Make sure the test cluster is running and accessible. ' +
-        'Run: bun run scripts/e2e-setup.ts to set up the test environment.'
+          'Make sure the test cluster is running and accessible. ' +
+          'Run: bun run scripts/e2e-setup.ts to set up the test environment.'
       );
     }
 
@@ -168,11 +158,12 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
     try {
       // Configure alchemy to use temp directory
       const { FileSystemStateStore } = await import('alchemy/state');
-      
+
       alchemyScope = await alchemy('typekro-e2e-comprehensive-test', {
-        stateStore: (scope) => new FileSystemStateStore(scope, { 
-          rootDir: './temp/.alchemy' 
-        })
+        stateStore: (scope) =>
+          new FileSystemStateStore(scope, {
+            rootDir: './temp/.alchemy',
+          }),
       });
       console.log(`✅ Alchemy scope created: ${alchemyScope.name} (stage: ${alchemyScope.stage})`);
     } catch (error) {
@@ -261,7 +252,10 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         const rgdList = rgds.body as { items: any[] };
         for (const rgd of rgdList.items) {
           // Only clean up test RGDs
-          if (rgd.metadata.name.includes('e2e-comprehensive-webapp') || rgd.metadata.name.includes('basic-app')) {
+          if (
+            rgd.metadata.name.includes('e2e-comprehensive-webapp') ||
+            rgd.metadata.name.includes('basic-app')
+          ) {
             try {
               console.log(`🗑️ Deleting stuck RGD: ${rgd.metadata.name}`);
               await customApi.deleteNamespacedCustomObject(
@@ -281,9 +275,8 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
       }
 
       // Wait a moment for cleanup to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
       console.log('✅ Cleanup completed');
-
     } catch (error) {
       console.warn('⚠️ Cleanup failed, but continuing with tests:', error);
     }
@@ -381,10 +374,12 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         let status = await factory.getStatus();
         let attempts = 0;
         const maxAttempts = 10;
-        
+
         while (status.health !== 'healthy' && attempts < maxAttempts) {
-          console.log(`⏳ Factory health: ${status.health} (attempt ${attempts + 1}/${maxAttempts})`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          console.log(
+            `⏳ Factory health: ${status.health} (attempt ${attempts + 1}/${maxAttempts})`
+          );
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           status = await factory.getStatus();
           attempts++;
         }
@@ -401,6 +396,14 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         expect(yaml).toContain('kind: Service');
         expect(yaml).toContain('webapp-config');
 
+        // Cleanup using factory-based resource destruction
+        console.log('🧹 Cleaning up DirectResourceFactory without alchemy...');
+        try {
+          await factory.deleteInstance(`direct-app-${uniqueSuffix}`);
+          console.log('✅ DirectResourceFactory cleanup completed');
+        } catch (error) {
+          console.warn('⚠️ DirectResourceFactory cleanup failed:', error);
+        }
         console.log('✅ DirectResourceFactory without alchemy test passed!');
       });
     });
@@ -461,18 +464,22 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
           // Create configuration files using real File provider
           const configFile = await File(`test-direct-integration-${sessionId}`, {
             path: `temp/config/direct-integration-${sessionId}.json`,
-            content: JSON.stringify({
-              message: 'DirectResourceFactory alchemy integration working!',
-              sessionId: sessionId,
-              timestamp: new Date().toISOString(),
-              factoryType: 'direct'
-            }, null, 2)
+            content: JSON.stringify(
+              {
+                message: 'DirectResourceFactory alchemy integration working!',
+                sessionId: sessionId,
+                timestamp: new Date().toISOString(),
+                factoryType: 'direct',
+              },
+              null,
+              2
+            ),
           });
 
           // Create application log file
           const logFile = await File(`app-log-${sessionId}`, {
             path: `temp/logs/app-${sessionId}.log`,
-            content: `[${new Date().toISOString()}] INFO: DirectResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`
+            content: `[${new Date().toISOString()}] INFO: DirectResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`,
           });
 
           const testResource = {
@@ -480,7 +487,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
             message: 'DirectResourceFactory alchemy integration working!',
             createdAt: Date.now(),
             configFile: configFile,
-            logFile: logFile
+            logFile: logFile,
           };
 
           expect(testResource.id).toBe('test-direct-integration');
@@ -492,27 +499,41 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
           const directResourceIds = Object.keys(directState);
 
           // Verify that our File resources are registered in alchemy state
-          const configFileState = Object.values(directState).find((state: any) =>
-            state.kind === 'fs::File' && state.output?.path === testResource.configFile.path
+          const configFileState = Object.values(directState).find(
+            (state: any) =>
+              state.kind === 'fs::File' && state.output?.path === testResource.configFile.path
           ) as any;
-          const logFileState = Object.values(directState).find((state: any) =>
-            state.kind === 'fs::File' && state.output?.path === testResource.logFile.path
+          const logFileState = Object.values(directState).find(
+            (state: any) =>
+              state.kind === 'fs::File' && state.output?.path === testResource.logFile.path
           ) as any;
 
           expect(configFileState).toBeDefined();
           expect(configFileState?.status).toBe('created');
-          expect(configFileState?.output.content).toContain('DirectResourceFactory alchemy integration working!');
+          expect(configFileState?.output.content).toContain(
+            'DirectResourceFactory alchemy integration working!'
+          );
 
           expect(logFileState).toBeDefined();
           expect(logFileState?.status).toBe('created');
           expect(logFileState?.output.content).toContain('DirectResourceFactory test started');
 
-          console.log(`✅ DirectResourceFactory alchemy state validation passed - ${directResourceIds.length} resources in state`);
+          console.log(
+            `✅ DirectResourceFactory alchemy state validation passed - ${directResourceIds.length} resources in state`
+          );
           console.log(`   - Config file: ${configFileState?.id} (${configFileState?.status})`);
           console.log(`   - Log file: ${logFileState?.id} (${logFileState?.status})`);
           // Alchemy state validation completed above using built-in state store
         });
 
+        // Cleanup using factory-based resource destruction
+        console.log('🧹 Cleaning up DirectResourceFactory with alchemy...');
+        try {
+          await factory.deleteInstance('alchemy-direct-app');
+          console.log('✅ DirectResourceFactory alchemy cleanup completed');
+        } catch (error) {
+          console.warn('⚠️ DirectResourceFactory alchemy cleanup failed:', error);
+        }
         console.log('✅ DirectResourceFactory with alchemy test passed!');
       });
     });
@@ -520,8 +541,8 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
   describe('KroResourceFactory without Alchemy', () => {
     it('should deploy ResourceGraphDefinition and create instances', async () => {
-    // Increase timeout for this test as it involves Kro RGD deployment
-    const _testTimeout = 180000; // 3 minutes
+      // Increase timeout for this test as it involves Kro RGD deployment
+      const _testTimeout = 180000; // 3 minutes
       await withTestNamespace('kro-without-alchemy', async (testNamespace) => {
         console.log('🧪 Testing KroResourceFactory without alchemy...');
 
@@ -586,6 +607,14 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         // Health can be either healthy or degraded depending on deployment success
         expect(['healthy', 'degraded']).toContain(status.health);
 
+        // Cleanup using factory-based resource destruction
+        console.log('🧹 Cleaning up KroResourceFactory without alchemy...');
+        try {
+          await factory.deleteInstance(`kro-app-${uniqueSuffix}`);
+          console.log('✅ KroResourceFactory cleanup completed');
+        } catch (error) {
+          console.warn('⚠️ KroResourceFactory cleanup failed:', error);
+        }
         console.log('✅ KroResourceFactory without alchemy test passed!');
       });
     });
@@ -654,18 +683,22 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
             // Create configuration files using real File provider
             const kroConfigFile = await File(`test-kro-integration-${sessionId}`, {
               path: `temp/config/kro-integration-${sessionId}.json`,
-              content: JSON.stringify({
-                message: 'KroResourceFactory alchemy integration working!',
-                sessionId: sessionId,
-                timestamp: new Date().toISOString(),
-                factoryType: 'kro'
-              }, null, 2)
+              content: JSON.stringify(
+                {
+                  message: 'KroResourceFactory alchemy integration working!',
+                  sessionId: sessionId,
+                  timestamp: new Date().toISOString(),
+                  factoryType: 'kro',
+                },
+                null,
+                2
+              ),
             });
 
             // Create application log file
             const kroLogFile = await File(`kro-app-log-${sessionId}`, {
               path: `temp/logs/kro-app-${sessionId}.log`,
-              content: `[${new Date().toISOString()}] INFO: KroResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`
+              content: `[${new Date().toISOString()}] INFO: KroResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`,
             });
 
             const kroTestResource = {
@@ -673,7 +706,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
               message: 'KroResourceFactory alchemy integration working!',
               createdAt: Date.now(),
               configFile: kroConfigFile,
-              logFile: kroLogFile
+              logFile: kroLogFile,
             };
 
             expect(kroTestResource.id).toBe('test-kro-integration');
@@ -685,27 +718,43 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
             const kroResourceIds = Object.keys(kroState);
 
             // Verify that our File resources are registered in alchemy state
-            const kroConfigFileState = Object.values(kroState).find((state: any) =>
-              state.kind === 'fs::File' && state.output?.path === kroTestResource.configFile.path
+            const kroConfigFileState = Object.values(kroState).find(
+              (state: any) =>
+                state.kind === 'fs::File' && state.output?.path === kroTestResource.configFile.path
             ) as any;
-            const kroLogFileState = Object.values(kroState).find((state: any) =>
-              state.kind === 'fs::File' && state.output?.path === kroTestResource.logFile.path
+            const kroLogFileState = Object.values(kroState).find(
+              (state: any) =>
+                state.kind === 'fs::File' && state.output?.path === kroTestResource.logFile.path
             ) as any;
 
             expect(kroConfigFileState).toBeDefined();
             expect(kroConfigFileState?.status).toBe('created');
-            expect(kroConfigFileState?.output.content).toContain('KroResourceFactory alchemy integration working!');
+            expect(kroConfigFileState?.output.content).toContain(
+              'KroResourceFactory alchemy integration working!'
+            );
 
             expect(kroLogFileState).toBeDefined();
             expect(kroLogFileState?.status).toBe('created');
             expect(kroLogFileState?.output.content).toContain('KroResourceFactory test started');
 
-            console.log(`✅ KroResourceFactory alchemy state validation passed - ${kroResourceIds.length} resources in state`);
-            console.log(`   - Config file: ${kroConfigFileState?.id} (${kroConfigFileState?.status})`);
+            console.log(
+              `✅ KroResourceFactory alchemy state validation passed - ${kroResourceIds.length} resources in state`
+            );
+            console.log(
+              `   - Config file: ${kroConfigFileState?.id} (${kroConfigFileState?.status})`
+            );
             console.log(`   - Log file: ${kroLogFileState?.id} (${kroLogFileState?.status})`);
             // Alchemy state validation completed above using built-in state store
           });
 
+          // Cleanup using factory-based resource destruction
+          console.log('🧹 Cleaning up KroResourceFactory with alchemy...');
+          try {
+            await factory.deleteInstance('alchemy-kro-app');
+            console.log('✅ KroResourceFactory alchemy cleanup completed');
+          } catch (error) {
+            console.warn('⚠️ KroResourceFactory alchemy cleanup failed:', error);
+          }
           console.log('✅ KroResourceFactory with alchemy test passed!');
         });
       });
@@ -718,13 +767,19 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
           const graph = createTestResourceGraph('compat');
 
           // Create all four factory types
-          const directFactory = await graph.factory('direct', { namespace: testNamespace, kubeConfig: kc });
+          const directFactory = await graph.factory('direct', {
+            namespace: testNamespace,
+            kubeConfig: kc,
+          });
           const directAlchemyFactory = await graph.factory('direct', {
             namespace: testNamespace,
             alchemyScope: alchemyScope,
             kubeConfig: kc,
           });
-          const kroFactory = await graph.factory('kro', { namespace: testNamespace, kubeConfig: kc });
+          const kroFactory = await graph.factory('kro', {
+            namespace: testNamespace,
+            kubeConfig: kc,
+          });
           const kroAlchemyFactory = await graph.factory('kro', {
             namespace: testNamespace,
             alchemyScope: alchemyScope,
@@ -780,8 +835,14 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
           const graph = createTestResourceGraph('types');
 
           // Test that all factories maintain the same type safety
-          const directFactory = await graph.factory('direct', { namespace: testNamespace, kubeConfig: kc });
-          const kroFactory = await graph.factory('kro', { namespace: testNamespace, kubeConfig: kc });
+          const directFactory = await graph.factory('direct', {
+            namespace: testNamespace,
+            kubeConfig: kc,
+          });
+          const kroFactory = await graph.factory('kro', {
+            namespace: testNamespace,
+            kubeConfig: kc,
+          });
 
           const spec: WebAppSpec = {
             name: 'type-safety-test',

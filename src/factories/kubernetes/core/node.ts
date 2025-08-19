@@ -11,5 +11,34 @@ export function node(resource: V1Node): Enhanced<V1NodeSpec, V1NodeStatus> {
     apiVersion: 'v1',
     kind: 'Node',
     metadata: resource.metadata ?? { name: 'unnamed-node' },
+  }).withReadinessEvaluator((liveResource: V1Node) => {
+    const status = liveResource.status;
+    
+    if (!status) {
+      return {
+        ready: false,
+        reason: 'StatusMissing',
+        message: 'Node status not available yet',
+      };
+    }
+
+    const conditions = status.conditions || [];
+    const readyCondition = conditions.find(c => c.type === 'Ready');
+    
+    if (readyCondition?.status === 'True') {
+      return {
+        ready: true,
+        message: 'Node is ready and schedulable',
+      };
+    }
+
+    const reason = readyCondition?.reason || 'Unknown';
+    const message = readyCondition?.message || 'Node readiness condition not found';
+    
+    return {
+      ready: false,
+      reason,
+      message: `Node is not ready: ${message}`,
+    };
   });
 }

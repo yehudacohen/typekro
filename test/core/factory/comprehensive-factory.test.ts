@@ -1,6 +1,6 @@
 /**
  * Comprehensive tests for factory implementations
- * 
+ *
  * This test suite validates all factory implementations and interfaces
  * including DirectResourceFactory, KroResourceFactory, and their integration
  * with alchemy.
@@ -16,7 +16,7 @@ import { Cel } from '../../../src/core/references/index.js';
 // Mock alchemy scope for testing - simplified mock that doesn't fully implement Scope
 class MockAlchemyScope {
   private resources = new Map<string, any>();
-  
+
   readonly stage = 'test';
   readonly name = 'mock-scope';
   readonly local = true;
@@ -88,11 +88,11 @@ function createTestSchemas() {
 // Helper function to create a comprehensive resource graph
 function createComprehensiveResourceGraph() {
   const schemas = createTestSchemas();
-  
+
   return toResourceGraph(
     {
       name: 'comprehensive-webapp',
-      ...schemas.definition
+      ...schemas.definition,
     },
     (schema) => ({
       storage: simplePvc({
@@ -136,7 +136,7 @@ describe('Comprehensive Factory Tests', () => {
   describe('DirectResourceFactory Comprehensive Tests', () => {
     it('should create DirectResourceFactory with all configuration options', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       const factory = await graph.factory('direct', {
         namespace: 'production',
         timeout: 600000,
@@ -190,12 +190,12 @@ describe('Comprehensive Factory Tests', () => {
 
       expect(typeof yaml).toBe('string');
       expect(yaml.length).toBeGreaterThan(0);
-      
+
       // Should contain all resource types
       expect(yaml).toContain('PersistentVolumeClaim');
       expect(yaml).toContain('Deployment');
       expect(yaml).toContain('Service');
-      
+
       // Should contain resolved configuration values (DirectResourceFactory resolves spec values)
       expect(yaml).toContain('nginx:latest'); // Resolved image value
       expect(yaml).toContain('10Gi'); // Resolved storage value
@@ -209,7 +209,7 @@ describe('Comprehensive Factory Tests', () => {
 
       // Test that rollback method exists and can be called
       expect(typeof factory.rollback).toBe('function');
-      
+
       // Note: We can't easily test actual rollback without a real deployment
       // but we can verify the method signature and basic functionality
       try {
@@ -243,7 +243,7 @@ describe('Comprehensive Factory Tests', () => {
 
     it('should support alchemy integration', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       const alchemyFactory = await graph.factory('direct', {
         namespace: 'test',
         alchemyScope: mockAlchemyScope as any, // Mock scope for testing
@@ -269,7 +269,7 @@ describe('Comprehensive Factory Tests', () => {
           environment: 'production',
           // Missing required fields or invalid values would be caught here
         } as any);
-        
+
         expect(typeof yaml).toBe('string');
       } catch (error) {
         // If validation is implemented, this would catch invalid specs
@@ -281,7 +281,7 @@ describe('Comprehensive Factory Tests', () => {
   describe('KroResourceFactory Comprehensive Tests', () => {
     it('should create KroResourceFactory with all configuration options', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       const factory = await graph.factory('kro', {
         namespace: 'production',
         timeout: 600000,
@@ -312,7 +312,7 @@ describe('Comprehensive Factory Tests', () => {
       });
 
       const rgdYaml = factory.toYaml();
-      
+
       expect(typeof rgdYaml).toBe('string');
       expect(rgdYaml.length).toBeGreaterThan(0);
       expect(rgdYaml).toContain('ResourceGraphDefinition');
@@ -353,7 +353,7 @@ describe('Comprehensive Factory Tests', () => {
       expect(factory.schema).toBeDefined();
       expect(factory.schema.spec).toBeDefined();
       expect(factory.schema.status).toBeDefined();
-      
+
       // Test that schema proxy provides type-safe access
       const nameRef = factory.schema.spec.name;
       expect(nameRef).toBeDefined();
@@ -368,7 +368,7 @@ describe('Comprehensive Factory Tests', () => {
 
       // Test RGD status method exists
       expect(typeof factory.getRGDStatus).toBe('function');
-      
+
       // Note: We can't easily test actual RGD status without a real Kubernetes cluster
       // but we can verify the method signature
       try {
@@ -381,7 +381,7 @@ describe('Comprehensive Factory Tests', () => {
 
     it('should support alchemy integration', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       const alchemyFactory = await graph.factory('kro', {
         namespace: 'test',
         alchemyScope: mockAlchemyScope as any, // Mock scope for testing
@@ -403,7 +403,7 @@ describe('Comprehensive Factory Tests', () => {
       expect(typeof factory.getInstances).toBe('function');
       expect(typeof factory.getStatus).toBe('function');
       expect(typeof factory.deleteInstance).toBe('function');
-      
+
       // Note: We can't easily test actual instance operations without a real Kubernetes cluster
     });
   });
@@ -411,7 +411,7 @@ describe('Comprehensive Factory Tests', () => {
   describe('Factory Pattern Type Safety', () => {
     it('should maintain type safety across factory modes', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       const directFactory = await graph.factory('direct', { namespace: 'test' });
       const kroFactory = await graph.factory('kro', { namespace: 'test' });
 
@@ -430,7 +430,7 @@ describe('Comprehensive Factory Tests', () => {
 
       expect(typeof directYaml).toBe('string');
       expect(typeof kroInstanceYaml).toBe('string');
-      
+
       // Both should contain the same spec values (note: may be in schema reference format)
       expect(directYaml.length).toBeGreaterThan(0);
       expect(kroInstanceYaml.length).toBeGreaterThan(0);
@@ -438,18 +438,18 @@ describe('Comprehensive Factory Tests', () => {
 
     it('should provide consistent Enhanced type across factories', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       const directFactory = await graph.factory('direct', { namespace: 'test' });
       const kroFactory = await graph.factory('kro', { namespace: 'test' });
 
       // Both factories should have the same deploy method signature
       expect(typeof directFactory.deploy).toBe('function');
       expect(typeof kroFactory.deploy).toBe('function');
-      
+
       // Both should have consistent instance management
       expect(typeof directFactory.getInstances).toBe('function');
       expect(typeof kroFactory.getInstances).toBe('function');
-      
+
       expect(typeof directFactory.deleteInstance).toBe('function');
       expect(typeof kroFactory.deleteInstance).toBe('function');
     });
@@ -458,7 +458,7 @@ describe('Comprehensive Factory Tests', () => {
   describe('Factory Error Handling', () => {
     it('should handle invalid factory options gracefully', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       // Test with invalid timeout
       const factory = await graph.factory('direct', {
         namespace: 'test',
@@ -471,10 +471,10 @@ describe('Comprehensive Factory Tests', () => {
 
     it('should handle missing required configuration', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       // Test with minimal configuration
       const factory = await graph.factory('direct', {});
-      
+
       expect(factory).toBeDefined();
       expect(factory.mode).toBe('direct');
       expect(factory.namespace).toBe('default'); // Should use default namespace
@@ -482,7 +482,7 @@ describe('Comprehensive Factory Tests', () => {
 
     it('should handle alchemy deployment failures gracefully', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       const alchemyFactory = await graph.factory('direct', {
         namespace: 'test',
         alchemyScope: mockAlchemyScope as any, // Mock scope for testing
@@ -498,7 +498,9 @@ describe('Comprehensive Factory Tests', () => {
         });
       } catch (error) {
         expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toMatch(/No active cluster!|Node with id .* already exists in dependency graph/);
+        expect((error as Error).message).toMatch(
+          /No active cluster!|Node with id .* already exists in dependency graph|Not running within an Alchemy Scope/
+        );
       }
     });
   });
@@ -507,15 +509,15 @@ describe('Comprehensive Factory Tests', () => {
     it('should handle large resource graphs efficiently', async () => {
       // Create a larger resource graph for performance testing
       const schemas = createTestSchemas();
-      
+
       const largeGraph = toResourceGraph(
         {
           name: 'large-webapp',
-          ...schemas.definition
+          ...schemas.definition,
         },
         (schema) => {
           const resources: Record<string, any> = {};
-          
+
           // Create multiple deployments
           for (let i = 0; i < 5; i++) {
             resources[`deployment-${i}`] = simpleDeployment({
@@ -524,7 +526,7 @@ describe('Comprehensive Factory Tests', () => {
               image: schema.spec.image,
               replicas: schema.spec.replicas,
             });
-            
+
             resources[`service-${i}`] = simpleService({
               id: `webappService${i}`,
               name: `${schema.spec.name}-${i}`,
@@ -532,7 +534,7 @@ describe('Comprehensive Factory Tests', () => {
               ports: [{ port: 80 + i, targetPort: 3000 }],
             });
           }
-          
+
           return resources;
         },
         (_schema, _resources) => ({
@@ -566,7 +568,7 @@ describe('Comprehensive Factory Tests', () => {
 
     it('should handle concurrent factory operations', async () => {
       const graph = createComprehensiveResourceGraph();
-      
+
       // Create multiple factories concurrently
       const factoryPromises = [
         graph.factory('direct', { namespace: 'test-1' }),
@@ -576,13 +578,13 @@ describe('Comprehensive Factory Tests', () => {
       ];
 
       const factories = await Promise.all(factoryPromises);
-      
+
       expect(factories).toHaveLength(4);
       expect(factories[0]?.mode).toBe('direct');
       expect(factories[1]?.mode).toBe('direct');
       expect(factories[2]?.mode).toBe('kro');
       expect(factories[3]?.mode).toBe('kro');
-      
+
       expect(factories[0]?.namespace).toBe('test-1');
       expect(factories[1]?.namespace).toBe('test-2');
       expect(factories[2]?.namespace).toBe('test-3');

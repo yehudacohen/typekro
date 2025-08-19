@@ -10,5 +10,11 @@ export function priorityClass(
     apiVersion: 'scheduling.k8s.io/v1',
     kind: 'PriorityClass',
     metadata: resource.metadata ?? { name: 'unnamed-priorityclass' },
+  }).withReadinessEvaluator(() => {
+    // PriorityClass is a configuration resource - ready when it exists
+    return {
+      ready: true,
+      message: 'PriorityClass is ready when created (configuration resource)',
+    };
   }) as V1PriorityClass & Enhanced<V1PriorityClass, object>;
 }

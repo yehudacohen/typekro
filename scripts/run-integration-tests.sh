@@ -65,12 +65,16 @@ if [ "${SKIP_CLUSTER_TESTS:-false}" != "true" ]; then
   # Signal tests to skip any per-test cluster setup/teardown
   export SKIP_CLUSTER_SETUP=true
 fi
+echo "🔍 DEBUG: About to export SKIP_CLUSTER_SETUP..."
 
 # Run all integration tests with increased timeout
+echo "🔍 DEBUG: SKIP_CLUSTER_SETUP is set to: ${SKIP_CLUSTER_SETUP}"
 echo "🧪 Running Integration Tests..."
+echo "🔍 DEBUG: About to run bun test command..."
 echo "==============================="
-bun test test/integration/ --timeout 300000 # 5 minutes
+bun test $(find test/integration -name '*.test.ts') --timeout 300000 # 5 minutes
 
+echo "🔍 DEBUG: Test command completed!"
 # Cleanup only if not in debug mode
 if [ "$DEBUG_MODE" != "true" ]; then
   echo "🧹 Cleaning up integration test environment..."

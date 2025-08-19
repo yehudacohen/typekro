@@ -3,10 +3,8 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
-import { getIntegrationTestKubeConfig } from './shared-kubeconfig';
-import {
-  secret
-} from '../../src/factories/index'
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import { secret } from '../../src/factories/index';
 import {
   Cel,
   simpleConfigMap,
@@ -22,39 +20,30 @@ const _CLUSTER_NAME = 'typekro-e2e-test';
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
   const timestamp = Date.now().toString().slice(-6); // Last 6 digits
-  const sanitized = testName.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20);
+  const sanitized = testName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .slice(0, 20);
   return `typekro-${sanitized}-${timestamp}`;
 };
+const clusterAvailable = isClusterAvailable();
+const describeOrSkip = clusterAvailable ? describe : describe.skip;
 const _TEST_TIMEOUT = 300000; // 5 minutes
 
-describe('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
+describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
   let customApi: k8s.CustomObjectsApi;
 
   beforeAll(async () => {
-    console.log('🚀 SETUP: Starting end-to-end test environment setup...');
+    if (!clusterAvailable) return;
 
-    // Global integration harness sets up the cluster; skip if signaled
-    if (!process.env.SKIP_CLUSTER_SETUP) {
-      console.log('🔧 SETUP: Running e2e setup script...');
-      try {
-        execSync('bun run scripts/e2e-setup.ts', { 
-          stdio: 'inherit',
-          timeout: 300000 // 5 minute timeout
-        });
-        console.log('✅ SETUP: E2E environment setup completed');
-      } catch (error) {
-        throw new Error(`❌ SETUP: Failed to run e2e setup script: ${error}`);
-      }
-    } else {
-      console.log('⏭️  Using pre-existing cluster from integration harness');
-    }
+    console.log('🚀 SETUP: Connecting to existing cluster...');
 
     // Use shared kubeconfig helper for consistent TLS configuration
     kc = getIntegrationTestKubeConfig();
-    
+
     k8sApi = kc.makeApiClient(k8s.CoreV1Api);
     appsApi = kc.makeApiClient(k8s.AppsV1Api);
     customApi = kc.makeApiClient(k8s.CustomObjectsApi);

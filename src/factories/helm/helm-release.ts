@@ -18,12 +18,12 @@ export interface HelmReleaseConfig {
 
 /**
  * Deploy a Helm chart using Flux CD's HelmRelease
- * 
+ *
  * Creates a HelmRelease resource that integrates with TypeKro's magic proxy system,
  * allowing schema references and CEL expressions in Helm values.
- * 
+ *
  * @param config - Configuration for the HelmRelease
- * 
+ *
  * @example
  * Basic Helm release:
  * ```typescript
@@ -36,7 +36,7 @@ export interface HelmReleaseConfig {
  *   }
  * })
  * ```
- * 
+ *
  * @example
  * With TypeKro schema references:
  * ```typescript
@@ -62,12 +62,12 @@ export interface HelmReleaseConfig {
  *   }
  * })
  * ```
- * 
+ *
  * @example
  * With cross-resource references:
  * ```typescript
  * const secret = secret({ name: 'app-secrets', data: { ... } });
- * 
+ *
  * helmRelease({
  *   name: 'database',
  *   chart: {
@@ -83,15 +83,25 @@ export interface HelmReleaseConfig {
  * })
  * ```
  */
-export function helmRelease(config: HelmReleaseConfig): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+export function helmRelease(
+  config: HelmReleaseConfig
+): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   // Extract repository name from URL for sourceRef
   let repoName = 'helm-repo';
   if (config.chart.repository.includes('bitnami')) {
     repoName = 'bitnami';
+  } else if (config.chart.repository.startsWith('oci://')) {
+    // For OCI repositories, use a more descriptive name based on the chart name
+    repoName = `${config.name}-helm-repo`;
   } else {
-    repoName = config.chart.repository.split('/').pop()?.replace(/[^a-z0-9-]/gi, '-').toLowerCase() || 'helm-repo';
+    repoName =
+      config.chart.repository
+        .split('/')
+        .pop()
+        ?.replace(/[^a-z0-9-]/gi, '-')
+        .toLowerCase() || 'helm-repo';
   }
-  
+
   return createResource({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
@@ -125,21 +135,21 @@ export function helmRelease(config: HelmReleaseConfig): Enhanced<HelmReleaseSpec
 
 /**
  * Simplified Helm chart factory for common use cases
- * 
+ *
  * This function provides a streamlined way to deploy Helm charts with TypeKro's
  * magic proxy system support for schema references and CEL expressions.
- * 
+ *
  * @param name - The name of the HelmRelease resource
  * @param repository - The Helm chart repository URL
  * @param chart - The chart name within the repository
  * @param values - Optional values to override chart defaults (supports TypeKro references)
- * 
+ *
  * @example
  * Basic usage:
  * ```typescript
  * simpleHelmChart('nginx', 'https://charts.bitnami.com/bitnami', 'nginx')
  * ```
- * 
+ *
  * @example
  * With static values:
  * ```typescript
@@ -148,7 +158,7 @@ export function helmRelease(config: HelmReleaseConfig): Enhanced<HelmReleaseSpec
  *   replica: { replicaCount: 3 }
  * })
  * ```
- * 
+ *
  * @example
  * With TypeKro schema references:
  * ```typescript
@@ -164,12 +174,12 @@ export function helmRelease(config: HelmReleaseConfig): Enhanced<HelmReleaseSpec
  *   }
  * })
  * ```
- * 
+ *
  * @example
  * With cross-resource references:
  * ```typescript
  * const configMap = configMap({ name: 'app-config', data: { ... } });
- * 
+ *
  * simpleHelmChart('app', 'https://charts.example.com', 'my-app', {
  *   config: {
  *     configMapName: configMap.metadata.name,
@@ -179,9 +189,9 @@ export function helmRelease(config: HelmReleaseConfig): Enhanced<HelmReleaseSpec
  * ```
  */
 export function simpleHelmChart(
-  name: string, 
-  repository: string, 
-  chart: string, 
+  name: string,
+  repository: string,
+  chart: string,
   values?: Record<string, any>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   return helmRelease({

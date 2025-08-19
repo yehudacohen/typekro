@@ -1,12 +1,12 @@
 /**
  * E2E Factory Pattern Validation Tests
- * 
+ *
  * This test suite validates all factory pattern combinations by testing:
  * 1. Factory creation and configuration
  * 2. YAML generation and structure
  * 3. Type safety and method availability
  * 4. Error handling for different scenarios
- * 
+ *
  * This focuses on validating the factory patterns work correctly without
  * requiring full cluster deployment (which has serialization issues to fix).
  */
@@ -30,7 +30,10 @@ const _TEST_TIMEOUT = 60000; // 1 minute
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
   const timestamp = Date.now().toString().slice(-6); // Last 6 digits
-  const sanitized = testName.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20);
+  const sanitized = testName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .slice(0, 20);
   return `${BASE_NAMESPACE}-${sanitized}-${timestamp}`;
 };
 
@@ -59,10 +62,10 @@ describe('E2E Factory Pattern Validation Tests', () => {
     try {
       const { FileSystemStateStore } = await import('alchemy/state');
       kroAlchemyScope = await alchemy('kro-alchemy-scope-test', {
-        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' })
+        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' }),
       });
       directAlchemyScope = await alchemy('direct-alchemy-scope-test', {
-        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' })
+        stateStore: (scope) => new FileSystemStateStore(scope, { rootDir: './temp/.alchemy' }),
       });
     } catch (e) {
       console.log('⚠️  Failed to create test Alchemy scopes, some tests may skip:', e);
@@ -131,14 +134,18 @@ describe('E2E Factory Pattern Validation Tests', () => {
               CONFIG_PATH: '/etc/config/app.properties',
             },
             ports: [{ name: 'http', containerPort: 8080, protocol: 'TCP' }],
-            volumeMounts: [{
-              name: 'config-volume',
-              mountPath: '/etc/config',
-            }],
-            volumes: [{
-              name: 'config-volume',
-              configMap: { name: `${schema.spec.name}-config` },
-            }],
+            volumeMounts: [
+              {
+                name: 'config-volume',
+                mountPath: '/etc/config',
+              },
+            ],
+            volumes: [
+              {
+                name: 'config-volume',
+                configMap: { name: `${schema.spec.name}-config` },
+              },
+            ],
             id: 'webappDeployment',
           }),
 
@@ -316,14 +323,18 @@ describe('E2E Factory Pattern Validation Tests', () => {
               PGDATA: '/var/lib/postgresql/data/pgdata',
             },
             ports: [{ name: 'postgres', containerPort: 5432, protocol: 'TCP' }],
-            volumeMounts: [{
-              name: 'config-volume',
-              mountPath: '/etc/postgresql',
-            }],
-            volumes: [{
-              name: 'config-volume',
-              configMap: { name: Cel.expr(schema.spec.name, '-db-config') },
-            }],
+            volumeMounts: [
+              {
+                name: 'config-volume',
+                mountPath: '/etc/postgresql',
+              },
+            ],
+            volumes: [
+              {
+                name: 'config-volume',
+                configMap: { name: Cel.expr(schema.spec.name, '-db-config') },
+              },
+            ],
             id: 'dbDeployment',
           }),
 
@@ -372,7 +383,21 @@ describe('E2E Factory Pattern Validation Tests', () => {
       expect(instanceYaml).toContain('test-postgres-db');
       expect(instanceYaml).toContain('storage_size = 10Gi');
 
-      // Test deployment attempt (should fail gracefully without alchemy environment)
+      // Create the test namespace before deployment
+      const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+      try {
+        await k8sApi.createNamespace({
+          metadata: { name: testNamespace },
+        });
+        console.log(`✅ Created test namespace: ${testNamespace}`);
+      } catch (error) {
+        // Namespace might already exist
+        console.log(
+          `⚠️  Namespace ${testNamespace} might already exist: ${(error as Error).message}`
+        );
+      }
+
+      // Test deployment attempt
       try {
         await factory.deploy({
           name: 'test-postgres',
@@ -387,7 +412,8 @@ describe('E2E Factory Pattern Validation Tests', () => {
         console.log(`📝 Deployment failed as expected: ${errorMessage}`);
 
         // Accept any deployment failure as expected in test environment
-        const isExpectedError = errorMessage.includes('Not running within an Alchemy Scope') ||
+        const isExpectedError =
+          errorMessage.includes('Not running within an Alchemy Scope') ||
           errorMessage.includes('No active cluster') ||
           errorMessage.includes('Deployment failed') ||
           errorMessage.includes('Failed to deploy') ||
@@ -396,7 +422,9 @@ describe('E2E Factory Pattern Validation Tests', () => {
           errorMessage.includes('TLS') ||
           errorMessage.includes('connection');
         expect(isExpectedError).toBe(true);
-        console.log('✅ DirectResourceFactory + Alchemy Scope correctly detected missing environment');
+        console.log(
+          '✅ DirectResourceFactory + Alchemy Scope correctly detected missing environment'
+        );
       }
 
       console.log('✅ DirectResourceFactory + Alchemy Scope validation completed successfully');
@@ -489,7 +517,9 @@ describe('E2E Factory Pattern Validation Tests', () => {
       } catch (error) {
         // Expected deployment failure due to cluster connectivity or resource issues
         expect((error as Error).message).toContain('deployment failed');
-        console.log('✅ DirectResourceFactory without Alchemy correctly handled deployment failure');
+        console.log(
+          '✅ DirectResourceFactory without Alchemy correctly handled deployment failure'
+        );
       }
 
       console.log('✅ DirectResourceFactory without Alchemy validation completed successfully');
@@ -510,33 +540,34 @@ describe('E2E Factory Pattern Validation Tests', () => {
       });
 
       // Create the same resource graph for both factory types
-      const createResourceGraph = (name: string) => toResourceGraph(
-        {
-          name,
-          apiVersion: 'v1alpha1',
-          kind: 'TestApp',
-          spec: AppSpecSchema,
-          status: AppStatusSchema,
-        },
-        (schema) => ({
-          deployment: simpleDeployment({
-            name: schema.spec.name,
-            image: schema.spec.image,
-            replicas: schema.spec.replicas,
-            id: 'appDeployment',
-          }),
+      const createResourceGraph = (name: string) =>
+        toResourceGraph(
+          {
+            name,
+            apiVersion: 'v1alpha1',
+            kind: 'TestApp',
+            spec: AppSpecSchema,
+            status: AppStatusSchema,
+          },
+          (schema) => ({
+            deployment: simpleDeployment({
+              name: schema.spec.name,
+              image: schema.spec.image,
+              replicas: schema.spec.replicas,
+              id: 'appDeployment',
+            }),
 
-          service: simpleService({
-            name: `${schema.spec.name}-svc`,
-            selector: { app: schema.spec.name },
-            ports: [{ port: 80, targetPort: 80 }],
-            id: 'appService',
+            service: simpleService({
+              name: `${schema.spec.name}-svc`,
+              selector: { app: schema.spec.name },
+              ports: [{ port: 80, targetPort: 80 }],
+              id: 'appService',
+            }),
           }),
-        }),
-        (_schema, _resources) => ({
-          ready: Cel.expr<boolean>`true`,
-        })
-      );
+          (_schema, _resources) => ({
+            ready: Cel.expr<boolean>`true`,
+          })
+        );
 
       // Create both factory types
       const kroGraph = createResourceGraph('kro-test-app');
@@ -690,8 +721,8 @@ describe('E2E Factory Pattern Validation Tests', () => {
         console.log('⚠️ Deployment unexpectedly succeeded');
       } catch (error) {
         const errorMessage = (error as Error).message;
-        const isExpectedError = errorMessage.includes('deployment failed') ||
-          errorMessage.includes('No active cluster');
+        const isExpectedError =
+          errorMessage.includes('deployment failed') || errorMessage.includes('No active cluster');
         expect(isExpectedError).toBe(true);
         console.log('✅ Deployment to bad namespace properly failed');
       }

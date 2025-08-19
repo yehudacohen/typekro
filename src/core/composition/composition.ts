@@ -19,6 +19,7 @@ import {
   horizontalPodAutoscaler,
   ingress,
   job,
+  namespace,
   networkPolicy,
   persistentVolumeClaim,
   secret,
@@ -45,8 +46,17 @@ import type {
   V2HpaStatus,
 } from '../../factories/kubernetes/types.js';
 import type { Enhanced } from '../types.js';
-import type { SimpleConfigMapConfig } from './types.js';
+import type { SimpleConfigMapConfig, SimpleNamespaceConfig } from './types.js';
 import type { SimpleDeploymentConfig } from './types.js';
+
+export function simpleNamespace(config: SimpleNamespaceConfig): Enhanced<any, any> {
+  return namespace({
+    ...(config.id && { id: config.id }),
+    metadata: {
+      name: config.name,
+    },
+  });
+}
 
 export function simpleDeployment(config: SimpleDeploymentConfig): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   const env: V1EnvVar[] = config.env

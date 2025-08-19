@@ -12,7 +12,7 @@ import type { CelExpression, KubernetesRef } from '../core/types/common.js';
 import type { KroSimpleSchema, SerializationContext } from '../core/types/serialization.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 
-
+import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
 /**
  * Generate deterministic resource ID based on resource metadata
  * This ensures stable IDs across multiple applications for GitOps workflows
@@ -166,14 +166,14 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
 
   if (obj && typeof obj === 'object') {
     const result: Record<string, unknown> = {};
-    
+
     // Use Object.entries to get enumerable properties
     for (const [key, value] of Object.entries(obj)) {
       // Exclude the hidden resourceId property and id field from the final template
       if (key === '__resourceId' || key === 'id') continue;
       result[key] = processResourceReferences(value, context);
     }
-    
+
     // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
     const originalObj = obj as any;
     if (originalObj.readinessEvaluator && typeof originalObj.readinessEvaluator === 'function') {
@@ -181,10 +181,10 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
         value: originalObj.readinessEvaluator,
         enumerable: false,
         configurable: true,
-        writable: false
+        writable: false,
       });
     }
-    
+
     return result;
   }
 
@@ -219,14 +219,13 @@ function getKroTypeFromJson(node: unknown): string {
       return 'boolean';
     }
     // Handle literal unions - use Kro Simple Schema enum format
-    const enumValues = node
-      .map((branch) => {
-        if (typeof branch.unit === 'string') {
-          return branch.unit;
-        }
-        return String(branch.unit);
-      });
-    
+    const enumValues = node.map((branch) => {
+      if (typeof branch.unit === 'string') {
+        return branch.unit;
+      }
+      return String(branch.unit);
+    });
+
     // Return as Kro Simple Schema enum format: string | enum="value1,value2,value3"
     return `string | enum="${enumValues.join(',')}"`;
   }
@@ -296,13 +295,13 @@ function arktypeJsonToKroFields(node: unknown, prefix = ''): Record<string, stri
  */
 function serializeStatusMappingsToCel(statusMappings: any): Record<string, string> {
   const celExpressions: Record<string, string> = {};
-  
+
   function serializeValue(value: any): string {
     // Handle KubernetesRef objects (can be functions due to proxy)
     if (isKubernetesRef(value)) {
       return `\${${value.resourceId}.${value.fieldPath}}`;
     }
-    
+
     // Handle CelExpression objects
     if (isCelExpression(value)) {
       // Check if this is a template expression (mixed string with embedded CEL)
@@ -312,7 +311,7 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
       }
       return `\${${value.expression}}`;
     }
-    
+
     // Handle nested objects recursively
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       const nestedExpressions: Record<string, any> = {};
@@ -321,7 +320,7 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
       }
       return nestedExpressions as any; // Return as any for nested objects
     }
-    
+
     // Handle primitive values
     if (typeof value === 'string') {
       return `\${"${value}"}`;
@@ -332,15 +331,15 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
     if (typeof value === 'boolean') {
       return `\${${value}}`;
     }
-    
+
     // Fallback for unknown types
     return `\${""}`;
   }
-  
+
   for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
     celExpressions[fieldName] = serializeValue(fieldValue);
   }
-  
+
   return celExpressions;
 }
 
@@ -351,19 +350,19 @@ function _requiresKroResolution(value: any): boolean {
   if (isKubernetesRef(value)) {
     return true;
   }
-  
+
   if (isCelExpression(value)) {
     // Check if the CEL expression contains resource references
     const expression = value.expression;
     const resourceRefPattern = /([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./;
     return resourceRefPattern.test(expression);
   }
-  
+
   if (value && typeof value === 'object' && !Array.isArray(value) && !isCelExpression(value)) {
     // Recursively check nested objects
     return Object.values(value).some(_requiresKroResolution);
   }
-  
+
   return false;
 }
 
@@ -372,27 +371,32 @@ function _requiresKroResolution(value: any): boolean {
  * This leverages existing factory functions that already have readiness evaluators defined
  */
 export function ensureReadinessEvaluator<T extends Enhanced<any, any>>(resource: T): T {
-  // Safety-first approach: only return resources that already have factory-provided readiness evaluators
-  // Do NOT add default evaluators - this forces users to use proper factory functions
-  
-  // Check for readiness evaluator using multiple methods to be more robust
-  const hasEvaluator = 'readinessEvaluator' in resource && typeof resource.readinessEvaluator === 'function';
-  const hasEvaluatorProperty = Object.hasOwn(resource, 'readinessEvaluator');
-  const evaluatorType = typeof (resource as any).readinessEvaluator;
-  
-  if (hasEvaluator || (hasEvaluatorProperty && evaluatorType === 'function')) {
-      return resource;
+  // First: Check if resource already has attached evaluator
+  if (typeof resource.readinessEvaluator === 'function') {
+    return resource;
   }
-
-  // If we reach here, the resource doesn't have a readiness evaluator
-  // This should not happen if proper factory functions are used
-  console.warn(`Resource ${resource.kind}/${resource.metadata?.name} is missing readiness evaluator. Use proper factory functions like simpleDeployment(), simpleService(), etc.`);
   
-  // Return resource as-is - the deployment engine will reject resources without evaluators
-  return resource;
+  // Second: Look up in registry by KIND
+  const registry = ReadinessEvaluatorRegistry.getInstance();
+  const evaluator = registry.getEvaluatorForKind(resource.kind);
+  
+  if (evaluator) {
+    // Attach the registry evaluator to this resource instance
+    Object.defineProperty(resource, 'readinessEvaluator', {
+      value: evaluator,
+      enumerable: false,
+      configurable: true,
+      writable: false,
+    });
+    return resource;
+  }
+  
+  // Third: No evaluator found anywhere
+  throw new Error(
+    `No readiness evaluator found for ${resource.kind}/${resource.metadata?.name}. ` +
+    `Use a factory function like deployment(), configMap(), etc., or call .withReadinessEvaluator().`
+  );
 }
-
-
 
 /**
  * Recursively converts an Enhanced resource proxy into a plain JavaScript object.
@@ -414,11 +418,11 @@ export function toPlainObject<T>(obj: T, visited = new Set<any>()): T {
 
   // Handle arrays by converting each item
   if (Array.isArray(obj)) {
-    const plainArray = obj.map(item => toPlainObject(item, visited)) as any;
+    const plainArray = obj.map((item) => toPlainObject(item, visited)) as any;
     visited.delete(obj);
     return plainArray;
   }
-  
+
   // Use getOwnPropertyNames and getOwnPropertySymbols to capture all keys,
   // including non-enumerable ones (like our brand symbols) if needed.
   const plainObj: Record<string | symbol, any> = {};
@@ -426,7 +430,7 @@ export function toPlainObject<T>(obj: T, visited = new Set<any>()): T {
 
   for (const key of keys) {
     const value = (obj as any)[key];
-    
+
     // Preserve readinessEvaluator function as-is
     if (key === 'readinessEvaluator') {
       plainObj[key] = value;
@@ -441,10 +445,9 @@ export function toPlainObject<T>(obj: T, visited = new Set<any>()): T {
   return plainObj as T;
 }
 
-
 /**
  * Converts an Arktype schema to a Kro-compatible schema definition
- * 
+ *
  * IMPORTANT: Status fields in Kro now use user-defined mappings from the StatusBuilder function
  * instead of auto-generated CEL expressions.
  */
@@ -466,17 +469,16 @@ export function arktypeToKroSchema(
   }
 
   // Separate static and dynamic status fields
-  const { dynamicFields } = statusMappings 
+  const { dynamicFields } = statusMappings
     ? separateStatusFields(statusMappings)
     : { dynamicFields: {} };
 
   // Only serialize dynamic fields that need Kro resolution
-  const statusCelExpressions = Object.keys(dynamicFields).length > 0
-    ? serializeStatusMappingsToCel(dynamicFields)
-    : {};
+  const statusCelExpressions =
+    Object.keys(dynamicFields).length > 0 ? serializeStatusMappingsToCel(dynamicFields) : {};
 
   // Extract just the version part for the schema (Kro expects v1alpha1, not kro.run/v1alpha1)
-  const schemaApiVersion = schemaDefinition.apiVersion.includes('/') 
+  const schemaApiVersion = schemaDefinition.apiVersion.includes('/')
     ? schemaDefinition.apiVersion.split('/')[1] || schemaDefinition.apiVersion
     : schemaDefinition.apiVersion;
 

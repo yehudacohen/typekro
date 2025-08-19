@@ -1,6 +1,6 @@
 /**
  * Flux CD Factory Functions
- * 
+ *
  * This module provides factory functions for Flux CD resources including
  * GitRepository, Kustomization, and other Flux CD components.
  */

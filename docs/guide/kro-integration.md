@@ -28,10 +28,59 @@ TypeKro is built on top of Kubernetes Resource Orchestrator (KRO), which provide
 ### Prerequisites
 
 - Kubernetes cluster with admin access
-- kubectl configured for your cluster
+- kubectl configured for your cluster  
 - Cluster version 1.20+ recommended
+- TypeKro installed in your project
+
+### TypeKro Bootstrap vs Manual Installation
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **TypeKro Bootstrap** | • Type-safe installation<br>• Includes Flux CD for HelmRelease support<br>• Automatic readiness checking<br>• Consistent with TypeKro patterns | • Requires TypeKro dependency<br>• More opinionated setup |
+| **Manual kubectl** | • Direct control<br>• Minimal dependencies<br>• Official installation method | • Manual YAML management<br>• No readiness guarantees<br>• No Flux integration |
 
 ### Install KRO Controller
+
+#### Option 1: TypeKro Bootstrap (Recommended)
+
+Use TypeKro's built-in bootstrap composition for a complete runtime setup:
+
+```typescript
+import { typeKroRuntimeBootstrap } from 'typekro';
+
+async function bootstrapKroEnvironment() {
+  // Create bootstrap composition
+  const bootstrap = typeKroRuntimeBootstrap({
+    namespace: 'flux-system',
+    fluxVersion: 'v2.4.0',
+    kroVersion: '0.3.0'
+  });
+
+  // Deploy with direct factory
+  const factory = await bootstrap.factory('direct', {
+    namespace: 'flux-system',
+    waitForReady: true,
+    timeout: 300000 // 5 minutes
+  });
+
+  console.log('Installing Flux CD and KRO...');
+  const result = await factory.deploy({
+    namespace: 'flux-system'
+  });
+
+  console.log('KRO environment ready!', result.status);
+}
+
+bootstrapKroEnvironment().catch(console.error);
+```
+
+This approach:
+- ✅ Installs Flux CD controllers in `flux-system` namespace
+- ✅ Installs KRO via HelmRelease in `kro` namespace  
+- ✅ Uses proper dependency management and readiness checking
+- ✅ Provides TypeScript-native installation experience
+
+#### Option 2: Manual kubectl Installation
 
 ```bash
 # Install the latest KRO release
@@ -45,11 +94,17 @@ kubectl get crd | grep kro.run
 ### Verify Installation
 
 ```bash
+# Check Flux controllers (if using TypeKro bootstrap)
+kubectl get pods -n flux-system
+
 # Check KRO controller is running
-kubectl get deployment -n kro-system kro-controller-manager
+kubectl get pods -n kro
 
 # Verify ResourceGraphDefinition CRD is installed
 kubectl explain resourcegraphdefinition
+
+# Check HelmRelease status (if using TypeKro bootstrap)
+kubectl get helmrelease -n kro
 ```
 
 ## Basic KRO Integration

@@ -1,49 +1,28 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
-import { execSync } from 'node:child_process';
 import * as k8s from '@kubernetes/client-node';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 import { toResourceGraph, simpleConfigMap } from '../../src/index.js';
 import { type } from 'arktype';
-
-// Test configuration
-const CLUSTER_NAME = 'typekro-e2e-test';
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
   const timestamp = Date.now().toString().slice(-6); // Last 6 digits
-  const sanitized = testName.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20);
+  const sanitized = testName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .slice(0, 20);
   return `typekro-${sanitized}-${timestamp}`;
 };
 
-// Check if cluster is available
-let isClusterAvailable = false;
-try {
-  execSync(`kind get clusters | grep ${CLUSTER_NAME}`, {
-    stdio: 'pipe',
-    timeout: 10000,
-  });
-  isClusterAvailable = true;
-} catch (_error) {
-  console.log(
-    `⚠️  Skipping e2e test: Test cluster '${CLUSTER_NAME}' not found. Run: bun run scripts/e2e-setup.ts`
-  );
-}
-
-const describeOrSkip = isClusterAvailable ? describe : describe.skip;
+const clusterAvailable = isClusterAvailable();
+const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
   let kc: k8s.KubeConfig;
 
   beforeAll(() => {
-    // Initialize Kubernetes client with TLS skip
-    kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
-
-    // Configure to skip TLS verification for test environment
-    const cluster = kc.getCurrentCluster();
-    if (cluster) {
-      const modifiedCluster = { ...cluster, skipTLSVerify: true };
-      kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-    }
+    // Use shared kubeconfig helper for consistent TLS configuration
+    kc = getIntegrationTestKubeConfig();
   });
 
   it('should deploy resources directly without TLS certificate errors', async () => {
@@ -101,7 +80,7 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
 
     // Verify the ConfigMap was actually created in the cluster
     const configMap = await k8sApi.readNamespacedConfigMap('tls-test-config', NAMESPACE);
-    
+
     expect(configMap.body.data?.TEST_VALUE).toBe('direct-factory-works');
     expect(configMap.body.data?.TIMESTAMP).toBeDefined();
 
