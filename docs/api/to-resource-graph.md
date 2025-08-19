@@ -1,419 +1,532 @@
-# toResourceGraph
+# toResourceGraph API
 
-The primary function for creating typed resource graphs in TypeKro.
+The `toResourceGraph()` function is the core of TypeKro's type-safe infrastructure definition system. It creates a typed resource graph with schema validation, cross-resource references, and multiple deployment strategies.
 
-## Signature
+## Overview
+
+`toResourceGraph()` enables you to:
+- Define infrastructure with compile-time type safety
+- Create cross-resource references that resolve at runtime
+- Use the same code for multiple deployment strategies
+- Build complex applications with dependency management
+
+## Function Signature
 
 ```typescript
-function toResourceGraph<TSpec, TStatus>(
-  name: string,
-  builder: (schema: SchemaProxy<TSpec, TStatus>) => Record<string, Enhanced<any, any>>,
-  schema: SchemaDefinition<TSpec, TStatus>
+function toResourceGraph<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>
+>(
+  definition: ResourceGraphDefinition<TSpec, TStatus>,
+  resourceBuilder: (schema: SchemaProxy<TSpec, TStatus>) => TResources,
+  statusBuilder: (schema: SchemaProxy<TSpec, TStatus>, resources: TResources) => MagicAssignableShape<TStatus>,
+  options?: SerializationOptions
 ): TypedResourceGraph<TSpec, TStatus>
 ```
 
 ## Parameters
 
-### `name: string`
-The name of the resource graph. This becomes the name of the ResourceGraphDefinition when deployed via Kro.
+### `definition`
 
-### `builder: (schema) => Record<string, Enhanced<any, any>>`
-A function that receives a schema proxy and returns an object containing all the resources in your graph.
-
-**Parameters:**
-- `schema: SchemaProxy<TSpec, TStatus>` - Provides type-safe access to spec and status fields
-
-**Returns:**
-- `Record<string, Enhanced<any, any>>` - Object with resource names as keys and Enhanced resources as values
-
-### `schema: SchemaDefinition<TSpec, TStatus>`
-Schema definition containing API version, kind, and type definitions.
-
-**Properties:**
-- `apiVersion: string` - API version for the custom resource
-- `kind: string` - Kind name for the custom resource
-- `spec: Type<TSpec>` - ArkType schema for the spec
-- `status?: Type<TStatus>` - ArkType schema for the status (optional)
-- `statusMappings?: Record<string, any>` - Mapping of status fields to values or expressions
-
-## Return Value
-
-Returns a `TypedResourceGraph<TSpec, TStatus>` with the following methods:
-
-### `factory(mode, options?)`
-Creates a factory for deploying the resource graph.
+Resource graph definition with metadata and schema information.
 
 ```typescript
-const factory = await graph.factory('direct', {
-  namespace: 'production',
-  timeout: 300000
-});
+interface ResourceGraphDefinition<TSpec, TStatus> {
+  name: string;
+  apiVersion: string;
+  kind: string;
+  spec: Type<TSpec>;     // Arktype schema for spec
+  status: Type<TStatus>; // Arktype schema for status
+}
 ```
 
-### `toYaml(spec?)`
-Generates YAML for the resource graph.
+#### Properties
+
+- **`name`**: Unique identifier for the resource graph
+- **`apiVersion`**: Kubernetes-style API version (e.g., "example.com/v1")
+- **`kind`**: Resource type name (e.g., "WebApp", "Database")
+- **`spec`**: Arktype schema defining the input specification
+- **`status`**: Arktype schema defining the computed status
+
+### `resourceBuilder`
+
+Function that creates the actual Kubernetes resources using the schema proxy.
 
 ```typescript
-// Generate ResourceGraphDefinition
-const rgdYaml = graph.toYaml();
-
-// Generate instance YAML
-const instanceYaml = graph.toYaml({
-  name: 'my-app',
-  image: 'nginx:latest'
-});
+type ResourceBuilder<TSpec, TStatus, TResources> = (
+  schema: SchemaProxy<TSpec, TStatus>
+) => TResources
 ```
 
-## Examples
+#### Parameters
 
-### Basic Usage
+- **`schema`**: Magic proxy providing type-safe access to spec and status fields
+- **Returns**: Object containing Enhanced resources or deployment closures
+
+### `statusBuilder`
+
+Function that computes dynamic status values based on resource state.
+
+```typescript
+type StatusBuilder<TSpec, TStatus, TResources> = (
+  schema: SchemaProxy<TSpec, TStatus>, 
+  resources: TResources
+) => MagicAssignableShape<TStatus>
+```
+
+#### Parameters
+
+- **`schema`**: Same schema proxy as resource builder
+- **`resources`**: The resources created by the resource builder
+- **Returns**: Object matching the status schema shape
+
+### `options` (Optional)
+
+Serialization and behavior options.
+
+```typescript
+interface SerializationOptions {
+  namespace?: string;
+  optimizeCel?: boolean;
+  validateSchema?: boolean;
+}
+```
+
+## Returns
+
+A `TypedResourceGraph` object with factory methods for different deployment strategies.
+
+```typescript
+interface TypedResourceGraph<TSpec, TStatus> {
+  factory(mode: 'direct' | 'kro', options?: FactoryOptions): Promise<ResourceFactory>;
+  definition: ResourceGraphDefinition<TSpec, TStatus>;
+}
+```
+
+## Basic Example
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
 
-const AppSpec = type({
+// Define the schema using arktype
+const WebAppSpec = type({
   name: 'string',
   image: 'string',
+  replicas: 'number',
+  host: 'string'
+});
+
+const WebAppStatus = type({
+  ready: 'boolean',
+  url: 'string',
   replicas: 'number'
 });
 
-const AppStatus = type({
-  phase: 'string',
-  readyReplicas: 'number'
-});
-
-const webApp = toResourceGraph(
-  'webapp',
+// Create the resource graph
+const webapp = toResourceGraph(
+  {
+    name: 'simple-webapp',
+    apiVersion: 'example.com/v1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus
+  },
+  // Resource builder - creates the actual Kubernetes resources
   (schema) => ({
     deployment: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas
+      name: schema.spec.name,        // Type-safe schema reference
+      image: schema.spec.image,      // Full IDE autocomplete
+      replicas: schema.spec.replicas,
+      ports: [80]
     }),
     
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: schema.spec.name,
       selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }]
+      ports: [{ port: 80, targetPort: 80 }]
+    }),
+    
+    ingress: simpleIngress({
+      name: schema.spec.name,
+      host: schema.spec.host,        // Schema reference
+      serviceName: schema.spec.name, // References service above
+      servicePort: 80
     })
   }),
-  {
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebApp',
-    spec: AppSpec,
-    status: AppStatus,
-    statusMappings: {
-      phase: deployment.status.phase,
-      readyReplicas: deployment.status.readyReplicas
-    }
-  }
+  // Status builder - computes dynamic status
+  (schema, resources) => ({
+    ready: Cel.expr(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
+    url: Cel.template('https://%s', schema.spec.host),
+    replicas: resources.deployment.status.readyReplicas
+  })
 );
 ```
 
-### With Cross-Resource References
+## Advanced Patterns
+
+### Cross-Resource References
+
+Resources can reference each other using the magic proxy system:
 
 ```typescript
-const fullStack = toResourceGraph(
-  'fullstack-app',
+const microservices = toResourceGraph(
+  {
+    name: 'microservices',
+    apiVersion: 'platform.example.com/v1',
+    kind: 'Microservices',
+    spec: type({ name: 'string', environment: 'string' }),
+    status: type({ ready: 'boolean' })
+  },
   (schema) => ({
+    // Database
     database: simpleDeployment({
-      name: `${schema.spec.name}-db`,
-      image: 'postgres:15'
-    }),
-    
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
+      name: Cel.template('%s-db', schema.spec.name),
+      image: 'postgres:13',
       env: {
-        // Cross-resource reference
-        DATABASE_HOST: database.status.podIP
+        POSTGRES_DB: schema.spec.name,
+        POSTGRES_USER: 'app',
+        POSTGRES_PASSWORD: 'secret'
       }
     }),
     
-    service: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }]
+    dbService: simpleService({
+      name: Cel.template('%s-db', schema.spec.name),
+      selector: { app: Cel.template('%s-db', schema.spec.name) },
+      ports: [{ port: 5432, targetPort: 5432 }]
+    }),
+    
+    // API server that references database
+    api: simpleDeployment({
+      name: Cel.template('%s-api', schema.spec.name),
+      image: 'myapp/api:latest',
+      env: {
+        // Reference to database service (runtime resolution)
+        DATABASE_URL: Cel.template(
+          'postgres://app:secret@%s:5432/%s',
+          schema.spec.name,  // References dbService.spec.clusterIP at runtime
+          schema.spec.name
+        ),
+        ENVIRONMENT: schema.spec.environment
+      }
+    }),
+    
+    apiService: simpleService({
+      name: Cel.template('%s-api', schema.spec.name),
+      selector: { app: Cel.template('%s-api', schema.spec.name) },
+      ports: [{ port: 8080, targetPort: 8080 }]
     })
   }),
-  {
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'FullStackApp',
-    spec: FullStackSpec,
-    status: FullStackStatus
-  }
+  (schema, resources) => ({
+    ready: Cel.expr(
+      resources.database.status.readyReplicas, ' > 0 && ',
+      resources.api.status.readyReplicas, ' > 0'
+    )
+  })
 );
 ```
 
-### With CEL Expressions
+### Environment-Specific Configuration
+
+Use schema references to create environment-specific deployments:
 
 ```typescript
-import { Cel } from 'typekro';
-
-const smartApp = toResourceGraph(
-  'smart-app',
+const app = toResourceGraph(
+  {
+    name: 'configurable-app',
+    apiVersion: 'config.example.com/v1',
+    kind: 'ConfigurableApp',
+    spec: type({
+      name: 'string',
+      environment: '"development" | "staging" | "production"',
+      replicas: 'number',
+      image: 'string',
+      logLevel: '"debug" | "info" | "warn" | "error"'
+    }),
+    status: type({ 
+      ready: 'boolean',
+      environment: 'string' 
+    })
+  },
   (schema) => ({
+    config: simpleConfigMap({
+      name: Cel.template('%s-config', schema.spec.name),
+      data: {
+        ENVIRONMENT: schema.spec.environment,
+        LOG_LEVEL: schema.spec.logLevel,
+        // Environment-specific values using CEL
+        DEBUG: Cel.conditional(
+          schema.spec.environment === 'development',
+          'true',
+          'false'
+        ),
+        API_TIMEOUT: Cel.conditional(
+          schema.spec.environment === 'production',
+          '30000',
+          '10000'
+        )
+      }
+    }),
+    
     deployment: simpleDeployment({
       name: schema.spec.name,
       image: schema.spec.image,
-      replicas: schema.spec.replicas
-    }),
-    
-    service: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }]
+      replicas: schema.spec.replicas,
+      env: {
+        ENVIRONMENT: schema.spec.environment,
+        LOG_LEVEL: schema.spec.logLevel
+      }
     })
   }),
+  (schema, resources) => ({
+    ready: Cel.expr(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
+    environment: schema.spec.environment
+  })
+);
+```
+
+### Complex Status Computation
+
+Status builders can perform complex calculations using CEL expressions:
+
+```typescript
+const cluster = toResourceGraph(
   {
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'SmartApp',
-    spec: SmartAppSpec,
-    status: SmartAppStatus,
-    statusMappings: {
-      // CEL expressions for dynamic status
-      ready: Cel.expr(deployment.status.readyReplicas, '> 0'),
-      url: Cel.template('http://%s', service.status.loadBalancer.ingress[0].ip),
-      healthScore: Cel.expr(
-        `(${deployment.status.readyReplicas} * 100) / ${deployment.spec.replicas}`
-      )
-    }
-  }
-);
-```
-
-### Conditional Resources
-
-```typescript
-const conditionalApp = toResourceGraph(
-  'conditional-app',
-  (schema) => ({
-    deployment: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image
+    name: 'app-cluster',
+    apiVersion: 'cluster.example.com/v1',
+    kind: 'AppCluster',
+    spec: type({
+      name: 'string',
+      services: 'string[]',
+      minReplicas: 'number'
     }),
-    
-    service: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }]
-    }),
-    
-    // Conditional ingress only in production
-    ...(schema.spec.environment === 'production' && {
-      ingress: simpleIngress({
-        name: `${schema.spec.name}-ingress`,
-        rules: [{
-          host: `${schema.spec.name}.example.com`,
-          http: {
-            paths: [{
-              path: '/',
-              backend: {
-                service: {
-                  name: service.metadata.name,
-                  port: { number: 80 }
-                }
-              }
-            }]
-          }
-        }]
-      })
+    status: type({
+      totalReplicas: 'number',
+      readyReplicas: 'number',
+      healthStatus: '"healthy" | "degraded" | "unhealthy"',
+      serviceStatuses: 'Record<string, boolean>'
     })
+  },
+  (schema) => ({
+    // Create services dynamically based on spec
+    services: schema.spec.services.map(serviceName => 
+      simpleDeployment({
+        name: serviceName,
+        image: `myapp/${serviceName}:latest`,
+        replicas: schema.spec.minReplicas
+      })
+    )
   }),
-  schemaDefinition
+  (schema, resources) => ({
+    // Sum total replicas across all services
+    totalReplicas: Cel.expr(
+      resources.services.map(svc => svc.spec.replicas).join(' + ')
+    ),
+    
+    // Sum ready replicas across all services  
+    readyReplicas: Cel.expr(
+      resources.services.map(svc => svc.status.readyReplicas).join(' + ')
+    ),
+    
+    // Compute overall health status
+    healthStatus: Cel.conditional(
+      Cel.expr(
+        resources.services.map(svc => 
+          `${svc.status.readyReplicas} >= ${svc.spec.replicas}`
+        ).join(' && ')
+      ),
+      'healthy',
+      Cel.conditional(
+        Cel.expr(
+          resources.services.map(svc => svc.status.readyReplicas).join(' + '),
+          ' > 0'
+        ),
+        'degraded',
+        'unhealthy'
+      )
+    ),
+    
+    // Individual service statuses
+    serviceStatuses: Object.fromEntries(
+      resources.services.map((svc, i) => [
+        schema.spec.services[i],
+        Cel.expr(svc.status.readyReplicas, ' >= ', svc.spec.replicas)
+      ])
+    )
+  })
 );
 ```
 
-## Schema Proxy
+## Deployment Strategies
 
-The schema proxy provides type-safe access to spec and status fields:
+Once you have a resource graph, you can deploy it using different strategies:
 
-### Spec Access
+### Direct Deployment
+
+Deploy immediately to your cluster:
 
 ```typescript
-const builder = (schema) => ({
-  deployment: simpleDeployment({
-    name: schema.spec.name,        // Type-safe access to spec.name
-    image: schema.spec.image,      // Type-safe access to spec.image
-    replicas: schema.spec.replicas // Type-safe access to spec.replicas
-  })
+const factory = await webapp.factory('direct', { namespace: 'development' });
+await factory.deploy({
+  name: 'my-webapp',
+  image: 'nginx:latest',
+  replicas: 2,
+  host: 'dev.example.com'
 });
 ```
 
-### Status Access (for statusMappings)
+### KRO Deployment
+
+Deploy using Kubernetes Resource Orchestrator for advanced runtime features:
 
 ```typescript
-const schemaDefinition = {
-  // ...
-  statusMappings: {
-    // Access status fields (these become CEL expressions)
-    currentPhase: deployment.status.phase,
-    readyCount: deployment.status.readyReplicas
-  }
+const factory = await webapp.factory('kro', { namespace: 'production' });
+await factory.deploy({
+  name: 'webapp-prod',
+  image: 'nginx:1.21',
+  replicas: 3,
+  host: 'prod.example.com'
+});
+```
+
+### YAML Generation
+
+Generate deterministic YAML for GitOps workflows:
+
+```typescript
+const factory = await webapp.factory('kro', { namespace: 'staging' });
+const yaml = factory.toYaml();
+
+// Write to file for GitOps deployment
+writeFileSync('k8s/webapp-staging.yaml', yaml);
+```
+
+## Type Safety Features
+
+### Schema Validation
+
+Arktype schemas provide runtime validation:
+
+```typescript
+const spec = {
+  name: 'my-app',
+  image: 'nginx:latest',
+  replicas: '3',  // ❌ Type error: expected number, got string
+  host: 'example.com'
 };
+
+// TypeScript will catch this at compile time
+// Arktype will catch this at runtime
 ```
 
-## Schema Definition
+### Reference Type Safety
 
-### Required Fields
-
-```typescript
-interface SchemaDefinition<TSpec, TStatus> {
-  apiVersion: string;  // e.g., 'example.com/v1alpha1'
-  kind: string;        // e.g., 'WebApp'
-  spec: Type<TSpec>;   // ArkType schema for spec
-}
-```
-
-### Optional Fields
+Schema references are fully type-safe:
 
 ```typescript
-interface SchemaDefinition<TSpec, TStatus> {
-  status?: Type<TStatus>;                    // ArkType schema for status
-  statusMappings?: Record<string, any>;      // Status field mappings
-  metadata?: {
-    labels?: Record<string, string>;         // Default labels
-    annotations?: Record<string, string>;    // Default annotations
-  };
-}
-```
-
-## Type Safety
-
-### Spec Type Safety
-
-The schema proxy ensures spec fields are properly typed:
-
-```typescript
-const AppSpec = type({
-  name: 'string',
-  replicas: 'number',
-  environment: '"dev" | "staging" | "prod"'
-});
-
-const graph = toResourceGraph('app', (schema) => ({
+(schema) => ({
   deployment: simpleDeployment({
-    name: schema.spec.name,        // ✅ string
-    replicas: schema.spec.replicas, // ✅ number
-    // environment: schema.spec.env // ❌ TypeScript error - 'env' doesn't exist
+    name: schema.spec.name,        // ✅ Type: string
+    replicas: schema.spec.count,   // ❌ Type error: 'count' doesn't exist
+    image: schema.spec.image       // ✅ Type: string
   })
-}), { spec: AppSpec, /* ... */ });
+})
 ```
 
 ### Status Type Safety
 
-Status mappings are validated against the status schema:
+Status builders must match the defined schema:
 
 ```typescript
-const AppStatus = type({
-  phase: 'string',
-  readyReplicas: 'number',
-  url: 'string'
-});
-
-const graph = toResourceGraph('app', builder, {
-  spec: AppSpec,
-  status: AppStatus,
-  statusMappings: {
-    phase: deployment.status.phase,        // ✅ string
-    readyReplicas: deployment.status.readyReplicas, // ✅ number
-    url: service.status.loadBalancer.ingress[0].ip, // ✅ string
-    // invalidField: 'value' // ❌ TypeScript error - not in status schema
-  }
-});
-```
-
-## Error Handling
-
-### Schema Validation Errors
-
-```typescript
-try {
-  const factory = await graph.factory('direct');
-  await factory.deploy(invalidSpec);
-} catch (error) {
-  if (error instanceof SchemaValidationError) {
-    console.error('Invalid spec:', error.errors);
-  }
-}
-```
-
-### Resource Creation Errors
-
-```typescript
-try {
-  const graph = toResourceGraph('app', (schema) => ({
-    deployment: simpleDeployment({
-      // Missing required fields will cause TypeScript errors
-      name: schema.spec.name
-      // image: schema.spec.image // Required but missing
-    })
-  }), schemaDefinition);
-} catch (error) {
-  console.error('Resource creation failed:', error);
-}
+(schema, resources) => ({
+  ready: resources.deployment.status.readyReplicas > 0,  // ✅ Type: boolean
+  url: `https://${schema.spec.host}`,                    // ✅ Type: string
+  invalid: 'not-in-schema'                               // ❌ Type error
+})
 ```
 
 ## Best Practices
 
 ### 1. Use Descriptive Names
 
-```typescript
-// ✅ Clear and descriptive
-const webApplicationStack = toResourceGraph('web-application-stack', ...);
-
-// ❌ Too generic
-const app = toResourceGraph('app', ...);
-```
-
-### 2. Group Related Resources
+Choose clear, descriptive names for your resource graphs:
 
 ```typescript
-const microserviceStack = toResourceGraph('microservice', (schema) => ({
-  // Core application
-  api: simpleDeployment({ /* ... */ }),
-  apiService: simpleService({ /* ... */ }),
-  
-  // Database
-  database: simpleDeployment({ /* ... */ }),
-  databaseService: simpleService({ /* ... */ }),
-  
-  // Configuration
-  config: simpleConfigMap({ /* ... */ }),
-  secrets: simpleSecret({ /* ... */ })
-}), schemaDefinition);
-```
+// Good
+const webApplicationWithDatabase = toResourceGraph({
+  name: 'web-app-with-db',
+  apiVersion: 'platform.example.com/v1',
+  kind: 'WebApplicationWithDatabase',
+  // ...
+});
 
-### 3. Use Environment-Specific Logic
-
-```typescript
-const adaptiveApp = toResourceGraph('adaptive-app', (schema) => ({
-  deployment: simpleDeployment({
-    name: schema.spec.name,
-    image: schema.spec.image,
-    replicas: schema.spec.environment === 'production' ? 5 : 2,
-    resources: schema.spec.environment === 'production'
-      ? { cpu: '1000m', memory: '2Gi' }
-      : { cpu: '100m', memory: '256Mi' }
-  })
-}), schemaDefinition);
-```
-
-### 4. Validate Input Schemas
-
-```typescript
-const StrictAppSpec = type({
-  name: 'string>2',           // At least 3 characters
-  image: 'string',
-  replicas: 'number>0',       // At least 1
-  environment: '"dev" | "staging" | "prod"'  // Enum validation
+// Avoid
+const app = toResourceGraph({
+  name: 'app',
+  apiVersion: 'v1',
+  kind: 'App',
+  // ...
 });
 ```
 
-## See Also
+### 2. Organize Related Resources
 
-- [Factory Functions](./factories.md) - Available factory functions
-- [CEL Expressions](../guide/cel-expressions.md) - CEL expression guide
-- [Cross-Resource References](../guide/cross-references.md) - Connect resources dynamically
-- [Examples](../examples/) - Real-world usage examples
+Group related resources logically in the resource builder:
+
+```typescript
+(schema) => ({
+  // Data layer
+  database: simpleDeployment({ /* ... */ }),
+  dbService: simpleService({ /* ... */ }),
+  
+  // Application layer  
+  api: simpleDeployment({ /* ... */ }),
+  apiService: simpleService({ /* ... */ }),
+  
+  // Presentation layer
+  frontend: simpleDeployment({ /* ... */ }),
+  frontendService: simpleService({ /* ... */ }),
+  
+  // Infrastructure
+  ingress: simpleIngress({ /* ... */ })
+})
+```
+
+### 3. Use CEL Expressions Judiciously
+
+Use CEL for dynamic values, but prefer static values when possible:
+
+```typescript
+// Good: Use CEL for dynamic computation
+env: {
+  SERVICE_URL: Cel.template('http://%s:8080', schema.spec.name),
+  DEBUG: Cel.conditional(schema.spec.environment === 'development', 'true', 'false')
+}
+
+// Good: Use static values when known
+env: {
+  PORT: '8080',
+  NODE_ENV: 'production'
+}
+```
+
+### 4. Validate Schemas Thoroughly
+
+Use arktype's validation features to catch errors early:
+
+```typescript
+const WebAppSpec = type({
+  name: 'string>0',           // Non-empty string
+  replicas: 'number>=1',      // At least 1 replica
+  image: 'string>0',          // Non-empty string
+  environment: '"dev" | "staging" | "production"'  // Specific values
+});
+```
+
+## Related APIs
+
+- [Factory Functions](/api/factories) - Simple resource creation functions
+- [CEL Expressions](/api/cel) - Dynamic value computation
+- [Types](/api/types) - TypeScript type definitions
+- [Resource Graphs Guide](/guide/resource-graphs) - Conceptual overview

@@ -1,178 +1,214 @@
 # What is TypeKro?
 
-TypeKro is a hypermodern infrastructure-as-code library that brings the type safety of TypeScript, the declarative nature of Kubernetes YAML, and the runtime intelligence of continuous reconciliation into a single, cohesive workflow.
+TypeKro is a **hypermodern Infrastructure-as-Code** tool that brings the type safety of TypeScript, the GitOps-friendly output of declarative YAML, and the runtime intelligence of **Kubernetes Resource Orchestrator (KRO)** to Kubernetes infrastructure management.
 
-## The Problem TypeKro Solves
+## Core Philosophy
 
-If you've worked with Kubernetes infrastructure before, you've probably encountered these common trade-offs:
+**Write infrastructure in pure TypeScript with full IDE support, then deploy directly to clusters or generate deterministic YAML for GitOps workflows.**
 
-### Traditional Approaches and Their Limitations
+TypeKro eliminates the traditional trade-offs between type safety, deployment flexibility, and runtime intelligence by providing:
 
-**Raw YAML Manifests:**
-- ✅ Declarative and GitOps-friendly
-- ❌ Error-prone and hard to refactor
-- ❌ No compile-time validation
-- ❌ Brittle cross-resource dependencies
+- **Compile-time type safety** with full TypeScript validation
+- **Deployment flexibility** - same code works with Direct, YAML, or KRO deployment strategies  
+- **Runtime intelligence** through CEL expressions and cross-resource references
+- **GitOps compatibility** with deterministic YAML generation
 
-**Imperative IaC Tools (Terraform, Pulumi):**
-- ✅ Type-safe and programmable
-- ❌ Stateful and complex
-- ❌ Awkward GitOps integration
-- ❌ External state backends required
+## What is KRO?
 
-**Kubernetes Templating (Helm, Kustomize):**
-- ✅ Reusable and configurable
-- ❌ Limited programming capabilities
-- ❌ Complex dependency management
-- ❌ No type safety
+[Kubernetes Resource Orchestrator (KRO)](https://kro.run/) is an open-source project by AWS Labs that enables resources to reference each other's runtime state using CEL expressions. KRO provides:
 
-## The TypeKro Solution
+- **Runtime dependency resolution** between Kubernetes resources
+- **CEL expression evaluation** for dynamic resource configuration
+- **Automatic reconciliation** and drift correction
+- **Status propagation** and health monitoring
 
-TypeKro eliminates these trade-offs by combining the best aspects of each approach:
+TypeKro works in **Direct Mode** (no KRO required) for simple deployments, or **KRO Mode** for advanced orchestration scenarios.
+
+## Key Benefits
+
+### 📝 **TypeScript-First Development**
+
+Write infrastructure using familiar TypeScript syntax with full IDE support:
 
 ```typescript
-// Type-safe infrastructure definition
-const webApp = toResourceGraph('webapp', (schema) => ({
-  database: simpleDeployment({
-    name: `${schema.spec.name}-db`,
-    image: 'postgres:15'
+import { type } from 'arktype';
+import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+
+const WebAppSpec = type({
+  name: 'string',
+  image: 'string', 
+  replicas: 'number'
+});
+
+const webapp = toResourceGraph(
+  {
+    name: 'my-webapp',
+    apiVersion: 'example.com/v1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: type({ ready: 'boolean' })
+  },
+  (schema) => ({
+    app: simpleDeployment({
+      name: schema.spec.name,    // Type-safe schema reference
+      image: schema.spec.image,  // Full IDE autocomplete
+      replicas: schema.spec.replicas
+    }),
+    
+    service: simpleService({
+      name: schema.spec.name,
+      selector: { app: schema.spec.name },
+      ports: [{ port: 80, targetPort: 80 }]
+    })
   }),
-  
-  app: simpleDeployment({
-    name: schema.spec.name,
-    image: schema.spec.image,
-    env: {
-      // Runtime cross-resource reference
-      DATABASE_URL: `postgresql://${database.status.podIP}:5432/webapp`
-    }
+  (schema, resources) => ({
+    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
   })
-}), {
-  apiVersion: 'example.com/v1alpha1',
-  kind: 'WebApp',
-  spec: WebAppSpec,
-  status: WebAppStatus
-});
-
-// Choose your deployment strategy
-const directFactory = await webApp.factory('direct');  // Direct deployment
-const yaml = webApp.toYaml();                          // GitOps YAML
-const kroFactory = await webApp.factory('kro');       // Kro integration
+);
 ```
 
-## Core Principles
+### 🚀 **Deployment Flexibility**
 
-### 1. Type Safety First
-
-Every resource, field, and reference is fully typed. Catch configuration errors at compile time, not runtime:
+The same TypeScript code can be deployed in multiple ways without modification:
 
 ```typescript
-// This will cause a TypeScript error
+const spec = { name: 'my-app', image: 'nginx:1.21', replicas: 3 };
+
+// 1. Generate YAML for GitOps (no cluster interaction)
+const kroFactory = await webapp.factory('kro', { namespace: 'dev' });
+const yaml = kroFactory.toYaml();
+writeFileSync('k8s/webapp.yaml', yaml);
+
+// 2. Deploy directly to cluster (immediate)
+const directFactory = await webapp.factory('direct', { namespace: 'dev' });
+await directFactory.deploy(spec);
+
+// 3. Integrate with Alchemy for multi-cloud
+await alchemyScope.run(async () => {
+  const factory = await webapp.factory('direct', { 
+    namespace: 'dev',
+    alchemyScope: alchemyScope 
+  });
+  await factory.deploy(spec);
+});
+```
+
+### 🔗 **Runtime Intelligence**
+
+TypeKro's magic proxy system enables compile-time type safety with runtime flexibility:
+
+```typescript
+// Schema references become CEL expressions at runtime
 const deployment = simpleDeployment({
-  name: 'my-app',
-  image: 'nginx:latest',
-  replicas: '3'  // ❌ Error: string not assignable to number
+  name: schema.spec.name,        // Type-safe reference
+  image: schema.spec.image,      // Full autocomplete
+  env: {
+    SERVICE_URL: Cel.template('http://%s:8080', schema.spec.name)
+  }
+});
+
+// Cross-resource references work naturally
+const ingress = simpleIngress({
+  name: schema.spec.name,
+  host: schema.spec.hostname,
+  serviceName: service.metadata.name,  // References other resource
+  servicePort: 80
 });
 ```
 
-### 2. Runtime Intelligence
+### 🎯 **GitOps Ready**
 
-Cross-resource references are resolved at runtime, enabling truly dynamic infrastructure:
+Generate deterministic, Git-friendly YAML output:
 
 ```typescript
-const app = simpleDeployment({
-  name: 'web-app',
+// Deterministic YAML generation
+const factory = await webapp.factory('kro', { namespace: 'production' });
+const yaml = factory.toYaml();
+
+// Same input always generates identical YAML
+// Perfect for GitOps workflows with ArgoCD, Flux, etc.
+writeFileSync('k8s/production/webapp.yaml', yaml);
+```
+
+## How TypeKro Works
+
+### Magic Proxy System
+
+TypeKro's core innovation is its **magic proxy system** that creates different behaviors for static values vs. dynamic references:
+
+```typescript
+// Static values (known at execution time)
+const deployment = simpleDeployment({
+  name: 'my-app',      // Static string
+  replicas: 3          // Static number
+});
+
+// Dynamic references (resolved at runtime)
+const deployment = simpleDeployment({
+  name: schema.spec.name,    // Schema reference → CEL expression
+  replicas: schema.spec.replicas
+});
+
+// Cross-resource references (runtime resolution)
+const deployment = simpleDeployment({
   env: {
-    // This resolves to the actual pod IP at runtime
-    DATABASE_HOST: database.status.podIP,
-    // CEL expressions for complex logic
-    READY: Cel.expr(database.status.readyReplicas, '> 0 ? "true" : "false"')
+    DB_HOST: database.service.spec.clusterIP  // Runtime cluster state
   }
 });
 ```
 
-### 3. GitOps Compatible
+### Enhanced Types (RefOrValue Pattern)
 
-Generate deterministic YAML that works perfectly with any GitOps workflow:
+Every factory function accepts `RefOrValue<T>`, which means any parameter can be:
 
-```yaml
-# Generated YAML is clean and GitOps-ready
-apiVersion: kro.run/v1alpha1
-kind: ResourceGraphDefinition
-metadata:
-  name: webapp
-spec:
-  resources:
-    - id: database
-      template:
-        apiVersion: apps/v1
-        kind: Deployment
-        # ... standard Kubernetes YAML
-```
+1. **Direct value**: `name: "my-app"`
+2. **Schema reference**: `name: schema.spec.name`
+3. **CEL expression**: `name: Cel.template("%s-service", schema.spec.name)`
+4. **Resource reference**: `env: { DB_HOST: database.service.spec.clusterIP }`
 
-### 4. Kubernetes Native
+This provides **compile-time type safety** while enabling **runtime flexibility**.
 
-Built on standard Kubernetes primitives. No custom controllers or external dependencies required for basic functionality.
+## TypeKro vs. Alternatives
 
-## Architecture Overview
-
-TypeKro consists of several key components:
-
-### Factory Functions
-Pre-built, type-safe functions for creating common Kubernetes resources:
-
-```typescript
-import { simpleDeployment, simpleService, simplePvc } from 'typekro';
-```
-
-### Resource Graphs
-Composable infrastructure definitions that can reference each other:
-
-```typescript
-const graph = toResourceGraph('my-stack', (schema) => ({
-  // Resources can reference each other
-  database: simpleDeployment({ /* ... */ }),
-  app: simpleDeployment({
-    env: { DB_HOST: database.status.podIP }
-  })
-}));
-```
-
-### Deployment Strategies
-Multiple ways to deploy your infrastructure:
-
-- **Direct**: Deploy resources directly to Kubernetes
-- **YAML**: Generate GitOps-ready YAML files
-- **Kro**: Use Kro controller for advanced reconciliation
-- **Alchemy**: Integrate with multi-cloud scenarios
-
-### CEL Expressions
-Common Expression Language for dynamic field evaluation:
-
-```typescript
-status: {
-  ready: Cel.expr(deployment.status.readyReplicas, '== ', deployment.spec.replicas),
-  url: Cel.template('https://%s/api', service.status.loadBalancer.ingress[0].hostname)
-}
-```
+| Feature | TypeKro | Pulumi | CDK8s | Helm | Kustomize |
+|---------|---------|---------|--------|------|-----------|
+| **Type Safety** | ✅ Full TypeScript | ✅ Multi-language | ✅ TypeScript | ❌ Templates | ❌ YAML |
+| **GitOps Ready** | ✅ Deterministic YAML | ❌ State backend | ✅ YAML output | ✅ Charts | ✅ YAML |
+| **Runtime Dependencies** | ✅ KRO + CEL | ❌ Deploy-time only | ❌ Static | ❌ Templates | ❌ Static |
+| **Kubernetes Native** | ✅ Pure K8s resources | ❌ Abstraction layer | ✅ Pure K8s | ✅ K8s resources | ✅ K8s resources |
+| **Learning Curve** | 🟢 Just TypeScript | 🔴 New concepts | 🟡 TypeScript + K8s | 🔴 Templates | 🔴 YAML complexity |
+| **State Management** | ✅ Stateless | ❌ State backend | ✅ Stateless | ✅ Stateless | ✅ Stateless |
 
 ## When to Use TypeKro
 
-TypeKro is ideal for:
+### ✅ **Perfect For:**
 
-- **Complex Kubernetes applications** with multiple interconnected services
-- **GitOps workflows** that need type-safe infrastructure generation
-- **Development teams** that want infrastructure-as-code with full IDE support
-- **Multi-environment deployments** with varying configurations
-- **Organizations** transitioning from manual YAML to programmatic infrastructure
+- **Teams comfortable with TypeScript** who want infrastructure-as-code
+- **GitOps workflows** requiring deterministic YAML output
+- **Complex applications** with runtime dependencies between resources
+- **Multi-environment deployments** with environment-specific configurations
+- **Organizations** wanting type safety without vendor lock-in
 
-TypeKro might not be the best fit for:
+### 🤔 **Consider Alternatives If:**
 
-- **Simple, static applications** with no cross-resource dependencies
-- **Teams** heavily invested in existing Terraform/Pulumi workflows
-- **Environments** where TypeScript/Node.js tooling is not available
+- **Team prefers YAML** and doesn't want programmatic infrastructure
+- **Simple applications** with no cross-resource dependencies
+- **Legacy workflows** heavily invested in existing tooling
+- **Multi-cloud requirements** beyond Kubernetes (unless using [Alchemy integration](/guide/alchemy-integration))
 
 ## Next Steps
 
-Ready to get started? Check out our [Getting Started Guide](./getting-started.md) to install TypeKro and build your first resource graph.
+Ready to get started with TypeKro?
 
-Or explore our [Examples](../examples/) to see TypeKro in action with real-world scenarios.
+1. **[Quick Start](/guide/quick-start)** - Get TypeKro running in 5 minutes
+2. **[Getting Started](/guide/getting-started)** - Comprehensive setup guide
+3. **[Core Concepts](/guide/resource-graphs)** - Understand resource graphs and references
+4. **[Deployment Strategies](/guide/direct-deployment)** - Choose the right deployment approach
+
+## Community and Support
+
+- **GitHub**: [typekro](https://github.com/yehudacohen/typekro) - Source code, issues, and contributions
+- **NPM**: [@typekro](https://www.npmjs.com/package/typekro) - Package downloads and versions
+- **Examples**: [examples/](https://github.com/yehudacohen/typekro/tree/main/examples) - Real-world usage patterns
+
+TypeKro is open-source and released under the Apache 2.0 license. We welcome contributions, feedback, and community involvement!

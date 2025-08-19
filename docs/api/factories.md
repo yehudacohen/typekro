@@ -1,647 +1,495 @@
-# Factory Functions
+# Factory Functions API
 
-Pre-built, type-safe functions for creating common Kubernetes resources.
+Factory functions are the building blocks of TypeKro resource graphs. They create type-safe Kubernetes resources with simplified configuration, intelligent defaults, and built-in readiness evaluation.
 
 ## Overview
 
-Factory functions provide a clean, typed API for creating Kubernetes resources with sensible defaults and full TypeScript support.
+TypeKro provides two categories of factory functions:
 
-```typescript
-import { 
-  simpleDeployment, 
-  simpleService, 
-  simpleConfigMap 
-} from 'typekro';
-```
+1. **Simple Factories** (`simple*`) - Simplified configuration with sensible defaults
+2. **Full Factories** - Complete Kubernetes resource specifications for advanced use cases
 
-## Core Factory Functions
+All factory functions return `Enhanced<TSpec, TStatus>` objects that can be used in resource graphs and reference other resources through the magic proxy system.
+
+## Simple Factory Functions
+
+Simple factories provide streamlined configuration for common Kubernetes resources:
 
 ### Workloads
 
-#### `simpleDeployment`
-
-Creates a Kubernetes Deployment with sensible defaults.
+Create application workloads with simplified configuration:
 
 ```typescript
-function simpleDeployment(config: SimpleDeploymentConfig): Enhanced<V1Deployment, V1DeploymentStatus>
-```
+import { simpleDeployment, simpleJob, simpleStatefulSet, simpleCronJob } from 'typekro';
 
-**Configuration:**
-```typescript
-interface SimpleDeploymentConfig {
-  name: string;
-  image: string;
-  replicas?: number;
-  ports?: Array<{ containerPort: number; protocol?: string }>;
-  env?: Record<string, string | KubernetesRef<string>>;
-  resources?: {
-    cpu?: string;
-    memory?: string;
-  };
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-  volumeMounts?: Array<{
-    name: string;
-    mountPath: string;
-    readOnly?: boolean;
-  }>;
-  volumes?: Array<k8s.V1Volume>;
-  livenessProbe?: k8s.V1Probe;
-  readinessProbe?: k8s.V1Probe;
-}
-```
-
-**Example:**
-```typescript
-const deployment = simpleDeployment({
+// Deployment with minimal configuration
+const app = simpleDeployment({
   name: 'web-app',
-  image: 'nginx:latest',
+  image: 'nginx:1.21',
   replicas: 3,
-  ports: [{ containerPort: 80 }],
+  ports: [80],
   env: {
     NODE_ENV: 'production',
-    DATABASE_URL: database.status.podIP
-  },
-  resources: {
-    cpu: '500m',
-    memory: '1Gi'
-  },
-  livenessProbe: {
-    httpGet: { path: '/health', port: 80 },
-    initialDelaySeconds: 30
+    PORT: '80'
   }
 });
-```
 
-#### `simpleStatefulSet`
+// Job for batch processing
+const dataJob = simpleJob({
+  name: 'data-processor',
+  image: 'data-processor:v1.0',
+  command: ['process-data'],
+  env: {
+    INPUT_PATH: '/data/input',
+    OUTPUT_PATH: '/data/output'
+  }
+});
 
-Creates a Kubernetes StatefulSet for stateful applications.
-
-```typescript
-function simpleStatefulSet(config: SimpleStatefulSetConfig): Enhanced<V1StatefulSet, V1StatefulSetStatus>
-```
-
-**Example:**
-```typescript
+// StatefulSet for databases
 const database = simpleStatefulSet({
   name: 'postgres',
-  image: 'postgres:15',
-  replicas: 1,
-  ports: [{ containerPort: 5432 }],
+  image: 'postgres:13',
+  replicas: 3,
+  serviceName: 'postgres-headless',
+  ports: [5432],
   env: {
     POSTGRES_DB: 'myapp',
-    POSTGRES_USER: 'user',
-    POSTGRES_PASSWORD: 'password'
-  },
-  volumeClaimTemplates: [{
-    name: 'data',
-    size: '10Gi',
-    storageClass: 'fast-ssd'
-  }],
-  volumeMounts: [{
-    name: 'data',
-    mountPath: '/var/lib/postgresql/data'
-  }]
+    POSTGRES_USER: 'app'
+  }
 });
-```
 
-#### `simpleJob`
-
-Creates a Kubernetes Job for batch processing.
-
-```typescript
-function simpleJob(config: SimpleJobConfig): Enhanced<V1Job, V1JobStatus>
-```
-
-**Example:**
-```typescript
-const migrationJob = simpleJob({
-  name: 'db-migration',
-  image: 'myapp/migrations:latest',
-  env: {
-    DATABASE_URL: database.status.podIP
-  },
-  restartPolicy: 'OnFailure',
-  backoffLimit: 3,
-  activeDeadlineSeconds: 3600
-});
-```
-
-#### `simpleCronJob`
-
-Creates a Kubernetes CronJob for scheduled tasks.
-
-```typescript
-function simpleCronJob(config: SimpleCronJobConfig): Enhanced<V1CronJob, V1CronJobStatus>
-```
-
-**Example:**
-```typescript
-const backupJob = simpleCronJob({
+// CronJob for scheduled tasks
+const backup = simpleCronJob({
   name: 'daily-backup',
-  schedule: '0 2 * * *',  // Daily at 2 AM
   image: 'backup-tool:latest',
-  env: {
-    BACKUP_TARGET: 's3://my-backups/',
-    DATABASE_URL: database.status.podIP
-  },
-  successfulJobsHistoryLimit: 3,
-  failedJobsHistoryLimit: 1
+  schedule: '0 2 * * *',  // Daily at 2 AM
+  command: ['backup-database']
 });
 ```
 
 ### Networking
 
-#### `simpleService`
-
-Creates a Kubernetes Service to expose applications.
+Create networking resources with simplified configuration:
 
 ```typescript
-function simpleService(config: SimpleServiceConfig): Enhanced<V1Service, V1ServiceStatus>
-```
+import { simpleService, simpleIngress, simpleNetworkPolicy } from 'typekro';
 
-**Configuration:**
-```typescript
-interface SimpleServiceConfig {
-  name: string;
-  selector: Record<string, string>;
-  ports: Array<{
-    port: number;
-    targetPort?: number | string;
-    protocol?: string;
-    name?: string;
-  }>;
-  type?: 'ClusterIP' | 'NodePort' | 'LoadBalancer' | 'ExternalName';
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-}
-```
-
-**Example:**
-```typescript
-const service = simpleService({
+// Service for load balancing
+const webService = simpleService({
   name: 'web-service',
-  selector: { app: 'web-app' },
-  ports: [
-    { port: 80, targetPort: 8080 },
-    { port: 443, targetPort: 8443, name: 'https' }
-  ],
-  type: 'LoadBalancer',
-  annotations: {
-    'service.beta.kubernetes.io/aws-load-balancer-type': 'nlb'
-  }
+  selector: { app: 'web' },
+  ports: [{ port: 80, targetPort: 8080 }],
+  type: 'ClusterIP'
 });
-```
 
-#### `simpleIngress`
-
-Creates an Ingress resource for HTTP routing.
-
-```typescript
-function simpleIngress(config: SimpleIngressConfig): Enhanced<V1Ingress, V1IngressStatus>
-```
-
-**Example:**
-```typescript
-const ingress = simpleIngress({
+// Ingress for external access
+const webIngress = simpleIngress({
   name: 'web-ingress',
-  ingressClassName: 'nginx',
-  rules: [{
-    host: 'myapp.example.com',
-    http: {
-      paths: [{
-        path: '/',
-        pathType: 'Prefix',
-        backend: {
-          service: {
-            name: service.metadata.name,
-            port: { number: 80 }
-          }
-        }
-      }]
-    }
-  }],
-  tls: [{
-    secretName: 'web-tls',
-    hosts: ['myapp.example.com']
+  host: 'app.example.com',
+  serviceName: 'web-service',
+  servicePort: 80,
+  path: '/',
+  ingressClassName: 'nginx'
+});
+
+// Network policy for security
+const appPolicy = simpleNetworkPolicy({
+  name: 'app-network-policy',
+  podSelector: { matchLabels: { app: 'web' } },
+  policyTypes: ['Ingress'],
+  ingress: [{
+    from: [{ podSelector: { matchLabels: { tier: 'frontend' } } }],
+    ports: [{ protocol: 'TCP', port: 8080 }]
   }]
 });
 ```
 
 ### Configuration
 
-#### `simpleConfigMap`
-
-Creates a ConfigMap for application configuration.
+Create configuration resources:
 
 ```typescript
-function simpleConfigMap(config: SimpleConfigMapConfig): Enhanced<V1ConfigMap, {}>
-```
+import { simpleConfigMap, simpleSecret } from 'typekro';
 
-**Configuration:**
-```typescript
-interface SimpleConfigMapConfig {
-  name: string;
-  data?: Record<string, string>;
-  binaryData?: Record<string, string>;
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-}
-```
-
-**Example:**
-```typescript
-const config = simpleConfigMap({
+// ConfigMap for application configuration
+const appConfig = simpleConfigMap({
   name: 'app-config',
   data: {
-    'app.properties': `
-      server.port=8080
-      database.url=jdbc:postgresql://postgres:5432/myapp
-      logging.level=INFO
-    `,
-    'nginx.conf': `
-      server {
-        listen 80;
-        location / {
-          proxy_pass http://backend:8080;
-        }
-      }
-    `,
-    'LOG_LEVEL': 'info',
-    'FEATURE_FLAGS': 'auth,metrics,logging'
+    apiUrl: 'https://api.example.com',
+    logLevel: 'info',
+    timeout: '30s'
   }
 });
-```
 
-#### `simpleSecret`
-
-Creates a Secret for sensitive data.
-
-```typescript
-function simpleSecret(config: SimpleSecretConfig): Enhanced<V1Secret, {}>
-```
-
-**Configuration:**
-```typescript
-interface SimpleSecretConfig {
-  name: string;
-  data?: Record<string, string>;      // Base64 encoded values
-  stringData?: Record<string, string>; // Plain text values (auto-encoded)
-  type?: string;
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-}
-```
-
-**Example:**
-```typescript
-// Using stringData (recommended)
-const secret = simpleSecret({
+// Secret for sensitive data
+const appSecrets = simpleSecret({
   name: 'app-secrets',
-  type: 'Opaque',
-  stringData: {
-    'database-password': 'supersecret',
-    'api-key': 'abcdefghijk',
-    'jwt-secret': 'my-jwt-signing-secret'
-  }
-});
-
-// Using pre-encoded data
-const encodedSecret = simpleSecret({
-  name: 'app-secrets-encoded',
   data: {
-    'database-password': 'c3VwZXJzZWNyZXQ=',  // base64 encoded
-    'api-key': 'YWJjZGVmZ2hpams='
+    dbPassword: 'encoded-password',
+    apiKey: 'encoded-api-key'
   }
 });
 ```
 
 ### Storage
 
-#### `simplePvc`
-
-Creates a PersistentVolumeClaim for storage.
+Create storage resources:
 
 ```typescript
-function simplePvc(config: SimplePvcConfig): Enhanced<V1PersistentVolumeClaim, V1PersistentVolumeClaimStatus>
-```
+import { simplePvc } from 'typekro';
 
-**Configuration:**
-```typescript
-interface SimplePvcConfig {
-  name: string;
-  size: string;
-  storageClass?: string;
-  accessModes?: string[];
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-}
-```
-
-**Example:**
-```typescript
-const storage = simplePvc({
+// Persistent Volume Claim
+const appStorage = simplePvc({
   name: 'app-storage',
-  size: '10Gi',
-  storageClass: 'fast-ssd',
   accessModes: ['ReadWriteOnce'],
-  labels: {
-    app: 'web-app',
-    tier: 'storage'
-  }
+  size: '10Gi',
+  storageClass: 'fast-ssd'
 });
 ```
 
-### RBAC
+### Autoscaling
 
-#### `simpleServiceAccount`
-
-Creates a ServiceAccount for pod identity.
+Create autoscaling resources:
 
 ```typescript
-function simpleServiceAccount(config: SimpleServiceAccountConfig): Enhanced<V1ServiceAccount, {}>
-```
+import { simpleHpa } from 'typekro';
 
-**Example:**
-```typescript
-const serviceAccount = simpleServiceAccount({
-  name: 'app-service-account',
-  labels: {
-    app: 'web-app'
+// Horizontal Pod Autoscaler
+const appAutoscaler = simpleHpa({
+  name: 'app-hpa',
+  targetRef: {
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    name: 'web-app'
   },
-  annotations: {
-    'eks.amazonaws.com/role-arn': 'arn:aws:iam::123456789012:role/MyRole'
-  }
+  minReplicas: 2,
+  maxReplicas: 10,
+  targetCPUUtilizationPercentage: 70
 });
 ```
 
-#### `simpleRole`
+## Using Factory Functions in Resource Graphs
 
-Creates a Role for namespace-scoped permissions.
+Factory functions are designed to work seamlessly with `toResourceGraph()`:
 
 ```typescript
-function simpleRole(config: SimpleRoleConfig): Enhanced<V1Role, {}>
+import { type } from 'arktype';
+import { toResourceGraph, simpleDeployment, simpleService, simpleConfigMap, Cel } from 'typekro';
+
+const WebAppSpec = type({
+  name: 'string',
+  image: 'string',
+  replicas: 'number',
+  environment: 'string'
+});
+
+const webapp = toResourceGraph(
+  {
+    name: 'full-webapp',
+    apiVersion: 'example.com/v1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: type({ ready: 'boolean', url: 'string' })
+  },
+  (schema) => ({
+    // Configuration first
+    config: simpleConfigMap({
+      name: Cel.template('%s-config', schema.spec.name),
+      data: {
+        environment: schema.spec.environment,
+        logLevel: Cel.conditional(
+          schema.spec.environment === 'production',
+          'warn',
+          'debug'
+        )
+      }
+    }),
+    
+    // Application deployment
+    deployment: simpleDeployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
+      ports: [8080],
+      env: {
+        NODE_ENV: schema.spec.environment,
+        LOG_LEVEL: 'info'  // Could reference config.data.logLevel
+      }
+    }),
+    
+    // Service for the deployment
+    service: simpleService({
+      name: schema.spec.name,
+      selector: { app: schema.spec.name },
+      ports: [{ port: 80, targetPort: 8080 }]
+    })
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
+    url: Cel.template('http://%s', resources.service.spec.clusterIP)
+  })
+);
 ```
 
-**Example:**
+## Advanced Factory Functions
+
+For scenarios requiring complete control, TypeKro also provides full factory functions that accept complete Kubernetes resource specifications:
+
 ```typescript
-const role = simpleRole({
-  name: 'app-role',
-  rules: [
-    {
-      apiGroups: [''],
-      resources: ['pods', 'services'],
-      verbs: ['get', 'list', 'watch']
+import { deployment, service, configMap, secret } from 'typekro';
+
+// Full deployment specification
+const advancedDeployment = deployment({
+  metadata: {
+    name: 'advanced-app',
+    labels: { app: 'advanced', tier: 'backend' },
+    annotations: { 'deployment.kubernetes.io/revision': '1' }
+  },
+  spec: {
+    replicas: 3,
+    strategy: {
+      type: 'RollingUpdate',
+      rollingUpdate: {
+        maxSurge: 1,
+        maxUnavailable: 1
+      }
     },
-    {
-      apiGroups: ['apps'],
-      resources: ['deployments'],
-      verbs: ['get', 'list', 'watch', 'create', 'update', 'patch']
+    selector: {
+      matchLabels: { app: 'advanced' }
+    },
+    template: {
+      metadata: {
+        labels: { app: 'advanced', tier: 'backend' }
+      },
+      spec: {
+        containers: [{
+          name: 'app',
+          image: 'myapp:v1.0',
+          ports: [{ containerPort: 8080 }],
+          resources: {
+            requests: { cpu: '100m', memory: '128Mi' },
+            limits: { cpu: '500m', memory: '512Mi' }
+          },
+          livenessProbe: {
+            httpGet: { path: '/health', port: 8080 },
+            initialDelaySeconds: 30,
+            periodSeconds: 10
+          },
+          readinessProbe: {
+            httpGet: { path: '/ready', port: 8080 },
+            initialDelaySeconds: 5,
+            periodSeconds: 5
+          }
+        }]
+      }
     }
-  ]
+  }
 });
 ```
 
-#### `simpleRoleBinding`
+## Cross-Resource References
 
-Creates a RoleBinding to bind roles to subjects.
+Factory functions support cross-resource references through the magic proxy system:
 
 ```typescript
-function simpleRoleBinding(config: SimpleRoleBindingConfig): Enhanced<V1RoleBinding, {}>
-```
-
-**Example:**
-```typescript
-const roleBinding = simpleRoleBinding({
-  name: 'app-role-binding',
-  roleRef: {
-    apiGroup: 'rbac.authorization.k8s.io',
-    kind: 'Role',
-    name: role.metadata.name
+const microservices = toResourceGraph(
+  {
+    name: 'microservices',
+    apiVersion: 'platform.example.com/v1',
+    kind: 'Microservices',
+    spec: type({ name: 'string' }),
+    status: type({ ready: 'boolean' })
   },
-  subjects: [{
-    kind: 'ServiceAccount',
-    name: serviceAccount.metadata.name,
-    namespace: 'default'
-  }]
-});
+  (schema) => ({
+    // Database configuration
+    dbConfig: simpleConfigMap({
+      name: 'db-config',
+      data: {
+        host: 'postgres',
+        port: '5432',
+        database: schema.spec.name
+      }
+    }),
+    
+    // Database deployment
+    database: simpleDeployment({
+      name: 'postgres',
+      image: 'postgres:13',
+      env: {
+        POSTGRES_DB: schema.spec.name,  // Schema reference
+        POSTGRES_USER: 'app'
+      }
+    }),
+    
+    // Database service
+    dbService: simpleService({
+      name: 'postgres',
+      selector: { app: 'postgres' },
+      ports: [{ port: 5432, targetPort: 5432 }]
+    }),
+    
+    // API server that references database
+    api: simpleDeployment({
+      name: 'api',
+      image: 'myapp/api:latest',
+      env: {
+        // Reference to database service (runtime resolution)
+        DATABASE_URL: Cel.template(
+          'postgres://app@%s:5432/%s',
+          'postgres',  // References dbService.spec.clusterIP at runtime
+          schema.spec.name
+        )
+      }
+    }),
+    
+    // API service
+    apiService: simpleService({
+      name: 'api',
+      selector: { app: 'api' },
+      ports: [{ port: 8080, targetPort: 8080 }]
+    })
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(
+      resources.database.status.readyReplicas, ' > 0 && ',
+      resources.api.status.readyReplicas, ' > 0'
+    )
+  })
+);
 ```
 
-## Advanced Usage
+## Function Categories
 
-### Cross-Resource References
+### Core Workloads
+- `simpleDeployment()` - Stateless applications
+- `simpleStatefulSet()` - Stateful applications
+- `simpleJob()` - Batch processing
+- `simpleCronJob()` - Scheduled tasks
 
-Factory functions can reference other resources:
+### Networking
+- `simpleService()` - Load balancing and service discovery
+- `simpleIngress()` - External HTTP/HTTPS access
+- `simpleNetworkPolicy()` - Network security policies
+
+### Configuration & Storage
+- `simpleConfigMap()` - Configuration data
+- `simpleSecret()` - Sensitive data
+- `simplePvc()` - Persistent storage
+
+### Autoscaling
+- `simpleHpa()` - Horizontal Pod Autoscaler
+
+### Advanced Resources
+- `deployment()`, `job()`, `statefulSet()`, etc. - Full Kubernetes specifications
+- `customResource()` - Custom Resource Definitions
+- `helmRelease()` - Helm chart deployments
+- `yamlFile()`, `yamlDirectory()` - External YAML integration
+
+## Best Practices
+
+### 1. Start with Simple Functions
+
+Begin with simple factory functions and only use full factories when you need advanced configuration:
 
 ```typescript
-const database = simpleDeployment({
-  name: 'postgres',
-  image: 'postgres:15'
-});
-
+// Good: Start simple
 const app = simpleDeployment({
-  name: 'web-app',
-  image: 'myapp:latest',
-  env: {
-    DATABASE_HOST: database.status.podIP,
-    DATABASE_PORT: '5432'
-  }
-});
-
-const service = simpleService({
-  name: 'web-service',
-  selector: { app: app.metadata.labels.app },
-  ports: [{ port: 80, targetPort: 3000 }]
-});
-```
-
-### Environment-Specific Configuration
-
-```typescript
-const deployment = simpleDeployment({
-  name: schema.spec.name,
-  image: schema.spec.image,
-  replicas: schema.spec.environment === 'production' ? 5 : 2,
-  resources: schema.spec.environment === 'production' 
-    ? { cpu: '1000m', memory: '2Gi' }
-    : { cpu: '100m', memory: '256Mi' },
-  env: {
-    NODE_ENV: schema.spec.environment,
-    LOG_LEVEL: schema.spec.environment === 'production' ? 'info' : 'debug'
-  }
-});
-```
-
-### Volume Mounting
-
-```typescript
-const config = simpleConfigMap({
-  name: 'app-config',
-  data: { 'app.conf': 'server.port=8080' }
-});
-
-const secret = simpleSecret({
-  name: 'app-secrets',
-  stringData: { 'api-key': 'secret-key' }
-});
-
-const deployment = simpleDeployment({
-  name: 'web-app',
-  image: 'myapp:latest',
-  volumeMounts: [
-    { name: 'config', mountPath: '/etc/config' },
-    { name: 'secrets', mountPath: '/etc/secrets', readOnly: true }
-  ],
-  volumes: [
-    { name: 'config', configMap: { name: config.metadata.name } },
-    { name: 'secrets', secret: { secretName: secret.metadata.name } }
-  ]
-});
-```
-
-## Type Safety Features
-
-### Compile-Time Validation
-
-```typescript
-// ✅ This works
-const deployment = simpleDeployment({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3
 });
 
-// ❌ TypeScript errors
-const badDeployment = simpleDeployment({
-  name: 123,           // Error: number not assignable to string
-  image: 'nginx:latest',
-  replicas: '3',       // Error: string not assignable to number
-  invalidField: true   // Error: object literal may only specify known properties
+// Only when you need advanced features
+const advancedApp = deployment({
+  metadata: { /* ... */ },
+  spec: { /* complex configuration */ }
 });
 ```
 
-### IDE Support
+### 2. Use Schema References
 
-Factory functions provide full autocomplete and documentation in your IDE:
-
-- Parameter suggestions with descriptions
-- Type checking for all configuration options
-- Hover documentation for each field
-- Error highlighting for invalid configurations
-
-## Custom Factory Functions
-
-Create your own factory functions for common patterns:
+Leverage schema references for dynamic configuration:
 
 ```typescript
-import { createResource } from 'typekro';
-
-export function customWebApp(config: CustomWebAppConfig) {
-  return createResource({
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: {
-      name: config.name,
-      labels: {
-        app: config.name,
-        tier: 'web',
-        version: config.version
-      }
-    },
-    spec: {
-      replicas: config.replicas,
-      selector: {
-        matchLabels: { app: config.name }
-      },
-      template: {
-        metadata: {
-          labels: { app: config.name }
-        },
-        spec: {
-          containers: [{
-            name: config.name,
-            image: config.image,
-            ports: config.ports,
-            env: Object.entries(config.env || {}).map(([name, value]) => ({
-              name,
-              value: String(value)
-            })),
-            securityContext: {
-              runAsNonRoot: true,
-              runAsUser: 1000,
-              allowPrivilegeEscalation: false
-            }
-          }]
-        }
-      }
+(schema) => ({
+  deployment: simpleDeployment({
+    name: schema.spec.name,           // Dynamic from input
+    image: schema.spec.image,         // Dynamic from input
+    replicas: schema.spec.replicas,   // Dynamic from input
+    env: {
+      ENVIRONMENT: schema.spec.environment  // Schema reference
     }
-  });
-}
+  })
+})
 ```
 
-## Best Practices
+### 3. Group Related Resources
 
-### 1. Use Descriptive Names
-
-```typescript
-// ✅ Good
-const userApiDeployment = simpleDeployment({ name: 'user-api' });
-const userApiService = simpleService({ name: 'user-api-service' });
-
-// ❌ Avoid
-const d1 = simpleDeployment({ name: 'app' });
-const s1 = simpleService({ name: 'svc' });
-```
-
-### 2. Group Related Resources
+Organize related resources together in your resource builder:
 
 ```typescript
-const userService = {
-  deployment: simpleDeployment({ /* ... */ }),
-  service: simpleService({ /* ... */ }),
-  configMap: simpleConfigMap({ /* ... */ }),
-  secret: simpleSecret({ /* ... */ })
-};
-```
-
-### 3. Use Environment Variables for Configuration
-
-```typescript
-const deployment = simpleDeployment({
-  name: 'api',
-  image: process.env.API_IMAGE || 'api:latest',
-  replicas: parseInt(process.env.API_REPLICAS || '3'),
-  env: {
-    NODE_ENV: process.env.NODE_ENV || 'production',
-    LOG_LEVEL: process.env.LOG_LEVEL || 'info'
-  }
-});
-```
-
-### 4. Validate Configuration
-
-```typescript
-import { type } from 'arktype';
-
-const DeploymentConfig = type({
-  name: 'string>2',
-  image: 'string',
-  replicas: 'number>0',
-  environment: '"dev" | "staging" | "prod"'
-});
-
-function createDeployment(config: unknown) {
-  const validConfig = DeploymentConfig(config);
-  if (validConfig instanceof type.errors) {
-    throw new Error(`Invalid config: ${validConfig.summary}`);
-  }
+(schema) => ({
+  // Storage layer
+  database: simpleStatefulSet({ /* ... */ }),
+  dbService: simpleService({ /* ... */ }),
   
-  return simpleDeployment(validConfig);
-}
+  // Application layer
+  api: simpleDeployment({ /* ... */ }),
+  apiService: simpleService({ /* ... */ }),
+  
+  // Ingress layer
+  ingress: simpleIngress({ /* ... */ })
+})
 ```
 
-## See Also
+### 4. Use Meaningful Names
 
-- [Cross-Resource References](../guide/cross-references.md) - Connect resources dynamically
-- [CEL Expressions](../guide/cel-expressions.md) - Add runtime logic to your resources
-- [Examples](../examples/) - Real-world usage examples
+Choose descriptive names that reflect the resource's purpose:
+
+```typescript
+// Good
+const userApiDeployment = simpleDeployment({
+  name: 'user-api',
+  image: 'myapp/user-api:v1.0'
+});
+
+const userApiService = simpleService({
+  name: 'user-api-service',
+  selector: { app: 'user-api' }
+});
+
+// Avoid
+const deploy1 = simpleDeployment({ /* ... */ });
+const svc = simpleService({ /* ... */ });
+```
+
+## Type Safety
+
+All factory functions provide full TypeScript type safety:
+
+```typescript
+// TypeScript will validate all parameters
+const deployment = simpleDeployment({
+  name: 'my-app',           // ✅ string
+  image: 'nginx:latest',    // ✅ string
+  replicas: 3,              // ✅ number
+  ports: [80, 443],         // ✅ number[]
+  invalid: 'parameter'      // ❌ Type error
+});
+
+// Schema references are also type-safe
+(schema) => ({
+  deployment: simpleDeployment({
+    name: schema.spec.name,     // ✅ Type: string
+    replicas: schema.spec.count // ❌ Type error if 'count' doesn't exist
+  })
+})
+```
+
+## Related APIs
+
+- [Workloads API](/api/factories/workloads) - Detailed workload factory documentation
+- [Networking API](/api/factories/networking) - Detailed networking factory documentation  
+- [toResourceGraph API](/api/to-resource-graph) - Resource graph creation
+- [CEL Expressions API](/api/cel) - Dynamic value computation
+- [Types API](/api/types) - TypeScript type definitions
