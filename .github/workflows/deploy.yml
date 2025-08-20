@@ -12,8 +12,8 @@ permissions:
   id-token: write
 
 jobs:
-  # Deploy docs on master changes
-  deploy-docs:
+  # Build docs on master changes
+  build-docs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,8 +32,17 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/.vitepress/dist
-          
+  
+  # Deploy docs to GitHub Pages
+  deploy-docs:
+    needs: build-docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v3
 
   # Publish to npm only on version tags
