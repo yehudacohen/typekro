@@ -43,7 +43,7 @@ features:
     details: Write infrastructure in pure TypeScript with full IDE support. Refactor safely with compile-time validation and modern tooling.
 ---
 
-<div class="beta-badge">⚠️ BETA - Not for production</div>
+<div class="beta-badge">⚠️ BETA - Not for production use</div>
 
 <div id="getting-started">
 <TutorialCarousel />
