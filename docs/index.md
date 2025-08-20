@@ -13,6 +13,9 @@ hero:
     - theme: alt
       text: View Examples
       link: /examples/
+    - theme: alt
+      text: ⭐ Star on GitHub
+      link: https://github.com/yehudacohen/typekro
 
 features:
   - icon: 🔒
@@ -95,10 +98,6 @@ TypeKro works in **Direct Mode** (no KRO required) for simple deployments, or **
 <div style="text-align: center; margin: 24px 0;">
   <a href="/guide/getting-started" class="vp-button vp-button-brand vp-button-medium">Install TypeKro</a>
   <a href="/examples/" class="vp-button vp-button-alt vp-button-medium" style="margin-left: 16px;">View Examples</a>
-</div>
-
-<div style="text-align: center; margin: 24px 0;">
-  <GitHubStarButton />
 </div>
 
 </div>
