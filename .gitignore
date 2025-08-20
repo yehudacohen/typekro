@@ -36,3 +36,23 @@ logs/
 .env
 .env.local
 .env.*.local
+
+# Backup files (prevent accidental commits)
+*.backup
+*.backup2
+*.backup3
+*.bak
+*.old
+*.orig
+
+# Generated/compiled examples
+examples-dist/
+
+# Documentation validation temp files
+.temp-docs-validation/
+
+# TypeScript compilation artifacts in source
+src/**/*.js
+src/**/*.d.ts
+src/**/*.js.map
+src/**/*.d.ts.map
