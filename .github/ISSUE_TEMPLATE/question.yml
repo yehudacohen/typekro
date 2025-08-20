@@ -1,0 +1,59 @@
+name: ❓ Question
+description: Ask a question about TypeKro
+title: "[Question]: "
+labels: ["question", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about TypeKro? We're here to help! 
+        
+        💬 For faster responses, consider asking in our [Discord community](https://discord.gg/kKNSDDjW)
+        📚 Also check our [documentation](https://typekro.run) for common solutions
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know?
+      placeholder: How do I...?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to accomplish?
+      placeholder: I'm trying to build...
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What You've Tried
+      description: What have you already attempted?
+      placeholder: I tried following the docs but...
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Code Sample
+      description: Share relevant code if applicable
+      render: typescript
+      placeholder: |
+        // Your current code
+        import { toResourceGraph } from 'typekro';
+        // ...
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Please confirm you've checked these resources
+      options:
+        - label: I've searched existing issues and discussions
+          required: true
+        - label: I've checked the [documentation](https://typekro.run)
+          required: true
+        - label: I've looked at the [examples](https://typekro.run/examples/)
+          required: true

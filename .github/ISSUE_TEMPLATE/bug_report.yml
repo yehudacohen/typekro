@@ -1,0 +1,79 @@
+name: 🐛 Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below to help us reproduce and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the behavior
+      placeholder: |
+        1. Create a resource graph with...
+        2. Deploy using...
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen
+      placeholder: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Code Sample
+      description: Minimal code that reproduces the issue
+      render: typescript
+      placeholder: |
+        // Minimal TypeScript code that demonstrates the bug
+        import { toResourceGraph } from 'typekro';
+        // ...
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Your environment details
+      placeholder: |
+        - TypeKro version: 
+        - Node.js version: 
+        - Operating System: 
+        - Kubernetes version: 
+        - Deployment mode: (direct/kro/yaml)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Logs
+      description: Any error messages or logs
+      render: shell
+      placeholder: Paste error logs here
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context about the problem
+      placeholder: Screenshots, related issues, etc.
