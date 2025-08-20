@@ -6,8 +6,7 @@
 
 [![NPM Version](https://img.shields.io/npm/v/typekro.svg)](https://www.npmjs.com/package/typekro)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-
-> **Kubernetes infrastructure with TypeScript instead of YAML**
+## **Kubernetes infrastructure with TypeScript instead of YAML**
 
 TypeKro combines the type safety of TypeScript, the GitOps-friendly output of declarative YAML, and the runtime intelligence of **Kubernetes Resource Orchestrator (KRO)** - an open-source project that enables advanced resource orchestration with runtime dependencies and CEL expressions. Write infrastructure in pure TypeScript with full IDE support, then deploy directly to clusters or generate deterministic YAML for GitOps workflows.
 
