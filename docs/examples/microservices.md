@@ -476,13 +476,13 @@ const scaling = {
 
 ## Related Examples
 
-- **[Database Integration](./database.md)** - Learn about database patterns used in each service
+- **[Database Integration](./database-app.md)** - Learn about database patterns used in each service
 - **[Multi-Environment](./multi-environment.md)** - Deploy this application across environments
 - **[CI/CD Integration](./cicd.md)** - Automate deployment of microservices
 
 ## Learn More
 
 - **[Cross-Resource References](../guide/cross-references.md)** - Inter-service communication patterns
-- **[Factory Functions](../guide/factory-functions.md)** - Reusable service components
-- **[Direct Deployment](../guide/direct-deployment.md)** - Local development deployment
-- **[KRO Integration](../guide/kro-integration.md)** - Production orchestration
+- **[Factory Functions](../guide/factories.md)** - Reusable service components
+- **[Direct Deployment](../guide/deployment/direct.md)** - Local development deployment
+- **[KRO Integration](../guide/deployment/kro.md)** - Production orchestration

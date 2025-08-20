@@ -14,7 +14,7 @@ Create `simple-app.ts`:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
 
 const AppSpec = type({
   name: 'string',
@@ -22,32 +22,38 @@ const AppSpec = type({
   replicas: 'number'
 });
 
+const AppStatus = type({
+  ready: 'boolean',
+  url: 'string'
+});
+
 export const app = toResourceGraph(
   {
     name: 'simple-app',
     apiVersion: 'example.com/v1alpha1',
     kind: 'SimpleApp',
-    spec: SimpleAppSpec,
-    status: SimpleAppStatus,
+    spec: AppSpec,
+    status: AppStatus,
   },
   (schema) => ({
-  deployment: simpleDeployment({
-    name: schema.spec.name,
-    image: schema.spec.image,
-    replicas: schema.spec.replicas,
-    ports: [{ containerPort: 80 }]
+    deployment: simpleDeployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
+      ports: [{ containerPort: 80 }]
+    }),
+    
+    service: simpleService({
+      name: Cel.template('%s-service', schema.spec.name),
+      selector: { app: schema.spec.name },
+      ports: [{ port: 80, targetPort: 80 }]
+    })
   }),
-  
-  service: simpleService({
-    name: `${schema.spec.name}-service`,
-    selector: { app: schema.spec.name },
-    ports: [{ port: 80, targetPort: 80 }]
+  (schema, resources) => ({
+    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
+    url: Cel.template('http://%s', resources.service.status.clusterIP)
   })
-}), {
-  apiVersion: 'example.com/v1alpha1',
-  kind: 'SimpleApp',
-  spec: AppSpec
-});
+);
 ```
 
 ## 3. Deploy It
@@ -103,7 +109,7 @@ kubectl get services
 
 ## What's Next?
 
-- **Add a database**: [Database Integration Example](../examples/database.md)
+- **Add a database**: [Database Integration Example](../examples/database-app.md)
 - **Learn cross-references**: [Cross-Resource References](./cross-references.md)
 - **Explore CEL expressions**: [CEL Expressions](./cel-expressions.md)
 - **See more examples**: [Examples Gallery](../examples/)
@@ -151,9 +157,9 @@ const resources = {
   // Only create ingress in production
   ...(schema.spec.environment === 'production' && {
     ingress: simpleIngress({
-      name: `${schema.spec.name}-ingress`,
-      host: `${schema.spec.name}.example.com`,
-      serviceName: `${schema.spec.name}-service`
+      name: Cel.expr(schema.spec.name, '-ingress'),
+      host: Cel.template('%s.example.com', schema.spec.name),
+      serviceName: Cel.expr(schema.spec.name, '-service')
     })
   })
 };

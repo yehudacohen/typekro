@@ -110,12 +110,12 @@ export const multiEnvApp = toResourceGraph(
   (schema) => {
     // Environment-specific namespace prefix
     const envPrefix = schema.spec.environment;
-    const appName = `${envPrefix}-${schema.spec.app.name}`;
+    const appName = Cel.expr(envPrefix, '-', schema.spec.app.name);
     
     return {
       // Application configuration
       appConfig: simpleConfigMap({
-        name: `${appName}-config`,
+        name: Cel.expr(appName, '-config'),
         data: {
           ENVIRONMENT: schema.spec.environment,
           LOG_LEVEL: schema.spec.settings.logLevel,
@@ -124,9 +124,9 @@ export const multiEnvApp = toResourceGraph(
           APP_VERSION: schema.spec.app.version,
           
           // Database connection
-          DB_HOST: `${appName}-db`,
+          DB_HOST: Cel.expr(appName, '-db'),
           DB_PORT: '5432',
-          DB_NAME: `app_${schema.spec.environment}`,
+          DB_NAME: Cel.expr('app_', schema.spec.environment),
           
           // Environment-specific URLs
           ...(schema.spec.settings.domain && {
@@ -137,7 +137,7 @@ export const multiEnvApp = toResourceGraph(
       
       // Database secrets (different per environment)
       dbSecret: simpleSecret({
-        name: `${appName}-db-secret`,
+        name: Cel.expr(appName, '-db-secret'),
         data: {
           // Use different passwords per environment
           DB_PASSWORD: schema.spec.environment === 'production' 
@@ -151,7 +151,7 @@ export const multiEnvApp = toResourceGraph(
       
       // Database persistent volume
       dbStorage: simplePvc({
-        name: `${appName}-db-storage`,
+        name: Cel.expr(appName, '-db-storage'),
         accessMode: 'ReadWriteOnce',
         size: schema.spec.database.storageSize,
         // Production uses faster storage class
@@ -162,14 +162,14 @@ export const multiEnvApp = toResourceGraph(
       
       // Database deployment
       database: simpleDeployment({
-        name: `${appName}-db`,
+        name: Cel.expr(appName, '-db'),
         image: schema.spec.database.image,
         replicas: 1, // Single DB instance for all environments
         ports: [{ containerPort: 5432 }],
         env: [
-          { name: 'POSTGRES_DB', value: `app_${schema.spec.environment}` },
-          { name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_USER' } } },
-          { name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_PASSWORD' } } }
+          { name: 'POSTGRES_DB', value: Cel.expr('app_', schema.spec.environment) },
+          { name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_USER' } } },
+          { name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_PASSWORD' } } }
         ],
         volumeMounts: [{
           name: 'db-storage',
@@ -177,7 +177,7 @@ export const multiEnvApp = toResourceGraph(
         }],
         volumes: [{
           name: 'db-storage',
-          persistentVolumeClaim: { claimName: `${appName}-db-storage` }
+          persistentVolumeClaim: { claimName: Cel.expr(appName, '-db-storage') }
         }],
         resources: {
           requests: {
@@ -199,21 +199,21 @@ export const multiEnvApp = toResourceGraph(
       
       // Database service
       dbService: simpleService({
-        name: `${appName}-db`,
-        selector: { app: `${appName}-db` },
+        name: Cel.expr(appName, '-db'),
+        selector: { app: Cel.expr(appName, '-db') },
         ports: [{ port: 5432, targetPort: 5432 }]
       }),
       
       // Application deployment
       app: simpleDeployment({
         name: appName,
-        image: `${schema.spec.app.image}:${schema.spec.app.version}`,
+        image: Cel.template('%s:%s', schema.spec.app.image, schema.spec.app.version),
         replicas: schema.spec.app.replicas,
         ports: [{ containerPort: 3000 }],
-        envFrom: [{ configMapRef: { name: `${appName}-config` } }],
+        envFrom: [{ configMapRef: { name: Cel.expr(appName, '-config') } }],
         env: [
-          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_PASSWORD' } } },
-          { name: 'DB_USER', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_USER' } } }
+          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_PASSWORD' } } },
+          { name: 'DB_USER', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_USER' } } }
         ],
         resources: {
           requests: {
@@ -223,10 +223,10 @@ export const multiEnvApp = toResourceGraph(
           limits: {
             // Production gets 2x limits
             cpu: schema.spec.environment === 'production' 
-              ? `${parseInt(schema.spec.app.resources.cpu) * 2}m`
+              ? Cel.template('%dm', parseInt(schema.spec.app.resources.cpu) * 2)
               : schema.spec.app.resources.cpu,
             memory: schema.spec.environment === 'production'
-              ? `${parseInt(schema.spec.app.resources.memory.replace('Mi', '')) * 2}Mi`
+              ? Cel.template('%dMi', parseInt(schema.spec.app.resources.memory.replace('Mi', '')) * 2)
               : schema.spec.app.resources.memory
           }
         },
@@ -259,8 +259,8 @@ export const multiEnvApp = toResourceGraph(
   // Status aggregation across resources
   (schema, resources) => ({
     appUrl: schema.spec.settings.domain 
-      ? `https://${schema.spec.settings.domain}`
-      : `http://${schema.spec.environment}-${schema.spec.app.name}`,
+      ? Cel.template('https://%s', schema.spec.settings.domain)
+      : Cel.template('http://%s-%s', schema.spec.environment, schema.spec.app.name),
     databaseReady: resources.database.status.readyReplicas === 1,
     environment: schema.spec.environment,
     version: schema.spec.app.version,
@@ -511,13 +511,13 @@ const resources = {
 
 ## Related Examples
 
-- **[Database Integration](./database.md)** - Database patterns used across environments
+- **[Database Integration](./database-app.md)** - Database patterns used across environments
 - **[Microservices](./microservices.md)** - Multi-service environment deployment
 - **[CI/CD Integration](./cicd.md)** - Automated environment promotion
 
 ## Learn More
 
-- **[GitOps Workflows](../guide/gitops.md)** - YAML generation and CD integration
-- **[Direct Deployment](../guide/direct-deployment.md)** - Development environment setup
-- **[KRO Integration](../guide/kro-integration.md)** - Production orchestration
+- **[GitOps Workflows](../guide/deployment/gitops.md)** - YAML generation and CD integration
+- **[Direct Deployment](../guide/deployment/direct.md)** - Development environment setup
+- **[KRO Integration](../guide/deployment/kro.md)** - Production orchestration
 - **[Performance Optimization](../guide/performance.md)** - Environment-specific tuning

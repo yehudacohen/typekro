@@ -95,64 +95,26 @@ This setup enables:
 
 ## Basic Direct Deployment
 
-### Simple Application Deployment
+For complete examples, see:
+- **[Basic WebApp Pattern](../../examples/basic-webapp.md)** - Simple app with deployment + service
+- **[Database + Application](../../examples/database-app.md)** - Full stack with database
 
+### Quick Direct Deployment
 ```typescript
-import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+// 1. Create factory
+const factory = await webapp.factory('direct', { namespace: 'dev' });
 
-const AppSpec = type({
-  name: 'string',
-  image: 'string',
-  replicas: 'number'
+// 2. Deploy application  
+await factory.deploy({
+  name: 'my-app',
+  image: 'nginx:latest',
+  replicas: 2,
+  environment: 'development'
 });
 
-const AppStatus = type({
-  url: 'string',
-  phase: 'string',
-  readyReplicas: 'number'
-});
-
-const simpleApp = toResourceGraph(
-  { name: 'simple-app', schema: { spec: AppSpec, status: AppStatus } },
-  (schema) => ({
-    deployment: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
-      ports: [{ containerPort: 80 }]
-    }),
-    
-    service: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 80 }]
-    })
-  }),
-  (schema, resources) => ({
-    url: `http://${resources.service.spec.clusterIP}:80`,
-    phase: resources.deployment.status.phase,
-    readyReplicas: resources.deployment.status.readyReplicas
-  })
-);
-
-// Deploy directly
-async function deployApp() {
-  const factory = await simpleApp.factory('direct', {
-    namespace: 'default'
-  });
-
-  const instance = await factory.deploy({
-    name: 'hello-world',
-    image: 'nginx:latest',
-    replicas: 3
-  });
-
-  console.log('✅ Deployment successful');
-  console.log('Instance:', instance);
-}
-
-deployApp().catch(console.error);
+// 3. Check status
+const status = await factory.getStatus();
+console.log('App ready:', status.ready);
 ```
 
 ### Deployment with Configuration
@@ -334,7 +296,7 @@ const fullStack = toResourceGraph(
   (schema) => ({
     // Database
     database: simpleDeployment({
-      name: `${schema.spec.name}-db`,
+      name: Cel.expr(schema.spec.name, '-db'),
       image: 'postgres:15',
       env: {
         POSTGRES_DB: schema.spec.database.name,
@@ -345,8 +307,8 @@ const fullStack = toResourceGraph(
     }),
     
     databaseService: simpleService({
-      name: `${schema.spec.name}-db-service`,
-      selector: { app: `${schema.spec.name}-db` },
+      name: Cel.expr(schema.spec.name, '-db-service'),
+      selector: { app: Cel.expr(schema.spec.name, '-db') },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
@@ -355,13 +317,13 @@ const fullStack = toResourceGraph(
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
-        DATABASE_URL: `postgresql://${schema.spec.database.user}:${schema.spec.database.password}@${databaseService.metadata.name}:5432/${schema.spec.database.name}`
+        DATABASE_URL: Cel.template('postgresql://%s:%s@%s:5432/%s', schema.spec.database.user, schema.spec.database.password, databaseService.metadata.name, schema.spec.database.name)
       },
       ports: [{ containerPort: 3000 }]
     }),
     
     appService: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     })
@@ -369,7 +331,7 @@ const fullStack = toResourceGraph(
   (schema, resources) => ({
     databaseReady: Cel.expr(resources.database.status.readyReplicas, '> 0'),
     appReady: Cel.expr(resources.app.status.readyReplicas, '> 0'),
-    url: `http://${resources.appService.spec.clusterIP}`,
+    url: Cel.template('http://%s', resources.appService.spec.clusterIP),
     
     fullyReady: Cel.expr(
       resources.database.status.readyReplicas, '> 0 && ',
@@ -413,8 +375,8 @@ const microservices = toResourceGraph(
         env: service.env
       });
       
-      services[`${service.name}Service`] = simpleService({
-        name: `${service.name}-service`,
+      services[Cel.expr(service.name, 'Service')] = simpleService({
+        name: Cel.expr(service.name, '-service'),
         selector: { app: service.name },
         ports: [{ port: service.port, targetPort: service.port }]
       });
@@ -428,7 +390,7 @@ const microservices = toResourceGraph(
     schema.spec.services.forEach(service => {
       serviceStatus[service.name] = {
         ready: Cel.expr(resources[service.name].status.readyReplicas, '> 0'),
-        endpoint: `http://${resources[`${service.name}Service`].spec.clusterIP}:${service.port}`
+        endpoint: Cel.template('http://%s:%d', resources[Cel.expr(service.name, 'Service')].spec.clusterIP, service.port)
       };
     });
     
@@ -436,7 +398,7 @@ const microservices = toResourceGraph(
       services: serviceStatus,
       allReady: Cel.expr(
         schema.spec.services.map(s => 
-          `${resources[s.name].status.readyReplicas} > 0`
+          Cel.expr(resources[s.name].status.readyReplicas, ' > 0')
         ).join(' && ')
       )
     };
@@ -599,7 +561,7 @@ const scalableApp = toResourceGraph(
     
     // Horizontal Pod Autoscaler
     hpa: simpleHpa({
-      name: `${schema.spec.name}-hpa`,
+      name: Cel.expr(schema.spec.name, '-hpa'),
       scaleTargetRef: {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
@@ -625,7 +587,7 @@ const statefulApp = toResourceGraph(
   { name: 'stateful-app', schema: { spec: StatefulAppSpec } },
   (schema) => ({
     storage: simplePvc({
-      name: `${schema.spec.name}-storage`,
+      name: Cel.expr(schema.spec.name, '-storage'),
       size: schema.spec.storage.size,
       storageClass: schema.spec.storage.class,
       accessModes: ['ReadWriteOnce']
@@ -703,7 +665,7 @@ try {
     // Get detailed error information
     for (const resource of error.failedResources) {
       const events = await factory.getResourceEvents(resource.kind, resource.name);
-      console.error(`Events for ${resource.name}:`, events);
+      console.error(Cel.template('Events for %s:', resource.name), events);
     }
   }
 }
@@ -752,7 +714,7 @@ const apps = ['app1', 'app2', 'app3'];
 const deployments = await Promise.all(
   apps.map(name => factory.deploy({
     name,
-    image: `${name}:latest`,
+    image: Cel.template('%s:latest', name),
     replicas: 2
   }))
 );
@@ -778,13 +740,13 @@ async function deploy() {
   });
   
   await factory.deploy({
-    name: `myapp-${environment}`,
-    image: `myregistry/myapp:${imageTag}`,
+    name: Cel.template('myapp-%s', environment),
+    image: Cel.template('myregistry/myapp:%s', imageTag),
     replicas: config[environment].replicas,
     environment
   });
   
-  console.log(`✅ Deployed to ${environment}`);
+  console.log(Cel.template('✅ Deployed to %s', environment));
 }
 
 deploy().catch(process.exit(1));
@@ -830,8 +792,8 @@ const factory = await graph.factory('direct', config);
 // ✅ Use consistent, descriptive names
 const factory = await graph.factory('direct');
 await factory.deploy({
-  name: `${appName}-${environment}`,
-  image: `${registry}/${appName}:${version}`,
+  name: Cel.template('%s-%s', appName, environment),
+  image: Cel.template('%s/%s:%s', registry, appName, version),
   replicas: config.replicas
 });
 ```
@@ -866,7 +828,7 @@ process.on('SIGINT', async () => {
 
 ## Next Steps
 
-- **[KRO Integration](./kro-integration.md)** - Advanced orchestration with KRO
+- **[KRO Integration](./kro.md)** - Advanced orchestration with KRO
 - **[GitOps Workflows](./gitops.md)** - Deploy via GitOps with YAML generation
-- **[Status Hydration](./status-hydration.md)** - Monitor deployment status
-- **[Troubleshooting](./troubleshooting.md)** - Debug deployment issues
+- **[Status Hydration](../status-hydration.md)** - Monitor deployment status
+- **[Troubleshooting](../troubleshooting.md)** - Debug deployment issues

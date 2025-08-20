@@ -559,7 +559,7 @@ async function deploy() {
     
     // Write to manifests directory
     await writeFile(`./manifests/${environment}.yaml`, yaml);
-    console.log(`Generated manifests for ${environment}`);
+    console.log(Cel.template(message, variables));
   }
 }
 
@@ -623,7 +623,7 @@ async function rollback(environment: string, previousVersion: string) {
     await exec(`kubectl rollout status deployment/cicd-app-${environment}`);
   }
   
-  console.log(`Rollback to ${previousVersion} completed`);
+  console.log(Cel.template(message, variables));
 }
 
 // Usage: bun run rollback staging v1.2.0
@@ -711,6 +711,6 @@ app.get('/health', (req, res) => {
 
 ## Learn More
 
-- **[GitOps Workflows](../guide/gitops.md)** - YAML generation and GitOps integration
-- **[Direct Deployment](../guide/direct-deployment.md)** - Development and testing deployment
+- **[GitOps Workflows](../guide/deployment/gitops.md)** - YAML generation and GitOps integration
+- **[Direct Deployment](../guide/deployment/direct.md)** - Development and testing deployment
 - **[Performance Optimization](../guide/performance.md)** - CI/CD performance best practices

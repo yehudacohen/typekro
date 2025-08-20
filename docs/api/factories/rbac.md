@@ -97,7 +97,7 @@ const microservice = toResourceGraph(
     
     // Role with conditional permissions
     appRole: role({
-      metadata: { name: `${schema.spec.name}-role` },
+      metadata: { name: Cel.expr(schema.spec.name, '-role') },
       rules: [
         // Always allow reading pods
         {
@@ -124,7 +124,7 @@ const microservice = toResourceGraph(
     
     // Role binding
     roleBinding: roleBinding({
-      metadata: { name: `${schema.spec.name}-binding` },
+      metadata: { name: Cel.expr(schema.spec.name, '-binding') },
       subjects: [{
         kind: 'ServiceAccount',
         name: schema.spec.name,
@@ -132,7 +132,7 @@ const microservice = toResourceGraph(
       }],
       roleRef: {
         kind: 'Role',
-        name: `${schema.spec.name}-role`,
+        name: Cel.expr(schema.spec.name, '-role'),
         apiGroup: 'rbac.authorization.k8s.io'
       }
     }),
@@ -257,7 +257,7 @@ const multiTenantPlatform = toResourceGraph(
     tenantAccounts: schema.spec.tenants.map(tenant =>
       serviceAccount({
         metadata: {
-          name: `${tenant}-service-account`,
+          name: Cel.expr(tenant, '-service-account'),
           labels: { tenant }
         }
       })
@@ -266,7 +266,7 @@ const multiTenantPlatform = toResourceGraph(
     // Create roles for each tenant (namespace-scoped)
     tenantRoles: schema.spec.tenants.map(tenant =>
       role({
-        metadata: { name: `${tenant}-role` },
+        metadata: { name: Cel.expr(tenant, '-role') },
         rules: [
           {
             apiGroups: [''],
@@ -282,7 +282,7 @@ const multiTenantPlatform = toResourceGraph(
           {
             apiGroups: [''],
             resources: ['secrets'],
-            resourceNames: [`${tenant}-secrets`],
+            resourceNames: [Cel.expr(tenant, '-secrets')],
             verbs: ['get', 'list']
           }
         ]
@@ -292,15 +292,15 @@ const multiTenantPlatform = toResourceGraph(
     // Bind roles to service accounts
     tenantBindings: schema.spec.tenants.map(tenant =>
       roleBinding({
-        metadata: { name: `${tenant}-binding` },
+        metadata: { name: Cel.expr(tenant, '-binding') },
         subjects: [{
           kind: 'ServiceAccount',
-          name: `${tenant}-service-account`,
+          name: Cel.expr(tenant, '-service-account'),
           namespace: 'default'
         }],
         roleRef: {
           kind: 'Role',
-          name: `${tenant}-role`,
+          name: Cel.expr(tenant, '-role'),
           apiGroup: 'rbac.authorization.k8s.io'
         }
       })
@@ -309,10 +309,10 @@ const multiTenantPlatform = toResourceGraph(
     // Tenant applications
     tenantApps: schema.spec.tenants.map(tenant =>
       simpleDeployment({
-        name: `${tenant}-app`,
+        name: Cel.expr(tenant, '-app'),
         image: 'tenant-app:latest',
         ports: [8080],
-        serviceAccountName: `${tenant}-service-account`,
+        serviceAccountName: Cel.expr(tenant, '-service-account'),
         env: {
           TENANT_NAME: tenant
         }
@@ -322,7 +322,7 @@ const multiTenantPlatform = toResourceGraph(
   (schema, resources) => ({
     ready: Cel.expr(
       resources.tenantApps.map(app => 
-        `${app.status.readyReplicas} > 0`
+        Cel.expr(app.status.readyReplicas, ' > 0')
       ).join(' && ')
     )
   })

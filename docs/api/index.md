@@ -285,7 +285,7 @@ import { toResourceGraph } from 'typekro';
 
 ## Support
 
-- **Documentation**: [TypeKro Docs](/)
-- **Examples**: [Examples Gallery](/examples/)
+- **Documentation**: [TypeKro Docs](../index.md)
+- **Examples**: [Examples Gallery](../examples/)
 - **Issues**: [GitHub Issues](https://github.com/yehudacohen/typekro/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/yehudacohen/typekro/discussions)

@@ -38,15 +38,19 @@ const webApp = toResourceGraph(
       replicas: schema.spec.replicas
     }),
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     })
   }),
+  (schema, resources) => ({
+    serviceEndpoint: Cel.template('http://%s:80', resources.service.spec.clusterIP)
+  })
+  }),
   
   // Status builder - defines how to compute status
   (schema, resources) => ({
-    url: `http://${resources.service.status.loadBalancer.ingress[0].ip}`,
+    url: Cel.template('http://%s', resources.service.status.loadBalancer.ingress[0].ip),
     phase: resources.deployment.status.phase
   })
 );
@@ -75,14 +79,16 @@ The resource builder function creates the actual Kubernetes resources:
 ```typescript
 const resourceBuilder = (schema) => ({
   // Each key becomes a resource ID
-  database: simpleDeployment({
-    name: `${schema.spec.name}-db`,
-    image: 'postgres:15',
-    env: {
-      POSTGRES_DB: schema.spec.database.name,
-      POSTGRES_USER: schema.spec.database.user
-    }
-  }),
+    database: simpleDeployment({
+      name: Cel.expr(schema.spec.name, '-db'),
+      image: 'postgres:15',
+      env: {
+        POSTGRES_DB: schema.spec.database.name,
+        POSTGRES_USER: schema.spec.database.user,
+        POSTGRES_PASSWORD: schema.spec.database.password
+      },
+      ports: [{ containerPort: 5432 }]
+    }),
   
   app: simpleDeployment({
     name: schema.spec.name,
@@ -93,11 +99,11 @@ const resourceBuilder = (schema) => ({
     }
   }),
   
-  service: simpleService({
-    name: `${schema.spec.name}-service`,
-    selector: { app: schema.spec.name },
-    ports: [{ port: 80, targetPort: 3000 }]
-  })
+    service: simpleService({
+      name: Cel.expr(schema.spec.name, '-service'),
+      selector: { app: schema.spec.name },
+      ports: [{ port: 80, targetPort: 3000 }]
+    })
 });
 ```
 
@@ -113,8 +119,8 @@ const statusBuilder = (schema, resources) => ({
   
   // Computed values
   url: schema.spec.environment === 'production'
-    ? `https://${resources.service.status.loadBalancer.ingress[0].hostname}`
-    : `http://${resources.service.spec.clusterIP}`,
+    ? Cel.template('https://%s', resources.service.status.loadBalancer.ingress[0].hostname)
+    : Cel.template('http://%s', resources.service.spec.clusterIP),
     
   // Complex logic with CEL expressions
   ready: Cel.expr(
@@ -138,313 +144,14 @@ const basicStack = toResourceGraph(
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas
-    }),
-    
-    service: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }]
-    })
   }),
-  (schema, resources) => ({
-    serviceEndpoint: `http://${resources.service.spec.clusterIP}:80`
+  
+  service: simpleService({
+    name: Cel.expr(schema.spec.name, '-service'),
+    selector: { app: schema.spec.name },
+    ports: [{ port: 80, targetPort: 3000 }]
   })
-);
-```
-
-### Database Integration
-
-```typescript
-const databaseStack = toResourceGraph(
-  { name: 'database-stack', schema: { spec: DatabaseStackSpec } },
-  (schema) => ({
-    database: simpleDeployment({
-      name: `${schema.spec.name}-db`,
-      image: 'postgres:15',
-      env: {
-        POSTGRES_DB: schema.spec.database.name,
-        POSTGRES_USER: schema.spec.database.user,
-        POSTGRES_PASSWORD: schema.spec.database.password
-      },
-      ports: [{ containerPort: 5432 }]
-    }),
-    
-    dbService: simpleService({
-      name: `${schema.spec.name}-db-service`,
-      selector: { app: `${schema.spec.name}-db` },
-      ports: [{ port: 5432, targetPort: 5432 }]
-    }),
-    
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      env: {
-        DATABASE_URL: `postgresql://${schema.spec.database.user}:${schema.spec.database.password}@${dbService.metadata.name}:5432/${schema.spec.database.name}`
-      }
-    }),
-    
-    appService: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }]
-    })
-  }),
-  (schema, resources) => ({
-    appUrl: `http://${resources.appService.spec.clusterIP}`,
-    databaseHost: resources.dbService.spec.clusterIP,
-    ready: Cel.expr(
-      resources.app.status.readyReplicas, '> 0 && ',
-      resources.database.status.readyReplicas, '> 0'
-    )
-  })
-);
-```
-
-### Microservices Architecture
-
-```typescript
-const microservicesStack = toResourceGraph(
-  { name: 'microservices', schema: { spec: MicroservicesSpec } },
-  (schema) => ({
-    // API Gateway
-    gateway: simpleDeployment({
-      name: `${schema.spec.name}-gateway`,
-      image: schema.spec.gateway.image,
-      ports: [{ containerPort: 8080 }],
-      env: {
-        USER_SERVICE_URL: `http://user-service:3000`,
-        ORDER_SERVICE_URL: `http://order-service:3000`
-      }
-    }),
-    
-    gatewayService: simpleService({
-      name: 'gateway-service',
-      selector: { app: `${schema.spec.name}-gateway` },
-      ports: [{ port: 80, targetPort: 8080 }],
-      type: 'LoadBalancer'
-    }),
-    
-    // User Service
-    userService: simpleDeployment({
-      name: 'user-service',
-      image: schema.spec.services.user.image,
-      replicas: schema.spec.services.user.replicas,
-      ports: [{ containerPort: 3000 }]
-    }),
-    
-    userServiceSvc: simpleService({
-      name: 'user-service',
-      selector: { app: 'user-service' },
-      ports: [{ port: 3000, targetPort: 3000 }]
-    }),
-    
-    // Order Service
-    orderService: simpleDeployment({
-      name: 'order-service',
-      image: schema.spec.services.order.image,
-      replicas: schema.spec.services.order.replicas,
-      ports: [{ containerPort: 3000 }],
-      env: {
-        USER_SERVICE_URL: `http://user-service:3000`
-      }
-    }),
-    
-    orderServiceSvc: simpleService({
-      name: 'order-service',
-      selector: { app: 'order-service' },
-      ports: [{ port: 3000, targetPort: 3000 }]
-    })
-  }),
-  (schema, resources) => ({
-    gatewayUrl: `http://${resources.gatewayService.status.loadBalancer.ingress[0].ip}`,
-    servicesReady: Cel.expr(
-      resources.userService.status.readyReplicas, '> 0 && ',
-      resources.orderService.status.readyReplicas, '> 0'
-    )
-  })
-);
-```
-
-## Environment-Specific Configuration
-
-### Conditional Resources
-
-```typescript
-const adaptiveStack = toResourceGraph(
-  { name: 'adaptive-stack', schema: { spec: AdaptiveStackSpec } },
-  (schema) => ({
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.environment === 'production' ? 5 : 2,
-      resources: schema.spec.environment === 'production'
-        ? { cpu: '1000m', memory: '2Gi' }
-        : { cpu: '100m', memory: '256Mi' }
-    }),
-    
-    service: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }],
-      type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
-    }),
-    
-    // Only create ingress in production
-    ...(schema.spec.environment === 'production' && {
-      ingress: simpleIngress({
-        name: `${schema.spec.name}-ingress`,
-        rules: [{
-          host: `${schema.spec.name}.${schema.spec.domain}`,
-          http: {
-            paths: [{
-              path: '/',
-              pathType: 'Prefix',
-              backend: {
-                service: {
-                  name: service.metadata.name,
-                  port: { number: 80 }
-                }
-              }
-            }]
-          }
-        }],
-        tls: [{
-          secretName: `${schema.spec.name}-tls`,
-          hosts: [`${schema.spec.name}.${schema.spec.domain}`]
-        }]
-      })
-    })
-  }),
-  (schema, resources) => ({
-    url: schema.spec.environment === 'production'
-      ? `https://${schema.spec.name}.${schema.spec.domain}`
-      : `http://${resources.service.spec.clusterIP}`,
-    environment: schema.spec.environment,
-    replicas: resources.app.status.readyReplicas
-  })
-);
-```
-
-### Configuration Management
-
-```typescript
-const configuredStack = toResourceGraph(
-  { name: 'configured-stack', schema: { spec: ConfiguredStackSpec } },
-  (schema) => ({
-    config: simpleConfigMap({
-      name: `${schema.spec.name}-config`,
-      data: {
-        'app.properties': `
-          environment=${schema.spec.environment}
-          log.level=${schema.spec.environment === 'production' ? 'info' : 'debug'}
-          features.auth=${schema.spec.features.auth}
-          features.metrics=${schema.spec.features.metrics}
-        `,
-        'database.conf': `
-          host=${schema.spec.database.host}
-          port=${schema.spec.database.port}
-          name=${schema.spec.database.name}
-        `
-      }
-    }),
-    
-    secrets: simpleSecret({
-      name: `${schema.spec.name}-secrets`,
-      stringData: {
-        'database-password': schema.spec.database.password,
-        'jwt-secret': schema.spec.security.jwtSecret,
-        'api-key': schema.spec.security.apiKey
-      }
-    }),
-    
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      env: {
-        CONFIG_PATH: '/etc/config',
-        SECRETS_PATH: '/etc/secrets'
-      },
-      volumeMounts: [
-        { name: 'config', mountPath: '/etc/config' },
-        { name: 'secrets', mountPath: '/etc/secrets', readOnly: true }
-      ],
-      volumes: [
-        { name: 'config', configMap: { name: config.metadata.name } },
-        { name: 'secrets', secret: { secretName: secrets.metadata.name } }
-      ]
-    })
-  }),
-  (schema, resources) => ({
-    configurationReady: Cel.expr(
-      `"${resources.config.metadata.name}" != "" && "${resources.secrets.metadata.name}" != ""`
-    )
-  })
-);
-```
-
-## Advanced Resource Graph Features
-
-### Cross-Graph References
-
-```typescript
-// Shared database graph
-const sharedDatabase = toResourceGraph(
-  { name: 'shared-database', schema: { spec: DatabaseSpec } },
-  (schema) => ({
-    database: simpleDeployment({
-      name: schema.spec.name,
-      image: 'postgres:15'
-    }),
-    service: simpleService({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 5432, targetPort: 5432 }]
-    })
-  }),
-  (schema, resources) => ({
-    host: resources.service.spec.clusterIP,
-    port: 5432,
-    ready: Cel.expr(resources.database.status.readyReplicas, '> 0')
-  })
-);
-
-// Application that uses shared database
-const appWithSharedDb = toResourceGraph(
-  { name: 'app-with-shared-db', schema: { spec: AppSpec } },
-  (schema) => ({
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      env: {
-        // Reference external database
-        DATABASE_URL: `postgresql://user:pass@${schema.spec.database.host}:${schema.spec.database.port}/myapp`
-      }
-    })
-  }),
-  (schema, resources) => ({
-    phase: resources.app.status.phase
-  })
-);
-```
-
-### Dynamic Resource Creation
-
-```typescript
-const dynamicStack = toResourceGraph(
-  { name: 'dynamic-stack', schema: { spec: DynamicStackSpec } },
-  (schema) => {
-    const resources: Record<string, any> = {};
-    
-    // Create multiple worker deployments
-    for (let i = 0; i < schema.spec.workers.count; i++) {
-      resources[`worker-${i}`] = simpleDeployment({
-        name: `${schema.spec.name}-worker-${i}`,
-        image: schema.spec.workers.image,
-        env: {
-          WORKER_ID: i.toString(),
-          TOTAL_WORKERS: schema.spec.workers.count.toString()
-        }
-      });
+});
     }
     
     // Main application
@@ -554,10 +261,10 @@ await kroFactory.deploy(spec);
 ```typescript
 // ✅ Use consistent naming patterns
 const resources = {
-  database: simpleDeployment({ name: `${schema.spec.name}-db` }),
-  databaseService: simpleService({ name: `${schema.spec.name}-db-service` }),
+  database: simpleDeployment({ name: Cel.expr(schema.spec.name, '-db') }),
+  databaseService: simpleService({ name: Cel.expr(schema.spec.name, '-db-service') }),
   app: simpleDeployment({ name: schema.spec.name }),
-  appService: simpleService({ name: `${schema.spec.name}-service` })
+  appService: simpleService({ name: Cel.expr(schema.spec.name, '-service') })
 };
 
 // ❌ Avoid inconsistent naming
@@ -610,7 +317,7 @@ const statusBuilder = (schema, resources) => ({
   totalReplicas: resources.app.spec.replicas,
   
   // Service information
-  serviceEndpoint: `http://${resources.service.spec.clusterIP}:80`,
+  serviceEndpoint: Cel.template('http://%s:80', resources.service.spec.clusterIP),
   
   // Overall health
   healthy: Cel.expr(

@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide will help you install TypeKro and create your first type-safe Kubernetes infrastructure.
+Get up and running with TypeKro in under 5 minutes, then dive deeper into comprehensive infrastructure patterns. This guide shows you the fastest path to deploying type-safe Kubernetes infrastructure.
 
 ## Prerequisites
 
@@ -69,9 +69,110 @@ pnpm add -D @types/node
 
 :::
 
-## Your First Resource Graph
+## Quick Start: Your First App in 5 Minutes
 
-Let's create a simple web application with a database. Create a new file called `webapp.ts`:
+### 1. Create Your First App
+
+Create `simple-app.ts`:
+
+```typescript
+import { type } from 'arktype';
+import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+
+const AppSpec = type({
+  name: 'string',
+  image: 'string',
+  replicas: 'number'
+});
+
+const AppStatus = type({
+  ready: 'boolean',
+  url: 'string'
+});
+
+export const app = toResourceGraph(
+  {
+    name: 'simple-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'SimpleApp',
+    spec: AppSpec,
+    status: AppStatus,
+  },
+  (schema) => ({
+    deployment: simpleDeployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
+      ports: [{ containerPort: 80 }]
+    }),
+    
+    service: simpleService({
+      name: Cel.expr(schema.spec.name, '-service'),
+      selector: { app: schema.spec.name },
+      ports: [{ port: 80, targetPort: 80 }]
+    })
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(resources.deployment.status.readyReplicas, '> 0'),
+    url: Cel.template('http://%s', resources.service.status.clusterIP)
+  })
+);
+```
+
+### 2. Deploy It
+
+**Option A: Direct Deployment**
+
+```typescript
+// deploy.ts
+import { app } from './simple-app.js';
+
+const factory = await app.factory('direct', { namespace: 'default' });
+await factory.deploy({
+  name: 'hello-world',
+  image: 'nginx:latest',
+  replicas: 2
+});
+
+console.log('Deployed! 🚀');
+```
+
+```bash
+bun run deploy.ts
+```
+
+**Option B: Generate YAML**
+
+```typescript
+// generate.ts
+import { writeFileSync } from 'fs';
+import { app } from './simple-app.js';
+
+const yaml = app.toYaml({
+  name: 'hello-world',
+  image: 'nginx:latest',
+  replicas: 2
+});
+
+writeFileSync('app.yaml', yaml);
+console.log('YAML generated! 📄');
+```
+
+```bash
+bun run generate.ts
+kubectl apply -f app.yaml
+```
+
+### 3. Verify It Works
+
+```bash
+kubectl get pods
+kubectl get services
+```
+
+## Comprehensive Example: Full-Stack Web Application
+
+Now let's create a more realistic application with a database. Create `webapp.ts`:
 
 ```typescript
 import { type } from 'arktype';
@@ -79,7 +180,8 @@ import {
   toResourceGraph, 
   simpleDeployment, 
   simpleService,
-  simpleConfigMap 
+  simpleConfigMap,
+  Cel
 } from 'typekro';
 
 // Define your application's interface
@@ -109,7 +211,7 @@ export const webAppGraph = toResourceGraph(
   (schema) => ({
     // Configuration
     config: simpleConfigMap({
-      name: `${schema.spec.name}-config`,
+      name: Cel.expr(schema.spec.name, '-config'),
       data: {
         LOG_LEVEL: schema.spec.environment === 'production' ? 'info' : 'debug',
         DATABASE_URL: 'postgresql://postgres:5432/webapp'
@@ -118,7 +220,7 @@ export const webAppGraph = toResourceGraph(
 
     // Database
     database: simpleDeployment({
-      name: `${schema.spec.name}-db`,
+      name: Cel.expr(schema.spec.name, '-db'),
       image: 'postgres:15',
       env: {
         POSTGRES_DB: 'webapp',
@@ -130,8 +232,8 @@ export const webAppGraph = toResourceGraph(
 
     // Database service
     dbService: simpleService({
-      name: `${schema.spec.name}-db-service`,
-      selector: { app: `${schema.spec.name}-db` },
+      name: Cel.expr(schema.spec.name, '-db-service'),
+      selector: { app: Cel.expr(schema.spec.name, '-db') },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
 
@@ -143,14 +245,14 @@ export const webAppGraph = toResourceGraph(
       env: {
         NODE_ENV: schema.spec.environment,
         // Reference the database service
-        DATABASE_HOST: `${dbService.metadata.name}.${dbService.metadata.namespace}.svc.cluster.local`
+        DATABASE_HOST: Cel.template('%s.%s.svc.cluster.local', resources.dbService.metadata.name, resources.dbService.metadata.namespace)
       },
       ports: [{ containerPort: 3000 }]
     }),
 
     // Web service
     webService: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       type: 'LoadBalancer'
@@ -158,11 +260,67 @@ export const webAppGraph = toResourceGraph(
   }),
   // StatusBuilder function
   (schema, resources) => ({
-    url: Cel.expr<string>(resources.webService.status.loadBalancer.ingress[0].ip, ' != "" ? "http://" + ', resources.webService.status.loadBalancer.ingress[0].ip, ' : "pending"'),
-    phase: Cel.expr<'pending' | 'running' | 'ready'>(resources.app.status.readyReplicas, ' > 0 ? "ready" : "pending"'),
+    url: Cel.expr<string>(
+      resources.webService.status.loadBalancer.ingress,
+      '.size() > 0 ? "http://" + ',
+      resources.webService.status.loadBalancer.ingress[0].ip,
+      ': "pending"'
+    ),
+    phase: Cel.expr<string>(resources.app.status.readyReplicas, ' > 0 ? "ready" : "pending"'),
     readyReplicas: resources.app.status.readyReplicas
   })
 );
+```
+
+## Common Patterns
+
+### Environment-Specific Configuration
+
+```typescript
+const config = schema.spec.environment === 'production' 
+  ? { replicas: 5, resources: { cpu: '500m', memory: '1Gi' } }
+  : { replicas: 1, resources: { cpu: '100m', memory: '256Mi' } };
+
+const deployment = simpleDeployment({
+  name: schema.spec.name,
+  image: schema.spec.image,
+  replicas: config.replicas,
+  resources: config.resources
+});
+```
+
+### Cross-Resource References
+
+```typescript
+const database = simpleDeployment({
+  name: 'db',
+  image: 'postgres:15'
+});
+
+const app = simpleDeployment({
+  name: 'app',
+  image: 'myapp:latest',
+  env: {
+    DATABASE_HOST: database.status.podIP  // Runtime reference
+  }
+});
+```
+
+### Conditional Resources
+
+```typescript
+const resources = {
+  app: simpleDeployment({ /* ... */ }),
+  
+  // Only create ingress in production
+  ...(schema.spec.environment === 'production' && {
+    ingress: simpleIngress({
+      name: Cel.expr(schema.spec.name, '-ingress'),
+      host: Cel.template('%s.example.com', schema.spec.name),
+      serviceName: Cel.expr(schema.spec.name, '-service')
+    })
+  })
+};
 ```
 
 ## Bootstrap TypeKro Runtime (Optional)
@@ -347,14 +505,27 @@ Add a type-check script to your `package.json`:
 }
 ```
 
-## Next Steps
+## What's Next?
 
 Now that you have TypeKro installed and working, explore these topics:
 
-- **[Factory Functions](./factory-functions.md)** - Learn about the built-in resource factories
-- **[Cross-Resource References](./cross-references.md)** - Connect resources dynamically
-- **[CEL Expressions](./cel-expressions.md)** - Add runtime logic to your infrastructure
-- **[Examples](../examples/)** - See real-world TypeKro applications
+### Core Concepts
+- **[Factories](./factories.md)** - Learn about built-in resource factories and how to create custom ones
+- **[Schemas & Types](./schemas-and-types.md)** - Master TypeKro's type system and schema definitions
+- **[Runtime Behavior](./runtime-behavior.md)** - Understand status hydration, cross-references, and external references
+- **[CEL Expressions](./cel-expressions.md)** - Add dynamic runtime logic to your infrastructure
+
+### Deployment Methods
+- **[Direct Deployment](./deployment/direct.md)** - Deploy directly to your cluster for rapid development
+- **[GitOps](./deployment/gitops.md)** - Integrate with GitOps workflows
+- **[KRO Integration](./deployment/kro.md)** - Use KRO controller for advanced orchestration
+- **[Alchemy Integration](./deployment/alchemy.md)** - Enterprise-grade deployment strategies
+
+### Real-World Examples
+- **[Basic Patterns](../examples/basic-patterns.md)** - Fundamental deployment patterns
+- **[Microservices](../examples/microservices.md)** - Complex multi-service architectures
+- **[CI/CD](../examples/cicd.md)** - Continuous integration and deployment
+- **[Multi-Environment](../examples/multi-environment.md)** - Environment-specific configurations
 
 ## Troubleshooting
 

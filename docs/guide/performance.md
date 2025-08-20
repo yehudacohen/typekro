@@ -67,7 +67,7 @@ const efficientGraph = toResourceGraph(
     // Conditional resource creation
     if (schema.spec.needsDatabase) {
       resources.database = simpleDeployment({
-        name: `${schema.spec.name}-db`,
+        name: Cel.expr(schema.spec.name, "-db"),
         image: 'postgres:15'
       });
     }
@@ -107,7 +107,7 @@ const coreAppGraph = toResourceGraph(
       image: schema.spec.image
     }),
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, "-service"),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     })
@@ -123,7 +123,7 @@ const databaseGraph = toResourceGraph(
       image: 'postgres:15'
     }),
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, "-service"),
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432 }]
     })
@@ -218,12 +218,12 @@ async function parallelDeploy() {
   const deployments = await Promise.all(
     apps.map(name => factory.deploy({
       name,
-      image: `${name}:latest`,
+      image: Cel.template("%s:latest", name),
       replicas: 2
     }))
   );
   
-  console.log(`Deployed ${deployments.length} applications`);
+  console.log(Cel.template("Deployed %d applications", deployments.length));
 }
 
 // ✅ Use Promise.allSettled for error resilience
@@ -242,7 +242,7 @@ async function resilientParallelDeploy() {
   const successful = results.filter(r => r.status === 'fulfilled');
   const failed = results.filter(r => r.status === 'rejected');
   
-  console.log(`✅ ${successful.length} successful, ❌ ${failed.length} failed`);
+  console.log(Cel.template("✅ %d successful, ❌ %d failed", successful.length, failed.length));
 }
 ```
 
@@ -667,10 +667,10 @@ function trackMemoryUsage(operation: string) {
     end() {
       const after = process.memoryUsage();
       
-      console.log(`Memory usage for ${operation}:`);
-      console.log(`  Heap Used: ${(after.heapUsed - before.heapUsed) / 1024 / 1024} MB`);
-      console.log(`  Heap Total: ${(after.heapTotal - before.heapTotal) / 1024 / 1024} MB`);
-      console.log(`  RSS: ${(after.rss - before.rss) / 1024 / 1024} MB`);
+      console.log(Cel.template(message, variables));
+      console.log(Cel.template(message, variables));
+      console.log(Cel.template(message, variables));
+      console.log(Cel.template(message, variables));
     }
   };
 }
@@ -721,10 +721,10 @@ async function loadTestGraphCreation() {
   }
   
   const durations = results.map(r => r.duration);
-  console.log(`Load test results for ${iterations} graph creations:`);
-  console.log(`  Average: ${durations.reduce((a, b) => a + b) / durations.length}ms`);
-  console.log(`  Min: ${Math.min(...durations)}ms`);
-  console.log(`  Max: ${Math.max(...durations)}ms`);
+  console.log(Cel.template(message, variables));
+  console.log(Cel.template(message, variables));
+  console.log(Cel.template(message, variables));
+  console.log(Cel.template(message, variables));
   
   return results;
 }
@@ -759,9 +759,9 @@ async function benchmarkFactories() {
   const duration2 = performance.now() - start2;
   
   console.log('Benchmark Results:');
-  console.log(`  Individual factories: ${duration1}ms`);
-  console.log(`  Cached factory: ${duration2}ms`);
-  console.log(`  Speedup: ${(duration1 / duration2).toFixed(2)}x`);
+  console.log(Cel.template(message, variables));
+  console.log(Cel.template(message, variables));
+  console.log(Cel.template(message, variables));
 }
 ```
 
@@ -803,14 +803,14 @@ const resource = resources.find(r => r.name === name);  // O(n) lookup
 // ✅ Batch API operations
 const resources = await Promise.all([
   k8s.apps.readNamespacedDeployment(name, namespace),
-  k8s.core.readNamespacedService(`${name}-service`, namespace),
-  k8s.core.readNamespacedConfigMap(`${name}-config`, namespace)
+  k8s.core.readNamespacedService(Cel.expr(name, "-service"), namespace),
+  k8s.core.readNamespacedConfigMap(Cel.expr(name, "-config"), namespace)
 ]);
 
 // ❌ Sequential API calls
 const deployment = await k8s.apps.readNamespacedDeployment(name, namespace);
-const service = await k8s.core.readNamespacedService(`${name}-service`, namespace);
-const configMap = await k8s.core.readNamespacedConfigMap(`${name}-config`, namespace);
+const service = await k8s.core.readNamespacedService(Cel.expr(name, "-service"), namespace);
+const configMap = await k8s.core.readNamespacedConfigMap(Cel.expr(name, "-config"), namespace);
 ```
 
 ### 4. Implement Circuit Breakers

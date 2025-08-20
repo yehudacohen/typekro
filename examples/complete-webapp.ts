@@ -136,12 +136,19 @@ const completeWebappGraph = toResourceGraph(
   },
   // StatusBuilder function - defines how status fields map to resource status
   (schema, resources) => ({
-    databaseReady: Cel.expr<boolean>(resources.database?.status.readyReplicas, "> 0"),
-    webAppReady: Cel.expr<boolean>(resources.webapp?.status.readyReplicas, " = " , resources.webapp?.spec.replicas),
-    ingressReady: Cel.expr<boolean>(resources.webappIngress?.status.loadBalancer.ingress?.length, " > 0"),
-    url: Cel.template(`https://%s`,schema.spec.hostname),
-    totalReplicas: resources.webapp?.spec.replicas,
-    readyReplicas: resources.webapp?.status.readyReplicas,
+    databaseReady: Cel.expr<boolean>(resources.database.status.readyReplicas, ' > 0'),
+    webAppReady: Cel.expr<boolean>(
+      resources.webapp.status.readyReplicas,
+      ' == ',
+      resources.webapp.spec.replicas
+    ),
+    ingressReady: Cel.expr<boolean>(
+      resources.webappIngress.status.loadBalancer.ingress.length,
+      ' > 0'
+    ),
+    url: Cel.template('https://%s', schema.spec.hostname),
+    totalReplicas: resources.webapp.spec.replicas,
+    readyReplicas: resources.webapp.status.readyReplicas,
   })
 );
 

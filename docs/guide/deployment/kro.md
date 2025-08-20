@@ -146,7 +146,7 @@ const kroWebApp = toResourceGraph(
     }),
     
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
@@ -224,7 +224,7 @@ const databaseStack = toResourceGraph(
   (schema) => ({
     // Database deployment
     database: simpleDeployment({
-      name: `${schema.spec.name}-db`,
+      name: Cel.expr(schema.spec.name, '-db'),
       image: 'postgres:15',
       env: {
         POSTGRES_DB: schema.spec.database.name,
@@ -236,8 +236,8 @@ const databaseStack = toResourceGraph(
     
     // Database service
     databaseService: simpleService({
-      name: `${schema.spec.name}-db-service`,
-      selector: { app: `${schema.spec.name}-db` },
+      name: Cel.expr(schema.spec.name, '-db-service'),
+      selector: { app: Cel.expr(schema.spec.name, '-db') },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
@@ -273,7 +273,7 @@ const databaseStack = toResourceGraph(
     }),
     
     appService: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     })
@@ -335,13 +335,13 @@ const autoScalingStack = toResourceGraph(
     }),
     
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     }),
     
     hpa: simpleHpa({
-      name: `${schema.spec.name}-hpa`,
+      name: Cel.expr(schema.spec.name, '-hpa'),
       scaleTargetRef: {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
@@ -617,7 +617,7 @@ const conditionalStack = toResourceGraph(
     }),
     
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     }),
@@ -628,7 +628,7 @@ const conditionalStack = toResourceGraph(
         apiVersion: 'monitoring.coreos.com/v1',
         kind: 'ServiceMonitor',
         metadata: {
-          name: `${schema.spec.name}-monitor`
+          name: Cel.expr(schema.spec.name, '-monitor')
         },
         spec: {
           selector: {
@@ -645,7 +645,7 @@ const conditionalStack = toResourceGraph(
     // Only create ingress for external environments
     ...(schema.spec.external && {
       ingress: simpleIngress({
-        name: `${schema.spec.name}-ingress`,
+        name: Cel.expr(schema.spec.name, '-ingress'),
         rules: [{
           host: schema.spec.hostname,
           http: {
@@ -735,8 +735,8 @@ const appWithInfra = toResourceGraph(
       image: schema.spec.image,
       env: {
         // Reference shared infrastructure endpoints
-        DATABASE_URL: `postgresql://user:pass@${schema.spec.infrastructure.databaseEndpoint}/myapp`,
-        REDIS_URL: `redis://${schema.spec.infrastructure.redisEndpoint}/0`,
+        DATABASE_URL: Cel.template('postgresql://user:pass@%s/myapp', schema.spec.infrastructure.databaseEndpoint),
+        REDIS_URL: Cel.template('redis://%s/0', schema.spec.infrastructure.redisEndpoint),
         
         // Wait for infrastructure to be ready
         WAIT_FOR_INFRA: Cel.expr(
@@ -957,6 +957,6 @@ const rollbackPlan = {
 ## Next Steps
 
 - **[GitOps Workflows](./gitops.md)** - Use KRO with GitOps for production deployments
-- **[Alchemy Integration](./alchemy-integration.md)** - Extend to multi-cloud with Alchemy
-- **[Status Hydration](./status-hydration.md)** - Deep dive into KRO status management
-- **[Performance](./performance.md)** - Optimize KRO deployments for scale
+- **[Alchemy Integration](./alchemy.md)** - Extend to multi-cloud with Alchemy
+- **[Status Hydration](../status-hydration.md)** - Deep dive into KRO status management
+- **[Performance](../performance.md)** - Optimize KRO deployments for scale

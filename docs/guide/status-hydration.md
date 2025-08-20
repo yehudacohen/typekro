@@ -16,7 +16,7 @@ Status hydration transforms static status mappings into dynamic, live data by:
 ```typescript
 // Status mapping definition (static)
 const statusMappings = {
-  url: `http://${service.status.loadBalancer.ingress[0].ip}`,
+  url: Cel.template('http://%s', service.status.loadBalancer.ingress[0].ip),
   ready: Cel.expr(deployment.status.readyReplicas, '> 0'),
   phase: deployment.status.phase
 };
@@ -51,7 +51,7 @@ const webApp = toResourceGraph(
       replicas: schema.spec.replicas
     }),
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       type: 'LoadBalancer'
@@ -189,15 +189,15 @@ const statusBuilder = (schema, resources) => ({
   ),
   
   // Multi-resource health check
-  healthy: Cel.expr(
-    resources.app.status.readyReplicas, '> 0 && ',
-    resources.database.status.readyReplicas, '> 0 && ',
+  healthy: Cel.expr<boolean>(
+    resources.app.status.readyReplicas, ' > 0 && ',
+    resources.database.status.readyReplicas, ' > 0 && ',
     resources.service.status.loadBalancer.ingress, '.size() > 0'
   ),
   
   // Environment-based logic
-  accessMode: Cel.expr(
-    `"${schema.spec.environment}" == "production" ? "external" : "internal"`
+  accessMode: Cel.expr<string>(
+    'schema.spec.environment == "production" ? "external" : "internal"'
   )
 });
 ```
@@ -209,11 +209,11 @@ Combine information from multiple resources:
 ```typescript
 const microservicesStatus = (schema, resources) => ({
   // Count ready services
-  readyServices: Cel.expr(
-    `(${resources.userService.status.readyReplicas} > 0 ? 1 : 0) + `,
-    `(${resources.orderService.status.readyReplicas} > 0 ? 1 : 0) + `,
-    `(${resources.paymentService.status.readyReplicas} > 0 ? 1 : 0)`
-  ),
+  readyServices: Cel.expr<number>(`
+    (resources.userService.status.readyReplicas > 0 ? 1 : 0) + 
+    (resources.orderService.status.readyReplicas > 0 ? 1 : 0) + 
+    (resources.paymentService.status.readyReplicas > 0 ? 1 : 0)
+  `),
   
   // Total resource count
   totalResources: Object.keys(resources).length,
@@ -235,11 +235,11 @@ const microservicesStatus = (schema, resources) => ({
   },
   
   // Overall system health
-  systemHealth: Cel.expr(
-    resources.userService.status.readyReplicas, '> 0 && ',
-    resources.orderService.status.readyReplicas, '> 0 && ',
-    resources.paymentService.status.readyReplicas, '> 0 ? "healthy" : "degraded"'
-  )
+  systemHealth: Cel.expr<'healthy' | 'degraded'>(`
+    resources.userService.status.readyReplicas > 0 && 
+    resources.orderService.status.readyReplicas > 0 && 
+    resources.paymentService.status.readyReplicas > 0 ? "healthy" : "degraded"
+  `)
 });
 ```
 
@@ -250,24 +250,24 @@ Include temporal information in status:
 ```typescript
 const statusBuilder = (schema, resources) => ({
   // Uptime calculation
-  uptimeSeconds: Cel.expr(
-    `(now() - timestamp("${resources.deployment.metadata.creationTimestamp}")) / duration("1s")`
-  ),
+  uptimeSeconds: Cel.expr<number>(`
+    (now() - timestamp("resources.deployment.metadata.creationTimestamp")) / duration("1s")
+  `),
   
   // Age in human-readable format
-  age: Cel.expr(
-    `duration(now() - timestamp("${resources.deployment.metadata.creationTimestamp}")).getHours() > 24 ? `,
-    `string(duration(now() - timestamp("${resources.deployment.metadata.creationTimestamp}")).getHours() / 24) + " days" : `,
-    `string(duration(now() - timestamp("${resources.deployment.metadata.creationTimestamp}")).getHours()) + " hours"`
-  ),
+  age: Cel.expr<string>(`
+    duration(now() - timestamp("resources.deployment.metadata.creationTimestamp")).getHours() > 24 ? 
+    string(duration(now() - timestamp("resources.deployment.metadata.creationTimestamp")).getHours() / 24) + " days" : 
+    string(duration(now() - timestamp("resources.deployment.metadata.creationTimestamp")).getHours()) + " hours"
+  `),
   
   // Last update timestamp
   lastUpdated: new Date().toISOString(),
   
   // Status since creation
-  stabilityPeriod: Cel.expr(
-    `now() - timestamp("${resources.deployment.metadata.creationTimestamp}") > duration("5m") ? "stable" : "initializing"`
-  )
+  stabilityPeriod: Cel.expr<'stable' | 'initializing'>(`
+    now() - timestamp("resources.deployment.metadata.creationTimestamp") > duration("5m") ? "stable" : "initializing"
+  `)
 });
 ```
 
@@ -313,10 +313,9 @@ const appGraph = toResourceGraph(
     databaseConnected: schema.spec.database.ready,  // From external graph
     
     // Combined readiness
-    fullyReady: Cel.expr(
-      resources.app.status.readyReplicas, '> 0 && ',
-      `${schema.spec.database.ready} == true`
-    )
+    fullyReady: Cel.expr<boolean>(`
+      resources.app.status.readyReplicas > 0 && schema.spec.database.ready == true
+    `)
   })
 );
 ```
@@ -329,17 +328,17 @@ Create reusable status evaluation functions:
 // Reusable health evaluator
 function createHealthEvaluator(resources: any[]) {
   return {
-    allHealthy: Cel.expr(
-      resources.map(r => `${r.status.readyReplicas} > 0`).join(' && ')
-    ),
+    allHealthy: Cel.expr<boolean>(`
+      ${resources.map(r => `${r.status.readyReplicas} > 0`).join(' && ')}
+    `),
     
-    healthyCount: Cel.expr(
-      resources.map(r => `(${r.status.readyReplicas} > 0 ? 1 : 0)`).join(' + ')
-    ),
+    healthyCount: Cel.expr<number>(`
+      ${resources.map(r => `(${r.status.readyReplicas} > 0 ? 1 : 0)`).join(' + ')}
+    `),
     
-    healthPercentage: Cel.expr(
-      `(${resources.map(r => `(${r.status.readyReplicas} > 0 ? 1 : 0)`).join(' + ')}) * 100 / ${resources.length}`
-    )
+    healthPercentage: Cel.expr<number>(`
+      (${resources.map(r => `(${r.status.readyReplicas} > 0 ? 1 : 0)`).join(' + ')}) * 100 / ${resources.length}
+    `)
   };
 }
 
@@ -350,7 +349,9 @@ const statusBuilder = (schema, resources) => {
   
   return {
     ...health,
-    phase: Cel.expr(health.healthPercentage, '>= 100 ? "Ready" : >= 50 ? "Degraded" : "Failed"')
+    phase: Cel.expr<'Ready' | 'Degraded' | 'Failed'>(`
+      health.healthPercentage >= 100 ? "Ready" : health.healthPercentage >= 50 ? "Degraded" : "Failed"
+    `)
   };
 };
 ```
@@ -377,7 +378,7 @@ const complexStatus = (schema, resources) => ({
         available: resources.app.status.availableReplicas
       },
       endpoints: {
-        internal: `http://${resources.appService.spec.clusterIP}:80`,
+        internal: Cel.template('http://%s:80', resources.appService.status.clusterIP),
         external: Cel.template(
           'http://%s',
           resources.appService.status.loadBalancer.ingress[0].ip
@@ -398,9 +399,9 @@ const complexStatus = (schema, resources) => ({
   
   // Operational metrics
   metrics: {
-    uptime: Cel.expr(
-      `(now() - timestamp("${resources.app.metadata.creationTimestamp}")) / duration("1s")`
-    ),
+    uptime: Cel.expr<number>(`
+      (now() - timestamp("resources.app.metadata.creationTimestamp")) / duration("1s")
+    `),
     
     resourceUtilization: {
       cpu: Cel.expr(resources.app.status.readyReplicas, '* 0.1'),  // Mock calculation
@@ -497,7 +498,7 @@ const factory = await graph.factory('direct', {
     console.error('Status hydration failed:', error);
   },
   onStatusHydrationComplete: (duration) => {
-    console.log(`Status hydrated in ${duration}ms`);
+    console.log(`Status hydration completed in ${duration}ms`);
   }
 });
 ```
@@ -644,5 +645,5 @@ const statusWithHistory = (schema, resources) => ({
 
 - **[CEL Expressions](./cel-expressions.md)** - Master dynamic status computation
 - **[Cross-Resource References](./cross-references.md)** - Build interconnected status
-- **[Direct Deployment](./direct-deployment.md)** - Deploy with live status hydration
-- **[KRO Integration](./kro-integration.md)** - Use KRO for advanced status orchestration
+- **[Direct Deployment](./deployment/direct.md)** - Deploy with live status hydration
+- **[KRO Integration](./deployment/kro.md)** - Use KRO for advanced status orchestration

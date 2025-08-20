@@ -202,7 +202,7 @@ const hybridApp = toResourceGraph(
       
       env: {
         // AWS database connection
-        PRIMARY_DATABASE_URL: `postgresql://user:pass@${awsDatabase.endpoint}:5432/primarydb`,
+        PRIMARY_DATABASE_URL: Cel.template('postgresql://user:pass@%s:5432/primarydb', awsDatabase.endpoint),
         
         // GCP Redis connection
         CACHE_HOST: gcpRedis.host,
@@ -219,7 +219,7 @@ const hybridApp = toResourceGraph(
     gcpCacheReady: gcpRedis.state === 'READY',
     
     multiCloudReady: Cel.expr(
-      `"${awsDatabase.status}" == "available" && "${gcpRedis.state}" == "READY"`
+      Cel.template('"%%s" == "available" && "%%s" == "READY"', awsDatabase.status, gcpRedis.state)
     )
   })
 );
@@ -304,27 +304,27 @@ class CloudInfrastructure {
   
   constructor(name: string, config: CloudInfraConfig) {
     // VPC and networking
-    const vpc = new aws.ec2.Vpc(`${name}-vpc`, {
+    const vpc = new aws.ec2.Vpc(Cel.expr(name, "-vpc"), {
       cidrBlock: '10.0.0.0/16',
       enableDnsHostnames: true,
       enableDnsSupport: true
     });
     
-    const publicSubnet = new aws.ec2.Subnet(`${name}-public`, {
+    const publicSubnet = new aws.ec2.Subnet(Cel.expr(name, "-public"), {
       vpcId: vpc.id,
       cidrBlock: '10.0.1.0/24',
       availabilityZone: 'us-west-2a',
       mapPublicIpOnLaunch: true
     });
     
-    const privateSubnet = new aws.ec2.Subnet(`${name}-private`, {
+    const privateSubnet = new aws.ec2.Subnet(Cel.expr(name, "-private"), {
       vpcId: vpc.id,
       cidrBlock: '10.0.2.0/24',
       availabilityZone: 'us-west-2b'
     });
     
     // Security groups
-    const dbSecurityGroup = new aws.ec2.SecurityGroup(`${name}-db-sg`, {
+    const dbSecurityGroup = new aws.ec2.SecurityGroup(Cel.expr(name, "-db-sg"), {
       vpcId: vpc.id,
       ingress: [{
         protocol: 'tcp',
@@ -335,11 +335,11 @@ class CloudInfrastructure {
     });
     
     // Database
-    const dbSubnetGroup = new aws.rds.SubnetGroup(`${name}-db-subnet`, {
+    const dbSubnetGroup = new aws.rds.SubnetGroup(Cel.expr(name, "-db-subnet"), {
       subnetIds: [privateSubnet.id, publicSubnet.id]
     });
     
-    this.database = new aws.rds.Instance(`${name}-database`, {
+    this.database = new aws.rds.Instance(Cel.expr(name, "-database"), {
       allocatedStorage: config.database.storage,
       instanceClass: config.database.instanceClass,
       engine: 'postgres',
@@ -354,12 +354,12 @@ class CloudInfrastructure {
     });
     
     // Cache
-    const cacheSubnetGroup = new aws.elasticache.SubnetGroup(`${name}-cache-subnet`, {
+    const cacheSubnetGroup = new aws.elasticache.SubnetGroup(Cel.expr(name, "-cache-subnet"), {
       subnetIds: [privateSubnet.id, publicSubnet.id]
     });
     
-    this.cache = new aws.elasticache.ReplicationGroup(`${name}-cache`, {
-      description: `${name} Redis cache`,
+    this.cache = new aws.elasticache.ReplicationGroup(Cel.expr(name, "-cache"), {
+      description: Cel.template('%s Redis cache', name),
       nodeType: config.cache.nodeType,
       numCacheClusters: config.cache.replicas,
       port: 6379,
@@ -369,7 +369,7 @@ class CloudInfrastructure {
     });
     
     // Load Balancer
-    this.loadBalancer = new aws.alb.LoadBalancer(`${name}-alb`, {
+    this.loadBalancer = new aws.alb.LoadBalancer(Cel.expr(name, "-alb"), {
       loadBalancerType: 'application',
       subnets: [publicSubnet.id, privateSubnet.id],
       securityGroups: [dbSecurityGroup.id]
@@ -401,9 +401,9 @@ const enterpriseApp = toResourceGraph(
       replicas: schema.spec.replicas,
       
       env: {
-        DATABASE_URL: `postgresql://${infrastructure.database.username}:${infrastructure.database.password}@${infrastructure.database.endpoint}:5432/${infrastructure.database.dbName}`,
+        DATABASE_URL: Cel.template('postgresql://%s:%s@%s:5432/%s', infrastructure.database.username, infrastructure.database.password, infrastructure.database.endpoint, infrastructure.database.dbName),
         
-        REDIS_URL: `redis://${infrastructure.cache.primaryEndpoint}:6379`,
+        REDIS_URL: Cel.template('redis://%s:6379', infrastructure.cache.primaryEndpoint),
         
         LOAD_BALANCER_DNS: infrastructure.loadBalancer.dnsName
       }
@@ -438,20 +438,20 @@ const cloudConfigs = {
 function createCloudInfrastructure(environment: string) {
   const config = cloudConfigs[environment];
   
-  const database = new aws.rds.Instance(`${environment}-database`, {
+  const database = new aws.rds.Instance(Cel.expr(environment, "-database"), {
     instanceClass: config.database.instanceClass,
     allocatedStorage: config.database.storage,
     // ... other configuration
   });
   
-  const cache = new aws.elasticache.ReplicationGroup(`${environment}-cache`, {
+  const cache = new aws.elasticache.ReplicationGroup(Cel.expr(environment, "-cache"), {
     nodeType: config.cache.nodeType,
     numCacheClusters: config.cache.replicas,
     // ... other configuration
   });
   
   // Optional monitoring
-  const monitoring = config.monitoring ? new aws.cloudwatch.Dashboard(`${environment}-dashboard`, {
+  const monitoring = config.monitoring ? new aws.cloudwatch.Dashboard(Cel.expr(environment, "-dashboard"), {
     dashboardBody: JSON.stringify({
       widgets: [
         {
@@ -489,16 +489,16 @@ const drApp = toResourceGraph(
   { name: 'dr-app', schema: { spec: DrAppSpec } },
   (schema) => ({
     app: simpleDeployment({
-      name: `${schema.spec.name}-dr`,
+      name: Cel.expr(schema.spec.name, "-dr"),
       image: schema.spec.image,
       replicas: 1,  // Minimal replicas for DR
       
       env: {
         // Primary database (normal operation)
-        PRIMARY_DATABASE_URL: `postgresql://user:pass@${primaryInfra.database.endpoint}:5432/myapp`,
+        PRIMARY_DATABASE_URL: Cel.template('postgresql://user:pass@%s:5432/myapp', primaryInfra.database.endpoint),
         
         // DR database (failover)
-        DR_DATABASE_URL: `postgresql://user:pass@${drDatabase.connectionName}:5432/myapp`,
+        DR_DATABASE_URL: Cel.template('postgresql://user:pass@%s:5432/myapp', drDatabase.connectionName),
         
         // Failover configuration
         FAILOVER_MODE: schema.spec.failoverMode,
@@ -512,7 +512,7 @@ const drApp = toResourceGraph(
     failoverActive: schema.spec.failoverMode === 'active',
     
     primaryHealthy: Cel.expr(
-      `http_get("${schema.spec.primaryHealthCheck}").status == 200`
+      Cel.template('http_get("%s").status == 200', schema.spec.primaryHealthCheck)
     )
   })
 );
@@ -538,7 +538,7 @@ async function deployDevelopment() {
   });
   
   await k8sFactory.deploy({
-    name: `myapp-${environment}`,
+    name: Cel.expr("myapp-", environment),
     image: 'myapp:latest',
     replicas: 1,
     cloudConfig: {
@@ -547,7 +547,7 @@ async function deployDevelopment() {
     }
   });
   
-  console.log(`✅ Deployed to ${environment}`);
+  console.log(Cel.template("✅ Deployed to %s", environment));
 }
 ```
 
@@ -566,12 +566,12 @@ async function deployProduction() {
   
   await Promise.all(regions.map(async (region) => {
     const k8sFactory = await app.factory('kro', {
-      namespace: `${environment}-${region}`,
-      context: `${environment}-${region}`
+      namespace: Cel.template("%s-%s", environment, region),
+      context: Cel.template("%s-%s", environment, region)
     });
     
     return k8sFactory.deploy({
-      name: `myapp-${environment}-${region}`,
+      name: Cel.template("myapp-%s-%s", environment, region),
       image: 'myapp:v1.0.0',
       replicas: 5,
       region,
@@ -723,7 +723,7 @@ const appPolicy = new aws.iam.Policy('app-policy', {
           's3:GetObject',
           's3:PutObject'
         ],
-        Resource: `${bucket.arn}/*`
+        Resource: Cel.template("%s/*", bucket.arn)
       },
       {
         Effect: 'Allow',
@@ -787,14 +787,14 @@ async function runIntegrationTests() {
 
 ```typescript
 // ✅ Consistent naming across cloud and k8s
-const prefix = `${environment}-${appName}`;
+const prefix = Cel.template("%s-%s", environment, appName);
 
-const cloudDatabase = new aws.rds.Instance(`${prefix}-database`, {
+const cloudDatabase = new aws.rds.Instance(Cel.expr(prefix, "-database"), {
   // ... configuration
 });
 
 const k8sApp = simpleDeployment({
-  name: `${prefix}-app`,
+  name: Cel.expr(prefix, "-app"),
   // ... configuration
 });
 ```
@@ -806,7 +806,7 @@ const k8sApp = simpleDeployment({
 const environments = ['dev', 'staging', 'prod'];
 
 environments.forEach(env => {
-  const cloudStack = new CloudStack(`${env}-stack`, {
+  const cloudStack = new CloudStack(Cel.expr(env, "-stack"), {
     environment: env,
     region: env === 'prod' ? 'us-west-2' : 'us-east-1'
   });
@@ -867,6 +867,6 @@ try {
 ## Next Steps
 
 - **[GitOps Workflows](./gitops.md)** - Deploy Alchemy + TypeKro with GitOps
-- **[Performance](./performance.md)** - Optimize multi-cloud deployments
-- **[Troubleshooting](./troubleshooting.md)** - Debug cloud integration issues
-- **[Examples](../examples/)** - See real-world Alchemy + TypeKro applications
+- **[Performance](../performance.md)** - Optimize multi-cloud deployments
+- **[Troubleshooting](../troubleshooting.md)** - Debug cloud integration issues
+- **[Examples](../../examples/)** - See real-world Alchemy + TypeKro applications

@@ -413,7 +413,7 @@ const cluster = toResourceGraph(
     // Create services for each deployment
     serviceEndpoints: schema.spec.services.map(service =>
       simpleService({
-        name: `${service.name}-service`,
+        name: Cel.expr(service.name, '-service'),
         selector: { app: service.name },
         ports: [{ port: 80, targetPort: service.port }]
       })
@@ -422,7 +422,7 @@ const cluster = toResourceGraph(
   (schema, resources) => ({
     ready: Cel.expr(
       resources.services.map(svc => 
-        `${svc.status.readyReplicas} > 0`
+        Cel.expr(svc.status.readyReplicas, ' > 0')
       ).join(' && ')
     ),
     serviceCount: schema.spec.services.length,
@@ -457,7 +457,7 @@ function validateAndDeploy(input: unknown) {
     // Handle validation errors
     console.error('Schema validation failed:');
     result.forEach(error => {
-      console.error(`- ${error.path}: ${error.message}`);
+      console.error(Cel.template('- %s: %s', error.path, error.message));
     });
     throw new Error('Invalid input schema');
   }
@@ -643,7 +643,7 @@ async function deployApplication(input: unknown) {
   // Validate immediately
   const spec = AppSpec(input);
   if (spec instanceof type.errors) {
-    throw new Error(`Invalid spec: ${spec.summary}`);
+    throw new Error(Cel.template('Invalid spec: %s', spec.summary));
   }
   
   // Proceed with validated data
@@ -732,7 +732,7 @@ const ApiServerSpec = type({
 
 ## Related Topics
 
-- [Resource Graphs Guide](/guide/resource-graphs) - Using schemas in resource graphs
-- [toResourceGraph API](/api/to-resource-graph) - Complete API reference
-- [Type Safety Guide](/guide/type-safety) - Advanced TypeScript patterns
-- [CEL Expressions](/guide/cel-expressions) - Dynamic schema references
+- [Resource Graphs Guide](./resource-graphs.md) - Using schemas in resource graphs
+- [toResourceGraph API](../api/to-resource-graph.md) - Complete API reference
+- [Type Safety Guide](./type-safety.md) - Advanced TypeScript patterns
+- [CEL Expressions](./cel-expressions.md) - Dynamic schema references

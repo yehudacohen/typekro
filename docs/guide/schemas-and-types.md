@@ -1,12 +1,12 @@
-# Type Safety Patterns
+# Schemas & Types
 
-TypeKro leverages TypeScript's powerful type system to provide compile-time validation, IDE autocomplete, and runtime safety for your Kubernetes infrastructure. This guide covers advanced type safety patterns and best practices.
+TypeKro leverages both **ArkType** for runtime-safe schema validation and **TypeScript**'s powerful type system to provide comprehensive type safety. This guide covers how to define schemas, implement type safety patterns, and build robust, validated infrastructure configurations.
 
-## TypeKro's Type System
+## Introduction to TypeKro's Type System
 
-TypeKro provides several layers of type safety:
+TypeKro provides multiple layers of type safety:
 
-- **Schema validation** with arktype for runtime checking
+- **Schema validation** with ArkType for runtime checking
 - **Enhanced resources** with typed status and references
 - **Cross-resource references** with compile-time validation
 - **Factory functions** with typed configuration interfaces
@@ -14,9 +14,9 @@ TypeKro provides several layers of type safety:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment } from 'typekro';
+import { toResourceGraph, simpleDeployment, Cel } from 'typekro';
 
-// 1. Schema validation
+// 1. Schema validation with ArkType
 const AppSpec = type({
   name: 'string>2',           // String with minimum length
   replicas: 'number>0',       // Positive number
@@ -35,9 +35,120 @@ const app = toResourceGraph(
   }),
   (schema, resources) => ({
     // 4. Typed status mapping
-    ready: resources.deployment.status.readyReplicas > 0  // ✅ Number comparison
+    ready: Cel.expr(resources.deployment.status.readyReplicas, '> 0')
   })
 );
+```
+
+## Schema Definition with ArkType
+
+### What is ArkType?
+
+**ArkType** is a TypeScript schema validation library that provides:
+
+- **Runtime-safe types** - Validate data at runtime, not just compile time
+- **TypeScript-first syntax** - Define schemas using familiar TypeScript syntax
+- **Zero dependencies** - Lightweight and fast runtime validation
+- **Inference support** - Full TypeScript type inference from schema definitions
+
+### Basic Schema Definition
+
+Define basic types using ArkType's intuitive syntax:
+
+```typescript
+import { type } from 'arktype';
+
+// Basic primitive types
+const StringSchema = type('string');
+const NumberSchema = type('number');  
+const BooleanSchema = type('boolean');
+
+// String with constraints
+const NonEmptyString = type('string>0');        // Non-empty string
+const EmailString = type('string.email');       // Valid email format
+const UrlString = type('string.url');           // Valid URL format
+
+// Number with constraints  
+const PositiveNumber = type('number>0');        // Positive numbers
+const IntegerRange = type('1<=integer<=100');   // Integers from 1-100
+const Port = type('1<=integer<=65535');         // Valid port numbers
+```
+
+### Object Schemas
+
+Create complex object schemas for TypeKro specs:
+
+```typescript
+import { type } from 'arktype';
+
+// Application specification schema
+const AppSpec = type({
+  name: 'string>0',                    // Required non-empty string
+  image: 'string>0',                   // Required non-empty string
+  replicas: 'number>=1',               // At least 1 replica
+  environment: '"development" | "staging" | "production"',  // Literal union
+  ports: 'number[]',                   // Array of numbers
+  'resources?': {                      // Optional nested object
+    'cpu?': 'string',
+    'memory?': 'string'
+  }
+});
+
+// Database specification schema
+const DatabaseSpec = type({
+  name: 'string>0',
+  engine: '"postgres" | "mysql" | "mongodb"',
+  version: 'string',
+  storage: {
+    size: 'string',
+    class: 'string',
+    backup: 'boolean'
+  },
+  replicas: 'number>=1',
+  'resources?': {
+    cpu: 'string',
+    memory: 'string'
+  }
+});
+
+// Status schema
+const AppStatus = type({
+  ready: 'boolean',
+  phase: '"pending" | "running" | "failed" | "succeeded"',
+  replicas: 'number',
+  url: 'string',
+  'lastUpdate?': 'Date'
+});
+```
+
+### Using Schemas in Resource Graphs
+
+For complete schema integration examples, see [Basic WebApp Pattern](../examples/basic-webapp.md).
+
+Key schema integration concepts:
+- **Validation**: ArkType validates input at deploy time
+- **Type Safety**: TypeScript enforces schema contracts
+- **Runtime Checks**: Invalid inputs caught before deployment  
+- **Status Mapping**: Schema defines expected status structure
+
+```typescript
+// Schema with validation constraints
+const WebAppSpec = type({
+  name: 'string>0',                    // Non-empty string
+  replicas: '1<=integer<=50',          // Constrained range
+  environment: '"dev" | "staging" | "prod"'  // Union types
+});
+
+// Schema validation catches errors
+try {
+  await factory.deploy({
+    name: '',           // ❌ Invalid: empty string
+    replicas: 0,        // ❌ Invalid: below minimum  
+    environment: 'invalid'  // ❌ Invalid: not in union
+  });
+} catch (error) {
+  console.log('Validation failed:', error.summary);
+}
 ```
 
 ## Advanced Schema Patterns
@@ -197,6 +308,149 @@ const ApiServiceSpec = type({
     'scrapeInterval?': 'string'
   }
 });
+```
+
+### Conditional Schemas
+
+Create schemas with conditional validation based on other fields:
+
+```typescript
+const DatabaseConfigSpec = type({
+  engine: '"postgres" | "mysql" | "mongodb"',
+  version: 'string',
+  
+  // Conditional configuration based on engine
+  config: {
+    // PostgreSQL specific
+    'maxConnections?': 'number>0',
+    'sharedBuffers?': 'string',
+    
+    // MySQL specific  
+    'innodbBufferPoolSize?': 'string',
+    'maxAllowedPacket?': 'string',
+    
+    // MongoDB specific
+    'wiredTigerCacheSizeGB?': 'number>0',
+    'maxIncomingConnections?': 'number>0'
+  }
+});
+
+// Use with environment-specific defaults
+const environmentalDatabase = toResourceGraph(
+  {
+    name: 'environmental-database',
+    apiVersion: 'data.example.com/v1', 
+    kind: 'EnvironmentalDatabase',
+    spec: DatabaseConfigSpec,
+    status: type({ ready: 'boolean', endpoint: 'string' })
+  },
+  (schema) => ({
+    database: simpleStatefulSet({
+      name: schema.spec.engine,
+      image: Cel.template('%s:%s', schema.spec.engine, schema.spec.version),
+      env: {
+        // Engine-specific environment variables
+        ...(schema.spec.engine === 'postgres' ? {
+          POSTGRES_DB: 'myapp',
+          POSTGRES_MAX_CONNECTIONS: schema.spec.config.maxConnections?.toString() || '100'
+        } : {}),
+        
+        ...(schema.spec.engine === 'mysql' ? {
+          MYSQL_DATABASE: 'myapp',
+          MYSQL_MAX_ALLOWED_PACKET: schema.spec.config.maxAllowedPacket || '16M'
+        } : {}),
+        
+        ...(schema.spec.engine === 'mongodb' ? {
+          MONGO_INITDB_DATABASE: 'myapp'
+        } : {})
+      }
+    })
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(resources.database.status.readyReplicas, '> 0'),
+    endpoint: Cel.template('%s:5432', resources.database.spec.clusterIP)
+  })
+);
+```
+
+### Array and Collection Schemas
+
+Define schemas for arrays and collections:
+
+```typescript
+const ClusterSpec = type({
+  name: 'string>0',
+  
+  // Array of services with validation
+  services: {
+    name: 'string>0',
+    image: 'string>0',
+    port: '1<=integer<=65535',
+    'replicas?': '1<=integer<=100'
+  }[],
+  
+  // Configuration per environment
+  environments: {
+    name: '"dev" | "staging" | "prod"',
+    namespace: 'string>0',
+    resources: {
+      'cpu?': 'string',
+      'memory?': 'string'
+    },
+    'secrets?': 'string[]'
+  }[],
+  
+  // Optional configuration
+  'monitoring?': {
+    enabled: 'boolean',
+    'retention?': 'string'
+  }
+});
+
+const cluster = toResourceGraph(
+  {
+    name: 'service-cluster',
+    apiVersion: 'cluster.example.com/v1',
+    kind: 'ServiceCluster',
+    spec: ClusterSpec,
+    status: type({
+      ready: 'boolean',
+      serviceCount: 'number',
+      environmentsReady: 'string[]'
+    })
+  },
+  (schema) => ({
+    // Create deployments for each service
+    services: schema.spec.services.map(service =>
+      simpleDeployment({
+        name: service.name,
+        image: service.image,
+        replicas: service.replicas || 1,
+        ports: [service.port]
+      })
+    ),
+    
+    // Create services for each deployment
+    serviceEndpoints: schema.spec.services.map(service =>
+      simpleService({
+        name: Cel.expr(service.name, '-service'),
+        selector: { app: service.name },
+        ports: [{ port: 80, targetPort: service.port }]
+      })
+    )
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(
+      resources.services.map(svc => 
+        svc.status.readyReplicas
+      ).join(' + '),
+      '== ',
+      resources.services.length
+    ),
+    serviceCount: schema.spec.services.length,
+    environmentsReady: schema.spec.environments.map(env => env.name)
+  })
+);
 ```
 
 ## Type-Safe Factory Functions
@@ -432,43 +686,6 @@ const typedGraph = toResourceGraph(
 );
 ```
 
-### Reference Validation
-
-```typescript
-// Validate references at compile time
-type ValidReference<T, K extends keyof T> = T[K] extends string | number | boolean
-  ? ResourceReference<T[K]>
-  : never;
-
-// Type-safe reference builder
-class ReferenceBuilder<T> {
-  constructor(private resource: T) {}
-  
-  field<K extends keyof T>(field: K): ValidReference<T, K> {
-    return createReference(this.resource, field);
-  }
-}
-
-function ref<T>(resource: T): ReferenceBuilder<T> {
-  return new ReferenceBuilder(resource);
-}
-
-// Usage
-const database = simpleDeployment({
-  name: 'db',
-  image: 'postgres:15'
-});
-
-const app = simpleDeployment({
-  name: 'app',
-  image: 'myapp:latest',
-  env: {
-    DATABASE_HOST: ref(database).field('status').field('podIP'),  // ✅ Type-safe
-    DATABASE_NAME: ref(database).field('metadata').field('name')  // ✅ Type-safe
-  }
-});
-```
-
 ## Type-Safe CEL Expressions
 
 ### Typed CEL Builders
@@ -520,66 +737,6 @@ const statusMappings = {
   // ✅ Type-safe array operations
   hasIngress: cel(service.status.loadBalancer.ingress).size().greaterThan(0)
 };
-```
-
-### Complex Type-Safe Expressions
-
-```typescript
-// Type-safe template builder
-class CelTemplateBuilder {
-  private parts: string[] = [];
-  
-  add(value: string): CelTemplateBuilder {
-    this.parts.push(value);
-    return this;
-  }
-  
-  addRef<T>(ref: T, formatter?: (value: T) => string): CelTemplateBuilder {
-    const formattedRef = formatter ? formatter(ref) : String(ref);
-    this.parts.push(`%s`);
-    return this;
-  }
-  
-  build(): CelExpression<string> {
-    return Cel.template(this.parts.join(''), ...this.getReferences());
-  }
-  
-  private getReferences(): any[] {
-    // Implementation to extract references
-    return [];
-  }
-}
-
-// Type-safe URL builder
-function buildUrl(
-  protocol: 'http' | 'https',
-  host: string | ResourceReference<string>,
-  port?: number | ResourceReference<number>,
-  path?: string
-): CelExpression<string> {
-  const builder = new CelTemplateBuilder()
-    .add(protocol)
-    .add('://')
-    .addRef(host);
-    
-  if (port) {
-    builder.add(':').addRef(port);
-  }
-  
-  if (path) {
-    builder.add(path);
-  }
-  
-  return builder.build();
-}
-
-// Usage
-const appUrl = buildUrl(
-  'https',
-  service.status.loadBalancer.ingress[0].hostname,
-  80,
-  '/api'
-);
 ```
 
 ## Runtime Type Validation
@@ -636,91 +793,129 @@ async function deployApplication(input: unknown) {
 }
 ```
 
-### Dynamic Schema Updates
+### Custom Validation Rules
+
+Create custom validation rules with ArkType:
 
 ```typescript
-// Schema versioning for backward compatibility
-const AppSpecV1 = type({
-  name: 'string',
-  image: 'string',
-  replicas: 'number'
+// Custom validation functions
+const isValidKubernetesName = (value: string): boolean => {
+  return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(value);
+};
+
+const isValidDockerImage = (value: string): boolean => {
+  return /^[\w.\-_/]+:[\w.\-_]+$/.test(value);
+};
+
+// Schema with custom validation
+const CustomValidatedSpec = type({
+  name: ['string>0', ':', isValidKubernetesName],
+  image: ['string>0', ':', isValidDockerImage],
+  replicas: 'number>=1',
+  'labels?': ['Record<string, string>', ':', (labels) => 
+    Object.keys(labels).every(key => isValidKubernetesName(key))
+  ]
 });
 
-const AppSpecV2 = type({
-  name: 'string',
-  image: 'string',
-  replicas: 'number',
-  resources: {
-    cpu: 'string',
-    memory: 'string'
-  }
-});
-
-const AppSpecV3 = type({
-  name: 'string',
-  image: 'string',
-  replicas: 'number',
-  resources: {
-    cpu: 'string',
-    memory: 'string'
+// Use in resource graph
+const customApp = toResourceGraph(
+  {
+    name: 'custom-validated-app',
+    apiVersion: 'custom.example.com/v1',
+    kind: 'CustomValidatedApp',
+    spec: CustomValidatedSpec,
+    status: type({ ready: 'boolean' })
   },
-  healthChecks: {
-    enabled: 'boolean',
-    'path?': 'string'
+  (schema) => ({
+    app: simpleDeployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
+      labels: schema.spec.labels
+    })
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(resources.app.status.readyReplicas, '> 0')
+  })
+);
+```
+
+## Schema Evolution and Versioning
+
+### Versioned Schemas
+
+Handle schema evolution with versioning:
+
+```typescript
+// Version 1 schema
+const AppSpecV1 = type({
+  name: 'string>0',
+  image: 'string>0',
+  replicas: 'number>=1'
+});
+
+// Version 2 schema (adds environment)
+const AppSpecV2 = type({
+  name: 'string>0',
+  image: 'string>0', 
+  replicas: 'number>=1',
+  environment: '"dev" | "staging" | "prod"'  // New field
+});
+
+// Version 3 schema (adds resources, makes environment optional)
+const AppSpecV3 = type({
+  name: 'string>0',
+  image: 'string>0',
+  replicas: 'number>=1',
+  'environment?': '"dev" | "staging" | "prod"',  // Now optional
+  'resources?': {                                // New optional field
+    cpu: 'string',
+    memory: 'string'
   }
 });
 
-// Migration pipeline
-function migrateAppSpec(input: unknown, targetVersion: number = 3) {
-  // Try latest version first
-  if (targetVersion >= 3) {
-    try {
-      return { version: 3, spec: AppSpecV3(input) };
-    } catch {}
+// Migrate between schema versions
+function migrateToV3(input: any): any {
+  // Add default environment if missing
+  if (!input.environment) {
+    input.environment = 'dev';
   }
   
-  // Fall back to v2
-  if (targetVersion >= 2) {
-    try {
-      const v2Spec = AppSpecV2(input);
-      if (targetVersion === 3) {
-        // Migrate v2 to v3
-        return {
-          version: 3,
-          spec: {
-            ...v2Spec,
-            healthChecks: { enabled: true }
-          }
-        };
-      }
-      return { version: 2, spec: v2Spec };
-    } catch {}
-  }
-  
-  // Fall back to v1
-  const v1Spec = AppSpecV1(input);
-  if (targetVersion >= 2) {
-    // Migrate v1 to higher version
-    const migratedSpec = {
-      ...v1Spec,
-      resources: { cpu: '100m', memory: '256Mi' }
+  // Add default resources if missing
+  if (!input.resources) {
+    input.resources = {
+      cpu: '100m',
+      memory: '128Mi'
     };
-    
-    if (targetVersion >= 3) {
-      return {
-        version: 3,
-        spec: {
-          ...migratedSpec,
-          healthChecks: { enabled: false }
-        }
-      };
-    }
-    
-    return { version: 2, spec: migratedSpec };
   }
   
-  return { version: 1, spec: v1Spec };
+  return input;
 }
+
+// Use latest schema version
+const modernApp = toResourceGraph(
+  {
+    name: 'modern-app',
+    apiVersion: 'apps.example.com/v3',  // Version in API version
+    kind: 'ModernApp',
+    spec: AppSpecV3,                    // Latest schema
+    status: type({ ready: 'boolean' })
+  },
+  (schema) => ({
+    app: simpleDeployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
+      env: {
+        ENVIRONMENT: schema.spec.environment || 'dev'
+      },
+      resources: schema.spec.resources
+    })
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(resources.app.status.readyReplicas, '> 0')
+  })
+);
 ```
 
 ## Testing Type Safety
@@ -913,7 +1108,29 @@ function deployApp(input: unknown) {
 }
 ```
 
-### 3. Provide Clear Error Messages
+### 3. Use Descriptive Constraints
+
+Make schemas self-documenting with meaningful constraints:
+
+```typescript
+// ✅ Good: Descriptive constraints
+const ServerSpec = type({
+  name: 'string>0',                    // Must be non-empty
+  port: '1024<=integer<=65535',        // Valid unprivileged port range
+  replicas: '1<=integer<=50',          // Reasonable replica range
+  memory: 'string.format.memory'       // Kubernetes memory format
+});
+
+// ❌ Avoid: Vague constraints
+const ServerSpec = type({
+  name: 'string',
+  port: 'number',
+  replicas: 'number',
+  memory: 'string'
+});
+```
+
+### 4. Provide Clear Error Messages
 
 ```typescript
 // ✅ Descriptive validation
@@ -924,7 +1141,7 @@ const AppSpec = type({
 });
 ```
 
-### 4. Use Type Guards
+### 5. Use Type Guards
 
 ```typescript
 // ✅ Type guard functions
@@ -939,9 +1156,68 @@ function assertValidConfig(input: unknown): asserts input is AppConfig {
 }
 ```
 
+### 6. Group Related Fields
+
+Organize schema fields logically:
+
+```typescript
+const DatabaseSpec = type({
+  // Identity
+  name: 'string>0',
+  engine: '"postgres" | "mysql"',
+  
+  // Configuration
+  config: {
+    version: 'string',
+    port: 'number>0',
+    'maxConnections?': 'number>0'
+  },
+  
+  // Resources
+  resources: {
+    cpu: 'string',
+    memory: 'string',
+    storage: 'string'
+  },
+  
+  // High availability
+  'ha?': {
+    replicas: 'number>=2',
+    'backup?': {
+      enabled: 'boolean',
+      schedule: 'string'
+    }
+  }
+});
+```
+
+### 7. Document Schema Constraints
+
+Include comments explaining validation rules:
+
+```typescript
+const ApiServerSpec = type({
+  // Application identity (lowercase DNS-compatible)
+  name: 'string>0',
+  
+  // Container image (must include tag)
+  image: 'string.format.dockerImage',
+  
+  // Replica count (1-100 for resource limits)
+  replicas: '1<=integer<=100',
+  
+  // Network port (unprivileged ports only)
+  port: '1024<=integer<=65535',
+  
+  // Environment (affects configuration and resources)
+  environment: '"development" | "staging" | "production"'
+});
+```
+
 ## Next Steps
 
-- **[Performance](./performance.md)** - Optimize type checking performance
-- **[Custom Factories](./custom-factories.md)** - Build type-safe custom factories
-- **[Troubleshooting](./troubleshooting.md)** - Debug type-related issues
-- **[Examples](../examples/)** - See type safety in action
+- **[Runtime Behavior](./runtime-behavior.md)** - Understand status, references, and external dependencies
+- **[CEL Expressions](./cel-expressions.md)** - Add dynamic runtime logic to schemas
+- **[Factories](./factories.md)** - Build type-safe factory functions
+- **[Examples](../examples/)** - See schemas and types in action
+- **[API Reference](../api/)** - Complete API documentation

@@ -348,12 +348,12 @@ Combine multiple factory functions:
 ```typescript
 function webAppStack(config: WebAppConfig) {
   const configMap = simpleConfigMap({
-    name: `${config.name}-config`,
+    name: Cel.expr(config.name, '-config'),
     data: config.configData
   });
 
   const secret = simpleSecret({
-    name: `${config.name}-secrets`,
+    name: Cel.expr(config.name, '-secrets'),
     stringData: config.secrets
   });
 
@@ -376,7 +376,7 @@ function webAppStack(config: WebAppConfig) {
   });
 
   const service = simpleService({
-    name: `${config.name}-service`,
+    name: Cel.expr(config.name, '-service'),
     selector: { app: config.name },
     ports: config.ports
   });
@@ -524,7 +524,7 @@ const DeploymentConfig = type({
 function createDeployment(config: unknown) {
   const validConfig = DeploymentConfig(config);
   if (validConfig instanceof type.errors) {
-    throw new Error(`Invalid config: ${validConfig.summary}`);
+    throw new Error(Cel.template('Invalid config: %s', validConfig.summary));
   }
   
   return simpleDeployment(validConfig);

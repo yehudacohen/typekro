@@ -210,7 +210,7 @@ export function webApplication(
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: {
-      name: `${name}-config`,
+      name: Cel.expr(name, '-config'),
       labels: { app: name, team, environment }
     },
     data: {
@@ -249,7 +249,7 @@ export function webApplication(
             env: [
               { name: 'CONFIG_PATH', value: '/etc/config' },
               ...(database?.enabled ? [
-                { name: 'DATABASE_HOST', value: `${name}-database-service` },
+                { name: 'DATABASE_HOST', value: Cel.expr(name, '-database-service') },
                 { name: 'DATABASE_PORT', value: '5432' }
               ] : [])
             ],
@@ -273,7 +273,7 @@ export function webApplication(
     apiVersion: 'v1',
     kind: 'Service',
     metadata: {
-      name: `${name}-service`,
+      name: Cel.expr(name, '-service'),
       labels: { app: name, team, environment }
     },
     spec: {
@@ -295,7 +295,7 @@ export function webApplication(
       apiVersion: 'v1',
       kind: 'PersistentVolumeClaim',
       metadata: {
-        name: `${name}-database-storage`,
+        name: Cel.expr(name, '-database-storage'),
         labels: { app: name, component: 'database', team, environment }
       },
       spec: {
@@ -313,11 +313,11 @@ export function webApplication(
       apiVersion: 'apps/v1',
       kind: 'StatefulSet',
       metadata: {
-        name: `${name}-database`,
+        name: Cel.expr(name, '-database'),
         labels: { app: name, component: 'database', team, environment }
       },
       spec: {
-        serviceName: `${name}-database-service`,
+        serviceName: Cel.expr(name, '-database-service'),
         replicas: 1,
         selector: { matchLabels: { app: name, component: 'database' } },
         template: {
@@ -350,7 +350,7 @@ export function webApplication(
       apiVersion: 'v1',
       kind: 'Service',
       metadata: {
-        name: `${name}-database-service`,
+        name: Cel.expr(name, '-database-service'),
         labels: { app: name, component: 'database', team, environment }
       },
       spec: {
@@ -371,7 +371,7 @@ export function webApplication(
       apiVersion: 'networking.k8s.io/v1',
       kind: 'Ingress',
       metadata: {
-        name: `${name}-ingress`,
+        name: Cel.expr(name, '-ingress'),
         labels: { app: name, team, environment },
         annotations: {
           'nginx.ingress.kubernetes.io/rewrite-target': '/',
@@ -382,7 +382,7 @@ export function webApplication(
       },
       spec: {
         rules: [{
-          host: ingress.hostname || `${name}.${environment}.example.com`,
+          host: ingress.hostname || Cel.template('%s.%s.example.com', name, environment),
           http: {
             paths: [{
               path: '/',
@@ -398,8 +398,8 @@ export function webApplication(
         }],
         ...(ingress.tls && {
           tls: [{
-            secretName: `${name}-tls`,
-            hosts: [ingress.hostname || `${name}.${environment}.example.com`]
+            secretName: Cel.expr(name, '-tls'),
+            hosts: [ingress.hostname || Cel.template('%s.%s.example.com', name, environment)]
           }]
         })
       }
@@ -459,16 +459,16 @@ export function monitoringStack(
     apiVersion: 'apps/v1',
     kind: 'StatefulSet',
     metadata: {
-      name: `${name}-prometheus`,
+      name: Cel.expr(name, '-prometheus'),
       namespace,
-      labels: { app: `${name}-prometheus`, component: 'monitoring' }
+      labels: { app: Cel.expr(name, '-prometheus'), component: 'monitoring' }
     },
     spec: {
-      serviceName: `${name}-prometheus`,
+      serviceName: Cel.expr(name, '-prometheus'),
       replicas: 1,
-      selector: { matchLabels: { app: `${name}-prometheus` } },
+      selector: { matchLabels: { app: Cel.expr(name, '-prometheus') } },
       template: {
-        metadata: { labels: { app: `${name}-prometheus` } },
+        metadata: { labels: { app: Cel.expr(name, '-prometheus') } },
         spec: {
           containers: [{
             name: 'prometheus',
@@ -477,7 +477,7 @@ export function monitoringStack(
             args: [
               '--config.file=/etc/prometheus/prometheus.yml',
               '--storage.tsdb.path=/prometheus/',
-              `--storage.tsdb.retention.time=${promConfig.retention}`,
+              Cel.template('--storage.tsdb.retention.time=%s', promConfig.retention),
               '--web.console.libraries=/etc/prometheus/console_libraries',
               '--web.console.templates=/etc/prometheus/consoles',
               '--web.enable-lifecycle'
@@ -493,7 +493,7 @@ export function monitoringStack(
           }],
           volumes: [{
             name: 'prometheus-config',
-            configMap: { name: `${name}-prometheus-config` }
+            configMap: { name: Cel.expr(name, '-prometheus-config') }
           }]
         }
       },
@@ -515,12 +515,12 @@ export function monitoringStack(
     apiVersion: 'v1',
     kind: 'Service',
     metadata: {
-      name: `${name}-prometheus`,
+      name: Cel.expr(name, '-prometheus'),
       namespace,
-      labels: { app: `${name}-prometheus` }
+      labels: { app: Cel.expr(name, '-prometheus') }
     },
     spec: {
-      selector: { app: `${name}-prometheus` },
+      selector: { app: Cel.expr(name, '-prometheus') },
       ports: [{ port: 9090, targetPort: 9090 }],
       type: 'ClusterIP'
     }
@@ -531,15 +531,15 @@ export function monitoringStack(
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: {
-      name: `${name}-grafana`,
+      name: Cel.expr(name, '-grafana'),
       namespace,
-      labels: { app: `${name}-grafana`, component: 'monitoring' }
+      labels: { app: Cel.expr(name, '-grafana'), component: 'monitoring' }
     },
     spec: {
       replicas: 1,
-      selector: { matchLabels: { app: `${name}-grafana` } },
+      selector: { matchLabels: { app: Cel.expr(name, '-grafana') } },
       template: {
-        metadata: { labels: { app: `${name}-grafana` } },
+        metadata: { labels: { app: Cel.expr(name, '-grafana') } },
         spec: {
           containers: [{
             name: 'grafana',
@@ -560,7 +560,7 @@ export function monitoringStack(
           }],
           volumes: [
             { name: 'grafana-storage', emptyDir: {} },
-            { name: 'grafana-config', configMap: { name: `${name}-grafana-config` } }
+            { name: 'grafana-config', configMap: { name: Cel.expr(name, '-grafana-config') } }
           ]
         }
       }
@@ -572,12 +572,12 @@ export function monitoringStack(
     apiVersion: 'v1',
     kind: 'Service',
     metadata: {
-      name: `${name}-grafana`,
+      name: Cel.expr(name, '-grafana'),
       namespace,
-      labels: { app: `${name}-grafana` }
+      labels: { app: Cel.expr(name, '-grafana') }
     },
     spec: {
-      selector: { app: `${name}-grafana` },
+      selector: { app: Cel.expr(name, '-grafana') },
       ports: [{ port: 3000, targetPort: 3000 }],
       type: 'ClusterIP'
     }
@@ -596,15 +596,15 @@ export function monitoringStack(
       apiVersion: 'apps/v1',
       kind: 'Deployment',
       metadata: {
-        name: `${name}-alertmanager`,
+        name: Cel.expr(name, '-alertmanager'),
         namespace,
-        labels: { app: `${name}-alertmanager`, component: 'monitoring' }
+        labels: { app: Cel.expr(name, '-alertmanager'), component: 'monitoring' }
       },
       spec: {
         replicas: 1,
-        selector: { matchLabels: { app: `${name}-alertmanager` } },
+        selector: { matchLabels: { app: Cel.expr(name, '-alertmanager') } },
         template: {
-          metadata: { labels: { app: `${name}-alertmanager` } },
+          metadata: { labels: { app: Cel.expr(name, '-alertmanager') } },
           spec: {
             containers: [{
               name: 'alertmanager',
@@ -621,7 +621,7 @@ export function monitoringStack(
             }],
             volumes: [{
               name: 'alertmanager-config',
-              configMap: { name: `${name}-alertmanager-config` }
+              configMap: { name: Cel.expr(name, '-alertmanager-config') }
             }]
           }
         }
@@ -756,7 +756,7 @@ class MonitoringPlugin implements ApplicationPlugin {
         apiVersion: 'monitoring.coreos.com/v1',
         kind: 'ServiceMonitor',
         metadata: {
-          name: `${config.name}-monitor`,
+          name: Cel.expr(config.name, '-monitor'),
           labels: { app: config.name }
         },
         spec: {
@@ -916,7 +916,7 @@ describe('webApplication integration', () => {
       }),
       (schema, resources) => ({
         ready: resources.deployment.status.readyReplicas > 0,
-        url: `http://${resources.service.spec.clusterIP}`
+        url: Cel.template('http://%s', resources.service.spec.clusterIP)
       })
     );
     

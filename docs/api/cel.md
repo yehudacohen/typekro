@@ -350,7 +350,7 @@ Work with arrays and collections using CEL list functions:
 const microservices = createResourceGraph('microservices', (schema) => {
   const services = ['auth', 'api', 'worker'].map(name => 
     service({
-      metadata: { name: `${name}-service` },
+      metadata: { name: Cel.expr(name, "-service") },
       spec: {
         selector: { app: name },
         ports: [{ port: 8080, targetPort: 8080 }]

@@ -59,7 +59,7 @@ export const simpleWebApp = toResourceGraph(
 
     // Service to expose the application
     service: simpleService({
-      name: `${schema.spec.name}-service`,
+      name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }],
       
@@ -271,7 +271,7 @@ import { simpleConfigMap } from 'typekro';
 
 const resources = {
   config: simpleConfigMap({
-    name: `${schema.spec.name}-config`,
+    name: Cel.expr(schema.spec.name, '-config'),
     data: {
       'nginx.conf': `
         server {
@@ -307,9 +307,9 @@ import { simpleIngress } from 'typekro';
 // Only in production
 ...(schema.spec.environment === 'production' && {
   ingress: simpleIngress({
-    name: `${schema.spec.name}-ingress`,
+    name: Cel.expr(schema.spec.name, '-ingress'),
     rules: [{
-      host: `${schema.spec.name}.example.com`,
+      host: Cel.template('%s.example.com', schema.spec.name),
       http: {
         paths: [{
           path: '/',

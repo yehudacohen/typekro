@@ -104,14 +104,14 @@ async function generateYaml() {
   // Create directories
   mkdirSync('deploy/definitions', { recursive: true });
   environments.forEach(env => {
-    mkdirSync(`deploy/instances/${env}`, { recursive: true });
+    mkdirSync(Cel.template("deploy/instances/%s", env), { recursive: true });
   });
 
   // Generate ResourceGraphDefinitions
   Object.entries(graphs).forEach(([name, graph]) => {
     const rgdYaml = graph.toYaml();
-    writeFileSync(`deploy/definitions/${name}-rgd.yaml`, rgdYaml);
-    console.log(`Generated ${name} ResourceGraphDefinition`);
+    writeFileSync(Cel.template("deploy/definitions/%s-rgd.yaml", name), rgdYaml);
+    console.log(Cel.template("Generated %s ResourceGraphDefinition", name));
   });
 
   // Generate environment instances
@@ -120,8 +120,8 @@ async function generateYaml() {
     
     Object.entries(graphs).forEach(([name, graph]) => {
       const instanceYaml = graph.toYaml(config[name]);
-      writeFileSync(`deploy/instances/${env}/${name}.yaml`, instanceYaml);
-      console.log(`Generated ${name} instance for ${env}`);
+      writeFileSync(Cel.template("deploy/instances/%s/%s.yaml", env, name), instanceYaml);
+      console.log(Cel.template("Generated %s instance for %s", name, env));
     });
   });
 
@@ -717,11 +717,11 @@ interface PromotionConfig {
 async function promoteEnvironment(config: PromotionConfig) {
   const { sourceEnv, targetEnv, imageTag, configOverrides } = config;
   
-  console.log(`Promoting from ${sourceEnv} to ${targetEnv}`);
+  console.log(Cel.template("Promoting from %s to %s", sourceEnv, targetEnv));
   
   // Read source environment configuration
   const sourceConfig = JSON.parse(
-    readFileSync(`src/configs/${sourceEnv}.json`, 'utf8')
+    readFileSync(Cel.template("src/configs/%s.json", sourceEnv), 'utf8')
   );
   
   // Create target configuration
@@ -733,9 +733,9 @@ async function promoteEnvironment(config: PromotionConfig) {
   
   // Generate YAML for target environment
   const yaml = webAppGraph.toYaml(targetConfig);
-  writeFileSync(`deploy/instances/${targetEnv}/webapp.yaml`, yaml);
+  writeFileSync(Cel.template("deploy/instances/%s/webapp.yaml", targetEnv), yaml);
   
-  console.log(`✅ Promoted to ${targetEnv}`);
+  console.log(Cel.template("✅ Promoted to %s", targetEnv));
   
   // Optional: Create pull request
   if (process.env.CREATE_PR === 'true') {
@@ -961,34 +961,34 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 async function checkDeploymentStatus(environment: string, timeout = 300) {
-  console.log(`Checking deployment status for ${environment}`);
+  console.log(Cel.template("Checking deployment status for %s", environment));
   
   try {
     // Check if resources are deployed
     const { stdout } = await execAsync(
-      `kubectl get webapp webapp-${environment} -o jsonpath='{.status.phase}'`
+      Cel.template("kubectl get webapp webapp-%s -o jsonpath", environment)='{.status.phase}'`
     );
     
     if (stdout.trim() === 'Running') {
-      console.log(`✅ ${environment} deployment is running`);
+      console.log(Cel.template("✅ %s deployment is running", environment));
       return true;
     }
     
     // Wait for deployment to be ready
     await execAsync(
-      `kubectl wait --for=condition=ready webapp/webapp-${environment} --timeout=${timeout}s`
+      Cel.template("kubectl wait --for=condition=ready webapp/webapp-%s --timeout=%ds", environment, timeout)
     );
     
-    console.log(`✅ ${environment} deployment is ready`);
+    console.log(Cel.template("✅ %s deployment is ready", environment));
     return true;
     
   } catch (error) {
-    console.error(`❌ ${environment} deployment failed:`, error.message);
+    console.error(Cel.template("❌ %s deployment failed:", environment), error.message);
     
     // Get more details
     try {
       const { stdout: events } = await execAsync(
-        `kubectl get events --field-selector involvedObject.name=webapp-${environment} --sort-by=.metadata.creationTimestamp`
+        Cel.template("kubectl get events --field-selector involvedObject.name=webapp-%s --sort-by=", environment).metadata.creationTimestamp`
       );
       console.log('Recent events:', events);
     } catch (eventError) {
@@ -1010,7 +1010,7 @@ async function performHealthCheck(environment: string) {
       name: 'Deployment Ready',
       check: async () => {
         const result = await execAsync(
-          `kubectl get deployment webapp-${environment} -o jsonpath='{.status.readyReplicas}'`
+          Cel.template("kubectl get deployment webapp-%s -o jsonpath", environment)='{.status.readyReplicas}'`
         );
         return parseInt(result.stdout) > 0;
       }
@@ -1019,7 +1019,7 @@ async function performHealthCheck(environment: string) {
       name: 'Service Available',
       check: async () => {
         const result = await execAsync(
-          `kubectl get service webapp-${environment}-service -o jsonpath='{.spec.clusterIP}'`
+          Cel.template("kubectl get service webapp-%s-service -o jsonpath", environment)='{.spec.clusterIP}'`
         );
         return result.stdout.trim() !== '';
       }
@@ -1030,7 +1030,7 @@ async function performHealthCheck(environment: string) {
         // Port-forward and check HTTP response
         const portForward = spawn('kubectl', [
           'port-forward',
-          `service/webapp-${environment}-service`,
+          Cel.template("service/webapp-%s-service", environment),
           '8080:80'
         ]);
         
@@ -1052,17 +1052,17 @@ async function performHealthCheck(environment: string) {
     checks.map(async ({ name, check }) => {
       try {
         const result = await check();
-        console.log(`${result ? '✅' : '❌'} ${name}`);
+        console.log(Cel.template("%s %s", result ? "✅" : "❌", name));
         return { name, passed: result };
       } catch (error) {
-        console.log(`❌ ${name}: ${error.message}`);
+        console.log(Cel.template("❌ %s: %s", name, error.message));
         return { name, passed: false, error: error.message };
       }
     })
   );
   
   const allPassed = results.every(r => r.passed);
-  console.log(`\n${allPassed ? '✅' : '❌'} Overall health: ${allPassed ? 'HEALTHY' : 'UNHEALTHY'}`);
+  console.log(Cel.template("\n%s Overall health: %s", allPassed ? "✅" : "❌", allPassed ? "HEALTHY" : "UNHEALTHY"));
   
   return { healthy: allPassed, checks: results };
 }
@@ -1075,8 +1075,8 @@ async function performHealthCheck(environment: string) {
 ```typescript
 // ✅ Generate deterministic YAML
 const generateConfig = (environment: string, gitCommit: string) => ({
-  name: `webapp-${environment}`,
-  image: `myapp:${gitCommit}`,  // Use git commit as image tag
+  name: Cel.template("webapp-%s", environment),
+  image: Cel.template("myapp:%s", gitCommit),  // Use git commit as image tag
   replicas: environmentConfig[environment].replicas,
   
   labels: {
@@ -1103,7 +1103,7 @@ const EnvironmentConfig = type({
 function validateConfig(config: unknown) {
   const result = EnvironmentConfig(config);
   if (result instanceof type.errors) {
-    throw new Error(`Invalid configuration: ${result.summary}`);
+    throw new Error(Cel.template("Invalid configuration: %s", result.summary));
   }
   return result;
 }
@@ -1114,17 +1114,17 @@ function validateConfig(config: unknown) {
 ```typescript
 // ✅ Implement rollback capability
 async function rollback(environment: string, previousVersion: string) {
-  console.log(`Rolling back ${environment} to ${previousVersion}`);
+  console.log(Cel.template("Rolling back %s to %s", environment, previousVersion));
   
   // Update configuration to previous version
   const rollbackConfig = {
     ...environments[environment],
-    image: `myapp:${previousVersion}`
+    image: Cel.template("myapp:%s", previousVersion)
   };
   
   // Generate and apply YAML
   const yaml = webAppGraph.toYaml(rollbackConfig);
-  writeFileSync(`deploy/instances/${environment}/webapp.yaml`, yaml);
+  writeFileSync(Cel.template("deploy/instances/%s/webapp.yaml", environment), yaml);
   
   // Commit rollback
   await execAsync(`
@@ -1191,7 +1191,7 @@ flux reconcile kustomization webapp-production
 
 ## Next Steps
 
-- **[Type Safety](./type-safety.md)** - Ensure configuration correctness
-- **[Performance](./performance.md)** - Optimize GitOps workflows  
-- **[Troubleshooting](./troubleshooting.md)** - Debug GitOps deployment issues
-- **[Examples](../examples/)** - See complete GitOps examples
+- **[Type Safety](../type-safety.md)** - Ensure configuration correctness
+- **[Performance](../performance.md)** - Optimize GitOps workflows  
+- **[Troubleshooting](../troubleshooting.md)** - Debug GitOps deployment issues
+- **[Examples](../../examples/)** - See complete GitOps examples

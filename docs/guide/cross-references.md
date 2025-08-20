@@ -307,7 +307,7 @@ const services = {
 const frontend = simpleDeployment({
   name: 'frontend',
   env: {
-    API_URL: `http://${services.api.metadata.name}:${services.api.spec.ports[0].port}`,
+    API_URL: Cel.template("http://%s", [reference]):${services.api.spec.ports[0].port}`,
     CACHE_URL: `redis://${services.cache.metadata.name}:${services.cache.spec.ports[0].port}`,
     DB_URL: `postgresql://${services.database.metadata.name}:${services.database.spec.ports[0].port}/app`
   }

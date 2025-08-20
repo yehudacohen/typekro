@@ -194,16 +194,16 @@ This provides **compile-time type safety** while enabling **runtime flexibility*
 - **Team prefers YAML** and doesn't want programmatic infrastructure
 - **Simple applications** with no cross-resource dependencies
 - **Legacy workflows** heavily invested in existing tooling
-- **Multi-cloud requirements** beyond Kubernetes (unless using [Alchemy integration](/guide/alchemy-integration))
+- **Multi-cloud requirements** beyond Kubernetes (unless using [Alchemy integration](./deployment/alchemy.md))
 
 ## Next Steps
 
 Ready to get started with TypeKro?
 
-1. **[Quick Start](/guide/quick-start)** - Get TypeKro running in 5 minutes
-2. **[Getting Started](/guide/getting-started)** - Comprehensive setup guide
-3. **[Core Concepts](/guide/resource-graphs)** - Understand resource graphs and references
-4. **[Deployment Strategies](/guide/direct-deployment)** - Choose the right deployment approach
+1. **[Quick Start](./quick-start.md)** - Get TypeKro running in 5 minutes
+2. **[Getting Started](./getting-started.md)** - Comprehensive setup guide
+3. **[Core Concepts](./resource-graphs.md)** - Understand resource graphs and references
+4. **[Deployment Strategies](./deployment/)** - Choose the right deployment approach
 
 ## Community and Support
 

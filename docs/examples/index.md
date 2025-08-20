@@ -2,79 +2,29 @@
 
 Explore real-world TypeKro applications and patterns. Each example includes complete, runnable code and explanations of key concepts.
 
-## Basic Examples
+## Core Patterns
 
-Perfect for getting started with TypeKro fundamentals.
+Essential patterns that demonstrate TypeKro's key capabilities.
 
-### [Simple Web App](./simple-webapp.md)
-A basic web application with service exposure. Great for understanding the core TypeKro concepts.
+### [Basic WebApp Pattern](./basic-webapp.md)
+Foundational pattern - web application with deployment and service.
 
-**What you'll learn:**
-- Basic resource graph creation
-- Factory functions usage
-- Direct deployment
+**Key concepts:** Resource graphs, factory functions, cross-references, status mapping
 
-```typescript
-const app = toResourceGraph(
-  {
-    name: 'webapp',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebApp',
-    spec: WebAppSpec,
-    status: WebAppStatus,
-  },
-  (schema) => ({
-  deployment: simpleDeployment({
-    name: schema.spec.name,
-    image: schema.spec.image,
-    ports: [{ containerPort: 3000 }]
-  }),
-  service: simpleService({
-    name: `${schema.spec.name}-service`,
-    selector: { app: schema.spec.name },
-    ports: [{ port: 80, targetPort: 3000 }]
-  })
-}));
-```
+### [Database + Application](./database-app.md) 
+Full-stack application with PostgreSQL and web application.
 
-### [Database Integration](./database.md)
-Web application with PostgreSQL database, demonstrating cross-resource references.
+**Key concepts:** Multi-resource orchestration, service discovery, environment configuration
 
-**What you'll learn:**
-- Cross-resource references
-- Environment configuration
-- Service discovery patterns
+### [Microservices Architecture](./microservices.md)
+Complex multi-service platform with API gateway and service mesh.
 
-```typescript
-const stack = toResourceGraph(
-  {
-    name: 'webapp-db',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebAppWithDB',
-    spec: WebAppWithDBSpec,
-    status: WebAppWithDBStatus,
-  },
-  (schema) => ({
-  database: simpleDeployment({
-    name: `${schema.spec.name}-db`,
-    image: 'postgres:15'
-  }),
-  app: simpleDeployment({
-    name: schema.spec.name,
-    env: {
-      DATABASE_HOST: database.status.podIP  // Cross-resource reference
-    }
-  })
-}));
-```
+**Key concepts:** Service coordination, ingress routing, health aggregation
 
-### [Microservices](./microservices.md)
-Multi-service application with API gateway and service mesh integration.
+### [Helm Integration Patterns](./helm-patterns.md)
+Helm chart deployment and integration patterns.
 
-**What you'll learn:**
-- Multiple service coordination
-- Service mesh patterns
-- API gateway configuration
+**Key concepts:** Chart deployment, value templating, multi-chart applications
 
 ## Advanced Examples
 
@@ -104,70 +54,18 @@ Comprehensive monitoring setup with Prometheus, Grafana, and alerting.
 - Custom metrics
 - Alert configuration
 
-## Real-World Patterns
+## Usage by Experience Level
 
-### Configuration Management
+### **Beginners**
+1. [Basic WebApp Pattern](./basic-webapp.md) - Core concepts
+2. [Database + Application](./database-app.md) - Resource relationships
 
-```typescript
-// Environment-specific configs
-const getConfig = (env: string) => ({
-  development: { replicas: 1, resources: { cpu: '100m' } },
-  staging: { replicas: 2, resources: { cpu: '200m' } },
-  production: { replicas: 5, resources: { cpu: '500m' } }
-}[env]);
+### **Intermediate**
+1. [Microservices Architecture](./microservices.md) - Multi-service deployments  
+2. [Helm Integration](./helm-patterns.md) - Package management
 
-const deployment = simpleDeployment({
-  name: schema.spec.name,
-  replicas: getConfig(schema.spec.environment).replicas,
-  resources: getConfig(schema.spec.environment).resources
-});
-```
-
-### Service Discovery
-
-```typescript
-// Services can reference each other naturally
-const apiService = simpleService({
-  name: 'api-service',
-  selector: { app: 'api' }
-});
-
-const frontend = simpleDeployment({
-  name: 'frontend',
-  env: {
-    API_URL: `http://${apiService.metadata.name}:${apiService.spec.ports[0].port}`
-  }
-});
-```
-
-### Conditional Resources
-
-```typescript
-const resources = {
-  app: simpleDeployment({ /* ... */ }),
-  
-  // Only create ingress in production
-  ...(schema.spec.environment === 'production' && {
-    ingress: simpleIngress({
-      name: `${schema.spec.name}-ingress`,
-      rules: [{
-        host: `${schema.spec.name}.example.com`,
-        http: {
-          paths: [{
-            path: '/',
-            backend: {
-              service: {
-                name: `${schema.spec.name}-service`,
-                port: { number: 80 }
-              }
-            }
-          }]
-        }
-      }]
-    })
-  })
-};
-```
+### **Advanced**
+Combine patterns and create custom factories for specific use cases.
 
 ## Example Categories
 
@@ -205,22 +103,16 @@ Each example includes:
 ### Quick Start
 
 ```bash
-# Clone the example
-git clone https://github.com/yehudacohen/typekro-examples
-cd typekro-examples/simple-webapp
-
-# Install dependencies
-bun install
-
-# Deploy to your cluster
-bun run deploy
+# Copy the example code from the documentation
+# Follow the setup instructions in each example
+# Examples include complete working code
 ```
 
 ## Contributing Examples
 
 Have a great TypeKro pattern to share? We'd love to include it!
 
-1. Fork the [examples repository](https://github.com/yehudacohen/typekro-examples)
+1. Submit examples via GitHub issues or discussions
 2. Add your example with documentation
 3. Submit a pull request
 
@@ -234,4 +126,3 @@ Have a great TypeKro pattern to share? We'd love to include it!
 
 - **Questions**: [GitHub Discussions](https://github.com/yehudacohen/typekro/discussions)
 - **Issues**: [GitHub Issues](https://github.com/yehudacohen/typekro/issues)
-- **Community**: [Discord Server](https://discord.gg/typekro)

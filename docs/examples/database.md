@@ -564,13 +564,13 @@ statefulSet: simpleStatefulSet({
 
 ## Related Examples
 
-- [Simple Web App](/examples/simple-webapp) - Basic application deployment
-- [Microservices](/examples/microservices) - Multi-service architecture
-- [Monitoring Stack](/examples/monitoring) - Database monitoring setup
+- [Simple Web App](./simple-webapp.md) - Basic application deployment
+- [Microservices](./microservices.md) - Multi-service architecture
+- [Monitoring Stack](./monitoring.md) - Database monitoring setup
 
 ## Related APIs
 
-- [Workloads API](/api/factories/workloads) - StatefulSet and Deployment factories
-- [Configuration API](/api/factories/config) - ConfigMap and Secret management
-- [Storage API](/api/factories/storage) - Persistent Volume Claims
-- [CEL Expressions API](/api/cel) - Dynamic configuration patterns
+- [Workloads API](../api/factories/workloads.md) - StatefulSet and Deployment factories
+- [Configuration API](../api/factories/config.md) - ConfigMap and Secret management
+- [Storage API](../api/factories/storage.md) - Persistent Volume Claims
+- [CEL Expressions API](../api/cel.md) - Dynamic configuration patterns
