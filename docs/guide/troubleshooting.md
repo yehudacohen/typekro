@@ -141,7 +141,15 @@ metadata:
 **Diagnosis:**
 ```typescript
 // Check if referenced resource exists
-const graph = toResourceGraph('my-app', (schema) => ({
+const graph = toResourceGraph(
+  {
+    name: 'my-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'MyApp',
+    spec: MyAppSpec,
+    status: MyAppStatus,
+  },
+  (schema) => ({
   database: simpleDeployment({ name: 'db' }),
   app: simpleDeployment({
     env: {
@@ -420,7 +428,15 @@ import { type } from 'arktype';
 
 const AppSpec = type({ name: 'string' });
 
-const graph = toResourceGraph('test', (schema) => ({
+const graph = toResourceGraph(
+  {
+    name: 'test',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'TestApp',
+    spec: TestAppSpec,
+    status: TestAppStatus,
+  },
+  (schema) => ({
   app: simpleDeployment({
     name: schema.spec.name,
     image: 'nginx:latest'

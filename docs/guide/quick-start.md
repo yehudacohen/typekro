@@ -22,7 +22,15 @@ const AppSpec = type({
   replicas: 'number'
 });
 
-export const app = toResourceGraph('simple-app', (schema) => ({
+export const app = toResourceGraph(
+  {
+    name: 'simple-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'SimpleApp',
+    spec: SimpleAppSpec,
+    status: SimpleAppStatus,
+  },
+  (schema) => ({
   deployment: simpleDeployment({
     name: schema.spec.name,
     image: schema.spec.image,

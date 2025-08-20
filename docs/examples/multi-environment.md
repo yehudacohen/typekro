@@ -101,8 +101,12 @@ const EnvironmentStatus = type({
 export const multiEnvApp = toResourceGraph(
   {
     name: 'multi-env-app',
-    schema: { spec: EnvironmentSpec, status: EnvironmentStatus }
+    apiVersion: 'deploy.example.com/v1alpha1',
+    kind: 'MultiEnvApp',
+    spec: EnvironmentSpec,
+    status: EnvironmentStatus,
   },
+  // ResourceBuilder function
   (schema) => {
     // Environment-specific namespace prefix
     const envPrefix = schema.spec.environment;

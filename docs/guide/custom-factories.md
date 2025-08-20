@@ -899,7 +899,13 @@ describe('webApplication integration', () => {
   
   it('should work with toResourceGraph', () => {
     const webAppGraph = toResourceGraph(
-      { name: 'webapp-stack', schema: { spec: WebAppSpec } },
+      {
+        name: 'webapp-stack',
+        apiVersion: 'example.com/v1alpha1',
+        kind: 'WebApp',
+        spec: WebAppSpec,
+        status: WebAppStatus,
+      },
       (schema) => webApplication({
         name: schema.spec.name,
         image: schema.spec.image,

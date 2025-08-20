@@ -15,7 +15,15 @@ A basic web application with service exposure. Great for understanding the core 
 - Direct deployment
 
 ```typescript
-const app = toResourceGraph('webapp', (schema) => ({
+const app = toResourceGraph(
+  {
+    name: 'webapp',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus,
+  },
+  (schema) => ({
   deployment: simpleDeployment({
     name: schema.spec.name,
     image: schema.spec.image,
@@ -38,7 +46,15 @@ Web application with PostgreSQL database, demonstrating cross-resource reference
 - Service discovery patterns
 
 ```typescript
-const stack = toResourceGraph('webapp-db', (schema) => ({
+const stack = toResourceGraph(
+  {
+    name: 'webapp-db',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebAppWithDB',
+    spec: WebAppWithDBSpec,
+    status: WebAppWithDBStatus,
+  },
+  (schema) => ({
   database: simpleDeployment({
     name: `${schema.spec.name}-db`,
     image: 'postgres:15'

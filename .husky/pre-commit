@@ -1,1 +1,1 @@
-bun run test:all
+bun run test

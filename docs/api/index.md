@@ -86,7 +86,15 @@ interface Enhanced<T, S> extends KubernetesResource {
 
 ```typescript
 // Basic resource graph
-const app = toResourceGraph('my-app', (schema) => ({
+const app = toResourceGraph(
+  {
+    name: 'my-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'MyApp',
+    spec: MyAppSpec,
+    status: MyAppStatus,
+  },
+  (schema) => ({
   deployment: simpleDeployment({
     name: schema.spec.name,
     image: schema.spec.image
@@ -244,10 +252,17 @@ const StrictAppSpec = type({
 });
 
 // Validation happens automatically
-const graph = toResourceGraph('app', builder, {
-  spec: StrictAppSpec,
-  status: AppStatus
-});
+const graph = toResourceGraph(
+  {
+    name: 'app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'App',
+    spec: StrictAppSpec,
+    status: AppStatus,
+  },
+  builder,
+  statusBuilder
+);
 ```
 
 ## Migration Guide

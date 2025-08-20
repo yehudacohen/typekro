@@ -98,7 +98,14 @@ const WebAppStatus = type({
 
 // Create your resource graph
 export const webAppGraph = toResourceGraph(
-  'webapp-stack',
+  {
+    name: 'webapp-stack',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus,
+  },
+  // ResourceBuilder function
   (schema) => ({
     // Configuration
     config: simpleConfigMap({
@@ -149,17 +156,12 @@ export const webAppGraph = toResourceGraph(
       type: 'LoadBalancer'
     })
   }),
-  {
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebApp',
-    spec: WebAppSpec,
-    status: WebAppStatus,
-    statusMappings: {
-      url: `http://${webService.status.loadBalancer.ingress[0].ip}`,
-      phase: app.status.phase,
-      readyReplicas: app.status.readyReplicas
-    }
-  }
+  // StatusBuilder function
+  (schema, resources) => ({
+    url: Cel.expr<string>(resources.webService.status.loadBalancer.ingress[0].ip, ' != "" ? "http://" + ', resources.webService.status.loadBalancer.ingress[0].ip, ' : "pending"'),
+    phase: Cel.expr<'pending' | 'running' | 'ready'>(resources.app.status.readyReplicas, ' > 0 ? "ready" : "pending"'),
+    readyReplicas: resources.app.status.readyReplicas
+  })
 );
 ```
 

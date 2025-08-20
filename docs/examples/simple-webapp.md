@@ -15,7 +15,8 @@ import { type } from 'arktype';
 import { 
   toResourceGraph, 
   simpleDeployment, 
-  simpleService 
+  simpleService,
+  Cel
 } from 'typekro';
 
 // Define the application interface
@@ -28,13 +29,20 @@ const WebAppSpec = type({
 
 const WebAppStatus = type({
   url: 'string',
-  phase: 'string',
+  phase: '"pending" | "running" | "failed"',
   readyReplicas: 'number'
 });
 
 // Create the resource graph
 export const simpleWebApp = toResourceGraph(
-  'simple-webapp',
+  {
+    name: 'simple-webapp',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus,
+  },
+  // ResourceBuilder function - defines the Kubernetes resources
   (schema) => ({
     // Web application deployment
     deployment: simpleDeployment({
@@ -59,19 +67,14 @@ export const simpleWebApp = toResourceGraph(
       type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
     })
   }),
-  {
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebApp',
-    spec: WebAppSpec,
-    status: WebAppStatus,
-    statusMappings: {
-      url: schema.spec.environment === 'production'
-        ? `http://${service.status.loadBalancer.ingress[0].ip}`
-        : `http://${service.spec.clusterIP}`,
-      phase: deployment.status.phase,
-      readyReplicas: deployment.status.readyReplicas
-    }
-  }
+  // StatusBuilder function - defines how status fields map to resource status
+  (schema, resources) => ({
+    url: schema.spec.environment === 'production'
+      ? Cel.expr<string>(resources.service.status.loadBalancer.ingress[0].ip, ' != "" ? "http://" + ', resources.service.status.loadBalancer.ingress[0].ip, ' : "pending"')
+      : Cel.template('http://%s', resources.service.spec.clusterIP),
+    phase: Cel.expr<'pending' | 'running' | 'failed'>(resources.deployment.status.readyReplicas, ' == ', resources.deployment.spec.replicas, ' ? "running" : "pending"'),
+    readyReplicas: resources.deployment.status.readyReplicas
+  })
 );
 ```
 
@@ -100,7 +103,7 @@ async function deployDirect() {
   console.log('✅ Deployed successfully!');
   
   // Check deployment status
-  const status = await factory.getStatus();
+  const status = await factory.getStatus(instance);
   console.log('📊 Status:', status);
 }
 
@@ -116,25 +119,31 @@ For GitOps workflows:
 import { writeFileSync } from 'fs';
 import { simpleWebApp } from './simple-webapp.js';
 
-// Generate ResourceGraphDefinition
+// Generate ResourceGraphDefinition for Kro
 const rgdYaml = simpleWebApp.toYaml();
 writeFileSync('webapp-definition.yaml', rgdYaml);
 
 // Generate production instance
 const prodInstanceYaml = simpleWebApp.toYaml({
-  name: 'production-webapp',
-  image: 'nginx:1.24',
-  replicas: 5,
-  environment: 'production'
+  metadata: { name: 'production-webapp', namespace: 'production' },
+  spec: {
+    name: 'production-webapp',
+    image: 'nginx:1.24',
+    replicas: 5,
+    environment: 'production'
+  }
 });
 writeFileSync('webapp-production.yaml', prodInstanceYaml);
 
 // Generate development instance
 const devInstanceYaml = simpleWebApp.toYaml({
-  name: 'dev-webapp',
-  image: 'nginx:latest',
-  replicas: 1,
-  environment: 'development'
+  metadata: { name: 'dev-webapp', namespace: 'development' },
+  spec: {
+    name: 'dev-webapp',
+    image: 'nginx:latest',
+    replicas: 1,
+    environment: 'development'
+  }
 });
 writeFileSync('webapp-development.yaml', devInstanceYaml);
 
@@ -156,7 +165,7 @@ The `WebAppSpec` type ensures your configuration is valid:
 
 ```typescript
 // ✅ This works
-await factory.deploy({
+const instance = await factory.deploy({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3,
@@ -164,7 +173,7 @@ await factory.deploy({
 });
 
 // ❌ This causes a TypeScript error
-await factory.deploy({
+const invalidInstance = await factory.deploy({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: '3',  // Error: string not assignable to number
@@ -186,18 +195,19 @@ resources: schema.spec.environment === 'production'
 type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
 ```
 
-### 3. Status Mapping
+### 3. Status Builder
 
-The status reflects the actual state of your deployment:
+The status builder uses CEL expressions to reflect the actual state of your deployment:
 
 ```typescript
-statusMappings: {
+// StatusBuilder function - maps resource status to your custom status
+(schema, resources) => ({
   url: schema.spec.environment === 'production'
-    ? `http://${service.status.loadBalancer.ingress[0].ip}`
-    : `http://${service.spec.clusterIP}`,
-  phase: deployment.status.phase,
-  readyReplicas: deployment.status.readyReplicas
-}
+    ? Cel.expr<string>(resources.service.status.loadBalancer.ingress[0].ip, ' != "" ? "http://" + ', resources.service.status.loadBalancer.ingress[0].ip, ' : "pending"')
+    : Cel.template('http://%s', resources.service.spec.clusterIP),
+  phase: Cel.expr<'pending' | 'running' | 'failed'>(resources.deployment.status.readyReplicas, ' == ', resources.deployment.spec.replicas, ' ? "running" : "pending"'),
+  readyReplicas: resources.deployment.status.readyReplicas
+})
 ```
 
 ## Testing Your Deployment

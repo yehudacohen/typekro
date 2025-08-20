@@ -366,7 +366,15 @@ const app = simpleDeployment({
 **Reference not found:**
 ```typescript
 // Make sure the referenced resource exists in the same graph
-const graph = toResourceGraph('my-app', (schema) => ({
+const graph = toResourceGraph(
+  {
+    name: 'my-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'MyApp',
+    spec: MyAppSpec,
+    status: MyAppStatus,
+  },
+  (schema) => ({
   database: simpleDeployment({ name: 'db' }),
   app: simpleDeployment({
     env: {

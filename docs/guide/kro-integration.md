@@ -130,7 +130,13 @@ const WebAppStatus = type({
 });
 
 const kroWebApp = toResourceGraph(
-  { name: 'kro-webapp', schema: { spec: WebAppSpec, status: WebAppStatus } },
+  {
+    name: 'kro-webapp',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'KroWebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus,
+  },
   (schema) => ({
     deployment: simpleDeployment({
       name: schema.spec.name,
@@ -208,7 +214,13 @@ KRO excels at handling complex runtime dependencies between resources:
 
 ```typescript
 const databaseStack = toResourceGraph(
-  { name: 'database-stack', schema: { spec: DatabaseStackSpec, status: DatabaseStackStatus } },
+  {
+    name: 'database-stack',
+    apiVersion: 'data.example.com/v1alpha1',
+    kind: 'DatabaseStack',
+    spec: DatabaseStackSpec,
+    status: DatabaseStackStatus,
+  },
   (schema) => ({
     // Database deployment
     database: simpleDeployment({

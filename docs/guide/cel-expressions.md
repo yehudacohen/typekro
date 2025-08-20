@@ -237,12 +237,17 @@ const statusMappings = {
 Most common use case - computing dynamic status:
 
 ```typescript
-const graph = toResourceGraph('webapp', builder, {
-  apiVersion: 'example.com/v1alpha1',
-  kind: 'WebApp',
-  spec: WebAppSpec,
-  status: WebAppStatus,
-  statusMappings: {
+const graph = toResourceGraph(
+  {
+    name: 'webapp',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus,
+  },
+  builder,
+  // StatusBuilder function
+  (schema, resources) => ({
     // CEL expressions for dynamic status
     phase: Cel.expr(
       deployment.status.readyReplicas,

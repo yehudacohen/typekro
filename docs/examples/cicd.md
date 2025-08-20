@@ -105,8 +105,12 @@ const CICDAppStatus = type({
 export const cicdApp = toResourceGraph(
   {
     name: 'cicd-app',
-    schema: { spec: CICDAppSpec, status: CICDAppStatus }
+    apiVersion: 'cicd.example.com/v1alpha1',
+    kind: 'CICDApp',
+    spec: CICDAppSpec,
+    status: CICDAppStatus,
   },
+  // ResourceBuilder function
   (schema) => {
     const appName = schema.spec.name;
     const fullImageName = `${schema.spec.build.imageRegistry}/${schema.spec.build.imageName}:${schema.spec.version}`;

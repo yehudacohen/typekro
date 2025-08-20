@@ -98,10 +98,14 @@ const MicroservicesStatus = type({
 
 ```typescript
 export const microservicesApp = toResourceGraph(
-  { 
+  {
     name: 'microservices-app',
-    schema: { spec: MicroservicesSpec, status: MicroservicesStatus }
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'MicroservicesApp',
+    spec: MicroservicesSpec,
+    status: MicroservicesStatus,
   },
+  // ResourceBuilder function - defines all Kubernetes resources
   (schema) => {
     // Shared configuration for all services
     const appConfig = simpleConfigMap({
@@ -297,32 +301,31 @@ http {
     };
   },
   
-  // Status mapping - aggregate health from all services
+  // StatusBuilder function - aggregate health from all services using CEL expressions
   (schema, resources) => ({
-    gatewayUrl: `https://${schema.spec.gateway.domain}`,
+    gatewayUrl: Cel.template('https://%s', schema.spec.gateway.domain),
     services: {
       user: {
-        url: 'http://user-service:3000',
-        ready: resources.userDeployment.status.readyReplicas === schema.spec.services.user.replicas
+        url: Cel.expr<string>`'http://user-service:3000'`,
+        ready: Cel.expr<boolean>(resources.userDeployment.status.readyReplicas, ' == ', resources.userDeployment.spec.replicas)
       },
       product: {
-        url: 'http://product-service:3000', 
-        ready: resources.productDeployment.status.readyReplicas === schema.spec.services.product.replicas
+        url: Cel.expr<string>`'http://product-service:3000'`, 
+        ready: Cel.expr<boolean>(resources.productDeployment.status.readyReplicas, ' == ', resources.productDeployment.spec.replicas)
       },
       order: {
-        url: 'http://order-service:3000',
-        ready: resources.orderDeployment.status.readyReplicas === schema.spec.services.order.replicas
+        url: Cel.expr<string>`'http://order-service:3000'`,
+        ready: Cel.expr<boolean>(resources.orderDeployment.status.readyReplicas, ' == ', resources.orderDeployment.spec.replicas)
       }
     },
-    health: (() => {
-      const userReady = resources.userDeployment.status.readyReplicas === schema.spec.services.user.replicas;
-      const productReady = resources.productDeployment.status.readyReplicas === schema.spec.services.product.replicas;
-      const orderReady = resources.orderDeployment.status.readyReplicas === schema.spec.services.order.replicas;
-      
-      if (userReady && productReady && orderReady) return 'healthy';
-      if (userReady || productReady) return 'degraded';
-      return 'unhealthy';
-    })()
+    health: Cel.expr<'healthy' | 'degraded' | 'unhealthy'>(
+      resources.userDeployment.status.readyReplicas, ' == ', resources.userDeployment.spec.replicas,
+      ' && ', resources.productDeployment.status.readyReplicas, ' == ', resources.productDeployment.spec.replicas,
+      ' && ', resources.orderDeployment.status.readyReplicas, ' == ', resources.orderDeployment.spec.replicas,
+      ' ? "healthy" : (',
+      resources.userDeployment.status.readyReplicas, ' > 0 || ', resources.productDeployment.status.readyReplicas, ' > 0',
+      ' ? "degraded" : "unhealthy")'
+    )
   })
 );
 ```

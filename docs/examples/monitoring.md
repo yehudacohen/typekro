@@ -147,8 +147,12 @@ const MonitoringStatus = type({
 export const monitoringStack = toResourceGraph(
   {
     name: 'monitoring-stack',
-    schema: { spec: MonitoringSpec, status: MonitoringStatus }
+    apiVersion: 'monitoring.example.com/v1alpha1',
+    kind: 'MonitoringStack',
+    spec: MonitoringSpec,
+    status: MonitoringStatus,
   },
+  // ResourceBuilder function
   (schema) => {
     return {
       // Prometheus Server
@@ -556,22 +560,20 @@ providers:
     };
   },
   
-  // Monitoring stack status
+  // StatusBuilder function - monitoring stack status using CEL expressions
   (schema, resources) => ({
-    prometheusReady: resources.prometheus.status.readyReplicas === 1,
-    grafanaReady: resources.grafana.status.readyReplicas === 1,
-    alertManagerReady: resources.alertManager.status.readyReplicas === 1,
+    prometheusReady: Cel.expr<boolean>(resources.prometheus.status.readyReplicas, ' >= 1'),
+    grafanaReady: Cel.expr<boolean>(resources.grafana.status.readyReplicas, ' >= 1'),
+    alertManagerReady: Cel.expr<boolean>(resources.alertManager.status.readyReplicas, ' >= 1'),
     targetsDiscovered: schema.spec.targets.length,
-    alertsActive: 0, // Would be populated from Prometheus API
-    healthStatus: (() => {
-      const promReady = resources.prometheus.status.readyReplicas === 1;
-      const grafanaReady = resources.grafana.status.readyReplicas === 1;
-      const alertManagerReady = resources.alertManager.status.readyReplicas === 1;
-      
-      if (promReady && grafanaReady && alertManagerReady) return 'healthy';
-      if (promReady) return 'degraded';
-      return 'unhealthy';
-    })()
+    alertsActive: Cel.expr<number>`0`, // Would be populated from Prometheus API in real implementation
+    healthStatus: Cel.expr<'healthy' | 'degraded' | 'unhealthy'>(
+      resources.prometheus.status.readyReplicas, ' >= 1 && ',
+      resources.grafana.status.readyReplicas, ' >= 1 && ',
+      resources.alertManager.status.readyReplicas, ' >= 1',
+      ' ? "healthy" : (',
+      resources.prometheus.status.readyReplicas, ' >= 1 ? "degraded" : "unhealthy")'
+    )
   })
 );
 ```
