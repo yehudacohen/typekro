@@ -8,25 +8,39 @@
 @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap');
 
 :root {
-  --vp-c-brand-1: #646cff;
-  --vp-c-brand-2: #747bff;
-  --vp-c-brand-3: #535bf2;
-  --vp-c-brand-soft: rgba(100, 108, 255, 0.14);
-  --vp-c-brand-softer: rgba(100, 108, 255, 0.07);
-  --vp-c-brand-softest: rgba(100, 108, 255, 0.04);
+  --vp-c-brand-1: #2563EB;
+  --vp-c-brand-2: #3B82F6;
+  --vp-c-brand-3: #1D4ED8;
+  --vp-c-brand-soft: rgba(37, 99, 235, 0.12);
+  --vp-c-brand-softer: rgba(37, 99, 235, 0.06);
+  --vp-c-brand-softest: rgba(37, 99, 235, 0.03);
 
   /* Coding font variables */
   --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
   --vp-font-family-base: 'JetBrains Mono', 'Fira Code', system-ui, -apple-system, sans-serif;
+
+  /* Additional TypeKro theme colors */
+  --typekro-navy: #1E40AF;
+  --typekro-navy-light: #2563EB;
+  --typekro-emerald: #059669;
+  --typekro-emerald-light: #10B981;
+  --typekro-cyan: #0EA5E9;
+  --typekro-cyan-light: #38BDF8;
+
+  /* Light Mode - Soft Mint Green (harmonizes with emerald logo) */
+  --vp-c-bg: #F7FFFE;
+  --vp-c-bg-alt: #ECFFF8;
+  --vp-c-bg-soft: #D1FAE5;
+  --vp-c-bg-mute: #A7F3D0;
 }
 
 .dark {
-  --vp-c-brand-1: #747bff;
-  --vp-c-brand-2: #646cff;
-  --vp-c-brand-3: #535bf2;
-  --vp-c-brand-soft: rgba(116, 123, 255, 0.16);
-  --vp-c-brand-softer: rgba(116, 123, 255, 0.12);
-  --vp-c-brand-softest: rgba(116, 123, 255, 0.08);
+  --vp-c-brand-1: #38BDF8;
+  --vp-c-brand-2: #0EA5E9;
+  --vp-c-brand-3: #0284C7;
+  --vp-c-brand-soft: rgba(56, 189, 248, 0.14);
+  --vp-c-brand-softer: rgba(56, 189, 248, 0.08);
+  --vp-c-brand-softest: rgba(56, 189, 248, 0.04);
 }
 
 /* Apply coding font to the entire site */
@@ -407,7 +421,16 @@ body {
 
 .VPHero .image {
   order: 1 !important;
-  max-width: 200px !important;
+  max-width: 300px !important;
+  margin: 0 auto !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+.VPHero .image img {
+  margin: 0 auto !important;
+  display: block !important;
 }
 
 .VPHero .main {
@@ -434,7 +457,16 @@ body {
   }
 
   .VPHero .image {
-    max-width: 280px !important;
+    max-width: 420px !important;
+    margin: 0 auto !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+  }
+
+  .VPHero .image img {
+    margin: 0 auto !important;
+    display: block !important;
   }
 }
 
@@ -460,7 +492,7 @@ body {
   }
 
   .VPHero .image {
-    max-width: 140px !important;
+    max-width: 210px !important;
     align-self: flex-start !important;
     order: 1 !important;
     margin: 0 !important;
@@ -469,7 +501,7 @@ body {
   }
 
   .VPHero .image-container {
-    max-width: 140px !important;
+    max-width: 210px !important;
     margin: 0 !important;
     height: auto !important;
     min-height: auto !important;
@@ -522,6 +554,24 @@ body {
   --tutorial-brand: var(--vp-c-brand-1);
   --tutorial-brand-dark: var(--vp-c-brand-2);
   --tutorial-brand-soft: var(--vp-c-brand-soft);
+}
+
+/* Additional dark mode variables */
+.dark {
+  --typekro-navy: #3B82F6;
+  --typekro-navy-light: #60A5FA;
+  --typekro-emerald: #10B981;
+  --typekro-emerald-light: #34D399;
+  --typekro-cyan: #38BDF8;
+  --typekro-cyan-light: #7DD3FC;
+
+  /* Dark Mode - Deep Forest Green (harmonizes with emerald logo) */
+  --vp-c-bg: #0F1B0F;
+  --vp-c-bg-alt: #152215;
+  --vp-c-bg-soft: #1B291B;
+  --vp-c-bg-mute: #213021;
+
+
 }
 
 /* Ensure proper spacing in documentation */
@@ -632,7 +682,7 @@ body {
   margin-bottom: 2rem;
   font-size: 2.5rem;
   font-weight: 700;
-  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-2));
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--typekro-emerald));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -666,7 +716,7 @@ body {
 
 /* Ensure the gradient effect works in both light and dark modes */
 .dark .vp-doc .content-container h2 {
-  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-light));
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--typekro-emerald-light));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -678,7 +728,7 @@ body {
   margin-bottom: 2rem !important;
   font-size: 2.5rem !important;
   font-weight: 700 !important;
-  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-2)) !important;
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--typekro-emerald)) !important;
   -webkit-background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
   background-clip: text !important;
@@ -687,7 +737,7 @@ body {
 
 /* Ensure the gradient effect works in both light and dark modes */
 .dark .centered-heading {
-  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--vp-c-brand-light)) !important;
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--typekro-emerald-light)) !important;
   -webkit-background-clip: text !important;
   -webkit-text-fill-color: transparent !important;
   background-clip: text !important;
@@ -729,17 +779,17 @@ body {
   position: fixed;
   top: 5rem;
   right: 2rem;
-  background: #fef3cd;
-  color: #856404;
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--vp-c-brand-1);
   padding: 0.4rem 1rem;
   border-radius: 16px;
   font-size: 0.75rem;
   font-weight: 600;
   font-family: var(--vp-font-family-mono);
-  border: 1px solid #ffeaa7;
+  border: 1px solid var(--vp-c-brand-soft);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   z-index: 1000;
   transition: all 0.3s ease;
 }
@@ -751,9 +801,9 @@ body {
 
 /* Dark mode adjustments for BETA badge */
 .dark .beta-badge {
-  background: #2d1b00;
-  color: #fbbf24;
-  border: 1px solid #92400e;
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--vp-c-brand-1);
+  border: 1px solid var(--vp-c-brand-soft);
 }
 
 /* Make the hero section relative positioned to contain the badge */

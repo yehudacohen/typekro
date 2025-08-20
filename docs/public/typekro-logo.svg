@@ -1,156 +1,162 @@
 <svg width="280" height="120" viewBox="0 0 280 120" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <!-- Gradients for colorful crow -->
+    <!-- Gradients for navy blue/green crow -->
     <linearGradient id="bodyGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#4F46E5;stop-opacity:1" />
-      <stop offset="50%" style="stop-color:#7C3AED;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#DB2777;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#1E3A8A;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#1E40AF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#312E81;stop-opacity:1" />
     </linearGradient>
     
     <linearGradient id="wingGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#059669;stop-opacity:1" />
-      <stop offset="50%" style="stop-color:#0891B2;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#3B82F6;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#10B981;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#059669;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#047857;stop-opacity:1" />
     </linearGradient>
     
     <linearGradient id="beakGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#EF4444;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#374151;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#111827;stop-opacity:1" />
     </linearGradient>
     
     <radialGradient id="eyeGradient" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" style="stop-color:#FBBF24;stop-opacity:1" />
-      <stop offset="70%" style="stop-color:#F59E0B;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#D97706;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#06B6D4;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#0891B2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0E7490;stop-opacity:1" />
     </radialGradient>
     
     <linearGradient id="textGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#1F2937;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#4B5563;stop-opacity:1" />
+      <stop offset="0%" style="stop-color:#1E40AF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#065F46;stop-opacity:1" />
     </linearGradient>
   </defs>
   
+  <!-- Wrap all content in a group with centering transform (+25px right) -->
+  <g transform="translate(25, 0)">
+  
   <!-- CROW FLYING ABOVE AS THE "T" - positioned lower, closer to text -->
   <!-- Left wing - forms left side of T horizontal bar -->
-  <ellipse cx="88" cy="42" rx="22" ry="10" fill="url(#wingGradient)" transform="rotate(-8 88 42)"/>
-  <ellipse cx="85" cy="44" rx="16" ry="6" fill="url(#bodyGradient)" opacity="0.6" transform="rotate(-8 85 44)"/>
+  <ellipse cx="28" cy="42" rx="22" ry="10" fill="url(#wingGradient)" transform="rotate(-8 28 42)"/>
+  <ellipse cx="25" cy="44" rx="16" ry="6" fill="url(#bodyGradient)" opacity="0.6" transform="rotate(-8 25 44)"/>
   
   <!-- Right wing - forms right side of T horizontal bar -->
-  <ellipse cx="122" cy="42" rx="22" ry="10" fill="url(#wingGradient)" transform="rotate(8 122 42)"/>
-  <ellipse cx="125" cy="44" rx="16" ry="6" fill="url(#bodyGradient)" opacity="0.6" transform="rotate(8 125 44)"/>
+  <ellipse cx="62" cy="42" rx="22" ry="10" fill="url(#wingGradient)" transform="rotate(8 62 42)"/>
+  <ellipse cx="65" cy="44" rx="16" ry="6" fill="url(#bodyGradient)" opacity="0.6" transform="rotate(8 65 44)"/>
   
   <!-- Crow head -->
-  <circle cx="105" cy="35" r="10" fill="url(#bodyGradient)"/>
+  <circle cx="45" cy="35" r="10" fill="url(#bodyGradient)"/>
   
   <!-- Crow body -->
-  <ellipse cx="105" cy="52" rx="7" ry="18" fill="url(#bodyGradient)"/>
+  <ellipse cx="45" cy="52" rx="7" ry="18" fill="url(#bodyGradient)"/>
   
   <!-- Neck connecting head to body -->
-  <ellipse cx="105" cy="43" rx="5" ry="5" fill="url(#bodyGradient)"/>
+  <ellipse cx="45" cy="43" rx="5" ry="5" fill="url(#bodyGradient)"/>
   
   <!-- Crow beak -->
-  <polygon points="97,33 88,35 98,37" fill="url(#beakGradient)"/>
+  <polygon points="37,33 28,35 38,37" fill="url(#beakGradient)"/>
   
   <!-- Crow eye -->
-  <circle cx="102" cy="33" r="2.2" fill="url(#eyeGradient)"/>
-  <circle cx="102" cy="33" r="1.3" fill="#1F2937"/>
-  <circle cx="102.5" cy="32.5" r="0.7" fill="#FFFFFF"/>
+  <circle cx="42" cy="33" r="2.2" fill="url(#eyeGradient)"/>
+  <circle cx="42" cy="33" r="1.3" fill="#1F2937"/>
+  <circle cx="42.5" cy="32.5" r="0.7" fill="#FFFFFF"/>
   
   <!-- Wing connection details to body -->
-  <ellipse cx="98" cy="45" rx="3" ry="4" fill="url(#wingGradient)" transform="rotate(-8 98 45)"/>
-  <ellipse cx="112" cy="45" rx="3" ry="4" fill="url(#wingGradient)" transform="rotate(8 112 45)"/>
+  <ellipse cx="38" cy="45" rx="3" ry="4" fill="url(#wingGradient)" transform="rotate(-8 38 45)"/>
+  <ellipse cx="52" cy="45" rx="3" ry="4" fill="url(#wingGradient)" transform="rotate(8 52 45)"/>
   
   <!-- Tail feathers -->
-  <ellipse cx="105" cy="67" rx="5" ry="8" fill="url(#wingGradient)"/>
-  <ellipse cx="102" cy="69" rx="3" ry="5" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(-5 102 69)"/>
-  <ellipse cx="108" cy="69" rx="3" ry="5" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(5 108 69)"/>
+  <ellipse cx="45" cy="67" rx="5" ry="8" fill="url(#wingGradient)"/>
+  <ellipse cx="42" cy="69" rx="3" ry="5" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(-5 42 69)"/>
+  <ellipse cx="48" cy="69" rx="3" ry="5" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(5 48 69)"/>
   
   <!-- Crow feet -->
-  <g transform="translate(102, 65)">
-    <line x1="0" y1="0" x2="-2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
-    <line x1="0" y1="0" x2="0" y2="4" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
-    <line x1="0" y1="0" x2="2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+  <g transform="translate(42, 65)">
+    <line x1="0" y1="0" x2="-2" y2="3" stroke="#0891B2" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="0" y2="4" stroke="#0891B2" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="2" y2="3" stroke="#0891B2" stroke-width="1.5" stroke-linecap="round"/>
   </g>
   
-  <g transform="translate(108, 65)">
-    <line x1="0" y1="0" x2="-2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
-    <line x1="0" y1="0" x2="0" y2="4" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
-    <line x1="0" y1="0" x2="2" y2="3" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round"/>
+  <g transform="translate(48, 65)">
+    <line x1="0" y1="0" x2="-2" y2="3" stroke="#0891B2" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="0" y2="4" stroke="#0891B2" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="0" y1="0" x2="2" y2="3" stroke="#0891B2" stroke-width="1.5" stroke-linecap="round"/>
   </g>
   
   <!-- Motion lines showing takeoff - positioned under the crow -->
   <g opacity="0.4" stroke="url(#wingGradient)" stroke-width="2" stroke-linecap="round" fill="none">
-    <path d="M90,65 Q95,67 100,70" />
-    <path d="M88,70 Q93,72 98,75" />
-    <path d="M110,70 Q115,67 120,65" />
-    <path d="M112,75 Q117,72 122,70" />
-    <path d="M95,72 Q100,74 105,76" />
-    <path d="M105,76 Q110,74 115,72" />
+    <path d="M30,65 Q35,67 40,70" />
+    <path d="M28,70 Q33,72 38,75" />
+    <path d="M50,70 Q55,67 60,65" />
+    <path d="M52,75 Q57,72 62,70" />
+    <path d="M35,72 Q40,74 45,76" />
+    <path d="M45,76 Q50,74 55,72" />
   </g>
   
   <!-- "ypeKro" as one word with vintage coding font -->
-  <text x="105" y="75" font-family="Courier New, monospace" font-size="48" font-weight="bold" fill="url(#bodyGradient)">ypeKro</text>
+  <text x="52" y="75" font-family="Courier New, monospace" font-size="48" font-weight="bold" fill="url(#bodyGradient)">ypeKro</text>
   
   <!-- Feather texture overlays for "ypeKro" - much more feathers and bigger -->
   <g opacity="0.4">
     <!-- y feather details -->
-    <ellipse cx="110" cy="50" rx="4" ry="2" fill="url(#wingGradient)" transform="rotate(15 110 50)"/>
-    <ellipse cx="115" cy="58" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-10 115 58)"/>
-    <ellipse cx="118" cy="65" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(25 118 65)"/>
-    <ellipse cx="112" cy="68" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-20 112 68)"/>
+    <ellipse cx="57" cy="50" rx="4" ry="2" fill="url(#wingGradient)" transform="rotate(15 57 50)"/>
+    <ellipse cx="62" cy="58" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-10 62 58)"/>
+    <ellipse cx="65" cy="65" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(25 65 65)"/>
+    <ellipse cx="59" cy="68" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-20 59 68)"/>
     
     <!-- p feather details -->
-    <ellipse cx="132" cy="45" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(20 132 45)"/>
-    <ellipse cx="138" cy="52" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-5 138 52)"/>
-    <ellipse cx="135" cy="60" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(30 135 60)"/>
-    <ellipse cx="140" cy="67" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-15 140 67)"/>
-    <ellipse cx="128" cy="70" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(10 128 70)"/>
+    <ellipse cx="79" cy="45" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(20 79 45)"/>
+    <ellipse cx="85" cy="52" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-5 85 52)"/>
+    <ellipse cx="82" cy="60" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(30 82 60)"/>
+    <ellipse cx="87" cy="67" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-15 87 67)"/>
+    <ellipse cx="75" cy="70" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(10 75 70)"/>
     
     <!-- e feather details -->
-    <ellipse cx="152" cy="48" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(-15 152 48)"/>
-    <ellipse cx="158" cy="55" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(10 158 55)"/>
-    <ellipse cx="155" cy="63" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(-25 155 63)"/>
-    <ellipse cx="160" cy="70" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(20 160 70)"/>
-    <ellipse cx="148" cy="68" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(5 148 68)"/>
+    <ellipse cx="99" cy="48" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(-15 99 48)"/>
+    <ellipse cx="105" cy="55" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(10 105 55)"/>
+    <ellipse cx="102" cy="63" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(-25 102 63)"/>
+    <ellipse cx="107" cy="70" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(20 107 70)"/>
+    <ellipse cx="95" cy="68" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(5 95 68)"/>
     
     <!-- K feather details -->
-    <ellipse cx="172" cy="46" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(25 172 46)"/>
-    <ellipse cx="180" cy="53" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-20 180 53)"/>
-    <ellipse cx="177" cy="61" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(15 177 61)"/>
-    <ellipse cx="184" cy="68" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-10 184 68)"/>
-    <ellipse cx="175" cy="70" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(35 175 70)"/>
-    <ellipse cx="168" cy="58" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-30 168 58)"/>
+    <ellipse cx="119" cy="46" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(25 119 46)"/>
+    <ellipse cx="127" cy="53" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-20 127 53)"/>
+    <ellipse cx="124" cy="61" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(15 124 61)"/>
+    <ellipse cx="131" cy="68" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-10 131 68)"/>
+    <ellipse cx="122" cy="70" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(35 122 70)"/>
+    <ellipse cx="115" cy="58" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-30 115 58)"/>
     
     <!-- r feather details -->
-    <ellipse cx="195" cy="48" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(-10 195 48)"/>
-    <ellipse cx="202" cy="55" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(5 202 55)"/>
-    <ellipse cx="199" cy="63" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(-25 199 63)"/>
-    <ellipse cx="205" cy="70" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(15 205 70)"/>
-    <ellipse cx="192" cy="68" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(8 192 68)"/>
+    <ellipse cx="142" cy="48" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(-10 142 48)"/>
+    <ellipse cx="149" cy="55" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(5 149 55)"/>
+    <ellipse cx="146" cy="63" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(-25 146 63)"/>
+    <ellipse cx="152" cy="70" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(15 152 70)"/>
+    <ellipse cx="139" cy="68" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(8 139 68)"/>
     
     <!-- o feather details -->
-    <ellipse cx="215" cy="50" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(18 215 50)"/>
-    <ellipse cx="222" cy="57" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-8 222 57)"/>
-    <ellipse cx="219" cy="65" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(28 219 65)"/>
-    <ellipse cx="225" cy="72" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-12 225 72)"/>
-    <ellipse cx="212" cy="70" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(12 212 70)"/>
-    <ellipse cx="228" cy="63" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(22 228 63)"/>
+    <ellipse cx="162" cy="50" rx="4" ry="2.2" fill="url(#wingGradient)" transform="rotate(18 162 50)"/>
+    <ellipse cx="169" cy="57" rx="3" ry="1.5" fill="#FFFFFF" transform="rotate(-8 169 57)"/>
+    <ellipse cx="166" cy="65" rx="3.5" ry="2" fill="url(#wingGradient)" transform="rotate(28 166 65)"/>
+    <ellipse cx="172" cy="72" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(-12 172 72)"/>
+    <ellipse cx="159" cy="70" rx="3" ry="1.8" fill="url(#wingGradient)" transform="rotate(12 159 70)"/>
+    <ellipse cx="175" cy="63" rx="2.5" ry="1.5" fill="#FFFFFF" transform="rotate(22 175 63)"/>
   </g>
   
   <!-- Wing feather details - bigger and more -->
   <g opacity="0.5">
-    <ellipse cx="80" cy="30" rx="5" ry="2.5" fill="#FFFFFF" transform="rotate(-12 80 30)"/>
-    <ellipse cx="85" cy="34" rx="4" ry="2" fill="#FFFFFF" transform="rotate(-6 85 34)"/>
-    <ellipse cx="88" cy="38" rx="3.5" ry="1.8" fill="url(#wingGradient)" transform="rotate(-18 88 38)"/>
+    <ellipse cx="20" cy="30" rx="5" ry="2.5" fill="#FFFFFF" transform="rotate(-12 20 30)"/>
+    <ellipse cx="25" cy="34" rx="4" ry="2" fill="#FFFFFF" transform="rotate(-6 25 34)"/>
+    <ellipse cx="28" cy="38" rx="3.5" ry="1.8" fill="url(#wingGradient)" transform="rotate(-18 28 38)"/>
     
-    <ellipse cx="130" cy="30" rx="5" ry="2.5" fill="#FFFFFF" transform="rotate(12 130 30)"/>
-    <ellipse cx="125" cy="34" rx="4" ry="2" fill="#FFFFFF" transform="rotate(6 125 34)"/>
-    <ellipse cx="122" cy="38" rx="3.5" ry="1.8" fill="url(#wingGradient)" transform="rotate(18 122 38)"/>
+    <ellipse cx="70" cy="30" rx="5" ry="2.5" fill="#FFFFFF" transform="rotate(12 70 30)"/>
+    <ellipse cx="65" cy="34" rx="4" ry="2" fill="#FFFFFF" transform="rotate(6 65 34)"/>
+    <ellipse cx="62" cy="38" rx="3.5" ry="1.8" fill="url(#wingGradient)" transform="rotate(18 62 38)"/>
     
     <!-- Additional wing feathers -->
-    <ellipse cx="75" cy="35" rx="3" ry="1.5" fill="url(#wingGradient)" transform="rotate(-25 75 35)"/>
-    <ellipse cx="135" cy="35" rx="3" ry="1.5" fill="url(#wingGradient)" transform="rotate(25 135 35)"/>
-    <ellipse cx="92" cy="32" rx="2.5" ry="1.2" fill="#FFFFFF" transform="rotate(-8 92 32)"/>
-    <ellipse cx="118" cy="32" rx="2.5" ry="1.2" fill="#FFFFFF" transform="rotate(8 118 32)"/>
+    <ellipse cx="15" cy="35" rx="3" ry="1.5" fill="url(#wingGradient)" transform="rotate(-25 15 35)"/>
+    <ellipse cx="75" cy="35" rx="3" ry="1.5" fill="url(#wingGradient)" transform="rotate(25 75 35)"/>
+    <ellipse cx="32" cy="32" rx="2.5" ry="1.2" fill="#FFFFFF" transform="rotate(-8 32 32)"/>
+    <ellipse cx="58" cy="32" rx="2.5" ry="1.2" fill="#FFFFFF" transform="rotate(8 58 32)"/>
+  </g>
+  
+  <!-- Close centering transform group -->
   </g>
 </svg>
