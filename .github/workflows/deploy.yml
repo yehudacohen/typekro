@@ -13,6 +13,32 @@ permissions:
   id-token: write
 
 jobs:
+  # Run tests and upload coverage
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        
+      - name: Install dependencies
+        run: bun install
+        
+      - name: Run tests with coverage
+        run: bun test --coverage --coverage-reporter=lcov
+        
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
   # Build docs on master changes
   build-docs:
     runs-on: ubuntu-latest

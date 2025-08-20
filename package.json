@@ -21,6 +21,7 @@
     "build:examples": "bun tsc --project tsconfig.examples.json",
     "dev": "bun tsc --watch",
     "test": "./scripts/run-unit-tests.sh",
+    "test:coverage": "bun test --coverage --coverage-reporter=lcov",
     "test:watch": "bun test --watch --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)",
     "test:all": "bun run test && bun run test:integration:all",
     "test:integration": "./scripts/run-integration-tests.sh",

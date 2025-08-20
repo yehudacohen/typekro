@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discord Community
+    url: https://discord.gg/kKNSDDjW
+    about: Join our Discord for quick questions and community support
+  - name: 📚 Documentation
+    url: https://typekro.run
+    about: Check our comprehensive documentation and guides
+  - name: 🚀 Examples
+    url: https://typekro.run/examples/
+    about: Browse code examples and common patterns
