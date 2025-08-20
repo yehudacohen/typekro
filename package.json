@@ -75,7 +75,7 @@
     "resource-graph"
   ],
   "author": "Skates Platform Team",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@kubernetes/client-node": "^0.20.0",
     "alchemy": "^0.56.0",
