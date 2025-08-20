@@ -5,7 +5,7 @@ I've never met a developer who likes YAML very much. Nonetheless, I keep running
 
 I think it is worthwhile noting that hardcore Kubernetes enthusiasts end up (almost universally) enduring the pain of YAML configuration, electing to write Helm charts or Kustomizations to manage their infrastructure rather than adopting tools that let them define their infrastructure in expressive, modern, statically typed programming languages. This stands in stark contrast to AWS engineers, who have long since abandoned the pain of writing CloudFormation templates in favor of Pulumi or Terraform or the AWS CDK.
 
-This blog post has two objectives:
+This blog post has two  objectives:
 
 1. To explain why I think Pulumi and cdk8s have not succeeded in gaining traction in the Kubernetes ecosystem.
 2. To introduce you to TypeKro, a new Kubernetes SDK that I have been working on with the goal of bringing Kubernetes development into the 2020s, and enable engineers to achieve a seamless development experience that benefits from the expressiveness and tooling of modern programming languages. All while using primitives they are familiar with, and without the pain points of cdk8s or Pulumi.
