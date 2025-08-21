@@ -61,29 +61,33 @@ const webapp = toResourceGraph(
     spec: WebAppSpec,
     status: WebAppStatus
   },
-  (schema) => ({
-    // Database
-    database: simpleDeployment({
-      name: 'postgres', 
-      image: 'postgres:15',
-      env: { POSTGRES_DB: 'app', POSTGRES_USER: 'user', POSTGRES_PASSWORD: 'secret' }
-    }),
-    
-    // Service (defined first to show cross-references work in any order)
-    service: simpleService({
-      name: schema.spec.name,  // Type-safe schema reference
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 80 }]
-    }),
-    
-    // Web app that references schema fields
-    app: simpleDeployment({
-      name: schema.spec.name,    // Type-safe schema reference
-      image: schema.spec.image,  // Full IDE autocomplete
-      replicas: schema.spec.replicas,
-      env: { DATABASE_HOST: 'postgres' }
-    })
-  }),
+  (schema) => {
+    // Create database first
+    const database = simpleDeployment({
+      name: 'postgres', 
+      image: 'postgres:15',
+      labels: { app: 'postgres', component: 'database' },
+      env: { POSTGRES_DB: 'app', POSTGRES_USER: 'user', POSTGRES_PASSWORD: 'secret' }
+    });
+    
+    // Create app that references database
+    const app = simpleDeployment({
+      name: schema.spec.name,    // Type-safe schema reference
+      image: schema.spec.image,  // Full IDE autocomplete
+      replicas: schema.spec.replicas,
+      labels: { app: schema.spec.name },
+      env: { DATABASE_HOST: database.metadata.name }  // Reference database by field
+    });
+    
+    // Create service that references app's labels
+    const service = simpleService({
+      name: Cel.template('%s-service', schema.spec.name),
+      selector: app.spec.selector.matchLabels,  // Reference deployment labels
+      ports: [{ port: 80, targetPort: 80 }]
+    });
+
+    return { database, app, service };
+  },
   (schema, resources) => ({
     ready: Cel.expr(resources.app.status.readyReplicas, ' > 0'),  // Runtime logic
     url: Cel.template('http://%s', schema.spec.name)  // String templating with schema reference
@@ -544,39 +548,33 @@ const infraGraph = toResourceGraph(
     spec: InfraSpec,
     status: type({ ready: 'boolean' })
   },
-  (schema) => ({
-    // Helm repository source
-    repository: helmRepository({
-      name: 'nginx-repo',
-      url: 'https://kubernetes.github.io/ingress-nginx'
-    }),
-    
-    // Type-safe Helm release with schema references
-    controller: helmRelease({
-      name: Cel.template('%s-ingress', schema.spec.name),
-      chart: {
-        spec: {
-          chart: 'ingress-nginx',
-          sourceRef: {
-            kind: 'HelmRepository',
-            name: 'nginx-repo'
-          },
-          version: '4.8.0'
-        }
-      },
-      values: {
-        controller: {
-          replicaCount: schema.spec.replicas,                    // Schema reference
-          service: {
-            loadBalancerIP: schema.spec.loadBalancerIP           // Schema reference
-          },
-          config: {
-            'custom-config': Cel.template('env-%s', schema.spec.environment)  // CEL expression
-          }
-        }
-      }
-    })
-  }),
+  (schema) => {
+    // Create Helm repository first
+    const repository = helmRepository({
+      name: 'nginx-repo',
+      url: 'https://kubernetes.github.io/ingress-nginx'
+    });
+    
+    // Create Helm release using simple factory
+    const controller = simpleHelmChart(
+      Cel.template('%s-ingress', schema.spec.name),
+      repository.spec.url,  // Reference repository URL by field
+      'ingress-nginx',
+      {
+        controller: {
+          replicaCount: schema.spec.replicas,                    // Schema reference
+          service: {
+            loadBalancerIP: schema.spec.loadBalancerIP           // Schema reference
+          },
+          config: {
+            'custom-config': Cel.template('env-%s', schema.spec.environment)  // CEL expression
+          }
+        }
+      }
+    );
+
+    return { repository, controller };
+  },
   (schema, resources) => ({
     ready: Cel.expr(resources.controller.status.conditions, '[?@.type=="Ready"].status == "True"')
   })
@@ -1006,24 +1004,30 @@ const appGraph = toResourceGraph(
     spec: AppSpec,
     status: type({ ready: 'boolean' })
   },
-  (schema) => ({
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      env: {
-        // Reference cloud resources
-        API_URL: api.url,
-        UPLOAD_BUCKET: bucket.name,
-        // Reference other Kubernetes resources  
-        REDIS_HOST: Cel.template('%s-redis', schema.spec.name)
-      }
-    }),
-    
-    redis: simpleDeployment({
-      name: Cel.template('%s-redis', schema.spec.name),
-      image: 'redis:7'
-    })
-  }),
+  (schema) => {
+    // Create redis first
+    const redis = simpleDeployment({
+      name: Cel.template('%s-redis', schema.spec.name),
+      image: 'redis:7',
+      labels: { app: Cel.template('%s-redis', schema.spec.name), component: 'cache' }
+    });
+    
+    // Create app that references redis
+    const app = simpleDeployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      labels: { app: schema.spec.name, component: 'web' },
+      env: {
+        // Reference cloud resources
+        API_URL: api.url,
+        UPLOAD_BUCKET: bucket.name,
+        // Reference other Kubernetes resources by field
+        REDIS_HOST: redis.metadata.name
+      }
+    });
+
+    return { redis, app };
+  },
   (schema, resources) => ({
     ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
   })
