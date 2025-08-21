@@ -30,7 +30,7 @@ jobs:
         run: bun test --coverage --coverage-reporter=lcov --timeout 10000 $(find test -name '*.test.ts' | grep -v integration)
         
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           file: ./coverage/lcov.info
           flags: unittests
