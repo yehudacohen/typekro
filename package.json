@@ -92,7 +92,7 @@
     "@types/bun": "^1.2.19",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.10.0",
-    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/eslint-plugin": "^8.40.0",
     "@typescript-eslint/parser": "^6.13.0",
     "eslint": "^8.54.0",
     "husky": "^9.0.0",
