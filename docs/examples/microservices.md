@@ -142,21 +142,22 @@ export const microservicesApp = toResourceGraph(
         name: 'user-service',
         image: schema.spec.services.user.image,
         replicas: schema.spec.services.user.replicas,
+        labels: { app: 'user-service', component: 'backend' },  // Labels for service selector
         ports: [{ containerPort: 3000 }],
         env: [
           { name: 'PORT', value: '3000' },
           { name: 'DB_HOST', value: schema.spec.services.user.database.host },
           { name: 'DB_NAME', value: schema.spec.services.user.database.name },
-          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: 'db-secrets', key: 'USER_DB_PASSWORD' } } }
+          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: dbSecrets.metadata.name, key: 'USER_DB_PASSWORD' } } }  // Reference Secret by field
         ],
-        envFrom: [{ configMapRef: { name: 'app-config' } }],
+        envFrom: [{ configMapRef: { name: appConfig.metadata.name } }],  // Reference ConfigMap by field
         livenessProbe: { httpGet: { path: '/health', port: 3000 } },
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
       
       userService: simpleService({
         name: 'user-service',
-        selector: { app: 'user-service' },
+        selector: { app: 'user-service' },  // Should match userDeployment labels
         ports: [{ port: 3000, targetPort: 3000 }]
       }),
       
@@ -170,9 +171,9 @@ export const microservicesApp = toResourceGraph(
           { name: 'PORT', value: '3000' },
           { name: 'DB_HOST', value: schema.spec.services.product.database.host },
           { name: 'DB_NAME', value: schema.spec.services.product.database.name },
-          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: 'db-secrets', key: 'PRODUCT_DB_PASSWORD' } } }
+          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: dbSecrets.metadata.name, key: 'PRODUCT_DB_PASSWORD' } } }  // Reference Secret by field
         ],
-        envFrom: [{ configMapRef: { name: 'app-config' } }],
+        envFrom: [{ configMapRef: { name: appConfig.metadata.name } }],  // Reference ConfigMap by field
         livenessProbe: { httpGet: { path: '/health', port: 3000 } },
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
@@ -193,9 +194,9 @@ export const microservicesApp = toResourceGraph(
           { name: 'PORT', value: '3000' },
           { name: 'DB_HOST', value: schema.spec.services.order.database.host },
           { name: 'DB_NAME', value: schema.spec.services.order.database.name },
-          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: 'db-secrets', key: 'ORDER_DB_PASSWORD' } } }
+          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: dbSecrets.metadata.name, key: 'ORDER_DB_PASSWORD' } } }  // Reference Secret by field
         ],
-        envFrom: [{ configMapRef: { name: 'app-config' } }],
+        envFrom: [{ configMapRef: { name: appConfig.metadata.name } }],  // Reference ConfigMap by field
         livenessProbe: { httpGet: { path: '/health', port: 3000 } },
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
@@ -434,7 +435,7 @@ Shared configuration is managed centrally but can be overridden per service:
 
 ```typescript
 // Global configuration
-envFrom: [{ configMapRef: { name: 'app-config' } }],
+envFrom: [{ configMapRef: { name: resources.appConfig.metadata.name } }],  // Reference ConfigMap by field
 
 // Service-specific overrides
 env: [

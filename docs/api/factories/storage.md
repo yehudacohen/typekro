@@ -77,7 +77,7 @@ const storageApp = toResourceGraph(
       volumes: [{
         name: 'data',
         persistentVolumeClaim: {
-          claimName: schema.spec.name + '-storage'  // References PVC above
+          claimName: resources.storage.metadata.name  // Reference PVC by field
         }
       }]
     })
@@ -252,7 +252,7 @@ const multiTierApp = toResourceGraph(
       }],
       volumes: [{
         name: 'db-data',
-        persistentVolumeClaim: { claimName: 'database-storage' }
+        persistentVolumeClaim: { claimName: resources.dbStorage.metadata.name }  // Reference PVC by field
       }]
     }),
     
@@ -267,7 +267,7 @@ const multiTierApp = toResourceGraph(
       }],
       volumes: [{
         name: 'shared-files', 
-        persistentVolumeClaim: { claimName: 'shared-storage' }
+        persistentVolumeClaim: { claimName: resources.sharedStorage.metadata.name }  // Reference PVC by field
       }]
     })
   }),

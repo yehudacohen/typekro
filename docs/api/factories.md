@@ -75,9 +75,10 @@ Create networking resources with simplified configuration:
 import { simpleService, simpleIngress, simpleNetworkPolicy } from 'typekro';
 
 // Service for load balancing
+// In a resource graph context where you have a deployment:
 const webService = simpleService({
   name: 'web-service',
-  selector: { app: 'web' },
+  selector: resources.webDeployment.spec.selector.matchLabels,  // Reference deployment labels
   ports: [{ port: 80, targetPort: 8080 }],
   type: 'ClusterIP'
 });
@@ -315,6 +316,7 @@ const microservices = toResourceGraph(
     database: simpleDeployment({
       name: 'postgres',
       image: 'postgres:13',
+      labels: { app: 'postgres', component: 'database' },  // Labels for service selector
       env: {
         POSTGRES_DB: schema.spec.name,  // Schema reference
         POSTGRES_USER: 'app'
@@ -324,7 +326,7 @@ const microservices = toResourceGraph(
     // Database service
     dbService: simpleService({
       name: 'postgres',
-      selector: { app: 'postgres' },
+      selector: resources.database.spec.selector.matchLabels,  // Reference database deployment labels
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
@@ -332,11 +334,12 @@ const microservices = toResourceGraph(
     api: simpleDeployment({
       name: 'api',
       image: 'myapp/api:latest',
+      labels: { app: 'api', component: 'backend' },  // Labels for service selector
       env: {
         // Reference to database service (runtime resolution)
         DATABASE_URL: Cel.template(
           'postgres://app@%s:5432/%s',
-          'postgres',  // References dbService.spec.clusterIP at runtime
+          resources.dbService.metadata.name,  // Reference service by field
           schema.spec.name
         )
       }
@@ -345,7 +348,7 @@ const microservices = toResourceGraph(
     // API service
     apiService: simpleService({
       name: 'api',
-      selector: { app: 'api' },
+      selector: resources.api.spec.selector.matchLabels,  // Reference API deployment labels
       ports: [{ port: 8080, targetPort: 8080 }]
     })
   }),

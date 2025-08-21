@@ -25,22 +25,29 @@ const appGraph = toResourceGraph(
     kind: 'NginxApp',
     spec: AppSchema
   },
-  (schema) => ({
-    nginx: helmRelease({
-      name: 'nginx',
-      chart: {
-        repository: 'https://charts.bitnami.com/bitnami',
-        name: 'nginx',
-        version: '13.2.23'
-      },
-      values: {
+  (schema) => {
+    // Create repository first
+    const repository = helmRepository({
+      name: 'bitnami',
+      url: 'https://charts.bitnami.com/bitnami',
+      interval: '10m'
+    });
+    
+    // Create app using simple factory
+    const app = simpleHelmChart(
+      'nginx',
+      repository.spec.url,  // Reference repository URL by field
+      'nginx',
+      {
         replicaCount: schema.spec.replicas,
         image: {
           tag: schema.spec.version
         }
       }
-    })
-  })
+    );
+
+    return { repository, app };
+  }
 );
 ```
 
@@ -281,39 +288,38 @@ const privateChartGraph = toResourceGraph(
       }
     })
   },
-  (schema) => ({
-    // Create secret for private repository
-    repoSecret: secret({
+  (schema) => {
+    // Create secret for private repository first
+    const repoSecret = secret({
       name: 'helm-repo-secret',
       data: {
         username: schema.spec.credentials.username,
         password: schema.spec.credentials.password
       }
-    }),
+    });
     
-    // Create HelmRepository resource
-    privateRepo: helmRepository({
+    // Create HelmRepository resource that references secret
+    const privateRepo = helmRepository({
       name: 'private-charts',
       namespace: 'flux-system',
       url: 'https://charts.private.company.com',
       secretRef: {
-        name: 'helm-repo-secret'
+        name: repoSecret.metadata.name  // Reference secret by field
       }
-    }),
+    });
     
-    // Deploy from private repository
-    app: helmRelease({
-      name: schema.spec.name,
-      chart: {
-        repository: 'https://charts.private.company.com',
-        name: 'private-app',
-        version: schema.spec.chartVersion
-      },
-      values: {
+    // Deploy using simple factory
+    const app = simpleHelmChart(
+      schema.spec.name,
+      privateRepo.spec.url,  // Reference repository URL by field
+      'private-app',
+      {
         // Application-specific values
       }
-    })
-  }),
+    );
+
+    return { repoSecret, privateRepo, app };
+  },
   (schema, resources) => ({
     repositoryReady: resources.privateRepo.status.ready,
     appReady: Cel.expr<boolean>(resources.app.status.phase, ' == "Ready"'),

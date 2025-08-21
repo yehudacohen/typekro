@@ -351,24 +351,20 @@ const helmApp = toResourceGraph(
     spec: HelmAppSpec,
     status: type({ ready: 'boolean', url: 'string' })
   },
-  (schema) => ({
-    // Helm repository source
-    repository: helmRepository({
+  (schema) => {
+    // Create Helm repository first
+    const repository = helmRepository({
       name: 'bitnami',
       url: 'https://charts.bitnami.com/bitnami',
       interval: '10m'
-    }),
+    });
     
-    // HelmRelease with schema references in values
-    nginx: helmRelease({
-      name: schema.spec.name,
-      namespace: schema.spec.environment,
-      chart: {
-        repository: 'bitnami',
-        name: 'nginx',
-        version: '13.2.23'
-      },
-      values: {
+    // Create HelmRelease using simple factory
+    const nginx = simpleHelmChart(
+      schema.spec.name,
+      repository.spec.url,  // Reference repository URL by field  
+      'nginx',
+      {
         // Type-safe values with schema references
         replicaCount: schema.spec.replicas,
         image: {
@@ -387,8 +383,10 @@ const helmApp = toResourceGraph(
           tls: schema.spec.environment === 'production'
         }
       }
-    })
-  }),
+    );
+
+    return { repository, nginx };
+  },
   (schema, resources) => ({
     ready: Cel.expr(resources.nginx.status.conditions, '[?@.type=="Ready"].status == "True"'),
     url: Cel.template('https://%s', schema.spec.domain)
@@ -416,16 +414,20 @@ const microservicesApp = toResourceGraph(
     }),
     status: type({ ready: 'boolean' })
   },
-  (schema) => ({
-    // Database
-    postgres: helmRelease({
-      name: Cel.template('%s-postgres', schema.spec.name),
-      chart: {
-        repository: 'bitnami',
-        name: 'postgresql',
-        version: '12.1.9'
-      },
-      values: {
+  (schema) => {
+    // Create repositories first
+    const bitnamiRepo = helmRepository({
+      name: 'bitnami',
+      url: 'https://charts.bitnami.com/bitnami',
+      interval: '10m'
+    });
+    
+    // Create database using simple factory
+    const postgres = simpleHelmChart(
+      Cel.template('%s-postgres', schema.spec.name),
+      bitnamiRepo.spec.url,  // Reference repository URL by field
+      'postgresql',
+      {
         auth: {
           database: schema.spec.name,
           username: 'app'
@@ -440,17 +442,14 @@ const microservicesApp = toResourceGraph(
           }
         }
       }
-    }),
+    );
     
-    // Redis cache
-    redis: helmRelease({
-      name: Cel.template('%s-redis', schema.spec.name),
-      chart: {
-        repository: 'bitnami',
-        name: 'redis',
-        version: '17.3.7'
-      },
-      values: {
+    // Create redis cache using simple factory
+    const redis = simpleHelmChart(
+      Cel.template('%s-redis', schema.spec.name),
+      bitnamiRepo.spec.url,  // Reference repository URL by field
+      'redis',
+      {
         auth: { enabled: false },
         replica: {
           replicaCount: Cel.conditional(
@@ -460,27 +459,36 @@ const microservicesApp = toResourceGraph(
           )
         }
       }
-    }),
+    );
     
-    // Monitoring stack (conditional)
-    ...(schema.spec.monitoring && {
-      prometheus: helmRelease({
-        name: 'prometheus',
-        chart: {
-          repository: 'prometheus-community',
-          name: 'kube-prometheus-stack',
-          version: '45.7.1'
-        },
-        values: {
+    const result = { bitnamiRepo, postgres, redis };
+    
+    // Add monitoring if enabled
+    if (schema.spec.monitoring) {
+      const prometheusRepo = helmRepository({
+        name: 'prometheus-community',
+        url: 'https://prometheus-community.github.io/helm-charts',
+        interval: '10m'
+      });
+      
+      const prometheus = simpleHelmChart(
+        'prometheus',
+        prometheusRepo.spec.url,  // Reference repository URL by field
+        'kube-prometheus-stack',
+        {
           prometheus: {
             prometheusSpec: {
               retention: '30d'
             }
           }
         }
-      })
-    })
-  }),
+      );
+      
+      return { ...result, prometheusRepo, prometheus };
+    }
+    
+    return result;
+  },
   (schema, resources) => ({
     ready: Cel.expr(
       resources.postgres.status.conditions, '[?@.type=="Ready"].status == "True" && ',
