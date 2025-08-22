@@ -39,7 +39,7 @@ async function setupFluxGitOps() {
     kroVersion: '0.3.0'
   });
 
-  const factory = await bootstrap.factory('direct', {
+  const factory = bootstrap.factory('direct', {
     namespace: 'flux-system',
     waitForReady: true
   });
@@ -394,7 +394,7 @@ const helmApp = toResourceGraph(
 );
 
 // Generate GitOps-ready YAML
-const factory = await helmApp.factory('kro', { namespace: 'flux-system' });
+const factory = helmApp.factory('kro', { namespace: 'flux-system' });
 const yaml = factory.toYaml();
 writeFileSync('deploy/helm-webapp.yaml', yaml);
 ```

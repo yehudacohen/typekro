@@ -41,12 +41,24 @@
 - Use `/tmp` or ask where to put temporary files
 - Clean up after yourself in the same session
 
-### 2. NO DESTRUCTIVE CHANGES WITHOUT PERMISSION
-- **NEVER** run `git checkout --`, `git reset`, or `git revert` without explicit user approval
+### 2. NO DESTRUCTIVE CHANGES WITHOUT PERMISSION - ESPECIALLY NO WORKING DIRECTORY DELETION
+- **NEVER EVER** run `git checkout HEAD --`, `git checkout --`, `git reset --hard`, or any command that deletes working directory changes
+- **THESE COMMANDS DESTROY USER'S UNCOMMITTED WORK** - this is the worst possible mistake an agent can make
+- **WORKING DIRECTORY CHANGES ARE SACRED** - they represent the user's current progress and should never be touched
 - **NEVER** delete files without asking first
 - **NEVER** revert changes blindly without understanding what they contain
 - **ALWAYS** check what changes contain before modifying them
 - **ALWAYS** ask "What will this command do?" before running destructive git commands
+- **IF YOU NEED TO UNDO YOUR CHANGES**: Make targeted edits to fix them, don't use destructive git commands
+
+### 2.1. NEVER COMMIT USER'S UNCOMMITTED CHANGES WITHOUT PERMISSION
+- **CRITICAL**: When user asks to commit specific changes, ONLY commit those exact changes
+- **NEVER** run `git add .` or `git commit -a` which commits ALL changes
+- **ALWAYS** check `git status` to see what files have uncommitted changes  
+- **ALWAYS** only stage the specific files that were part of your task
+- **NEVER** stage or commit files with user's work-in-progress changes
+- **ASK** if unsure which changes belong to your task vs user's other work
+- **EXAMPLE**: User asks to commit docs changes → only stage docs files, not package.json or src/ changes
 
 ### 3. CONTEXT-FIRST DEVELOPMENT (From steering/context-first-development.md)
 - **NEVER** assume something is wrong without investigation
@@ -128,12 +140,20 @@
 7. **Test Changes**: Ensure tests pass and behavior is correct
 8. **Clean Up**: Remove any temporary files immediately
 
+## WORKFLOW FOR COMMITS
+1. **Check git status**: See all changed files before staging anything
+2. **Identify your changes**: Only stage files that are part of your specific task
+3. **Verify with user**: If unclear what changes are yours vs theirs, ASK
+4. **Stage selectively**: Use `git add file1 file2` NOT `git add .`
+5. **Double-check**: Run `git status` again to verify only your changes are staged
+6. **Commit with clear message**: Explain what YOU changed, not user's other work
+
 ## RED FLAGS - STOP AND ASK FOR HELP
 - Tests are failing and you want to change test expectations
 - You want to disable features to make tests pass (`waitForReady: false`, skipping tests)
 - You want to add `as any` type assertions
 - You're creating backup files or duplicate implementations
-- You're running destructive git commands
+- **YOU'RE ABOUT TO RUN ANY `git checkout`, `git reset --hard`, OR OTHER COMMAND THAT DELETES WORKING DIRECTORY CHANGES**
 - You want to ignore existing codebase patterns
 - Code uses complex workarounds you don't understand
 - You're about to skip or comment out failing tests

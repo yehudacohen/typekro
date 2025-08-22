@@ -24,7 +24,7 @@ const bootstrap = typeKroRuntimeBootstrap({
   kroVersion: '0.3.0'
 });
 
-const factory = await bootstrap.factory('direct', {
+const factory = bootstrap.factory('direct', {
   namespace: 'flux-system',
   waitForReady: true,
   timeout: 300000
@@ -127,7 +127,7 @@ export const app = toResourceGraph(
 // deploy.ts
 import { app } from './simple-app.js';
 
-const factory = await app.factory('direct', { namespace: 'default' });
+const factory = app.factory('direct', { namespace: 'default' });
 await factory.deploy({
   name: 'hello-world',
   image: 'nginx:latest',
@@ -340,7 +340,7 @@ async function setupTypeKroRuntime() {
   });
 
   // Deploy using direct mode
-  const factory = await bootstrap.factory('direct', {
+  const factory = bootstrap.factory('direct', {
     namespace: 'flux-system',
     waitForReady: true,            // Wait for all components to be ready
     timeout: 300000               // 5 minute timeout
@@ -377,7 +377,7 @@ import { webAppGraph } from './webapp.js';
 
 async function deployApp() {
   // Create a direct deployment factory
-  const factory = await webAppGraph.factory('direct', {
+  const factory = webAppGraph.factory('direct', {
     namespace: 'development'
   });
 
@@ -443,7 +443,7 @@ Use the Kro controller for advanced reconciliation:
 import { webAppGraph } from './webapp.js';
 
 async function deployWithKro() {
-  const factory = await webAppGraph.factory('kro', {
+  const factory = webAppGraph.factory('kro', {
     namespace: 'production'
   });
 

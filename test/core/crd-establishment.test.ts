@@ -28,6 +28,32 @@ const mockK8sApi = {
     }
     return Promise.reject({ statusCode: 404 });
   }),
+  list: mock((apiVersion?: string, kind?: string) => {
+    // Mock CRD listing for CRD name discovery
+    if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
+      return Promise.resolve({
+        body: {
+          items: [
+            {
+              metadata: { name: 'myresources.example.com' },
+              spec: {
+                group: 'example.com',
+                names: { kind: 'MyResource', plural: 'myresources' }
+              }
+            },
+            {
+              metadata: { name: 'slowresources.example.com' },
+              spec: {
+                group: 'example.com',
+                names: { kind: 'SlowResource', plural: 'slowresources' }
+              }
+            }
+          ]
+        }
+      });
+    }
+    return Promise.resolve({ body: { items: [] } });
+  }),
   create: mock((resource?: any) =>
     Promise.resolve({
       body: {
@@ -112,6 +138,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     
     // Clear mocks
     mockK8sApi.read.mockClear();
+    mockK8sApi.list.mockClear();
     mockK8sApi.create.mockClear();
     mockK8sApi.patch.mockClear();
     mockReferenceResolver.resolveReferences.mockClear();
@@ -237,6 +264,26 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
         });
       }
       return Promise.reject({ statusCode: 404 });
+    });
+
+    // Also mock list to return the SlowResource CRD
+    mockK8sApi.list.mockImplementation((apiVersion?: string, kind?: string) => {
+      if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
+        return Promise.resolve({
+          body: {
+            items: [
+              {
+                metadata: { name: 'slowresources.example.com' },
+                spec: {
+                  group: 'example.com',
+                  names: { kind: 'SlowResource', plural: 'slowresources' }
+                }
+              }
+            ]
+          }
+        });
+      }
+      return Promise.resolve({ body: { items: [] } });
     });
 
     // Only create a custom resource (no CRD in the graph)

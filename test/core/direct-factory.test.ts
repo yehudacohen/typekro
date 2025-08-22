@@ -171,7 +171,7 @@ describe('DirectResourceFactory', () => {
 
       const spec: WebAppSpec = {
         name: 'test-app',
-        image: 'nginx:1.21',
+        image: 'nginx:latest',
         replicas: 2,
         port: 3000,
       };

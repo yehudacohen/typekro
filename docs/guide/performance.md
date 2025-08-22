@@ -207,7 +207,7 @@ const cachedGraph = toResourceGraph(
 ```typescript
 // ✅ Deploy independent resources in parallel
 async function parallelDeploy() {
-  const factory = await graph.factory('direct', {
+  const factory = graph.factory('direct', {
     parallelDeployment: true,
     maxConcurrency: 5
   });
@@ -230,7 +230,7 @@ async function parallelDeploy() {
 async function resilientParallelDeploy() {
   const deploymentPromises = apps.map(async (app) => {
     try {
-      const factory = await graph.factory('direct');
+      const factory = graph.factory('direct');
       return await factory.deploy(app);
     } catch (error) {
       return { error: error.message, app: app.name };
@@ -251,7 +251,7 @@ async function resilientParallelDeploy() {
 ```typescript
 // ✅ Batch status checks
 async function batchStatusCheck(deployments: string[]) {
-  const factory = await graph.factory('direct');
+  const factory = graph.factory('direct');
   
   // Check all statuses in parallel
   const statusPromises = deployments.map(name => 
@@ -271,7 +271,7 @@ async function batchStatusCheck(deployments: string[]) {
 }
 
 // ✅ Use selective status updates
-const optimizedFactory = await graph.factory('direct', {
+const optimizedFactory = graph.factory('direct', {
   statusUpdateInterval: 30000,    // Check every 30 seconds
   statusFields: ['phase', 'readyReplicas'], // Only check critical fields
   statusTimeout: 10000            // 10 second timeout per check
@@ -646,7 +646,7 @@ class PerformanceMonitor {
 const monitor = new PerformanceMonitor();
 
 const factory = await monitor.time('factory-creation', async () => {
-  return await graph.factory('direct');
+  return graph.factory('direct');
 });
 
 const deployment = await monitor.time('deployment', async () => {

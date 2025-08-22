@@ -366,12 +366,12 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                 // Deploy multiple instances that should share the same resource type
                 await factory.deploy({
                     name: `shared-app-v1-${Date.now()}`,
-                    version: '1.20',
+                    version: 'alpine',
                 });
 
                 await factory.deploy({
                     name: `shared-app-v2-${Date.now() + 1}`,
-                    version: '1.21',
+                    version: 'latest',
                 });
 
                 // Verify resource type sharing
@@ -518,21 +518,21 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                 const instance1 = await factory.deploy({
                     name: uniqueName,
                     replicas: 1,
-                    version: '1.20',
+                    version: 'alpine',
                 });
 
                 expect(instance1.spec.replicas).toBe(1);
-                expect(instance1.spec.version).toBe('1.20');
+                expect(instance1.spec.version).toBe('alpine');
 
                 // Update deployment
                 const instance2 = await factory.deploy({
                     name: uniqueName,
                     replicas: 3,
-                    version: '1.21',
+                    version: 'latest',
                 });
 
                 expect(instance2.spec.replicas).toBe(3);
-                expect(instance2.spec.version).toBe('1.21');
+                expect(instance2.spec.version).toBe('latest');
 
                 // Verify resources are updated in Alchemy state
                 const alchemyState = await alchemyScope.state.all();

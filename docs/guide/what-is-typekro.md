@@ -75,17 +75,17 @@ The same TypeScript code can be deployed in multiple ways without modification:
 const spec = { name: 'my-app', image: 'nginx:1.21', replicas: 3 };
 
 // 1. Generate YAML for GitOps (no cluster interaction)
-const kroFactory = await webapp.factory('kro', { namespace: 'dev' });
+const kroFactory = webapp.factory('kro', { namespace: 'dev' });
 const yaml = kroFactory.toYaml();
 writeFileSync('k8s/webapp.yaml', yaml);
 
 // 2. Deploy directly to cluster (immediate)
-const directFactory = await webapp.factory('direct', { namespace: 'dev' });
+const directFactory = webapp.factory('direct', { namespace: 'dev' });
 await directFactory.deploy(spec);
 
 // 3. Integrate with Alchemy for multi-cloud
 await alchemyScope.run(async () => {
-  const factory = await webapp.factory('direct', { 
+  const factory = webapp.factory('direct', { 
     namespace: 'dev',
     alchemyScope: alchemyScope 
   });
@@ -122,7 +122,7 @@ Generate deterministic, Git-friendly YAML output:
 
 ```typescript
 // Deterministic YAML generation
-const factory = await webapp.factory('kro', { namespace: 'production' });
+const factory = webapp.factory('kro', { namespace: 'production' });
 const yaml = factory.toYaml();
 
 // Same input always generates identical YAML

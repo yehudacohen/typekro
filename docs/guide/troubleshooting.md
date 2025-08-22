@@ -81,7 +81,7 @@ export KUBECONFIG=/path/to/your/kubeconfig
 **Diagnosis:**
 ```typescript
 // Enable debug logging
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   namespace: 'default',
   timeout: 60000  // Increase timeout
 });
@@ -119,7 +119,7 @@ kubectl describe nodes
 **Solution:**
 ```typescript
 // Ensure namespace exists
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   namespace: 'my-namespace'  // Make sure this namespace exists
 });
 
@@ -236,12 +236,12 @@ bun add -d @kubernetes/client-node
 **Solutions:**
 ```typescript
 // Increase timeout
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   timeout: 300000  // 5 minutes
 });
 
 // Disable readiness waiting for faster deployment
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   waitForReady: false
 });
 
@@ -329,7 +329,7 @@ const logger = createLogger({
 ### Use Dry Run Mode
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   dryRun: true  // Don't actually deploy
 });
 
@@ -354,7 +354,7 @@ console.log('Generated YAML:', yaml);
 ```typescript
 try {
   console.log('1. Creating factory...');
-  const factory = await graph.factory('direct', { namespace: 'test' });
+  const factory = graph.factory('direct', { namespace: 'test' });
   
   console.log('2. Deploying resources...');
   const result = await factory.deploy(spec);
@@ -448,6 +448,6 @@ const graph = toResourceGraph(
 });
 
 // Code that demonstrates the issue
-const factory = await graph.factory('direct');
+const factory = graph.factory('direct');
 await factory.deploy({ name: 'test-app' });  // Fails here
 ```

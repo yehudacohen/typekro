@@ -193,14 +193,14 @@ describe('E2E Factory Pattern Validation Tests', () => {
       // Generate and validate instance YAML
       const instanceYaml = factory.toYaml({
         name: 'test-webapp-kro-alchemy',
-        image: 'nginx:1.21',
+        image: 'nginx:latest',
         replicas: 2,
         port: 8080,
       });
 
       expect(instanceYaml).toContain('kind: WebApp');
       expect(instanceYaml).toContain('name: test-webapp-kro-alchemy');
-      expect(instanceYaml).toContain('nginx:1.21');
+      expect(instanceYaml).toContain('nginx:latest');
       expect(instanceYaml).toContain('2');
       expect(instanceYaml).toContain('8080');
 
@@ -586,7 +586,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
       // Test spec
       const testSpec = {
         name: 'test-app',
-        image: 'nginx:1.21',
+        image: 'nginx:latest',
         replicas: 3,
       };
 
@@ -597,8 +597,8 @@ describe('E2E Factory Pattern Validation Tests', () => {
       // Both should contain the same core Kubernetes resources
       expect(kroInstanceYaml).toContain('test-app');
       expect(directInstanceYaml).toContain('test-app');
-      expect(kroInstanceYaml).toContain('nginx:1.21');
-      expect(directInstanceYaml).toContain('nginx:1.21');
+      expect(kroInstanceYaml).toContain('nginx:latest');
+      expect(directInstanceYaml).toContain('nginx:latest');
       expect(kroInstanceYaml).toContain('3');
       expect(directInstanceYaml).toContain('3');
 

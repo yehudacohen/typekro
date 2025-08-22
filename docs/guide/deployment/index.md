@@ -21,7 +21,7 @@ TypeKro supports multiple deployment strategies to fit different workflows, envi
 - You're prototyping or learning TypeKro
 
 ```typescript
-const factory = await graph.factory('direct', { namespace: 'dev' });
+const factory = graph.factory('direct', { namespace: 'dev' });
 await factory.deploy(spec);
 ```
 
@@ -44,7 +44,7 @@ writeFileSync('deployment.yaml', yaml);
 - You're building platform abstractions
 
 ```typescript
-const factory = await graph.factory('kro', { namespace: 'prod' });
+const factory = graph.factory('kro', { namespace: 'prod' });
 await factory.deploy(spec);
 ```
 
@@ -55,7 +55,7 @@ await factory.deploy(spec);
 - You require compliance and governance
 
 ```typescript
-const factory = await graph.factory('alchemy', { 
+const factory = graph.factory('alchemy', { 
   namespace: 'prod',
   cluster: 'us-west-2'
 });
@@ -81,7 +81,7 @@ For rapid development and testing:
 
 ```typescript
 // 1. Direct deployment for immediate feedback
-const devFactory = await graph.factory('direct', { 
+const devFactory = graph.factory('direct', { 
   namespace: 'development',
   timeout: 60000
 });
@@ -132,7 +132,7 @@ Deploy the same application across multiple environments:
 const environments = ['dev', 'staging', 'prod'];
 
 for (const env of environments) {
-  const factory = await graph.factory(
+  const factory = graph.factory(
     env === 'dev' ? 'direct' : 'kro',
     { namespace: env }
   );
@@ -153,7 +153,7 @@ for (const env of environments) {
 All deployment methods support common configuration:
 
 ```typescript
-const factory = await graph.factory('method', {
+const factory = graph.factory('method', {
   namespace: 'my-namespace',        // Target namespace
   timeout: 300000,                  // Deployment timeout (5 minutes)
   waitForReady: true,               // Wait for resources to be ready
@@ -195,7 +195,7 @@ const config = {
   }
 };
 
-const factory = await graph.factory('kro', config[environment]);
+const factory = graph.factory('kro', config[environment]);
 ```
 
 ## Status and Monitoring
@@ -205,7 +205,7 @@ const factory = await graph.factory('kro', config[environment]);
 Direct and KRO deployments provide live status:
 
 ```typescript
-const factory = await graph.factory('direct');
+const factory = graph.factory('direct');
 await factory.deploy(spec);
 
 // Get current status
@@ -262,7 +262,7 @@ try {
 
 ```typescript
 // Enable debug logging
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   namespace: 'dev',
   debug: true,
   logger: {
@@ -287,7 +287,7 @@ console.log('Recent events:', events);
 ```typescript
 async function blueGreenDeploy(newVersion: string) {
   // Deploy green version
-  const greenFactory = await graph.factory('direct', { 
+  const greenFactory = graph.factory('direct', { 
     namespace: 'production' 
   });
   
@@ -313,7 +313,7 @@ async function blueGreenDeploy(newVersion: string) {
 ```typescript
 async function canaryDeploy(newVersion: string) {
   // Deploy canary with 10% traffic
-  const canaryFactory = await graph.factory('kro', { 
+  const canaryFactory = graph.factory('kro', { 
     namespace: 'production' 
   });
   
@@ -346,7 +346,7 @@ async function canaryDeploy(newVersion: string) {
 
 ```typescript
 // Ensure proper RBAC for deployment
-const factory = await graph.factory('kro', {
+const factory = graph.factory('kro', {
   namespace: 'production',
   rbac: {
     serviceAccount: 'typekro-deployer',
@@ -360,7 +360,7 @@ const factory = await graph.factory('kro', {
 
 ```typescript
 // Use external secret management
-const factory = await graph.factory('alchemy', {
+const factory = graph.factory('alchemy', {
   namespace: 'production',
   secretProvider: {
     type: 'vault',
@@ -374,7 +374,7 @@ const factory = await graph.factory('alchemy', {
 
 ```typescript
 // Apply network policies during deployment
-const factory = await graph.factory('kro', {
+const factory = graph.factory('kro', {
   namespace: 'production',
   networkPolicies: {
     enabled: true,

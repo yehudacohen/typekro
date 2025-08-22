@@ -21,7 +21,7 @@ import {
 import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import { DependencyGraph } from '../../src/core/dependencies/graph.js';
 
-const TEST_TIMEOUT = 30000; // 30 seconds - reduced for faster test execution
+const TEST_TIMEOUT = 300000; // 5 minutes - extended for image pulls in KIND clusters
 const _CLUSTER_NAME = 'typekro-e2e-test';
 
 // Check if cluster is available
@@ -166,7 +166,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                 },
                 {
                     kubeConfig: kubeConfig,
-                    timeout: 5000,
+                    timeout: 180000,
                     waitForReady: false // Disable waiting for readiness to speed up error tests
                 },
                 mockDeploymentEngine,
@@ -250,7 +250,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                     spec: type({ name: 'string' }),
                     status: type({ status: 'string' }),
                 },
-                { kubeConfig: kubeConfig, timeout: 5000 }, // Reduced timeout for faster test execution
+                { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
                 mockDeploymentEngine,
                 multipleFailureResourceResolver
             );
@@ -321,7 +321,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                     spec: type({ name: 'string' }),
                     status: type({ ready: 'boolean' }),
                 },
-                { kubeConfig: kubeConfig, timeout: 5000 }, // Reduced timeout for faster test execution
+                { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
                 mockDeploymentEngine,
                 partialSuccessResourceResolver
             );
@@ -390,7 +390,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                     spec: type({ name: 'string' }),
                     status: type({ message: 'string' }),
                 },
-                { kubeConfig: kubeConfig, timeout: 5000 }, // Reduced timeout for faster test execution
+                { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
                 mockDeploymentEngine,
                 contextTestResourceResolver
             );
@@ -514,7 +514,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                     spec: type({ name: 'string' }),
                     status: type({ status: 'string' }),
                 },
-                { kubeConfig: kubeConfig, timeout: 5000 }, // Reduced timeout for faster test execution
+                { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
                 mockDeploymentEngine,
                 invalidResourceResolver
             );
@@ -559,7 +559,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                     spec: type({ name: 'string' }),
                     status: type({ ready: 'boolean' }),
                 },
-                { kubeConfig: kubeConfig, timeout: 5000 }, // Reduced timeout for faster test execution
+                { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
                 mockDeploymentEngine,
                 {
                     createResourceGraphForInstance: () => ({

@@ -63,7 +63,7 @@ export const webapp = toResourceGraph(
 
 ### Deploy Directly
 ```typescript
-const factory = await webapp.factory('direct', { namespace: 'dev' });
+const factory = webapp.factory('direct', { namespace: 'dev' });
 await factory.deploy({
   name: 'my-app',
   image: 'nginx:latest', 

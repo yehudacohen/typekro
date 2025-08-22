@@ -199,7 +199,7 @@ Different deployment modes handle references differently:
 References are resolved by querying the Kubernetes API:
 
 ```typescript
-const factory = await graph.factory('direct');
+const factory = graph.factory('direct');
 // TypeKro queries the cluster to resolve references
 await factory.deploy(spec);
 ```

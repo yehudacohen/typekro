@@ -182,6 +182,7 @@ describe('ResourceRollbackManager', () => {
       mockK8sApi.read.mockResolvedValueOnce({ body: deployment1 });
       // Second read: resource is gone (404)
       const notFoundError = new Error("Not found") as any;
+      notFoundError.statusCode = 404;
       mockK8sApi.read.mockRejectedValueOnce(notFoundError);
 
       const startTime = Date.now();

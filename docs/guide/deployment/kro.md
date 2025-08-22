@@ -57,7 +57,7 @@ async function bootstrapKroEnvironment() {
   });
 
   // Deploy with direct factory
-  const factory = await bootstrap.factory('direct', {
+  const factory = bootstrap.factory('direct', {
     namespace: 'flux-system',
     waitForReady: true,
     timeout: 300000 // 5 minutes
@@ -181,7 +181,7 @@ const kroWebApp = toResourceGraph(
 
 ```typescript
 // Option 1: Use KRO factory for direct deployment
-const kroFactory = await kroWebApp.factory('kro', {
+const kroFactory = kroWebApp.factory('kro', {
   namespace: 'production'
 });
 
@@ -448,7 +448,7 @@ const multiEnvApp = toResourceGraph(
 // Deploy to different environments using the same code
 async function deployToEnvironments() {
   // Development
-  const devFactory = await multiEnvApp.factory('direct', { namespace: 'dev' });
+  const devFactory = multiEnvApp.factory('direct', { namespace: 'dev' });
   await devFactory.deploy({
     name: 'myapp-dev',
     image: 'myapp:latest',
@@ -456,7 +456,7 @@ async function deployToEnvironments() {
   });
   
   // Staging  
-  const stagingFactory = await multiEnvApp.factory('kro', { namespace: 'staging' });
+  const stagingFactory = multiEnvApp.factory('kro', { namespace: 'staging' });
   await stagingFactory.deploy({
     name: 'myapp-staging',
     image: 'myapp:v1.2.0',
@@ -464,7 +464,7 @@ async function deployToEnvironments() {
   });
   
   // Production
-  const prodFactory = await multiEnvApp.factory('kro', { namespace: 'production' });
+  const prodFactory = multiEnvApp.factory('kro', { namespace: 'production' });
   await prodFactory.deploy({
     name: 'myapp',
     image: 'myapp:v1.1.5',
@@ -911,8 +911,8 @@ kubectl get deployment my-app -o jsonpath='{.status}'
 
 ```typescript
 // Deploy the same graph in both modes for comparison
-const directFactory = await graph.factory('direct', { namespace: 'test-direct' });
-const kroFactory = await graph.factory('kro', { namespace: 'test-kro' });
+const directFactory = graph.factory('direct', { namespace: 'test-direct' });
+const kroFactory = graph.factory('kro', { namespace: 'test-kro' });
 
 // Deploy to both environments
 await Promise.all([
@@ -931,7 +931,7 @@ const kroStatus = await kroFactory.getStatus();
 // Start with non-critical applications
 const testApps = ['test-app-1', 'test-app-2'];
 for (const app of testApps) {
-  const kroFactory = await graph.factory('kro');
+  const kroFactory = graph.factory('kro');
   await kroFactory.deploy({ name: app, /* ... */ });
 }
 
@@ -948,7 +948,7 @@ const rollbackPlan = {
     await kubectl('delete', 'webapp', 'my-app');
     
     // Deploy with direct mode
-    const directFactory = await graph.factory('direct');
+    const directFactory = graph.factory('direct');
     await directFactory.deploy(lastKnownGoodSpec);
   }
 };

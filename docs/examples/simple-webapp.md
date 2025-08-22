@@ -89,7 +89,7 @@ Perfect for development and testing:
 import { simpleWebApp } from './simple-webapp.js';
 
 async function deployDirect() {
-  const factory = await simpleWebApp.factory('direct', {
+  const factory = simpleWebApp.factory('direct', {
     namespace: 'development'
   });
 
