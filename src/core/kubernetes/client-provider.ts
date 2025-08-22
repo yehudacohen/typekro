@@ -1,10 +1,10 @@
 /**
  * Kubernetes Client Provider
- * 
+ *
  * Single source of truth for all Kubernetes API interactions.
  * Manages KubeConfig loading and KubernetesObjectApi client instantiation
  * with consistent configuration across the entire application.
- * 
+ *
  * This provider implements the singleton pattern and serves as the central
  * authority for all Kubernetes API client creation, ensuring consistent
  * configuration, security settings, and lifecycle management.
@@ -21,7 +21,7 @@ export interface KubernetesClientConfig {
    * SECURITY WARNING: Only set to true in non-production environments.
    * This disables TLS certificate verification and makes connections vulnerable
    * to man-in-the-middle attacks.
-   * 
+   *
    * @default false (secure by default)
    */
   skipTLSVerify?: boolean;
@@ -93,7 +93,7 @@ export interface KubeConfigConsumer {
 
 /**
  * Kubernetes Client Provider - Single source of truth for Kubernetes API access
- * 
+ *
  * This class implements the singleton pattern and serves as the central authority
  * for all Kubernetes API client creation. It ensures consistent configuration,
  * security settings, and lifecycle management across the entire application.
@@ -169,7 +169,9 @@ export class KubernetesClientProvider {
     } catch (error) {
       this.logger.error('Failed to initialize Kubernetes client provider', error as Error);
       this.reset();
-      const enhancedError = new Error(`Failed to initialize Kubernetes client provider: ${(error as Error).message}`);
+      const enhancedError = new Error(
+        `Failed to initialize Kubernetes client provider: ${(error as Error).message}`
+      );
       enhancedError.cause = error;
       throw enhancedError;
     }
@@ -196,7 +198,9 @@ export class KubernetesClientProvider {
     } catch (error) {
       this.logger.error('Failed to initialize with pre-configured KubeConfig', error as Error);
       this.reset();
-      const enhancedError = new Error(`Failed to initialize with pre-configured KubeConfig: ${(error as Error).message}`);
+      const enhancedError = new Error(
+        `Failed to initialize with pre-configured KubeConfig: ${(error as Error).message}`
+      );
       enhancedError.cause = error;
       throw enhancedError;
     }
@@ -258,31 +262,39 @@ export class KubernetesClientProvider {
     // If complete cluster/user configuration is provided, use it directly
     if (config.cluster && config.user) {
       this.logger.debug('Using complete cluster/user configuration');
-      
+
       const contextName = config.context || 'typekro-context';
 
-      kc.clusters = [{
-        name: config.cluster.name,
-        server: config.cluster.server,
-        ...(config.cluster.skipTLSVerify !== undefined && { skipTLSVerify: config.cluster.skipTLSVerify }),
-        ...(config.cluster.caData && { caData: config.cluster.caData }),
-        ...(config.cluster.caFile && { caFile: config.cluster.caFile }),
-      }];
+      kc.clusters = [
+        {
+          name: config.cluster.name,
+          server: config.cluster.server,
+          ...(config.cluster.skipTLSVerify !== undefined && {
+            skipTLSVerify: config.cluster.skipTLSVerify,
+          }),
+          ...(config.cluster.caData && { caData: config.cluster.caData }),
+          ...(config.cluster.caFile && { caFile: config.cluster.caFile }),
+        },
+      ];
 
-      kc.users = [{
-        name: config.user.name,
-        ...(config.user.token && { token: config.user.token }),
-        ...(config.user.certData && { certData: config.user.certData }),
-        ...(config.user.certFile && { certFile: config.user.certFile }),
-        ...(config.user.keyData && { keyData: config.user.keyData }),
-        ...(config.user.keyFile && { keyFile: config.user.keyFile }),
-      }];
+      kc.users = [
+        {
+          name: config.user.name,
+          ...(config.user.token && { token: config.user.token }),
+          ...(config.user.certData && { certData: config.user.certData }),
+          ...(config.user.certFile && { certFile: config.user.certFile }),
+          ...(config.user.keyData && { keyData: config.user.keyData }),
+          ...(config.user.keyFile && { keyFile: config.user.keyFile }),
+        },
+      ];
 
-      kc.contexts = [{
-        name: contextName,
-        cluster: config.cluster.name,
-        user: config.user.name,
-      }];
+      kc.contexts = [
+        {
+          name: contextName,
+          cluster: config.cluster.name,
+          user: config.user.name,
+        },
+      ];
 
       kc.setCurrentContext(contextName);
     } else if (config.loadFromDefault !== false) {
@@ -302,33 +314,44 @@ export class KubernetesClientProvider {
         this.applyConfigModifications(kc, config);
       } catch (error) {
         // If loading from default fails (e.g., in test environments), create a minimal mock config
-        this.logger.warn('Failed to load kubeconfig, creating minimal mock configuration for testing', {
-          error: (error as Error).message,
-          isTestEnvironment: process.env.NODE_ENV === 'test' || process.env.VITEST === 'true',
-        });
+        this.logger.warn(
+          'Failed to load kubeconfig, creating minimal mock configuration for testing',
+          {
+            error: (error as Error).message,
+            isTestEnvironment: process.env.NODE_ENV === 'test' || process.env.VITEST === 'true',
+          }
+        );
 
         // Create a minimal mock configuration for testing
-        kc.clusters = [{
-          name: 'mock-cluster',
-          server: 'https://mock-kubernetes-api:6443',
-          skipTLSVerify: true,
-        }];
+        kc.clusters = [
+          {
+            name: 'mock-cluster',
+            server: 'https://mock-kubernetes-api:6443',
+            skipTLSVerify: true,
+          },
+        ];
 
-        kc.users = [{
-          name: 'mock-user',
-          token: 'mock-token',
-        }];
+        kc.users = [
+          {
+            name: 'mock-user',
+            token: 'mock-token',
+          },
+        ];
 
-        kc.contexts = [{
-          name: 'mock-context',
-          cluster: 'mock-cluster',
-          user: 'mock-user',
-        }];
+        kc.contexts = [
+          {
+            name: 'mock-context',
+            cluster: 'mock-cluster',
+            user: 'mock-user',
+          },
+        ];
 
         kc.setCurrentContext('mock-context');
       }
     } else {
-      throw new Error('Either complete cluster/user configuration must be provided, or loadFromDefault must be true');
+      throw new Error(
+        'Either complete cluster/user configuration must be provided, or loadFromDefault must be true'
+      );
     }
 
     // Validate and log security configuration
@@ -349,15 +372,15 @@ export class KubernetesClientProvider {
         // Keep TLS warnings at warn level - these are important security notices
         this.logger.warn('Explicitly disabling TLS verification - this is insecure', {
           server: cluster.server,
-          recommendation: 'Only use skipTLSVerify in development environments'
+          recommendation: 'Only use skipTLSVerify in development environments',
         });
       }
 
       const modifiedCluster = { ...cluster, skipTLSVerify: config.skipTLSVerify };
       kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-      
+
       this.logger.debug('Applied skipTLSVerify modification', {
-        skipTLSVerify: config.skipTLSVerify
+        skipTLSVerify: config.skipTLSVerify,
       });
     }
 
@@ -365,9 +388,9 @@ export class KubernetesClientProvider {
     if (config.server && cluster) {
       const updatedCluster = { ...cluster, server: config.server };
       kc.clusters = kc.clusters.map((c) => (c === cluster ? updatedCluster : c));
-      
+
       this.logger.debug('Applied server modification', {
-        server: config.server
+        server: config.server,
       });
     }
 
@@ -376,12 +399,12 @@ export class KubernetesClientProvider {
       try {
         kc.setCurrentContext(config.context);
         this.logger.debug('Applied context modification', {
-          context: config.context
+          context: config.context,
         });
       } catch (error) {
         this.logger.error('Failed to set context', error as Error, {
           requestedContext: config.context,
-          availableContexts: kc.getContexts().map(c => c.name)
+          availableContexts: kc.getContexts().map((c) => c.name),
         });
         throw new Error(`Context '${config.context}' not found in kubeconfig`);
       }
@@ -391,23 +414,30 @@ export class KubernetesClientProvider {
   /**
    * Validate and log security configuration
    */
-  private validateAndLogSecurityConfiguration(kc: k8s.KubeConfig, config: KubernetesClientConfig): void {
+  private validateAndLogSecurityConfiguration(
+    kc: k8s.KubeConfig,
+    config: KubernetesClientConfig
+  ): void {
     const cluster = kc.getCurrentCluster();
-    
+
     if (cluster?.skipTLSVerify) {
-      const isExplicitlySet = config.skipTLSVerify === true || config.cluster?.skipTLSVerify === true;
-      
+      const isExplicitlySet =
+        config.skipTLSVerify === true || config.cluster?.skipTLSVerify === true;
+
       // Keep TLS warnings at warn level - these are important security notices
-      this.logger.warn('TLS verification disabled - this is insecure and should only be used in development', {
-        server: cluster.server,
-        explicitlySet: isExplicitlySet,
-        fromClusterConfig: !isExplicitlySet,
-        recommendation: 'Update cluster configuration to enable TLS verification',
-        securityRisk: 'Connections are vulnerable to man-in-the-middle attacks'
-      });
+      this.logger.warn(
+        'TLS verification disabled - this is insecure and should only be used in development',
+        {
+          server: cluster.server,
+          explicitlySet: isExplicitlySet,
+          fromClusterConfig: !isExplicitlySet,
+          recommendation: 'Update cluster configuration to enable TLS verification',
+          securityRisk: 'Connections are vulnerable to man-in-the-middle attacks',
+        }
+      );
     } else {
       this.logger.debug('TLS verification enabled - secure configuration', {
-        server: cluster?.server
+        server: cluster?.server,
       });
     }
 
@@ -418,7 +448,7 @@ export class KubernetesClientProvider {
       } catch (error) {
         this.logger.warn('Invalid server URL format', {
           server: cluster.server,
-          error: (error as Error).message
+          error: (error as Error).message,
         });
       }
     }
@@ -430,7 +460,7 @@ export class KubernetesClientProvider {
   private isSameConfig(config?: KubernetesClientConfig): boolean {
     if (!this.config && !config) return true;
     if (!this.config || !config) return false;
-    
+
     return JSON.stringify(this.config) === JSON.stringify(config);
   }
 
@@ -490,7 +520,9 @@ export class KubernetesClientProvider {
 
     return {
       initialized: true,
-      ...(this.kubeConfig.getCurrentContext() && { currentContext: this.kubeConfig.getCurrentContext() }),
+      ...(this.kubeConfig.getCurrentContext() && {
+        currentContext: this.kubeConfig.getCurrentContext(),
+      }),
       ...(cluster?.server && { server: cluster.server }),
       ...(cluster?.skipTLSVerify !== undefined && { skipTLSVerify: cluster.skipTLSVerify }),
       ...(cluster?.name && { clusterName: cluster.name }),
@@ -509,7 +541,9 @@ export function getKubernetesClientProvider(): KubernetesClientProvider {
 /**
  * Factory function to create and initialize a provider instance
  */
-export function createKubernetesClientProvider(config?: KubernetesClientConfig): KubernetesClientProvider {
+export function createKubernetesClientProvider(
+  config?: KubernetesClientConfig
+): KubernetesClientProvider {
   const provider = KubernetesClientProvider.createInstance();
   if (config) {
     provider.initialize(config);
@@ -520,7 +554,9 @@ export function createKubernetesClientProvider(config?: KubernetesClientConfig):
 /**
  * Factory function to create a provider with a pre-configured KubeConfig
  */
-export function createKubernetesClientProviderWithKubeConfig(kubeConfig: k8s.KubeConfig): KubernetesClientProvider {
+export function createKubernetesClientProviderWithKubeConfig(
+  kubeConfig: k8s.KubeConfig
+): KubernetesClientProvider {
   const provider = KubernetesClientProvider.createInstance();
   provider.initializeWithKubeConfig(kubeConfig);
   return provider;

@@ -1,10 +1,11 @@
-import { describe, expect, it, } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
-import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
 import { hydrateStatus } from '../../src/core/deployment/status-hydrator.js';
+import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
+import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
 import { isCelExpression } from '../../src/utils/type-guards.js';
-import { isClusterAvailable } from "./shared-kubeconfig";
+import { isClusterAvailable } from './shared-kubeconfig';
+
 const clusterAvailable = isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
@@ -16,7 +17,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
         url: 'http://webapp-service',
         version: '1.0.0',
         environment: 'production',
-        
+
         // Dynamic fields (with Kubernetes references)
         phase: Cel.conditional(
           Cel.expr('webapp.status.readyReplicas > 0'),
@@ -24,12 +25,12 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
           '"pending"'
         ),
         replicas: Cel.expr('webapp.status.replicas'),
-        
+
         // Mixed nested object
         metadata: {
           name: 'my-app', // static
           namespace: Cel.expr('webapp.metadata.namespace'), // dynamic
-        }
+        },
       };
 
       const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
@@ -45,8 +46,8 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(Object.keys(dynamicFields)).toEqual(['phase', 'replicas', 'metadata']);
       expect(isCelExpression(dynamicFields.phase)).toBe(true);
       expect(isCelExpression(dynamicFields.replicas)).toBe(true);
-      expect(dynamicFields.metadata).toEqual({ 
-        namespace: expect.any(Object)
+      expect(dynamicFields.metadata).toEqual({
+        namespace: expect.any(Object),
       });
       expect(isCelExpression(dynamicFields.metadata.namespace)).toBe(true);
     });
@@ -92,8 +93,8 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
         environment: 'production',
         metadata: {
           name: 'my-app',
-          createdBy: 'typekro'
-        }
+          createdBy: 'typekro',
+        },
       };
 
       const kroResolvedStatus = {
@@ -111,7 +112,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
         environment: 'production',
         metadata: {
           name: 'my-app',
-          createdBy: 'typekro'
+          createdBy: 'typekro',
         },
         // Dynamic fields from Kro
         phase: 'running',
@@ -148,7 +149,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
         config: {
           timeout: 30,
           retries: 3,
-        }
+        },
       };
 
       const kroResolvedStatus = {
@@ -191,7 +192,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
         url: 'string',
         version: 'string',
         environment: 'string',
-        // Dynamic fields  
+        // Dynamic fields
         phase: '"pending" | "running" | "failed"',
         replicas: 'number',
         readyReplicas: 'number',
@@ -230,7 +231,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
           url: 'http://webapp-service.default.svc.cluster.local',
           version: '1.0.0',
           environment: 'production',
-          
+
           // Dynamic fields (with Kubernetes references)
           phase: Cel.conditional(
             Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
@@ -239,7 +240,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
           ) as 'pending' | 'running' | 'failed',
           replicas: Cel.expr(resources.deployment.status.replicas),
           readyReplicas: Cel.expr(resources.deployment.status.readyReplicas),
-          
+
           // Mixed nested object
           metadata: {
             name: 'webapp-app', // static
@@ -259,12 +260,14 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(yaml).toContain('kind: ResourceGraphDefinition');
       expect(yaml).toContain('name: webapp-with-mixed-status');
-      
+
       // Verify that only dynamic fields are in the Kro schema
-      expect(yaml).toContain('phase: \"${webapp.status.readyReplicas > 0 ? \\\"running\\\" : \\\"pending\\\"}\"');
+      expect(yaml).toContain(
+        'phase: \"${webapp.status.readyReplicas > 0 ? \\\"running\\\" : \\\"pending\\\"}\"'
+      );
       expect(yaml).toContain('replicas: ${webapp.status.replicas}');
       expect(yaml).toContain('readyReplicas: ${webapp.status.readyReplicas}');
-      
+
       // Static fields should NOT be in the Kro schema
       expect(yaml).not.toContain('url: \"http://webapp-service');
       expect(yaml).not.toContain('version: \"1.0.0\"');
@@ -286,7 +289,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       const resourceGraph = toResourceGraph(
         {
           name: 'webapp-status-test',
-          apiVersion: 'v1alpha1', 
+          apiVersion: 'v1alpha1',
           kind: 'WebAppStatusTest',
           spec: WebAppSpecSchema,
           status: WebAppStatusSchema,
@@ -340,27 +343,31 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
 
       // This should not throw during field separation
       const { staticFields, dynamicFields } = separateStatusFields(invalidStatusMappings);
-      
+
       expect(staticFields.validField).toBe('static-value');
       expect(isCelExpression(dynamicFields.invalidRef)).toBe(true);
-      
+
       // The validation should catch the invalid reference later
       // (This would be caught by validateResourceGraphDefinition)
     });
 
     it('should handle empty status mappings', () => {
       const emptyStatusMappings = {};
-      
+
       const { staticFields, dynamicFields } = separateStatusFields(emptyStatusMappings);
-      
+
       expect(Object.keys(staticFields)).toEqual([]);
       expect(Object.keys(dynamicFields)).toEqual([]);
     });
 
     it('should handle null/undefined status mappings', () => {
-      const { staticFields: staticNull, dynamicFields: dynamicNull } = separateStatusFields(null as any);
-      const { staticFields: staticUndef, dynamicFields: dynamicUndef } = separateStatusFields(undefined as any);
-      
+      const { staticFields: staticNull, dynamicFields: dynamicNull } = separateStatusFields(
+        null as any
+      );
+      const { staticFields: staticUndef, dynamicFields: dynamicUndef } = separateStatusFields(
+        undefined as any
+      );
+
       expect(Object.keys(staticNull)).toEqual([]);
       expect(Object.keys(dynamicNull)).toEqual([]);
       expect(Object.keys(staticUndef)).toEqual([]);
@@ -390,7 +397,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       // This is a conservative approach that ensures proper Kro resolution
       expect(staticFields).toHaveProperty('topLevelStatic');
       expect(staticFields.topLevelStatic).toBe('top-static');
-      
+
       expect(dynamicFields).toHaveProperty('level1');
       expect(dynamicFields.level1).toHaveProperty('dynamicAtLevel1');
       expect(dynamicFields.level1.level2).toHaveProperty('staticAtLevel2');
@@ -416,7 +423,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
 
       // Arrays with only static content should be static
       expect(staticFields.staticArray).toEqual(['item1', 'item2', 'item3']);
-      
+
       // LIMITATION: Arrays with mixed content are currently treated as static
       // This is a known limitation - arrays containing CEL expressions should be dynamic
       expect(staticFields.dynamicArray).toBeDefined();
@@ -424,11 +431,11 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(isCelExpression(staticFields.dynamicArray[0])).toBe(true);
       expect(staticFields.dynamicArray[1]).toBe('static-item');
       expect(isCelExpression(staticFields.dynamicArray[2])).toBe(true);
-      
+
       // Mixed objects should be split appropriately
       expect(staticFields.mixedObject).toEqual({ staticItems: ['a', 'b', 'c'] });
-      expect(dynamicFields.mixedObject).toEqual({ 
-        dynamicCount: expect.any(Object)
+      expect(dynamicFields.mixedObject).toEqual({
+        dynamicCount: expect.any(Object),
       });
       expect(isCelExpression(dynamicFields.mixedObject.dynamicCount)).toBe(true);
     });

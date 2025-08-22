@@ -5,9 +5,12 @@
  * the codebase to safely check and narrow types at runtime.
  */
 
+import {
+  CEL_EXPRESSION_BRAND,
+  KUBERNETES_REF_BRAND,
+  MIXED_TEMPLATE_BRAND,
+} from '../core/constants/brands.js';
 import type { CelExpression, KubernetesRef, ResourceReference } from '../core/types.js';
-
-import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND, MIXED_TEMPLATE_BRAND } from '../core/constants/brands.js';
 
 /**
  * Type guard to check if a value is a compile-time KubernetesRef.
@@ -39,22 +42,18 @@ export function isResourceReference(obj: unknown): obj is ResourceReference<unkn
  */
 export function isCelExpression<T = unknown>(value: unknown): value is CelExpression<T> {
   return Boolean(
-    value &&
-      typeof value === 'object' &&
-      value !== null &&
-      CEL_EXPRESSION_BRAND in value
+    value && typeof value === 'object' && value !== null && CEL_EXPRESSION_BRAND in value
   );
 }
 
 /**
  * Type guard to check if a value is a mixed template (literal string with embedded CEL)
  */
-export function isMixedTemplate(value: unknown): value is { [MIXED_TEMPLATE_BRAND]: true; expression: string } {
+export function isMixedTemplate(
+  value: unknown
+): value is { [MIXED_TEMPLATE_BRAND]: true; expression: string } {
   return Boolean(
-    value &&
-      typeof value === 'object' &&
-      value !== null &&
-      MIXED_TEMPLATE_BRAND in value
+    value && typeof value === 'object' && value !== null && MIXED_TEMPLATE_BRAND in value
   );
 }
 

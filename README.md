@@ -11,11 +11,9 @@
 [![Coverage](https://codecov.io/gh/yehudacohen/typekro/branch/master/graph/badge.svg)](https://codecov.io/gh/yehudacohen/typekro)
 
 📚 **[Documentation](https://typekro.run)** • 💬 **[Discord Community](https://discord.gg/kKNSDDjW)** • 🚀 **[Getting Started](https://typekro.run/guide/getting-started)**
-## **Kubernetes infrastructure with TypeScript instead of YAML**
+## **TypeKro: IaC for Kubernetes Done Right - Statically Typed, Declarative Kubernetes Configuration with TypeScript**
 
 TypeKro combines the type safety of TypeScript, the GitOps-friendly output of declarative YAML, and the runtime intelligence of **Kubernetes Resource Orchestrator (KRO)** - an open-source project that enables advanced resource orchestration with runtime dependencies and CEL expressions. Write infrastructure in pure TypeScript with full IDE support, then deploy directly to clusters or generate deterministic YAML for GitOps workflows.
-
-> **What is KRO?** [Kubernetes Resource Orchestrator](https://kro.run/) is an open-source project by AWS Labs that enables resources to reference each other's runtime state using CEL expressions. TypeKro works in Direct Mode (no KRO required) for simple deployments, or KRO Mode for advanced orchestration.
 
 ## Table of Contents
 
@@ -34,93 +32,89 @@ TypeKro combines the type safety of TypeScript, the GitOps-friendly output of de
 
 ## Quick Start
 
-Here's a complete web application with database in ~30 lines of TypeScript:
+Write Kubernetes infrastructure in pure TypeScript with full IDE support and type safety:
 
 ```typescript
-import { type } from 'arktype';  // Runtime-safe TypeScript schemas with concise syntax
+import { type } from 'arktype';
 import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
 
-// Define your app's interface
-const WebAppSpec = type({ 
-  name: 'string', 
-  image: 'string', 
-  replicas: 'number' 
-});
-
-const WebAppStatus = type({ 
-  ready: 'boolean', 
-  url: 'string' 
-});
-
-// Create your infrastructure
-const webapp = toResourceGraph(
-  {
-    name: 'my-webapp',
-    apiVersion: 'example.com/v1',
-    kind: 'WebApp',
-    spec: WebAppSpec,
-    status: WebAppStatus
-  },
-  (schema) => {
-    // Create database first
-    const database = simpleDeployment({
-      name: 'postgres', 
-      image: 'postgres:15',
-      labels: { app: 'postgres', component: 'database' },
-      env: { POSTGRES_DB: 'app', POSTGRES_USER: 'user', POSTGRES_PASSWORD: 'secret' }
-    });
-    
-    // Create app that references database
-    const app = simpleDeployment({
-      name: schema.spec.name,    // Type-safe schema reference
-      image: schema.spec.image,  // Full IDE autocomplete
-      replicas: schema.spec.replicas,
-      labels: { app: schema.spec.name },
-      env: { DATABASE_HOST: database.metadata.name }  // Reference database by field
-    });
-    
-    // Create service that references app's labels
-    const service = simpleService({
-      name: Cel.template('%s-service', schema.spec.name),
-      selector: app.spec.selector.matchLabels,  // Reference deployment labels
-      ports: [{ port: 80, targetPort: 80 }]
-    });
-
-    return { database, app, service };
+// Build your infrastructure with full type safety
+const deploymentService = toResourceGraph(
+  {
+    name: 'deployment-service',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'DeploymentService',
+    spec: type({ name: 'string', environment: '"dev" | "staging" | "prod"' }),
+    status: type({ ready: 'boolean', url: 'string' })
   },
-  (schema, resources) => ({
-    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0'),  // Runtime logic
-    url: Cel.template('http://%s', schema.spec.name)  // String templating with schema reference
-  })
+  (schema) => ({
+    deployment: simpleDeployment({
+      name: schema.spec.name,                    // ← Full IDE autocomplete
+      image: 'nginx',
+      replicas: schema.spec.environment === 'prod' ? 3 : 1,  // ← Type-safe logic
+      labels: { 
+        app: 'deployment',
+        env: schema.spec.environment             // ← Validated enum
+      },
+      ports: [{ containerPort: 80 }]
+    }),
+    
+    service: simpleService({
+      name: schema.spec.name,
+      selector: { app: 'deployment' },           // ← Cross-resource reference
+      ports: [{ port: 80, targetPort: 80 }]
+    })
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
+    url: Cel.template('http://%s.%s.svc', schema.spec.name, schema.spec.environment)
+  })
 );
 
-// Deploy it directly to your cluster
-const factory = webapp.factory('direct', { namespace: 'default' });
-await factory.deploy({ name: 'my-app', image: 'nginx', replicas: 3 });
+// Deploy instantly with full type checking
+await deploymentService.factory('direct').deploy({
+  name: 'my-app',           // ← IDE validates this exists
+  environment: 'staging'    // ← Only accepts: "dev" | "staging" | "prod"
+});
 ```
 
 **Key Features Demonstrated:**
-- **Schema References**: `schema.spec.name` becomes runtime CEL expressions
-- **Type Safety**: Full TypeScript validation and autocomplete  
-- **CEL Expressions**: `Cel.template()` for dynamic resource configuration
-- **Direct Deployment**: Resources are created immediately in your cluster
+- **Full IDE autocomplete** - IntelliSense for all properties
+- **Compile-time type checking** - Catch errors before deployment
+- **Runtime validation** - ArkType validates deployment specs
+- **Zero YAML required** - Pure TypeScript infrastructure
+- **Instant deployment** - No kubectl, no YAML files
 
-*Note: You can also generate GitOps-ready YAML with `factory.toYaml()` instead of deploying directly.*
+**Deploy anywhere:** Generate KRO YAML for GitOps with `factory.toYaml()` or integrate with multi-cloud using Alchemy.
 
-**Need advanced features?** Bootstrap a complete runtime environment with Flux CD and KRO:
-```typescript
-import { typeKroRuntimeBootstrap } from 'typekro';
-const bootstrap = typeKroRuntimeBootstrap({ fluxVersion: 'v2.4.0', kroVersion: '0.3.0' });
-await bootstrap.factory('direct').deploy({ namespace: 'flux-system' });
-```
+---
+
+## Comparison Grid
+
+| Feature | TypeKro | Pulumi | CDK8s | Helm | Kustomize | Crossplane |
+|---------|---------|---------|--------|------|-----------|------------|
+| **Type Safety** | ✅ Full TypeScript | ✅ Multi-language | ✅ TypeScript | ❌ Templates | ❌ YAML | ❌ YAML |
+| **GitOps Ready** | ✅ Deterministic YAML | ❌ State backend | ✅ YAML output | ✅ Charts | ✅ YAML | ✅ YAML |
+| **Runtime Dependencies** | ✅ KRO + CEL expressions | ❌ Deploy-time only | ❌ Static | ❌ Templates | ❌ Static | ✅ Compositions |
+| **IDE Support** | ✅ Full autocomplete | ✅ Language support | ✅ TypeScript | ❌ Limited | ❌ Limited | ❌ Limited |
+| **Learning Curve** | 🟢 Just TypeScript | 🔴 New concepts | 🟡 TypeScript + K8s | 🔴 Templates | 🔴 YAML hell | 🔴 Complex |
+| **Kubernetes Native** | ✅ Pure K8s resources | ❌ Abstraction layer | ✅ Pure K8s | ✅ K8s resources | ✅ K8s resources | ✅ K8s + CRDs |
+| **Cross-Resource Refs** | ✅ Runtime resolution | ❌ Deploy-time | ❌ Manual | ❌ Manual | ❌ Manual | ✅ Built-in |
+| **Multi-Cloud** | 🟡 Via Alchemy | ✅ Native | ❌ K8s only | ❌ K8s only | ❌ K8s only | ✅ Native |
+| **State Management** | ✅ Stateless | ❌ State backend | ✅ Stateless | ✅ Stateless | ✅ Stateless | ✅ Controller |
+| **CRD Timing** | ✅ Automatic | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual | ✅ Built-in |
 
 ---
 
 ## Deployment Flexibility
 
-### Write Once, Deploy Everywhere
+### Deploy the Same Resource Graph using GitOps, Direct Kubernetes API Integration, or using KRO
 
-TypeKro's core strength is **deployment flexibility**. The same TypeScript code can be deployed in multiple ways without modification:
+TypeKro offers deployment flexibility.
+
+> **What is KRO?** [Kubernetes Resource Orchestrator](https://kro.run/) is an open-source project by AWS Labs that enables resources to reference each other's runtime state using CEL expressions. TypeKro works in Direct Mode (no KRO required) for simple deployments, or KRO Mode for advanced orchestration.
+
+ The same TypeScript code can be deployed in multiple ways without modification:
 
 ```typescript
 // Define your infrastructure once  
@@ -303,175 +297,6 @@ writeFileSync('k8s/production/webapp.yaml', prodYaml);
 | Multi-cloud infrastructure | [Alchemy Integration](#multi-cloud-integration-with-alchemy) | Unified cloud + Kubernetes management |
 | Rapid prototyping | Direct Deployment | Minimal setup, immediate results |
 | Regulated environments | YAML Generation + GitOps | Audit trail, approval workflows |
-
----
-
-## Core Architecture
-
-TypeKro's architecture enables compile-time type safety with runtime intelligence through three key systems:
-
-```mermaid
-graph TD
-    A[TypeScript Code] --> B[Magic Proxy System]
-    B --> C[Schema References]
-    B --> D[Static Values]
-    C --> E[CEL Expressions]
-    D --> F[Direct Values]
-    E --> G[Runtime Resolution]
-    F --> G
-    G --> H{Deployment Strategy}
-    
-    H --> I[YAML Generation]
-    H --> J[Direct Deployment]
-    H --> K[KRO Deployment]
-    
-    I --> L[GitOps Tools<br/>ArgoCD, Flux, kubectl]
-    J --> M[Kubernetes API<br/>Immediate Deployment]
-    K --> N[KRO Controller<br/>Runtime Dependencies]
-    
-    L --> O[Kubernetes Cluster]
-    M --> O
-    N --> O
-    
-    subgraph "Compile Time"
-        A
-        B
-        C
-        D
-        P[IDE Support<br/>Autocomplete<br/>Type Safety]
-    end
-    
-    subgraph "Runtime"
-        E
-        G
-        Q[CEL Evaluation<br/>Cross-Resource Refs<br/>Status Propagation]
-    end
-    
-    A -.-> P
-    N -.-> Q
-    
-    style A fill:#e1f5fe
-    style B fill:#f3e5f5
-    style O fill:#e8f5e8
-    style P fill:#fff3e0
-    style Q fill:#fff3e0
-```
-
-### Magic Proxy System
-
-TypeKro's "magic" comes from its **proxy system** that creates different behaviors for execution-time vs runtime values:
-
-#### Static Values (Known at Execution Time)
-```typescript
-const deployment = simpleDeployment({
-  name: 'my-app',        // Static string
-  replicas: 3,           // Static number
-});
-
-// Accessing static values returns the actual value
-console.log(deployment.spec.replicas); // Returns: 3
-```
-
-#### Dynamic References (Unknown at Execution Time)
-```typescript
-const deployment = simpleDeployment({
-  name: schema.spec.name,  // Schema reference - unknown until runtime
-});
-
-// Accessing schema or status fields creates KubernetesRef objects
-const nameRef = schema.spec.name;        // Creates: KubernetesRef<string>
-const statusRef = deployment.status.readyReplicas; // Creates: KubernetesRef<number>
-```
-
-#### The `$` Prefix for Explicit References
-```typescript
-const configMap = simpleConfigMap({
-  name: 'config',
-  data: { key: 'value' }  // Static value
-});
-
-const deployment = simpleDeployment({
-  name: 'app',
-  env: {
-    // Static behavior: Uses the known value "value" at execution time
-    STATIC_VALUE: configMap.data.key,
-    
-    // Dynamic behavior: Creates reference resolved by Kro at runtime
-    DYNAMIC_VALUE: configMap.data.$key,
-  }
-});
-```
-
-**Key Rule**: Schema references (`schema.spec.*`) and status references (`resource.status.*`) are automatically converted to CEL expressions. For explicit runtime references to other resource properties, use the `$` prefix.
-
-### Enhanced Types (RefOrValue Pattern)
-
-Every factory function accepts `RefOrValue<T>`, which means any parameter can be:
-
-```typescript
-// 1. Direct value
-name: "my-app"
-
-// 2. Schema reference (becomes CEL)
-name: schema.spec.name
-
-// 3. CEL expression 
-name: Cel.template("%s-service", schema.spec.name)
-
-// 4. Reference to another resource
-env: {
-  DB_HOST: database.service.spec.clusterIP  // Runtime resolution
-}
-```
-
-This pattern provides **compile-time type safety** while enabling **runtime flexibility**.
-
-### CRD Installation Intelligence
-
-TypeKro's direct deployer automatically handles Custom Resource Definition timing:
-
-```typescript
-// TypeKro automatically detects CRD dependencies
-const kroResources = [
-  kroDefinition,           // CRD must be installed first
-  kroInstance             // Instance depends on CRD
-];
-
-const factory = await graph.factory('direct', { namespace: 'default' });
-await factory.deploy(spec);  // ✅ Automatically waits for CRD readiness
-```
-
-**Benefits:**
-- **No "CRD not found" errors** - Automatic timing coordination
-- **Zero manual ordering** - Intelligent dependency detection  
-- **Production reliability** - Handles CRD establishment properly
-
-### Runtime vs Compile-time Behavior
-
-| **Aspect** | **Compile-time** | **Runtime** |
-|------------|------------------|-------------|
-| **Type checking** | Full TypeScript validation | N/A |
-| **IDE support** | Autocomplete, refactoring | N/A |
-| **Schema references** | Appear as typed properties | Resolve to CEL expressions |
-| **Resource references** | Type-safe property access | Runtime cluster state lookup |
-| **Validation** | TypeScript + arktype schemas | Kubernetes validation + CEL |
-
----
-
-## Comparison Grid
-
-| Feature | TypeKro | Pulumi | CDK8s | Helm | Kustomize | Crossplane |
-|---------|---------|---------|--------|------|-----------|------------|
-| **Type Safety** | ✅ Full TypeScript | ✅ Multi-language | ✅ TypeScript | ❌ Templates | ❌ YAML | ❌ YAML |
-| **GitOps Ready** | ✅ Deterministic YAML | ❌ State backend | ✅ YAML output | ✅ Charts | ✅ YAML | ✅ YAML |
-| **Runtime Dependencies** | ✅ KRO + CEL expressions | ❌ Deploy-time only | ❌ Static | ❌ Templates | ❌ Static | ✅ Compositions |
-| **IDE Support** | ✅ Full autocomplete | ✅ Language support | ✅ TypeScript | ❌ Limited | ❌ Limited | ❌ Limited |
-| **Learning Curve** | 🟢 Just TypeScript | 🔴 New concepts | 🟡 TypeScript + K8s | 🔴 Templates | 🔴 YAML hell | 🔴 Complex |
-| **Kubernetes Native** | ✅ Pure K8s resources | ❌ Abstraction layer | ✅ Pure K8s | ✅ K8s resources | ✅ K8s resources | ✅ K8s + CRDs |
-| **Cross-Resource Refs** | ✅ Runtime resolution | ❌ Deploy-time | ❌ Manual | ❌ Manual | ❌ Manual | ✅ Built-in |
-| **Multi-Cloud** | 🟡 Via Alchemy | ✅ Native | ❌ K8s only | ❌ K8s only | ❌ K8s only | ✅ Native |
-| **State Management** | ✅ Stateless | ❌ State backend | ✅ Stateless | ✅ Stateless | ✅ Stateless | ✅ Controller |
-| **CRD Timing** | ✅ Automatic | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual | ✅ Built-in |
 
 ---
 
@@ -791,119 +616,6 @@ Choose based on your team's needs, not just technical capabilities. You can alwa
 
 ---
 
-## Enhanced Type System
-
-TypeKro provides **enhanced types** through its magic proxy system, eliminating the need for optional chaining (`?.`) when working with schema and resource references.
-
-### Schema References - Always Present
-
-When you access schema fields in the resource builder, TypeScript treats them as always present:
-
-```typescript
-const graph = toResourceGraph(
-  {
-    name: 'my-app',
-    spec: type({
-      name: 'string',
-      image: 'string',
-      replicas: 'number',
-      environment: 'string',
-    }),
-    status: type({
-      ready: 'boolean',
-      url: 'string',
-    }),
-  },
-  (schema) => ({
-    deployment: simpleDeployment({
-      // ✅ No optional chaining needed - TypeScript knows these exist
-      name: schema.spec.name,           // Type: string (not string | undefined)
-      image: schema.spec.image,         // Type: string (not string | undefined)
-      replicas: schema.spec.replicas,   // Type: number (not number | undefined)
-      
-      env: {
-        NODE_ENV: schema.spec.environment,  // Type: string
-      },
-    }),
-  }),
-  (schema, resources) => ({
-    // ✅ Status fields are also enhanced - no optional chaining needed
-    ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
-    url: Cel.template('https://%s.example.com', schema.spec.name),
-  })
-);
-```
-
-### Resource Status References - Enhanced Types
-
-Resource status fields are enhanced to be non-optional within the builders:
-
-```typescript
-// Without TypeKro (regular Kubernetes types)
-const regularK8s = {
-  // These would require optional chaining
-  replicas: deployment.status?.readyReplicas,        // number | undefined
-  conditions: deployment.status?.conditions?.[0],   // Condition | undefined
-};
-
-// With TypeKro (enhanced types)
-const graph = toResourceGraph(
-  // ... schema definition
-  (schema, resources) => ({
-    // ✅ No optional chaining needed - enhanced types guarantee presence
-    replicas: resources.deployment.status.readyReplicas,     // Type: number
-    phase: resources.deployment.status.phase,                // Type: string
-    conditions: resources.deployment.status.conditions[0],   // Type: Condition
-    
-    // Complex expressions work naturally
-    healthy: Cel.expr(
-      resources.deployment.status.readyReplicas, ' == ',
-      resources.deployment.spec.replicas
-    ),
-  })
-);
-```
-
-### How Enhanced Types Work
-
-The magic proxy system provides type enhancement while respecting the static/dynamic value distinction:
-
-1. **Enhanced Type Safety**: Schema and resource references appear as non-optional TypeScript types
-2. **Dynamic Reference Creation**: Schema and status field access creates `KubernetesRef<T>` objects
-3. **Static Value Preservation**: Known values at execution time remain as actual values
-
-```typescript
-// Schema references (always dynamic - unknown until runtime)
-const nameRef = schema.spec.name;                    // Creates: KubernetesRef<string>
-const imageRef = schema.spec.image;                  // Creates: KubernetesRef<string>
-
-// Resource status references (always dynamic - runtime cluster state)
-const replicasRef = resources.deployment.status.readyReplicas;  // Creates: KubernetesRef<number>
-
-// Static values (known at execution time)
-const staticName = 'my-app';                         // Remains: string
-const staticReplicas = 3;                            // Remains: number
-
-// Mixed usage in factory functions
-const deployment = simpleDeployment({
-  name: schema.spec.name,        // Dynamic: KubernetesRef<string> → CEL expression
-  replicas: 3,                   // Static: number → direct value
-  image: 'nginx:latest'          // Static: string → direct value
-});
-```
-
-### Benefits of Enhanced Types
-
-- **No Optional Chaining**: Write cleaner code without `?.` operators
-- **Better IntelliSense**: Full autocomplete for all schema and status fields
-- **Execution-Time Safety**: Catch typos and missing fields when building resources
-- **Runtime Flexibility**: References are resolved dynamically by Kro
-- **Natural Syntax**: Write code that looks like direct property access
-
-This enhanced type system makes TypeKro feel natural to use while maintaining the powerful reference resolution capabilities needed for complex Kubernetes deployments.
-
----
-
 ## Multi-Cloud Integration with Alchemy
 
 TypeKro integrates seamlessly with [Alchemy](https://alchemy.run) to enable unified cloud + Kubernetes infrastructure management. Alchemy is infrastructure-as-TypeScript that lets you deploy to Cloudflare, AWS, and more with pure TypeScript.
@@ -1103,6 +815,273 @@ await app.run(async () => {
 - **Deployment Flexibility**: Use any TypeKro deployment strategy with Alchemy
 - **IDE Support**: Full autocomplete and refactoring across your entire infrastructure
 - **GitOps Compatible**: Generate deterministic YAML while maintaining cloud resource management
+
+---
+
+
+## Core Architecture
+
+TypeKro's architecture enables compile-time type safety with runtime intelligence through three key systems:
+
+```mermaid
+graph TD
+    A[TypeScript Code] --> B[Magic Proxy System]
+    B --> C[Schema References]
+    B --> D[Static Values]
+    C --> E[CEL Expressions]
+    D --> F[Direct Values]
+    E --> G[Runtime Resolution]
+    F --> G
+    G --> H{Deployment Strategy}
+    
+    H --> I[YAML Generation]
+    H --> J[Direct Deployment]
+    H --> K[KRO Deployment]
+    
+    I --> L[GitOps Tools<br/>ArgoCD, Flux, kubectl]
+    J --> M[Kubernetes API<br/>Immediate Deployment]
+    K --> N[KRO Controller<br/>Runtime Dependencies]
+    
+    L --> O[Kubernetes Cluster]
+    M --> O
+    N --> O
+    
+    subgraph "Compile Time"
+        A
+        B
+        C
+        D
+        P[IDE Support<br/>Autocomplete<br/>Type Safety]
+    end
+    
+    subgraph "Runtime"
+        E
+        G
+        Q[CEL Evaluation<br/>Cross-Resource Refs<br/>Status Propagation]
+    end
+    
+    A -.-> P
+    N -.-> Q
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style O fill:#e8f5e8
+    style P fill:#fff3e0
+    style Q fill:#fff3e0
+```
+
+### Magic Proxy System
+
+TypeKro's "magic" comes from its **proxy system** that creates different behaviors for execution-time vs runtime values:
+
+#### Static Values (Known at Execution Time)
+```typescript
+const deployment = simpleDeployment({
+  name: 'my-app',        // Static string
+  replicas: 3,           // Static number
+});
+
+// Accessing static values returns the actual value
+console.log(deployment.spec.replicas); // Returns: 3
+```
+
+#### Dynamic References (Unknown at Execution Time)
+```typescript
+const deployment = simpleDeployment({
+  name: schema.spec.name,  // Schema reference - unknown until runtime
+});
+
+// Accessing schema or status fields creates KubernetesRef objects
+const nameRef = schema.spec.name;        // Creates: KubernetesRef<string>
+const statusRef = deployment.status.readyReplicas; // Creates: KubernetesRef<number>
+```
+
+#### The `$` Prefix for Explicit References
+```typescript
+const configMap = simpleConfigMap({
+  name: 'config',
+  data: { key: 'value' }  // Static value
+});
+
+const deployment = simpleDeployment({
+  name: 'app',
+  env: {
+    // Static behavior: Uses the known value "value" at execution time
+    STATIC_VALUE: configMap.data.key,
+    
+    // Dynamic behavior: Creates reference resolved by Kro at runtime
+    DYNAMIC_VALUE: configMap.data.$key,
+  }
+});
+```
+
+**Key Rule**: Schema references (`schema.spec.*`) and status references (`resource.status.*`) are automatically converted to CEL expressions. For explicit runtime references to other resource properties, use the `$` prefix.
+
+### Enhanced Types (RefOrValue Pattern)
+
+Every factory function accepts `RefOrValue<T>`, which means any parameter can be:
+
+```typescript
+// 1. Direct value
+name: "my-app"
+
+// 2. Schema reference (becomes CEL)
+name: schema.spec.name
+
+// 3. CEL expression 
+name: Cel.template("%s-service", schema.spec.name)
+
+// 4. Reference to another resource
+env: {
+  DB_HOST: database.service.spec.clusterIP  // Runtime resolution
+}
+```
+
+This pattern provides **compile-time type safety** while enabling **runtime flexibility**.
+
+### CRD Installation Intelligence
+
+TypeKro's direct deployer automatically handles Custom Resource Definition timing:
+
+```typescript
+// TypeKro automatically detects CRD dependencies
+const kroResources = [
+  kroDefinition,           // CRD must be installed first
+  kroInstance             // Instance depends on CRD
+];
+
+const factory = await graph.factory('direct', { namespace: 'default' });
+await factory.deploy(spec);  // ✅ Automatically waits for CRD readiness
+```
+
+**Benefits:**
+- **No "CRD not found" errors** - Automatic timing coordination
+- **Zero manual ordering** - Intelligent dependency detection  
+- **Production reliability** - Handles CRD establishment properly
+
+### Runtime vs Compile-time Behavior
+
+| **Aspect** | **Compile-time** | **Runtime** |
+|------------|------------------|-------------|
+| **Type checking** | Full TypeScript validation | N/A |
+| **IDE support** | Autocomplete, refactoring | N/A |
+| **Schema references** | Appear as typed properties | Resolve to CEL expressions |
+| **Resource references** | Type-safe property access | Runtime cluster state lookup |
+| **Validation** | TypeScript + arktype schemas | Kubernetes validation + CEL |
+
+---
+
+
+## Enhanced Type System
+
+TypeKro provides **enhanced types** through its magic proxy system, eliminating the need for optional chaining (`?.`) when working with schema and resource references.
+
+### Schema References - Always Present
+
+When you access schema fields in the resource builder, TypeScript treats them as always present:
+
+```typescript
+const graph = toResourceGraph(
+  {
+    name: 'my-app',
+    spec: type({
+      name: 'string',
+      image: 'string',
+      replicas: 'number',
+      environment: 'string',
+    }),
+    status: type({
+      ready: 'boolean',
+      url: 'string',
+    }),
+  },
+  (schema) => ({
+    deployment: simpleDeployment({
+      // ✅ No optional chaining needed - TypeScript knows these exist
+      name: schema.spec.name,           // Type: string (not string | undefined)
+      image: schema.spec.image,         // Type: string (not string | undefined)
+      replicas: schema.spec.replicas,   // Type: number (not number | undefined)
+      
+      env: {
+        NODE_ENV: schema.spec.environment,  // Type: string
+      },
+    }),
+  }),
+  (schema, resources) => ({
+    // ✅ Status fields are also enhanced - no optional chaining needed
+    ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
+    url: Cel.template('https://%s.example.com', schema.spec.name),
+  })
+);
+```
+
+### Resource Status References - Enhanced Types
+
+Resource status fields are enhanced to be non-optional within the builders:
+
+```typescript
+// Without TypeKro (regular Kubernetes types)
+const regularK8s = {
+  // These would require optional chaining
+  replicas: deployment.status?.readyReplicas,        // number | undefined
+  conditions: deployment.status?.conditions?.[0],   // Condition | undefined
+};
+
+// With TypeKro (enhanced types)
+const graph = toResourceGraph(
+  // ... schema definition
+  (schema, resources) => ({
+    // ✅ No optional chaining needed - enhanced types guarantee presence
+    replicas: resources.deployment.status.readyReplicas,     // Type: number
+    phase: resources.deployment.status.phase,                // Type: string
+    conditions: resources.deployment.status.conditions[0],   // Type: Condition
+    
+    // Complex expressions work naturally
+    healthy: Cel.expr(
+      resources.deployment.status.readyReplicas, ' == ',
+      resources.deployment.spec.replicas
+    ),
+  })
+);
+```
+
+### How Enhanced Types Work
+
+The magic proxy system provides type enhancement while respecting the static/dynamic value distinction:
+
+1. **Enhanced Type Safety**: Schema and resource references appear as non-optional TypeScript types
+2. **Dynamic Reference Creation**: Schema and status field access creates `KubernetesRef<T>` objects
+3. **Static Value Preservation**: Known values at execution time remain as actual values
+
+```typescript
+// Schema references (always dynamic - unknown until runtime)
+const nameRef = schema.spec.name;                    // Creates: KubernetesRef<string>
+const imageRef = schema.spec.image;                  // Creates: KubernetesRef<string>
+
+// Resource status references (always dynamic - runtime cluster state)
+const replicasRef = resources.deployment.status.readyReplicas;  // Creates: KubernetesRef<number>
+
+// Static values (known at execution time)
+const staticName = 'my-app';                         // Remains: string
+const staticReplicas = 3;                            // Remains: number
+
+// Mixed usage in factory functions
+const deployment = simpleDeployment({
+  name: schema.spec.name,        // Dynamic: KubernetesRef<string> → CEL expression
+  replicas: 3,                   // Static: number → direct value
+  image: 'nginx:latest'          // Static: string → direct value
+});
+```
+
+### Benefits of Enhanced Types
+
+- **No Optional Chaining**: Write cleaner code without `?.` operators
+- **Better IntelliSense**: Full autocomplete for all schema and status fields
+- **Execution-Time Safety**: Catch typos and missing fields when building resources
+- **Runtime Flexibility**: References are resolved dynamically by Kro
+- **Natural Syntax**: Write code that looks like direct property access
+
+This enhanced type system makes TypeKro feel natural to use while maintaining the powerful reference resolution capabilities needed for complex Kubernetes deployments.
 
 ---
 

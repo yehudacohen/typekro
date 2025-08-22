@@ -8,12 +8,12 @@ export function clusterRole(resource: V1ClusterRole): Enhanced<V1ClusterRole, un
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'ClusterRole',
     metadata: resource.metadata ?? { name: 'unnamed-clusterrole' },
-  }).withReadinessEvaluator((liveResource: V1ClusterRole) => {
+  }).withReadinessEvaluator((_liveResource: V1ClusterRole) => {
     // ClusterRoles are ready when they exist - they're configuration objects
     // that don't have complex status conditions
     return {
       ready: true,
-      message: 'ClusterRole is ready'
+      message: 'ClusterRole is ready',
     };
   });
 }

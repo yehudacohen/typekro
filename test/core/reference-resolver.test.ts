@@ -4,8 +4,8 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { ReferenceResolver } from '../../src/core.js';
-import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../src/core/constants/brands.js';
 
 // Mock the Kubernetes client
 const mockKubeConfig = {

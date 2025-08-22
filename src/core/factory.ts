@@ -1,12 +1,11 @@
 /**
  * Core Factory - Legacy factory functions (to be moved to organized structure)
- * 
+ *
  * This file contains the old factory functions that should be moved to the new
  * organized structure in src/factories/. It's kept temporarily for backward compatibility.
- * 
+ *
  * @deprecated Use the organized factory functions from src/factories/ instead
  */
-
 
 // Re-export all factory functions from the organized structure
 export * from '../factories/index.js';

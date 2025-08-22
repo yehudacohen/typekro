@@ -43,13 +43,13 @@ import {
   roleBinding,
   runtimeClass,
   secret,
+  // Serialization
+  serializeResourceGraphToYaml,
   service,
   serviceAccount,
   statefulSet,
   // Storage resources
   storageClass,
-  // Serialization
-  serializeResourceGraphToYaml,
   validatingWebhookConfiguration,
 } from '../src/index';
 

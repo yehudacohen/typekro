@@ -7,12 +7,11 @@
  */
 
 import type { Type } from 'arktype';
-import { isKubernetesRef, isCelExpression } from './type-guards.js';
-import type { CelExpression, KubernetesRef } from '../core/types/common.js';
-import type { KroSimpleSchema, SerializationContext } from '../core/types/serialization.js';
-import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
-
 import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
+import type { CelExpression, KubernetesRef } from '../core/types/common.js';
+import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
+import type { KroSimpleSchema, SerializationContext } from '../core/types/serialization.js';
+import { isCelExpression, isKubernetesRef } from './type-guards.js';
 /**
  * Generate deterministic resource ID based on resource metadata
  * This ensures stable IDs across multiple applications for GitOps workflows
@@ -375,11 +374,11 @@ export function ensureReadinessEvaluator<T extends Enhanced<any, any>>(resource:
   if (typeof resource.readinessEvaluator === 'function') {
     return resource;
   }
-  
+
   // Second: Look up in registry by KIND
   const registry = ReadinessEvaluatorRegistry.getInstance();
   const evaluator = registry.getEvaluatorForKind(resource.kind);
-  
+
   if (evaluator) {
     // Attach the registry evaluator to this resource instance
     Object.defineProperty(resource, 'readinessEvaluator', {
@@ -390,11 +389,11 @@ export function ensureReadinessEvaluator<T extends Enhanced<any, any>>(resource:
     });
     return resource;
   }
-  
+
   // Third: No evaluator found anywhere
   throw new Error(
     `No readiness evaluator found for ${resource.kind}/${resource.metadata?.name}. ` +
-    `Use a factory function like deployment(), configMap(), etc., or call .withReadinessEvaluator().`
+      `Use a factory function like deployment(), configMap(), etc., or call .withReadinessEvaluator().`
   );
 }
 

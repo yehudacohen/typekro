@@ -24,7 +24,7 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
 
           reason: 'StatusMissing',
           message: 'Deployment status not available yet',
-          details: { expectedReplicas }
+          details: { expectedReplicas },
         };
       }
 
@@ -38,7 +38,7 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
       if (ready) {
         return {
           ready: true,
-          message: `Deployment has ${readyReplicas}/${expectedReplicas} ready replicas and ${availableReplicas}/${expectedReplicas} available replicas`
+          message: `Deployment has ${readyReplicas}/${expectedReplicas} ready replicas and ${availableReplicas}/${expectedReplicas} available replicas`,
         };
       } else {
         return {
@@ -50,9 +50,8 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
             readyReplicas,
             availableReplicas,
 
-            updatedReplicas: status.updatedReplicas ||
-              0
-          }
+            updatedReplicas: status.updatedReplicas || 0,
+          },
         };
       }
     } catch (error) {
@@ -60,7 +59,7 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating deployment readiness: ${error}`,
-        details: { expectedReplicas, error: String(error) }
+        details: { expectedReplicas, error: String(error) },
       };
     }
   });

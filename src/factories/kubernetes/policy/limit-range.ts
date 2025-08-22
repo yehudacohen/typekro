@@ -10,12 +10,12 @@ export function limitRange(resource: V1LimitRange): Enhanced<V1LimitRangeSpec, u
     apiVersion: 'v1',
     kind: 'LimitRange',
     metadata: resource.metadata ?? { name: 'unnamed-limitrange' },
-  }).withReadinessEvaluator((liveResource: V1LimitRange) => {
+  }).withReadinessEvaluator((_liveResource: V1LimitRange) => {
     // LimitRanges are ready when they exist - they're configuration objects
     // that don't have complex status conditions
     return {
       ready: true,
-      message: 'LimitRange is ready'
+      message: 'LimitRange is ready',
     };
   });
 }

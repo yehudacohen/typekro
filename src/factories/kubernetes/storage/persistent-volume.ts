@@ -14,32 +14,32 @@ export function persistentVolume(resource: V1PersistentVolume): Enhanced<V1PvSpe
   }).withReadinessEvaluator((liveResource: V1PersistentVolume) => {
     try {
       const status = liveResource.status;
-      
+
       // Handle missing status gracefully
       if (!status) {
         return {
           ready: false,
           reason: 'StatusMissing',
-          message: 'PersistentVolume status not available yet'
+          message: 'PersistentVolume status not available yet',
         };
       }
-      
+
       const phase = status.phase;
-      
+
       // PV is ready when phase is Available or Bound
       const ready = phase === 'Available' || phase === 'Bound';
-      
+
       if (ready) {
         return {
           ready: true,
-          message: `PersistentVolume is ready with phase: ${phase}`
+          message: `PersistentVolume is ready with phase: ${phase}`,
         };
       } else {
         return {
           ready: false,
           reason: 'NotAvailable',
           message: `PersistentVolume phase is ${phase || 'unknown'}, waiting for Available or Bound phase`,
-          details: { phase }
+          details: { phase },
         };
       }
     } catch (error) {
@@ -47,7 +47,7 @@ export function persistentVolume(resource: V1PersistentVolume): Enhanced<V1PvSpe
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating PersistentVolume readiness: ${error}`,
-        details: { error: String(error) }
+        details: { error: String(error) },
       };
     }
   });

@@ -11,8 +11,8 @@ import {
   DirectDeploymentEngine,
   type Enhanced,
 } from '../../src/core.js';
-import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
+import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
 // Helper function to create properly typed test resources with mock readiness evaluators
 function createMockResource(
@@ -33,7 +33,7 @@ function createMockResource(
     value: () => ({ ready: true, message: 'Mock resource ready' }),
     enumerable: false,
     configurable: true,
-    writable: false
+    writable: false,
   });
 
   return resource;
@@ -41,14 +41,17 @@ function createMockResource(
 
 // Mock the Kubernetes client
 const mockK8sApi = {
-  read: mock((resource?: any) => {
+  read: mock((_resource?: any) => {
     // Default to resource not found (404) unless specifically mocked otherwise
     return Promise.reject({ statusCode: 404 });
   }),
   create: mock((resource?: any) =>
     Promise.resolve({
       body: {
-        metadata: { name: resource?.metadata?.name || 'test', namespace: resource?.metadata?.namespace || 'default' },
+        metadata: {
+          name: resource?.metadata?.name || 'test',
+          namespace: resource?.metadata?.namespace || 'default',
+        },
         kind: resource?.kind || 'Deployment',
         apiVersion: resource?.apiVersion || 'apps/v1',
       },
@@ -57,7 +60,10 @@ const mockK8sApi = {
   patch: mock((resource?: any) =>
     Promise.resolve({
       body: {
-        metadata: { name: resource?.metadata?.name || 'test', namespace: resource?.metadata?.namespace || 'default' },
+        metadata: {
+          name: resource?.metadata?.name || 'test',
+          namespace: resource?.metadata?.namespace || 'default',
+        },
         kind: resource?.kind || 'ConfigMap',
         apiVersion: resource?.apiVersion || 'v1',
       },
@@ -88,7 +94,11 @@ describe('DirectDeploymentEngine Simple', () => {
   let defaultOptions: DeploymentOptions;
 
   beforeEach(() => {
-    engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi as any, mockReferenceResolver as any);
+    engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as any,
+      mockReferenceResolver as any
+    );
     defaultOptions = {
       mode: 'direct',
       namespace: 'test-namespace',
@@ -127,7 +137,7 @@ describe('DirectDeploymentEngine Simple', () => {
               metadata: { name: 'test-deployment', namespace: 'test-namespace' },
               kind: 'Deployment',
               apiVersion: 'apps/v1',
-              status: { readyReplicas: 1, availableReplicas: 1 }
+              status: { readyReplicas: 1, availableReplicas: 1 },
             },
           });
         }
@@ -222,7 +232,7 @@ describe('DirectDeploymentEngine Simple', () => {
               metadata: { name: 'test-pod', namespace: 'test-namespace' },
               kind: 'Pod',
               apiVersion: 'v1',
-              status: { phase: 'Running' }
+              status: { phase: 'Running' },
             },
           });
         }
@@ -264,7 +274,7 @@ describe('DirectDeploymentEngine Simple', () => {
               metadata: { name: 'simple', namespace: 'test-namespace' },
               kind: 'Deployment',
               apiVersion: 'apps/v1',
-              status: { readyReplicas: 1, availableReplicas: 1 }
+              status: { readyReplicas: 1, availableReplicas: 1 },
             },
           });
         }
@@ -296,7 +306,7 @@ describe('DirectDeploymentEngine Simple', () => {
       // Clear previous mocks and set up fresh ones for this test
       mockK8sApi.read.mockClear();
       mockK8sApi.create.mockClear();
-      
+
       // Mock resource doesn't exist, and create fails
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
       mockK8sApi.create.mockRejectedValue(new Error('Deployment failed'));
@@ -310,11 +320,13 @@ describe('DirectDeploymentEngine Simple', () => {
           initialDelay: 100, // Faster delays for testing
           maxDelay: 500,
           backoffMultiplier: 2,
-        }
+        },
       };
 
       // This should fail after retrying, demonstrating graceful error handling
-      await expect(engine.deployResource(resource, testRetryOptions)).rejects.toThrow('Deployment failed');
+      await expect(engine.deployResource(resource, testRetryOptions)).rejects.toThrow(
+        'Deployment failed'
+      );
     }, 15000); // 15 second test timeout to allow for retries
   });
 
@@ -326,14 +338,14 @@ describe('DirectDeploymentEngine Simple', () => {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
         metadata: { name: 'ready-deployment', namespace: 'default' },
-        spec: { 
+        spec: {
           replicas: 3,
           selector: { matchLabels: { app: 'ready-deployment' } },
           template: {
             metadata: { labels: { app: 'ready-deployment' } },
-            spec: { containers: [{ name: 'app', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'app', image: 'nginx' }] },
+          },
+        },
       });
 
       const readyDeployedResource: DeployedResource = {
@@ -343,7 +355,7 @@ describe('DirectDeploymentEngine Simple', () => {
         namespace: 'default',
         manifest: readyDeploymentManifest as any, // Cast to KubernetesResource for DeployedResource
         status: 'deployed',
-        deployedAt: new Date()
+        deployedAt: new Date(),
       };
 
       // Create a deployment using the factory function (which includes readiness evaluator)
@@ -351,14 +363,14 @@ describe('DirectDeploymentEngine Simple', () => {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
         metadata: { name: 'not-ready-deployment', namespace: 'default' },
-        spec: { 
+        spec: {
           replicas: 3,
           selector: { matchLabels: { app: 'not-ready-deployment' } },
           template: {
             metadata: { labels: { app: 'not-ready-deployment' } },
-            spec: { containers: [{ name: 'app', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'app', image: 'nginx' }] },
+          },
+        },
       });
 
       const notReadyDeployedResource: DeployedResource = {
@@ -368,7 +380,7 @@ describe('DirectDeploymentEngine Simple', () => {
         namespace: 'default',
         manifest: notReadyDeploymentManifest as any, // Cast to KubernetesResource for DeployedResource
         status: 'deployed',
-        deployedAt: new Date()
+        deployedAt: new Date(),
       };
 
       // Mock the k8s API to return different statuses
@@ -381,8 +393,8 @@ describe('DirectDeploymentEngine Simple', () => {
               kind: 'Deployment',
               metadata: { name: 'ready-deployment', namespace: 'default' },
               spec: { replicas: 3 },
-              status: { readyReplicas: 3, availableReplicas: 3, replicas: 3 }
-            }
+              status: { readyReplicas: 3, availableReplicas: 3, replicas: 3 },
+            },
           });
         } else if (name === 'not-ready-deployment') {
           return Promise.resolve({
@@ -391,8 +403,8 @@ describe('DirectDeploymentEngine Simple', () => {
               kind: 'Deployment',
               metadata: { name: 'not-ready-deployment', namespace: 'default' },
               spec: { replicas: 3 },
-              status: { readyReplicas: 1, availableReplicas: 1, replicas: 3 }
-            }
+              status: { readyReplicas: 1, availableReplicas: 1, replicas: 3 },
+            },
           });
         } else {
           return Promise.reject({ statusCode: 404 });
@@ -413,7 +425,7 @@ describe('DirectDeploymentEngine Simple', () => {
         apiVersion: 'v1',
         kind: 'Service',
         metadata: { name: 'test-service', namespace: 'default' },
-        spec: { ports: [{ port: 80 }], type: 'ClusterIP' }
+        spec: { ports: [{ port: 80 }], type: 'ClusterIP' },
       });
 
       const deployedResource: DeployedResource = {
@@ -423,7 +435,7 @@ describe('DirectDeploymentEngine Simple', () => {
         namespace: 'default',
         manifest: serviceManifest as any, // Cast to KubernetesResource for DeployedResource
         status: 'deployed',
-        deployedAt: new Date()
+        deployedAt: new Date(),
       };
 
       // Mock the k8s API to return the service with status
@@ -433,8 +445,8 @@ describe('DirectDeploymentEngine Simple', () => {
           kind: 'Service',
           metadata: { name: 'test-service', namespace: 'default' },
           spec: { ports: [{ port: 80 }], type: 'ClusterIP' },
-          status: {}
-        }
+          status: {},
+        },
       });
 
       const isReady = await engine.isDeployedResourceReady(deployedResource);
@@ -451,11 +463,11 @@ describe('DirectDeploymentEngine Simple', () => {
         manifest: {
           apiVersion: 'v1',
           kind: 'ConfigMap',
-          metadata: { name: 'test-configmap', namespace: 'default' }
+          metadata: { name: 'test-configmap', namespace: 'default' },
           // No status field
         },
         status: 'deployed',
-        deployedAt: new Date()
+        deployedAt: new Date(),
       };
 
       // Mock the k8s API to return the configmap without status
@@ -463,9 +475,9 @@ describe('DirectDeploymentEngine Simple', () => {
         body: {
           apiVersion: 'v1',
           kind: 'ConfigMap',
-          metadata: { name: 'test-configmap', namespace: 'default' }
+          metadata: { name: 'test-configmap', namespace: 'default' },
           // No status field
-        }
+        },
       });
 
       const isReady = await engine.isDeployedResourceReady(deployedResource);

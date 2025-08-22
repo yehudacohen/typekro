@@ -166,9 +166,7 @@ export function formatReferenceError(
   }
 
   suggestions.push(`Available resources: ${availableResources.join(', ')}`);
-  suggestions.push(
-    `Make sure the referenced resource is included in your toResourceGraph() call`
-  );
+  suggestions.push(`Make sure the referenced resource is included in your toResourceGraph() call`);
   suggestions.push(`Check that the resource name and namespace are correct`);
 
   return new TypeKroReferenceError(message, fromResourceId, toResourceId, fieldPath, suggestions);

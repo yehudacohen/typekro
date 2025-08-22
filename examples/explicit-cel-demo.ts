@@ -6,7 +6,12 @@
  */
 
 import { Cel } from '../src/core/references/index.js';
-import { serializeResourceGraphToYaml, simpleConfigMap, simpleDeployment, simpleSecret } from '../src/index';
+import {
+  serializeResourceGraphToYaml,
+  simpleConfigMap,
+  simpleDeployment,
+  simpleSecret,
+} from '../src/index';
 
 // Create a database deployment
 const database = simpleDeployment({

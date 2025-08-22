@@ -56,10 +56,12 @@ describe('Schema Proxy Types', () => {
           kind: 'Pod',
           metadata: { name: 'test' },
           spec: {
-            containers: [{
-              name: 'test',
-              image: 'nginx',
-            }],
+            containers: [
+              {
+                name: 'test',
+                image: 'nginx',
+              },
+            ],
           },
         }),
       };
@@ -139,10 +141,12 @@ describe('Type Safety Validation', () => {
           kind: 'Pod',
           metadata: { name: 'test' },
           spec: {
-            containers: [{
-              name: 'test',
-              image: 'nginx',
-            }],
+            containers: [
+              {
+                name: 'test',
+                image: 'nginx',
+              },
+            ],
           },
         }),
       };

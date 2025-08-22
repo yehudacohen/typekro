@@ -1,6 +1,6 @@
 import pino from 'pino';
-import type { TypeKroLogger, LoggerConfig, LoggerContext } from './types.js';
 import { getLoggerConfigFromEnv, validateLoggerConfig } from './config.js';
+import type { LoggerConfig, LoggerContext, TypeKroLogger } from './types.js';
 
 /**
  * Pino-based implementation of TypeKroLogger
@@ -74,7 +74,7 @@ export function createLogger(config?: Partial<LoggerConfig>): TypeKroLogger {
 
   // Configure transport for pretty printing or custom destination
   let transport: pino.TransportSingleOptions | undefined;
-  
+
   if (finalConfig.pretty) {
     transport = {
       target: 'pino-pretty',
@@ -94,14 +94,17 @@ export function createLogger(config?: Partial<LoggerConfig>): TypeKroLogger {
   }
 
   const pinoLogger = transport ? pino(pinoOptions, pino.transport(transport)) : pino(pinoOptions);
-  
+
   return new PinoLogger(pinoLogger);
 }
 
 /**
  * Create a logger with TypeKro-specific context
  */
-export function createContextLogger(context: LoggerContext, config?: Partial<LoggerConfig>): TypeKroLogger {
+export function createContextLogger(
+  context: LoggerContext,
+  config?: Partial<LoggerConfig>
+): TypeKroLogger {
   const logger = createLogger(config);
   return logger.child(context);
 }
@@ -114,20 +117,30 @@ export const logger: TypeKroLogger = createLogger();
 /**
  * Create a component-specific logger
  */
-export function getComponentLogger(component: string, additionalContext?: Record<string, any>): TypeKroLogger {
+export function getComponentLogger(
+  component: string,
+  additionalContext?: Record<string, any>
+): TypeKroLogger {
   return logger.child({ component, ...additionalContext });
 }
 
 /**
  * Create a resource-specific logger
  */
-export function getResourceLogger(resourceId: string, additionalContext?: Record<string, any>): TypeKroLogger {
+export function getResourceLogger(
+  resourceId: string,
+  additionalContext?: Record<string, any>
+): TypeKroLogger {
   return logger.child({ resourceId, ...additionalContext });
 }
 
 /**
  * Create a deployment-specific logger
  */
-export function getDeploymentLogger(deploymentId: string, namespace?: string, additionalContext?: Record<string, any>): TypeKroLogger {
+export function getDeploymentLogger(
+  deploymentId: string,
+  namespace?: string,
+  additionalContext?: Record<string, any>
+): TypeKroLogger {
   return logger.child({ deploymentId, namespace, ...additionalContext });
 }

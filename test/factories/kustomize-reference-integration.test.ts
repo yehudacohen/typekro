@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { toResourceGraph } from '../../src/core/serialization/core.js';
-import { kustomization } from '../../src/factories/flux/kustomize/kustomization.js';
 import { gitRepository } from '../../src/factories/flux/git-repository.js';
+import { kustomization } from '../../src/factories/flux/kustomize/kustomization.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Kustomize Reference Integration', () => {
@@ -85,14 +85,14 @@ describe('Kustomize Reference Integration', () => {
           ],
         }),
       }),
-      (_schema, resources) => ({
+      (_schema, _resources) => ({
         ready: true,
         url: 'https://webapp.example.com',
       })
     );
 
     const resources = graph.resources;
-    const kustomizeResource = resources.find(r => r.kind === 'Kustomization');
+    const kustomizeResource = resources.find((r) => r.kind === 'Kustomization');
 
     // Verify the kustomization resource exists
     expect(kustomizeResource).toBeDefined();
@@ -170,22 +170,22 @@ describe('Kustomize Reference Integration', () => {
           ],
         }),
       }),
-      (_schema, resources) => ({
+      (_schema, _resources) => ({
         ready: true,
       })
     );
 
-    const kustomizeResource = graph.resources.find(r => r.kind === 'Kustomization');
+    const kustomizeResource = graph.resources.find((r) => r.kind === 'Kustomization');
     const patches = (kustomizeResource as any).spec?.patches;
-    
+
     expect(patches).toBeDefined();
     expect(patches).toHaveLength(1);
 
     const patch = patches![0];
-    
+
     // Verify reference in target selector
     expect(isKubernetesRef(patch.target?.namespace)).toBe(true);
-    
+
     // String patches should be preserved as-is
     expect(typeof patch.patch).toBe('string');
     expect(patch.patch).toContain('value: 3');
@@ -266,13 +266,13 @@ describe('Kustomize Reference Integration', () => {
           ],
         }),
       }),
-      (_schema, resources) => ({
+      (_schema, _resources) => ({
         ready: true,
       })
     );
 
-    const kustomizeResource = graph.resources.find(r => r.kind === 'Kustomization');
-    
+    const kustomizeResource = graph.resources.find((r) => r.kind === 'Kustomization');
+
     // Verify complex patch structure with nested references
     const patches = (kustomizeResource as any).spec?.patches;
     expect(patches).toBeDefined();
@@ -280,13 +280,13 @@ describe('Kustomize Reference Integration', () => {
 
     const patchContent = patches![0].patch as any;
     const container = patchContent.spec.template.spec.containers[0];
-    
+
     // Check resource references
     expect(isKubernetesRef(container.resources.requests.cpu)).toBe(true);
     expect(isKubernetesRef(container.resources.requests.memory)).toBe(true);
     expect(isKubernetesRef(container.resources.limits.cpu)).toBe(true);
     expect(isKubernetesRef(container.resources.limits.memory)).toBe(true);
-    
+
     // Check environment variable references
     expect(isKubernetesRef(container.env[0].value)).toBe(true); // schema.spec.environment
   });

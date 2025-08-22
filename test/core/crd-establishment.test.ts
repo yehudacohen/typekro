@@ -19,11 +19,9 @@ const mockK8sApi = {
       return Promise.resolve({
         body: {
           status: {
-            conditions: [
-              { type: 'Established', status: 'True' }
-            ]
-          }
-        }
+            conditions: [{ type: 'Established', status: 'True' }],
+          },
+        },
       });
     }
     return Promise.reject({ statusCode: 404 });
@@ -38,18 +36,18 @@ const mockK8sApi = {
               metadata: { name: 'myresources.example.com' },
               spec: {
                 group: 'example.com',
-                names: { kind: 'MyResource', plural: 'myresources' }
-              }
+                names: { kind: 'MyResource', plural: 'myresources' },
+              },
             },
             {
               metadata: { name: 'slowresources.example.com' },
               spec: {
                 group: 'example.com',
-                names: { kind: 'SlowResource', plural: 'slowresources' }
-              }
-            }
-          ]
-        }
+                names: { kind: 'SlowResource', plural: 'slowresources' },
+              },
+            },
+          ],
+        },
       });
     }
     return Promise.resolve({ body: { items: [] } });
@@ -58,23 +56,23 @@ const mockK8sApi = {
     Promise.resolve({
       body: {
         ...resource,
-        metadata: { ...resource.metadata, uid: 'test-uid' }
-      }
+        metadata: { ...resource.metadata, uid: 'test-uid' },
+      },
     })
   ),
   patch: mock((resource?: any) =>
     Promise.resolve({
       body: {
         ...resource,
-        metadata: { ...resource.metadata, uid: 'test-uid' }
-      }
+        metadata: { ...resource.metadata, uid: 'test-uid' },
+      },
     })
   ),
 };
 
 const mockKubeConfig = {} as any;
 const mockReferenceResolver = {
-  resolveReferences: mock((resource: any) => Promise.resolve(resource))
+  resolveReferences: mock((resource: any) => Promise.resolve(resource)),
 } as any;
 
 // Helper function to create a mock CRD
@@ -91,8 +89,8 @@ function createMockCRD(name: string): DeployableK8sResource<Enhanced<any, any>> 
       names: {
         plural: `${name}s`,
         singular: name,
-        kind: name.charAt(0).toUpperCase() + name.slice(1)
-      }
+        kind: name.charAt(0).toUpperCase() + name.slice(1),
+      },
     },
     status: {},
   } as DeployableK8sResource<Enhanced<any, any>>;
@@ -102,7 +100,7 @@ function createMockCRD(name: string): DeployableK8sResource<Enhanced<any, any>> 
     value: () => ({ ready: true, message: 'Mock CRD ready' }),
     enumerable: false,
     configurable: true,
-    writable: false
+    writable: false,
   });
 
   return crd;
@@ -124,7 +122,7 @@ function createMockCustomResource(kind: string): DeployableK8sResource<Enhanced<
     value: () => ({ ready: true, message: 'Mock custom resource ready' }),
     enumerable: false,
     configurable: true,
-    writable: false
+    writable: false,
   });
 
   return resource;
@@ -134,8 +132,12 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
   let engine: DirectDeploymentEngine;
 
   beforeEach(() => {
-    engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi as any, mockReferenceResolver as any);
-    
+    engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as any,
+      mockReferenceResolver as any
+    );
+
     // Clear mocks
     mockK8sApi.read.mockClear();
     mockK8sApi.list.mockClear();
@@ -157,9 +159,9 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
       name: 'test-crd-graph',
       resources: [
         { id: crd.id, manifest: crd },
-        { id: customResource.id, manifest: customResource }
+        { id: customResource.id, manifest: customResource },
       ],
-      dependencyGraph
+      dependencyGraph,
     };
 
     const options = {
@@ -185,15 +187,15 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     expect(mockK8sApi.create).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'MyResource',
-        apiVersion: 'example.com/v1'
+        apiVersion: 'example.com/v1',
       })
     );
-    
+
     // Verify CRD status was checked for establishment before deploying custom resource
     expect(mockK8sApi.read).toHaveBeenCalledWith({
       apiVersion: 'apiextensions.k8s.io/v1',
       kind: 'CustomResourceDefinition',
-      metadata: { name: 'myresources.example.com' }
+      metadata: { name: 'myresources.example.com' },
     });
   });
 
@@ -213,7 +215,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
       value: () => ({ ready: true, message: 'Mock deployment ready' }),
       enumerable: false,
       configurable: true,
-      writable: false
+      writable: false,
     });
 
     const dependencyGraph = new DependencyGraph();
@@ -221,10 +223,8 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
 
     const graph: ResourceGraph = {
       name: 'test-no-crd-graph',
-      resources: [
-        { id: deployment.id, manifest: deployment }
-      ],
-      dependencyGraph
+      resources: [{ id: deployment.id, manifest: deployment }],
+      dependencyGraph,
     };
 
     const options = {
@@ -244,7 +244,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     // Verify no CRD status checks were made
     expect(mockK8sApi.read).not.toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: 'CustomResourceDefinition'
+        kind: 'CustomResourceDefinition',
       })
     );
   });
@@ -257,10 +257,10 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
           body: {
             status: {
               conditions: [
-                { type: 'Established', status: 'False' } // Never established
-              ]
-            }
-          }
+                { type: 'Established', status: 'False' }, // Never established
+              ],
+            },
+          },
         });
       }
       return Promise.reject({ statusCode: 404 });
@@ -276,11 +276,11 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
                 metadata: { name: 'slowresources.example.com' },
                 spec: {
                   group: 'example.com',
-                  names: { kind: 'SlowResource', plural: 'slowresources' }
-                }
-              }
-            ]
-          }
+                  names: { kind: 'SlowResource', plural: 'slowresources' },
+                },
+              },
+            ],
+          },
         });
       }
       return Promise.resolve({ body: { items: [] } });
@@ -294,10 +294,8 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
 
     const graph: ResourceGraph = {
       name: 'test-slow-cr-graph',
-      resources: [
-        { id: customResource.id, manifest: customResource }
-      ],
-      dependencyGraph
+      resources: [{ id: customResource.id, manifest: customResource }],
+      dependencyGraph,
     };
 
     const options = {
@@ -309,7 +307,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
 
     // This should result in a failed deployment due to CRD establishment timeout
     const result = await engine.deploy(graph, options);
-    
+
     // The deployment should fail because the only resource failed to deploy
     expect(result.status).toBe('failed');
     expect(result.errors).toHaveLength(1);

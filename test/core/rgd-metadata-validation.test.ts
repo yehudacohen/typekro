@@ -1,13 +1,13 @@
 /**
  * Tests for ResourceGraphDefinition metadata validation
- * 
+ *
  * This test suite verifies that RGDs are created with valid metadata.name fields
  * and that invalid names are rejected early with clear error messages.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment } from '../../src/index.js';
+import { simpleDeployment, toResourceGraph } from '../../src/index.js';
 
 describe('RGD Metadata Validation', () => {
   const TestSchema = type({ name: 'string' });
@@ -94,7 +94,7 @@ describe('RGD Metadata Validation', () => {
     it('should accept simple valid names', async () => {
       const graph = createTestGraph('valid');
       expect(graph.name).toBe('valid');
-      
+
       const factory = await graph.factory('kro', { namespace: 'test' });
       expect(factory.name).toBe('valid');
       expect(factory.rgdName).toBe('valid');
@@ -103,7 +103,7 @@ describe('RGD Metadata Validation', () => {
     it('should accept names with dashes and numbers', async () => {
       const graph = createTestGraph('valid-name-123');
       expect(graph.name).toBe('valid-name-123');
-      
+
       const factory = await graph.factory('kro', { namespace: 'test' });
       expect(factory.name).toBe('valid-name-123');
       expect(factory.rgdName).toBe('valid-name-123');
@@ -112,7 +112,7 @@ describe('RGD Metadata Validation', () => {
     it('should convert camelCase names to kebab-case', async () => {
       const graph = createTestGraph('validCamelCase');
       expect(graph.name).toBe('validCamelCase');
-      
+
       const factory = await graph.factory('kro', { namespace: 'test' });
       expect(factory.name).toBe('validCamelCase');
       expect(factory.rgdName).toBe('valid-camel-case');
@@ -121,7 +121,7 @@ describe('RGD Metadata Validation', () => {
     it('should handle mixed case names correctly', async () => {
       const graph = createTestGraph('MyAppName');
       expect(graph.name).toBe('MyAppName');
-      
+
       const factory = await graph.factory('kro', { namespace: 'test' });
       expect(factory.name).toBe('MyAppName');
       expect(factory.rgdName).toBe('my-app-name');
@@ -132,9 +132,9 @@ describe('RGD Metadata Validation', () => {
     it('should generate RGD YAML with proper metadata.name', async () => {
       const graph = createTestGraph('test-app');
       const factory = await graph.factory('kro', { namespace: 'test-namespace' });
-      
+
       const yaml = factory.toYaml();
-      
+
       // Verify the YAML contains proper metadata
       expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(yaml).toContain('kind: ResourceGraphDefinition');
@@ -145,9 +145,9 @@ describe('RGD Metadata Validation', () => {
     it('should generate RGD YAML with converted camelCase names', async () => {
       const graph = createTestGraph('testAppName');
       const factory = await graph.factory('kro', { namespace: 'test-namespace' });
-      
+
       const yaml = factory.toYaml();
-      
+
       // Verify the YAML contains the converted name
       expect(yaml).toContain('name: test-app-name');
       expect(yaml).toContain('namespace: test-namespace');
@@ -158,7 +158,7 @@ describe('RGD Metadata Validation', () => {
     it('should prevent HTTP 422 errors by validating names early', () => {
       // These are the exact scenarios that would cause HTTP 422 errors
       const invalidNames = ['', null, undefined, '   ', '-invalid', 'invalid-'];
-      
+
       for (const invalidName of invalidNames) {
         expect(() => createTestGraph(invalidName)).toThrow();
       }
@@ -171,7 +171,7 @@ describe('RGD Metadata Validation', () => {
       } catch (error) {
         expect((error as Error).message).toContain('invalid_name');
         expect((error as Error).message).toContain('not a valid Kubernetes resource name');
-        expect((error as Error).message).toContain('lowercase alphanumeric characters or \'-\'');
+        expect((error as Error).message).toContain("lowercase alphanumeric characters or '-'");
       }
     });
   });

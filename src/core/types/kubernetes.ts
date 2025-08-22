@@ -72,10 +72,13 @@ export interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
   __externalRef?: boolean;
 }
 
-export type KubernetesResourceHeader<T extends KubernetesResource> = Pick<T, 'apiVersion' | 'kind'> & {
+export type KubernetesResourceHeader<T extends KubernetesResource> = Pick<
+  T,
+  'apiVersion' | 'kind'
+> & {
   metadata: {
-      name: string;
-      namespace: string;
+    name: string;
+    namespace: string;
   };
 };
 
@@ -92,7 +95,7 @@ export interface DeployableKubernetesResource<TSpec = unknown, TStatus = unknown
  * This provides a cleaner developer experience by removing undefined from Kubernetes types
  */
 type NonOptional<T> = {
-  [K in keyof T]-?: T[K] extends object 
+  [K in keyof T]-?: T[K] extends object
     ? T[K] extends Array<infer U>
       ? NonOptional<U>[]
       : NonOptional<NonNullable<T[K]>>
@@ -121,10 +124,10 @@ export type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
   readonly provisioner?: MagicProxy<string>; // StorageClass
   readonly parameters?: MagicProxy<{ [key: string]: string }>; // StorageClass
   readonly subsets?: MagicProxy<V1EndpointSubset[]>; // Endpoints
-  
+
   // Optional readiness evaluator that returns structured status
   readonly readinessEvaluator?: ReadinessEvaluator;
-  
+
   // Fluent builder method for setting readiness evaluator
   withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
 };
@@ -137,8 +140,8 @@ export type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
  */
 export interface ResourceStatus {
   ready: boolean;
-  reason?: string;        // Machine-readable reason code
-  message?: string;       // Human-readable status message
+  reason?: string; // Machine-readable reason code
+  message?: string; // Human-readable status message
   details?: Record<string, any>; // Additional debugging information
 }
 
@@ -346,9 +349,7 @@ export type DeployableK8sResource<T extends Enhanced<any, any>> = K8sClientCompa
  * Union type for resources that can be used in deployment operations
  * This handles both our typed resources and raw Kubernetes API objects
  */
-export type DeploymentResource =
-  | K8sClientCompatible<Enhanced<any, any>>
-  | KubernetesObject;
+export type DeploymentResource = K8sClientCompatible<Enhanced<any, any>> | KubernetesObject;
 
 /**
  * Type-safe resource accessor that works with both our types and k8s client types

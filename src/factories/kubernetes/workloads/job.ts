@@ -26,7 +26,7 @@ export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
           ready: false,
           reason: 'StatusMissing',
           message: 'Job status not available yet',
-          details: { expectedCompletions, parallelism, completionMode }
+          details: { expectedCompletions, parallelism, completionMode },
         };
       }
 
@@ -40,14 +40,14 @@ export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
           ready: false,
           reason: 'JobFailed',
           message: `Job failed: ${failed} failed pods exceed backoff limit of ${resource.spec.backoffLimit}`,
-          details: { 
-            expectedCompletions, 
-            succeeded, 
-            failed, 
-            active, 
+          details: {
+            expectedCompletions,
+            succeeded,
+            failed,
+            active,
             backoffLimit: resource.spec.backoffLimit,
-            completionMode 
-          }
+            completionMode,
+          },
         };
       }
 
@@ -55,49 +55,49 @@ export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
       if (completionMode === 'Indexed') {
         // For indexed jobs, we need all completions to succeed
         const ready = succeeded === expectedCompletions;
-        
+
         if (ready) {
           return {
             ready: true,
-            message: `Job (Indexed) completed: ${succeeded}/${expectedCompletions} completions succeeded`
+            message: `Job (Indexed) completed: ${succeeded}/${expectedCompletions} completions succeeded`,
           };
         } else {
           return {
             ready: false,
             reason: 'JobInProgress',
             message: `Job (Indexed) in progress: ${succeeded}/${expectedCompletions} completions succeeded, ${active} active, ${failed} failed`,
-            details: { 
-              expectedCompletions, 
-              succeeded, 
-              failed, 
-              active, 
+            details: {
+              expectedCompletions,
+              succeeded,
+              failed,
+              active,
               parallelism,
-              completionMode 
-            }
+              completionMode,
+            },
           };
         }
       } else {
         // NonIndexed mode: job is ready when succeeded count matches expected completions
         const ready = succeeded === expectedCompletions;
-        
+
         if (ready) {
           return {
             ready: true,
-            message: `Job completed: ${succeeded}/${expectedCompletions} completions succeeded`
+            message: `Job completed: ${succeeded}/${expectedCompletions} completions succeeded`,
           };
         } else {
           return {
             ready: false,
             reason: 'JobInProgress',
             message: `Job in progress: ${succeeded}/${expectedCompletions} completions succeeded, ${active} active, ${failed} failed`,
-            details: { 
-              expectedCompletions, 
-              succeeded, 
-              failed, 
-              active, 
+            details: {
+              expectedCompletions,
+              succeeded,
+              failed,
+              active,
               parallelism,
-              completionMode 
-            }
+              completionMode,
+            },
           };
         }
       }
@@ -106,7 +106,7 @@ export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating Job readiness: ${error}`,
-        details: { expectedCompletions, parallelism, completionMode, error: String(error) }
+        details: { expectedCompletions, parallelism, completionMode, error: String(error) },
       };
     }
   });

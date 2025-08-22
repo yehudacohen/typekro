@@ -1,6 +1,6 @@
 /**
  * Example: Dynamic Alchemy Resource Registration
- * 
+ *
  * This example demonstrates the new dynamic resource type registration
  * system that prevents "Resource already exists" errors while maintaining
  * full type safety and proper alchemy integration.
@@ -12,8 +12,8 @@ import {
   type TypeKroDeployer,
 } from '../src/alchemy/deployment.js';
 import { simpleDeployment, simpleService } from '../src/core/composition/index.js';
-import type { Enhanced } from '../src/core/types/kubernetes.js';
 import type { DeploymentOptions } from '../src/core/types/deployment.js';
+import type { Enhanced } from '../src/core/types/kubernetes.js';
 
 // Example: Create some TypeKro resources
 const webAppDeployment = simpleDeployment({
@@ -50,12 +50,18 @@ console.log('Registered types after: (types registered dynamically)');
 
 // Example: Create a deployer (mock for this example)
 class ExampleDeployer implements TypeKroDeployer {
-  async deploy<T extends Enhanced<unknown, unknown>>(resource: T, options: DeploymentOptions): Promise<T> {
+  async deploy<T extends Enhanced<unknown, unknown>>(
+    resource: T,
+    options: DeploymentOptions
+  ): Promise<T> {
     console.log(`Deploying ${resource.kind} to namespace ${options.namespace}`);
     return resource;
   }
-  
-  async delete<T extends Enhanced<unknown, unknown>>(resource: T, options: DeploymentOptions): Promise<void> {
+
+  async delete<T extends Enhanced<unknown, unknown>>(
+    resource: T,
+    options: DeploymentOptions
+  ): Promise<void> {
     console.log(`Deleting ${resource.kind} from namespace ${options.namespace}`);
   }
 }
@@ -81,8 +87,4 @@ console.log('✅ Centralized deployment logic');
 console.log('✅ Proper dependency management');
 console.log('✅ Automatic cleanup when alchemy scope is destroyed');
 
-export {
-  webAppDeployment,
-  webAppService,
-  ExampleDeployer,
-};
+export { webAppDeployment, webAppService, ExampleDeployer };

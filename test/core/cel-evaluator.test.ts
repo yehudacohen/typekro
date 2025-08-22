@@ -3,8 +3,8 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { CelEvaluationError, CelEvaluator } from '../../src/core.js';
-import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../src/core/constants/brands.js';
 
 describe('CelEvaluator', () => {
   let evaluator: CelEvaluator;

@@ -11,7 +11,7 @@ const rgdLogger = getComponentLogger('rgd-readiness');
 
 /**
  * ResourceGraphDefinition factory with readiness evaluation
- * 
+ *
  * Creates an Enhanced ResourceGraphDefinition with Kro-specific readiness logic
  * that checks the RGD status phase and conditions for 'ready' state.
  */
@@ -22,7 +22,7 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
     apiVersion: 'kro.run/v1alpha1',
     kind: 'ResourceGraphDefinition',
   };
-  
+
   return createResource(rgdResource).withReadinessEvaluator((liveRGD: any): ResourceStatus => {
     // This robust readiness check ensures the Kro controller has fully processed the RGD.
     try {
@@ -31,7 +31,7 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
         return {
           ready: false,
           reason: 'ResourceNotFound',
-          message: 'ResourceGraphDefinition not found in cluster.'
+          message: 'ResourceGraphDefinition not found in cluster.',
         };
       }
 
@@ -45,13 +45,14 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
           return {
             ready: false,
             reason: 'StatusPending',
-            message: 'ResourceGraphDefinition exists but Kro controller has not yet initialized status.'
+            message:
+              'ResourceGraphDefinition exists but Kro controller has not yet initialized status.',
           };
         }
         return {
           ready: false,
           reason: 'StatusMissing',
-          message: 'Waiting for Kro controller to initialize status.'
+          message: 'Waiting for Kro controller to initialize status.',
         };
       }
 
@@ -63,23 +64,29 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
           ready: false,
           reason: 'RGDProcessingFailed',
           message: `RGD processing failed: ${failedCondition?.message || 'Unknown error'}`,
-          details: { state: status.state, conditions }
+          details: { state: status.state, conditions },
         };
       }
 
       // 3. Check if RGD is in Active state with proper conditions
       const isStateReady = status.state === 'Active';
-      
+
       // Check for key readiness conditions (be defensive about conditions structure)
-      const reconcilerReady = conditions.find((c: any) => c && c.type === 'ReconcilerReady' && c.status === 'True');
-      const graphVerified = conditions.find((c: any) => c && c.type === 'GraphVerified' && c.status === 'True');
-      const crdSynced = conditions.find((c: any) => c && c.type === 'CustomResourceDefinitionSynced' && c.status === 'True');
+      const reconcilerReady = conditions.find(
+        (c: any) => c && c.type === 'ReconcilerReady' && c.status === 'True'
+      );
+      const graphVerified = conditions.find(
+        (c: any) => c && c.type === 'GraphVerified' && c.status === 'True'
+      );
+      const crdSynced = conditions.find(
+        (c: any) => c && c.type === 'CustomResourceDefinitionSynced' && c.status === 'True'
+      );
       const allConditionsReady = reconcilerReady && graphVerified && crdSynced;
 
       if (isStateReady && allConditionsReady) {
         return {
           ready: true,
-          message: 'ResourceGraphDefinition is active and ready.'
+          message: 'ResourceGraphDefinition is active and ready.',
         };
       }
 
@@ -88,7 +95,7 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
         ready: false,
         reason: 'ReconciliationPending',
         message: `Waiting for RGD to become active (current state: ${status.state || 'unknown'})`,
-        details: { state: status.state, conditions }
+        details: { state: status.state, conditions },
       };
     } catch (error) {
       // Log the error for debugging but don't let it crash the readiness evaluation
@@ -97,7 +104,7 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating ResourceGraphDefinition readiness: ${error}`,
-        details: { error: String(error), liveRGD: liveRGD }
+        details: { error: String(error), liveRGD: liveRGD },
       };
     }
   });

@@ -17,17 +17,16 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
-import { type } from 'arktype';
 import { File } from 'alchemy/fs';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
-
+import { type } from 'arktype';
 import {
-  toResourceGraph,
+  Cel,
+  simpleConfigMap,
   simpleDeployment,
   simpleService,
-  simpleConfigMap,
-  Cel,
+  toResourceGraph,
 } from '../../src/index.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration - use e2e-setup script
 const _CLUSTER_NAME = 'typekro-e2e-test';

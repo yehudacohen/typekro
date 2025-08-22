@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
-import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import type { DeploymentOptions } from '../../src/core/types/deployment.js';
+import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
 describe('Status Hydration Integration with DirectDeploymentEngine', () => {
   let engine: DirectDeploymentEngine;
@@ -51,10 +51,10 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
                   type: 'Available',
                   status: 'True',
                   lastTransitionTime: new Date().toISOString(),
-                }
-              ]
-            }
-          }
+                },
+              ],
+            },
+          },
         };
       },
       create: async (resource: any) => ({ body: resource }),
@@ -78,9 +78,9 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     });
 
     // Add id property to the Enhanced proxy directly
@@ -107,7 +107,7 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
     // The key is that hydrateStatus: true was processed without errors
     expect(enhanced.status).toBeDefined();
     expect(typeof enhanced.status).toBe('object');
-    
+
     // Verify that the deployment completed successfully with status hydration enabled
     expect(deployedResource.status).toBe('ready');
   });
@@ -121,9 +121,9 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     });
 
     // Add id property to the Enhanced proxy directly
@@ -166,7 +166,7 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
             metadata: { name: 'test-deployment-fail', namespace: 'test' },
             spec: { replicas: 1 },
             // No status field - this should cause readiness check to fail initially
-          }
+          },
         };
       } else {
         // Subsequent calls - resource becomes ready
@@ -185,10 +185,10 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
                   type: 'Available',
                   status: 'True',
                   lastTransitionTime: new Date().toISOString(),
-                }
-              ]
-            }
-          }
+                },
+              ],
+            },
+          },
         };
       }
     };
@@ -200,9 +200,9 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     });
 
     // Add id property to the Enhanced proxy directly
@@ -261,10 +261,10 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
                 type: 'Available',
                 status: 'True',
                 lastTransitionTime: new Date().toISOString(),
-              }
-            ]
-          }
-        }
+              },
+            ],
+          },
+        },
       };
     };
 
@@ -280,9 +280,9 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     });
 
     // Add id property to the Enhanced proxy directly

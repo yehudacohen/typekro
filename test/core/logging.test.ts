@@ -1,5 +1,11 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
-import { createLogger, getComponentLogger, getResourceLogger, getDeploymentLogger, type LoggerConfig } from '../../src/core/logging/index.js';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import {
+  createLogger,
+  getComponentLogger,
+  getDeploymentLogger,
+  getResourceLogger,
+  type LoggerConfig,
+} from '../../src/core/logging/index.js';
 
 describe('TypeKro Logging', () => {
   let originalEnv: Record<string, string | undefined>;
@@ -15,7 +21,7 @@ describe('TypeKro Logging', () => {
 
   afterEach(() => {
     // Restore original environment
-    Object.keys(originalEnv).forEach(key => {
+    Object.keys(originalEnv).forEach((key) => {
       if (originalEnv[key] === undefined) {
         delete process.env[key];
       } else {
@@ -103,7 +109,7 @@ describe('TypeKro Logging', () => {
   describe('Logger Methods', () => {
     it('should handle all log levels without throwing', () => {
       const logger = createLogger({ level: 'trace' });
-      
+
       expect(() => logger.trace('trace message')).not.toThrow();
       expect(() => logger.debug('debug message')).not.toThrow();
       expect(() => logger.info('info message')).not.toThrow();
@@ -115,7 +121,7 @@ describe('TypeKro Logging', () => {
     it('should handle error objects in error and fatal methods', () => {
       const logger = createLogger();
       const error = new Error('Test error');
-      
+
       expect(() => logger.error('Error occurred', error)).not.toThrow();
       expect(() => logger.fatal('Fatal error occurred', error)).not.toThrow();
     });
@@ -123,7 +129,7 @@ describe('TypeKro Logging', () => {
     it('should handle metadata in log methods', () => {
       const logger = createLogger();
       const meta = { userId: '123', action: 'deploy' };
-      
+
       expect(() => logger.info('User action', meta)).not.toThrow();
       expect(() => logger.error('Error with context', undefined, meta)).not.toThrow();
     });

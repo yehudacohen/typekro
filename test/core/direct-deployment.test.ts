@@ -5,27 +5,27 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { type } from 'arktype';
 import {
+  Cel,
   DependencyGraph,
   type DeployableK8sResource,
   type DeployedResource,
   type DeploymentOptions,
   DirectDeploymentEngine,
   type Enhanced,
-  toResourceGraph,
   simpleDeployment,
   simpleService,
-  Cel,
+  toResourceGraph,
 } from '../../src/core.js';
-import { 
-  deployment, 
-  pod, 
-  service, 
-  statefulSet, 
-  daemonSet, 
-  job, 
-  persistentVolumeClaim, 
-  configMap, 
-  secret 
+import {
+  configMap,
+  daemonSet,
+  deployment,
+  job,
+  persistentVolumeClaim,
+  pod,
+  secret,
+  service,
+  statefulSet,
 } from '../../src/factories/index.js';
 
 // Helper function to create properly typed test resources
@@ -211,7 +211,7 @@ describe('DirectDeploymentEngine', () => {
 
       // Check that create was called twice (once for each resource) with the correct namespace
       expect(mockK8sApi.create).toHaveBeenCalledTimes(2);
-      
+
       // Check that both calls have the correct namespace
       const createCalls = mockK8sApi.create.mock.calls as any[][];
       expect(createCalls).toHaveLength(2);
@@ -380,10 +380,10 @@ describe('DirectDeploymentEngine', () => {
               kind: 'Deployment',
               metadata: { name, namespace },
               spec: { replicas: 1 },
-              status: { 
-                readyReplicas: 1, 
+              status: {
+                readyReplicas: 1,
                 availableReplicas: 1,
-                replicas: 1 
+                replicas: 1,
               },
             },
           });
@@ -411,40 +411,40 @@ describe('DirectDeploymentEngine', () => {
     it('should detect Deployment readiness using factory evaluator', async () => {
       // Test the factory readiness evaluator directly
       const { deployment } = await import('../../src/factories/kubernetes/workloads/deployment.js');
-      
+
       const readyDeploymentResource = deployment({
         metadata: { name: 'test-deployment' },
-        spec: { 
+        spec: {
           replicas: 3,
           selector: { matchLabels: { app: 'test' } },
-          template: { 
+          template: {
             metadata: { labels: { app: 'test' } },
-            spec: { containers: [{ name: 'test', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'test', image: 'nginx' }] },
+          },
+        },
       });
 
       const notReadyDeploymentResource = deployment({
         metadata: { name: 'test-deployment-2' },
-        spec: { 
+        spec: {
           replicas: 3,
           selector: { matchLabels: { app: 'test' } },
-          template: { 
+          template: {
             metadata: { labels: { app: 'test' } },
-            spec: { containers: [{ name: 'test', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'test', image: 'nginx' }] },
+          },
+        },
       });
 
       // Test the readiness evaluator directly
       const readyResult = readyDeploymentResource.readinessEvaluator?.({
         kind: 'Deployment',
-        status: { readyReplicas: 3, availableReplicas: 3 }
+        status: { readyReplicas: 3, availableReplicas: 3 },
       } as any);
 
       const notReadyResult = notReadyDeploymentResource.readinessEvaluator?.({
-        kind: 'Deployment', 
-        status: { readyReplicas: 1, availableReplicas: 1 }
+        kind: 'Deployment',
+        status: { readyReplicas: 1, availableReplicas: 1 },
       } as any);
 
       expect(readyResult?.ready).toBe(true);
@@ -455,12 +455,12 @@ describe('DirectDeploymentEngine', () => {
       // Create pod resources using the factory function
       const readyPodResource = pod({
         metadata: { name: 'ready-pod' },
-        spec: { containers: [{ name: 'app', image: 'nginx' }] }
+        spec: { containers: [{ name: 'app', image: 'nginx' }] },
       });
 
       const notReadyPodResource = pod({
         metadata: { name: 'not-ready-pod' },
-        spec: { containers: [{ name: 'app', image: 'nginx' }] }
+        spec: { containers: [{ name: 'app', image: 'nginx' }] },
       });
 
       // Test the readiness evaluator directly
@@ -468,13 +468,13 @@ describe('DirectDeploymentEngine', () => {
         kind: 'Pod',
         status: {
           phase: 'Running',
-          containerStatuses: [{ ready: true }]
-        }
+          containerStatuses: [{ ready: true }],
+        },
       } as any);
 
       const notReadyResult = notReadyPodResource.readinessEvaluator?.({
         kind: 'Pod',
-        status: { phase: 'Pending' }
+        status: { phase: 'Pending' },
       } as any);
 
       expect(readyResult?.ready).toBe(true);
@@ -486,13 +486,13 @@ describe('DirectDeploymentEngine', () => {
       // that have readiness evaluators. Let's test with a ConfigMap as an example
       const configMapResource = configMap({
         metadata: { name: 'test-config' },
-        data: { key: 'value' }
+        data: { key: 'value' },
       });
 
       // Test the readiness evaluator directly
       const result = configMapResource.readinessEvaluator?.({
         kind: 'ConfigMap',
-        data: { key: 'value' }
+        data: { key: 'value' },
       } as any);
 
       expect(result?.ready).toBe(true);
@@ -508,11 +508,11 @@ describe('DirectDeploymentEngine', () => {
         manifest: {
           apiVersion: 'v1',
           kind: 'Service',
-          metadata: { name: 'test-service', namespace: 'default' }
+          metadata: { name: 'test-service', namespace: 'default' },
           // No spec or status - should be considered not ready
         },
         status: 'deployed',
-        deployedAt: new Date()
+        deployedAt: new Date(),
       };
 
       // Mock the k8s API to return the service without status
@@ -520,9 +520,9 @@ describe('DirectDeploymentEngine', () => {
         body: {
           apiVersion: 'v1',
           kind: 'Service',
-          metadata: { name: 'test-service', namespace: 'default' }
+          metadata: { name: 'test-service', namespace: 'default' },
           // No spec or status
-        }
+        },
       });
 
       const isReady = await engine.isDeployedResourceReady(deployedResource);
@@ -533,41 +533,41 @@ describe('DirectDeploymentEngine', () => {
       // Create StatefulSet resources using the factory function
       const readyStatefulSetResource = statefulSet({
         metadata: { name: 'ready-statefulset' },
-        spec: { 
+        spec: {
           replicas: 3,
           serviceName: 'ready-statefulset-service',
           selector: { matchLabels: { app: 'test' } },
           template: {
             metadata: { labels: { app: 'test' } },
-            spec: { containers: [{ name: 'app', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'app', image: 'nginx' }] },
+          },
+        },
       });
 
       const notReadyStatefulSetResource = statefulSet({
         metadata: { name: 'not-ready-statefulset' },
-        spec: { 
+        spec: {
           replicas: 3,
           serviceName: 'not-ready-statefulset-service',
           selector: { matchLabels: { app: 'test' } },
           template: {
             metadata: { labels: { app: 'test' } },
-            spec: { containers: [{ name: 'app', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'app', image: 'nginx' }] },
+          },
+        },
       });
 
       // Test the readiness evaluator directly
       const readyResult = await readyStatefulSetResource.readinessEvaluator?.({
         kind: 'StatefulSet',
         spec: { replicas: 3 },
-        status: { readyReplicas: 3, currentReplicas: 3, updatedReplicas: 3 }
+        status: { readyReplicas: 3, currentReplicas: 3, updatedReplicas: 3 },
       } as any);
 
       const notReadyResult = await notReadyStatefulSetResource.readinessEvaluator?.({
         kind: 'StatefulSet',
         spec: { replicas: 3 },
-        status: { readyReplicas: 1, currentReplicas: 1, updatedReplicas: 1 }
+        status: { readyReplicas: 1, currentReplicas: 1, updatedReplicas: 1 },
       } as any);
 
       expect(readyResult?.ready).toBe(true);
@@ -582,9 +582,9 @@ describe('DirectDeploymentEngine', () => {
           selector: { matchLabels: { app: 'test' } },
           template: {
             metadata: { labels: { app: 'test' } },
-            spec: { containers: [{ name: 'app', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'app', image: 'nginx' }] },
+          },
+        },
       });
 
       const notReadyDaemonSetResource = daemonSet({
@@ -593,20 +593,20 @@ describe('DirectDeploymentEngine', () => {
           selector: { matchLabels: { app: 'test' } },
           template: {
             metadata: { labels: { app: 'test' } },
-            spec: { containers: [{ name: 'app', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'app', image: 'nginx' }] },
+          },
+        },
       });
 
       // Test the readiness evaluator directly
       const readyResult = readyDaemonSetResource.readinessEvaluator?.({
         kind: 'DaemonSet',
-        status: { desiredNumberScheduled: 3, numberReady: 3 }
+        status: { desiredNumberScheduled: 3, numberReady: 3 },
       } as any);
 
       const notReadyResult = notReadyDaemonSetResource.readinessEvaluator?.({
         kind: 'DaemonSet',
-        status: { desiredNumberScheduled: 3, numberReady: 1 }
+        status: { desiredNumberScheduled: 3, numberReady: 1 },
       } as any);
 
       expect(readyResult?.ready).toBe(true);
@@ -620,12 +620,12 @@ describe('DirectDeploymentEngine', () => {
         spec: {
           completions: 1,
           template: {
-            spec: { 
+            spec: {
               containers: [{ name: 'app', image: 'nginx' }],
-              restartPolicy: 'Never'
-            }
-          }
-        }
+              restartPolicy: 'Never',
+            },
+          },
+        },
       });
 
       const notReadyJobResource = job({
@@ -633,25 +633,25 @@ describe('DirectDeploymentEngine', () => {
         spec: {
           completions: 3,
           template: {
-            spec: { 
+            spec: {
               containers: [{ name: 'app', image: 'nginx' }],
-              restartPolicy: 'Never'
-            }
-          }
-        }
+              restartPolicy: 'Never',
+            },
+          },
+        },
       });
 
       // Test the readiness evaluator directly
       const readyResult = readyJobResource.readinessEvaluator?.({
         kind: 'Job',
         spec: { completions: 1 },
-        status: { succeeded: 1 }
+        status: { succeeded: 1 },
       } as any);
 
       const notReadyResult = notReadyJobResource.readinessEvaluator?.({
         kind: 'Job',
         spec: { completions: 3 },
-        status: { succeeded: 1 }
+        status: { succeeded: 1 },
       } as any);
 
       expect(readyResult?.ready).toBe(true);
@@ -664,27 +664,27 @@ describe('DirectDeploymentEngine', () => {
         metadata: { name: 'ready-pvc' },
         spec: {
           accessModes: ['ReadWriteOnce'],
-          resources: { requests: { storage: '1Gi' } }
-        }
+          resources: { requests: { storage: '1Gi' } },
+        },
       });
 
       const notReadyPVCResource = persistentVolumeClaim({
         metadata: { name: 'not-ready-pvc' },
         spec: {
           accessModes: ['ReadWriteOnce'],
-          resources: { requests: { storage: '1Gi' } }
-        }
+          resources: { requests: { storage: '1Gi' } },
+        },
       });
 
       // Test the readiness evaluator directly
       const readyResult = readyPVCResource.readinessEvaluator?.({
         kind: 'PersistentVolumeClaim',
-        status: { phase: 'Bound' }
+        status: { phase: 'Bound' },
       } as any);
 
       const notReadyResult = notReadyPVCResource.readinessEvaluator?.({
         kind: 'PersistentVolumeClaim',
-        status: { phase: 'Pending' }
+        status: { phase: 'Pending' },
       } as any);
 
       expect(readyResult?.ready).toBe(true);
@@ -698,8 +698,8 @@ describe('DirectDeploymentEngine', () => {
         spec: {
           type: 'LoadBalancer',
           ports: [{ port: 80, targetPort: 8080 }],
-          selector: { app: 'test' }
-        }
+          selector: { app: 'test' },
+        },
       });
 
       const notReadyLBServiceResource = service({
@@ -707,8 +707,8 @@ describe('DirectDeploymentEngine', () => {
         spec: {
           type: 'LoadBalancer',
           ports: [{ port: 80, targetPort: 8080 }],
-          selector: { app: 'test' }
-        }
+          selector: { app: 'test' },
+        },
       });
 
       // Test the readiness evaluator directly
@@ -717,15 +717,15 @@ describe('DirectDeploymentEngine', () => {
         spec: { type: 'LoadBalancer' },
         status: {
           loadBalancer: {
-            ingress: [{ ip: '1.2.3.4' }]
-          }
-        }
+            ingress: [{ ip: '1.2.3.4' }],
+          },
+        },
       } as any);
 
       const notReadyResult = notReadyLBServiceResource.readinessEvaluator?.({
         kind: 'Service',
         spec: { type: 'LoadBalancer' },
-        status: {}
+        status: {},
       } as any);
 
       expect(readyResult?.ready).toBe(true);
@@ -736,23 +736,23 @@ describe('DirectDeploymentEngine', () => {
       // Create ConfigMap and Secret resources using the factory functions
       const configMapResource = configMap({
         metadata: { name: 'test-config' },
-        data: { key: 'value' }
+        data: { key: 'value' },
       });
 
       const secretResource = secret({
         metadata: { name: 'test-secret' },
-        data: { key: 'dmFsdWU=' } // base64 encoded 'value'
+        data: { key: 'dmFsdWU=' }, // base64 encoded 'value'
       });
 
       // Test the readiness evaluators directly
       const configMapResult = configMapResource.readinessEvaluator?.({
         kind: 'ConfigMap',
-        data: { key: 'value' }
+        data: { key: 'value' },
       } as any);
 
       const secretResult = secretResource.readinessEvaluator?.({
         kind: 'Secret',
-        data: { key: 'dmFsdWU=' }
+        data: { key: 'dmFsdWU=' },
       } as any);
 
       expect(configMapResult?.ready).toBe(true);
@@ -992,9 +992,9 @@ function createTestResourceGraph() {
       selector: { matchLabels: { app: 'database' } },
       template: {
         metadata: { labels: { app: 'database' } },
-        spec: { containers: [{ name: 'db', image: 'postgres' }] }
-      }
-    }
+        spec: { containers: [{ name: 'db', image: 'postgres' }] },
+      },
+    },
   });
   // Add the id property after creation to preserve the readiness evaluator
   (databaseManifest as any).id = 'database';
@@ -1008,9 +1008,9 @@ function createTestResourceGraph() {
       selector: { matchLabels: { app: 'app' } },
       template: {
         metadata: { labels: { app: 'app' } },
-        spec: { containers: [{ name: 'app', image: 'nginx' }] }
-      }
-    }
+        spec: { containers: [{ name: 'app', image: 'nginx' }] },
+      },
+    },
   });
   // Add the id property after creation to preserve the readiness evaluator
   (appManifest as any).id = 'app';
@@ -1023,7 +1023,7 @@ function createTestResourceGraph() {
     name: 'test-graph',
     resources: [
       { id: 'database', manifest: databaseManifest as any },
-      { id: 'app', manifest: appManifest as any }
+      { id: 'app', manifest: appManifest as any },
     ],
     dependencyGraph: graph,
   };
@@ -1069,7 +1069,7 @@ function createCircularDependencyGraph() {
     name: 'circular-graph',
     resources: [
       { id: 'a', manifest: resourceA },
-      { id: 'b', manifest: resourceB }
+      { id: 'b', manifest: resourceB },
     ],
     dependencyGraph: graph,
   };
@@ -1084,10 +1084,12 @@ function createInvalidResourceGraph() {
 
   return {
     name: 'invalid-graph',
-    resources: [{ 
-      id: 'existing', 
-      manifest: createMockResource({ id: 'existing', metadata: { name: 'existing' } })
-    }],
+    resources: [
+      {
+        id: 'existing',
+        manifest: createMockResource({ id: 'existing', metadata: { name: 'existing' } }),
+      },
+    ],
     // The 'missing' node is in the dependency graph but not in the resources array
     dependencyGraph: graph,
   };
@@ -1166,7 +1168,10 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
         (_schema, resources) => ({
           url: `http://${resources.service.metadata.name}`,
           readyReplicas: resources.deployment.status.readyReplicas,
-          phase: Cel.expr<'pending' | 'running' | 'failed'>(resources.deployment.status.readyReplicas, ' > 0 ? "running" : "pending"'),
+          phase: Cel.expr<'pending' | 'running' | 'failed'>(
+            resources.deployment.status.readyReplicas,
+            ' > 0 ? "running" : "pending"'
+          ),
         })
       );
 
@@ -1375,7 +1380,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
 
       // Test that the factory has the toDryRun method
       expect(typeof factory.toDryRun).toBe('function');
-      
+
       // Note: We can't easily test the actual dry run execution in this test environment
       // because it requires a real Kubernetes client setup. The method existence test
       // validates that the factory pattern integration is working correctly.

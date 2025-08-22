@@ -36,12 +36,12 @@ describe('Factory Pattern Types', () => {
         name: 'test-graph',
         resources: [],
         schema: {} as any, // Mock schema proxy
-        
+
         async factory(_mode, _options) {
           // Mock implementation
           throw new Error('Not implemented');
         },
-        
+
         toYaml() {
           return 'mock yaml';
         },
@@ -58,11 +58,11 @@ describe('Factory Pattern Types', () => {
       const mockGraphWithoutSchema: TypedResourceGraph<TestSpec, TestStatus> = {
         name: 'test-graph',
         resources: [],
-        
+
         async factory() {
           throw new Error('Not implemented');
         },
-        
+
         toYaml() {
           return 'mock yaml';
         },
@@ -103,7 +103,7 @@ describe('Factory Pattern Types', () => {
 
     it('should support alchemy scope', () => {
       const mockScope = {} as any; // Mock alchemy scope
-      
+
       const options: FactoryOptions = {
         alchemyScope: mockScope,
       };
@@ -120,20 +120,20 @@ describe('Factory Pattern Types', () => {
         name: 'test-factory',
         namespace: 'default',
         isAlchemyManaged: false,
-        
+
         async deploy(_spec) {
           // Mock implementation
           return {} as any;
         },
-        
+
         async getInstances() {
           return [];
         },
-        
+
         async deleteInstance(_name) {
           // Mock implementation
         },
-        
+
         async getStatus() {
           return {
             name: 'test-factory',
@@ -164,19 +164,19 @@ describe('Factory Pattern Types', () => {
         name: 'test-direct-factory',
         namespace: 'default',
         isAlchemyManaged: false,
-        
+
         async deploy(_spec) {
           return {} as any;
         },
-        
+
         async getInstances() {
           return [];
         },
-        
+
         async deleteInstance(_name) {
           // Mock implementation
         },
-        
+
         async getStatus() {
           return {
             name: 'test-direct-factory',
@@ -187,7 +187,7 @@ describe('Factory Pattern Types', () => {
             health: 'healthy',
           };
         },
-        
+
         // Direct-specific methods
         async rollback() {
           return {
@@ -198,11 +198,11 @@ describe('Factory Pattern Types', () => {
             errors: [],
           };
         },
-        
+
         async toDryRun(_spec) {
           return {} as any;
         },
-        
+
         toYaml(_spec) {
           return 'mock deployment yaml';
         },
@@ -224,19 +224,19 @@ describe('Factory Pattern Types', () => {
         isAlchemyManaged: false,
         rgdName: 'test-rgd',
         schema: {} as any, // Mock schema proxy
-        
+
         async deploy(_spec) {
           return {} as any;
         },
-        
+
         async getInstances() {
           return [];
         },
-        
+
         async deleteInstance(_name) {
           // Mock implementation
         },
-        
+
         async getStatus() {
           return {
             name: 'test-kro-factory',
@@ -247,7 +247,7 @@ describe('Factory Pattern Types', () => {
             health: 'healthy',
           };
         },
-        
+
         // Kro-specific methods
         async getRGDStatus() {
           return {
@@ -256,7 +256,7 @@ describe('Factory Pattern Types', () => {
             conditions: [],
           };
         },
-        
+
         toYaml(spec?) {
           if (spec) {
             return 'mock instance yaml';
@@ -280,19 +280,19 @@ describe('Factory Pattern Types', () => {
         isAlchemyManaged: false,
         rgdName: 'test-rgd',
         schema: {} as any,
-        
+
         async deploy(_spec) {
           return {} as any;
         },
-        
+
         async getInstances() {
           return [];
         },
-        
+
         async deleteInstance(_name) {
           // Mock implementation
         },
-        
+
         async getStatus() {
           return {
             name: 'test-kro-factory',
@@ -303,7 +303,7 @@ describe('Factory Pattern Types', () => {
             health: 'healthy',
           };
         },
-        
+
         async getRGDStatus() {
           return {
             name: 'test-rgd',
@@ -311,7 +311,7 @@ describe('Factory Pattern Types', () => {
             conditions: [],
           };
         },
-        
+
         toYaml(spec?) {
           if (spec) {
             return 'instance yaml with spec';
@@ -330,7 +330,7 @@ describe('Factory Pattern Types', () => {
     it('should map kro mode to KroResourceFactory', () => {
       // This test validates type mapping at compile time
       type KroFactory = FactoryForMode<'kro', TestSpec, TestStatus>;
-      
+
       // This should compile without errors
       const mockKroFactory: KroFactory = {
         mode: 'kro',
@@ -339,19 +339,19 @@ describe('Factory Pattern Types', () => {
         isAlchemyManaged: false,
         rgdName: 'test-rgd',
         schema: {} as any,
-        
+
         async deploy(_spec) {
           return {} as any;
         },
-        
+
         async getInstances() {
           return [];
         },
-        
+
         async deleteInstance(_name) {
           // Mock implementation
         },
-        
+
         async getStatus() {
           return {
             name: 'test',
@@ -362,7 +362,7 @@ describe('Factory Pattern Types', () => {
             health: 'healthy',
           };
         },
-        
+
         async getRGDStatus() {
           return {
             name: 'test-rgd',
@@ -370,7 +370,7 @@ describe('Factory Pattern Types', () => {
             conditions: [],
           };
         },
-        
+
         toYaml(_spec?) {
           return 'yaml';
         },
@@ -382,26 +382,26 @@ describe('Factory Pattern Types', () => {
     it('should map direct mode to DirectResourceFactory', () => {
       // This test validates type mapping at compile time
       type DirectFactory = FactoryForMode<'direct', TestSpec, TestStatus>;
-      
+
       // This should compile without errors
       const mockDirectFactory: DirectFactory = {
         mode: 'direct',
         name: 'test',
         namespace: 'default',
         isAlchemyManaged: false,
-        
+
         async deploy(_spec) {
           return {} as any;
         },
-        
+
         async getInstances() {
           return [];
         },
-        
+
         async deleteInstance(_name) {
           // Mock implementation
         },
-        
+
         async getStatus() {
           return {
             name: 'test',
@@ -412,7 +412,7 @@ describe('Factory Pattern Types', () => {
             health: 'healthy',
           };
         },
-        
+
         async rollback() {
           return {
             deploymentId: 'test',
@@ -422,11 +422,11 @@ describe('Factory Pattern Types', () => {
             errors: [],
           };
         },
-        
+
         async toDryRun(_spec) {
           return {} as any;
         },
-        
+
         toYaml(_spec) {
           return 'yaml';
         },
@@ -446,10 +446,10 @@ describe('Factory Pattern Types', () => {
 
       // This should compile without errors
       type ValidSpec = typeof validSchema.infer;
-      
+
       // Test that it can be used in factory types
       type TestFactory = ResourceFactory<ValidSpec, ValidSpec>;
-      
+
       // Mock to ensure it compiles
       const mockFactory: TestFactory = {} as any;
       expect(mockFactory).toBeDefined();

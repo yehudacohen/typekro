@@ -1,6 +1,6 @@
 /**
  * Readiness Evaluator Registry
- * 
+ *
  * Provides a global registry for readiness evaluators indexed by Kubernetes resource kind.
  * Factories automatically register their evaluators when withReadinessEvaluator() is called.
  */

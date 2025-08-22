@@ -27,7 +27,7 @@ interface KubernetesApiClientConfig {
    * This disables TLS certificate verification and makes connections vulnerable
    * to man-in-the-middle attacks.
    * Environment variable: KUBERNETES_SKIP_TLS_VERIFY
-   * 
+   *
    * @default false (secure by default)
    */
   skipTLSVerify?: boolean;
@@ -38,13 +38,12 @@ interface KubernetesApiClientConfig {
  * This client provides basic apply, get, and delete operations for Kubernetes resources.
  */
 export class KubernetesApi {
-  private kc: k8s.KubeConfig;
   private k8sApi: k8s.KubernetesObjectApi;
-  private logger = getComponentLogger('kubernetes-api');
+  private kc: k8s.KubeConfig;  private logger = getComponentLogger('kubernetes-api');
 
   constructor() {
     const config = this.loadConfigFromEnv();
-    
+
     // Use the centralized KubernetesClientProvider
     const clientConfig: KubernetesClientConfig = {
       cluster: {
@@ -84,11 +83,14 @@ export class KubernetesApi {
 
     // Log security warning when TLS is disabled
     if (skipTLSVerify) {
-      this.logger.warn('TLS verification disabled via environment variable - this is insecure and should only be used in development', {
-        component: 'kubernetes-api',
-        security: 'tls-disabled',
-        envVar: 'KUBERNETES_SKIP_TLS_VERIFY'
-      });
+      this.logger.warn(
+        'TLS verification disabled via environment variable - this is insecure and should only be used in development',
+        {
+          component: 'kubernetes-api',
+          security: 'tls-disabled',
+          envVar: 'KUBERNETES_SKIP_TLS_VERIFY',
+        }
+      );
     }
 
     // Validate TLS configuration
@@ -105,27 +107,38 @@ export class KubernetesApi {
   /**
    * Validate TLS configuration and provide actionable error messages
    */
-  private validateTLSConfiguration(apiServer: string, caCert?: string, skipTLSVerify?: boolean): void {
+  private validateTLSConfiguration(
+    apiServer: string,
+    caCert?: string,
+    skipTLSVerify?: boolean
+  ): void {
     // Check if connecting to HTTPS endpoint without proper TLS configuration
     if (apiServer.startsWith('https://')) {
       if (skipTLSVerify && !caCert) {
-        this.logger.warn('Connecting to HTTPS endpoint with TLS verification disabled and no CA certificate', {
-          component: 'kubernetes-api',
-          security: 'tls-configuration-warning',
-          apiServer,
-          recommendation: 'Provide KUBERNETES_CA_CERT environment variable for secure connections'
-        });
+        this.logger.warn(
+          'Connecting to HTTPS endpoint with TLS verification disabled and no CA certificate',
+          {
+            component: 'kubernetes-api',
+            security: 'tls-configuration-warning',
+            apiServer,
+            recommendation:
+              'Provide KUBERNETES_CA_CERT environment variable for secure connections',
+          }
+        );
       } else if (!skipTLSVerify && !caCert) {
-        this.logger.info('Connecting to HTTPS endpoint without custom CA certificate - using system trust store', {
-          component: 'kubernetes-api',
-          security: 'tls-configuration-info',
-          apiServer
-        });
+        this.logger.info(
+          'Connecting to HTTPS endpoint without custom CA certificate - using system trust store',
+          {
+            component: 'kubernetes-api',
+            security: 'tls-configuration-info',
+            apiServer,
+          }
+        );
       } else if (!skipTLSVerify && caCert) {
         this.logger.info('Secure TLS connection configured with custom CA certificate', {
           component: 'kubernetes-api',
           security: 'tls-configuration-secure',
-          apiServer
+          apiServer,
         });
       }
     } else if (apiServer.startsWith('http://')) {
@@ -133,7 +146,7 @@ export class KubernetesApi {
         component: 'kubernetes-api',
         security: 'insecure-connection',
         apiServer,
-        recommendation: 'Use HTTPS endpoint for secure connections'
+        recommendation: 'Use HTTPS endpoint for secure connections',
       });
     }
   }
@@ -155,11 +168,10 @@ export class KubernetesApi {
     const resourceLogger = this.logger.child({
       kind: manifest.kind,
       name: manifest.metadata.name,
-      namespace: manifest.metadata.namespace || 'default'
+      namespace: manifest.metadata.namespace || 'default',
     });
-    
-    try {
 
+    try {
       // V1ObjectMeta's namespace property is string, not string | undefined.
       // We must provide a string. Use a default if not present.
       const manifestNamespace = manifest.metadata.namespace || 'default';
@@ -212,7 +224,7 @@ export class KubernetesApi {
     namespace: string = 'default'
   ): Promise<any> {
     const getLogger = this.logger.child({ kind, name, namespace });
-    
+
     try {
       const { body } = await this.k8sApi.read({
         metadata: { name, namespace },
@@ -238,7 +250,7 @@ export class KubernetesApi {
     namespace: string = 'default'
   ): Promise<void> {
     const deleteLogger = this.logger.child({ kind, name, namespace });
-    
+
     try {
       // The delete method of KubernetesObjectApi takes the object to delete first,
       // then an optional V1DeleteOptions object.

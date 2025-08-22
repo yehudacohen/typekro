@@ -5,7 +5,13 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { simpleDeployment, simpleService, simpleConfigMap, toResourceGraph, Cel } from '../../src/index.js';
+import {
+  Cel,
+  simpleConfigMap,
+  simpleDeployment,
+  simpleService,
+  toResourceGraph,
+} from '../../src/index.js';
 
 describe('Status Field Generation', () => {
   const WebAppSpecSchema = type({
@@ -47,7 +53,10 @@ describe('Status Field Generation', () => {
         (_schema, resources) => ({
           readyReplicas: resources.deployment?.status.readyReplicas,
           url: Cel.template('http://%s', resources.service?.status.loadBalancer?.ingress?.[0]?.ip),
-          conditions: Cel.expr<string[]>(resources.deployment?.status.conditions, ".map(c, c.type)"),
+          conditions: Cel.expr<string[]>(
+            resources.deployment?.status.conditions,
+            '.map(c, c.type)'
+          ),
         })
       );
 
@@ -92,7 +101,10 @@ describe('Status Field Generation', () => {
         }),
         (_schema, resources) => ({
           availableReplicas: resources.webDeployment?.status.availableReplicas,
-          deploymentConditions: Cel.expr<string[]>(resources.webDeployment?.status.conditions, ".map(c, c.type)"),
+          deploymentConditions: Cel.expr<string[]>(
+            resources.webDeployment?.status.conditions,
+            '.map(c, c.type)'
+          ),
           replicas: resources.webDeployment?.status.replicas,
         })
       );
@@ -101,7 +113,9 @@ describe('Status Field Generation', () => {
 
       // Should map to deployment status fields
       expect(yaml).toContain('availableReplicas: ${webDeployment.status.availableReplicas}');
-      expect(yaml).toContain('deploymentConditions: ${webDeployment.status.conditions.map(c, c.type)}');
+      expect(yaml).toContain(
+        'deploymentConditions: ${webDeployment.status.conditions.map(c, c.type)}'
+      );
       expect(yaml).toContain('replicas: ${webDeployment.status.replicas}');
     });
 
@@ -137,7 +151,9 @@ describe('Status Field Generation', () => {
 
       // Should map to service status fields
       expect(yaml).toContain('endpoint: ${webService.status.loadBalancer.ingress.0.ip}');
-      expect(yaml).toContain('serviceEndpoint: ${webService.status.loadBalancer.ingress.0.hostname}');
+      expect(yaml).toContain(
+        'serviceEndpoint: ${webService.status.loadBalancer.ingress.0.hostname}'
+      );
       expect(yaml).toContain('url: http://${schema.spec.name}');
     });
 
@@ -180,7 +196,7 @@ describe('Status Field Generation', () => {
       // Should map deployment fields to deployment
       expect(yaml).toContain('readyReplicas: ${appDeployment.status.readyReplicas}');
 
-      // Should map service fields to service  
+      // Should map service fields to service
       expect(yaml).toContain('url: ${appService.status.loadBalancer.ingress.0.ip}');
 
       // Static fields should NOT be in the YAML (they're hydrated directly by TypeKro)

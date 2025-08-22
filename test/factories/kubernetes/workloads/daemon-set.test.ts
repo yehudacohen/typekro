@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { daemonSet } from '../../../../src/factories/kubernetes/workloads/daemon-set.js';
 import type { V1DaemonSet } from '@kubernetes/client-node';
+import { daemonSet } from '../../../../src/factories/kubernetes/workloads/daemon-set.js';
 
 describe('DaemonSet Factory', () => {
   const createTestDaemonSet = (
@@ -20,20 +20,20 @@ describe('DaemonSet Factory', () => {
       name,
       namespace,
       labels: {
-        app: name
-      }
+        app: name,
+      },
     },
     spec: {
       selector: {
         matchLabels: {
-          app: name
-        }
+          app: name,
+        },
       },
       template: {
         metadata: {
           labels: {
-            app: name
-          }
+            app: name,
+          },
         },
         spec: {
           containers: [
@@ -43,19 +43,19 @@ describe('DaemonSet Factory', () => {
               ports: [
                 {
                   containerPort: 80,
-                  protocol: 'TCP'
-                }
-              ]
-            }
+                  protocol: 'TCP',
+                },
+              ],
+            },
           ],
           tolerations: [
             {
-              operator: 'Exists'
-            }
-          ]
-        }
-      }
-    }
+              operator: 'Exists',
+            },
+          ],
+        },
+      },
+    },
   });
 
   describe('Factory Creation', () => {
@@ -87,23 +87,23 @@ describe('DaemonSet Factory', () => {
         {
           key: 'node-role.kubernetes.io/control-plane',
           operator: 'Exists',
-          effect: 'NoSchedule'
+          effect: 'NoSchedule',
         },
         {
           key: 'node.kubernetes.io/unschedulable',
           operator: 'Exists',
-          effect: 'NoSchedule'
-        }
+          effect: 'NoSchedule',
+        },
       ];
       daemonSetConfig.spec!.template.spec!.nodeSelector = {
-        'kubernetes.io/os': 'linux'
+        'kubernetes.io/os': 'linux',
       };
 
       const enhanced = daemonSet(daemonSetConfig);
 
       expect(enhanced.spec.template.spec!.tolerations).toHaveLength(2);
       expect(enhanced.spec.template.spec!.nodeSelector).toEqual({
-        'kubernetes.io/os': 'linux'
+        'kubernetes.io/os': 'linux',
       });
     });
 
@@ -139,8 +139,8 @@ describe('DaemonSet Factory', () => {
           numberAvailable: 3,
           numberUnavailable: 0,
           updatedNumberScheduled: 3,
-          currentNumberScheduled: 3
-        }
+          currentNumberScheduled: 3,
+        },
       };
 
       const result = evaluator(mockDaemonSet);
@@ -161,8 +161,8 @@ describe('DaemonSet Factory', () => {
           numberAvailable: 2,
           numberUnavailable: 3,
           updatedNumberScheduled: 5,
-          currentNumberScheduled: 5
-        }
+          currentNumberScheduled: 5,
+        },
       };
 
       const result = evaluator(mockDaemonSet);
@@ -183,8 +183,8 @@ describe('DaemonSet Factory', () => {
           numberAvailable: 0,
           numberUnavailable: 0,
           updatedNumberScheduled: 0,
-          currentNumberScheduled: 0
-        }
+          currentNumberScheduled: 0,
+        },
       };
 
       const result = evaluator(mockDaemonSet);
@@ -198,7 +198,7 @@ describe('DaemonSet Factory', () => {
       const evaluator = (enhanced as any).readinessEvaluator;
 
       const mockDaemonSet: V1DaemonSet = {
-        ...daemonSetConfig
+        ...daemonSetConfig,
         // No status
       };
 
@@ -216,7 +216,7 @@ describe('DaemonSet Factory', () => {
         ...daemonSetConfig,
         status: {
           // Missing desiredNumberScheduled and numberReady
-        }
+        },
       };
 
       const result = evaluator(mockDaemonSet);
@@ -233,7 +233,7 @@ describe('DaemonSet Factory', () => {
       const mockDaemonSet = {
         get status() {
           throw new Error('Status access failed');
-        }
+        },
       };
 
       const result = evaluator(mockDaemonSet);
@@ -254,8 +254,8 @@ describe('DaemonSet Factory', () => {
           numberAvailable: 1,
           numberUnavailable: 0,
           updatedNumberScheduled: 1,
-          currentNumberScheduled: 1
-        }
+          currentNumberScheduled: 1,
+        },
       };
 
       const result = evaluator(mockDaemonSet);
@@ -269,7 +269,7 @@ describe('DaemonSet Factory', () => {
       const malformedDaemonSet = {
         spec: {
           // Missing selector and template
-        }
+        },
       } as any;
 
       const enhanced = daemonSet(malformedDaemonSet);
@@ -281,7 +281,7 @@ describe('DaemonSet Factory', () => {
 
     it('should handle missing spec gracefully', () => {
       const daemonSetConfig = {
-        metadata: { name: 'testDaemonset' }
+        metadata: { name: 'testDaemonset' },
       } as any;
 
       const enhanced = daemonSet(daemonSetConfig);

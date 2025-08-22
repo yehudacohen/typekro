@@ -1,28 +1,28 @@
 /**
  * Kro Deployment Strategy
- * 
+ *
  * This module provides the Kro deployment strategy that deploys
  * via ResourceGraphDefinitions using the Kro controller.
  */
 
+import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
+import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { getComponentLogger } from '../../logging/index.js';
-import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
-import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
-import type { KubernetesResource } from '../../types/kubernetes.js';
-import type { DirectDeploymentEngine } from '../engine.js';
-import { BaseDeploymentStrategy } from './base-strategy.js';
-import { handleDeploymentError } from '../shared-utilities.js';
-import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
-import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
 import { generateKroSchemaFromArktype } from '../../serialization/schema.js';
+import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
+import type { KubernetesResource } from '../../types/kubernetes.js';
+import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
+import type { DirectDeploymentEngine } from '../engine.js';
+import { handleDeploymentError } from '../shared-utilities.js';
+import { BaseDeploymentStrategy } from './base-strategy.js';
 
 /**
  * Kro deployment strategy - deploys via ResourceGraphDefinitions
  */
 export class KroDeploymentStrategy<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 > extends BaseDeploymentStrategy<TSpec, TStatus> {
   constructor(
     factoryName: string,
@@ -49,7 +49,7 @@ export class KroDeploymentStrategy<
       logger.debug('Kro two-step deployment completed successfully', {
         factoryName: this.factoryName,
         instanceName,
-        namespace: this.namespace
+        namespace: this.namespace,
       });
 
       return {
@@ -105,7 +105,7 @@ export class KroDeploymentStrategy<
       },
       spec: {
         schema: kroSchema,
-        resources: Object.values(this.resources || {}).map(resource => ({
+        resources: Object.values(this.resources || {}).map((resource) => ({
           id: resource.id || resource.metadata?.name || 'unknown',
           template: resource,
         })),
@@ -131,14 +131,17 @@ export class KroDeploymentStrategy<
 
     logger.debug('ResourceGraphDefinition deployed successfully', {
       rgdName,
-      namespace: this.namespace
+      namespace: this.namespace,
     });
   }
 
   /**
    * Step 2: Deploy Custom Resource instance using DirectDeploymentEngine
    */
-  private async deployCustomResourceInstance(spec: TSpec, instanceName: string): Promise<DeploymentResult> {
+  private async deployCustomResourceInstance(
+    spec: TSpec,
+    instanceName: string
+  ): Promise<DeploymentResult> {
     const logger = getComponentLogger('kro-deployment-strategy');
 
     // Create custom resource instance data
@@ -192,7 +195,7 @@ export class KroDeploymentStrategy<
     logger.debug('Custom Resource instance deployed successfully', {
       instanceName,
       kind: this.schemaDefinition.kind,
-      namespace: this.namespace
+      namespace: this.namespace,
     });
 
     return {
@@ -211,7 +214,9 @@ export class KroDeploymentStrategy<
   private convertToKubernetesName(name: string): string {
     // Validate input name
     if (!name || typeof name !== 'string') {
-      throw new Error(`Invalid factory name: ${JSON.stringify(name)}. Factory name must be a non-empty string.`);
+      throw new Error(
+        `Invalid factory name: ${JSON.stringify(name)}. Factory name must be a non-empty string.`
+      );
     }
 
     const trimmedName = name.trim();
@@ -226,11 +231,15 @@ export class KroDeploymentStrategy<
 
     // Validate Kubernetes naming conventions
     if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-      throw new Error(`Invalid factory name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`);
+      throw new Error(
+        `Invalid factory name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
+      );
     }
 
     if (kubernetesName.length > 253) {
-      throw new Error(`Invalid factory name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`);
+      throw new Error(
+        `Invalid factory name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
+      );
     }
 
     return kubernetesName;
@@ -259,24 +268,31 @@ export class KroDeploymentStrategy<
           },
         });
 
-        const instance = response.body as KubernetesResource & { status?: { state?: string; conditions?: Array<{ type: string; status: string; message?: string }> } };
+        const instance = response.body as KubernetesResource & {
+          status?: {
+            state?: string;
+            conditions?: Array<{ type: string; status: string; message?: string }>;
+          };
+        };
         const status = instance.status;
 
         if (!status) {
           logger.debug('No status found yet, continuing to wait', { instanceName });
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, 2000));
           continue;
         }
 
         // Kro-specific readiness logic
         const state = status.state;
         const conditions = status.conditions || [];
-        const syncedCondition = conditions.find((c: { type: string; status: string; message?: string }) => c.type === 'InstanceSynced');
+        const syncedCondition = conditions.find(
+          (c: { type: string; status: string; message?: string }) => c.type === 'InstanceSynced'
+        );
 
         // Check if status has fields beyond the basic Kro fields (conditions, state)
         const statusKeys = Object.keys(status);
         const basicKroFields = ['conditions', 'state'];
-        const hasCustomStatusFields = statusKeys.some(key => !basicKroFields.includes(key));
+        const hasCustomStatusFields = statusKeys.some((key) => !basicKroFields.includes(key));
 
         const isActive = state === 'ACTIVE';
         const isSynced = syncedCondition?.status === 'True';
@@ -287,7 +303,7 @@ export class KroDeploymentStrategy<
           isActive,
           isSynced,
           hasCustomStatusFields,
-          statusKeys
+          statusKeys,
         });
 
         // Resource is ready when it's active, synced, and has custom status fields populated
@@ -298,7 +314,9 @@ export class KroDeploymentStrategy<
 
         // Check for failure states
         if (state === 'FAILED') {
-          const failedCondition = conditions.find((c: { type: string; status: string; message?: string }) => c.status === 'False');
+          const failedCondition = conditions.find(
+            (c: { type: string; status: string; message?: string }) => c.status === 'False'
+          );
           const errorMessage = failedCondition?.message || 'Unknown error';
           throw new Error(`Kro resource deployment failed: ${errorMessage}`);
         }
@@ -307,9 +325,8 @@ export class KroDeploymentStrategy<
           instanceName,
           state,
           isSynced,
-          hasCustomStatusFields
+          hasCustomStatusFields,
         });
-
       } catch (error) {
         const k8sError = error as { statusCode?: number };
         if (k8sError.statusCode !== 404) {
@@ -320,9 +337,11 @@ export class KroDeploymentStrategy<
       }
 
       // Wait before checking again
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
-    throw new Error(`Timeout waiting for Kro resource ${instanceName} to be ready after ${timeout}ms`);
+    throw new Error(
+      `Timeout waiting for Kro resource ${instanceName} to be ready after ${timeout}ms`
+    );
   }
 }

@@ -2,7 +2,7 @@
  * Simple tests for StatusHydrator - New interface
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { StatusHydrator } from '../../src/core/deployment/status-hydrator.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
@@ -25,11 +25,11 @@ describe('StatusHydrator - New Interface', () => {
             availableReplicas: 3,
             conditions: [
               { type: 'Available', status: 'True' },
-              { type: 'Progressing', status: 'True' }
-            ]
-          }
-        }
-      })
+              { type: 'Progressing', status: 'True' },
+            ],
+          },
+        },
+      }),
     } as any;
 
     statusHydrator = new StatusHydrator(mockK8sApi);
@@ -44,7 +44,7 @@ describe('StatusHydrator - New Interface', () => {
     const stats = statusHydrator.getCacheStats();
     expect(stats.size).toBe(0);
     expect(stats.keys).toEqual([]);
-    
+
     statusHydrator.clearCache();
     expect(statusHydrator.getCacheStats().size).toBe(0);
   });
@@ -56,20 +56,20 @@ describe('StatusHydrator - New Interface', () => {
         const error: any = new Error('Not found');
         error.statusCode = 404;
         throw error;
-      }
+      },
     } as any;
 
     const hydrator = new StatusHydrator(notFoundApi);
-    
+
     const mockEnhanced = {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
       metadata: {
         name: 'non-existent-deployment',
-        namespace: 'default'
+        namespace: 'default',
       },
       spec: {},
-      status: {}
+      status: {},
     } as any;
 
     const mockDeployedResource: DeployedResource = {
@@ -82,12 +82,12 @@ describe('StatusHydrator - New Interface', () => {
         kind: 'Deployment',
         metadata: {
           name: 'non-existent-deployment',
-          namespace: 'default'
+          namespace: 'default',
         },
-        spec: {}
+        spec: {},
       },
       status: 'deployed',
-      deployedAt: new Date()
+      deployedAt: new Date(),
     };
 
     const result = await hydrator.hydrateStatus(mockEnhanced, mockDeployedResource);
@@ -101,10 +101,10 @@ describe('StatusHydrator - New Interface', () => {
       kind: 'Deployment',
       metadata: {
         name: 'unknown',
-        namespace: 'default'
+        namespace: 'default',
       },
       spec: {},
-      status: {}
+      status: {},
     } as any;
 
     const mockDeployedResource: DeployedResource = {
@@ -116,10 +116,10 @@ describe('StatusHydrator - New Interface', () => {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
         metadata: {},
-        spec: {}
+        spec: {},
       },
       status: 'deployed',
-      deployedAt: new Date()
+      deployedAt: new Date(),
     };
 
     const result = await statusHydrator.hydrateStatus(mockEnhanced, mockDeployedResource);
@@ -133,14 +133,16 @@ describe('StatusHydrator - New Interface', () => {
       kind: 'Deployment',
       metadata: {
         name: 'test-proxy',
-        namespace: 'default'
+        namespace: 'default',
       },
       spec: {},
-      status: {}
+      status: {},
     } as any;
 
     // Should not throw even with empty deployed resources array
-    await expect(statusHydrator.hydrateEnhancedProxy(mockEnhancedProxy, [])).resolves.toBeUndefined();
+    await expect(
+      statusHydrator.hydrateEnhancedProxy(mockEnhancedProxy, [])
+    ).resolves.toBeUndefined();
   });
 
   it('should successfully hydrate status for valid resource', async () => {
@@ -149,10 +151,10 @@ describe('StatusHydrator - New Interface', () => {
       kind: 'Deployment',
       metadata: {
         name: 'test-deployment',
-        namespace: 'default'
+        namespace: 'default',
       },
       spec: {},
-      status: {}
+      status: {},
     } as any;
 
     const mockDeployedResource: DeployedResource = {
@@ -165,16 +167,16 @@ describe('StatusHydrator - New Interface', () => {
         kind: 'Deployment',
         metadata: {
           name: 'test-deployment',
-          namespace: 'default'
+          namespace: 'default',
         },
-        spec: {}
+        spec: {},
       },
       status: 'deployed',
-      deployedAt: new Date()
+      deployedAt: new Date(),
     };
 
     const result = await statusHydrator.hydrateStatus(mockEnhanced, mockDeployedResource);
-    
+
     // Should return success result
     expect(result).toBeDefined();
     expect(result.success).toBe(true);

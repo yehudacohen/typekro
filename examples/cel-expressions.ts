@@ -5,7 +5,12 @@
  * evaluations while maintaining type safety with KubernetesRef types.
  */
 
-import { Cel, serializeResourceGraphToYaml, simpleDeployment, simpleService } from '../src/index.js';
+import {
+  Cel,
+  serializeResourceGraphToYaml,
+  simpleDeployment,
+  simpleService,
+} from '../src/index.js';
 
 // Create base resources
 const database = simpleDeployment({
@@ -29,7 +34,11 @@ const webapp = simpleDeployment({
     DATABASE_PORT: '5432',
 
     // CEL escape hatch for complex expressions
-    DATABASE_STATUS: Cel.conditional<string>(database.status.readyReplicas, "'ready'", "'not-ready'"),
+    DATABASE_STATUS: Cel.conditional<string>(
+      database.status.readyReplicas,
+      "'ready'",
+      "'not-ready'"
+    ),
 
     // Complex mathematical expression (converted to string for env var)
     SCALING_FACTOR: Cel.string(Cel.min(Cel.expr(database.status.readyReplicas, ' * 2'), 10)),

@@ -1,13 +1,13 @@
 /**
  * Tests for status CEL expression generation
- * 
+ *
  * This test file validates that status fields in Kro schemas are correctly
  * mapped to CEL expressions that reference actual Kubernetes resource fields.
  */
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from '../../src/index.js';
+import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
 
 describe('Status CEL Expression Generation', () => {
   it('should generate correct CEL expressions for deployment readiness', () => {
@@ -52,12 +52,12 @@ describe('Status CEL Expression Generation', () => {
     );
 
     const yaml = graph.toYaml();
-    
+
     // Verify that the status expressions use the correct resource IDs
     expect(yaml).toContain('webappDeployment.status.readyReplicas > 0');
     // Static URL should NOT be in YAML (it's hydrated directly by TypeKro)
     expect(yaml).not.toContain('http://webapp-service');
-    
+
     // Verify that the expressions don't use generic names like 'deployment' or 'service'
     expect(yaml).not.toContain('deployment.status.ready');
     expect(yaml).not.toContain('service.status.loadBalancer');
@@ -96,7 +96,7 @@ describe('Status CEL Expression Generation', () => {
     );
 
     const yaml = graph.toYaml();
-    
+
     // Verify that status expressions use the correct resource ID
     expect(yaml).toContain('myDeployment.status.replicas');
     expect(yaml).toContain('myDeployment.status.availableReplicas');
@@ -132,20 +132,20 @@ describe('Status CEL Expression Generation', () => {
     );
 
     const yaml = graph.toYaml();
-    
+
     // Verify basic RGD structure
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: simple-app');
-    
+
     // Verify schema structure
     expect(yaml).toContain('kind: SimpleApp');
     expect(yaml).toContain('apiVersion: v1alpha1');
-    
+
     // Verify resources structure
     expect(yaml).toContain('- id: deployment');
     expect(yaml).toContain('template:');
-    
+
     // Verify status CEL expression
     expect(yaml).toContain('ready: ${deployment.status.readyReplicas > 0}');
   });

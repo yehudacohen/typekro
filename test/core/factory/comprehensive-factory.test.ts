@@ -6,12 +6,11 @@
  * with alchemy.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-
-import { toResourceGraph } from '../../../src/core/serialization/core.js';
-import { simpleDeployment, simpleService, simplePvc } from '../../../src/core/composition/index.js';
+import { simpleDeployment, simplePvc, simpleService } from '../../../src/core/composition/index.js';
 import { Cel } from '../../../src/core/references/index.js';
+import { toResourceGraph } from '../../../src/core/serialization/core.js';
 
 // Mock alchemy scope for testing - simplified mock that doesn't fully implement Scope
 class MockAlchemyScope {

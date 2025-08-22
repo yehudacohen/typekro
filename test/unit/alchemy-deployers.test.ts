@@ -1,34 +1,33 @@
 /**
- * Test suite for DirectTypeKroDeployer 
- * 
+ * Test suite for DirectTypeKroDeployer
+ *
  * This tests the alchemy deployment integration with readiness evaluator recreation.
  */
 
-import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { DirectTypeKroDeployer } from '../../src/alchemy/deployers.js';
-import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
-import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
-import * as k8s from '@kubernetes/client-node';
-import type { V1Deployment, V1Service } from '@kubernetes/client-node';
+import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
 describe('DirectTypeKroDeployer', () => {
   // Mock DirectDeploymentEngine following established patterns
   const createMockEngine = () => {
     const mockEngine = {
       deployResource: mock(() => Promise.resolve({ status: 'ready' })),
-      deployResources: mock(() => Promise.resolve({ 
-        status: 'success',
-        deployedResources: [],
-        duration: 100,
-        errors: []
-      })),
+      deployResources: mock(() =>
+        Promise.resolve({
+          status: 'success',
+          deployedResources: [],
+          duration: 100,
+          errors: [],
+        })
+      ),
       k8sApi: {
         create: mock(() => Promise.resolve({ body: {} })),
         read: mock(() => Promise.resolve({ body: {} })),
         delete: mock(() => Promise.resolve({ body: {} })),
         patch: mock(() => Promise.resolve({ body: {} })),
-      }
+      },
     } as any;
 
     // Reset all mocks
@@ -43,29 +42,31 @@ describe('DirectTypeKroDeployer', () => {
   };
 
   // Helper to create test resources
-  const createTestDeployment = (name: string, replicas: number = 2) => deployment({
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: { name, namespace: 'default' },
-    spec: {
-      replicas,
-      selector: { matchLabels: { app: name } },
-      template: {
-        metadata: { labels: { app: name } },
-        spec: { containers: [{ name: 'app', image: 'nginx:alpine' }] }
-      }
-    }
-  });
+  const createTestDeployment = (name: string, replicas: number = 2) =>
+    deployment({
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: { name, namespace: 'default' },
+      spec: {
+        replicas,
+        selector: { matchLabels: { app: name } },
+        template: {
+          metadata: { labels: { app: name } },
+          spec: { containers: [{ name: 'app', image: 'nginx:alpine' }] },
+        },
+      },
+    });
 
-  const createTestService = (name: string) => service({
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: { name, namespace: 'default' },
-    spec: {
-      selector: { app: name },
-      ports: [{ port: 80, targetPort: 8080 }]
-    }
-  });
+  const createTestService = (name: string) =>
+    service({
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name, namespace: 'default' },
+      spec: {
+        selector: { app: name },
+        ports: [{ port: 80, targetPort: 8080 }],
+      },
+    });
 
   describe('Readiness Evaluator Recreation', () => {
     let mockEngine: any;
@@ -78,15 +79,16 @@ describe('DirectTypeKroDeployer', () => {
 
     it('should recreate readiness evaluators with proper closure context', () => {
       const originalDeployment = createTestDeployment('test-app', 3);
-      
+
       // Access the private method through type assertion for testing
       const deployerWithPrivate = deployer as any;
-      const recreatedDeployment = deployerWithPrivate.recreateReadinessEvaluator(originalDeployment);
+      const recreatedDeployment =
+        deployerWithPrivate.recreateReadinessEvaluator(originalDeployment);
 
       expect(recreatedDeployment).toBeDefined();
       expect(recreatedDeployment.kind).toBe('Deployment');
       expect(recreatedDeployment.metadata.name).toBe('test-app');
-      
+
       // Test that the recreated evaluator has proper closure
       const evaluator = (recreatedDeployment as any).readinessEvaluator;
       expect(typeof evaluator).toBe('function');
@@ -96,10 +98,10 @@ describe('DirectTypeKroDeployer', () => {
         status: {
           readyReplicas: 3,
           availableReplicas: 3,
-          updatedReplicas: 3
-        }
+          updatedReplicas: 3,
+        },
       };
-      
+
       const readyResult = evaluator(readyStatus);
       expect(readyResult.ready).toBe(true);
       expect(readyResult.message).toContain('3/3 ready replicas');
@@ -107,7 +109,7 @@ describe('DirectTypeKroDeployer', () => {
 
     it('should handle non-Deployment resources by returning them unchanged', () => {
       const serviceResource = createTestService('test-service');
-      
+
       const deployerWithPrivate = deployer as any;
       const result = deployerWithPrivate.recreateReadinessEvaluator(serviceResource);
 
@@ -121,10 +123,10 @@ describe('DirectTypeKroDeployer', () => {
       const deploymentWith5Replicas = createTestDeployment('app-5-replicas', 5);
       const deployerWithPrivate = deployer as any;
       const recreated5 = deployerWithPrivate.recreateReadinessEvaluator(deploymentWith5Replicas);
-      
+
       const evaluator5 = (recreated5 as any).readinessEvaluator;
       const notReadyResult = evaluator5({
-        status: { readyReplicas: 2, availableReplicas: 3 }
+        status: { readyReplicas: 2, availableReplicas: 3 },
       });
       expect(notReadyResult.details?.expectedReplicas).toBe(5);
 
@@ -138,22 +140,23 @@ describe('DirectTypeKroDeployer', () => {
           selector: { matchLabels: { app: 'test' } },
           template: {
             metadata: { labels: { app: 'test' } },
-            spec: { containers: [{ name: 'app', image: 'nginx' }] }
-          }
-        }
+            spec: { containers: [{ name: 'app', image: 'nginx' }] },
+          },
+        },
       });
 
       const recreatedDefault = deployerWithPrivate.recreateReadinessEvaluator(deploymentDefault);
       const evaluatorDefault = (recreatedDefault as any).readinessEvaluator;
       const defaultResult = evaluatorDefault({
-        status: { readyReplicas: 0 }
+        status: { readyReplicas: 0 },
       });
       // Note: expectedReplicas might be a proxy function in this context
-      expect(typeof defaultResult.details?.expectedReplicas).toContain("function");    });
+      expect(typeof defaultResult.details?.expectedReplicas).toContain('function');
+    });
 
     it('should create evaluators that handle missing status gracefully', () => {
       const testDeployment = createTestDeployment('status-test', 2);
-      
+
       const deployerWithPrivate = deployer as any;
       const recreated = deployerWithPrivate.recreateReadinessEvaluator(testDeployment);
       const evaluator = (recreated as any).readinessEvaluator;
@@ -178,7 +181,7 @@ describe('DirectTypeKroDeployer', () => {
 
     it('should create evaluators that properly evaluate readiness conditions', () => {
       const testDeployment = createTestDeployment('readiness-test', 3);
-      
+
       const deployerWithPrivate = deployer as any;
       const recreated = deployerWithPrivate.recreateReadinessEvaluator(testDeployment);
       const evaluator = (recreated as any).readinessEvaluator;
@@ -188,8 +191,8 @@ describe('DirectTypeKroDeployer', () => {
         status: {
           readyReplicas: 3,
           availableReplicas: 3,
-          updatedReplicas: 3
-        }
+          updatedReplicas: 3,
+        },
       });
       expect(readyResult.ready).toBe(true);
       expect(readyResult.message).toContain('3/3 ready replicas');
@@ -200,8 +203,8 @@ describe('DirectTypeKroDeployer', () => {
         status: {
           readyReplicas: 1,
           availableReplicas: 2,
-          updatedReplicas: 3
-        }
+          updatedReplicas: 3,
+        },
       });
       expect(notReadyResult.ready).toBe(false);
       expect(notReadyResult.reason).toBe('ReplicasNotReady');
@@ -212,7 +215,7 @@ describe('DirectTypeKroDeployer', () => {
 
     it('should handle evaluator errors gracefully', () => {
       const testDeployment = createTestDeployment('error-test', 2);
-      
+
       const deployerWithPrivate = deployer as any;
       const recreated = deployerWithPrivate.recreateReadinessEvaluator(testDeployment);
       const evaluator = (recreated as any).readinessEvaluator;
@@ -238,7 +241,7 @@ describe('DirectTypeKroDeployer', () => {
     it('should integrate with DirectDeploymentEngine properly', () => {
       expect(deployer).toBeDefined();
       expect(deployer).toBeInstanceOf(DirectTypeKroDeployer);
-      
+
       // Verify the deployer has access to the engine
       const deployerWithPrivate = deployer as any;
       expect(deployerWithPrivate.engine).toBe(mockEngine);
@@ -248,7 +251,7 @@ describe('DirectTypeKroDeployer', () => {
       const originalDeployment = createTestDeployment('identity-test', 4);
       const originalMetadata = originalDeployment.metadata;
       const originalSpec = originalDeployment.spec;
-      
+
       const deployerWithPrivate = deployer as any;
       const recreated = deployerWithPrivate.recreateReadinessEvaluator(originalDeployment);
 
@@ -257,7 +260,7 @@ describe('DirectTypeKroDeployer', () => {
       expect(recreated.kind).toBe(originalDeployment.kind);
       expect(recreated.metadata).toEqual(originalMetadata);
       expect(recreated.spec).toEqual(originalSpec);
-      
+
       // Verify the readiness evaluator is properly attached
       expect((recreated as any).readinessEvaluator).toBeDefined();
       expect(typeof (recreated as any).readinessEvaluator).toBe('function');
@@ -268,11 +271,11 @@ describe('DirectTypeKroDeployer', () => {
       const complexDeployment = deployment({
         apiVersion: 'apps/v1',
         kind: 'Deployment',
-        metadata: { 
+        metadata: {
           name: 'complex-deployment',
           namespace: 'production',
           labels: { app: 'complex', tier: 'backend' },
-          annotations: { 'deployment.kubernetes.io/revision': '3' }
+          annotations: { 'deployment.kubernetes.io/revision': '3' },
         },
         spec: {
           replicas: 5,
@@ -280,15 +283,17 @@ describe('DirectTypeKroDeployer', () => {
           selector: { matchLabels: { app: 'complex' } },
           template: {
             metadata: { labels: { app: 'complex' } },
-            spec: { 
-              containers: [{ 
-                name: 'app', 
-                image: 'nginx:latest',
-                env: [{ name: 'ENV', value: 'production' }]
-              }] 
-            }
-          }
-        }
+            spec: {
+              containers: [
+                {
+                  name: 'app',
+                  image: 'nginx:latest',
+                  env: [{ name: 'ENV', value: 'production' }],
+                },
+              ],
+            },
+          },
+        },
       });
 
       const deployerWithPrivate = deployer as any;
@@ -299,7 +304,9 @@ describe('DirectTypeKroDeployer', () => {
       expect(recreated.metadata.labels).toEqual({ app: 'complex', tier: 'backend' });
       expect(recreated.metadata.annotations).toEqual({ 'deployment.kubernetes.io/revision': '3' });
       expect(recreated.spec.strategy).toEqual({ type: 'RollingUpdate' });
-      expect(recreated.spec.template.spec.containers[0].env).toEqual([{ name: 'ENV', value: 'production' }]);
+      expect(recreated.spec.template.spec.containers[0].env).toEqual([
+        { name: 'ENV', value: 'production' },
+      ]);
     });
   });
 
@@ -320,12 +327,12 @@ describe('DirectTypeKroDeployer', () => {
         metadata: { name: 'malformed' },
         spec: {
           // Missing selector and template
-          replicas: 2
-        }
+          replicas: 2,
+        },
       } as any;
 
       const deployerWithPrivate = deployer as any;
-      
+
       // This should not throw, but handle gracefully
       expect(() => {
         const result = deployerWithPrivate.recreateReadinessEvaluator(malformedDeployment);
@@ -335,7 +342,7 @@ describe('DirectTypeKroDeployer', () => {
 
     it('should provide meaningful error messages for evaluation failures', () => {
       const testDeployment = createTestDeployment('error-handling', 3);
-      
+
       const deployerWithPrivate = deployer as any;
       const recreated = deployerWithPrivate.recreateReadinessEvaluator(testDeployment);
       const evaluator = (recreated as any).readinessEvaluator;
@@ -343,20 +350,21 @@ describe('DirectTypeKroDeployer', () => {
       // Test error scenario with null input which should trigger EvaluationError
       const result = evaluator(null);
       expect(result.ready).toBe(false);
-      expect(result.reason).toBe("EvaluationError");
-      expect(result.message).toContain("Error evaluating deployment readiness");
-      expect(result.details?.expectedReplicas).toBeDefined();    });
+      expect(result.reason).toBe('EvaluationError');
+      expect(result.message).toContain('Error evaluating deployment readiness');
+      expect(result.details?.expectedReplicas).toBeDefined();
+    });
 
     it('should handle resources with null or undefined metadata', () => {
       const resourceWithNullMetadata = {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
         metadata: null,
-        spec: { replicas: 1 }
+        spec: { replicas: 1 },
       } as any;
 
       const deployerWithPrivate = deployer as any;
-      
+
       expect(() => {
         const result = deployerWithPrivate.recreateReadinessEvaluator(resourceWithNullMetadata);
         expect(result).toBeDefined();
@@ -367,17 +375,17 @@ describe('DirectTypeKroDeployer', () => {
       const resourceWithoutSpec = {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
-        metadata: { name: 'no-spec' }
+        metadata: { name: 'no-spec' },
         // No spec field
       } as any;
 
       const deployerWithPrivate = deployer as any;
       const recreated = deployerWithPrivate.recreateReadinessEvaluator(resourceWithoutSpec);
       const evaluator = (recreated as any).readinessEvaluator;
-      
+
       // Should default to 1 replica when spec is missing
       const result = evaluator({
-        status: { readyReplicas: 0 }
+        status: { readyReplicas: 0 },
       });
       expect(result.details?.expectedReplicas).toBe(1);
     });
@@ -396,7 +404,7 @@ describe('DirectTypeKroDeployer', () => {
       // Verify the deployer has the expected interface
       expect(deployer).toBeDefined();
       expect(deployer.constructor.name).toBe('DirectTypeKroDeployer');
-      
+
       // Check if it can be used as a TypeKroDeployer
       const typeKroDeployer = deployer as any; // TypeKroDeployer interface check
       expect(typeKroDeployer).toBeDefined();
@@ -405,7 +413,7 @@ describe('DirectTypeKroDeployer', () => {
     it('should work with different resource types beyond Deployment', () => {
       const serviceResource = createTestService('test-service');
       const deployerWithPrivate = deployer as any;
-      
+
       // Should handle Service resources without modification
       const result = deployerWithPrivate.recreateReadinessEvaluator(serviceResource);
       expect(result).toBe(serviceResource);
@@ -415,28 +423,28 @@ describe('DirectTypeKroDeployer', () => {
     it('should maintain consistency across multiple recreations', () => {
       const testDeployment = createTestDeployment('consistency-test', 2);
       const deployerWithPrivate = deployer as any;
-      
+
       // Recreate the same deployment multiple times
       const recreation1 = deployerWithPrivate.recreateReadinessEvaluator(testDeployment);
       const recreation2 = deployerWithPrivate.recreateReadinessEvaluator(testDeployment);
-      
+
       // Should produce equivalent results
       expect(recreation1.apiVersion).toBe(recreation2.apiVersion);
       expect(recreation1.kind).toBe(recreation2.kind);
       expect(recreation1.metadata).toEqual(recreation2.metadata);
       expect(recreation1.spec).toEqual(recreation2.spec);
-      
+
       // Both evaluators should behave the same way
       const evaluator1 = (recreation1 as any).readinessEvaluator;
       const evaluator2 = (recreation2 as any).readinessEvaluator;
-      
+
       const testStatus = {
-        status: { readyReplicas: 1, availableReplicas: 2 }
+        status: { readyReplicas: 1, availableReplicas: 2 },
       };
-      
+
       const result1 = evaluator1(testStatus);
       const result2 = evaluator2(testStatus);
-      
+
       expect(result1.ready).toBe(result2.ready);
       expect(result1.reason).toBe(result2.reason);
       expect(result1.details?.expectedReplicas).toBe(result2.details?.expectedReplicas);

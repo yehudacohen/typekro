@@ -6,7 +6,7 @@
  */
 
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
-import type { KroCompatibleType, KubernetesRef, SchemaMagicProxy, SchemaProxy, } from '../types.js';
+import type { KroCompatibleType, KubernetesRef, SchemaMagicProxy, SchemaProxy } from '../types.js';
 
 /**
  * Creates a KubernetesRef object specifically for schema references
@@ -41,11 +41,7 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
 
       // Only preserve essential function properties, not 'name' or other properties
       // that might conflict with field names
-      if (
-        prop === 'call' ||
-        prop === 'apply' ||
-        prop === 'bind'
-      ) {
+      if (prop === 'call' || prop === 'apply' || prop === 'bind') {
         return target[prop as keyof typeof target];
       }
 
@@ -120,7 +116,7 @@ export function createResourcesProxy<TResources extends Record<string, any>>(
   resources: TResources
 ): TResources {
   const proxiedResources: any = {};
-  
+
   for (const [resourceKey, resource] of Object.entries(resources)) {
     // Create a proxy that preserves the Enhanced resource structure
     // but converts field access to resource references instead of schema references
@@ -141,10 +137,10 @@ export function createResourcesProxy<TResources extends Record<string, any>>(
         }
         // For all other properties, return the original value
         return target[prop];
-      }
+      },
     });
   }
-  
+
   return proxiedResources as TResources;
 }
 
@@ -191,5 +187,3 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
     },
   }) as unknown as T;
 }
-
-

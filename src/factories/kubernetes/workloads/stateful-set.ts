@@ -27,7 +27,7 @@ export function statefulSet(
           ready: false,
           reason: 'StatusMissing',
           message: 'StatefulSet status not available yet',
-          details: { expectedReplicas, updateStrategy }
+          details: { expectedReplicas, updateStrategy },
         };
       }
 
@@ -42,26 +42,27 @@ export function statefulSet(
         if (ready) {
           return {
             ready: true,
-            message: `StatefulSet (OnDelete) has ${readyReplicas}/${expectedReplicas} ready replicas`
+            message: `StatefulSet (OnDelete) has ${readyReplicas}/${expectedReplicas} ready replicas`,
           };
         } else {
           return {
             ready: false,
             reason: 'ReplicasNotReady',
             message: `StatefulSet (OnDelete) waiting for replicas: ${readyReplicas}/${expectedReplicas} ready`,
-            details: { expectedReplicas, readyReplicas, updateStrategy }
+            details: { expectedReplicas, readyReplicas, updateStrategy },
           };
         }
       } else {
         // RollingUpdate: ensure all replicas are updated and ready
-        const ready = readyReplicas === expectedReplicas && 
-                     currentReplicas === expectedReplicas &&
-                     updatedReplicas === expectedReplicas;
+        const ready =
+          readyReplicas === expectedReplicas &&
+          currentReplicas === expectedReplicas &&
+          updatedReplicas === expectedReplicas;
 
         if (ready) {
           return {
             ready: true,
-            message: `StatefulSet (RollingUpdate) has all ${expectedReplicas} replicas ready, current, and updated`
+            message: `StatefulSet (RollingUpdate) has all ${expectedReplicas} replicas ready, current, and updated`,
           };
         } else {
           return {
@@ -73,8 +74,8 @@ export function statefulSet(
               readyReplicas,
               currentReplicas,
               updatedReplicas,
-              updateStrategy
-            }
+              updateStrategy,
+            },
           };
         }
       }
@@ -83,7 +84,7 @@ export function statefulSet(
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating StatefulSet readiness: ${error}`,
-        details: { expectedReplicas, updateStrategy, error: String(error) }
+        details: { expectedReplicas, updateStrategy, error: String(error) },
       };
     }
   });

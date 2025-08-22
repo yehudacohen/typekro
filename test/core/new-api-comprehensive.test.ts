@@ -5,12 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { 
-  toResourceGraph, 
-  simpleDeployment, 
-  simpleService,
-  Cel,
-} from '../../src/index.js';
+import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
 
 describe('New toResourceGraph API with StatusBuilder', () => {
   const WebAppSpecSchema = type({
@@ -114,8 +109,8 @@ describe('New toResourceGraph API with StatusBuilder', () => {
       );
 
       expect(graph.resources).toHaveLength(2);
-      expect(graph.resources.some(r => r.kind === 'Deployment')).toBe(true);
-      expect(graph.resources.some(r => r.kind === 'Service')).toBe(true);
+      expect(graph.resources.some((r) => r.kind === 'Deployment')).toBe(true);
+      expect(graph.resources.some((r) => r.kind === 'Service')).toBe(true);
     });
 
     it('should use StatusBuilder for defining status mappings', () => {
@@ -139,10 +134,10 @@ describe('New toResourceGraph API with StatusBuilder', () => {
         (schema, resources) => {
           // Should have access to schema
           expect(schema.spec.name).toBeDefined();
-          
+
           // Should have access to resources from ResourceBuilder
           expect(resources.deployment).toBeDefined();
-          
+
           return {
             url: `http://status-builder-test.example.com`,
             readyReplicas: resources.deployment.status.readyReplicas,
@@ -323,7 +318,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
         (_schema, resources) => {
           // StatusBuilder should have proper types too
           const deploymentStatus = resources.deployment.status.readyReplicas;
-          
+
           return {
             url: 'http://type-safe.com',
             readyReplicas: deploymentStatus,
@@ -365,12 +360,12 @@ describe('New toResourceGraph API with StatusBuilder', () => {
       );
 
       const yaml = graph.toYaml();
-      
+
       // Should contain the ResourceGraphDefinition structure
       expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(yaml).toContain('kind: ResourceGraphDefinition');
       expect(yaml).toContain('name: yaml-cel-test');
-      
+
       // Should contain status field definitions
       expect(yaml).toContain('status:');
     });

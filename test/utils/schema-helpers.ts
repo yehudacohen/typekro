@@ -3,7 +3,7 @@
  * These helpers provide proper type safety while working around TypeScript inference issues
  */
 
-import type { SchemaProxy, } from '../../src/index.js';
+import type { SchemaProxy } from '../../src/index.js';
 
 /**
  * Helper to properly type schema field access

@@ -1,6 +1,6 @@
 /**
  * Kubernetes Factory Type Definitions
- * 
+ *
  * This module re-exports Kubernetes types from the core types module
  * to maintain backward compatibility for factory functions.
  */

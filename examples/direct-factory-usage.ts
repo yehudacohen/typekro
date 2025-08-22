@@ -1,12 +1,18 @@
 /**
  * Example: DirectResourceFactory Usage
- * 
+ *
  * This example demonstrates how to use the new DirectResourceFactory
  * for deploying Kubernetes resources without the Kro controller.
  */
 
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, simpleConfigMap, Cel } from '../src/index.js';
+import {
+  Cel,
+  simpleConfigMap,
+  simpleDeployment,
+  simpleService,
+  toResourceGraph,
+} from '../src/index.js';
 
 // Define the schema for our web application
 const WebAppSpecSchema = type({
@@ -64,11 +70,13 @@ debug=false
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
-      ports: [{
-        name: 'http',
-        containerPort: schema.spec.port,
-        protocol: 'TCP',
-      }],
+      ports: [
+        {
+          name: 'http',
+          containerPort: schema.spec.port,
+          protocol: 'TCP',
+        },
+      ],
       env: {
         NODE_ENV: schema.spec.environment,
         PORT: String(schema.spec.port),
@@ -83,12 +91,14 @@ debug=false
       selector: {
         app: schema.spec.name,
       },
-      ports: [{
-        name: 'http',
-        port: 80,
-        targetPort: schema.spec.port,
-        protocol: 'TCP',
-      }],
+      ports: [
+        {
+          name: 'http',
+          port: 80,
+          targetPort: schema.spec.port,
+          protocol: 'TCP',
+        },
+      ],
       id: 'webapp-service',
     }),
   }),
@@ -248,7 +258,7 @@ async function demonstrateMultipleInstances() {
     const yaml = factory.toYaml(spec);
     const lines = yaml.split('\\n');
     console.log(`\\n${spec.name} (${spec.environment}):`);
-    console.log(`  Resources: ${lines.filter(line => line.includes('kind:')).length}`);
+    console.log(`  Resources: ${lines.filter((line) => line.includes('kind:')).length}`);
     console.log(`  Replicas: ${spec.replicas}`);
     console.log(`  Debug: ${spec.config.debug}`);
   }
@@ -321,8 +331,4 @@ if (import.meta.main) {
     .catch(console.error);
 }
 
-export {
-  webappGraph,
-  type WebAppSpec,
-  type WebAppStatus,
-};
+export { webappGraph, type WebAppSpec, type WebAppStatus };

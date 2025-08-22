@@ -9,15 +9,17 @@ import type { ReadinessEvaluator, ResourceStatus } from '../../core/types/index.
 
 /**
  * Default readiness evaluator for HelmRelease resources
- * 
+ *
  * HelmReleases are considered "ready" when they are successfully installed or upgraded
  * and the Helm release status indicates success.
  */
-export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (liveResource: any): ResourceStatus => {
+export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (
+  liveResource: any
+): ResourceStatus => {
   try {
     // For HelmRelease resources, we check the status conditions
     const status = liveResource.status;
-    
+
     if (!status) {
       return {
         ready: false,
@@ -66,7 +68,9 @@ export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (liveResource: 
         if (readyCondition.status === 'True') {
           return {
             ready: true,
-            message: readyCondition.message || `HelmRelease is ready (revision ${status.revision || 'unknown'})`,
+            message:
+              readyCondition.message ||
+              `HelmRelease is ready (revision ${status.revision || 'unknown'})`,
           };
         } else {
           return {
@@ -82,7 +86,9 @@ export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (liveResource: 
       if (releasedCondition && releasedCondition.status === 'True') {
         return {
           ready: true,
-          message: releasedCondition.message || `Helm chart released successfully (revision ${status.revision || 'unknown'})`,
+          message:
+            releasedCondition.message ||
+            `Helm chart released successfully (revision ${status.revision || 'unknown'})`,
         };
       }
     }
@@ -104,9 +110,9 @@ export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (liveResource: 
 
 /**
  * Create a readiness evaluator that waits for a specific Helm release revision
- * 
+ *
  * This is useful when you want to ensure a specific version of a chart is deployed.
- * 
+ *
  * @param expectedRevision The revision number to wait for
  * @returns ReadinessEvaluator function
  */
@@ -114,7 +120,7 @@ export function createHelmRevisionReadinessEvaluator(expectedRevision: number): 
   return (liveResource: any): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
-      
+
       // If not ready for other reasons, return that status
       if (!baseStatus.ready) {
         return baseStatus;
@@ -123,7 +129,7 @@ export function createHelmRevisionReadinessEvaluator(expectedRevision: number): 
       // Check if we have the expected revision
       const status = liveResource.status;
       const currentRevision = status?.revision;
-      
+
       if (currentRevision === expectedRevision) {
         return {
           ready: true,
@@ -148,17 +154,19 @@ export function createHelmRevisionReadinessEvaluator(expectedRevision: number): 
 
 /**
  * Create a readiness evaluator that checks for successful test execution
- * 
+ *
  * This evaluator waits for Helm tests to complete successfully if they are enabled.
- * 
+ *
  * @param requireTests Whether to require test success for readiness (default: false)
  * @returns ReadinessEvaluator function
  */
-export function createHelmTestReadinessEvaluator(requireTests: boolean = false): ReadinessEvaluator {
+export function createHelmTestReadinessEvaluator(
+  requireTests: boolean = false
+): ReadinessEvaluator {
   return (liveResource: any): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
-      
+
       // If not ready for other reasons, return that status
       if (!baseStatus.ready) {
         return baseStatus;
@@ -207,17 +215,19 @@ export function createHelmTestReadinessEvaluator(requireTests: boolean = false):
 
 /**
  * Create a readiness evaluator with custom timeout for Helm operations
- * 
+ *
  * This evaluator considers a HelmRelease failed if it takes too long to install/upgrade.
- * 
+ *
  * @param timeoutMinutes Maximum time to wait for Helm operations (default: 10 minutes)
  * @returns ReadinessEvaluator function
  */
-export function createHelmTimeoutReadinessEvaluator(timeoutMinutes: number = 10): ReadinessEvaluator {
+export function createHelmTimeoutReadinessEvaluator(
+  timeoutMinutes: number = 10
+): ReadinessEvaluator {
   return (liveResource: any): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
-      
+
       // If already ready or failed, return that status
       if (baseStatus.ready || baseStatus.reason === 'InstallationFailed') {
         return baseStatus;
@@ -226,10 +236,10 @@ export function createHelmTimeoutReadinessEvaluator(timeoutMinutes: number = 10)
       // Check if we have timing information
       const status = liveResource.status;
       const metadata = liveResource.metadata;
-      
+
       // Use lastDeployed time or creation time as reference
       let startTime: Date | null = null;
-      
+
       if (status?.lastDeployed) {
         startTime = new Date(status.lastDeployed);
       } else if (metadata?.creationTimestamp) {
@@ -239,7 +249,7 @@ export function createHelmTimeoutReadinessEvaluator(timeoutMinutes: number = 10)
       if (startTime) {
         const now = new Date();
         const elapsedMinutes = (now.getTime() - startTime.getTime()) / (1000 * 60);
-        
+
         if (elapsedMinutes > timeoutMinutes) {
           return {
             ready: false,
@@ -262,29 +272,23 @@ export function createHelmTimeoutReadinessEvaluator(timeoutMinutes: number = 10)
 
 /**
  * Create a comprehensive readiness evaluator that combines multiple Helm checks
- * 
+ *
  * This evaluator provides a complete readiness check including revision, tests, and timeout.
- * 
+ *
  * @param options Configuration options for the comprehensive check
  * @returns ReadinessEvaluator function
  */
-export function createComprehensiveHelmReadinessEvaluator(options: {
-  expectedRevision?: number;
-  requireTests?: boolean;
-  timeoutMinutes?: number;
-} = {}): ReadinessEvaluator {
-  const {
-    expectedRevision,
-    requireTests = false,
-    timeoutMinutes = 10
-  } = options;
+export function createComprehensiveHelmReadinessEvaluator(
+  options: { expectedRevision?: number; requireTests?: boolean; timeoutMinutes?: number } = {}
+): ReadinessEvaluator {
+  const { expectedRevision, requireTests = false, timeoutMinutes = 10 } = options;
 
   return (liveResource: any): ResourceStatus => {
     try {
       // First check timeout
       const timeoutEvaluator = createHelmTimeoutReadinessEvaluator(timeoutMinutes);
       const timeoutStatus = timeoutEvaluator(liveResource);
-      
+
       if (timeoutStatus.reason === 'Timeout') {
         return timeoutStatus;
       }

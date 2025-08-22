@@ -1,23 +1,29 @@
 /**
  * Direct Deployment Strategy
- * 
+ *
  * This module provides the direct deployment strategy that deploys
  * individual Kubernetes resources directly to the cluster.
  */
 
-import type { DeploymentResult, FactoryOptions, ResourceGraph, DeploymentContext, DeployedResource } from '../../types/deployment.js';
+import type {
+  DeployedResource,
+  DeploymentContext,
+  DeploymentResult,
+  FactoryOptions,
+  ResourceGraph,
+} from '../../types/deployment.js';
+import { ResourceDeploymentError } from '../../types/deployment.js';
 import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
 import type { DirectDeploymentEngine } from '../engine.js';
-import { BaseDeploymentStrategy } from './base-strategy.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
-import { ResourceDeploymentError } from '../../types/deployment.js';
+import { BaseDeploymentStrategy } from './base-strategy.js';
 
 /**
  * Direct deployment strategy - deploys individual Kubernetes resources
  */
 export class DirectDeploymentStrategy<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 > extends BaseDeploymentStrategy<TSpec, TStatus> {
   constructor(
     factoryName: string,
@@ -25,7 +31,7 @@ export class DirectDeploymentStrategy<
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
-    public resourceResolver: { createResourceGraphForInstance(spec: TSpec): ResourceGraph }   // Resource resolution logic
+    public resourceResolver: { createResourceGraphForInstance(spec: TSpec): ResourceGraph } // Resource resolution logic
   ) {
     super(factoryName, namespace, schemaDefinition, factoryOptions);
   }
@@ -44,7 +50,7 @@ export class DirectDeploymentStrategy<
 
       // Pass closures to deployment engine for level-based execution
       const closures = this.factoryOptions.closures || {};
-      
+
       // Deploy using the direct deployment engine with closures if available, otherwise use regular deploy
       let deploymentResult: DeploymentResult;
       if (Object.keys(closures).length > 0 && 'deployWithClosures' in this.deploymentEngine) {
@@ -59,8 +65,8 @@ export class DirectDeploymentStrategy<
           ): Promise<DeploymentResult>;
         };
         deploymentResult = await engineWithClosures.deployWithClosures(
-          resourceGraph, 
-          closures, 
+          resourceGraph,
+          closures,
           deploymentOptions,
           spec,
           this.factoryOptions.alchemyScope
@@ -99,7 +105,7 @@ export class DirectDeploymentStrategy<
   ): DeploymentContext {
     // Get Kubernetes API from deployment engine
     const kubernetesApi = this.deploymentEngine.getKubernetesApi();
-    
+
     // Create reference resolver function
     const resolveReference = async (ref: unknown): Promise<unknown> => {
       // This would integrate with the existing reference resolution system

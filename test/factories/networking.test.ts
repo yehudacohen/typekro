@@ -5,9 +5,9 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import type { V1Ingress, V1NetworkPolicy } from '@kubernetes/client-node';
 import { ingress } from '../../src/factories/kubernetes/networking/ingress.js';
 import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
-import type { V1Ingress, V1NetworkPolicy } from '@kubernetes/client-node';
 
 describe('Networking Factories', () => {
   describe('Ingress Factory', () => {
@@ -185,7 +185,7 @@ describe('Networking Factories', () => {
       const evaluator = (enhanced as any).readinessEvaluator;
 
       // Test with malformed input that might cause errors
-      const errorScenarios = [null, undefined, 'invalid-string', 42, { status: 'invalid-status' }];
+      const _errorScenarios = [null, undefined, 'invalid-string', 42, { status: 'invalid-status' }];
 
       // Test just with truly invalid input that will hit the catch block
       const result = evaluator({ invalidField: 'this will cause errors when accessing .status' });
@@ -404,8 +404,8 @@ describe('Networking Factories', () => {
       expect(enhanced.spec).toEqual(complexPolicy.spec! as any);
       expect(enhanced.spec!.ingress).toHaveLength(1);
       expect(enhanced.spec!.egress).toHaveLength(2);
-      expect(enhanced.spec!!!.ingress![0].from).toHaveLength(2);
-      expect(enhanced.spec!!!.ingress![0].ports).toHaveLength(2);
+      expect(enhanced.spec!.ingress![0].from).toHaveLength(2);
+      expect(enhanced.spec!.ingress![0].ports).toHaveLength(2);
     });
 
     it('should handle minimal network policy specifications', () => {

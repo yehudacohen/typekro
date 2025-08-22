@@ -38,9 +38,23 @@ export function useStepValidation() {
       return false;
     }
 
-    // Validate code example
-    if (!validateCodeExample(step.codeExample)) {
-      console.warn(`Invalid code example for step: ${step.id}`);
+    // Validate code content - either codeExample or codeBlocks must be present
+    if (step.codeExample) {
+      // Single code example
+      if (!validateCodeExample(step.codeExample)) {
+        console.warn(`Invalid code example for step: ${step.id}`);
+        return false;
+      }
+    } else if (step.codeBlocks && step.codeBlocks.length > 0) {
+      // Multiple code blocks
+      for (const codeBlock of step.codeBlocks) {
+        if (!validateCodeExample(codeBlock.example)) {
+          console.warn(`Invalid code block for step: ${step.id}`);
+          return false;
+        }
+      }
+    } else {
+      console.warn(`Step missing code content (either codeExample or codeBlocks): ${step.id}`);
       return false;
     }
 
@@ -72,7 +86,7 @@ export function useStepValidation() {
     }
 
     // Check for duplicate IDs
-    const ids = steps.map(step => step.id);
+    const ids = steps.map((step) => step.id);
     const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
     if (duplicateIds.length > 0) {
       errors.push(`Duplicate step IDs found: ${duplicateIds.join(', ')}`);
@@ -87,16 +101,16 @@ export function useStepValidation() {
 
     return {
       isValid: errors.length === 0,
-      errors
+      errors,
     };
   };
 
   const getStepById = (steps: TutorialStep[], id: string): TutorialStep | undefined => {
-    return steps.find(step => step.id === id);
+    return steps.find((step) => step.id === id);
   };
 
   const getStepIndex = (steps: TutorialStep[], id: string): number => {
-    return steps.findIndex(step => step.id === id);
+    return steps.findIndex((step) => step.id === id);
   };
 
   return {
@@ -104,6 +118,6 @@ export function useStepValidation() {
     validateSteps,
     validateCodeExample,
     getStepById,
-    getStepIndex
+    getStepIndex,
   };
 }

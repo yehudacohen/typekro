@@ -6,28 +6,29 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { ensureReadinessEvaluator } from '../../utils/helpers.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { CircularDependencyError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { ReferenceResolver, DeploymentMode } from '../references/index.js';
 import type { DeploymentModeType } from '../references/index.js';
+import { DeploymentMode, ReferenceResolver } from '../references/index.js';
 import type {
+  ClosureDependencyInfo,
+  DeploymentClosure,
+  DeploymentContext,
   DeploymentError,
   DeploymentEvent,
   DeploymentOperationStatus,
   DeploymentOptions,
   DeploymentResult,
   DeploymentStateRecord,
+  EnhancedDeploymentPlan,
   ResolutionContext,
   ResourceGraph,
   RollbackResult,
-  DeploymentClosure,
-  DeploymentContext,
-  ClosureDependencyInfo,
-  EnhancedDeploymentPlan,
 } from '../types/deployment.js';
-import type { Scope } from '../types/serialization.js';
 import { ResourceDeploymentError } from '../types/deployment.js';
+import type { Scope } from '../types/serialization.js';
 import type {
   DeployableK8sResource,
   DeployedResource,
@@ -36,7 +37,6 @@ import type {
 } from '../types.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { StatusHydrator } from './status-hydrator.js';
-import { ensureReadinessEvaluator } from '../../utils/helpers.js';
 
 export class DirectDeploymentEngine {
   private dependencyResolver: DependencyResolver;
@@ -55,7 +55,8 @@ export class DirectDeploymentEngine {
     private deploymentMode: DeploymentModeType = DeploymentMode.DIRECT
   ) {
     this.dependencyResolver = new DependencyResolver();
-    this.referenceResolver = referenceResolver || new ReferenceResolver(kubeClient, this.deploymentMode, k8sApi);
+    this.referenceResolver =
+      referenceResolver || new ReferenceResolver(kubeClient, this.deploymentMode, k8sApi);
     this.k8sApi = k8sApi || kubeClient.makeApiClient(k8s.KubernetesObjectApi);
     this.readinessChecker = new ResourceReadinessChecker(this.k8sApi);
     this.statusHydrator = new StatusHydrator(this.k8sApi);
@@ -66,7 +67,7 @@ export class DirectDeploymentEngine {
       this.readyResources.add(resourceKey);
       this.logger.debug('Resource marked as ready via generic readiness checker', {
         resourceKey,
-        totalReady: this.readyResources.size
+        totalReady: this.readyResources.size,
       });
     });
   }
@@ -85,7 +86,8 @@ export class DirectDeploymentEngine {
   public async isDeployedResourceReady(deployedResource: DeployedResource): Promise<boolean> {
     try {
       // Check if the deployed resource has a factory-provided readiness evaluator
-      const readinessEvaluator = (deployedResource.manifest as Enhanced<any, any>).readinessEvaluator;
+      const readinessEvaluator = (deployedResource.manifest as Enhanced<any, any>)
+        .readinessEvaluator;
 
       if (readinessEvaluator) {
         // Use the factory-provided readiness evaluator
@@ -112,7 +114,7 @@ export class DirectDeploymentEngine {
         } else {
           this.logger.warn('Readiness evaluator returned unexpected result', {
             resourceId: deployedResource.id,
-            result
+            result,
           });
           return false;
         }
@@ -136,7 +138,7 @@ export class DirectDeploymentEngine {
         resourceId: deployedResource.id,
         kind: deployedResource.kind,
         name: deployedResource.name,
-        namespace: deployedResource.namespace
+        namespace: deployedResource.namespace,
       });
       return false;
     }
@@ -157,7 +159,10 @@ export class DirectDeploymentEngine {
     const startTime = Date.now();
     const deployedResources: DeployedResource[] = [];
     const errors: DeploymentError[] = [];
-    const deploymentLogger = this.logger.child({ deploymentId, resourceCount: graph.resources.length });
+    const deploymentLogger = this.logger.child({
+      deploymentId,
+      resourceCount: graph.resources.length,
+    });
     deploymentLogger.info('Starting deployment', { options });
 
     try {
@@ -168,7 +173,9 @@ export class DirectDeploymentEngine {
       });
 
       // 1. Validate no cycles in dependency graph
-      deploymentLogger.debug('Validating dependency graph', { dependencyGraph: graph.dependencyGraph });
+      deploymentLogger.debug('Validating dependency graph', {
+        dependencyGraph: graph.dependencyGraph,
+      });
       this.dependencyResolver.validateNoCycles(graph.dependencyGraph);
 
       // 2. Analyze deployment order and identify parallel stages
@@ -177,7 +184,7 @@ export class DirectDeploymentEngine {
       deploymentLogger.debug('Deployment plan determined', {
         levels: deploymentPlan.levels.length,
         totalResources: deploymentPlan.totalResources,
-        maxParallelism: deploymentPlan.maxParallelism
+        maxParallelism: deploymentPlan.maxParallelism,
       });
 
       // 3. Create resolution context
@@ -197,9 +204,11 @@ export class DirectDeploymentEngine {
 
         const levelLogger = deploymentLogger.child({
           level: levelIndex + 1,
-          resourceCount: currentLevel.length
+          resourceCount: currentLevel.length,
         });
-        levelLogger.debug(`Deploying level ${levelIndex + 1} with ${currentLevel.length} resources in parallel`);
+        levelLogger.debug(
+          `Deploying level ${levelIndex + 1} with ${currentLevel.length} resources in parallel`
+        );
 
         // Track performance metrics for this level
         const levelStartTime = Date.now();
@@ -221,14 +230,14 @@ export class DirectDeploymentEngine {
                 phase: 'validation' as const,
                 error,
                 timestamp: new Date(),
-              }
+              },
             };
           }
 
           resourceLogger.debug('Found resource in graph', {
             resourceId: resource.id,
             kind: resource.manifest?.kind,
-            name: resource.manifest?.metadata?.name
+            name: resource.manifest?.metadata?.name,
           });
 
           try {
@@ -249,7 +258,7 @@ export class DirectDeploymentEngine {
             return {
               success: true,
               resourceId,
-              deployedResource
+              deployedResource,
             };
           } catch (error) {
             resourceLogger.error('Resource deployment failed', error as Error);
@@ -272,7 +281,7 @@ export class DirectDeploymentEngine {
                 phase: 'deployment' as const,
                 error: error as Error,
                 timestamp: new Date(),
-              }
+              },
             };
           }
         });
@@ -326,8 +335,12 @@ export class DirectDeploymentEngine {
 
         // Calculate level performance metrics
         const levelDuration = Date.now() - levelStartTime;
-        const successfulCount = levelResults.filter(r => r.status === 'fulfilled' && r.value.success).length;
-        const failedCount = levelResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
+        const successfulCount = levelResults.filter(
+          (r) => r.status === 'fulfilled' && r.value.success
+        ).length;
+        const failedCount = levelResults.filter(
+          (r) => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)
+        ).length;
         const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
         // Use debug level in test environments to reduce noise, info level in production
         const logLevel = isTestEnvironment ? 'debug' : 'info';
@@ -336,13 +349,14 @@ export class DirectDeploymentEngine {
           failed: failedCount,
           duration: levelDuration,
           parallelism: currentLevel.length,
-          averageTimePerResource: Math.round(levelDuration / currentLevel.length)
+          averageTimePerResource: Math.round(levelDuration / currentLevel.length),
         });
       }
 
       const duration = Date.now() - startTime;
       const successfulResources = deployedResources.filter((r) => r.status !== 'failed');
-      const status = errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
+      const status =
+        errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
 
       // Log comprehensive performance metrics
       const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
@@ -356,8 +370,13 @@ export class DirectDeploymentEngine {
         averageTimePerResource: Math.round(duration / deploymentPlan.totalResources),
         successfulResources: successfulResources.length,
         failedResources: errors.length,
-        parallelismEfficiency: Math.round((deploymentPlan.totalResources / deploymentPlan.levels.length) / deploymentPlan.maxParallelism * 100),
-        status
+        parallelismEfficiency: Math.round(
+          (deploymentPlan.totalResources /
+            deploymentPlan.levels.length /
+            deploymentPlan.maxParallelism) *
+            100
+        ),
+        status,
       });
 
       this.emitEvent(options, {
@@ -471,10 +490,7 @@ export class DirectDeploymentEngine {
    * Extract dependencies from a closure by analyzing its configuration
    * This is a simplified implementation - in practice, we would need more sophisticated analysis
    */
-  private extractClosureDependencies<TSpec>(
-    closure: DeploymentClosure,
-    spec: TSpec
-  ): string[] {
+  private extractClosureDependencies<TSpec>(_closure: DeploymentClosure, _spec: TSpec): string[] {
     // For now, return empty dependencies since closures typically don't depend on Enhanced<> resources
     // In the future, this could analyze closure arguments for resource references
     return [];
@@ -483,13 +499,16 @@ export class DirectDeploymentEngine {
   /**
    * Get the execution level of a resource in the dependency graph
    */
-  private getResourceLevel(resourceId: string, dependencyGraph: import('../dependencies/index.js').DependencyGraph): number {
+  private getResourceLevel(
+    resourceId: string,
+    dependencyGraph: import('../dependencies/index.js').DependencyGraph
+  ): number {
     // Find the level where this resource appears in the deployment plan
     const deploymentPlan = this.dependencyResolver.analyzeDeploymentOrder(dependencyGraph);
 
     for (let levelIndex = 0; levelIndex < deploymentPlan.levels.length; levelIndex++) {
       const level = deploymentPlan.levels[levelIndex];
-      if (level && level.includes(resourceId)) {
+      if (level?.includes(resourceId)) {
         return levelIndex;
       }
     }
@@ -508,7 +527,7 @@ export class DirectDeploymentEngine {
     const enhancedLevels: Array<{ resources: string[]; closures: ClosureDependencyInfo[] }> = [];
 
     // Check if we have any closures at level -1 (pre-resource level)
-    const preResourceClosures = closureDependencies.filter(c => c.level === -1);
+    const preResourceClosures = closureDependencies.filter((c) => c.level === -1);
 
     // If we have pre-resource closures, add them as level 0 and shift everything else
     if (preResourceClosures.length > 0) {
@@ -533,7 +552,8 @@ export class DirectDeploymentEngine {
       }
 
       // Adjust level index if we added a pre-resource level
-      const adjustedLevel = preResourceClosures.length > 0 ? closureInfo.level + 1 : closureInfo.level;
+      const adjustedLevel =
+        preResourceClosures.length > 0 ? closureInfo.level + 1 : closureInfo.level;
 
       // Ensure we have enough levels
       while (enhancedLevels.length <= adjustedLevel) {
@@ -552,7 +572,7 @@ export class DirectDeploymentEngine {
       totalClosures: closureDependencies.length,
       maxParallelism: Math.max(
         deploymentPlan.maxParallelism,
-        Math.max(...enhancedLevels.map(level => level.closures.length))
+        Math.max(...enhancedLevels.map((level) => level.closures.length))
       ),
     };
   }
@@ -574,12 +594,12 @@ export class DirectDeploymentEngine {
     const deploymentLogger = this.logger.child({
       deploymentId,
       resourceCount: graph.resources.length,
-      closureCount: Object.keys(closures).length
+      closureCount: Object.keys(closures).length,
     });
 
     deploymentLogger.info('Starting deployment with closures', {
       options,
-      closures: Object.keys(closures)
+      closures: Object.keys(closures),
     });
 
     try {
@@ -590,7 +610,9 @@ export class DirectDeploymentEngine {
       });
 
       // 1. Validate no cycles in dependency graph
-      deploymentLogger.debug('Validating dependency graph', { dependencyGraph: graph.dependencyGraph });
+      deploymentLogger.debug('Validating dependency graph', {
+        dependencyGraph: graph.dependencyGraph,
+      });
       this.dependencyResolver.validateNoCycles(graph.dependencyGraph);
 
       // 2. Analyze deployment order and identify parallel stages
@@ -599,18 +621,22 @@ export class DirectDeploymentEngine {
       deploymentLogger.debug('Deployment plan determined', {
         levels: deploymentPlan.levels.length,
         totalResources: deploymentPlan.totalResources,
-        maxParallelism: deploymentPlan.maxParallelism
+        maxParallelism: deploymentPlan.maxParallelism,
       });
 
       // 3. Analyze closure dependencies and integrate into deployment plan
-      const closureDependencies = this.analyzeClosureDependencies(closures, spec, graph.dependencyGraph);
+      const closureDependencies = this.analyzeClosureDependencies(
+        closures,
+        spec,
+        graph.dependencyGraph
+      );
       const enhancedPlan = this.integrateClosuresIntoPlan(deploymentPlan, closureDependencies);
 
       deploymentLogger.debug('Enhanced deployment plan with closures', {
         levels: enhancedPlan.levels.length,
         totalResources: enhancedPlan.totalResources,
         totalClosures: enhancedPlan.totalClosures,
-        maxParallelism: enhancedPlan.maxParallelism
+        maxParallelism: enhancedPlan.maxParallelism,
       });
 
       // 4. Create resolution context
@@ -631,9 +657,11 @@ export class DirectDeploymentEngine {
         const levelLogger = deploymentLogger.child({
           level: levelIndex + 1,
           resourceCount: currentLevel.resources.length,
-          closureCount: currentLevel.closures.length
+          closureCount: currentLevel.closures.length,
         });
-        levelLogger.debug(`Deploying level ${levelIndex + 1} with ${currentLevel.resources.length} resources and ${currentLevel.closures.length} closures in parallel`);
+        levelLogger.debug(
+          `Deploying level ${levelIndex + 1} with ${currentLevel.resources.length} resources and ${currentLevel.closures.length} closures in parallel`
+        );
 
         const levelStartTime = Date.now();
 
@@ -675,14 +703,14 @@ export class DirectDeploymentEngine {
                 phase: 'validation' as const,
                 error,
                 timestamp: new Date(),
-              }
+              },
             };
           }
 
           resourceLogger.debug('Found resource in graph', {
             resourceId: resource.id,
             kind: resource.manifest?.kind,
-            name: resource.manifest?.metadata?.name
+            name: resource.manifest?.metadata?.name,
           });
 
           try {
@@ -698,7 +726,7 @@ export class DirectDeploymentEngine {
             return {
               success: true,
               resourceId,
-              deployedResource
+              deployedResource,
             };
           } catch (error) {
             resourceLogger.error('Resource deployment failed', error as Error);
@@ -721,7 +749,7 @@ export class DirectDeploymentEngine {
                 phase: 'deployment' as const,
                 error: error as Error,
                 timestamp: new Date(),
-              }
+              },
             };
           }
         });
@@ -733,12 +761,14 @@ export class DirectDeploymentEngine {
 
           try {
             const result = await closureInfo.closure(deploymentContext);
-            closureLogger.debug('Closure executed successfully', { resultCount: result?.length || 0 });
+            closureLogger.debug('Closure executed successfully', {
+              resultCount: result?.length || 0,
+            });
             return {
               success: true,
               type: 'closure' as const,
               name: closureInfo.name,
-              result
+              result,
             };
           } catch (error) {
             closureLogger.error('Closure execution failed', error as Error);
@@ -751,7 +781,7 @@ export class DirectDeploymentEngine {
                 phase: 'deployment' as const,
                 error: error as Error,
                 timestamp: new Date(),
-              }
+              },
             };
           }
         });
@@ -837,13 +867,15 @@ export class DirectDeploymentEngine {
           closures: { successful: successfulClosures, failed: failedClosures },
           duration: levelDuration,
           parallelism: totalOperations,
-          averageTimePerOperation: totalOperations > 0 ? Math.round(levelDuration / totalOperations) : 0
+          averageTimePerOperation:
+            totalOperations > 0 ? Math.round(levelDuration / totalOperations) : 0,
         });
       }
 
       const duration = Date.now() - startTime;
       const successfulResources = deployedResources.filter((r) => r.status !== 'failed');
-      const status = errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
+      const status =
+        errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
 
       // Log comprehensive performance metrics
       const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
@@ -854,10 +886,11 @@ export class DirectDeploymentEngine {
         totalClosures: enhancedPlan.totalClosures,
         parallelLevels: enhancedPlan.levels.length,
         maxParallelism: enhancedPlan.maxParallelism,
-        averageTimePerResource: enhancedPlan.totalResources > 0 ? Math.round(duration / enhancedPlan.totalResources) : 0,
+        averageTimePerResource:
+          enhancedPlan.totalResources > 0 ? Math.round(duration / enhancedPlan.totalResources) : 0,
         successfulResources: successfulResources.length,
         failedResources: errors.length,
-        status
+        status,
       });
 
       this.emitEvent(options, {
@@ -926,7 +959,7 @@ export class DirectDeploymentEngine {
         ],
       };
     }
-  }  /**
+  } /**
 
    * Deploy a single resource
    */
@@ -935,11 +968,12 @@ export class DirectDeploymentEngine {
     context: ResolutionContext,
     options: DeploymentOptions
   ): Promise<DeployedResource> {
-    const resourceId = resource.id || (resource as any).__resourceId || resource.metadata?.name || 'unknown';
+    const resourceId =
+      resource.id || (resource as any).__resourceId || resource.metadata?.name || 'unknown';
     const resourceLogger = this.logger.child({
       resourceId,
       kind: resource.kind,
-      name: resource.metadata?.name
+      name: resource.metadata?.name,
     });
     resourceLogger.debug('Starting single resource deployment');
 
@@ -954,7 +988,7 @@ export class DirectDeploymentEngine {
     let resolvedResource: KubernetesResource;
     try {
       resourceLogger.debug('Resolving resource references', {
-        originalMetadata: resource.metadata
+        originalMetadata: resource.metadata,
       });
       const resolveTimeout = options.timeout || 30000;
       resolvedResource = (await Promise.race([
@@ -965,7 +999,7 @@ export class DirectDeploymentEngine {
       ])) as KubernetesResource;
       resourceLogger.debug('References resolved successfully', {
         resolvedMetadata: resolvedResource.metadata,
-        hasReadinessEvaluator: !!(resolvedResource as any).readinessEvaluator
+        hasReadinessEvaluator: !!(resolvedResource as any).readinessEvaluator,
       });
     } catch (error) {
       resourceLogger.warn('Reference resolution failed, using original resource', error as Error);
@@ -973,11 +1007,15 @@ export class DirectDeploymentEngine {
     }
 
     // 2. Apply namespace if specified, but only if resource doesn't already have one
-    if (options.namespace && resolvedResource.metadata && typeof resolvedResource.metadata.namespace !== 'string') {
+    if (
+      options.namespace &&
+      resolvedResource.metadata &&
+      typeof resolvedResource.metadata.namespace !== 'string'
+    ) {
       resourceLogger.debug('Applying namespace from deployment options', {
         targetNamespace: options.namespace,
         currentNamespace: resolvedResource.metadata.namespace,
-        currentNamespaceType: typeof resolvedResource.metadata.namespace
+        currentNamespaceType: typeof resolvedResource.metadata.namespace,
       });
 
       // Create a completely new metadata object to avoid proxy issues
@@ -999,7 +1037,7 @@ export class DirectDeploymentEngine {
           value: readinessEvaluator,
           enumerable: false,
           configurable: true,
-          writable: false
+          writable: false,
         });
       }
 
@@ -1069,7 +1107,7 @@ export class DirectDeploymentEngine {
             appliedName: appliedResource.metadata?.name,
             appliedNamespace: appliedResource.metadata?.namespace,
             operation: existing ? 'patched' : 'created',
-            attempt
+            attempt,
           });
 
           // Success - break out of retry loop
@@ -1096,11 +1134,11 @@ export class DirectDeploymentEngine {
           resourceLogger.debug('Retrying resource deployment', {
             attempt: attempt + 1,
             maxRetries: retryPolicy.maxRetries,
-            delay
+            delay,
           });
 
           // Wait before retrying
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     }
@@ -1192,7 +1230,9 @@ export class DirectDeploymentEngine {
             this.emitEvent(options, {
               type: 'resource-ready',
               resourceId: deployedResource.id,
-              message: result.message || `${deployedResource.kind}/${deployedResource.name} ready (custom evaluator)`,
+              message:
+                result.message ||
+                `${deployedResource.kind}/${deployedResource.name} ready (custom evaluator)`,
               timestamp: new Date(),
             });
 
@@ -1211,8 +1251,7 @@ export class DirectDeploymentEngine {
         }
 
         // Wait before next check
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       } catch (error) {
         // Emit error status event
         this.emitEvent(options, {
@@ -1223,7 +1262,7 @@ export class DirectDeploymentEngine {
         });
 
         // If we can't read the resource, it's not ready yet
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
 
@@ -1277,7 +1316,7 @@ export class DirectDeploymentEngine {
           error: error as Error,
           resourceId: resource.id,
           kind: resource.kind,
-          name: resource.name
+          name: resource.name,
         });
 
         errors.push({
@@ -1332,7 +1371,7 @@ export class DirectDeploymentEngine {
     const deleteLogger = this.logger.child({
       resourceId: resource.id,
       kind: resource.kind,
-      name: resource.name
+      name: resource.name,
     });
 
     try {
@@ -1372,7 +1411,9 @@ export class DirectDeploymentEngine {
         }
       }
 
-      throw new Error(`Timeout waiting for resource ${resource.kind}/${resource.name} to be deleted`);
+      throw new Error(
+        `Timeout waiting for resource ${resource.kind}/${resource.name} to be deleted`
+      );
     } catch (error) {
       deleteLogger.error('Failed to delete resource', error as Error);
       throw error;
@@ -1406,8 +1447,8 @@ export class DirectDeploymentEngine {
         deploymentRecord.options
       );
 
-      const status = errors.length === 0 ? 'success' :
-        rolledBackResources.length > 0 ? 'partial' : 'failed';
+      const status =
+        errors.length === 0 ? 'success' : rolledBackResources.length > 0 ? 'partial' : 'failed';
 
       return {
         deploymentId,
@@ -1423,12 +1464,14 @@ export class DirectDeploymentEngine {
         rolledBackResources: [],
         duration: Date.now() - startTime,
         status: 'failed',
-        errors: [{
-          resourceId: deploymentId,
-          phase: 'rollback',
-          error: error as Error,
-          timestamp: new Date(),
-        }],
+        errors: [
+          {
+            resourceId: deploymentId,
+            phase: 'rollback',
+            error: error as Error,
+            timestamp: new Date(),
+          },
+        ],
       };
     }
   }
@@ -1450,8 +1493,12 @@ export class DirectDeploymentEngine {
 
     const result: DeploymentOperationStatus = {
       deploymentId,
-      status: deploymentRecord.status === 'completed' ? 'completed' :
-        deploymentRecord.status === 'failed' ? 'failed' : 'running',
+      status:
+        deploymentRecord.status === 'completed'
+          ? 'completed'
+          : deploymentRecord.status === 'failed'
+            ? 'failed'
+            : 'running',
       startTime: deploymentRecord.startTime,
       resources: deploymentRecord.resources,
     };
@@ -1492,30 +1539,22 @@ export class DirectDeploymentEngine {
     if (!crdName) {
       logger.warn('Could not determine CRD name for custom resource', {
         kind: resource.kind,
-        apiVersion: resource.apiVersion
+        apiVersion: resource.apiVersion,
       });
       return;
     }
 
     logger.debug('Custom resource detected, waiting for CRD establishment', {
       resourceKind: resource.kind,
-      crdName
+      crdName,
     });
 
     await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger);
 
     logger.debug('CRD established, proceeding with custom resource deployment', {
       resourceKind: resource.kind,
-      crdName
+      crdName,
     });
-  }
-
-  /**
-   * Check if a resource is a CustomResourceDefinition
-   */
-  private isCRD(resource: any): boolean {
-    return resource.kind === 'CustomResourceDefinition' &&
-      resource.apiVersion?.includes('apiextensions.k8s.io');
   }
 
   /**
@@ -1549,7 +1588,7 @@ export class DirectDeploymentEngine {
       'events.k8s.io/v1',
       'flowcontrol.apiserver.k8s.io/v1beta3',
       'node.k8s.io/v1',
-      'scheduling.k8s.io/v1'
+      'scheduling.k8s.io/v1',
     ];
 
     return !builtInApiGroups.includes(resource.apiVersion);
@@ -1578,16 +1617,12 @@ export class DirectDeploymentEngine {
 
     try {
       // Try to find the CRD by querying the API
-      const crds = await this.k8sApi.list(
-        'apiextensions.k8s.io/v1',
-        'CustomResourceDefinition'
-      );
+      const crds = await this.k8sApi.list('apiextensions.k8s.io/v1', 'CustomResourceDefinition');
 
       // Look for a CRD that matches our group and kind
       const matchingCrd = (crds.body as any)?.items?.find((crd: any) => {
         const crdSpec = crd.spec;
-        return crdSpec?.group === group &&
-          crdSpec?.names?.kind === resource.kind;
+        return crdSpec?.group === group && crdSpec?.names?.kind === resource.kind;
       });
 
       if (matchingCrd) {
@@ -1626,7 +1661,7 @@ export class DirectDeploymentEngine {
         const crdStatus = await this.k8sApi.read({
           apiVersion: 'apiextensions.k8s.io/v1',
           kind: 'CustomResourceDefinition',
-          metadata: { name: crdName } // CRDs are cluster-scoped, no namespace needed
+          metadata: { name: crdName }, // CRDs are cluster-scoped, no namespace needed
         } as any);
 
         const conditions = (crdStatus.body as any)?.status?.conditions || [];
@@ -1639,25 +1674,22 @@ export class DirectDeploymentEngine {
 
         logger.debug('CRD exists but not yet established, waiting...', {
           crdName,
-          establishedStatus: establishedCondition?.status || 'unknown'
+          establishedStatus: establishedCondition?.status || 'unknown',
         });
-
       } catch (error) {
         // CRD might not exist yet (e.g., being installed by a closure)
         // This is expected in scenarios where closures install CRDs
         logger.debug('CRD not found yet, waiting for it to be created...', {
           crdName,
-          error: (error as Error).message
+          error: (error as Error).message,
         });
       }
 
       // Wait before next poll
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
     }
 
     // Timeout reached
     throw new Error(`Timeout waiting for CRD ${crdName} to be established after ${timeout}ms`);
   }
-
-
 }

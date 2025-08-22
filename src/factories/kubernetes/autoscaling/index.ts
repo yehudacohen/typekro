@@ -1,6 +1,6 @@
 /**
  * Kubernetes Autoscaling Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes autoscaling resources
  * including HorizontalPodAutoscalers (v1 and v2).
  */

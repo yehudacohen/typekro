@@ -1,10 +1,13 @@
 import * as yaml from 'js-yaml';
-import { PathResolver } from '../../../core/yaml/path-resolver.js';
-import type { DeploymentClosure, DeploymentContext, AppliedResource } from '../../../core/types/deployment.js';
-import type { KubernetesRef } from '../../../core/types/common.js';
-import type { KubernetesResource } from '../../../core/types/kubernetes.js';
-
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
+import type { KubernetesRef } from '../../../core/types/common.js';
+import type {
+  AppliedResource,
+  DeploymentClosure,
+  DeploymentContext,
+} from '../../../core/types/deployment.js';
+import type { KubernetesResource } from '../../../core/types/kubernetes.js';
+import { PathResolver } from '../../../core/yaml/path-resolver.js';
 
 /**
  * Parse YAML content into Kubernetes manifests
@@ -12,13 +15,13 @@ import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
 function parseYamlManifests(yamlContent: string): KubernetesResource[] {
   const documents = yaml.loadAll(yamlContent);
   const manifests: KubernetesResource[] = [];
-  
+
   for (const doc of documents) {
     if (doc && typeof doc === 'object' && 'kind' in doc && 'apiVersion' in doc) {
       manifests.push(doc as KubernetesResource);
     }
   }
-  
+
   return manifests;
 }
 
@@ -51,7 +54,7 @@ export interface YamlDirectoryConfig {
  *       path: 'git:github.com/fluxcd/flux2/manifests/install@main',
  *       namespace: 'flux-system'
  *     }),
- *     
+ *
  *     // Enhanced<> resources deploy in parallel
  *     app: simpleDeployment({
  *       name: 'my-app',
@@ -66,29 +69,34 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
   // Return closure that will be executed during deployment
   return async (deploymentContext: DeploymentContext): Promise<AppliedResource[]> => {
     const pathResolver = new PathResolver();
-    const yamlFiles = await pathResolver.discoverYamlFiles(config.path, {
-      recursive: config.recursive ?? true,
-      include: config.include ?? ['**/*.yaml', '**/*.yml'],
-      exclude: config.exclude ?? []
-    }, config.name);
-    
+    const yamlFiles = await pathResolver.discoverYamlFiles(
+      config.path,
+      {
+        recursive: config.recursive ?? true,
+        include: config.include ?? ['**/*.yaml', '**/*.yml'],
+        exclude: config.exclude ?? [],
+      },
+      config.name
+    );
+
     const allResults: AppliedResource[] = [];
     const strategy = config.deploymentStrategy || 'replace';
-    
+
     for (const discoveredFile of yamlFiles) {
       // Use the pre-fetched content from the discovered file
       const manifests = parseYamlManifests(discoveredFile.content);
-      
+
       for (const manifest of manifests) {
         // Resolve namespace references
-        const resolvedNamespace = config.namespace && isKubernetesRef(config.namespace)
-          ? await deploymentContext.resolveReference(config.namespace)
-          : config.namespace;
-          
+        const resolvedNamespace =
+          config.namespace && isKubernetesRef(config.namespace)
+            ? await deploymentContext.resolveReference(config.namespace)
+            : config.namespace;
+
         if (resolvedNamespace && !manifest.metadata?.namespace) {
           manifest.metadata = { ...manifest.metadata, namespace: resolvedNamespace as string };
         }
-        
+
         try {
           // Apply via alchemy if scope is configured, otherwise direct to Kubernetes
           if (deploymentContext.alchemyScope) {
@@ -102,27 +110,29 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
           } else if (deploymentContext.kubernetesApi) {
             await deploymentContext.kubernetesApi.create(manifest);
           } else {
-            throw new Error('No deployment method available: neither alchemyScope nor kubernetesApi provided');
+            throw new Error(
+              'No deployment method available: neither alchemyScope nor kubernetesApi provided'
+            );
           }
-          
+
           allResults.push({
             kind: manifest.kind || 'Unknown',
             name: manifest.metadata?.name || 'unknown',
             namespace: manifest.metadata?.namespace || undefined,
-            apiVersion: manifest.apiVersion || 'v1'
+            apiVersion: manifest.apiVersion || 'v1',
           });
         } catch (error: any) {
           // Handle conflicts based on deployment strategy
           if (error?.response?.statusCode === 409 || error?.statusCode === 409) {
             const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
-            
+
             if (strategy === 'skipIfExists') {
               console.log(`⚠️ Skipping existing resource: ${resourceName}`);
               allResults.push({
                 kind: manifest.kind || 'Unknown',
                 name: manifest.metadata?.name || 'unknown',
                 namespace: manifest.metadata?.namespace || undefined,
-                apiVersion: manifest.apiVersion || 'v1'
+                apiVersion: manifest.apiVersion || 'v1',
               });
             } else if (strategy === 'replace') {
               console.log(`🔄 Replacing existing resource: ${resourceName}`);
@@ -160,7 +170,7 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                   kind: manifest.kind || 'Unknown',
                   name: manifest.metadata?.name || 'unknown',
                   namespace: manifest.metadata?.namespace || undefined,
-                  apiVersion: manifest.apiVersion || 'v1'
+                  apiVersion: manifest.apiVersion || 'v1',
                 });
               } catch (replaceError) {
                 console.error(`❌ Failed to replace resource ${resourceName}:`, replaceError);
@@ -177,7 +187,7 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
         }
       }
     }
-    
+
     return allResults;
   };
 }
@@ -187,9 +197,12 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
  */
 export const GitPaths = {
   fluxHelm: (version = 'main') => `git:github.com/fluxcd/helm-controller/config/default@${version}`,
-  fluxKustomize: (version = 'main') => `git:github.com/fluxcd/kustomize-controller/config/default@${version}`,
-  fluxSource: (version = 'main') => `git:github.com/fluxcd/source-controller/config/default@${version}`,
+  fluxKustomize: (version = 'main') =>
+    `git:github.com/fluxcd/kustomize-controller/config/default@${version}`,
+  fluxSource: (version = 'main') =>
+    `git:github.com/fluxcd/source-controller/config/default@${version}`,
   kro: (version = 'main') => `git:github.com/Azure/kro/config/default@${version}`,
-  argoCD: (version = 'stable') => `git:github.com/argoproj/argo-cd/manifests/install.yaml@${version}`,
+  argoCD: (version = 'stable') =>
+    `git:github.com/argoproj/argo-cd/manifests/install.yaml@${version}`,
   istio: (version = 'master') => `git:github.com/istio/istio/manifests/charts/base@${version}`,
 } as const;

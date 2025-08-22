@@ -6,66 +6,70 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { kroCustomResourceDefinition } from '../../../src/factories/kro/kro-crd.js';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node';
+import { kroCustomResourceDefinition } from '../../../src/factories/kro/kro-crd.js';
 
 describe('KroCustomResourceDefinition Factory', () => {
-  const createTestCRD = (name: string = 'webapplications.example.com.kro.run'): V1CustomResourceDefinition => ({
+  const createTestCRD = (
+    name: string = 'webapplications.example.com.kro.run'
+  ): V1CustomResourceDefinition => ({
     apiVersion: 'apiextensions.k8s.io/v1',
     kind: 'CustomResourceDefinition',
     metadata: {
       name,
       namespace: undefined, // CRDs are cluster-scoped
       labels: {
-        'kro.run/managed-by': 'kro-controller'
-      }
+        'kro.run/managed-by': 'kro-controller',
+      },
     },
     spec: {
       group: 'example.com.kro.run',
-      versions: [{
-        name: 'v1alpha1',
-        served: true,
-        storage: true,
-        schema: {
-          openAPIV3Schema: {
-            type: 'object',
-            properties: {
-              spec: {
-                type: 'object',
-                properties: {
-                  image: { type: 'string' },
-                  replicas: { type: 'integer', default: 1 }
-                }
+      versions: [
+        {
+          name: 'v1alpha1',
+          served: true,
+          storage: true,
+          schema: {
+            openAPIV3Schema: {
+              type: 'object',
+              properties: {
+                spec: {
+                  type: 'object',
+                  properties: {
+                    image: { type: 'string' },
+                    replicas: { type: 'integer', default: 1 },
+                  },
+                },
+                status: {
+                  type: 'object',
+                  properties: {
+                    phase: { type: 'string' },
+                    conditions: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          type: { type: 'string' },
+                          status: { type: 'string' },
+                          message: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
               },
-              status: {
-                type: 'object',
-                properties: {
-                  phase: { type: 'string' },
-                  conditions: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        type: { type: 'string' },
-                        status: { type: 'string' },
-                        message: { type: 'string' }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }],
+            },
+          },
+        },
+      ],
       scope: 'Namespaced',
       names: {
         plural: 'webapplications',
         singular: 'webapplication',
         kind: 'WebApplication',
-        shortNames: ['webapp', 'webapps']
-      }
-    }
+        shortNames: ['webapp', 'webapps'],
+      },
+    },
   });
 
   describe('Factory Creation', () => {
@@ -85,7 +89,7 @@ describe('KroCustomResourceDefinition Factory', () => {
       const crdConfig = createTestCRD('customresources.webapp.kro.run');
       crdConfig.spec.names.kind = 'CustomResource';
       crdConfig.spec.names.plural = 'customresources';
-      
+
       const enhanced = kroCustomResourceDefinition(crdConfig);
 
       expect(enhanced.spec.names.kind).toBe('CustomResource');
@@ -95,46 +99,50 @@ describe('KroCustomResourceDefinition Factory', () => {
 
     it('should handle CRD with complex schema', () => {
       const complexCRD = createTestCRD('databases.storage.kro.run');
-      complexCRD.spec.versions = [{
-        name: 'v1beta1',
-        served: true,
-        storage: true,
-        schema: {
-          openAPIV3Schema: {
-            type: 'object',
-            properties: {
-              spec: {
-                type: 'object',
-                properties: {
-                  version: { type: 'string', enum: ['12', '13', '14'] },
-                  replicas: { type: 'integer', minimum: 1, maximum: 10 },
-                  storage: {
-                    type: 'object',
-                    properties: {
-                      size: { type: 'string' },
-                      storageClass: { type: 'string' }
+      complexCRD.spec.versions = [
+        {
+          name: 'v1beta1',
+          served: true,
+          storage: true,
+          schema: {
+            openAPIV3Schema: {
+              type: 'object',
+              properties: {
+                spec: {
+                  type: 'object',
+                  properties: {
+                    version: { type: 'string', enum: ['12', '13', '14'] },
+                    replicas: { type: 'integer', minimum: 1, maximum: 10 },
+                    storage: {
+                      type: 'object',
+                      properties: {
+                        size: { type: 'string' },
+                        storageClass: { type: 'string' },
+                      },
+                      required: ['size'],
                     },
-                    required: ['size']
-                  }
+                  },
+                  required: ['version'],
                 },
-                required: ['version']
-              }
-            }
-          }
-        }
-      }];
+              },
+            },
+          },
+        },
+      ];
 
       const enhanced = kroCustomResourceDefinition(complexCRD);
 
       expect(enhanced.spec.versions).toHaveLength(1);
       expect(enhanced.spec.versions[0].name).toBe('v1beta1');
-      expect(enhanced.spec.versions[0].schema.openAPIV3Schema.properties.spec.required).toContain('version');
+      expect(enhanced.spec.versions[0].schema.openAPIV3Schema.properties.spec.required).toContain(
+        'version'
+      );
     });
 
     it('should handle missing metadata gracefully', () => {
       const crdConfig = createTestCRD();
       delete (crdConfig as any).metadata;
-      
+
       const enhanced = kroCustomResourceDefinition(crdConfig);
 
       expect(enhanced).toBeDefined();
@@ -165,28 +173,30 @@ describe('KroCustomResourceDefinition Factory', () => {
               status: 'True',
               lastTransitionTime: new Date(),
               reason: 'InitialNamesAccepted',
-              message: 'the initial names have been accepted'
+              message: 'the initial names have been accepted',
             },
             {
               type: 'NamesAccepted',
               status: 'True',
               lastTransitionTime: new Date(),
               reason: 'NoConflicts',
-              message: 'no conflicts found'
-            }
+              message: 'no conflicts found',
+            },
           ],
           acceptedNames: {
             plural: 'webapplications',
             singular: 'webapplication',
-            kind: 'WebApplication'
+            kind: 'WebApplication',
           },
-          storedVersions: ['v1alpha1']
-        }
+          storedVersions: ['v1alpha1'],
+        },
       };
 
       const result = evaluator(mockCRD);
       expect(result.ready).toBe(true);
-      expect(result.message).toContain('Kro-generated CRD webapplications.example.com.kro.run is established');
+      expect(result.message).toContain(
+        'Kro-generated CRD webapplications.example.com.kro.run is established'
+      );
     });
 
     it('should evaluate as not ready when Established is False', () => {
@@ -203,17 +213,17 @@ describe('KroCustomResourceDefinition Factory', () => {
               status: 'False',
               lastTransitionTime: new Date(),
               reason: 'Installing',
-              message: 'the CRD is being installed'
+              message: 'the CRD is being installed',
             },
             {
               type: 'NamesAccepted',
               status: 'True',
               lastTransitionTime: new Date(),
               reason: 'NoConflicts',
-              message: 'no conflicts found'
-            }
-          ]
-        }
+              message: 'no conflicts found',
+            },
+          ],
+        },
       };
 
       const result = evaluator(mockCRD);
@@ -236,17 +246,17 @@ describe('KroCustomResourceDefinition Factory', () => {
               status: 'True',
               lastTransitionTime: new Date(),
               reason: 'InitialNamesAccepted',
-              message: 'the initial names have been accepted'
+              message: 'the initial names have been accepted',
             },
             {
               type: 'NamesAccepted',
               status: 'False',
               lastTransitionTime: new Date(),
               reason: 'NameConflict',
-              message: 'name conflicts found'
-            }
-          ]
-        }
+              message: 'name conflicts found',
+            },
+          ],
+        },
       };
 
       const result = evaluator(mockCRD);
@@ -269,17 +279,17 @@ describe('KroCustomResourceDefinition Factory', () => {
               status: 'True',
               lastTransitionTime: new Date(),
               reason: 'InitialNamesAccepted',
-              message: 'the initial names have been accepted'
+              message: 'the initial names have been accepted',
             },
             {
               type: 'NamesAccepted',
               status: 'True',
               lastTransitionTime: new Date(),
               reason: 'NoConflicts',
-              message: 'no conflicts found'
-            }
-          ]
-        }
+              message: 'no conflicts found',
+            },
+          ],
+        },
       };
 
       const result = evaluator(mockCRD);
@@ -297,7 +307,7 @@ describe('KroCustomResourceDefinition Factory', () => {
         ...crdConfig,
         status: {
           // No conditions array
-        }
+        },
       };
 
       const result = evaluator(mockCRD);
@@ -313,7 +323,7 @@ describe('KroCustomResourceDefinition Factory', () => {
       const evaluator = (enhanced as any).readinessEvaluator;
 
       const mockCRD: V1CustomResourceDefinition = {
-        ...crdConfig
+        ...crdConfig,
         // No status
       };
 
@@ -339,7 +349,7 @@ describe('KroCustomResourceDefinition Factory', () => {
       const malformedCRD = {
         spec: {
           // Missing required fields
-        }
+        },
       } as any;
 
       const enhanced = kroCustomResourceDefinition(malformedCRD);
@@ -351,7 +361,7 @@ describe('KroCustomResourceDefinition Factory', () => {
 
     it('should handle missing spec gracefully', () => {
       const crdConfig = {
-        metadata: { name: 'test.kro.run' }
+        metadata: { name: 'test.kro.run' },
       } as any;
 
       const enhanced = kroCustomResourceDefinition(crdConfig);

@@ -4,12 +4,12 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment } from '../../src/index.js';
+import { simpleDeployment, toResourceGraph } from '../../src/index.js';
 
 describe('Status Hydration Integration', () => {
   it('should demonstrate Enhanced proxy status hydration after deployment', async () => {
     // This test demonstrates the expected behavior - actual cluster testing would require E2E setup
-    
+
     const WebAppSpecSchema = type({
       name: 'string',
       image: 'string',
@@ -65,7 +65,7 @@ describe('Status Hydration Integration', () => {
       //   image: 'nginx:latest',
       //   replicas: 2,
       // });
-      // 
+      //
       // After deployment and status hydration:
       // expect(instance.status.readyReplicas).toBe(2); // Live cluster data
       // expect(instance.status.phase).toBe('Running');
@@ -81,15 +81,15 @@ describe('Status Hydration Integration', () => {
 
   it('should show status hydration works for different resource types', () => {
     // This demonstrates that different resource types will get appropriate status fields hydrated
-    
+
     const resourceTypeStatusFields = {
-      'Deployment': ['replicas', 'readyReplicas', 'availableReplicas', 'conditions'],
-      'Service': ['loadBalancer.ingress', 'conditions'],
-      'Pod': ['podIP', 'hostIP', 'containerStatuses', 'phase'],
-      'Job': ['succeeded', 'failed', 'active', 'completionTime'],
-      'StatefulSet': ['replicas', 'readyReplicas', 'currentReplicas'],
-      'PersistentVolumeClaim': ['capacity', 'accessModes', 'phase'],
-      'Ingress': ['loadBalancer.ingress', 'conditions'],
+      Deployment: ['replicas', 'readyReplicas', 'availableReplicas', 'conditions'],
+      Service: ['loadBalancer.ingress', 'conditions'],
+      Pod: ['podIP', 'hostIP', 'containerStatuses', 'phase'],
+      Job: ['succeeded', 'failed', 'active', 'completionTime'],
+      StatefulSet: ['replicas', 'readyReplicas', 'currentReplicas'],
+      PersistentVolumeClaim: ['capacity', 'accessModes', 'phase'],
+      Ingress: ['loadBalancer.ingress', 'conditions'],
     };
 
     // Verify we have status field mappings for common resource types
@@ -102,13 +102,13 @@ describe('Status Hydration Integration', () => {
   it('should demonstrate the deployment flow with status hydration', () => {
     // This shows the expected flow:
     // 1. Deploy Resource → 2. Wait for Ready → 3. Hydrate Status → 4. Return Enhanced Proxy
-    
+
     const expectedFlow = [
       '1. Resource deployed to cluster',
       '2. ResourceReadinessChecker waits for resource to be ready',
       '3. StatusHydrator queries live resource status',
       '4. Enhanced proxy status fields populated with live data',
-      '5. User gets Enhanced proxy with real cluster status'
+      '5. User gets Enhanced proxy with real cluster status',
     ];
 
     expectedFlow.forEach((step, index) => {

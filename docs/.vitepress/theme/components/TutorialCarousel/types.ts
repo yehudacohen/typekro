@@ -20,11 +20,17 @@ export interface CallToAction {
   type: 'primary' | 'secondary';
 }
 
+export interface CodeBlock {
+  title?: string;
+  example: CodeExample;
+}
+
 export interface TutorialStep {
   id: string;
   title: string;
   description: string;
-  codeExample: CodeExample;
+  codeExample?: CodeExample;
+  codeBlocks?: CodeBlock[];
   explanation: string;
   highlights?: string[];
   nextSteps?: CallToAction[];

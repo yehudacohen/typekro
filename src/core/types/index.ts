@@ -28,14 +28,14 @@ export * from './kubernetes.js';
 export type * from './references.js';
 export * from './references.js';
 // =============================================================================
+// Resource Graph Types (selective export to avoid conflicts)
+// =============================================================================
+export type { ResourceGraph } from './resource-graph.js';
+// =============================================================================
 // Serialization Types
 // =============================================================================
 export type * from './serialization.js';
 export * from './serialization.js';
-// =============================================================================
-// Resource Graph Types (selective export to avoid conflicts)
-// =============================================================================
-export type { ResourceGraph } from './resource-graph.js';
 // =============================================================================
 // YAML Types
 // =============================================================================

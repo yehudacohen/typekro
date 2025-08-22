@@ -41,7 +41,7 @@ export function generateKroSchemaFromArktype<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
 >(
-  name: string, 
+  name: string,
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
   resources?: Record<string, KubernetesResource>,
   statusMappings?: any

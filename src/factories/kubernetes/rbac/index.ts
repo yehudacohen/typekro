@@ -1,6 +1,6 @@
 /**
  * Kubernetes RBAC Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes RBAC resources
  * including Roles, RoleBindings, ClusterRoles, ServiceAccounts, etc.
  */

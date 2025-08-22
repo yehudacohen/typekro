@@ -1,6 +1,6 @@
 /**
  * Kubernetes Workload Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes workload resources
  * including Deployments, Jobs, StatefulSets, CronJobs, DaemonSets, etc.
  */

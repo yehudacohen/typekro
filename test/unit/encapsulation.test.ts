@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'bun:test';
-import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
+import { describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
+import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 
 describe('Encapsulation and Public Interfaces', () => {
   describe('DirectDeploymentEngine', () => {
@@ -11,12 +11,12 @@ describe('Encapsulation and Public Interfaces', () => {
         { name: 'test-cluster', server: 'https://test-cluster.example.com' },
         { name: 'test-user' }
       );
-      
+
       const engine = new DirectDeploymentEngine(kubeConfig);
-      
+
       // Should have public getter method
       expect(typeof engine.getKubernetesApi).toBe('function');
-      
+
       // Should return a KubernetesObjectApi instance
       const k8sApi = engine.getKubernetesApi();
       expect(k8sApi).toBeDefined();
@@ -33,17 +33,17 @@ describe('Encapsulation and Public Interfaces', () => {
         { name: 'test-cluster', server: 'https://test-cluster.example.com' },
         { name: 'test-user' }
       );
-      
+
       const engine = new DirectDeploymentEngine(kubeConfig);
-      
+
       // Private member should not be accessible
       expect((engine as any).k8sApi).toBeDefined(); // It exists internally
-      
+
       // But accessing it directly should be discouraged (TypeScript would prevent this)
       // This test documents that we've moved away from bracket notation access
       const publicApi = engine.getKubernetesApi();
       const privateApi = (engine as any).k8sApi;
-      
+
       // They should be the same instance (proper encapsulation)
       expect(publicApi).toBe(privateApi);
     });

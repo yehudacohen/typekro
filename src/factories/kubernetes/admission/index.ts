@@ -1,6 +1,6 @@
 /**
  * Kubernetes Admission Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes admission control resources
  * including MutatingWebhookConfigurations and ValidatingWebhookConfigurations.
  */

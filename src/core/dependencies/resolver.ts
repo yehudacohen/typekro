@@ -5,13 +5,13 @@
  * topological ordering for deployment.
  */
 
-import { isCelExpression, isKubernetesRef } from './type-guards.js';
+import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { CircularDependencyError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
+import { isCelExpression, isKubernetesRef } from './type-guards.js';
 
 export class DependencyResolver {
   private logger = getComponentLogger('dependency-resolver');
@@ -43,7 +43,7 @@ export class DependencyResolver {
             // This might be an external reference that will be resolved at runtime
             this.logger.warn('Reference to unknown resource', {
               referencedResourceId: ref.resourceId,
-              sourceResourceId: resource.id
+              sourceResourceId: resource.id,
             });
           }
         }

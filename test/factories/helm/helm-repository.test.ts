@@ -6,7 +6,10 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { helmRepository, type HelmRepositoryConfig } from '../../../src/factories/helm/helm-repository.js';
+import {
+  type HelmRepositoryConfig,
+  helmRepository,
+} from '../../../src/factories/helm/helm-repository.js';
 
 describe('HelmRepository Factory', () => {
   const createTestConfig = (
@@ -83,10 +86,8 @@ describe('HelmRepository Factory', () => {
         metadata: { name: 'test-repo' },
         spec: { url: 'https://charts.bitnami.com/bitnami' },
         status: {
-          conditions: [
-            { type: 'Ready', status: 'True', message: 'Repository is ready' }
-          ]
-        }
+          conditions: [{ type: 'Ready', status: 'True', message: 'Repository is ready' }],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -103,10 +104,8 @@ describe('HelmRepository Factory', () => {
         metadata: { name: 'test-repo' },
         spec: { url: 'https://charts.bitnami.com/bitnami' },
         status: {
-          conditions: [
-            { type: 'Ready', status: 'False', message: 'Repository not accessible' }
-          ]
-        }
+          conditions: [{ type: 'Ready', status: 'False', message: 'Repository not accessible' }],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -121,18 +120,18 @@ describe('HelmRepository Factory', () => {
       const evaluator = (enhanced as any).readinessEvaluator;
 
       const mockResource = {
-        metadata: { 
+        metadata: {
           name: 'oci-repo',
           generation: 1,
-          resourceVersion: '12345'
+          resourceVersion: '12345',
         },
-        spec: { 
+        spec: {
           url: 'oci://ghcr.io/my-org/charts',
-          type: 'oci'
+          type: 'oci',
         },
         status: {
-          conditions: [] // OCI repos may not have status conditions
-        }
+          conditions: [], // OCI repos may not have status conditions
+        },
       };
 
       const result = evaluator(mockResource);
@@ -148,13 +147,13 @@ describe('HelmRepository Factory', () => {
 
       const mockResource = {
         metadata: { name: 'oci-repo' },
-        spec: { 
+        spec: {
           url: 'oci://ghcr.io/my-org/charts',
-          type: 'oci'
+          type: 'oci',
         },
         status: {
-          conditions: []
-        }
+          conditions: [],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -169,7 +168,7 @@ describe('HelmRepository Factory', () => {
 
       const mockResource = {
         metadata: { name: 'test-repo' },
-        spec: { url: 'https://charts.bitnami.com/bitnami' }
+        spec: { url: 'https://charts.bitnami.com/bitnami' },
         // No status
       };
 
@@ -194,7 +193,7 @@ describe('HelmRepository Factory', () => {
     it('should handle missing name gracefully', () => {
       const config = { url: 'https://charts.bitnami.com/bitnami' } as HelmRepositoryConfig;
       const enhanced = helmRepository(config);
-      
+
       // The factory doesn't throw but creates resource with undefined name
       expect(enhanced.metadata.name).toBe(undefined);
       expect(enhanced.spec.url).toBe(config.url);
@@ -203,7 +202,7 @@ describe('HelmRepository Factory', () => {
     it('should handle missing url gracefully', () => {
       const config = { name: 'testRepo' } as HelmRepositoryConfig;
       const enhanced = helmRepository(config);
-      
+
       // The factory doesn't throw but creates resource with undefined url
       expect(enhanced.metadata.name).toBe('testRepo');
       expect(enhanced.spec.url).toBe(undefined);
@@ -219,11 +218,11 @@ describe('HelmRepository Factory', () => {
         interval: '10m',
         type: 'default' as const,
         namespace: 'flux-system',
-        id: 'uniqueId' // Use camelCase ID as required by Kro
+        id: 'uniqueId', // Use camelCase ID as required by Kro
       };
 
       const result = helmRepository(config);
-      
+
       // These should compile without type errors
       expect(result.spec.url).toBe(config.url);
       expect(result.spec.interval).toBe(config.interval);

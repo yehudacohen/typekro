@@ -8,7 +8,7 @@
   >
     <!-- Header -->
     <div class="carousel-header">
-      <h2 class="carousel-title">Getting Started</h2>
+      <h2 class="carousel-title">Using TypeKro</h2>
     </div>
 
     <!-- Main Content -->
@@ -73,7 +73,7 @@ const props = withDefaults(defineProps<Props>(), {
   autoPlay: false,
   showProgress: true,
   enableSwipe: true,
-  showCompletionMessage: true
+  showCompletionMessage: true,
 });
 
 // Refs
@@ -100,7 +100,7 @@ const {
   startAutoPlay,
   stopAutoPlay,
   reset,
-  trackCompletion
+  trackCompletion,
 } = useCarouselState(tutorialSteps);
 
 // Computed properties
@@ -135,7 +135,7 @@ const handleCallToAction = (action: CallToAction) => {
     (window as any).gtag('event', 'tutorial_cta_click', {
       event_category: 'tutorial',
       event_label: action.text,
-      step_id: currentStepData.value.id
+      step_id: currentStepData.value.id,
     });
   }
 
@@ -162,7 +162,7 @@ const handleResize = () => {
 onMounted(() => {
   checkMobile();
   window.addEventListener('resize', handleResize);
-  
+
   if (props.autoPlay) {
     startTutorialAutoPlay();
   }
@@ -170,7 +170,7 @@ onMounted(() => {
   // Track tutorial start
   if (typeof window !== 'undefined' && (window as any).gtag) {
     (window as any).gtag('event', 'tutorial_started', {
-      event_category: 'tutorial'
+      event_category: 'tutorial',
     });
   }
 });
@@ -195,7 +195,7 @@ defineExpose({
   previousStep,
   reset,
   startAutoPlay: startTutorialAutoPlay,
-  stopAutoPlay: stopTutorialAutoPlay
+  stopAutoPlay: stopTutorialAutoPlay,
 });
 </script>
 
@@ -282,7 +282,7 @@ defineExpose({
 }
 
 .cta-button--primary:hover {
-  background: var(--vp-c-brand-dark);
+  background: var(--vp-c-brand-darker, #1e40af); color: white;
   transform: translateY(-1px);
 }
 

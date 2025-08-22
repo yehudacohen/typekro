@@ -196,7 +196,10 @@ export class PathResolver {
   /**
    * Resolve content from a path (local file or git: URL)
    */
-  async resolveContent(filePath: string, resourceName: string = 'unknown'): Promise<ResolvedContent> {
+  async resolveContent(
+    filePath: string,
+    resourceName: string = 'unknown'
+  ): Promise<ResolvedContent> {
     if (filePath.startsWith('git:')) {
       const content = await this.resolveGitContent(filePath, resourceName);
       return {
@@ -228,8 +231,8 @@ export class PathResolver {
   async resolveLocalContent(localPath: string, resourceName: string = 'unknown'): Promise<string> {
     try {
       // Resolve relative paths
-      const resolvedPath = path.isAbsolute(localPath) 
-        ? localPath 
+      const resolvedPath = path.isAbsolute(localPath)
+        ? localPath
         : path.resolve(process.cwd(), localPath);
 
       // Check if file exists
@@ -306,7 +309,7 @@ export class PathResolver {
   parseGitPath(gitPath: string, resourceName: string = 'unknown'): GitPathInfo {
     // Match git: URLs with optional @ref suffix
     const match = gitPath.match(/^git:([^/]+)\/([^/]+)\/([^/]+)\/(.+?)(?:@(.+))?$/);
-    
+
     if (!match) {
       throw YamlPathResolutionError.invalidGitUrl(resourceName, gitPath);
     }
@@ -343,10 +346,10 @@ export class PathResolver {
     try {
       // Use GitHub API to fetch file content
       const apiUrl = `https://api.github.com/repos/${gitInfo.owner}/${gitInfo.repo}/contents/${gitInfo.path}?ref=${gitInfo.ref}`;
-      
+
       const response = await fetch(apiUrl, {
         headers: {
-          'Accept': 'application/vnd.github.v3+json',
+          Accept: 'application/vnd.github.v3+json',
           'User-Agent': 'TypeKro/1.0',
           // TODO: Add authentication support for private repositories
           // 'Authorization': `token ${process.env.GITHUB_TOKEN}`,
@@ -359,20 +362,30 @@ export class PathResolver {
           const repoCheckUrl = `https://api.github.com/repos/${gitInfo.owner}/${gitInfo.repo}`;
           const repoResponse = await fetch(repoCheckUrl, {
             headers: {
-              'Accept': 'application/vnd.github.v3+json',
+              Accept: 'application/vnd.github.v3+json',
               'User-Agent': 'TypeKro/1.0',
             },
           });
 
           if (!repoResponse.ok) {
-            throw GitContentError.repositoryNotFound(resourceName, `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}`);
+            throw GitContentError.repositoryNotFound(
+              resourceName,
+              `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}`
+            );
           } else {
-            throw GitContentError.pathNotFound(resourceName, `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}`, gitInfo.path);
+            throw GitContentError.pathNotFound(
+              resourceName,
+              `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}`,
+              gitInfo.path
+            );
           }
         }
 
         if (response.status === 401 || response.status === 403) {
-          throw GitContentError.authenticationFailed(resourceName, `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}/${gitInfo.path}@${gitInfo.ref}`);
+          throw GitContentError.authenticationFailed(
+            resourceName,
+            `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}/${gitInfo.path}@${gitInfo.ref}`
+          );
         }
 
         throw new GitContentError(
@@ -389,7 +402,7 @@ export class PathResolver {
       }
 
       const data = await response.json();
-      
+
       // GitHub API returns base64-encoded content for files
       if (data.type === 'file' && data.content) {
         return Buffer.from(data.content, 'base64').toString('utf-8');
@@ -437,11 +450,7 @@ export class PathResolver {
     } = {},
     resourceName: string = 'unknown'
   ): Promise<DiscoveredFile[]> {
-    const {
-      recursive = true,
-      include = ['**/*.yaml', '**/*.yml'],
-      exclude = [],
-    } = options;
+    const { recursive = true, include = ['**/*.yaml', '**/*.yml'], exclude = [] } = options;
 
     if (dirPath.startsWith('git:')) {
       return this.discoverGitYamlFiles(dirPath, { recursive, include, exclude }, resourceName);
@@ -464,8 +473,8 @@ export class PathResolver {
   ): Promise<DiscoveredFile[]> {
     try {
       // Resolve relative paths
-      const resolvedPath = path.isAbsolute(dirPath) 
-        ? dirPath 
+      const resolvedPath = path.isAbsolute(dirPath)
+        ? dirPath
         : path.resolve(process.cwd(), dirPath);
 
       // Check if directory exists
@@ -536,8 +545,10 @@ export class PathResolver {
         }
       } else if (entry.isFile()) {
         // Check if file matches include/exclude patterns
-        if (this.matchesPatterns(relativePath, options.include) && 
-            !this.matchesPatterns(relativePath, options.exclude)) {
+        if (
+          this.matchesPatterns(relativePath, options.include) &&
+          !this.matchesPatterns(relativePath, options.exclude)
+        ) {
           try {
             const content = fs.readFileSync(fullPath, 'utf-8');
             files.push({
@@ -567,7 +578,7 @@ export class PathResolver {
     resourceName: string
   ): Promise<DiscoveredFile[]> {
     const parsed = this.parseGitPath(gitPath, resourceName);
-    
+
     // For now, we'll implement a simple approach using GitHub API
     // This could be enhanced to support more complex directory traversal
     if (parsed.host !== 'github.com') {
@@ -586,10 +597,10 @@ export class PathResolver {
     try {
       // Use GitHub API to list directory contents
       const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/${parsed.path}?ref=${parsed.ref}`;
-      
+
       const response = await fetch(apiUrl, {
         headers: {
-          'Accept': 'application/vnd.github.v3+json',
+          Accept: 'application/vnd.github.v3+json',
           'User-Agent': 'TypeKro/1.0',
         },
       });
@@ -611,7 +622,7 @@ export class PathResolver {
       }
 
       const data = await response.json();
-      
+
       if (!Array.isArray(data)) {
         throw new GitContentError(
           `Expected directory listing from Git repository for resource '${resourceName}', but got a file`,
@@ -626,22 +637,24 @@ export class PathResolver {
       }
 
       const files: DiscoveredFile[] = [];
-      
+
       // Process files in the directory
       for (const item of data) {
         if (item.type === 'file') {
           const relativePath = item.name;
-          
+
           // Check if file matches include/exclude patterns
-          if (this.matchesPatterns(relativePath, options.include) && 
-              !this.matchesPatterns(relativePath, options.exclude)) {
+          if (
+            this.matchesPatterns(relativePath, options.include) &&
+            !this.matchesPatterns(relativePath, options.exclude)
+          ) {
             try {
               // Fetch file content
               const fileContent = await this.resolveGitContent(
                 `git:${parsed.host}/${parsed.owner}/${parsed.repo}/${item.path}@${parsed.ref}`,
                 resourceName
               );
-              
+
               files.push({
                 path: item.path,
                 relativePath,
@@ -659,13 +672,13 @@ export class PathResolver {
             options,
             resourceName
           );
-          
+
           // Adjust relative paths for subdirectory files
-          const adjustedFiles = subDirFiles.map(file => ({
+          const adjustedFiles = subDirFiles.map((file) => ({
             ...file,
             relativePath: path.join(item.name, file.relativePath),
           }));
-          
+
           files.push(...adjustedFiles);
         }
       }
@@ -699,32 +712,32 @@ export class PathResolver {
       return false;
     }
 
-    return patterns.some(pattern => {
+    return patterns.some((pattern) => {
       // Convert simple glob patterns to regex
       // This is a basic implementation - could use a proper glob library like minimatch
-      
+
       try {
         // Simple cases first
         if (pattern === '*') {
           return true;
         }
-        
+
         if (!pattern.includes('*') && !pattern.includes('?')) {
           // Exact match
           return filePath === pattern;
         }
-        
+
         // Handle ** first (before escaping)
         let regexPattern = pattern.replace(/\*\*/g, '__DOUBLESTAR__');
-        
+
         // Escape special regex characters except * and ?
         regexPattern = regexPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-        
+
         // Convert glob patterns to regex
         regexPattern = regexPattern
-          .replace(/__DOUBLESTAR__/g, '.*')  // ** matches any number of directories (including /)
-          .replace(/\\\*/g, '[^/]*')         // * matches any characters except /
-          .replace(/\\\?/g, '.');            // ? matches any single character
+          .replace(/__DOUBLESTAR__/g, '.*') // ** matches any number of directories (including /)
+          .replace(/\\\*/g, '[^/]*') // * matches any characters except /
+          .replace(/\\\?/g, '.'); // ? matches any single character
 
         const regex = new RegExp(`^${regexPattern}$`);
         return regex.test(filePath);
@@ -745,7 +758,7 @@ export class PathResolver {
   private async resolveHttpContent(url: string, resourceName: string = 'unknown'): Promise<string> {
     try {
       const response = await fetch(url);
-      
+
       if (!response.ok) {
         throw new YamlPathResolutionError(
           `Failed to fetch HTTP resource for resource '${resourceName}': HTTP ${response.status} ${response.statusText}`,
@@ -759,9 +772,9 @@ export class PathResolver {
           ]
         );
       }
-      
+
       const content = await response.text();
-      
+
       if (!content || content.trim().length === 0) {
         throw new YamlPathResolutionError(
           `Empty content received from HTTP resource for resource '${resourceName}': ${url}`,
@@ -774,13 +787,13 @@ export class PathResolver {
           ]
         );
       }
-      
+
       return content;
     } catch (error) {
       if (error instanceof YamlPathResolutionError) {
         throw error;
       }
-      
+
       throw new YamlPathResolutionError(
         `Failed to resolve HTTP content for resource '${resourceName}': ${error instanceof Error ? error.message : String(error)}`,
         resourceName,

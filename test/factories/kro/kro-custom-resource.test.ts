@@ -26,15 +26,15 @@ describe('KroCustomResource Factory', () => {
     kind: 'WebApplication',
     metadata: {
       name,
-      namespace: 'default'
+      namespace: 'default',
     },
     spec: {
       image: 'nginx:latest',
       replicas: 3,
       config: {
-        env: 'production'
-      }
-    } as TestSpec
+        env: 'production',
+      },
+    } as TestSpec,
   });
 
   describe('Factory Creation', () => {
@@ -66,7 +66,7 @@ describe('KroCustomResource Factory', () => {
         apiVersion: 'example.com/v1',
         kind: 'MinimalResource',
         metadata: { name: 'minimal' },
-        spec: { image: 'alpine' } as TestSpec
+        spec: { image: 'alpine' } as TestSpec,
       };
 
       const enhanced = kroCustomResource<TestSpec, TestStatus>(minimalConfig);
@@ -81,7 +81,7 @@ describe('KroCustomResource Factory', () => {
         apiVersion: 'database.example.com/v1beta1',
         kind: 'PostgreSQLCluster',
         metadata: { name: 'pgCluster', namespace: 'databases' },
-        spec: { version: '14', replicas: 3 } as any
+        spec: { version: '14', replicas: 3 } as any,
       };
 
       const enhanced = kroCustomResource(databaseConfig);
@@ -108,7 +108,7 @@ describe('KroCustomResource Factory', () => {
 
       const mockResource = {
         metadata: { name: 'testResource' },
-        spec: { image: 'nginx:latest' }
+        spec: { image: 'nginx:latest' },
         // No status
       };
 
@@ -128,8 +128,8 @@ describe('KroCustomResource Factory', () => {
         spec: { image: 'nginx:latest' },
         status: {
           // Missing state field
-          conditions: []
-        }
+          conditions: [],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -148,12 +148,10 @@ describe('KroCustomResource Factory', () => {
         spec: { image: 'nginx:latest' },
         status: {
           state: 'ACTIVE',
-          conditions: [
-            { type: 'Ready', status: 'True', message: 'All resources are ready' }
-          ],
+          conditions: [{ type: 'Ready', status: 'True', message: 'All resources are ready' }],
           phase: 'Running',
-          readyReplicas: 3
-        }
+          readyReplicas: 3,
+        },
       };
 
       const result = evaluator(mockResource);
@@ -171,10 +169,8 @@ describe('KroCustomResource Factory', () => {
         spec: { image: 'nginx:latest' },
         status: {
           state: 'ACTIVE',
-          conditions: [
-            { type: 'InstanceSynced', status: 'True', message: 'Instance is synced' }
-          ]
-        }
+          conditions: [{ type: 'InstanceSynced', status: 'True', message: 'Instance is synced' }],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -192,10 +188,8 @@ describe('KroCustomResource Factory', () => {
         spec: { image: 'nginx:latest' },
         status: {
           state: 'FAILED',
-          conditions: [
-            { type: 'Ready', status: 'False', message: 'Deployment failed' }
-          ]
-        }
+          conditions: [{ type: 'Ready', status: 'False', message: 'Deployment failed' }],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -214,8 +208,8 @@ describe('KroCustomResource Factory', () => {
         spec: { image: 'nginx:latest' },
         status: {
           state: 'PROGRESSING',
-          conditions: []
-        }
+          conditions: [],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -234,8 +228,8 @@ describe('KroCustomResource Factory', () => {
         spec: { image: 'nginx:latest' },
         status: {
           state: 'PENDING',
-          conditions: []
-        }
+          conditions: [],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -252,7 +246,7 @@ describe('KroCustomResource Factory', () => {
       const mockResource = {
         metadata: { name: 'testResource' },
         spec: { image: 'nginx:latest' },
-        status: 'invalid-status' // Non-object status
+        status: 'invalid-status', // Non-object status
       };
 
       const result = evaluator(mockResource);
@@ -270,10 +264,8 @@ describe('KroCustomResource Factory', () => {
         spec: { image: 'nginx:latest' },
         status: {
           state: 'ACTIVE',
-          conditions: [
-            { type: 'Ready', status: 'False', message: 'Still waiting for resources' }
-          ]
-        }
+          conditions: [{ type: 'Ready', status: 'False', message: 'Still waiting for resources' }],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -288,7 +280,7 @@ describe('KroCustomResource Factory', () => {
       const resourceConfig = {
         apiVersion: 'example.com/v1',
         kind: 'TestResource',
-        spec: { image: 'nginx' } as TestSpec
+        spec: { image: 'nginx' } as TestSpec,
       } as any;
 
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
@@ -302,7 +294,7 @@ describe('KroCustomResource Factory', () => {
       const resourceConfig = {
         apiVersion: 'example.com/v1',
         kind: 'TestResource',
-        metadata: { name: 'testResource' }
+        metadata: { name: 'testResource' },
       } as any;
 
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
@@ -328,7 +320,7 @@ describe('KroCustomResource Factory', () => {
         apiVersion: 'custom.example.com/v1',
         kind: 'CustomApp',
         metadata: { name: 'typedApp' },
-        spec: { replicas: 5, image: 'custom:latest' } as CustomSpec
+        spec: { replicas: 5, image: 'custom:latest' } as CustomSpec,
       };
 
       const result = kroCustomResource<CustomSpec, CustomStatus>(resourceConfig);

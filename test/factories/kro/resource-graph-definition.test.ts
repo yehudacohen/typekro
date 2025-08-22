@@ -12,15 +12,15 @@ describe('ResourceGraphDefinition Factory', () => {
   const createTestRGD = (name: string = 'testRgd') => ({
     metadata: {
       name,
-      namespace: 'default'
+      namespace: 'default',
     },
     spec: {
       schema: {
         apiVersion: 'example.com/v1',
         kind: 'Example',
         spec: {
-          name: { type: 'string' }
-        }
+          name: { type: 'string' },
+        },
       },
       resources: {
         service: {
@@ -28,17 +28,17 @@ describe('ResourceGraphDefinition Factory', () => {
             apiVersion: 'v1',
             kind: 'Service',
             metadata: {
-              name: '{{ .metadata.name }}'
+              name: '{{ .metadata.name }}',
             },
             spec: {
               selector: {
-                app: '{{ .metadata.name }}'
-              }
-            }
-          }
-        }
-      }
-    }
+                app: '{{ .metadata.name }}',
+              },
+            },
+          },
+        },
+      },
+    },
   });
 
   describe('Factory Creation', () => {
@@ -72,8 +72,8 @@ describe('ResourceGraphDefinition Factory', () => {
             kind: 'WebApp',
             spec: {
               image: { type: 'string' },
-              replicas: { type: 'integer', default: 1 }
-            }
+              replicas: { type: 'integer', default: 1 },
+            },
           },
           resources: {
             deployment: {
@@ -84,22 +84,24 @@ describe('ResourceGraphDefinition Factory', () => {
                   replicas: '{{ .spec.replicas }}',
                   template: {
                     spec: {
-                      containers: [{
-                        image: '{{ .spec.image }}'
-                      }]
-                    }
-                  }
-                }
-              }
+                      containers: [
+                        {
+                          image: '{{ .spec.image }}',
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
             },
             service: {
               template: {
                 apiVersion: 'v1',
-                kind: 'Service'
-              }
-            }
-          }
-        }
+                kind: 'Service',
+              },
+            },
+          },
+        },
       };
 
       const enhanced = resourceGraphDefinition(complexRGD);
@@ -137,14 +139,16 @@ describe('ResourceGraphDefinition Factory', () => {
 
       const mockResource = {
         metadata: { name: 'testRgd', uid: '12345' },
-        spec: {}
+        spec: {},
         // No status
       };
 
       const result = evaluator(mockResource);
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('StatusPending');
-      expect(result.message).toBe('ResourceGraphDefinition exists but Kro controller has not yet initialized status.');
+      expect(result.message).toBe(
+        'ResourceGraphDefinition exists but Kro controller has not yet initialized status.'
+      );
     });
 
     it('should evaluate as not ready when no status and no uid', () => {
@@ -154,7 +158,7 @@ describe('ResourceGraphDefinition Factory', () => {
 
       const mockResource = {
         metadata: { name: 'testRgd' },
-        spec: {}
+        spec: {},
         // No status, no uid
       };
 
@@ -176,9 +180,9 @@ describe('ResourceGraphDefinition Factory', () => {
           conditions: [
             { type: 'ReconcilerReady', status: 'True', message: 'Reconciler is ready' },
             { type: 'GraphVerified', status: 'True', message: 'Graph is verified' },
-            { type: 'CustomResourceDefinitionSynced', status: 'True', message: 'CRD is synced' }
-          ]
-        }
+            { type: 'CustomResourceDefinitionSynced', status: 'True', message: 'CRD is synced' },
+          ],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -196,10 +200,8 @@ describe('ResourceGraphDefinition Factory', () => {
         spec: {},
         status: {
           state: 'failed',
-          conditions: [
-            { type: 'Ready', status: 'False', message: 'Validation failed' }
-          ]
-        }
+          conditions: [{ type: 'Ready', status: 'False', message: 'Validation failed' }],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -218,8 +220,8 @@ describe('ResourceGraphDefinition Factory', () => {
         spec: {},
         status: {
           state: 'Pending',
-          conditions: []
-        }
+          conditions: [],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -238,8 +240,8 @@ describe('ResourceGraphDefinition Factory', () => {
         spec: {},
         status: {
           state: 'Unknown',
-          conditions: []
-        }
+          conditions: [],
+        },
       };
 
       const result = evaluator(mockResource);
@@ -254,7 +256,7 @@ describe('ResourceGraphDefinition Factory', () => {
       const evaluator = (enhanced as any).readinessEvaluator;
 
       const mockResource = {
-        metadata: { name: 'testRgd' }
+        metadata: { name: 'testRgd' },
         // No spec or status
       };
 

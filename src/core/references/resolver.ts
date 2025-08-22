@@ -7,6 +7,7 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/index.js';
+import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
 import { ResourceReadinessTimeoutError } from '../types/deployment.js';
@@ -16,10 +17,8 @@ import type {
   DeployedResource,
   KubernetesRef,
   KubernetesResource,
-
 } from '../types.js';
 import { CelEvaluator } from './cel-evaluator.js';
-import { ResourceReadinessChecker } from '../deployment/readiness.js';
 
 // =============================================================================
 // TYPE DEFINITIONS FOR IMPROVED TYPE SAFETY
@@ -60,10 +59,10 @@ interface CacheStatistics {
 
 export const DeploymentMode = {
   KRO: 'kro',
-  DIRECT: 'direct'
+  DIRECT: 'direct',
 } as const;
 
-export type DeploymentMode = typeof DeploymentMode[keyof typeof DeploymentMode];
+export type DeploymentMode = (typeof DeploymentMode)[keyof typeof DeploymentMode];
 
 export class ReferenceResolver {
   private cache = new Map<string, unknown>();
@@ -90,27 +89,31 @@ export class ReferenceResolver {
   async resolveReferences(resource: any, context: ResolutionContext): Promise<any> {
     // Quick check - if there are no references, return the resource as-is
     if (!this.hasReferences(resource)) {
-      this.logger.trace('No references found in resource, returning as-is', { resourceId: resource.id });
+      this.logger.trace('No references found in resource, returning as-is', {
+        resourceId: resource.id,
+      });
       return resource;
-}
+    }
 
     this.logger.trace('Cloning resource and resolving references', { resourceId: resource.id });
     // Deep clone the resource to avoid modifying the original
     // JSON.stringify/parse properly handles Enhanced proxies by triggering all getters
     const resolved = JSON.parse(JSON.stringify(resource));
-// Restore Symbol brands that were lost during JSON serialization
+    // Restore Symbol brands that were lost during JSON serialization
     this.restoreBrands(resolved);
 
-// FIX: Preserve the non-enumerable readinessEvaluator which is lost during JSON serialization.
+    // FIX: Preserve the non-enumerable readinessEvaluator which is lost during JSON serialization.
     if (resource.readinessEvaluator && typeof resource.readinessEvaluator === 'function') {
-      this.logger.trace('Preserving readiness evaluator on cloned resource', { resourceId: resource.id });
+      this.logger.trace('Preserving readiness evaluator on cloned resource', {
+        resourceId: resource.id,
+      });
       Object.defineProperty(resolved, 'readinessEvaluator', {
         value: resource.readinessEvaluator,
         enumerable: false,
         configurable: false,
-        writable: false
+        writable: false,
       });
-}
+    }
 
     await this.traverseAndResolve(resolved, context);
     return resolved;
@@ -164,15 +167,26 @@ export class ReferenceResolver {
     }
 
     // Check if this looks like a KubernetesRef (has resourceId and fieldPath)
-    if (obj.resourceId && obj.fieldPath && typeof obj.resourceId === 'string' && typeof obj.fieldPath === 'string') {
+    if (
+      obj.resourceId &&
+      obj.fieldPath &&
+      typeof obj.resourceId === 'string' &&
+      typeof obj.fieldPath === 'string'
+    ) {
       // Restore the KubernetesRef brand
-      Object.defineProperty(obj, Symbol.for('TypeKro.KubernetesRef'), { value: true, enumerable: false });
+      Object.defineProperty(obj, Symbol.for('TypeKro.KubernetesRef'), {
+        value: true,
+        enumerable: false,
+      });
     }
 
     // Check if this looks like a CelExpression (has expression property)
     if (obj.expression && typeof obj.expression === 'string') {
       // Restore the CelExpression brand
-      Object.defineProperty(obj, Symbol.for('TypeKro.CelExpression'), { value: true, enumerable: false });
+      Object.defineProperty(obj, Symbol.for('TypeKro.CelExpression'), {
+        value: true,
+        enumerable: false,
+      });
     }
 
     // Recursively restore brands in nested objects
@@ -286,14 +300,11 @@ export class ReferenceResolver {
   /**
    * Convert a KubernetesRef to a CEL string for Kro controller evaluation
    */
-  private convertKubernetesRefToString(
-    ref: KubernetesRef,
-    context: ResolutionContext
-  ): string {
+  private convertKubernetesRefToString(ref: KubernetesRef, context: ResolutionContext): string {
     this.logger.debug('Converting KubernetesRef to CEL string for Kro mode', {
       resourceId: ref.resourceId,
       fieldPath: ref.fieldPath,
-      deploymentId: context.deploymentId
+      deploymentId: context.deploymentId,
     });
 
     // Convert KubernetesRef to Kro-compatible CEL string format
@@ -304,13 +315,10 @@ export class ReferenceResolver {
   /**
    * Convert a CEL expression to a CEL string for Kro controller evaluation
    */
-  private convertCelExpressionToString(
-    expr: CelExpression,
-    context: ResolutionContext
-  ): string {
+  private convertCelExpressionToString(expr: CelExpression, context: ResolutionContext): string {
     this.logger.debug('Converting CEL expression to string for Kro mode', {
       expression: expr.expression,
-      deploymentId: context.deploymentId
+      deploymentId: context.deploymentId,
     });
 
     // Convert CEL expression to Kro-compatible CEL string format
@@ -320,11 +328,11 @@ export class ReferenceResolver {
 
   /**
    * Evaluate a CEL expression using runtime CEL evaluation
-   * 
+   *
    * This method performs ACTUAL CEL expression evaluation using the cel-js library.
    * It's only used in Direct mode deployment where TypeKro must resolve CEL expressions
    * to concrete values before creating Kubernetes manifests.
-   * 
+   *
    * In Kro mode, CEL expressions are converted to strings and evaluated by the Kro operator.
    */
   private async evaluateCelExpression<T = unknown>(
@@ -382,7 +390,7 @@ export class ReferenceResolver {
   ): Promise<KubernetesResource> {
     const queryLogger = this.logger.child({
       resourceId: ref.resourceId,
-      fieldPath: ref.fieldPath
+      fieldPath: ref.fieldPath,
     });
 
     try {
@@ -408,7 +416,7 @@ export class ReferenceResolver {
 
       queryLogger.debug('Successfully retrieved cluster resource', {
         resourceName: resource.metadata?.name,
-        resourceKind: resource.kind
+        resourceKind: resource.kind,
       });
 
       // Convert k8s.KubernetesObject to our KubernetesResource type
@@ -428,7 +436,7 @@ export class ReferenceResolver {
       if (k8sError.statusCode === 404) {
         queryLogger.warn('Resource not found in cluster', {
           resourceId: ref.resourceId,
-          error: k8sError.message
+          error: k8sError.message,
         });
         throw new ReferenceResolutionError(
           ref,
@@ -438,12 +446,14 @@ export class ReferenceResolver {
 
       queryLogger.error('Failed to query cluster resource', error as Error, {
         resourceId: ref.resourceId,
-        statusCode: k8sError.statusCode
+        statusCode: k8sError.statusCode,
       });
 
       throw new ReferenceResolutionError(
         ref,
-        new Error(`Failed to query cluster resource '${ref.resourceId}': ${k8sError.message || error}`)
+        new Error(
+          `Failed to query cluster resource '${ref.resourceId}': ${k8sError.message || error}`
+        )
       );
     }
   }
@@ -524,28 +534,28 @@ export class ReferenceResolver {
    */
   private getDefaultApiVersion(kind: string): string {
     const defaultApiVersions: KubernetesKindMap = {
-      'Pod': 'v1',
-      'Service': 'v1',
-      'ConfigMap': 'v1',
-      'Secret': 'v1',
-      'Namespace': 'v1',
-      'PersistentVolumeClaim': 'v1',
-      'PersistentVolume': 'v1',
-      'Deployment': 'apps/v1',
-      'StatefulSet': 'apps/v1',
-      'DaemonSet': 'apps/v1',
-      'ReplicaSet': 'apps/v1',
-      'Job': 'batch/v1',
-      'CronJob': 'batch/v1',
-      'Ingress': 'networking.k8s.io/v1',
-      'NetworkPolicy': 'networking.k8s.io/v1',
-      'ServiceAccount': 'v1',
-      'Role': 'rbac.authorization.k8s.io/v1',
-      'RoleBinding': 'rbac.authorization.k8s.io/v1',
-      'ClusterRole': 'rbac.authorization.k8s.io/v1',
-      'ClusterRoleBinding': 'rbac.authorization.k8s.io/v1',
-      'HorizontalPodAutoscaler': 'autoscaling/v2',
-      'CustomResourceDefinition': 'apiextensions.k8s.io/v1',
+      Pod: 'v1',
+      Service: 'v1',
+      ConfigMap: 'v1',
+      Secret: 'v1',
+      Namespace: 'v1',
+      PersistentVolumeClaim: 'v1',
+      PersistentVolume: 'v1',
+      Deployment: 'apps/v1',
+      StatefulSet: 'apps/v1',
+      DaemonSet: 'apps/v1',
+      ReplicaSet: 'apps/v1',
+      Job: 'batch/v1',
+      CronJob: 'batch/v1',
+      Ingress: 'networking.k8s.io/v1',
+      NetworkPolicy: 'networking.k8s.io/v1',
+      ServiceAccount: 'v1',
+      Role: 'rbac.authorization.k8s.io/v1',
+      RoleBinding: 'rbac.authorization.k8s.io/v1',
+      ClusterRole: 'rbac.authorization.k8s.io/v1',
+      ClusterRoleBinding: 'rbac.authorization.k8s.io/v1',
+      HorizontalPodAutoscaler: 'autoscaling/v2',
+      CustomResourceDefinition: 'apiextensions.k8s.io/v1',
     } as const;
 
     return defaultApiVersions[kind] ?? 'v1';
@@ -582,7 +592,12 @@ export class ReferenceResolver {
           current = currentObj[field];
         }
 
-        if (Array.isArray(current) && !Number.isNaN(index) && index >= 0 && index < current.length) {
+        if (
+          Array.isArray(current) &&
+          !Number.isNaN(index) &&
+          index >= 0 &&
+          index < current.length
+        ) {
           current = current[index];
         } else {
           return undefined;
@@ -633,28 +648,24 @@ export class ReferenceResolver {
       };
 
       // Use the real readiness checker instead of simulation
-      await readinessChecker.waitForResourceReady(
-        deployedResource,
-        deploymentOptions,
-        (event) => {
-          readinessLogger.debug('Readiness check progress', {
-            type: event.type,
-            message: event.message
-          });
-        }
-      );
+      await readinessChecker.waitForResourceReady(deployedResource, deploymentOptions, (event) => {
+        readinessLogger.debug('Readiness check progress', {
+          type: event.type,
+          message: event.message,
+        });
+      });
 
       readinessLogger.info('Resource is ready', {
         resourceId: resourceRef.resourceId,
         kind: resource.kind,
-        name: resource.metadata?.name
+        name: resource.metadata?.name,
       });
 
       return true;
     } catch (error) {
       readinessLogger.error('Resource readiness check failed', error as Error, {
         resourceId: resourceRef.resourceId,
-        timeout
+        timeout,
       });
 
       if (error instanceof ResourceReadinessTimeoutError) {
@@ -709,5 +720,3 @@ export class CelExpressionError extends Error {
     this.cause = cause;
   }
 }
-
-

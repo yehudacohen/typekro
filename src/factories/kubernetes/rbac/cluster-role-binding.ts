@@ -10,12 +10,12 @@ export function clusterRoleBinding(
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'ClusterRoleBinding',
     metadata: resource.metadata ?? { name: 'unnamed-clusterrolebinding' },
-  }).withReadinessEvaluator((liveResource: V1ClusterRoleBinding) => {
+  }).withReadinessEvaluator((_liveResource: V1ClusterRoleBinding) => {
     // ClusterRoleBindings are ready when they exist - they're configuration objects
     // that don't have complex status conditions
     return {
       ready: true,
-      message: 'ClusterRoleBinding is ready'
+      message: 'ClusterRoleBinding is ready',
     };
   }) as V1ClusterRoleBinding & Enhanced<V1ClusterRoleBinding, object>;
 }

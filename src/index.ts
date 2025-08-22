@@ -3,6 +3,23 @@
  */
 
 // =============================================================================
+// ALCHEMY INTEGRATION
+// =============================================================================
+// Alchemy resource conversion and wrapper utilities
+export {
+  createAlchemyResourceId,
+  DirectTypeKroDeployer,
+  // Resource conversion utilities
+  // Alchemy conversion utilities removed - using dynamic registration approach
+
+  // Utility functions (non-conflicting)
+  // generateDeterministicResourceId is exported from utils
+
+  // Alchemy dynamic registration exports
+  ensureResourceTypeRegistered,
+  KroTypeKroDeployer,
+} from './alchemy/deployment.js';
+// =============================================================================
 // CORE FUNCTIONALITY
 // =============================================================================
 // Export all core functionality (excluding createResource to avoid conflicts with factories)
@@ -11,6 +28,9 @@ export {
   type CelExpression,
   // Error types
   CircularDependencyError,
+  // Logging functionality
+  createContextLogger,
+  createLogger,
   // Alchemy integration - dynamic registration approach (exported below)
 
   // Schema proxy functions
@@ -24,6 +44,9 @@ export {
   type Enhanced,
   externalRef,
   generateKroSchema,
+  getComponentLogger,
+  getDeploymentLogger,
+  getResourceLogger,
   isCelExpression,
   // Utility functions
   isKubernetesRef,
@@ -31,17 +54,11 @@ export {
   type KroCompatibleType,
   type KubernetesRef,
   type KubernetesResource,
-  // Logging functionality
-  createContextLogger,
-  createLogger,
-  getComponentLogger,
-  getDeploymentLogger,
-  getResourceLogger,
-  logger,
   type LoggerConfig,
   type LoggerContext,
+  logger,
+  type MagicAssignableShape,
   type MagicProxy,
-  type TypeKroLogger,
   // Reference resolution and CEL
   ReferenceResolver,
   type RefOrValue,
@@ -49,7 +66,6 @@ export {
   type ResourceGraphDefinition,
   type SchemaProxy,
   type StatusBuilder,
-  type MagicAssignableShape,
   // Serialization and YAML generation
   serializeResourceGraphToYaml,
   simpleConfigMap,
@@ -65,27 +81,10 @@ export {
   type TypedKroResourceGraphDefinition,
   type TypedResourceGraphFactory,
   TypeKroError,
+  type TypeKroLogger,
   toResourceGraph,
   validateResourceGraph,
 } from './core.js';
-
-// =============================================================================
-// ALCHEMY INTEGRATION
-// =============================================================================
-// Alchemy resource conversion and wrapper utilities
-export {
-  // Resource conversion utilities
-  // Alchemy conversion utilities removed - using dynamic registration approach
-
-  // Utility functions (non-conflicting)
-  // generateDeterministicResourceId is exported from utils
-
-  // Alchemy dynamic registration exports
-  ensureResourceTypeRegistered,
-  DirectTypeKroDeployer,
-  KroTypeKroDeployer,
-  createAlchemyResourceId,
-} from './alchemy/deployment.js';
 
 // Alchemy state inspection utilities removed - use alchemy's built-in state store instead
 // Access via: alchemyScope.state.all(), alchemyScope.state.get(id), etc.
@@ -103,19 +102,16 @@ export {} from // createTypedKubernetesResource, - REMOVED (causes registration 
 // createKroResourceProvider, - REMOVED (non-compliant with spec)
 // createKroInstanceProvider, - REMOVED (non-compliant with spec)
 './alchemy/index.js';
-
-// =============================================================================
-// FACTORY FUNCTIONS
-// =============================================================================
-// Factory functions organized by ecosystem and resource type
-export * from './factories/index.js';
-
 // =============================================================================
 // BOOTSTRAP COMPOSITIONS
 // =============================================================================
 // Pre-built compositions for infrastructure bootstrap
 export {
-  typeKroRuntimeBootstrap,
   type TypeKroRuntimeConfig,
+  typeKroRuntimeBootstrap,
 } from './core/composition/typekro-runtime/index.js';
-
+// =============================================================================
+// FACTORY FUNCTIONS
+// =============================================================================
+// Factory functions organized by ecosystem and resource type
+export * from './factories/index.js';

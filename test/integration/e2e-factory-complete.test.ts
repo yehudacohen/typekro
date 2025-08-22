@@ -1,15 +1,14 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
-import { type } from 'arktype';
 import * as k8s from '@kubernetes/client-node';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
-
+import { type } from 'arktype';
 import {
   Cel,
+  simpleConfigMap,
   simpleDeployment,
   simpleService,
-  simpleConfigMap,
   toResourceGraph,
 } from '../../src/index.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
 const NAMESPACE = 'typekro-test'; // Use same namespace as setup script

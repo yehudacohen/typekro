@@ -3,9 +3,9 @@ layout: home
 
 hero:
   image: /typekro-logo.svg
-  name: 'Kubernetes with TypeScript instead of YAML'
+  name: 'IaC for Kubernetes Done Right'
   text: ""
-  tagline: "Build Kubernetes infrastructure with runtime dependencies in clean TypeScript that compiles to Kubernetes Resource Orchestrator (KRO) YAML."
+  tagline: "Statically Typed, Declarative Kubernetes Configuration with TypeScript"
   actions:
     - theme: brand
       text: Get Started

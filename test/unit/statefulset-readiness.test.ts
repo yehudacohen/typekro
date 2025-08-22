@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import type { V1StatefulSet } from '@kubernetes/client-node';
 import { statefulSet } from '../../src/factories/kubernetes/workloads/stateful-set.js';
 
@@ -12,10 +12,10 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
         },
-        updateStrategy: { type: 'RollingUpdate' }
-      }
+        updateStrategy: { type: 'RollingUpdate' },
+      },
     };
 
     const enhanced = statefulSet(resource);
@@ -32,10 +32,10 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
         },
-        updateStrategy: { type: 'RollingUpdate' }
-      }
+        updateStrategy: { type: 'RollingUpdate' },
+      },
     };
 
     const enhanced = statefulSet(resource);
@@ -45,8 +45,8 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         readyReplicas: 3,
         currentReplicas: 3,
         updatedReplicas: 3,
-        replicas: 3
-      }
+        replicas: 3,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -63,10 +63,10 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
         },
-        updateStrategy: { type: 'RollingUpdate' }
-      }
+        updateStrategy: { type: 'RollingUpdate' },
+      },
     };
 
     const enhanced = statefulSet(resource);
@@ -76,8 +76,8 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         readyReplicas: 2,
         currentReplicas: 3,
         updatedReplicas: 2,
-        replicas: 3
-      }
+        replicas: 3,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -89,7 +89,7 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
       readyReplicas: 2,
       currentReplicas: 3,
       updatedReplicas: 2,
-      updateStrategy: 'RollingUpdate'
+      updateStrategy: 'RollingUpdate',
     });
   });
 
@@ -102,10 +102,10 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
         },
-        updateStrategy: { type: 'OnDelete' }
-      }
+        updateStrategy: { type: 'OnDelete' },
+      },
     };
 
     const enhanced = statefulSet(resource);
@@ -115,8 +115,8 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         readyReplicas: 2,
         currentReplicas: 2,
         updatedReplicas: 1, // OnDelete doesn't care about updated replicas
-        replicas: 2
-      }
+        replicas: 2,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -133,9 +133,9 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = statefulSet(resource);
@@ -147,7 +147,7 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
     expect(status.message).toBe('StatefulSet status not available yet');
     expect(status.details).toEqual({
       expectedReplicas: 1,
-      updateStrategy: 'RollingUpdate' // default
+      updateStrategy: 'RollingUpdate', // default
     });
   });
 
@@ -160,10 +160,10 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
         // No updateStrategy specified - should default to RollingUpdate
-      }
+      },
     };
 
     const enhanced = statefulSet(resource);
@@ -173,8 +173,8 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         readyReplicas: 1,
         currentReplicas: 1,
         updatedReplicas: 1,
-        replicas: 1
-      }
+        replicas: 1,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -191,13 +191,13 @@ describe('StatefulSet Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = statefulSet(resource);
-    
+
     // Pass malformed resource that will cause an error
     const malformedResource = null as any;
 

@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
+
 /**
  * Interactive Kro Controller Debugging Script
- * 
+ *
  * This script helps debug why RGDs aren't being processed by the Kro controller
  * by deploying a simple RGD and monitoring the cluster state in real-time.
  */
 
-import { type } from 'arktype';
 import * as k8s from '@kubernetes/client-node';
-import { toResourceGraph, simpleDeployment, simpleService } from '../src/index.js';
+import { type } from 'arktype';
+import { simpleDeployment, simpleService, toResourceGraph } from '../src/index.js';
 
 // Define simple schemas for testing
 const WebAppSpecSchema = type({
@@ -24,21 +25,23 @@ const WebAppStatusSchema = type({
 
 async function main() {
   console.log('🚀 Starting interactive Kro debugging...');
-  
+
   // Set up Kubernetes client with TLS verification disabled for kind using centralized provider
-  const { getKubeConfig, getKubernetesApi } = await import('../src/core/kubernetes/client-provider.js');
-  
+  const { getKubeConfig, getKubernetesApi } = await import(
+    '../src/core/kubernetes/client-provider.js'
+  );
+
   const kubeConfig = getKubeConfig({ skipTLSVerify: true });
   const k8sApi = getKubernetesApi({ skipTLSVerify: true });
   const customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
-  
+
   const cluster = kubeConfig.getCurrentCluster();
   if (cluster) {
     console.log('Using cluster:', cluster.name);
   }
-  
+
   console.log('📋 Current cluster context:', kubeConfig.getCurrentContext());
-  
+
   // Create a simple resource graph
   console.log('\n📝 Creating TypeKro resource graph...');
   const webappGraph = toResourceGraph(
@@ -75,7 +78,7 @@ async function main() {
   console.log('\n📄 Generated RGD YAML:');
   const rgdYaml = webappGraph.toYaml();
   console.log(rgdYaml);
-  
+
   // Parse the YAML to get the RGD object
   const rgdManifests = k8s.loadAllYaml(rgdYaml);
   const rgdManifest = rgdManifests[0] as k8s.KubernetesObject & {
@@ -87,12 +90,12 @@ async function main() {
       resources?: unknown[];
     };
   };
-  
+
   if (!rgdManifest) {
     console.error('❌ Failed to parse RGD YAML');
     return;
   }
-  
+
   console.log('\n🔍 RGD Manifest structure:');
   console.log('- apiVersion:', rgdManifest.apiVersion);
   console.log('- kind:', rgdManifest.kind);
@@ -100,7 +103,7 @@ async function main() {
   console.log('- metadata.namespace:', rgdManifest.metadata?.namespace);
   console.log('- spec.schema.kind:', rgdManifest.spec?.schema?.kind);
   console.log('- spec.resources.length:', rgdManifest.spec?.resources?.length);
-  
+
   // Debug the status expressions
   console.log('\n🔍 Status expressions:');
   const statusExpressions = rgdManifest.spec?.schema?.status;
@@ -109,29 +112,29 @@ async function main() {
       console.log(`- ${field}: ${expression}`);
     }
   }
-  
+
   try {
     // Clean up any existing RGD first
     console.log('\n🧹 Cleaning up any existing RGD...');
     try {
       await k8sApi.delete(rgdManifest);
       console.log('✅ Existing RGD deleted');
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for deletion
+      await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait for deletion
     } catch (_error) {
       console.log('ℹ️ No existing RGD to delete (this is fine)');
     }
-    
+
     // Apply the RGD to the cluster
     console.log('\n🚀 Applying RGD to cluster...');
     const appliedRgd = await k8sApi.create(rgdManifest);
     console.log('✅ RGD applied successfully');
     console.log('- Resource version:', appliedRgd.body.metadata?.resourceVersion);
     console.log('- UID:', appliedRgd.body.metadata?.uid);
-    
+
     // Wait a moment for processing
     console.log('\n⏳ Waiting 5 seconds for Kro controller to process...');
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
     // Check RGD status
     console.log('\n🔍 Checking RGD status...');
     try {
@@ -142,9 +145,18 @@ async function main() {
         'resourcegraphdefinitions',
         rgdManifest.metadata?.name || 'debug-webapp'
       );
-      
+
       console.log('📊 RGD Status:');
-      const status = (rgdStatus.body as { status?: { state?: string; phase?: string; conditions?: Array<{ type: string; status: string; message?: string }>; observedGeneration?: number } }).status;
+      const status = (
+        rgdStatus.body as {
+          status?: {
+            state?: string;
+            phase?: string;
+            conditions?: Array<{ type: string; status: string; message?: string }>;
+            observedGeneration?: number;
+          };
+        }
+      ).status;
       if (status) {
         console.log('- Phase:', status.phase);
         console.log('- Conditions:', JSON.stringify(status.conditions, null, 2));
@@ -155,18 +167,18 @@ async function main() {
     } catch (error) {
       console.log('⚠️ Could not get RGD status:', (error as Error).message);
     }
-    
+
     // Check if CRD was created
     console.log('\n🔍 Checking if CRD was created...');
     try {
       const apiExtensionsApi = kubeConfig.makeApiClient(k8s.ApiextensionsV1Api);
       const crds = await apiExtensionsApi.listCustomResourceDefinition();
-      
-      const debugWebAppCrd = crds.body.items.find(crd => 
-        crd.spec.names.kind === 'DebugWebApp' || 
-        crd.metadata?.name?.includes('debugwebapp')
+
+      const debugWebAppCrd = crds.body.items.find(
+        (crd) =>
+          crd.spec.names.kind === 'DebugWebApp' || crd.metadata?.name?.includes('debugwebapp')
       );
-      
+
       if (debugWebAppCrd) {
         console.log('✅ CRD found:');
         console.log('- Name:', debugWebAppCrd.metadata?.name);
@@ -176,21 +188,21 @@ async function main() {
       } else {
         console.log('❌ No DebugWebApp CRD found');
         console.log('Available CRDs:');
-        crds.body.items.forEach(crd => {
+        crds.body.items.forEach((crd) => {
           console.log(`  - ${crd.metadata?.name} (${crd.spec.names.kind})`);
         });
       }
     } catch (error) {
       console.log('⚠️ Could not list CRDs:', (error as Error).message);
     }
-    
+
     // Check Kro controller logs
     console.log('\n📋 Checking Kro controller logs...');
     try {
       const coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
       const pods = await coreApi.listNamespacedPod('kro-system');
-      const kroPod = pods.body.items.find(pod => pod.metadata?.name?.startsWith('kro-'));
-      
+      const kroPod = pods.body.items.find((pod) => pod.metadata?.name?.startsWith('kro-'));
+
       if (kroPod) {
         console.log('🔍 Kro controller pod:', kroPod.metadata?.name);
         try {
@@ -206,7 +218,7 @@ async function main() {
             undefined,
             50 // Last 50 lines
           );
-          
+
           console.log('📋 Recent Kro controller logs:');
           console.log(logs.body);
         } catch (logError) {
@@ -218,19 +230,22 @@ async function main() {
     } catch (error) {
       console.log('⚠️ Could not check controller logs:', (error as Error).message);
     }
-    
+
     console.log('\n🎯 Next steps for debugging:');
     console.log('1. Check if the RGD has a status.phase field');
     console.log('2. Look at Kro controller logs for any errors');
     console.log('3. Verify the RGD YAML format matches Kro expectations');
     console.log('4. Check if the Kro controller version is compatible');
-    
+
     console.log('\n🔧 Manual debugging commands:');
-    console.log(`kubectl get resourcegraphdefinitions -n ${rgdManifest.metadata?.namespace || 'default'}`);
-    console.log(`kubectl describe resourcegraphdefinition ${rgdManifest.metadata?.name} -n ${rgdManifest.metadata?.namespace || 'default'}`);
+    console.log(
+      `kubectl get resourcegraphdefinitions -n ${rgdManifest.metadata?.namespace || 'default'}`
+    );
+    console.log(
+      `kubectl describe resourcegraphdefinition ${rgdManifest.metadata?.name} -n ${rgdManifest.metadata?.namespace || 'default'}`
+    );
     console.log('kubectl logs -n kro-system deployment/kro');
     console.log('kubectl get crds | grep debugwebapp');
-    
   } catch (error) {
     console.error('❌ Failed to apply RGD:', error);
     if (error instanceof Error) {

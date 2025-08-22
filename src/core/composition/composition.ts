@@ -46,8 +46,11 @@ import type {
   V2HpaStatus,
 } from '../../factories/kubernetes/types.js';
 import type { Enhanced } from '../types.js';
-import type { SimpleConfigMapConfig, SimpleNamespaceConfig } from './types.js';
-import type { SimpleDeploymentConfig } from './types.js';
+import type {
+  SimpleConfigMapConfig,
+  SimpleDeploymentConfig,
+  SimpleNamespaceConfig,
+} from './types.js';
 
 export function simpleNamespace(config: SimpleNamespaceConfig): Enhanced<any, any> {
   return namespace({
@@ -58,11 +61,13 @@ export function simpleNamespace(config: SimpleNamespaceConfig): Enhanced<any, an
   });
 }
 
-export function simpleDeployment(config: SimpleDeploymentConfig): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
+export function simpleDeployment(
+  config: SimpleDeploymentConfig
+): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   const env: V1EnvVar[] = config.env
     ? Object.entries(config.env).map(([name, value]) => ({ name, value }))
     : [];
-    
+
   return deployment({
     ...(config.id && { id: config.id }),
     metadata: {

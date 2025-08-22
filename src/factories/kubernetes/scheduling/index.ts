@@ -1,6 +1,6 @@
 /**
  * Kubernetes Scheduling Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes scheduling resources
  * including PriorityClasses and RuntimeClasses.
  */

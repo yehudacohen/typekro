@@ -1,55 +1,61 @@
 /**
  * KroResourceFactory implementation for Kro deployment mode
- * 
+ *
  * This factory handles deployment via Kro ResourceGraphDefinitions,
  * using the Kro controller for dependency resolution and resource management.
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { getComponentLogger } from '../logging/index.js';
 import {
-  type KubernetesClientProvider,
+  createAlchemyResourceId,
+  ensureResourceTypeRegistered,
+  KroTypeKroDeployer,
+} from '../../alchemy/deployment.js';
+import { kroCustomResourceDefinition } from '../../factories/kro/kro-crd.js';
+import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
+import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
+import {
   createKubernetesClientProvider,
   createKubernetesClientProviderWithKubeConfig,
-  type KubernetesClientConfig
+  type KubernetesClientConfig,
+  type KubernetesClientProvider,
 } from '../kubernetes/client-provider.js';
-
+import { getComponentLogger } from '../logging/index.js';
+import { createSchemaProxy, DeploymentMode } from '../references/index.js';
+import { generateKroSchemaFromArktype } from '../serialization/schema.js';
+import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
+import type { KubernetesRef } from '../types/common.js';
 import type {
+  AppliedResource,
+  DeploymentClosure,
+  DeploymentContext,
   FactoryOptions,
   FactoryStatus,
   KroResourceFactory,
   RGDStatus,
-  DeploymentClosure,
-  DeploymentContext,
-  AppliedResource,
 } from '../types/deployment.js';
-import type { Enhanced, KubernetesResource, DeployableK8sResource } from '../types/kubernetes.js';
-import type { KroCompatibleType, MagicAssignableShape } from '../types/serialization.js';
-import type { SchemaDefinition, SchemaProxy } from '../types/serialization.js';
-import type { KubernetesRef } from '../types/common.js';
+import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 // Alchemy integration
-import type { Scope } from '../types/serialization.js';
-import { createSchemaProxy } from '../references/index.js';
-import { generateKroSchemaFromArktype } from '../serialization/schema.js';
-import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
+import type {
+  KroCompatibleType,
+  MagicAssignableShape,
+  SchemaDefinition,
+  SchemaProxy,
+  Scope,
+} from '../types/serialization.js';
 import { DirectDeploymentEngine } from './engine.js';
-import { DeploymentMode } from '../references/index.js';
-import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
-import { kroCustomResourceDefinition } from '../../factories/kro/kro-crd.js';
-import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
-import { ensureResourceTypeRegistered, KroTypeKroDeployer, createAlchemyResourceId } from '../../alchemy/deployment.js';
-import { isKubernetesRef } from '../dependencies/type-guards.js';
 
 /**
  * KroResourceFactory implementation
- * 
+ *
  * Handles deployment via Kro ResourceGraphDefinitions. The RGD is deployed once,
  * and then instances are created as custom resources that the Kro controller processes.
  */
 export class KroResourceFactoryImpl<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
-> implements KroResourceFactory<TSpec, TStatus> {
+  TStatus extends KroCompatibleType,
+> implements KroResourceFactory<TSpec, TStatus>
+{
   readonly mode = 'kro' as const;
   readonly name: string;
   readonly namespace: string;
@@ -106,65 +112,8 @@ export class KroResourceFactoryImpl<
     // Instead, we'll validate when closures are executed during deployment
     this.logger.debug('Kro factory initialized with closures', {
       closureCount: Object.keys(this.closures).length,
-      closureNames: Object.keys(this.closures)
+      closureNames: Object.keys(this.closures),
     });
-  }
-
-  /**
-   * Validate closure arguments for Kro mode compatibility
-   * This is called during deployment when we have access to the actual arguments
-   */
-  private validateClosureArgumentsForKroMode(closureName: string, config: any): void {
-    const errors: string[] = [];
-
-    // Recursively check for KubernetesRef objects in the closure configuration
-    const checkForKubernetesRefs = (obj: any, path: string = ''): void => {
-      if (isKubernetesRef(obj)) {
-        errors.push(`Found KubernetesRef at ${path || 'root'}`);
-        return;
-      }
-
-      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-        for (const [key, value] of Object.entries(obj)) {
-          const newPath = path ? `${path}.${key}` : key;
-          checkForKubernetesRefs(value, newPath);
-        }
-      } else if (Array.isArray(obj)) {
-        obj.forEach((item, index) => {
-          const newPath = path ? `${path}[${index}]` : `[${index}]`;
-          checkForKubernetesRefs(item, newPath);
-        });
-      }
-    };
-
-    checkForKubernetesRefs(config);
-
-    if (errors.length > 0) {
-      const errorMessage = [
-        `Kro mode does not support dynamic references in YAML closures.`,
-        `Found KubernetesRef in closure '${closureName}':`,
-        ...errors.map(error => `  - ${error}`),
-        ``,
-        `Kro mode limitations:`,
-        `  - YAML closures must use static values only`,
-        `  - Dynamic references (schema.spec.*, resource.status.*) are not supported`,
-        `  - Use static strings, numbers, and objects instead`,
-        ``,
-        `Solutions:`,
-        `  1. Use static values: namespace: 'my-namespace' instead of namespace: schema.spec.namespace`,
-        `  2. Switch to Direct mode: await graph.factory('direct', options)`,
-        `  3. Move dynamic logic to Enhanced<> resources instead of closures`,
-        ``,
-        `Example of Kro-compatible closure:`,
-        `  yamlFile({`,
-        `    name: 'static-config',`,
-        `    path: 'git:github.com/org/repo/config.yaml@main',`,
-        `    namespace: 'kro-system' // Static string - OK`,
-        `  })`,
-      ].join('\n');
-
-      throw new Error(errorMessage);
-    }
   }
 
   /**
@@ -173,12 +122,16 @@ export class KroResourceFactoryImpl<
   private convertToKubernetesName(name: string): string {
     // Validate input name
     if (!name || typeof name !== 'string') {
-      throw new Error(`Invalid resource graph name: ${JSON.stringify(name)}. Resource graph name must be a non-empty string.`);
+      throw new Error(
+        `Invalid resource graph name: ${JSON.stringify(name)}. Resource graph name must be a non-empty string.`
+      );
     }
 
     const trimmedName = name.trim();
     if (trimmedName.length === 0) {
-      throw new Error(`Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`);
+      throw new Error(
+        `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`
+      );
     }
 
     // Convert to kebab-case and validate result
@@ -188,11 +141,15 @@ export class KroResourceFactoryImpl<
 
     // Validate Kubernetes naming conventions
     if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-      throw new Error(`Invalid resource graph name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`);
+      throw new Error(
+        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
+      );
     }
 
     if (kubernetesName.length > 253) {
-      throw new Error(`Invalid resource graph name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`);
+      throw new Error(
+        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
+      );
     }
 
     return kubernetesName;
@@ -239,8 +196,6 @@ export class KroResourceFactoryImpl<
     return clientProvider.getKubeConfig();
   }
 
-
-
   /**
    * Deploy a new instance by creating a custom resource
    */
@@ -265,13 +220,13 @@ export class KroResourceFactoryImpl<
    * Execute closures before RGD creation (Kro mode requirement)
    * Closures must execute before ResourceGraphDefinition is created
    */
-  private async executeClosuresBeforeRGD(spec: TSpec): Promise<AppliedResource[]> {
+  private async executeClosuresBeforeRGD(_spec: TSpec): Promise<AppliedResource[]> {
     if (Object.keys(this.closures).length === 0) {
       return []; // No closures to execute
     }
 
     this.logger.info('Executing closures before RGD creation', {
-      closureCount: Object.keys(this.closures).length
+      closureCount: Object.keys(this.closures).length,
     });
 
     // First, validate all closures before creating any API clients
@@ -282,8 +237,10 @@ export class KroResourceFactoryImpl<
       namespace: this.namespace,
       deployedResources: new Map(),
       resolveReference: async (ref: KubernetesRef) => {
-        throw new Error(`Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`);
-      }
+        throw new Error(
+          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`
+        );
+      },
     };
 
     for (const [closureName, closure] of Object.entries(this.closures)) {
@@ -292,7 +249,10 @@ export class KroResourceFactoryImpl<
         await closure(mockDeploymentContext);
       } catch (error) {
         // If validation fails, throw the validation error immediately
-        if (error instanceof Error && error.message.includes('Kro mode does not support dynamic reference resolution')) {
+        if (
+          error instanceof Error &&
+          error.message.includes('Kro mode does not support dynamic reference resolution')
+        ) {
           throw error;
         }
         // For other errors, wrap them with context
@@ -309,8 +269,10 @@ export class KroResourceFactoryImpl<
       namespace: this.namespace,
       deployedResources: new Map(), // Empty for pre-RGD execution
       resolveReference: async (ref: KubernetesRef) => {
-        throw new Error(`Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`);
-      }
+        throw new Error(
+          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`
+        );
+      },
     };
 
     // Execute closures sequentially to maintain order
@@ -327,25 +289,33 @@ export class KroResourceFactoryImpl<
 
         this.logger.info('Closure executed successfully', {
           name: closureName,
-          resourceCount: results.length
+          resourceCount: results.length,
         });
       } catch (error) {
         // Check if this is a KubernetesRef validation error and enhance it
         if (error instanceof Error && error.message.includes('KubernetesRef')) {
-          this.logger.error('Closure validation failed - dynamic references not supported in Kro mode', {
-            name: closureName,
-            message: error.message
-          });
+          this.logger.error(
+            'Closure validation failed - dynamic references not supported in Kro mode',
+            {
+              name: closureName,
+              message: error.message,
+            }
+          );
           throw error; // Re-throw with original detailed message
         }
 
-        this.logger.error('Closure execution failed', { name: closureName, message: error instanceof Error ? error.message : String(error) });
-        throw new Error(`Failed to execute closure '${closureName}': ${error instanceof Error ? error.message : String(error)}`);
+        this.logger.error('Closure execution failed', {
+          name: closureName,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw new Error(
+          `Failed to execute closure '${closureName}': ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
 
     this.logger.info('All closures executed successfully', {
-      totalResources: allResults.length
+      totalResources: allResults.length,
     });
 
     return allResults;
@@ -359,7 +329,12 @@ export class KroResourceFactoryImpl<
     await this.ensureRGDDeployed();
 
     // Create DirectDeploymentEngine with KRO mode for CEL string conversion
-    const deploymentEngine = new DirectDeploymentEngine(this.getKubeConfig(), undefined, undefined, DeploymentMode.KRO);
+    const deploymentEngine = new DirectDeploymentEngine(
+      this.getKubeConfig(),
+      undefined,
+      undefined,
+      DeploymentMode.KRO
+    );
 
     // Create custom resource instance
     const instanceName = this.generateInstanceName(spec);
@@ -395,20 +370,17 @@ export class KroResourceFactoryImpl<
         value: readinessEvaluator,
         enumerable: false,
         configurable: false,
-        writable: false
+        writable: false,
       });
     }
 
     // Deploy without waiting for readiness - we'll handle that ourselves
-    const _deployedResource = await deploymentEngine.deployResource(
-      deployableResource,
-      {
-        mode: 'kro',
-        namespace: this.namespace,
-        waitForReady: false, // We'll handle Kro-specific readiness ourselves
-        timeout: this.factoryOptions.timeout || 300000,
-      }
-    );
+    const _deployedResource = await deploymentEngine.deployResource(deployableResource, {
+      mode: 'kro',
+      namespace: this.namespace,
+      waitForReady: false, // We'll handle Kro-specific readiness ourselves
+      timeout: this.factoryOptions.timeout || 300000,
+    });
 
     // Handle Kro-specific readiness checking if requested
     if (this.factoryOptions.waitForReady ?? true) {
@@ -421,7 +393,7 @@ export class KroResourceFactoryImpl<
 
   /**
    * Deploy using type-safe alchemy resource wrapping
-   * 
+   *
    * In alchemy mode, the RGD gets one typed alchemy Resource and each instance gets another
    */
   private async deployWithAlchemy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
@@ -432,11 +404,21 @@ export class KroResourceFactoryImpl<
     // Use static registration functions
 
     // Create deployer instance using DirectDeploymentEngine with KRO mode
-    const kroEngine = new DirectDeploymentEngine(this.getKubeConfig(), undefined, undefined, DeploymentMode.KRO);
+    const kroEngine = new DirectDeploymentEngine(
+      this.getKubeConfig(),
+      undefined,
+      undefined,
+      DeploymentMode.KRO
+    );
     const deployer = new KroTypeKroDeployer(kroEngine);
 
     // 1. Ensure RGD is deployed via alchemy (once per factory)
-    const kroSchema = generateKroSchemaFromArktype(this.name, this.schemaDefinition, this.resources, this.statusMappings);
+    const kroSchema = generateKroSchemaFromArktype(
+      this.name,
+      this.schemaDefinition,
+      this.resources,
+      this.statusMappings
+    );
     const rgdManifest = {
       apiVersion: 'kro.run/v1alpha1',
       kind: 'ResourceGraphDefinition',
@@ -446,7 +428,7 @@ export class KroResourceFactoryImpl<
       },
       spec: {
         schema: kroSchema,
-        resources: Object.values(this.resources).map(resource => ({
+        resources: Object.values(this.resources).map((resource) => ({
           id: resource.id || resource.metadata?.name || 'unknown',
           template: resource,
         })),
@@ -513,9 +495,11 @@ export class KroResourceFactoryImpl<
 
       const instances = (listResponse.body as any).items || [];
 
-      return await Promise.all(instances.map(async (instance: any) => {
-        return await this.createEnhancedProxy(instance.spec, instance.metadata.name);
-      }));
+      return await Promise.all(
+        instances.map(async (instance: any) => {
+          return await this.createEnhancedProxy(instance.spec, instance.metadata.name);
+        })
+      );
     } catch (error) {
       const k8sError = error as { message?: string; body?: string; statusCode?: number };
       // If the CRD doesn't exist yet or there are no instances, return empty array
@@ -614,7 +598,7 @@ export class KroResourceFactoryImpl<
         phase = 'ready';
       } else if (rgd.status?.state === 'Inactive') {
         // Check if it's failed or just pending
-        const hasFailedCondition = rgd.status?.conditions?.some(c => c.status === 'False');
+        const hasFailedCondition = rgd.status?.conditions?.some((c) => c.status === 'False');
         phase = hasFailedCondition ? 'failed' : 'pending';
       }
 
@@ -660,11 +644,23 @@ metadata:
   name: ${customResource.metadata.name}
   namespace: ${customResource.metadata.namespace}
 spec:
-${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: ${typeof value === 'string' ? `"${value}"` : value}`).join('\n')}`;
+${Object.entries(spec as Record<string, any>)
+  .map(([key, value]) => `  ${key}: ${typeof value === 'string' ? `"${value}"` : value}`)
+  .join('\n')}`;
     } else {
       // Generate RGD YAML
-      const kroSchema = generateKroSchemaFromArktype(this.name, this.schemaDefinition, this.resources, this.statusMappings);
-      return serializeResourceGraphToYaml(this.rgdName, this.resources, { namespace: this.namespace }, kroSchema);
+      const kroSchema = generateKroSchemaFromArktype(
+        this.name,
+        this.schemaDefinition,
+        this.resources,
+        this.statusMappings
+      );
+      return serializeResourceGraphToYaml(
+        this.rgdName,
+        this.resources,
+        { namespace: this.namespace },
+        kroSchema
+      );
     }
   }
 
@@ -673,11 +669,26 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
    */
   private async ensureRGDDeployed(): Promise<void> {
     // Create DirectDeploymentEngine instance with KRO mode for CEL string generation
-    const deploymentEngine = new DirectDeploymentEngine(this.getKubeConfig(), undefined, undefined, DeploymentMode.KRO);
+    const deploymentEngine = new DirectDeploymentEngine(
+      this.getKubeConfig(),
+      undefined,
+      undefined,
+      DeploymentMode.KRO
+    );
 
     // Create the RGD using the same serialization logic as toYaml()
-    const kroSchema = generateKroSchemaFromArktype(this.name, this.schemaDefinition, this.resources, this.statusMappings);
-    const rgdYaml = serializeResourceGraphToYaml(this.rgdName, this.resources, { namespace: this.namespace }, kroSchema);
+    const kroSchema = generateKroSchemaFromArktype(
+      this.name,
+      this.schemaDefinition,
+      this.resources,
+      this.statusMappings
+    );
+    const rgdYaml = serializeResourceGraphToYaml(
+      this.rgdName,
+      this.resources,
+      { namespace: this.namespace },
+      kroSchema
+    );
 
     // Parse the YAML to get the RGD object
     const rgdManifests = k8s.loadAllYaml(rgdYaml);
@@ -690,7 +701,7 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
         ...rgdManifest.metadata,
         name: this.rgdName,
         namespace: this.namespace,
-      }
+      },
     };
 
     // Create Enhanced RGD with readiness evaluator
@@ -708,11 +719,11 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
       // Wait for the CRD to be created by Kro using DirectDeploymentEngine
       await this.waitForCRDReadyWithEngine(deploymentEngine);
     } catch (error) {
-      throw new Error(`Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
-
-
 
   /**
    * Wait for the CRD to be created by Kro using DirectDeploymentEngine
@@ -751,12 +762,13 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     });
   }
 
-
-
   /**
    * Separate static and dynamic status fields
    */
-  private async separateStatusFields(): Promise<{ staticFields: Record<string, any>; dynamicFields: Record<string, any> }> {
+  private async separateStatusFields(): Promise<{
+    staticFields: Record<string, any>;
+    dynamicFields: Record<string, any>;
+  }> {
     if (!this.statusMappings) {
       return { staticFields: {}, dynamicFields: {} };
     }
@@ -793,8 +805,8 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     // The schema definition contains just the version part (e.g., 'v1alpha1')
     // We need to construct the full API version for the instance (e.g., 'kro.run/v1alpha1')
     const apiVersion = this.schemaDefinition.apiVersion.includes('/')
-      ? this.schemaDefinition.apiVersion  // Already has group prefix
-      : `kro.run/${this.schemaDefinition.apiVersion}`;  // Add kro.run group
+      ? this.schemaDefinition.apiVersion // Already has group prefix
+      : `kro.run/${this.schemaDefinition.apiVersion}`; // Add kro.run group
 
     return {
       apiVersion,
@@ -810,7 +822,10 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
   /**
    * Create an Enhanced proxy for the instance with mixed static/dynamic hydration
    */
-  private async createEnhancedProxyWithMixedHydration(spec: TSpec, instanceName: string): Promise<Enhanced<TSpec, TStatus>> {
+  private async createEnhancedProxyWithMixedHydration(
+    spec: TSpec,
+    instanceName: string
+  ): Promise<Enhanced<TSpec, TStatus>> {
     const hydrationLogger = this.logger.child({ instanceName });
 
     // Separate static and dynamic status fields
@@ -849,10 +864,10 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
     // Hydrate dynamic status fields if enabled and there are dynamic fields
     if (this.factoryOptions.hydrateStatus !== false && Object.keys(dynamicFields).length > 0) {
       try {
-
-        const hydratedDynamicFields = await this.hydrateDynamicStatusFields(instanceName, dynamicFields);
-
-
+        const hydratedDynamicFields = await this.hydrateDynamicStatusFields(
+          instanceName,
+          dynamicFields
+        );
 
         // Merge dynamic fields with static fields
         // Dynamic fields from Kro take precedence over static fields with same names
@@ -875,7 +890,10 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
   /**
    * Create an Enhanced proxy for the instance (backward compatibility method)
    */
-  private async createEnhancedProxy(spec: TSpec, instanceName: string): Promise<Enhanced<TSpec, TStatus>> {
+  private async createEnhancedProxy(
+    spec: TSpec,
+    instanceName: string
+  ): Promise<Enhanced<TSpec, TStatus>> {
     return this.createEnhancedProxyWithMixedHydration(spec, instanceName);
   }
 
@@ -921,18 +939,18 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
         const status = instance.status;
         if (!status) {
           readinessLogger.debug('No status found yet, continuing to wait', { instanceName });
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, 2000));
           continue;
         }
 
         const state = status.state;
         const conditions = status.conditions || [];
-        const syncedCondition = conditions.find(c => c.type === 'InstanceSynced');
+        const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
 
         // Check if status has fields beyond the basic Kro fields (conditions, state)
         const statusKeys = Object.keys(status);
         const basicKroFields = ['conditions', 'state'];
-        const hasCustomStatusFields = statusKeys.some(key => !basicKroFields.includes(key));
+        const hasCustomStatusFields = statusKeys.some((key) => !basicKroFields.includes(key));
 
         const isActive = state === 'ACTIVE';
         const isSynced = syncedCondition?.status === 'True';
@@ -943,7 +961,7 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
           isActive,
           isSynced,
           hasCustomStatusFields,
-          statusKeys
+          statusKeys,
         });
 
         // Resource is ready when it's active, synced, and has custom status fields populated
@@ -954,7 +972,7 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
 
         // Check for failure states
         if (state === 'FAILED') {
-          const failedCondition = conditions.find(c => c.status === 'False');
+          const failedCondition = conditions.find((c) => c.status === 'False');
           const errorMessage = failedCondition?.message || 'Unknown error';
           throw new Error(`Kro instance deployment failed: ${errorMessage}`);
         }
@@ -963,9 +981,8 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
           instanceName,
           state,
           isSynced,
-          hasCustomStatusFields
+          hasCustomStatusFields,
         });
-
       } catch (error) {
         const k8sError = error as { statusCode?: number };
         if (k8sError.statusCode !== 404) {
@@ -976,20 +993,23 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
       }
 
       // Wait before checking again - use shorter intervals for faster response
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     const elapsed = Date.now() - startTime;
-    throw new Error(`Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms). This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro`);
+    throw new Error(
+      `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms). This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro`
+    );
   }
 
   /**
    * Hydrate dynamic status fields by evaluating CEL expressions against live Kro resource data
    */
-  private async hydrateDynamicStatusFields(instanceName: string, dynamicFields: Record<string, any>): Promise<Record<string, any>> {
+  private async hydrateDynamicStatusFields(
+    instanceName: string,
+    dynamicFields: Record<string, any>
+  ): Promise<Record<string, any>> {
     const dynamicLogger = this.logger.child({ instanceName });
-
-
 
     // Get the live custom resource to extract dynamic status fields
     const apiVersion = this.schemaDefinition.apiVersion.includes('/')
@@ -1034,7 +1054,7 @@ ${Object.entries(spec as Record<string, any>).map(([key, value]) => `  ${key}: $
  */
 export function createKroResourceFactory<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 >(
   name: string,
   resources: Record<string, KubernetesResource>,
@@ -1042,5 +1062,11 @@ export function createKroResourceFactory<
   statusMappings: any,
   options: FactoryOptions = {}
 ): KroResourceFactory<TSpec, TStatus> {
-  return new KroResourceFactoryImpl<TSpec, TStatus>(name, resources, schemaDefinition, statusMappings, options);
+  return new KroResourceFactoryImpl<TSpec, TStatus>(
+    name,
+    resources,
+    schemaDefinition,
+    statusMappings,
+    options
+  );
 }

@@ -7,10 +7,10 @@ export type V1ReplicationControllerStatus = NonNullable<V1ReplicationController[
 
 export function replicationController(
   resource: V1ReplicationController
-): Enhanced<V1ReplicationControllerSpec, V1ReplicationControllerStatus> {  
+): Enhanced<V1ReplicationControllerSpec, V1ReplicationControllerStatus> {
   // Capture expected replicas in closure for readiness evaluation
   const expectedReplicas = resource.spec?.replicas || 1;
-  
+
   return createResource({
     ...resource,
     apiVersion: 'v1',
@@ -19,27 +19,27 @@ export function replicationController(
   }).withReadinessEvaluator((liveResource: V1ReplicationController) => {
     try {
       const status = liveResource.status;
-      
+
       // Handle missing status gracefully
       if (!status) {
         return {
           ready: false,
           reason: 'StatusMissing',
           message: 'ReplicationController status not available yet',
-          details: { expectedReplicas }
+          details: { expectedReplicas },
         };
       }
-      
+
       const readyReplicas = status.readyReplicas || 0;
       const availableReplicas = status.availableReplicas || 0;
-      
+
       // ReplicationController is ready when ready and available replicas match expected
       const ready = readyReplicas === expectedReplicas && availableReplicas === expectedReplicas;
-      
+
       if (ready) {
         return {
           ready: true,
-          message: `ReplicationController has ${readyReplicas}/${expectedReplicas} ready replicas and ${availableReplicas}/${expectedReplicas} available replicas`
+          message: `ReplicationController has ${readyReplicas}/${expectedReplicas} ready replicas and ${availableReplicas}/${expectedReplicas} available replicas`,
         };
       } else {
         return {
@@ -50,8 +50,8 @@ export function replicationController(
             expectedReplicas,
             readyReplicas,
             availableReplicas,
-            replicas: status.replicas || 0
-          }
+            replicas: status.replicas || 0,
+          },
         };
       }
     } catch (error) {
@@ -59,7 +59,7 @@ export function replicationController(
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating ReplicationController readiness: ${error}`,
-        details: { expectedReplicas, error: String(error) }
+        details: { expectedReplicas, error: String(error) },
       };
     }
   });

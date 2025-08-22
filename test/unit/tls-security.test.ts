@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import { KubernetesApi } from '../../src/core/kubernetes/api.js';
 import type { FactoryOptions } from '../../src/core/types/deployment.js';
@@ -18,7 +18,7 @@ describe('TLS Security Configuration', () => {
 
   afterEach(() => {
     // Restore original environment
-    Object.keys(originalEnv).forEach(key => {
+    Object.keys(originalEnv).forEach((key) => {
       if (originalEnv[key] === undefined) {
         delete process.env[key];
       } else {
@@ -35,11 +35,11 @@ describe('TLS Security Configuration', () => {
       delete process.env.KUBERNETES_SKIP_TLS_VERIFY;
 
       const api = new KubernetesApi();
-      
+
       // Access the private kc property to check cluster configuration
       const kc = (api as any).kc;
       const cluster = kc.getCurrentCluster();
-      
+
       expect(cluster?.skipTLSVerify).toBe(false);
     });
 
@@ -50,11 +50,11 @@ describe('TLS Security Configuration', () => {
       process.env.KUBERNETES_SKIP_TLS_VERIFY = 'true';
 
       const api = new KubernetesApi();
-      
+
       // Access the private kc property to check cluster configuration
       const kc = (api as any).kc;
       const cluster = kc.getCurrentCluster();
-      
+
       expect(cluster?.skipTLSVerify).toBe(true);
     });
 
@@ -65,11 +65,11 @@ describe('TLS Security Configuration', () => {
       process.env.KUBERNETES_SKIP_TLS_VERIFY = 'false';
 
       const api = new KubernetesApi();
-      
+
       // Access the private kc property to check cluster configuration
       const kc = (api as any).kc;
       const cluster = kc.getCurrentCluster();
-      
+
       expect(cluster?.skipTLSVerify).toBe(false);
     });
   });
@@ -77,15 +77,15 @@ describe('TLS Security Configuration', () => {
   describe('FactoryOptions TLS Configuration', () => {
     it('should have skipTLSVerify option with security documentation', () => {
       const options: FactoryOptions = {
-        skipTLSVerify: true
+        skipTLSVerify: true,
       };
-      
+
       expect(options.skipTLSVerify).toBe(true);
     });
 
     it('should default to secure TLS verification', () => {
       const options: FactoryOptions = {};
-      
+
       expect(options.skipTLSVerify).toBeUndefined();
     });
   });

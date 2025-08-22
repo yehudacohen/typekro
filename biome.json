@@ -166,7 +166,8 @@
           },
           "suspicious": {
             "noExplicitAny": "off",
-            "noTemplateCurlyInString": "off"
+            "noTemplateCurlyInString": "off",
+            "noThenProperty": "off"
           }
         }
       }

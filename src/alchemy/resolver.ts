@@ -1,6 +1,6 @@
 /**
  * Alchemy-aware Reference Resolver
- * 
+ *
  * This module provides utilities for handling alchemy promises in resource references
  * and provides deferred resolution capabilities for mixed dependency scenarios.
  */
@@ -8,9 +8,9 @@
 // Phase 4 alchemy integration
 import type * as k8s from '@kubernetes/client-node';
 import type { ResolutionContext } from '../core/types/deployment.js';
-import { isCelExpression, isKubernetesRef } from '../utils/type-guards.js';
 import type { KubernetesResource } from '../core/types/kubernetes.js';
 import { generateDeterministicResourceId } from '../utils/helpers.js';
+import { isCelExpression, isKubernetesRef } from '../utils/type-guards.js';
 
 // Define alchemy-compatible types based on the actual alchemy domain model
 // These represent the interface that alchemy resources should implement
@@ -48,9 +48,9 @@ const RESOURCE_FQN_SYMBOL = Symbol.for('alchemy::resourceFQN');
 export function isAlchemyResource(value: unknown): value is AlchemyResource {
   return Boolean(
     value &&
-    typeof value === 'object' &&
-    '__alchemyResource' in value &&
-    (value as AlchemyResource).__alchemyResource === true
+      typeof value === 'object' &&
+      '__alchemyResource' in value &&
+      (value as AlchemyResource).__alchemyResource === true
   );
 }
 
@@ -60,18 +60,16 @@ export function isAlchemyResource(value: unknown): value is AlchemyResource {
 export function isAlchemyPromise(value: unknown): value is AlchemyPromise {
   return Boolean(
     value &&
-    typeof value === 'object' &&
-    (
+      typeof value === 'object' &&
       // Check for explicit alchemy promise marker
-      ('__alchemyPromise' in value && (value as AlchemyPromise).__alchemyPromise === true) ||
-      // Check for promise-like interface with alchemy symbols
-      ('then' in value &&
-        typeof (value as any).then === 'function' &&
-        (ALCHEMY_PROMISE_SYMBOL in value ||
-          RESOURCE_ID_SYMBOL in value ||
-          RESOURCE_TYPE_SYMBOL in value ||
-          RESOURCE_FQN_SYMBOL in value))
-    )
+      (('__alchemyPromise' in value && (value as AlchemyPromise).__alchemyPromise === true) ||
+        // Check for promise-like interface with alchemy symbols
+        ('then' in value &&
+          typeof (value as any).then === 'function' &&
+          (ALCHEMY_PROMISE_SYMBOL in value ||
+            RESOURCE_ID_SYMBOL in value ||
+            RESOURCE_TYPE_SYMBOL in value ||
+            RESOURCE_FQN_SYMBOL in value)))
   );
 }
 
@@ -94,12 +92,15 @@ export interface AlchemyResolutionContext extends ResolutionContext {
 
 /**
  * Resolve references with alchemy promise awareness
- * 
+ *
  * @param obj - Object containing references to resolve
  * @param context - Resolution context with alchemy options
  * @returns Resolved object with alchemy promises handled according to context
  */
-export async function resolveReferencesWithAlchemy<T>(obj: T, context: AlchemyResolutionContext): Promise<T> {
+export async function resolveReferencesWithAlchemy<T>(
+  obj: T,
+  context: AlchemyResolutionContext
+): Promise<T> {
   if (context.deferAlchemyResolution) {
     // Preserve alchemy promises, only resolve TypeKro references
     return resolveTypeKroReferencesOnly(obj, context);
@@ -111,12 +112,16 @@ export async function resolveReferencesWithAlchemy<T>(obj: T, context: AlchemyRe
 
 /**
  * Resolve only TypeKro references, preserving alchemy promises
- * 
+ *
  * This is used when building resource graphs that will be processed by alchemy,
  * where alchemy promises should be preserved for later resolution within the
  * alchemy provider context.
  */
-export async function resolveTypeKroReferencesOnly<T>(obj: T, context: AlchemyResolutionContext): Promise<T> {
+export async function resolveTypeKroReferencesOnly<T>(
+  obj: T,
+  context: AlchemyResolutionContext,
+  visited: WeakSet<object> = new WeakSet()
+): Promise<T> {
   if (obj === null || obj === undefined) {
     return obj;
   }
@@ -132,17 +137,29 @@ export async function resolveTypeKroReferencesOnly<T>(obj: T, context: AlchemyRe
 
   // Recursively process arrays and objects
   if (Array.isArray(obj)) {
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return obj; // Return as-is to break circular reference
+    }
+    visited.add(obj);
+
     const objArray = obj as unknown[];
     const resolved = await Promise.all(
-      objArray.map(item => resolveTypeKroReferencesOnly(item, context))
+      objArray.map((item) => resolveTypeKroReferencesOnly(item, context, visited))
     );
     return resolved as T;
   }
 
   if (typeof obj === 'object') {
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return obj; // Return as-is to break circular reference
+    }
+    visited.add(obj);
+
     const resolved: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
-      resolved[key] = await resolveTypeKroReferencesOnly(value, context);
+      resolved[key] = await resolveTypeKroReferencesOnly(value, context, visited);
     }
     return resolved as T;
   }
@@ -152,11 +169,15 @@ export async function resolveTypeKroReferencesOnly<T>(obj: T, context: AlchemyRe
 
 /**
  * Resolve all references including alchemy promises
- * 
+ *
  * This is used within alchemy provider contexts where all references
  * should be fully resolved to their final values.
  */
-export async function resolveAllReferences<T>(obj: T, context: AlchemyResolutionContext): Promise<T> {
+export async function resolveAllReferences<T>(
+  obj: T,
+  context: AlchemyResolutionContext,
+  visited: WeakSet<object> = new WeakSet()
+): Promise<T> {
   if (obj === null || obj === undefined) {
     return obj;
   }
@@ -171,17 +192,29 @@ export async function resolveAllReferences<T>(obj: T, context: AlchemyResolution
 
   // Recursively process arrays and objects
   if (Array.isArray(obj)) {
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return obj; // Return as-is to break circular reference
+    }
+    visited.add(obj);
+
     const objArray = obj as unknown[];
     const resolved = await Promise.all(
-      objArray.map(item => resolveAllReferences(item, context))
+      objArray.map((item) => resolveAllReferences(item, context, visited))
     );
     return resolved as T;
   }
 
   if (typeof obj === 'object') {
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return obj; // Return as-is to break circular reference
+    }
+    visited.add(obj);
+
     const resolved: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
-      resolved[key] = await resolveAllReferences(value, context);
+      resolved[key] = await resolveAllReferences(value, context, visited);
     }
     return resolved as T;
   }
@@ -192,7 +225,10 @@ export async function resolveAllReferences<T>(obj: T, context: AlchemyResolution
 /**
  * Resolve an alchemy promise to its final value
  */
-export async function resolveAlchemyPromise(promise: AlchemyPromise, context: AlchemyResolutionContext): Promise<unknown> {
+export async function resolveAlchemyPromise(
+  promise: AlchemyPromise,
+  context: AlchemyResolutionContext
+): Promise<unknown> {
   // Check cache first
   const resourceId = getAlchemyResourceId(promise);
   if (context.alchemyResourceCache?.has(resourceId)) {
@@ -211,7 +247,9 @@ export async function resolveAlchemyPromise(promise: AlchemyPromise, context: Al
 
     return resolvedResource;
   } catch (error) {
-    throw new Error(`Failed to resolve alchemy resource ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Failed to resolve alchemy resource ${resourceId}: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
@@ -234,16 +272,20 @@ function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): strin
   }
 
   // Try to extract kind and name from the resource for deterministic ID
-  const kind = RESOURCE_TYPE_SYMBOL in resource ? (resource as any)[RESOURCE_TYPE_SYMBOL] : 
-               ('resourceType' in resource && typeof resource.resourceType === 'string') ? resource.resourceType : 'Resource';
+  const kind =
+    RESOURCE_TYPE_SYMBOL in resource
+      ? (resource as any)[RESOURCE_TYPE_SYMBOL]
+      : 'resourceType' in resource && typeof resource.resourceType === 'string'
+        ? resource.resourceType
+        : 'Resource';
 
   // Try to get name from resource metadata or properties
   let name = 'unknown';
   if (resource && typeof resource === 'object') {
-    const resourceObj = resource as { 
-      metadata?: { name?: string }; 
-      name?: string; 
-      id?: string; 
+    const resourceObj = resource as {
+      metadata?: { name?: string };
+      name?: string;
+      id?: string;
     };
     if (resourceObj.metadata?.name) {
       name = resourceObj.metadata.name;
@@ -267,7 +309,7 @@ function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): strin
 
 /**
  * Build a resource graph with deferred alchemy resolution
- * 
+ *
  * This creates a resource graph where alchemy promises are preserved,
  * allowing them to be resolved later within the alchemy provider context.
  */
@@ -291,7 +333,7 @@ export async function buildResourceGraphWithDeferredResolution(
 
 /**
  * Resolve all references within an alchemy provider context
- * 
+ *
  * This fully resolves all references including alchemy promises,
  * typically used within alchemy resource providers.
  */
@@ -316,7 +358,10 @@ export async function resolveAllReferencesInAlchemyContext(
 /**
  * Check if an object contains any alchemy promises
  */
-export function containsAlchemyPromises(obj: unknown): boolean {
+export function containsAlchemyPromises(
+  obj: unknown,
+  visited: WeakSet<object> = new WeakSet()
+): boolean {
   if (obj === null || obj === undefined) {
     return false;
   }
@@ -326,12 +371,24 @@ export function containsAlchemyPromises(obj: unknown): boolean {
   }
 
   if (Array.isArray(obj)) {
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return false; // Assume no promises in circular reference
+    }
+    visited.add(obj);
+
     const objArray = obj as unknown[];
-    return objArray.some(item => containsAlchemyPromises(item));
+    return objArray.some((item) => containsAlchemyPromises(item, visited));
   }
 
   if (typeof obj === 'object') {
-    return Object.values(obj).some(value => containsAlchemyPromises(value));
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return false; // Assume no promises in circular reference
+    }
+    visited.add(obj);
+
+    return Object.values(obj).some((value) => containsAlchemyPromises(value, visited));
   }
 
   return false;
@@ -342,6 +399,7 @@ export function containsAlchemyPromises(obj: unknown): boolean {
  */
 export function extractAlchemyPromises(obj: unknown): AlchemyPromise[] {
   const promises: AlchemyPromise[] = [];
+  const visited = new WeakSet<object>();
 
   const extract = (value: unknown) => {
     if (value === null || value === undefined) {
@@ -354,12 +412,24 @@ export function extractAlchemyPromises(obj: unknown): AlchemyPromise[] {
     }
 
     if (Array.isArray(value)) {
+      // Circular reference protection
+      if (visited.has(value)) {
+        return;
+      }
+      visited.add(value);
+
       const valueArray = value as unknown[];
       valueArray.forEach(extract);
       return;
     }
 
     if (typeof value === 'object') {
+      // Circular reference protection
+      if (visited.has(value)) {
+        return;
+      }
+      visited.add(value);
+
       Object.values(value).forEach(extract);
     }
   };
@@ -406,19 +476,34 @@ export function hasMixedDependencies(resources: Record<string, unknown>): boolea
 /**
  * Recursively check if an object contains TypeKro references
  */
-function hasTypeKroReferencesRecursive(obj: any): boolean {
+function hasTypeKroReferencesRecursive(
+  obj: any,
+  visited: WeakSet<object> = new WeakSet()
+): boolean {
   if (isKubernetesRef(obj) || isCelExpression(obj)) {
     return true;
   }
-  
+
   if (Array.isArray(obj)) {
-    return obj.some(item => hasTypeKroReferencesRecursive(item));
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return false;
+    }
+    visited.add(obj);
+
+    return obj.some((item) => hasTypeKroReferencesRecursive(item, visited));
   }
-  
+
   if (obj && typeof obj === 'object') {
-    return Object.values(obj).some(value => hasTypeKroReferencesRecursive(value));
+    // Circular reference protection
+    if (visited.has(obj)) {
+      return false;
+    }
+    visited.add(obj);
+
+    return Object.values(obj).some((value) => hasTypeKroReferencesRecursive(value, visited));
   }
-  
+
   return false;
 }
 
@@ -454,25 +539,30 @@ export function createAlchemyResourceConfig(
  * Create multiple alchemy resource configurations from a resource graph
  * This ensures all resources in a graph have consistent, deterministic IDs
  */
-export function createAlchemyResourceConfigs(
-  resources: Record<string, KubernetesResource>
-): Record<string, {
-  id: string;
-  type: string;
-  config: KubernetesResource;
-}> {
-  const configs: Record<string, {
+export function createAlchemyResourceConfigs(resources: Record<string, KubernetesResource>): Record<
+  string,
+  {
     id: string;
     type: string;
     config: KubernetesResource;
-  }> = {};
+  }
+> {
+  const configs: Record<
+    string,
+    {
+      id: string;
+      type: string;
+      config: KubernetesResource;
+    }
+  > = {};
 
   for (const [resourceKey, kubernetesResource] of Object.entries(resources)) {
     // Use the resource key as the base for ID generation if no explicit ID
     const kind = kubernetesResource.kind || 'Resource';
     const name = kubernetesResource.metadata?.name || resourceKey;
 
-    configs[resourceKey] = createAlchemyResourceConfig(kubernetesResource,
+    configs[resourceKey] = createAlchemyResourceConfig(
+      kubernetesResource,
       generateDeterministicResourceId(kind, name)
     );
   }
