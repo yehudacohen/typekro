@@ -6,18 +6,18 @@
  */
 
 import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
-import { getComponentLogger } from '../core/logging/index.js';
 import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
-import { isCelExpression } from '../utils/type-guards.js';
+import { getComponentLogger } from '../core/logging/index.js';
+import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
 import type {
   Enhanced,
   KubernetesResource,
   MagicProxy,
   ReadinessEvaluator,
 } from '../core/types.js';
-import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index.js';
-import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
 import { validateResourceId } from '../core/validation/cel-validator.js';
+import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index.js';
+import { isCelExpression } from '../utils/type-guards.js';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
@@ -372,7 +372,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
         evaluator,
         'factory-defined'
       );
-      
+
       // Still attach to individual resource instance (existing behavior)
       Object.defineProperty(this, 'readinessEvaluator', {
         value: evaluator,

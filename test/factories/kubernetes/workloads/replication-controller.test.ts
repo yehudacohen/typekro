@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { replicationController } from '../../../../src/factories/kubernetes/workloads/replication-controller.js';
 import type { V1ReplicationController } from '@kubernetes/client-node';
+import { replicationController } from '../../../../src/factories/kubernetes/workloads/replication-controller.js';
 
 describe('ReplicationController Factory', () => {
   const createTestReplicationController = (
@@ -20,19 +20,19 @@ describe('ReplicationController Factory', () => {
       name,
       namespace: 'default',
       labels: {
-        app: name
-      }
+        app: name,
+      },
     },
     spec: {
       replicas,
       selector: {
-        app: name
+        app: name,
       },
       template: {
         metadata: {
           labels: {
-            app: name
-          }
+            app: name,
+          },
         },
         spec: {
           containers: [
@@ -41,14 +41,14 @@ describe('ReplicationController Factory', () => {
               image: 'nginx:1.21',
               ports: [
                 {
-                  containerPort: 80
-                }
-              ]
-            }
-          ]
-        }
-      }
-    }
+                  containerPort: 80,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
   });
 
   describe('Factory Creation', () => {
@@ -103,13 +103,15 @@ describe('ReplicationController Factory', () => {
           replicas: 2,
           readyReplicas: 2,
           availableReplicas: 2,
-          observedGeneration: 1
-        }
+          observedGeneration: 1,
+        },
       };
 
       const result = evaluator(mockRC);
       expect(result.ready).toBe(true);
-      expect(result.message).toContain('ReplicationController has 2/2 ready replicas and 2/2 available replicas');
+      expect(result.message).toContain(
+        'ReplicationController has 2/2 ready replicas and 2/2 available replicas'
+      );
     });
 
     it('should evaluate as not ready when some replicas are not ready', () => {
@@ -123,8 +125,8 @@ describe('ReplicationController Factory', () => {
           replicas: 2,
           readyReplicas: 1,
           availableReplicas: 1,
-          observedGeneration: 1
-        }
+          observedGeneration: 1,
+        },
       };
 
       const result = evaluator(mockRC);
@@ -139,7 +141,7 @@ describe('ReplicationController Factory', () => {
       const evaluator = (enhanced as any).readinessEvaluator;
 
       const mockRC: V1ReplicationController = {
-        ...rcConfig
+        ...rcConfig,
         // No status
       };
 
@@ -158,9 +160,9 @@ describe('ReplicationController Factory', () => {
         ...rcConfig,
         status: {
           replicas: 2,
-          observedGeneration: 1
+          observedGeneration: 1,
           // Missing readyReplicas and availableReplicas
-        }
+        },
       };
 
       const result = evaluator(mockRC);
@@ -180,13 +182,15 @@ describe('ReplicationController Factory', () => {
           replicas: 1,
           readyReplicas: 1,
           availableReplicas: 1,
-          observedGeneration: 1
-        }
+          observedGeneration: 1,
+        },
       };
 
       const result = evaluator(mockRC);
       expect(result.ready).toBe(true);
-      expect(result.message).toContain('ReplicationController has 1/1 ready replicas and 1/1 available replicas');
+      expect(result.message).toContain(
+        'ReplicationController has 1/1 ready replicas and 1/1 available replicas'
+      );
     });
   });
 

@@ -5,9 +5,9 @@
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 
 import type { DependencyGraph } from '../dependencies/index.js';
+import type { KubernetesRef } from './common.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
 import type { KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
-import type { KubernetesRef } from './common.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status
@@ -55,7 +55,9 @@ export interface DeploymentContext {
  * A closure that executes deployment operations during the deployment phase
  * Generic type that can be used for YAML, Terraform, Pulumi, or any other deployment operations
  */
-export type DeploymentClosure<T = AppliedResource[]> = (deploymentContext: DeploymentContext) => Promise<T>;
+export type DeploymentClosure<T = AppliedResource[]> = (
+  deploymentContext: DeploymentContext
+) => Promise<T>;
 
 /**
  * Information about a closure's dependencies for level-based execution
@@ -111,7 +113,7 @@ export interface AlchemyDeploymentOptions {
    * SECURITY WARNING: Only set to true in non-production environments.
    * This disables TLS certificate verification and makes connections vulnerable
    * to man-in-the-middle attacks.
-   * 
+   *
    * @default false (secure by default)
    */
   skipTLSVerify?: boolean;
@@ -125,7 +127,16 @@ export interface RetryPolicy {
 }
 
 export interface DeploymentEvent {
-  type: 'started' | 'progress' | 'completed' | 'failed' | 'rollback' | 'status-hydrated' | 'resource-warning' | 'resource-status' | 'resource-ready';
+  type:
+    | 'started'
+    | 'progress'
+    | 'completed'
+    | 'failed'
+    | 'rollback'
+    | 'status-hydrated'
+    | 'resource-warning'
+    | 'resource-status'
+    | 'resource-ready';
   resourceId?: string;
   message: string;
   timestamp?: Date;
@@ -172,7 +183,7 @@ export interface ResourceGraph {
 // New typed ResourceGraph interface for the factory pattern
 export interface TypedResourceGraph<
   TSpec extends KroCompatibleType = any,
-  TStatus extends KroCompatibleType = any
+  TStatus extends KroCompatibleType = any,
 > {
   name: string;
   resources: KubernetesResource[];
@@ -211,7 +222,7 @@ export interface FactoryOptions {
    * SECURITY WARNING: Only set to true in non-production environments.
    * This disables TLS certificate verification and makes connections vulnerable
    * to man-in-the-middle attacks.
-   * 
+   *
    * @default false (secure by default)
    */
   skipTLSVerify?: boolean;
@@ -221,16 +232,17 @@ export interface FactoryOptions {
 export type FactoryForMode<
   TMode,
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
-> =
-  TMode extends 'kro' ? KroResourceFactory<TSpec, TStatus> :
-  TMode extends 'direct' ? DirectResourceFactory<TSpec, TStatus> :
-  never;
+  TStatus extends KroCompatibleType,
+> = TMode extends 'kro'
+  ? KroResourceFactory<TSpec, TStatus>
+  : TMode extends 'direct'
+    ? DirectResourceFactory<TSpec, TStatus>
+    : never;
 
 // Unified factory interface - all modes implement this
 export interface ResourceFactory<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 > {
   // Core deployment - single method handles all cases
   deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>>;
@@ -250,7 +262,7 @@ export interface ResourceFactory<
 // Mode-specific factories extend the base interface
 export interface DirectResourceFactory<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 > extends ResourceFactory<TSpec, TStatus> {
   mode: 'direct';
 
@@ -262,7 +274,7 @@ export interface DirectResourceFactory<
 
 export interface KroResourceFactory<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 > extends ResourceFactory<TSpec, TStatus> {
   mode: 'kro';
 

@@ -10,12 +10,12 @@ export function storageClass(
     apiVersion: 'storage.k8s.io/v1',
     kind: 'StorageClass',
     metadata: resource.metadata ?? { name: 'unnamed-storageclass' },
-  }).withReadinessEvaluator((liveResource: V1StorageClass) => {
+  }).withReadinessEvaluator((_liveResource: V1StorageClass) => {
     // StorageClasses are ready when they exist - they're configuration objects
     // that don't have complex status conditions
     return {
       ready: true,
-      message: 'StorageClass is ready'
+      message: 'StorageClass is ready',
     };
   }) as V1StorageClass & Enhanced<V1StorageClass, object>;
 }

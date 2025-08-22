@@ -1,6 +1,6 @@
 /**
  * Resource Graph Types
- * 
+ *
  * This module contains types related to resource graphs to avoid
  * circular dependencies between deployment and serialization types.
  */

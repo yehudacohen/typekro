@@ -4,33 +4,35 @@
  * This factory handles direct deployment of Kubernetes resources using TypeKro's
  * internal dependency resolution engine, without requiring the Kro controller.
  */
+
+import { toCamelCase } from '../../utils/helpers.js';
 import { DependencyResolver } from '../dependencies/index.js';
-import { DirectDeploymentEngine } from './engine.js';
-import { getComponentLogger } from '../logging/index.js';
-import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
+import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
 import {
-  type KubernetesClientProvider,
   createKubernetesClientProvider,
   createKubernetesClientProviderWithKubeConfig,
   type KubernetesClientConfig,
+  type KubernetesClientProvider,
 } from '../kubernetes/client-provider.js';
-import { DirectDeploymentStrategy, AlchemyDeploymentStrategy } from './strategies/index.js';
-import { ResourceReadinessChecker } from './readiness.js';
-import { generateInstanceName } from './shared-utilities.js';
-import { toCamelCase } from '../../utils/helpers.js';
+import { getComponentLogger } from '../logging/index.js';
 import type {
+  DeploymentClosure,
+  DeploymentError,
   DeploymentResult,
   DirectResourceFactory,
   FactoryOptions,
   FactoryStatus,
+  ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
-import type { KroCompatibleType, SchemaDefinition } from '../types/serialization.js';
-import type { DeploymentError, ResourceGraph, DeploymentClosure } from '../types/deployment.js';
 // Alchemy integration
-import type { Scope } from '../types/serialization.js';
-import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
+import type { KroCompatibleType, SchemaDefinition, Scope } from '../types/serialization.js';
+import { DirectDeploymentEngine } from './engine.js';
+import { ResourceReadinessChecker } from './readiness.js';
+import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
+import { generateInstanceName } from './shared-utilities.js';
+import { AlchemyDeploymentStrategy, DirectDeploymentStrategy } from './strategies/index.js';
 
 /**
  * DirectResourceFactory implementation

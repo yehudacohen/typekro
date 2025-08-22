@@ -1,15 +1,15 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import { type } from 'arktype';
 import {
-  secret,
   Cel,
+  secret,
   simpleConfigMap,
   simpleDeployment,
   simpleService,
   toResourceGraph,
 } from '../../src/index';
-import { type } from 'arktype';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
 const _CLUSTER_NAME = 'typekro-e2e-test';
@@ -273,15 +273,15 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
       console.log('✅ Static fields are hydrated directly by TypeKro');
       console.log('✅ Dynamic fields are resolved by Kro');
       console.log('✅ Instance management methods work correctly');
-      console.log('✅ All underlying Kubernetes resources were created'); 
+      console.log('✅ All underlying Kubernetes resources were created');
 
       // Cleanup using factory-based resource destruction
-      console.log("🧹 Cleaning up deployed resources...");
+      console.log('🧹 Cleaning up deployed resources...');
       try {
-        await kroFactory.deleteInstance("test-webapp-factory");
-        console.log("✅ Factory cleanup completed");
+        await kroFactory.deleteInstance('test-webapp-factory');
+        console.log('✅ Factory cleanup completed');
       } catch (error) {
-        console.warn("⚠️ Factory cleanup failed:", error);
+        console.warn('⚠️ Factory cleanup failed:', error);
       }
     });
   }, 180000);

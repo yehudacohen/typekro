@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { replicaSet } from '../../../../src/factories/kubernetes/workloads/replica-set.js';
 import type { V1ReplicaSet } from '@kubernetes/client-node';
+import { replicaSet } from '../../../../src/factories/kubernetes/workloads/replica-set.js';
 
 describe('ReplicaSet Factory', () => {
   const createTestReplicaSet = (
@@ -20,21 +20,21 @@ describe('ReplicaSet Factory', () => {
       name,
       namespace: 'default',
       labels: {
-        app: name
-      }
+        app: name,
+      },
     },
     spec: {
       replicas,
       selector: {
         matchLabels: {
-          app: name
-        }
+          app: name,
+        },
       },
       template: {
         metadata: {
           labels: {
-            app: name
-          }
+            app: name,
+          },
         },
         spec: {
           containers: [
@@ -43,14 +43,14 @@ describe('ReplicaSet Factory', () => {
               image: 'nginx:1.21',
               ports: [
                 {
-                  containerPort: 80
-                }
-              ]
-            }
-          ]
-        }
-      }
-    }
+                  containerPort: 80,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
   });
 
   describe('Factory Creation', () => {
@@ -104,8 +104,8 @@ describe('ReplicaSet Factory', () => {
           replicas: 3,
           readyReplicas: 3,
           availableReplicas: 3,
-          observedGeneration: 1
-        }
+          observedGeneration: 1,
+        },
       };
 
       const result = evaluator(mockReplicaSet);
@@ -124,8 +124,8 @@ describe('ReplicaSet Factory', () => {
           replicas: 3,
           readyReplicas: 1,
           availableReplicas: 1,
-          observedGeneration: 1
-        }
+          observedGeneration: 1,
+        },
       };
 
       const result = evaluator(mockReplicaSet);
@@ -139,7 +139,7 @@ describe('ReplicaSet Factory', () => {
       const evaluator = (enhanced as any).readinessEvaluator;
 
       const mockReplicaSet: V1ReplicaSet = {
-        ...replicaSetConfig
+        ...replicaSetConfig,
         // No status
       };
 
@@ -159,8 +159,8 @@ describe('ReplicaSet Factory', () => {
         status: {
           replicas: 1,
           readyReplicas: 1,
-          observedGeneration: 1
-        }
+          observedGeneration: 1,
+        },
       };
 
       const result = evaluator(mockReplicaSet);

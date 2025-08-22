@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { simpleDeployment, simpleService, toResourceGraph, Cel } from '../../src/index.js';
+import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
 
 describe('Status Field Integration', () => {
   it('should generate a complete ResourceGraphDefinition with proper status CEL expressions', () => {
@@ -44,9 +44,13 @@ describe('Status Field Integration', () => {
         }),
       }),
       (_schema, resources) => ({
-        url: Cel.template('http://%s.%s.svc.cluster.local', resources.service?.metadata?.name, resources.service?.metadata?.namespace),
+        url: Cel.template(
+          'http://%s.%s.svc.cluster.local',
+          resources.service?.metadata?.name,
+          resources.service?.metadata?.namespace
+        ),
         readyReplicas: resources.deployment?.status.readyReplicas,
-        conditions: Cel.expr<string[]>(resources.deployment?.status.conditions, ".map(c, c.type)"),
+        conditions: Cel.expr<string[]>(resources.deployment?.status.conditions, '.map(c, c.type)'),
       })
     );
 
@@ -58,7 +62,7 @@ describe('Status Field Integration', () => {
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: webapp-with-status');
-    
+
     // Verify schema section has proper status CEL expressions
     expect(yaml).toContain('status:');
     // Should not contain default Kro fields (auto-injected by Kro)
@@ -68,13 +72,15 @@ describe('Status Field Integration', () => {
     // Should contain user-defined status fields as CEL expressions
     expect(yaml).toContain('readyReplicas: ${webappDeployment.status.readyReplicas}');
     expect(yaml).toContain('conditions: ${webappDeployment.status.conditions.map(c, c.type)}');
-    expect(yaml).toContain('url: http://${schema.spec.name}.${webappService.metadata.namespace}.svc.cluster.local');
-    
+    expect(yaml).toContain(
+      'url: http://${schema.spec.name}.${webappService.metadata.namespace}.svc.cluster.local'
+    );
+
     // Verify resources section
     expect(yaml).toContain('resources:');
     expect(yaml).toContain('id: webappDeployment');
     expect(yaml).toContain('id: webappService');
-    
+
     // Verify resource templates have proper CEL expressions for cross-references
     expect(yaml).toContain('name: ${schema.spec.name}');
     expect(yaml).toContain('image: ${schema.spec.image}');
@@ -117,19 +123,22 @@ describe('Status Field Integration', () => {
       }),
       (_schema, resources) => ({
         availableReplicas: resources.deployment?.status.availableReplicas,
-        deploymentConditions: Cel.expr<string[]>(resources.deployment?.status.conditions, ".map(c, c.type)"),
+        deploymentConditions: Cel.expr<string[]>(
+          resources.deployment?.status.conditions,
+          '.map(c, c.type)'
+        ),
       })
     );
 
     const yaml = graph.toYaml();
-    
+
     // Should match the pattern from Kro documentation:
     // status:
     //   deploymentConditions: ${deployment.status.conditions}
     //   availableReplicas: ${deployment.status.availableReplicas}
     expect(yaml).toContain('deploymentConditions: ${deployment.status.conditions.map(c, c.type)}');
     expect(yaml).toContain('availableReplicas: ${deployment.status.availableReplicas}');
-    
+
     // Should have proper resource templates
     expect(yaml).toContain('template:');
     expect(yaml).toContain('apiVersion: apps/v1');

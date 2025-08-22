@@ -1,6 +1,6 @@
 /**
  * Alchemy Utility Functions
- * 
+ *
  * This module provides utility functions for alchemy integration
  * with TypeKro resources.
  */
@@ -12,11 +12,11 @@ import { generateDeterministicResourceId } from '../utils/helpers.js';
  * Utility function to create deterministic resource IDs for alchemy resources
  */
 export function createAlchemyResourceId<T extends Enhanced<any, any>>(
-    resource: T,
-    namespace?: string
+  resource: T,
+  namespace?: string
 ): string {
-    const kind = resource.kind || 'Resource';
-    const name = resource.metadata?.name || 'unnamed';
+  const kind = resource.kind || 'Resource';
+  const name = resource.metadata?.name || 'unnamed';
 
-    return generateDeterministicResourceId(kind, name, namespace);
+  return generateDeterministicResourceId(kind, name, namespace);
 }

@@ -1,18 +1,21 @@
 /**
  * Test suite for ResourceRollbackManager
- * 
+ *
  * This tests the critical safety mechanism for rolling back resources
  * in reverse dependency order with proper error handling.
  */
 
-import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
-import { ResourceRollbackManager, createRollbackManager, createRollbackManagerWithKubeConfig } from '../../src/core/deployment/rollback-manager.js';
-import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
-import { service } from '../../src/factories/kubernetes/networking/service.js';
-import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
-import type { V1Deployment, V1Service, V1ConfigMap } from '@kubernetes/client-node';
+import {
+  createRollbackManager,
+  createRollbackManagerWithKubeConfig,
+  ResourceRollbackManager,
+} from '../../src/core/deployment/rollback-manager.js';
 import type { DeploymentEvent } from '../../src/core/types/deployment.js';
+import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
+import { service } from '../../src/factories/kubernetes/networking/service.js';
+import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
 describe('ResourceRollbackManager', () => {
   // Mock Kubernetes client following patterns from enhanced-deployment-engine.test.ts
@@ -25,7 +28,7 @@ describe('ResourceRollbackManager', () => {
       replace: mock(() => Promise.resolve({ body: {} })),
       list: mock(() => Promise.resolve({ body: { items: [] } })),
     } as any;
-    
+
     // Reset all mocks before each test
     mockApi.create.mockClear();
     mockApi.read.mockClear();
@@ -33,47 +36,50 @@ describe('ResourceRollbackManager', () => {
     mockApi.patch.mockClear();
     mockApi.replace.mockClear();
     mockApi.list.mockClear();
-    
+
     return mockApi;
   };
 
   // Helper to create test resources
-  const createTestDeployment = (name: string, namespace: string = 'default') => deployment({
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: { name, namespace },
-    spec: {
-      replicas: 2,
-      selector: { matchLabels: { app: name } },
-      template: {
-        metadata: { labels: { app: name } },
-        spec: { containers: [{ name: 'app', image: 'nginx' }] }
-      }
-    }
-  });
+  const createTestDeployment = (name: string, namespace: string = 'default') =>
+    deployment({
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: { name, namespace },
+      spec: {
+        replicas: 2,
+        selector: { matchLabels: { app: name } },
+        template: {
+          metadata: { labels: { app: name } },
+          spec: { containers: [{ name: 'app', image: 'nginx' }] },
+        },
+      },
+    });
 
-  const createTestService = (name: string, namespace: string = 'default') => service({
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: { name, namespace },
-    spec: {
-      selector: { app: name },
-      ports: [{ port: 80, targetPort: 8080 }]
-    }
-  });
+  const createTestService = (name: string, namespace: string = 'default') =>
+    service({
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: { name, namespace },
+      spec: {
+        selector: { app: name },
+        ports: [{ port: 80, targetPort: 8080 }],
+      },
+    });
 
-  const createTestConfigMap = (name: string, namespace: string = 'default') => configMap({
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: { name, namespace },
-    data: { 'config.yaml': 'test: value' }
-  });
+  const createTestConfigMap = (name: string, namespace: string = 'default') =>
+    configMap({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name, namespace },
+      data: { 'config.yaml': 'test: value' },
+    });
 
   describe('Factory Functions', () => {
     it('should create rollback manager with KubernetesObjectApi', () => {
       const mockK8sApi = createMockK8sApi();
       const manager = createRollbackManager(mockK8sApi);
-      
+
       expect(manager).toBeInstanceOf(ResourceRollbackManager);
     });
 
@@ -81,9 +87,9 @@ describe('ResourceRollbackManager', () => {
       const mockKubeConfig = new k8s.KubeConfig();
       // Mock the makeApiClient method
       mockKubeConfig.makeApiClient = mock(() => createMockK8sApi());
-      
+
       const manager = createRollbackManagerWithKubeConfig(mockKubeConfig);
-      
+
       expect(manager).toBeInstanceOf(ResourceRollbackManager);
       expect(mockKubeConfig.makeApiClient).toHaveBeenCalledWith(k8s.KubernetesObjectApi);
     });
@@ -114,15 +120,15 @@ describe('ResourceRollbackManager', () => {
       expect(result.status).toBe('success');
       expect(result.rolledBackResources).toHaveLength(3);
       expect(result.errors).toHaveLength(0);
-      
+
       // Verify deletion was called for each resource
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(3);
-      
+
       // Verify reverse order by checking the calls
       const deleteCalls = mockK8sApi.delete.mock.calls;
-      expect(deleteCalls[0][0].metadata.name).toBe('app1');  // deployment first (reversed)
-      expect(deleteCalls[1][0].metadata.name).toBe('app1-service');  // service second
-      expect(deleteCalls[2][0].metadata.name).toBe('app1-config');   // configmap last
+      expect(deleteCalls[0][0].metadata.name).toBe('app1'); // deployment first (reversed)
+      expect(deleteCalls[1][0].metadata.name).toBe('app1-service'); // service second
+      expect(deleteCalls[2][0].metadata.name).toBe('app1-config'); // configmap last
     });
 
     it('should emit proper rollback events throughout the process', async () => {
@@ -133,19 +139,19 @@ describe('ResourceRollbackManager', () => {
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
       const result = await manager.rollbackResources(resources, {
-        emitEvent: (event) => events.push(event)
+        emitEvent: (event) => events.push(event),
       });
 
       expect(result.status).toBe('success');
-      
+
       // Should have rollback started, progress, and completed events
-      const eventTypes = events.map(e => e.type);
-      expect(eventTypes).toContain('rollback');  // started
-      expect(eventTypes).toContain('progress');  // per resource
+      const eventTypes = events.map((e) => e.type);
+      expect(eventTypes).toContain('rollback'); // started
+      expect(eventTypes).toContain('progress'); // per resource
       expect(eventTypes).toContain('completed'); // finished
-      
+
       // Check progress event has proper resource information
-      const progressEvent = events.find(e => e.type === 'progress');
+      const progressEvent = events.find((e) => e.type === 'progress');
       expect(progressEvent?.resourceId).toContain('Deployment/test-app');
       expect(progressEvent?.message).toContain('Successfully rolled back');
     });
@@ -159,7 +165,7 @@ describe('ResourceRollbackManager', () => {
       const notFoundError = new Error('Not found') as any;
       notFoundError.statusCode = 404;
       mockK8sApi.delete.mockRejectedValueOnce(notFoundError);
-      
+
       // Second deletion (service) succeeds
       mockK8sApi.delete.mockResolvedValueOnce({ body: {} });
 
@@ -176,18 +182,18 @@ describe('ResourceRollbackManager', () => {
 
       // Mock successful deletion
       mockK8sApi.delete.mockResolvedValue({ body: {} });
-      
+
       // Mock the read calls for deletion waiting
       // First read: resource still exists
       mockK8sApi.read.mockResolvedValueOnce({ body: deployment1 });
       // Second read: resource is gone (404)
-      const notFoundError = new Error("Not found") as any;
+      const notFoundError = new Error('Not found') as any;
       notFoundError.statusCode = 404;
       mockK8sApi.read.mockRejectedValueOnce(notFoundError);
 
       const startTime = Date.now();
       const result = await manager.rollbackResources(resources, {
-        timeout: 5000  // 5 second timeout
+        timeout: 5000, // 5 second timeout
       });
       const duration = Date.now() - startTime;
 
@@ -197,8 +203,8 @@ describe('ResourceRollbackManager', () => {
         expect.objectContaining({
           kind: 'Deployment',
           metadata: expect.objectContaining({
-            name: 'wait-for-deletion'
-          })
+            name: 'wait-for-deletion',
+          }),
         })
       );
     });
@@ -221,17 +227,17 @@ describe('ResourceRollbackManager', () => {
       const deleteError = new Error('Resource has finalizers') as any;
       deleteError.statusCode = 409; // Conflict
       mockK8sApi.delete.mockRejectedValueOnce(deleteError);
-      
+
       // Force deletion succeeds
       mockK8sApi.delete.mockResolvedValueOnce({ body: {} });
 
       const result = await manager.rollbackResources(resources, {
-        force: true
+        force: true,
       });
 
       expect(result.status).toBe('success');
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(2);
-      
+
       // Check that second call used gracePeriod = 0 for force deletion
       const forceDeletionCall = mockK8sApi.delete.mock.calls[1];
       expect(forceDeletionCall[3]).toBe(0); // gracePeriod parameter
@@ -250,10 +256,10 @@ describe('ResourceRollbackManager', () => {
 
       const calls = mockK8sApi.delete.mock.calls;
       expect(calls).toHaveLength(2);
-      
+
       // First call - normal deletion with undefined gracePeriod
       expect(calls[0][3]).toBeUndefined();
-      
+
       // Second call - force deletion with gracePeriod = 0
       expect(calls[1][3]).toBe(0);
     });
@@ -269,16 +275,16 @@ describe('ResourceRollbackManager', () => {
 
       const result = await manager.rollbackResources(resources, {
         force: true,
-        emitEvent: (event) => events.push(event)
+        emitEvent: (event) => events.push(event),
       });
 
       expect(result.status).toBe('failed');
       expect(result.rolledBackResources).toHaveLength(0);
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0].error.message).toBe('Persistent finalizer');
-      
+
       // Should have emitted a failed event
-      const failedEvent = events.find(e => e.type === 'failed');
+      const failedEvent = events.find((e) => e.type === 'failed');
       expect(failedEvent).toBeDefined();
       expect(failedEvent?.message).toContain('Failed to rollback');
     });
@@ -337,7 +343,7 @@ describe('ResourceRollbackManager', () => {
         apiVersion: 'v1',
         kind: 'ConfigMap',
         metadata: {}, // No name!
-        data: { test: 'value' }
+        data: { test: 'value' },
       } as any;
 
       const resources = [malformedResource];
@@ -355,13 +361,13 @@ describe('ResourceRollbackManager', () => {
 
       // Mock successful deletion
       mockK8sApi.delete.mockResolvedValue({ body: {} });
-      
+
       // Mock read calls that always return the resource (never gets deleted)
       mockK8sApi.read.mockResolvedValue({ body: deployment1 });
 
       const startTime = Date.now();
       const result = await manager.rollbackResources(resources, {
-        timeout: 1000  // 1 second timeout (short for testing)
+        timeout: 1000, // 1 second timeout (short for testing)
       });
       const duration = Date.now() - startTime;
 
@@ -387,8 +393,8 @@ describe('ResourceRollbackManager', () => {
         kind: 'ConfigMap',
         metadata: {
           name: 'simple-string',
-          namespace: 'simple-namespace'
-        }
+          namespace: 'simple-namespace',
+        },
       } as any;
 
       mockK8sApi.delete.mockResolvedValue({ body: {} });
@@ -400,8 +406,8 @@ describe('ResourceRollbackManager', () => {
         expect.objectContaining({
           metadata: expect.objectContaining({
             name: 'simple-string',
-            namespace: 'simple-namespace'
-          })
+            namespace: 'simple-namespace',
+          }),
         }),
         undefined,
         undefined,
@@ -416,20 +422,20 @@ describe('ResourceRollbackManager', () => {
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
       const result = await manager.rollbackResources([deployment1] as any[], {
-        emitEvent: (event) => events.push(event)
+        emitEvent: (event) => events.push(event),
       });
 
       expect(result.status).toBe('success');
       expect(result.rolledBackResources[0]).toBe('Deployment/test-app (production)');
-      
-      const progressEvent = events.find(e => e.type === 'progress');
+
+      const progressEvent = events.find((e) => e.type === 'progress');
       expect(progressEvent?.resourceId).toBe('Deployment/test-app (production)');
     });
 
     it('should handle namespaced and cluster-scoped resources', async () => {
       // Namespaced resource
       const namespacedResource = createTestConfigMap('namespaced-config', 'kube-system');
-      
+
       // Cluster-scoped resource (simulated)
       const clusterResource = {
         apiVersion: 'v1',
@@ -439,16 +445,19 @@ describe('ResourceRollbackManager', () => {
 
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
-      const result = await manager.rollbackResources([namespacedResource, clusterResource] as any[]);
+      const result = await manager.rollbackResources([
+        namespacedResource,
+        clusterResource,
+      ] as any[]);
 
       expect(result.status).toBe('success');
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(2);
-      
+
       // Check namespaced resource call
       const namespacedCall = mockK8sApi.delete.mock.calls[1][0]; // Second call (reverse order)
       expect(namespacedCall.metadata.namespace).toBe('kube-system');
-      
-      // Check cluster-scoped resource call  
+
+      // Check cluster-scoped resource call
       const clusterCall = mockK8sApi.delete.mock.calls[0][0]; // First call (reverse order)
       expect(clusterCall.metadata.namespace).toBeUndefined();
     });
@@ -465,7 +474,7 @@ describe('ResourceRollbackManager', () => {
 
     it('should handle empty resource list', async () => {
       const result = await manager.rollbackResources([]);
-      
+
       expect(result.status).toBe('success');
       expect(result.rolledBackResources).toHaveLength(0);
       expect(result.errors).toHaveLength(0);

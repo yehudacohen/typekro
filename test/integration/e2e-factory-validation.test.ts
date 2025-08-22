@@ -11,16 +11,16 @@
  * requiring full cluster deployment (which has serialization issues to fix).
  */
 
-import { beforeAll, afterAll, describe, expect, it } from 'bun:test';
-import alchemy from 'alchemy';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
+import alchemy from 'alchemy';
 import { type } from 'arktype';
 import {
-  toResourceGraph,
+  Cel,
+  simpleConfigMap,
   simpleDeployment,
   simpleService,
-  simpleConfigMap,
-  Cel,
+  toResourceGraph,
 } from '../../src/index.js';
 
 // Test configuration

@@ -1,23 +1,23 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import {
-  isAlchemyResource,
-  isAlchemyPromise,
-  resolveReferencesWithAlchemy,
-  resolveTypeKroReferencesOnly,
-  resolveAllReferences,
-  resolveAlchemyPromise,
-  buildResourceGraphWithDeferredResolution,
-  resolveAllReferencesInAlchemyContext,
-  containsAlchemyPromises,
-  extractAlchemyPromises,
-  createAlchemyReferenceResolver,
-  hasMixedDependencies,
-  createAlchemyResourceConfig,
-  createAlchemyResourceConfigs,
-  type AlchemyResource,
   type AlchemyPromise,
   type AlchemyResolutionContext,
+  type AlchemyResource,
+  buildResourceGraphWithDeferredResolution,
+  containsAlchemyPromises,
+  createAlchemyReferenceResolver,
+  createAlchemyResourceConfig,
+  createAlchemyResourceConfigs,
+  extractAlchemyPromises,
+  hasMixedDependencies,
+  isAlchemyPromise,
+  isAlchemyResource,
+  resolveAlchemyPromise,
+  resolveAllReferences,
+  resolveAllReferencesInAlchemyContext,
+  resolveReferencesWithAlchemy,
+  resolveTypeKroReferencesOnly,
 } from '../../../src/alchemy/resolver.js';
 import type { KubernetesResource } from '../../../src/core/types/kubernetes.js';
 
@@ -137,7 +137,8 @@ describe('Alchemy Resolver Comprehensive', () => {
 
         // Mock the promise to resolve immediately
         Object.defineProperty(alchemyPromise, 'then', {
-          value: (onResolve: (value: any) => any) => Promise.resolve(mockResolvedValue).then(onResolve),
+          value: (onResolve: (value: any) => any) =>
+            Promise.resolve(mockResolvedValue).then(onResolve),
         });
 
         const obj = { resource: alchemyPromise };

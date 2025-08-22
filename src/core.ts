@@ -12,10 +12,10 @@
 // Alchemy Integration - Dynamic Registration
 // =============================================================================
 export {
-  ensureResourceTypeRegistered,
-  DirectTypeKroDeployer,
-  KroTypeKroDeployer,
   createAlchemyResourceId,
+  DirectTypeKroDeployer,
+  ensureResourceTypeRegistered,
+  KroTypeKroDeployer,
 } from './alchemy/deployment.js';
 // Alchemy conversion utilities removed - using dynamic registration approach
 export type { WebServiceComponent } from './core/composition/index.js';
@@ -72,6 +72,27 @@ export {
   TypeKroReferenceError,
   ValidationError,
 } from './core/errors.js';
+export type {
+  KubeConfigConsumer,
+  KubernetesApiConsumer,
+  KubernetesClientConfig,
+} from './core/kubernetes/client-provider.js';
+// =============================================================================
+// Kubernetes Client Provider (Single Source of Truth)
+// =============================================================================
+export {
+  createKubernetesClientProvider,
+  createKubernetesClientProviderWithKubeConfig,
+  getKubeConfig,
+  getKubernetesApi,
+  getKubernetesClientProvider,
+  KubernetesClientProvider,
+} from './core/kubernetes/client-provider.js';
+export type {
+  LoggerConfig,
+  LoggerContext,
+  TypeKroLogger,
+} from './core/logging/index.js';
 // =============================================================================
 // Logging Module (Professional Structured Logging)
 // =============================================================================
@@ -82,11 +103,6 @@ export {
   getDeploymentLogger,
   getResourceLogger,
   logger,
-} from './core/logging/index.js';
-export type {
-  LoggerConfig,
-  LoggerContext,
-  TypeKroLogger,
 } from './core/logging/index.js';
 // =============================================================================
 // References Module (CEL, Schema Proxy, External Refs)
@@ -116,6 +132,21 @@ export {
 // Core Types and Interfaces
 // =============================================================================
 export type * from './core/types/index.js';
+export type {
+  DiscoveredFile,
+  GitPathInfo,
+  ResolvedContent,
+} from './core/yaml/index.js';
+// =============================================================================
+// YAML Processing Module
+// =============================================================================
+export {
+  GitContentError,
+  PathResolver,
+  pathResolver,
+  YamlPathResolutionError,
+  YamlProcessingError,
+} from './core/yaml/index.js';
 export { customResource } from './factories/kubernetes/extensions/custom-resource.js';
 // Factory types are now exported from the organized factories structure
 export type * from './factories/kubernetes/types.js';
@@ -123,23 +154,6 @@ export type * from './factories/kubernetes/types.js';
 // Resource Factory
 // =============================================================================
 export { createResource } from './factories/shared.js';
-// =============================================================================
-// Kubernetes Client Provider (Single Source of Truth)
-// =============================================================================
-export {
-  KubernetesClientProvider,
-  getKubernetesClientProvider,
-  createKubernetesClientProvider,
-  createKubernetesClientProviderWithKubeConfig,
-  getKubernetesApi,
-  getKubeConfig,
-} from './core/kubernetes/client-provider.js';
-export type {
-  KubernetesClientConfig,
-  KubernetesApiConsumer,
-  KubeConfigConsumer,
-} from './core/kubernetes/client-provider.js';
-
 // =============================================================================
 // Core Utilities
 // =============================================================================
@@ -156,19 +170,3 @@ export {
   pascalCase,
   processResourceReferences,
 } from './utils/index.js';
-
-// =============================================================================
-// YAML Processing Module
-// =============================================================================
-export {
-  PathResolver,
-  pathResolver,
-  YamlPathResolutionError,
-  GitContentError,
-  YamlProcessingError,
-} from './core/yaml/index.js';
-export type {
-  GitPathInfo,
-  ResolvedContent,
-  DiscoveredFile,
-} from './core/yaml/index.js';

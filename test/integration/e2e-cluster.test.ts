@@ -3,7 +3,7 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import { type } from 'arktype';
 import { secret } from '../../src/factories/index';
 import {
   Cel,
@@ -12,7 +12,7 @@ import {
   simpleService,
   toResourceGraph,
 } from '../../src/index';
-import { type } from 'arktype';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
 const _CLUSTER_NAME = 'typekro-e2e-test';

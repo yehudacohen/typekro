@@ -337,7 +337,7 @@ export class AlchemyDeploymentStrategy<
           resourceIds: resourceGraph.resources.map((r) => r.id),
           resourceKinds: resourceGraph.resources.map((r) => r.manifest?.kind),
         });
-        return resourceGraph;
+        return { ...resourceGraph, name: instanceName };
       } else {
         this.logger.warn(
           'Base strategy does not have resourceResolver or createResourceGraphForInstance method',

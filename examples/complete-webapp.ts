@@ -4,12 +4,12 @@
 
 import { type } from 'arktype';
 import {
-  toResourceGraph,
+  Cel,
   simpleDeployment,
   simpleIngress,
   simpleNetworkPolicy,
   simpleService,
-  Cel,
+  toResourceGraph,
 } from '../src/index.js';
 
 // Define the schema for our complete web application

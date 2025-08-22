@@ -1,5 +1,5 @@
-import { createResource } from '../shared.js';
 import type { Enhanced } from '../../core/types/index.js';
+import { createResource } from '../shared.js';
 
 export interface GitRepositorySpec {
   url: string;
@@ -50,9 +50,9 @@ export interface GitRepositoryConfig {
 
 /**
  * Create a GitRepository resource for Flux CD
- * 
+ *
  * @param config - Configuration for the GitRepository
- * 
+ *
  * @example
  * ```typescript
  * gitRepository({
@@ -63,7 +63,9 @@ export interface GitRepositoryConfig {
  * })
  * ```
  */
-export function gitRepository(config: GitRepositoryConfig): Enhanced<GitRepositorySpec, GitRepositoryStatus> {
+export function gitRepository(
+  config: GitRepositoryConfig
+): Enhanced<GitRepositorySpec, GitRepositoryStatus> {
   return createResource({
     ...(config.id && { id: config.id }),
     apiVersion: 'source.toolkit.fluxcd.io/v1',

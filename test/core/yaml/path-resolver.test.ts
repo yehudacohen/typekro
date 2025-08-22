@@ -2,10 +2,10 @@
  * Tests for PathResolver implementation
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { PathResolver, YamlPathResolutionError } from '../../../src/core/yaml/path-resolver.js';
 
 describe('PathResolver', () => {
@@ -26,8 +26,11 @@ describe('PathResolver', () => {
 
   describe('parseGitPath', () => {
     it('should parse valid git URLs correctly', () => {
-      const result = resolver.parseGitPath('git:github.com/owner/repo/path/to/file.yaml@main', 'test');
-      
+      const result = resolver.parseGitPath(
+        'git:github.com/owner/repo/path/to/file.yaml@main',
+        'test'
+      );
+
       expect(result).toEqual({
         host: 'github.com',
         owner: 'owner',
@@ -39,7 +42,7 @@ describe('PathResolver', () => {
 
     it('should use default ref when not specified', () => {
       const result = resolver.parseGitPath('git:github.com/owner/repo/path/to/file.yaml', 'test');
-      
+
       expect(result.ref).toBe('main');
     });
 
@@ -63,12 +66,16 @@ describe('PathResolver', () => {
 
     it('should throw error for non-existent file', async () => {
       const nonExistentFile = path.join(tempDir, 'does-not-exist.yaml');
-      
-      await expect(resolver.resolveLocalContent(nonExistentFile, 'test')).rejects.toThrow(YamlPathResolutionError);
+
+      await expect(resolver.resolveLocalContent(nonExistentFile, 'test')).rejects.toThrow(
+        YamlPathResolutionError
+      );
     });
 
     it('should throw error when path is a directory', async () => {
-      await expect(resolver.resolveLocalContent(tempDir, 'test')).rejects.toThrow(YamlPathResolutionError);
+      await expect(resolver.resolveLocalContent(tempDir, 'test')).rejects.toThrow(
+        YamlPathResolutionError
+      );
     });
   });
 
@@ -80,12 +87,12 @@ describe('PathResolver', () => {
       fs.writeFileSync(path.join(tempDir, 'file3.txt'), 'content3'); // Should be excluded
 
       const result = await resolver.discoverYamlFiles(tempDir, {}, 'test');
-      
+
       expect(result).toHaveLength(2);
-      expect(result.map(f => f.relativePath).sort()).toEqual(['file1.yaml', 'file2.yml']);
-      
+      expect(result.map((f) => f.relativePath).sort()).toEqual(['file1.yaml', 'file2.yml']);
+
       // Find the specific file and check its content
-      const file1 = result.find(f => f.relativePath === 'file1.yaml');
+      const file1 = result.find((f) => f.relativePath === 'file1.yaml');
       expect(file1?.content).toBe('content1');
     });
 
@@ -95,13 +102,17 @@ describe('PathResolver', () => {
       fs.writeFileSync(path.join(tempDir, 'exclude.yaml'), 'content2');
       fs.writeFileSync(path.join(tempDir, 'other.yml'), 'content3');
 
-      const result = await resolver.discoverYamlFiles(tempDir, {
-        include: ['include.yaml', '*.yml'],
-        exclude: ['exclude.yaml'],
-      }, 'test');
-      
+      const result = await resolver.discoverYamlFiles(
+        tempDir,
+        {
+          include: ['include.yaml', '*.yml'],
+          exclude: ['exclude.yaml'],
+        },
+        'test'
+      );
+
       expect(result).toHaveLength(2);
-      expect(result.map(f => f.relativePath).sort()).toEqual(['include.yaml', 'other.yml']);
+      expect(result.map((f) => f.relativePath).sort()).toEqual(['include.yaml', 'other.yml']);
     });
 
     it('should handle recursive directory traversal', async () => {
@@ -112,9 +123,9 @@ describe('PathResolver', () => {
       fs.writeFileSync(path.join(subDir, 'nested.yaml'), 'nested');
 
       const result = await resolver.discoverYamlFiles(tempDir, { recursive: true }, 'test');
-      
+
       expect(result).toHaveLength(2);
-      expect(result.map(f => f.relativePath).sort()).toEqual(['root.yaml', 'subdir/nested.yaml']);
+      expect(result.map((f) => f.relativePath).sort()).toEqual(['root.yaml', 'subdir/nested.yaml']);
     });
 
     it('should handle non-recursive mode', async () => {
@@ -125,7 +136,7 @@ describe('PathResolver', () => {
       fs.writeFileSync(path.join(subDir, 'nested.yaml'), 'nested');
 
       const result = await resolver.discoverYamlFiles(tempDir, { recursive: false }, 'test');
-      
+
       expect(result).toHaveLength(1);
       expect(result[0]?.relativePath).toBe('root.yaml');
     });
@@ -138,7 +149,7 @@ describe('PathResolver', () => {
       fs.writeFileSync(testFile, testContent);
 
       const result = await resolver.resolveContent(testFile, 'test');
-      
+
       expect(result.source).toBe('local');
       expect(result.content).toBe(testContent);
       expect(result.originalPath).toBe(testFile);
@@ -147,7 +158,7 @@ describe('PathResolver', () => {
     it('should identify git URLs correctly', async () => {
       // This test would require mocking fetch, so we'll just test the path detection
       const gitPath = 'git:github.com/owner/repo/file.yaml@main';
-      
+
       // We expect this to fail with network error since we're not mocking fetch
       await expect(resolver.resolveContent(gitPath, 'test')).rejects.toThrow();
     });
@@ -156,10 +167,10 @@ describe('PathResolver', () => {
   describe('pattern matching', () => {
     it('should match simple patterns correctly', () => {
       const resolver = new PathResolver();
-      
+
       // Access private method for testing
       const matchesPatterns = (resolver as any).matchesPatterns.bind(resolver);
-      
+
       expect(matchesPatterns('file.yaml', ['*.yaml'])).toBe(true);
       expect(matchesPatterns('file.yml', ['*.yaml'])).toBe(false);
       expect(matchesPatterns('dir/file.yaml', ['**/*.yaml'])).toBe(true);

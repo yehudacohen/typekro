@@ -4,17 +4,17 @@
  * This module provides ACTUAL runtime CEL expression evaluation using the cel-js library.
  * This is used for Direct mode deployment where CEL expressions must be evaluated
  * by TypeKro before creating Kubernetes manifests.
- * 
+ *
  * Purpose:
  * - Evaluate CEL expressions at runtime using live cluster data
  * - Resolve resource references to actual values from deployed resources
  * - Support standard CEL functions and operations
- * 
+ *
  * When to use:
  * - Direct mode deployment (DeploymentMode.DIRECT)
  * - When CEL expressions need to be resolved to concrete values
  * - For status field evaluation that references live cluster resources
- * 
+ *
  * NOT used for:
  * - Kro mode deployment (Kro operator handles CEL evaluation)
  * - Compile-time optimization (see cel-optimizer.ts)

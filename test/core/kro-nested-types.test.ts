@@ -1,12 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
-import {
-  toResourceGraph,
-  simpleDeployment,
-  simpleConfigMap,
-  Cel,
-} from '../../src/index.js';
+import { Cel, simpleConfigMap, simpleDeployment, toResourceGraph } from '../../src/index.js';
 
 // --- Test Suite 1: End-to-End Schema and Builder Validation ---
 
@@ -38,8 +33,6 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
     observedUrl: 'string',
   });
 
-
-
   it('should correctly handle all specified schema types', () => {
     const factory = toResourceGraph(
       {
@@ -57,7 +50,7 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
             DB_POOL_SIZE: Cel.string(schema.spec.database.connection.poolSize),
             DEPLOY_STRATEGY: schema.spec.app.deployment.strategy,
           },
-          id: 'webappDeployment'
+          id: 'webappDeployment',
         }),
       }),
       (_schema, resources) => ({
@@ -74,16 +67,12 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
 
     expect(generatedSchemaSpec.appTags).toBe('[]string');
     expect(generatedSchemaSpec.databaseConnectionPoolSize).toBe('integer');
-    expect(generatedSchemaSpec.appDeploymentStrategy).toBe(
-      "'Recreate'|'RollingUpdate'"
-    );
+    expect(generatedSchemaSpec.appDeploymentStrategy).toBe("'Recreate'|'RollingUpdate'");
 
     const resourceTemplate = parsedYaml.spec.resources[0].template;
     const envVars = resourceTemplate.spec.template.spec.containers[0].env;
     const poolSizeVar = envVars.find((e: any) => e.name === 'DB_POOL_SIZE');
-    expect(poolSizeVar.value).toBe(
-      '${string(schema.spec.database.connection.poolSize)}'
-    );
+    expect(poolSizeVar.value).toBe('${string(schema.spec.database.connection.poolSize)}');
   });
 });
 

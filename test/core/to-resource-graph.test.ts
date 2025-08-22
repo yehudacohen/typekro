@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { simpleDeployment, toResourceGraph, Cel } from '../../src/index.js';
+import { Cel, simpleDeployment, toResourceGraph } from '../../src/index.js';
 
 describe('toResourceGraph API', () => {
   const WebAppSpecSchema = type({
@@ -75,7 +75,7 @@ describe('toResourceGraph API', () => {
       );
 
       expect(() => graph.toYaml()).not.toThrow();
-      
+
       const yaml = graph.toYaml();
       expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(yaml).toContain('kind: ResourceGraphDefinition');
@@ -136,7 +136,7 @@ describe('toResourceGraph API', () => {
       );
 
       const kroFactory = await graph.factory('kro');
-      
+
       expect(kroFactory.mode).toBe('kro');
       expect(kroFactory.name).toBe('test-webapp');
       expect(kroFactory.rgdName).toBe('test-webapp');
@@ -167,7 +167,7 @@ describe('toResourceGraph API', () => {
       );
 
       const directFactory = await graph.factory('direct');
-      
+
       expect(directFactory.mode).toBe('direct');
       expect(directFactory.name).toBe('test-webapp');
       expect(typeof directFactory.rollback).toBe('function');
@@ -204,7 +204,7 @@ describe('toResourceGraph API', () => {
       };
 
       const kroFactory = await graph.factory('kro', factoryOptions);
-      
+
       expect(kroFactory.namespace).toBe('test-namespace');
       expect(kroFactory.mode).toBe('kro');
     });
@@ -330,7 +330,7 @@ describe('toResourceGraph API', () => {
       );
 
       expect(() => graph.toYaml()).not.toThrow();
-      
+
       const yaml = graph.toYaml();
       expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(yaml).toContain('kind: ResourceGraphDefinition');

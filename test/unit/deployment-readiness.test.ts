@@ -3,8 +3,8 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import type { V1Deployment } from '@kubernetes/client-node';
+import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
 describe('Deployment Factory with Readiness Evaluation', () => {
   it('should create deployment with readiness evaluator', () => {
@@ -17,13 +17,13 @@ describe('Deployment Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = deployment(deploymentResource);
-    
+
     expect(enhanced).toBeDefined();
     expect((enhanced as any).readinessEvaluator).toBeDefined();
     expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
@@ -39,16 +39,16 @@ describe('Deployment Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = deployment(deploymentResource);
     const evaluator = (enhanced as any).readinessEvaluator;
-    
+
     const result = evaluator({ status: null });
-    
+
     expect(result.ready).toBe(false);
     expect(result.reason).toBe('StatusMissing');
     expect(result.message).toContain('status not available');
@@ -65,24 +65,24 @@ describe('Deployment Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = deployment(deploymentResource);
     const evaluator = (enhanced as any).readinessEvaluator;
-    
+
     const liveResource = {
       status: {
         readyReplicas: 3,
         availableReplicas: 3,
-        updatedReplicas: 3
-      }
+        updatedReplicas: 3,
+      },
     };
-    
+
     const result = evaluator(liveResource);
-    
+
     expect(result.ready).toBe(true);
     expect(result.message).toContain('3/3 ready replicas');
     expect(result.message).toContain('3/3 available replicas');
@@ -98,24 +98,24 @@ describe('Deployment Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = deployment(deploymentResource);
     const evaluator = (enhanced as any).readinessEvaluator;
-    
+
     const liveResource = {
       status: {
         readyReplicas: 1,
         availableReplicas: 2,
-        updatedReplicas: 3
-      }
+        updatedReplicas: 3,
+      },
     };
-    
+
     const result = evaluator(liveResource);
-    
+
     expect(result.ready).toBe(false);
     expect(result.reason).toBe('ReplicasNotReady');
     expect(result.message).toContain('1/3 ready');
@@ -135,23 +135,23 @@ describe('Deployment Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = deployment(deploymentResource);
     const evaluator = (enhanced as any).readinessEvaluator;
-    
+
     const liveResource = {
       status: {
         readyReplicas: 1,
-        availableReplicas: 1
-      }
+        availableReplicas: 1,
+      },
     };
-    
+
     const result = evaluator(liveResource);
-    
+
     expect(result.ready).toBe(true);
     expect(result.message).toContain('1/1 ready replicas');
   });
@@ -166,17 +166,17 @@ describe('Deployment Factory with Readiness Evaluation', () => {
         selector: { matchLabels: { app: 'test' } },
         template: {
           metadata: { labels: { app: 'test' } },
-          spec: { containers: [{ name: 'test', image: 'nginx' }] }
-        }
-      }
+          spec: { containers: [{ name: 'test', image: 'nginx' }] },
+        },
+      },
     };
 
     const enhanced = deployment(deploymentResource);
     const evaluator = (enhanced as any).readinessEvaluator;
-    
+
     // Pass malformed resource that might cause errors
     const result = evaluator(null);
-    
+
     expect(result.ready).toBe(false);
     expect(result.reason).toBe('EvaluationError');
     expect(result.message).toContain('Error evaluating deployment readiness');

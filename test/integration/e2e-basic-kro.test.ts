@@ -1,21 +1,16 @@
 /**
  * Basic E2E Kro Test
- * 
+ *
  * Simple test to validate basic Kro functionality works
  */
 
 import { beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import {
-  toResourceGraph,
-  simpleDeployment,
-  simpleService,
-  Cel,
-} from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable, } from './shared-kubeconfig';
+import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-e2e-basic';
@@ -25,7 +20,10 @@ const _TEST_TIMEOUT = 300000; // 5 minutes
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
   const timestamp = Date.now().toString().slice(-6); // Last 6 digits
-  const sanitized = testName.toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20);
+  const sanitized = testName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .slice(0, 20);
   return `${BASE_NAMESPACE}-${sanitized}-${timestamp}`;
 };
 const _CLUSTER_NAME = 'typekro-e2e-test';
@@ -47,7 +45,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     // Use shared kubeconfig helper for consistent TLS configuration
     try {
       kc = getIntegrationTestKubeConfig();
-      
+
       k8sApi = kc.makeApiClient(k8s.CoreV1Api);
       appsApi = kc.makeApiClient(k8s.AppsV1Api);
       customApi = kc.makeApiClient(k8s.CustomObjectsApi);
@@ -55,8 +53,8 @@ describeOrSkip('Basic E2E Kro Test', () => {
       console.error('❌ Failed to initialize Kubernetes client:', error);
       throw new Error(
         `Kubernetes client initialization failed: ${error}. ` +
-        'Make sure the test cluster is running and accessible. ' +
-        'Run: bun run scripts/e2e-setup.ts to set up the test environment.'
+          'Make sure the test cluster is running and accessible. ' +
+          'Run: bun run scripts/e2e-setup.ts to set up the test environment.'
       );
     }
 
@@ -72,15 +70,15 @@ describeOrSkip('Basic E2E Kro Test', () => {
     testFn: (namespace: string) => Promise<T>
   ): Promise<T> => {
     const namespace = generateTestNamespace(testName);
-    
+
     try {
       // Create namespace
       await k8sApi.createNamespace({ metadata: { name: namespace } });
       console.log(`📦 Created test namespace: ${namespace}`);
-      
+
       // Run test
       const result = await testFn(namespace);
-      
+
       return result;
     } finally {
       // Cleanup namespace
@@ -98,7 +96,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     const testTimeout = 180000; // 3 minutes
     const startTime = Date.now();
     const testNamespace = generateTestNamespace('basic-rgd-deploy');
-    
+
     // Create test namespace
     try {
       await k8sApi.createNamespace({ metadata: { name: testNamespace } });
@@ -182,14 +180,14 @@ describeOrSkip('Basic E2E Kro Test', () => {
 
     // Wait for the underlying Kubernetes resources to be created by Kro
     console.log('⏳ Waiting for Kro to create underlying resources...');
-    
+
     // Check timeout periodically
     const checkTimeout = () => {
       if (Date.now() - startTime > testTimeout) {
         throw new Error(`Test timed out after ${testTimeout}ms`);
       }
     };
-    
+
     await waitForDeployment('test-app', testNamespace);
     checkTimeout();
     await waitForService('test-app-svc', testNamespace);
@@ -203,7 +201,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     expect(service.body.spec?.selector?.app).toBe('test-app');
 
     console.log('✅ Basic E2E test completed successfully');
-    
+
     // Cleanup using factory
     try {
       await factory.deleteInstance('test-app');
@@ -211,7 +209,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     } catch (error) {
       console.warn('⚠️ Factory cleanup failed:', error);
     }
-    
+
     // Cleanup test namespace
     try {
       await k8sApi.deleteNamespace(testNamespace);
@@ -222,7 +220,11 @@ describeOrSkip('Basic E2E Kro Test', () => {
   });
 
   // Helper functions
-  async function _waitForRGDReady(name: string, _namespace: string, timeoutMs = 60000): Promise<void> {
+  async function _waitForRGDReady(
+    name: string,
+    _namespace: string,
+    timeoutMs = 60000
+  ): Promise<void> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
@@ -234,12 +236,14 @@ describeOrSkip('Basic E2E Kro Test', () => {
         );
         const status = (rgd.body as any).status;
         // Check if RGD is in Active state and all conditions are True
-        if (status?.state === 'Active' && 
-            status?.conditions?.every((c: any) => c.status === 'True')) {
+        if (
+          status?.state === 'Active' &&
+          status?.conditions?.every((c: any) => c.status === 'True')
+        ) {
           console.log(`✅ RGD ${name} is ready`);
           return;
         }
-        
+
         // Log the current status for debugging
         console.log(`RGD ${name} status:`, status?.state || 'Unknown');
         if (status?.conditions) {
@@ -252,12 +256,16 @@ describeOrSkip('Basic E2E Kro Test', () => {
       } catch (_error) {
         console.log(`RGD ${name} not found yet, continuing to wait...`);
       }
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
     throw new Error(`Timeout waiting for RGD ${name} to be ready`);
   }
 
-  async function waitForDeployment(name: string, namespace: string, timeoutMs = 120000): Promise<void> {
+  async function waitForDeployment(
+    name: string,
+    namespace: string,
+    timeoutMs = 120000
+  ): Promise<void> {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
@@ -270,7 +278,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
       } catch (_error) {
         // Deployment not found yet, continue waiting
       }
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw new Error(`Timeout waiting for deployment ${name} to be ready`);
   }
@@ -285,7 +293,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
       } catch (_error) {
         // Service not found yet, continue waiting
       }
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error(`Timeout waiting for service ${name} to be ready`);
   }

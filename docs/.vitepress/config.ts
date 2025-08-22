@@ -4,7 +4,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid';
 export default withMermaid(
   defineConfig({
     title: 'TypeKro',
-    description: 'Hypermodern Infrastructure-as-Code for Kubernetes with TypeScript',
+    description: 'Statically Typed, Declarative Kubernetes Configuration with TypeScript',
     base: '/',
 
     head: [

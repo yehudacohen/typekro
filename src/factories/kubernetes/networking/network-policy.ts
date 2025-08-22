@@ -10,12 +10,12 @@ export function networkPolicy(resource: V1NetworkPolicy): Enhanced<V1NetworkPoli
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
     metadata: resource.metadata ?? { name: 'unnamed-networkpolicy' },
-  }).withReadinessEvaluator((liveResource: V1NetworkPolicy) => {
+  }).withReadinessEvaluator((_liveResource: V1NetworkPolicy) => {
     // NetworkPolicies are ready when they exist - they're configuration objects
     // that are applied by the network plugin
     return {
       ready: true,
-      message: 'NetworkPolicy is ready'
+      message: 'NetworkPolicy is ready',
     };
   });
 }

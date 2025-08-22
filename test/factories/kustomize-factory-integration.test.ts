@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { kustomization } from '../../src/factories/flux/kustomize/kustomization.js';
 import { kustomizationReadinessEvaluator } from '../../src/factories/flux/kustomize/readiness-evaluators.js';
 
@@ -115,7 +115,7 @@ describe('Kustomize Factory Integration', () => {
       namespace: 'flux-system',
     });
     expect(kustomizeResource.spec?.path).toBe('./overlays/production');
-    
+
     // Verify patches
     expect(kustomizeResource.spec?.patches).toHaveLength(1);
     const patch = kustomizeResource.spec?.patches?.[0];
@@ -170,7 +170,7 @@ describe('Kustomize Factory Integration', () => {
     expect(kustomizeResource.spec?.prune).toBe(true);
     expect(kustomizeResource.spec?.wait).toBe(true);
     expect(kustomizeResource.spec?.timeout).toBe('10m');
-    
+
     // Verify optional fields are undefined when not provided
     expect(kustomizeResource.spec?.patches).toBeUndefined();
     expect(kustomizeResource.spec?.images).toBeUndefined();
@@ -209,9 +209,7 @@ describe('Kustomize Factory Integration', () => {
           },
         ],
         inventory: {
-          entries: [
-            { id: 'apps_v1_Deployment_default_webapp', v: 'v1' },
-          ],
+          entries: [{ id: 'apps_v1_Deployment_default_webapp', v: 'v1' }],
         },
       },
     };

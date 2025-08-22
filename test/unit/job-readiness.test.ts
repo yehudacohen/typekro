@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import type { V1Job } from '@kubernetes/client-node';
 import { job } from '../../src/factories/kubernetes/workloads/job.js';
 
@@ -8,12 +8,12 @@ describe('Job Factory with Readiness Evaluation', () => {
       metadata: { name: 'test-job' },
       spec: {
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -29,12 +29,12 @@ describe('Job Factory with Readiness Evaluation', () => {
         parallelism: 2,
         completionMode: 'NonIndexed',
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -43,8 +43,8 @@ describe('Job Factory with Readiness Evaluation', () => {
       status: {
         succeeded: 3,
         failed: 0,
-        active: 0
-      }
+        active: 0,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -60,12 +60,12 @@ describe('Job Factory with Readiness Evaluation', () => {
         parallelism: 2,
         completionMode: 'Indexed',
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -74,8 +74,8 @@ describe('Job Factory with Readiness Evaluation', () => {
       status: {
         succeeded: 5,
         failed: 0,
-        active: 0
-      }
+        active: 0,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -90,12 +90,12 @@ describe('Job Factory with Readiness Evaluation', () => {
         completions: 4,
         parallelism: 2,
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -104,8 +104,8 @@ describe('Job Factory with Readiness Evaluation', () => {
       status: {
         succeeded: 2,
         failed: 0,
-        active: 2
-      }
+        active: 2,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -118,7 +118,7 @@ describe('Job Factory with Readiness Evaluation', () => {
       failed: 0,
       active: 2,
       parallelism: 2,
-      completionMode: 'NonIndexed'
+      completionMode: 'NonIndexed',
     });
   });
 
@@ -129,12 +129,12 @@ describe('Job Factory with Readiness Evaluation', () => {
         completions: 1,
         backoffLimit: 3,
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -143,8 +143,8 @@ describe('Job Factory with Readiness Evaluation', () => {
       status: {
         succeeded: 0,
         failed: 4, // Exceeds backoff limit of 3
-        active: 0
-      }
+        active: 0,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -157,7 +157,7 @@ describe('Job Factory with Readiness Evaluation', () => {
       failed: 4,
       active: 0,
       backoffLimit: 3,
-      completionMode: 'NonIndexed'
+      completionMode: 'NonIndexed',
     });
   });
 
@@ -167,12 +167,12 @@ describe('Job Factory with Readiness Evaluation', () => {
       spec: {
         completions: 2,
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -185,7 +185,7 @@ describe('Job Factory with Readiness Evaluation', () => {
     expect(status.details).toEqual({
       expectedCompletions: 2,
       parallelism: 1, // default
-      completionMode: 'NonIndexed' // default
+      completionMode: 'NonIndexed', // default
     });
   });
 
@@ -197,12 +197,12 @@ describe('Job Factory with Readiness Evaluation', () => {
         // No parallelism specified - should default to 1
         // No completionMode specified - should default to NonIndexed
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -211,8 +211,8 @@ describe('Job Factory with Readiness Evaluation', () => {
       status: {
         succeeded: 1,
         failed: 0,
-        active: 0
-      }
+        active: 0,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);
@@ -225,16 +225,16 @@ describe('Job Factory with Readiness Evaluation', () => {
       metadata: { name: 'test-job' },
       spec: {
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
-    
+
     // Pass malformed resource that will cause an error
     const malformedResource = null as any;
 
@@ -252,12 +252,12 @@ describe('Job Factory with Readiness Evaluation', () => {
         completions: 3,
         backoffLimit: 5,
         template: {
-          spec: { 
+          spec: {
             containers: [{ name: 'test', image: 'busybox' }],
-            restartPolicy: 'Never'
-          }
-        }
-      }
+            restartPolicy: 'Never',
+          },
+        },
+      },
     };
 
     const enhanced = job(resource);
@@ -266,8 +266,8 @@ describe('Job Factory with Readiness Evaluation', () => {
       status: {
         succeeded: 2,
         failed: 2, // Within backoff limit
-        active: 1
-      }
+        active: 1,
+      },
     };
 
     const status = enhanced.readinessEvaluator!(liveResource);

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from '../../src/index.js';
+import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
 
 describe('DirectResourceFactory', () => {
   const WebAppSpecSchema = type({
@@ -285,28 +285,29 @@ describe('DirectResourceFactory', () => {
 
   describe('Deterministic Behavior', () => {
     it('should create identical factories from same resource graph', async () => {
-      const createGraph = () => toResourceGraph(
-        {
-          name: 'deterministic-test',
-          apiVersion: 'v1alpha1',
-          kind: 'WebApp',
-          spec: WebAppSpecSchema,
-          status: WebAppStatusSchema,
-        },
-        (schema) => ({
-          deployment: simpleDeployment({
-            name: schema.spec.name,
-            image: schema.spec.image,
-            replicas: schema.spec.replicas,
-            id: 'deterministicDeployment',
+      const createGraph = () =>
+        toResourceGraph(
+          {
+            name: 'deterministic-test',
+            apiVersion: 'v1alpha1',
+            kind: 'WebApp',
+            spec: WebAppSpecSchema,
+            status: WebAppStatusSchema,
+          },
+          (schema) => ({
+            deployment: simpleDeployment({
+              name: schema.spec.name,
+              image: schema.spec.image,
+              replicas: schema.spec.replicas,
+              id: 'deterministicDeployment',
+            }),
           }),
-        }),
-        (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
-          readyReplicas: resources.deployment.status.readyReplicas,
-          phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
-        })
-      );
+          (_schema, resources) => ({
+            url: `http://${resources.deployment.status.podIP}`,
+            readyReplicas: resources.deployment.status.readyReplicas,
+            phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
+          })
+        );
 
       const graph1 = createGraph();
       const graph2 = createGraph();

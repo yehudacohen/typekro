@@ -15,7 +15,7 @@ export function customResourceDefinition(
     metadata: resource.metadata ?? { name: 'unnamed-crd' },
   }).withReadinessEvaluator((liveResource: V1CustomResourceDefinition) => {
     const status = liveResource.status;
-    
+
     if (!status) {
       return {
         ready: false,
@@ -25,16 +25,16 @@ export function customResourceDefinition(
     }
 
     const conditions = status.conditions || [];
-    
+
     // Check for Established condition
-    const established = conditions.find(c => c.type === 'Established');
-    const namesAccepted = conditions.find(c => c.type === 'NamesAccepted');
-    
+    const established = conditions.find((c) => c.type === 'Established');
+    const namesAccepted = conditions.find((c) => c.type === 'NamesAccepted');
+
     const isEstablished = established?.status === 'True';
     const areNamesAccepted = namesAccepted?.status === 'True';
-    
+
     const ready = isEstablished && areNamesAccepted;
-    
+
     if (ready) {
       return {
         ready: true,
@@ -44,7 +44,7 @@ export function customResourceDefinition(
       const reasons = [];
       if (!isEstablished) reasons.push('not established');
       if (!areNamesAccepted) reasons.push('names not accepted');
-      
+
       return {
         ready: false,
         reason: 'ConditionsNotMet',

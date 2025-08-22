@@ -22,17 +22,17 @@ export function daemonSet(resource: V1DaemonSet): Enhanced<V1DaemonSetSpec, V1Da
       const numberReady = status.numberReady || 0;
 
       const ready = desiredNumberScheduled > 0 && numberReady === desiredNumberScheduled;
-      
+
       return {
         ready,
-        reason: ready 
+        reason: ready
           ? `All ${desiredNumberScheduled} pods are ready`
-          : `${numberReady}/${desiredNumberScheduled} pods ready`
+          : `${numberReady}/${desiredNumberScheduled} pods ready`,
       };
     } catch (error) {
-      return { 
-        ready: false, 
-        reason: `Error checking DaemonSet status: ${error instanceof Error ? error.message : String(error)}` 
+      return {
+        ready: false,
+        reason: `Error checking DaemonSet status: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   });

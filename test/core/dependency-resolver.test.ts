@@ -3,6 +3,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import {
   CircularDependencyError,
   DependencyGraph,
@@ -10,7 +11,6 @@ import {
   type DeployableK8sResource,
   type Enhanced,
 } from '../../src/core.js';
-import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../src/core/constants/brands.js';
 
 // Helper function to create properly typed test resources
 function createMockResource(

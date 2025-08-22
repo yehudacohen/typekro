@@ -2,12 +2,12 @@
  * Tests for dynamic alchemy resource type registration
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import {
+  clearRegisteredTypes,
+  DirectTypeKroDeployer,
   ensureResourceTypeRegistered,
   inferAlchemyTypeFromTypeKroResource,
-  DirectTypeKroDeployer,
-  clearRegisteredTypes,
 } from '../../../src/alchemy/deployment.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 import { deployment } from '../../../src/factories/kubernetes/workloads/deployment.js';
@@ -26,10 +26,12 @@ const mockDeployment = deployment({
     template: {
       metadata: { labels: { app: 'test' } },
       spec: {
-        containers: [{
-          name: 'app',
-          image: 'nginx:latest',
-        }],
+        containers: [
+          {
+            name: 'app',
+            image: 'nginx:latest',
+          },
+        ],
       },
     },
   },
@@ -46,8 +48,6 @@ const mockRGD: Enhanced<any, any> = {
   spec: {},
   status: {},
 } as Enhanced<any, any>;
-
-
 
 describe('Dynamic Alchemy Resource Registration', () => {
   beforeEach(() => {
@@ -72,7 +72,7 @@ describe('Dynamic Alchemy Resource Registration', () => {
         apiVersion: 'example.kro.run/v1alpha1',
         kind: 'WebApp',
       };
-      
+
       const type = inferAlchemyTypeFromTypeKroResource(mockCRD);
       expect(type).toBe('kro::WebApp');
     });
@@ -82,9 +82,10 @@ describe('Dynamic Alchemy Resource Registration', () => {
         ...mockDeployment,
         kind: undefined as any,
       };
-      
-      expect(() => inferAlchemyTypeFromTypeKroResource(invalidResource))
-        .toThrow('Resource must have a kind field for Alchemy type inference');
+
+      expect(() => inferAlchemyTypeFromTypeKroResource(invalidResource)).toThrow(
+        'Resource must have a kind field for Alchemy type inference'
+      );
     });
 
     it('should validate resource kind naming patterns', () => {
@@ -92,9 +93,10 @@ describe('Dynamic Alchemy Resource Registration', () => {
         ...mockDeployment,
         kind: 'Invalid-Kind-Name',
       };
-      
-      expect(() => inferAlchemyTypeFromTypeKroResource(invalidResource))
-        .toThrow('contains invalid characters');
+
+      expect(() => inferAlchemyTypeFromTypeKroResource(invalidResource)).toThrow(
+        'contains invalid characters'
+      );
     });
 
     it('should reject reserved resource type names', () => {
@@ -102,9 +104,10 @@ describe('Dynamic Alchemy Resource Registration', () => {
         ...mockDeployment,
         kind: 'Resource',
       };
-      
-      expect(() => inferAlchemyTypeFromTypeKroResource(reservedResource))
-        .toThrow('is a reserved name and cannot be used');
+
+      expect(() => inferAlchemyTypeFromTypeKroResource(reservedResource)).toThrow(
+        'is a reserved name and cannot be used'
+      );
     });
 
     it('should reject resource kinds that are too long', () => {
@@ -112,9 +115,10 @@ describe('Dynamic Alchemy Resource Registration', () => {
         ...mockDeployment,
         kind: 'A'.repeat(101), // Exceeds 100 character limit
       };
-      
-      expect(() => inferAlchemyTypeFromTypeKroResource(longKindResource))
-        .toThrow('exceeds maximum length');
+
+      expect(() => inferAlchemyTypeFromTypeKroResource(longKindResource)).toThrow(
+        'exceeds maximum length'
+      );
     });
   });
 
@@ -140,7 +144,7 @@ describe('Dynamic Alchemy Resource Registration', () => {
     it('should track registered types', () => {
       ensureResourceTypeRegistered(mockDeployment);
       ensureResourceTypeRegistered(mockRGD);
-      
+
       // Note: We can't easily inspect registered types, so we'll test behavior instead
       // The fact that ensureResourceTypeRegistered didn't throw means it worked
       expect(true).toBe(true);
@@ -173,23 +177,23 @@ describe('Dynamic Alchemy Resource Registration', () => {
         deploy: async () => ({
           status: 'success' as const,
           resources: [],
-          errors: []
-        })
+          errors: [],
+        }),
       } as any;
       const deployer = new DirectTypeKroDeployer(mockEngine);
-      
+
       const result = await deployer.deploy(mockDeployment, {
         mode: 'direct',
         namespace: 'test',
         waitForReady: true,
         timeout: 30000,
       });
-      
+
       // The result should have the same properties as the original deployment
       expect(result.kind).toBe(mockDeployment.kind);
       expect(result.metadata?.name).toBe(mockDeployment.metadata?.name as any);
       expect(result.spec?.replicas).toBe(mockDeployment.spec?.replicas);
-      
+
       // The result should now have a readiness evaluator
       expect(result).toHaveProperty('readinessEvaluator');
       expect(typeof (result as any).readinessEvaluator).toBe('function');

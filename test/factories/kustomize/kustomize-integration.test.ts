@@ -95,7 +95,7 @@ describe('Kustomize Integration', () => {
           ],
         }),
       }),
-      (schema, resources) => ({
+      (_schema, _resources) => ({
         ready: false,
         url: 'http://pending',
       })

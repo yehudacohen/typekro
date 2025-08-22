@@ -1,10 +1,6 @@
 import type * as k8s from '@kubernetes/client-node';
 import { getComponentLogger } from '../logging/index.js';
-import type {
-  DeployedResource,
-  Enhanced,
-  KubernetesResource,
-} from '../types.js';
+import type { DeployedResource, Enhanced, KubernetesResource } from '../types.js';
 
 /**
  * Options for status hydration
@@ -90,14 +86,24 @@ export class StatusHydrator {
       const liveStatus = await this.queryResourceStatus(resource);
 
       if (!liveStatus) {
-        return { success: false, resourceId, hydratedFields: [], error: new Error('Resource not found') };
+        return {
+          success: false,
+          resourceId,
+          hydratedFields: [],
+          error: new Error('Resource not found'),
+        };
       }
 
       // Extract status data
       const status = liveStatus.status as TStatus;
 
       if (!status) {
-        return { success: false, resourceId, hydratedFields: [], error: new Error('No status found') };
+        return {
+          success: false,
+          resourceId,
+          hydratedFields: [],
+          error: new Error('No status found'),
+        };
       }
 
       // Populate Enhanced proxy with live status data
@@ -116,7 +122,7 @@ export class StatusHydrator {
         success: false,
         resourceId,
         hydratedFields: [],
-        error: error instanceof Error ? error : new Error(String(error))
+        error: error instanceof Error ? error : new Error(String(error)),
       };
     }
   }
@@ -138,7 +144,12 @@ export class StatusHydrator {
       const status = liveResourceData.status;
 
       if (!status) {
-        return { success: false, resourceId, hydratedFields: [], error: new Error('No status found') };
+        return {
+          success: false,
+          resourceId,
+          hydratedFields: [],
+          error: new Error('No status found'),
+        };
       }
 
       // Populate Enhanced proxy with live status data
@@ -157,7 +168,7 @@ export class StatusHydrator {
         success: false,
         resourceId,
         hydratedFields: [],
-        error: error instanceof Error ? error : new Error(String(error))
+        error: error instanceof Error ? error : new Error(String(error)),
       };
     }
   }
@@ -170,14 +181,15 @@ export class StatusHydrator {
     status: TStatus,
     hydratedFields: string[]
   ): void {
-    const resourceId = (enhanced as { __resourceId?: string }).__resourceId || enhanced.metadata?.name || 'unknown';
+    const resourceId =
+      (enhanced as { __resourceId?: string }).__resourceId || enhanced.metadata?.name || 'unknown';
     const statusLogger = this.logger.child({ resourceId });
-    
+
     statusLogger.debug('Populating enhanced status', {
       hasStatus: !!enhanced.status,
-      statusFields: Object.keys(status || {})
+      statusFields: Object.keys(status || {}),
     });
-    
+
     // Use type assertion to access the internal status object
     const statusProxy = enhanced.status as Record<string, unknown>;
 
@@ -185,20 +197,22 @@ export class StatusHydrator {
     const allLiveStatusKeys = Object.keys(status || {});
 
     for (const field of allLiveStatusKeys) {
-        // Check if the field exists on the live status
-        if (status[field] !== undefined) {
-            try {
-                // Assign the value directly to the proxy.
-                // The proxy's setter will handle it.
-                statusProxy[field] = status[field];
-                hydratedFields.push(field);
-                statusLogger.debug('Status field hydrated', { field, value: status[field] });
-            } catch (error) {
-                statusLogger.debug('Failed to set status field', { field, error: (error as Error).message });
-            }
+      // Check if the field exists on the live status
+      if (status[field] !== undefined) {
+        try {
+          // Assign the value directly to the proxy.
+          // The proxy's setter will handle it.
+          statusProxy[field] = status[field];
+          hydratedFields.push(field);
+          statusLogger.debug('Status field hydrated', { field, value: status[field] });
+        } catch (error) {
+          statusLogger.debug('Failed to set status field', {
+            field,
+            error: (error as Error).message,
+          });
         }
+      }
     }
-
   }
 
   /**
@@ -210,12 +224,11 @@ export class StatusHydrator {
   ): Promise<void> {
     const proxyName = enhancedProxy.metadata?.name || 'unknown';
     const proxyLogger = this.logger.child({ proxyName });
-    
+
     try {
       // Find the primary resource for this Enhanced proxy
-      const primaryResource = deployedResources.find(r =>
-        r.id === enhancedProxy.metadata?.name ||
-        r.name === enhancedProxy.metadata?.name
+      const primaryResource = deployedResources.find(
+        (r) => r.id === enhancedProxy.metadata?.name || r.name === enhancedProxy.metadata?.name
       );
 
       if (!primaryResource) {
@@ -245,7 +258,9 @@ export class StatusHydrator {
     const queryLogger = this.logger.child({ kind, name, namespace });
 
     if (!name || !namespace) {
-      queryLogger.warn('Invalid resource metadata for status query', { resourceId: deployedResource.id });
+      queryLogger.warn('Invalid resource metadata for status query', {
+        resourceId: deployedResource.id,
+      });
       return null;
     }
 
@@ -304,7 +319,7 @@ export class StatusHydrator {
     this.statusCache.set(key, {
       data,
       timestamp: Date.now(),
-      ttl: this.mergedOptions.cacheTtl
+      ttl: this.mergedOptions.cacheTtl,
     });
   }
 
@@ -321,7 +336,7 @@ export class StatusHydrator {
   getCacheStats(): { size: number; keys: string[] } {
     return {
       size: this.statusCache.size,
-      keys: Array.from(this.statusCache.keys())
+      keys: Array.from(this.statusCache.keys()),
     };
   }
 }

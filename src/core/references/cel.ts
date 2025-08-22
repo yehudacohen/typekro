@@ -56,7 +56,6 @@ function expr<T = unknown>(
   } as CelExpression<T> & T;
 }
 
-
 /**
  * Convenience method for joining parts with automatic spacing.
  * Useful for building readable CEL expressions.
@@ -98,7 +97,6 @@ function join<T = unknown>(
   return context ? expr<T>(context, ...spacedParts) : expr<T>(...spacedParts);
 }
 
-
 // Common CEL value types
 type CelValue = string | number | boolean | null | undefined;
 
@@ -132,11 +130,13 @@ function conditional<T = unknown>(
   }
 }
 
-
 /**
  * Creates a CEL expression for mathematical operations
  */
-function math<T = unknown>(operation: string, ...operands: RefOrValue<CelValue>[]): CelExpression<T> & T;
+function math<T = unknown>(
+  operation: string,
+  ...operands: RefOrValue<CelValue>[]
+): CelExpression<T> & T;
 function math<T = unknown>(
   context: SerializationContext,
   operation: string,
@@ -180,9 +180,9 @@ function math<T = unknown>(
 
 /**
  * Creates a mixed string template that combines literal strings with CEL expressions
- * 
+ *
  * This function creates YAML strings with embedded CEL expressions.
- * 
+ *
  * Examples:
  * - template('http://%s', schema.spec.name) -> "http://${schema.spec.name}"
  * - template('%s-%s', prefix, suffix) -> "${prefix}-${suffix}"
@@ -247,9 +247,9 @@ function template(
 
 /**
  * Creates a CEL string concatenation expression using the + operator
- * 
+ *
  * This function automatically quotes string literals and joins all parts with +
- * 
+ *
  * Examples:
  * - concat('http://', serviceName) -> "http://" + serviceName
  * - concat(prefix, '-', suffix) -> prefix + "-" + suffix

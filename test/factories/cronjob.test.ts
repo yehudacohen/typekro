@@ -5,8 +5,8 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { cronJob } from '../../src/factories/kubernetes/workloads/cron-job.js';
 import type { V1CronJob } from '@kubernetes/client-node';
+import { cronJob } from '../../src/factories/kubernetes/workloads/cron-job.js';
 
 describe('CronJob Factory', () => {
   const createTestCronJob = (
@@ -395,7 +395,7 @@ describe('CronJob Factory', () => {
         'pg_dump',
       ]);
       expect(
-        enhanced.spec!.jobTemplate.spec!.template.spec!!.volumes![0].persistentVolumeClaim!.claimName
+        enhanced.spec!.jobTemplate.spec!.template.spec!.volumes![0].persistentVolumeClaim!.claimName
       ).toBe('backup-pvc');
 
       // Test readiness evaluation with complex job

@@ -1,6 +1,6 @@
 /**
  * Kubernetes Networking Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes networking resources
  * including Services, Ingresses, NetworkPolicies, Endpoints, etc.
  */

@@ -13,7 +13,7 @@ export function node(resource: V1Node): Enhanced<V1NodeSpec, V1NodeStatus> {
     metadata: resource.metadata ?? { name: 'unnamed-node' },
   }).withReadinessEvaluator((liveResource: V1Node) => {
     const status = liveResource.status;
-    
+
     if (!status) {
       return {
         ready: false,
@@ -23,8 +23,8 @@ export function node(resource: V1Node): Enhanced<V1NodeSpec, V1NodeStatus> {
     }
 
     const conditions = status.conditions || [];
-    const readyCondition = conditions.find(c => c.type === 'Ready');
-    
+    const readyCondition = conditions.find((c) => c.type === 'Ready');
+
     if (readyCondition?.status === 'True') {
       return {
         ready: true,
@@ -34,7 +34,7 @@ export function node(resource: V1Node): Enhanced<V1NodeSpec, V1NodeStatus> {
 
     const reason = readyCondition?.reason || 'Unknown';
     const message = readyCondition?.message || 'Node readiness condition not found';
-    
+
     return {
       ready: false,
       reason,

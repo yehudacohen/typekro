@@ -3,8 +3,12 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { resourceGraphDefinition, kroCustomResource, kroCustomResourceDefinition } from '../../src/factories/kro/index.js';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node';
+import {
+  kroCustomResource,
+  kroCustomResourceDefinition,
+  resourceGraphDefinition,
+} from '../../src/factories/kro/index.js';
 
 describe('Kro Factory Functions', () => {
   describe('resourceGraphDefinition', () => {
@@ -14,14 +18,14 @@ describe('Kro Factory Functions', () => {
         spec: {
           schema: {
             apiVersion: 'v1alpha1',
-            kind: 'TestResource'
+            kind: 'TestResource',
           },
-          resources: []
-        }
+          resources: [],
+        },
       };
 
       const enhanced = resourceGraphDefinition(rgd);
-      
+
       expect(enhanced).toBeDefined();
       expect(enhanced.apiVersion).toBe('kro.run/v1alpha1');
       expect(enhanced.kind).toBe('ResourceGraphDefinition');
@@ -32,25 +36,25 @@ describe('Kro Factory Functions', () => {
     it('should evaluate RGD as ready when phase is ready and Ready condition is True', () => {
       const rgd = {
         metadata: { name: 'test-rgd' },
-        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] }
+        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] },
       };
 
       const enhanced = resourceGraphDefinition(rgd);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveRGD = {
         status: {
           state: 'Active',
           conditions: [
             { type: 'ReconcilerReady', status: 'True' },
             { type: 'GraphVerified', status: 'True' },
-            { type: 'CustomResourceDefinitionSynced', status: 'True' }
-          ]
-        }
+            { type: 'CustomResourceDefinitionSynced', status: 'True' },
+          ],
+        },
       };
-      
+
       const result = evaluator(liveRGD);
-      
+
       expect(result.ready).toBe(true);
       expect(result.message).toContain('ResourceGraphDefinition is active and ready');
     });
@@ -58,21 +62,21 @@ describe('Kro Factory Functions', () => {
     it('should evaluate RGD as not ready when phase is not ready', () => {
       const rgd = {
         metadata: { name: 'test-rgd' },
-        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] }
+        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] },
       };
 
       const enhanced = resourceGraphDefinition(rgd);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveRGD = {
         status: {
           state: 'processing',
-          conditions: []
-        }
+          conditions: [],
+        },
       };
-      
+
       const result = evaluator(liveRGD);
-      
+
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('ReconciliationPending');
       expect(result.message).toContain('current state: processing');
@@ -82,14 +86,14 @@ describe('Kro Factory Functions', () => {
     it('should handle missing status gracefully', () => {
       const rgd = {
         metadata: { name: 'test-rgd' },
-        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] }
+        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] },
       };
 
       const enhanced = resourceGraphDefinition(rgd);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const result = evaluator({ status: null });
-      
+
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('StatusMissing');
       expect(result.message).toContain('Waiting for Kro controller to initialize status');
@@ -102,7 +106,7 @@ describe('Kro Factory Functions', () => {
         name: string;
         replicas: number;
       }
-      
+
       interface WebAppStatus {
         url: string;
         ready: boolean;
@@ -112,11 +116,11 @@ describe('Kro Factory Functions', () => {
         apiVersion: 'kro.run/v1alpha1',
         kind: 'WebApplication',
         metadata: { name: 'test-webapp' },
-        spec: { name: 'test', replicas: 3 }
+        spec: { name: 'test', replicas: 3 },
       };
 
       const enhanced = kroCustomResource<WebAppSpec, WebAppStatus>(resource);
-      
+
       expect(enhanced).toBeDefined();
       expect(enhanced.apiVersion).toBe('kro.run/v1alpha1');
       expect(enhanced.kind).toBe('WebApplication');
@@ -129,24 +133,22 @@ describe('Kro Factory Functions', () => {
         apiVersion: 'kro.run/v1alpha1',
         kind: 'WebApplication',
         metadata: { name: 'test-webapp' },
-        spec: { name: 'test', replicas: 3 }
+        spec: { name: 'test', replicas: 3 },
       };
 
       const enhanced = kroCustomResource(resource);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveResource = {
         status: {
           state: 'ACTIVE',
-          conditions: [
-            { type: 'Ready', status: 'True', reason: 'AllResourcesReady' }
-          ],
-          observedGeneration: 1
-        }
+          conditions: [{ type: 'Ready', status: 'True', reason: 'AllResourcesReady' }],
+          observedGeneration: 1,
+        },
       };
-      
+
       const result = evaluator(liveResource);
-      
+
       expect(result.ready).toBe(true);
       expect(result.message).toContain('WebApplication instance is active');
     });
@@ -156,24 +158,22 @@ describe('Kro Factory Functions', () => {
         apiVersion: 'kro.run/v1alpha1',
         kind: 'WebApplication',
         metadata: { name: 'test-webapp' },
-        spec: { name: 'test', replicas: 3 }
+        spec: { name: 'test', replicas: 3 },
       };
 
       const enhanced = kroCustomResource(resource);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveResource = {
         status: {
           state: 'PROGRESSING',
-          conditions: [
-            { type: 'Ready', status: 'False', reason: 'ResourcesCreating' }
-          ],
-          observedGeneration: 1
-        }
+          conditions: [{ type: 'Ready', status: 'False', reason: 'ResourcesCreating' }],
+          observedGeneration: 1,
+        },
       };
-      
+
       const result = evaluator(liveResource);
-      
+
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('KroInstanceProgressing');
       expect(result.message).toContain('State: PROGRESSING');
@@ -185,24 +185,29 @@ describe('Kro Factory Functions', () => {
         apiVersion: 'kro.run/v1alpha1',
         kind: 'WebApplication',
         metadata: { name: 'test-webapp' },
-        spec: { name: 'test', replicas: 3 }
+        spec: { name: 'test', replicas: 3 },
       };
 
       const enhanced = kroCustomResource(resource);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveResource = {
         status: {
           state: 'FAILED',
           conditions: [
-            { type: 'Ready', status: 'False', reason: 'ResourceCreationFailed', message: 'Failed to create deployment' }
+            {
+              type: 'Ready',
+              status: 'False',
+              reason: 'ResourceCreationFailed',
+              message: 'Failed to create deployment',
+            },
           ],
-          observedGeneration: 1
-        }
+          observedGeneration: 1,
+        },
       };
-      
+
       const result = evaluator(liveResource);
-      
+
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('KroInstanceFailed');
       expect(result.message).toContain('Failed to create deployment');
@@ -214,16 +219,16 @@ describe('Kro Factory Functions', () => {
         apiVersion: 'kro.run/v1alpha1',
         kind: 'WebApplication',
         metadata: { name: 'test-webapp' },
-        spec: { name: 'test', replicas: 3 }
+        spec: { name: 'test', replicas: 3 },
       };
 
       const enhanced = kroCustomResource(resource);
-      
+
       // Check that the enhanced resource has the expected structure
       expect(enhanced).toBeDefined();
       expect(enhanced.apiVersion).toBe('kro.run/v1alpha1');
       expect(enhanced.kind).toBe('WebApplication');
-      
+
       // The metadata should be a proxy, so we check that it exists and has the right structure
       expect(enhanced.metadata).toBeDefined();
       expect(typeof enhanced.metadata).toBe('object');
@@ -238,31 +243,33 @@ describe('Kro Factory Functions', () => {
         metadata: { name: 'webapplications.kro.run' },
         spec: {
           group: 'kro.run',
-          versions: [{
-            name: 'v1alpha1',
-            served: true,
-            storage: true,
-            schema: {
-              openAPIV3Schema: {
-                type: 'object',
-                properties: {
-                  spec: { type: 'object' },
-                  status: { type: 'object' }
-                }
-              }
-            }
-          }],
+          versions: [
+            {
+              name: 'v1alpha1',
+              served: true,
+              storage: true,
+              schema: {
+                openAPIV3Schema: {
+                  type: 'object',
+                  properties: {
+                    spec: { type: 'object' },
+                    status: { type: 'object' },
+                  },
+                },
+              },
+            },
+          ],
           scope: 'Namespaced',
           names: {
             plural: 'webapplications',
             singular: 'webapplication',
-            kind: 'WebApplication'
-          }
-        }
+            kind: 'WebApplication',
+          },
+        },
       };
 
       const enhanced = kroCustomResourceDefinition(crd);
-      
+
       expect(enhanced).toBeDefined();
       expect(enhanced.apiVersion).toBe('apiextensions.k8s.io/v1');
       expect(enhanced.kind).toBe('CustomResourceDefinition');
@@ -279,25 +286,25 @@ describe('Kro Factory Functions', () => {
           group: 'kro.run',
           versions: [{ name: 'v1alpha1', served: true, storage: true }],
           scope: 'Namespaced',
-          names: { plural: 'webapplications', singular: 'webapplication', kind: 'WebApplication' }
-        }
+          names: { plural: 'webapplications', singular: 'webapplication', kind: 'WebApplication' },
+        },
       };
 
       const enhanced = kroCustomResourceDefinition(crd);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveCRD = {
         metadata: { name: 'webapplications.kro.run' },
         status: {
           conditions: [
             { type: 'Established', status: 'True', reason: 'InitialNamesAccepted' },
-            { type: 'NamesAccepted', status: 'True', reason: 'NoConflicts' }
-          ]
-        }
+            { type: 'NamesAccepted', status: 'True', reason: 'NoConflicts' },
+          ],
+        },
       };
-      
+
       const result = evaluator(liveCRD);
-      
+
       expect(result.ready).toBe(true);
       expect(result.message).toContain('webapplications.kro.run is established');
     });
@@ -311,25 +318,25 @@ describe('Kro Factory Functions', () => {
           group: 'apps',
           versions: [{ name: 'v1', served: true, storage: true }],
           scope: 'Namespaced',
-          names: { plural: 'deployments', singular: 'deployment', kind: 'Deployment' }
-        }
+          names: { plural: 'deployments', singular: 'deployment', kind: 'Deployment' },
+        },
       };
 
       const enhanced = kroCustomResourceDefinition(crd);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveCRD = {
         metadata: { name: 'deployments.apps' },
         status: {
           conditions: [
             { type: 'Established', status: 'True', reason: 'InitialNamesAccepted' },
-            { type: 'NamesAccepted', status: 'True', reason: 'NoConflicts' }
-          ]
-        }
+            { type: 'NamesAccepted', status: 'True', reason: 'NoConflicts' },
+          ],
+        },
       };
-      
+
       const result = evaluator(liveCRD);
-      
+
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('KroCRDNotReady');
       expect(result.details?.isKroCRD).toBe(false);
@@ -344,25 +351,25 @@ describe('Kro Factory Functions', () => {
           group: 'kro.run',
           versions: [{ name: 'v1alpha1', served: true, storage: true }],
           scope: 'Namespaced',
-          names: { plural: 'webapplications', singular: 'webapplication', kind: 'WebApplication' }
-        }
+          names: { plural: 'webapplications', singular: 'webapplication', kind: 'WebApplication' },
+        },
       };
 
       const enhanced = kroCustomResourceDefinition(crd);
       const evaluator = (enhanced as any).readinessEvaluator;
-      
+
       const liveCRD = {
         metadata: { name: 'webapplications.kro.run' },
         status: {
           conditions: [
             { type: 'Established', status: 'False', reason: 'Installing' },
-            { type: 'NamesAccepted', status: 'True', reason: 'NoConflicts' }
-          ]
-        }
+            { type: 'NamesAccepted', status: 'True', reason: 'NoConflicts' },
+          ],
+        },
       };
-      
+
       const result = evaluator(liveCRD);
-      
+
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('KroCRDNotReady');
       expect(result.message).toContain('Established: False');
@@ -373,14 +380,14 @@ describe('Kro Factory Functions', () => {
     it('should exclude readiness evaluators from serialization across all Kro factories', () => {
       const rgd = resourceGraphDefinition({
         metadata: { name: 'test-rgd' },
-        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] }
+        spec: { schema: { apiVersion: 'v1alpha1', kind: 'TestResource' }, resources: [] },
       });
 
       const customResource = kroCustomResource({
         apiVersion: 'kro.run/v1alpha1',
         kind: 'WebApplication',
         metadata: { name: 'test-webapp' },
-        spec: { name: 'test', replicas: 3 }
+        spec: { name: 'test', replicas: 3 },
       });
 
       const crd = kroCustomResourceDefinition({
@@ -391,8 +398,8 @@ describe('Kro Factory Functions', () => {
           group: 'kro.run',
           versions: [{ name: 'v1alpha1', served: true, storage: true }],
           scope: 'Namespaced',
-          names: { plural: 'webapplications', singular: 'webapplication', kind: 'WebApplication' }
-        }
+          names: { plural: 'webapplications', singular: 'webapplication', kind: 'WebApplication' },
+        },
       });
 
       // All should have readiness evaluators

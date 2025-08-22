@@ -1,13 +1,13 @@
 /**
  * Health Checking Tests
- * 
+ *
  * Tests the real health checking implementation using readiness evaluators
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { type } from 'arktype';
 import { DirectResourceFactoryImpl } from '../../src/core/deployment/direct-factory.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
-import { type } from 'arktype';
 
 describe('Health Checking with Readiness Evaluators', () => {
   const TestSpecSchema = type({
@@ -33,10 +33,12 @@ describe('Health Checking with Readiness Evaluators', () => {
           template: {
             metadata: { labels: { app: 'test-app' } },
             spec: {
-              containers: [{
-                name: 'test-app',
-                image: 'nginx:latest',
-              }],
+              containers: [
+                {
+                  name: 'test-app',
+                  image: 'nginx:latest',
+                },
+              ],
             },
           },
           replicas: 1,
@@ -59,7 +61,7 @@ describe('Health Checking with Readiness Evaluators', () => {
 
   it('should return healthy status when no deployments exist', async () => {
     const status = await factory.getStatus();
-    
+
     expect(status.health).toBe('healthy');
     expect(status.instanceCount).toBe(0);
     expect(status.name).toBe('test-health-factory');
@@ -82,10 +84,12 @@ describe('Health Checking with Readiness Evaluators', () => {
         template: {
           metadata: { labels: { app: 'test-app' } },
           spec: {
-            containers: [{
-              name: 'test-app',
-              image: 'nginx:latest',
-            }],
+            containers: [
+              {
+                name: 'test-app',
+                image: 'nginx:latest',
+              },
+            ],
           },
         },
         replicas: 1,
@@ -118,10 +122,12 @@ describe('Health Checking with Readiness Evaluators', () => {
         template: {
           metadata: { labels: { app: 'test-app' } },
           spec: {
-            containers: [{
-              name: 'test-app',
-              image: 'nginx:latest',
-            }],
+            containers: [
+              {
+                name: 'test-app',
+                image: 'nginx:latest',
+              },
+            ],
           },
         },
         replicas: 2,
@@ -151,10 +157,12 @@ describe('Health Checking with Readiness Evaluators', () => {
         template: {
           metadata: { labels: { app: 'test-app' } },
           spec: {
-            containers: [{
-              name: 'test-app',
-              image: 'nginx:latest',
-            }],
+            containers: [
+              {
+                name: 'test-app',
+                image: 'nginx:latest',
+              },
+            ],
           },
         },
         replicas: 1,
@@ -174,15 +182,15 @@ describe('Health Checking with Readiness Evaluators', () => {
 
   it('should provide detailed health information via getHealthDetails', async () => {
     const healthDetails = await factory.getHealthDetails();
-    
+
     expect(healthDetails).toHaveProperty('health');
     expect(healthDetails).toHaveProperty('resourceCounts');
     expect(healthDetails).toHaveProperty('errors');
-    
+
     expect(healthDetails.health).toBe('healthy');
     expect(healthDetails.resourceCounts.total).toBe(0);
     expect(healthDetails.errors).toHaveLength(0);
-    
+
     expect(typeof healthDetails.resourceCounts.healthy).toBe('number');
     expect(typeof healthDetails.resourceCounts.degraded).toBe('number');
     expect(typeof healthDetails.resourceCounts.failed).toBe('number');

@@ -35,7 +35,12 @@ export type EnvVarValue =
   | KubernetesRef<string | undefined>
   | CelExpression<string>;
 
-export type MagicAssignable<T> = T | undefined | KubernetesRef<T> | KubernetesRef<T | undefined> | CelExpression<T>;
+export type MagicAssignable<T> =
+  | T
+  | undefined
+  | KubernetesRef<T>
+  | KubernetesRef<T | undefined>
+  | CelExpression<T>;
 
 // Type assertion helpers for the magic proxy system
 export type MagicString = string | KubernetesRef<string> | CelExpression<string>;

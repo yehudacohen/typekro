@@ -15,9 +15,9 @@ import type {
 
 export class ResourceReadinessChecker {
   private onResourceReady?: (resource: DeployedResource) => void;
-  
-  constructor(private k8sApi: k8s.KubernetesObjectApi) { }
-  
+
+  constructor(private k8sApi: k8s.KubernetesObjectApi) {}
+
   /**
    * Set callback to be called when a resource becomes ready
    */
@@ -94,12 +94,12 @@ export class ResourceReadinessChecker {
 
         if (this.isResourceReady(currentResource)) {
           const duration = Date.now() - startTime;
-          
+
           // Mark resource as ready in the deployment engine's tracking
           if (this.onResourceReady) {
             this.onResourceReady(deployedResource);
           }
-          
+
           emitEvent({
             type: 'progress',
             resourceId: deployedResource.id,
@@ -198,8 +198,6 @@ export class ResourceReadinessChecker {
     // For resources with status, check for common readiness patterns
     return this.isGenericResourceReady(resource);
   }
-
-
 
   /**
    * Generic readiness check for unknown resource types

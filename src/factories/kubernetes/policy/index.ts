@@ -1,6 +1,6 @@
 /**
  * Kubernetes Policy Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes policy resources
  * including PodDisruptionBudgets, ResourceQuotas, and LimitRanges.
  */

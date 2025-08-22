@@ -10,12 +10,12 @@ export function roleBinding(
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'RoleBinding',
     metadata: resource.metadata ?? { name: 'unnamed-rolebinding' },
-  }).withReadinessEvaluator((liveResource: V1RoleBinding) => {
+  }).withReadinessEvaluator((_liveResource: V1RoleBinding) => {
     // RoleBindings are ready when they exist - they're configuration objects
     // that don't have complex status conditions
     return {
       ready: true,
-      message: 'RoleBinding is ready'
+      message: 'RoleBinding is ready',
     };
   }) as V1RoleBinding & Enhanced<V1RoleBinding, object>;
 }

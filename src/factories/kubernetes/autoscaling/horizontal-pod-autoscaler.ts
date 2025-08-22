@@ -16,24 +16,24 @@ export function horizontalPodAutoscaler(
   }).withReadinessEvaluator((liveResource: V2HorizontalPodAutoscaler) => {
     try {
       const status = liveResource.status;
-      
+
       if (!status) {
         return { ready: false, reason: 'No status available' };
       }
 
       // HPA is ready when it can read metrics and has current replicas
       const ready = status.currentReplicas !== undefined;
-      
+
       return {
         ready,
-        reason: ready 
+        reason: ready
           ? `HPA is active with ${status.currentReplicas} current replicas`
-          : 'HPA is not yet able to read metrics'
+          : 'HPA is not yet able to read metrics',
       };
     } catch (error) {
-      return { 
-        ready: false, 
-        reason: `Error checking HPA status: ${error instanceof Error ? error.message : String(error)}` 
+      return {
+        ready: false,
+        reason: `Error checking HPA status: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   });

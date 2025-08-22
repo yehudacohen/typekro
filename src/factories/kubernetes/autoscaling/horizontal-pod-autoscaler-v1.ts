@@ -16,7 +16,7 @@ export function horizontalPodAutoscalerV1(
   }).withReadinessEvaluator((liveResource: V1HorizontalPodAutoscaler) => {
     const status = liveResource.status;
     const spec = liveResource.spec;
-    
+
     if (!status) {
       return {
         ready: false,
@@ -31,10 +31,11 @@ export function horizontalPodAutoscalerV1(
     const maxReplicas = spec?.maxReplicas || 1;
 
     // HPA is ready when it has valid current replicas within bounds
-    const ready = currentReplicas > 0 && 
-                  currentReplicas >= minReplicas && 
-                  currentReplicas <= maxReplicas &&
-                  desiredReplicas > 0;
+    const ready =
+      currentReplicas > 0 &&
+      currentReplicas >= minReplicas &&
+      currentReplicas <= maxReplicas &&
+      desiredReplicas > 0;
 
     return {
       ready,

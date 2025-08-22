@@ -1,6 +1,6 @@
 /**
  * Alchemy Integration Utilities
- * 
+ *
  * This file contains utility functions that align with the dynamic registration approach.
  * Static resource registration functions have been removed to avoid conflicts.
  */
@@ -11,10 +11,12 @@ import { generateDeterministicResourceId as _generateDeterministicResourceId } f
  * Utility to check if a factory is alchemy-managed
  */
 export function isAlchemyWrapped(factory: any): boolean {
-  return factory !== null &&
+  return (
+    factory !== null &&
     factory !== undefined &&
     typeof factory === 'object' &&
-    factory.isAlchemyManaged === true;
+    factory.isAlchemyManaged === true
+  );
 }
 
 /**

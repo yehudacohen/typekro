@@ -1,7 +1,7 @@
-import { createResource } from '../shared.js';
 import type { Enhanced } from '../../core/types/index.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';
+import { createResource } from '../shared.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
+import type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';
 
 export interface HelmReleaseConfig {
   name: string;

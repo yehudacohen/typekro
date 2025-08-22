@@ -5,11 +5,11 @@
  * It actually deploys to a Kubernetes cluster and verifies the complete workflow.
  */
 
-import { beforeAll, describe, it, expect } from 'bun:test';
+import { beforeAll, describe, expect, it } from 'bun:test';
 import { execSync } from 'node:child_process';
-import * as k8s from '@kubernetes/client-node';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { toResourceGraph } from '../../src/core/serialization/index.js';
 import { helmRelease, helmRepository } from '../../src/factories/helm/index.js';
@@ -205,7 +205,7 @@ describeOrSkip('End-to-End Helm Integration', () => {
               }
             : {}),
         }),
-        (schema, resources) => ({
+        (schema, _resources) => ({
           phase: 'Ready' as const,
           helmControllerReady: true,
           applicationsDeployed: schema.spec.enableRedis ? 2 : 1,
@@ -237,7 +237,7 @@ describeOrSkip('End-to-End Helm Integration', () => {
 
       // Deploy the platform instance
       const platformInstance = await factory.deploy({
-        name: "helm-platform-instance",
+        name: 'helm-platform-instance',
         environment: 'development',
         nginxReplicas: 2,
         enableRedis: true,
@@ -334,7 +334,7 @@ describeOrSkip('End-to-End Helm Integration', () => {
       // Test both RGD YAML and individual resource YAML generation
       const rgdYaml = helmPlatformGraph.toYaml();
       const instanceYaml = factory.toYaml({
-        name: "helm-platform-instance",
+        name: 'helm-platform-instance',
         environment: 'development',
         nginxReplicas: 2,
         enableRedis: true,
@@ -412,12 +412,12 @@ describeOrSkip('End-to-End Helm Integration', () => {
       console.log('🎯 This test proves TypeKro can be a complete GitOps platform orchestrator!');
 
       // Cleanup using factory-based resource destruction
-      console.log("🧹 Cleaning up deployed resources...");
+      console.log('🧹 Cleaning up deployed resources...');
       try {
-        await factory.deleteInstance("helm-platform-instance");
-        console.log("✅ Factory cleanup completed");
+        await factory.deleteInstance('helm-platform-instance');
+        console.log('✅ Factory cleanup completed');
       } catch (error) {
-        console.warn("⚠️ Factory cleanup failed:", error);
+        console.warn('⚠️ Factory cleanup failed:', error);
       }
 
       // Fallback: cleanup test namespace

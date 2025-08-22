@@ -2,31 +2,32 @@
  * Tests for StatusHydrator - Updated for new interface
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { StatusHydrator } from '../../src/core/deployment/status-hydrator.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
 
 // Mock Kubernetes API
-const createMockK8sApi = (mockResource?: any) => ({
-  read: async () => ({
-    body: mockResource || {
-      apiVersion: 'apps/v1',
-      kind: 'Deployment',
-      metadata: { name: 'test-deployment', namespace: 'default' },
-      status: {
-        replicas: 3,
-        readyReplicas: 3,
-        availableReplicas: 3,
-        conditions: [
-          { type: 'Available', status: 'True' },
-          { type: 'Progressing', status: 'True' }
-        ]
-      }
-    }
-  })
-}) as any as k8s.KubernetesObjectApi;
+const createMockK8sApi = (mockResource?: any) =>
+  ({
+    read: async () => ({
+      body: mockResource || {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'test-deployment', namespace: 'default' },
+        status: {
+          replicas: 3,
+          readyReplicas: 3,
+          availableReplicas: 3,
+          conditions: [
+            { type: 'Available', status: 'True' },
+            { type: 'Progressing', status: 'True' },
+          ],
+        },
+      },
+    }),
+  }) as any as k8s.KubernetesObjectApi;
 
 describe('StatusHydrator', () => {
   let statusHydrator: StatusHydrator;
@@ -35,7 +36,7 @@ describe('StatusHydrator', () => {
 
   beforeEach(() => {
     statusHydrator = new StatusHydrator(createMockK8sApi());
-    
+
     mockDeployedResource = {
       id: 'testDeployment',
       kind: 'Deployment',
@@ -44,7 +45,7 @@ describe('StatusHydrator', () => {
       manifest: {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
-        metadata: { name: 'test-deployment', namespace: 'default' }
+        metadata: { name: 'test-deployment', namespace: 'default' },
       },
       status: 'ready',
       deployedAt: new Date(),
@@ -61,22 +62,19 @@ describe('StatusHydrator', () => {
 
   describe('hydrateStatus', () => {
     it('should successfully hydrate Deployment status fields', async () => {
-      const result = await statusHydrator.hydrateStatus(
-        mockEnhanced,
-        mockDeployedResource
-      );
+      const result = await statusHydrator.hydrateStatus(mockEnhanced, mockDeployedResource);
 
       expect(result.success).toBe(true);
       expect(result.resourceId).toBe('test-deployment');
       expect(result.hydratedFields.length).toBeGreaterThan(0);
-      
+
       // Check that status fields were populated
       expect(mockEnhanced.status.replicas).toBe(3);
       expect(mockEnhanced.status.readyReplicas).toBe(3);
       expect(mockEnhanced.status.availableReplicas).toBe(3);
       expect(mockEnhanced.status.conditions).toEqual([
         { type: 'Available', status: 'True' },
-        { type: 'Progressing', status: 'True' }
+        { type: 'Progressing', status: 'True' },
       ]);
     });
 
@@ -87,13 +85,13 @@ describe('StatusHydrator', () => {
         metadata: { name: 'test-service', namespace: 'default' },
         status: {
           loadBalancer: {
-            ingress: [{ ip: '192.168.1.100' }]
-          }
-        }
+            ingress: [{ ip: '192.168.1.100' }],
+          },
+        },
       });
 
       statusHydrator = new StatusHydrator(serviceApi);
-      
+
       const serviceResource: DeployedResource = {
         ...mockDeployedResource,
         id: 'testService',
@@ -107,10 +105,7 @@ describe('StatusHydrator', () => {
         metadata: { name: 'test-service', namespace: 'default' },
       } as Enhanced<any, any>;
 
-      const result = await statusHydrator.hydrateStatus(
-        serviceEnhanced,
-        serviceResource
-      );
+      const result = await statusHydrator.hydrateStatus(serviceEnhanced, serviceResource);
 
       expect(result.success).toBe(true);
       expect(serviceEnhanced.status.loadBalancer?.ingress).toEqual([{ ip: '192.168.1.100' }]);
@@ -125,14 +120,12 @@ describe('StatusHydrator', () => {
           phase: 'Running',
           podIP: '10.244.0.5',
           hostIP: '192.168.1.10',
-          containerStatuses: [
-            { name: 'app', ready: true, restartCount: 0 }
-          ]
-        }
+          containerStatuses: [{ name: 'app', ready: true, restartCount: 0 }],
+        },
       });
 
       statusHydrator = new StatusHydrator(podApi);
-      
+
       const podResource: DeployedResource = {
         ...mockDeployedResource,
         id: 'testPod',
@@ -146,17 +139,14 @@ describe('StatusHydrator', () => {
         metadata: { name: 'test-pod', namespace: 'default' },
       } as Enhanced<any, any>;
 
-      const result = await statusHydrator.hydrateStatus(
-        podEnhanced,
-        podResource
-      );
+      const result = await statusHydrator.hydrateStatus(podEnhanced, podResource);
 
       expect(result.success).toBe(true);
       expect(podEnhanced.status.phase).toBe('Running');
       expect(podEnhanced.status.podIP).toBe('10.244.0.5');
       expect(podEnhanced.status.hostIP).toBe('192.168.1.10');
       expect(podEnhanced.status.containerStatuses).toEqual([
-        { name: 'app', ready: true, restartCount: 0 }
+        { name: 'app', ready: true, restartCount: 0 },
       ]);
     });
 
@@ -164,15 +154,12 @@ describe('StatusHydrator', () => {
       const errorApi = {
         read: async () => {
           throw new Error('Resource not found');
-        }
+        },
       } as any as k8s.KubernetesObjectApi;
 
       statusHydrator = new StatusHydrator(errorApi);
 
-      const result = await statusHydrator.hydrateStatus(
-        mockEnhanced,
-        mockDeployedResource
-      );
+      const result = await statusHydrator.hydrateStatus(mockEnhanced, mockDeployedResource);
 
       expect(result.success).toBe(false);
       expect(result.error?.message).toContain('Resource not found');
@@ -188,7 +175,7 @@ describe('StatusHydrator', () => {
       });
 
       statusHydrator = new StatusHydrator(noStatusApi);
-      
+
       const configResource: DeployedResource = {
         ...mockDeployedResource,
         id: 'testConfig',
@@ -196,10 +183,7 @@ describe('StatusHydrator', () => {
         name: 'test-config',
       };
 
-      const result = await statusHydrator.hydrateStatus(
-        mockEnhanced,
-        configResource
-      );
+      const result = await statusHydrator.hydrateStatus(mockEnhanced, configResource);
 
       expect(result.success).toBe(false);
       expect(result.error?.message).toContain('No status found');
@@ -216,10 +200,10 @@ describe('StatusHydrator', () => {
             body: {
               apiVersion: 'apps/v1',
               kind: 'Deployment',
-              status: { replicas: 3 }
-            }
+              status: { replicas: 3 },
+            },
           };
-        }
+        },
       } as any as k8s.KubernetesObjectApi;
 
       statusHydrator = new StatusHydrator(cachingApi, { enableCaching: true });
@@ -241,9 +225,9 @@ describe('StatusHydrator', () => {
 
     it('should clear cache when requested', async () => {
       await statusHydrator.hydrateStatus(mockEnhanced, mockDeployedResource);
-      
+
       statusHydrator.clearCache();
-      
+
       const stats = statusHydrator.getCacheStats();
       expect(stats.size).toBe(0);
     });

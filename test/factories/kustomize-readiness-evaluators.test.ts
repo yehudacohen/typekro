@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { kustomizationReadinessEvaluator } from '../../src/factories/flux/kustomize/readiness-evaluators.js';
 
 describe('Kustomize Readiness Evaluators', () => {
@@ -187,9 +187,7 @@ describe('Kustomize Readiness Evaluators', () => {
             },
           ],
           inventory: {
-            entries: [
-              { id: 'apps_v1_Deployment_default_webapp', v: 'v1' },
-            ],
+            entries: [{ id: 'apps_v1_Deployment_default_webapp', v: 'v1' }],
           },
         },
       };

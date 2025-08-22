@@ -15,7 +15,7 @@ export function certificateSigningRequest(
     metadata: resource.metadata ?? { name: 'unnamed-csr' },
   }).withReadinessEvaluator((liveResource: V1CertificateSigningRequest) => {
     const status = liveResource.status;
-    
+
     if (!status) {
       return {
         ready: false,
@@ -25,8 +25,8 @@ export function certificateSigningRequest(
     }
 
     const conditions = status.conditions || [];
-    const approved = conditions.find(c => c.type === 'Approved');
-    const denied = conditions.find(c => c.type === 'Denied');
+    const approved = conditions.find((c) => c.type === 'Approved');
+    const denied = conditions.find((c) => c.type === 'Denied');
     const certificate = status.certificate;
 
     if (denied?.status === 'True') {

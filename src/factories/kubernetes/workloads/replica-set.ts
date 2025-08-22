@@ -15,7 +15,7 @@ export function replicaSet(resource: V1ReplicaSet): Enhanced<V1ReplicaSetSpec, V
     try {
       const status = liveResource.status;
       const spec = liveResource.spec;
-      
+
       if (!status) {
         return { ready: false, reason: 'No status available' };
       }
@@ -24,17 +24,17 @@ export function replicaSet(resource: V1ReplicaSet): Enhanced<V1ReplicaSetSpec, V
       const readyReplicas = status.readyReplicas || 0;
 
       const ready = readyReplicas >= expectedReplicas;
-      
+
       return {
         ready,
-        reason: ready 
+        reason: ready
           ? `All ${expectedReplicas} replicas are ready`
-          : `${readyReplicas}/${expectedReplicas} replicas ready`
+          : `${readyReplicas}/${expectedReplicas} replicas ready`,
       };
     } catch (error) {
-      return { 
-        ready: false, 
-        reason: `Error checking ReplicaSet status: ${error instanceof Error ? error.message : String(error)}` 
+      return {
+        ready: false,
+        reason: `Error checking ReplicaSet status: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   });

@@ -16,38 +16,38 @@ export function podDisruptionBudget(
   }).withReadinessEvaluator((liveResource: V1PodDisruptionBudget) => {
     try {
       const status = liveResource.status;
-      
+
       // Handle missing status gracefully
       if (!status) {
         return {
           ready: false,
           reason: 'StatusMissing',
-          message: 'PodDisruptionBudget status not available yet'
+          message: 'PodDisruptionBudget status not available yet',
         };
       }
-      
+
       // PDB is ready when it has been processed and has status
       const currentHealthy = status.currentHealthy || 0;
       const desiredHealthy = status.desiredHealthy || 0;
       const expectedPods = status.expectedPods || 0;
-      
+
       // PDB is ready when it has been processed by the controller
       if (expectedPods > 0 && currentHealthy >= desiredHealthy) {
         return {
           ready: true,
-          message: `PodDisruptionBudget is ready with ${currentHealthy}/${expectedPods} healthy pods (desired: ${desiredHealthy})`
+          message: `PodDisruptionBudget is ready with ${currentHealthy}/${expectedPods} healthy pods (desired: ${desiredHealthy})`,
         };
       } else if (expectedPods === 0) {
         return {
           ready: true,
-          message: 'PodDisruptionBudget is ready (no matching pods)'
+          message: 'PodDisruptionBudget is ready (no matching pods)',
         };
       } else {
         return {
           ready: false,
           reason: 'InsufficientHealthyPods',
           message: `Waiting for healthy pods: ${currentHealthy}/${expectedPods} healthy (desired: ${desiredHealthy})`,
-          details: { currentHealthy, desiredHealthy, expectedPods }
+          details: { currentHealthy, desiredHealthy, expectedPods },
         };
       }
     } catch (error) {
@@ -55,7 +55,7 @@ export function podDisruptionBudget(
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating PodDisruptionBudget readiness: ${error}`,
-        details: { error: String(error) }
+        details: { error: String(error) },
       };
     }
   });

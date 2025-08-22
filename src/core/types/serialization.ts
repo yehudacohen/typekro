@@ -3,16 +3,15 @@
  */
 
 import type { Type } from 'arktype';
-
-import type { Enhanced, } from './kubernetes.js';
-import type { SchemaMagicProxy } from './references.js';
 import type { MagicAssignable } from './common.js';
-import type { 
-  DeploymentOptions, 
-  DeploymentResult, 
-  DeploymentOperationStatus, 
-  RollbackResult,
+import type { Enhanced } from './kubernetes.js';
+import type { SchemaMagicProxy } from './references.js';
+import type {
   AlchemyDeploymentOptions,
+  DeploymentOperationStatus,
+  DeploymentOptions,
+  DeploymentResult,
+  RollbackResult,
 } from './resource-graph.js';
 
 // Re-export alchemy Scope type for compatibility
@@ -66,14 +65,14 @@ export type KroSchemaBasicType = 'string' | 'integer' | 'boolean' | 'float';
 type KroNestedType<Depth extends number = 10> = Depth extends 0
   ? never
   : {
-    [K in string]:
-    | KroSchemaBasicType
-    | `[]${KroSchemaBasicType}`
-    | `map[string]${KroSchemaBasicType}`
-    | KroNestedType<Prev<Depth>>
-    | `[]${string}` // Arrays of custom types
-    | `map[string]${string}`; // Maps of custom types
-  };
+      [K in string]:
+        | KroSchemaBasicType
+        | `[]${KroSchemaBasicType}`
+        | `map[string]${KroSchemaBasicType}`
+        | KroNestedType<Prev<Depth>>
+        | `[]${string}` // Arrays of custom types
+        | `map[string]${string}`; // Maps of custom types
+    };
 
 /**
  * Helper type to decrement depth counter
@@ -81,24 +80,24 @@ type KroNestedType<Depth extends number = 10> = Depth extends 0
 type Prev<T extends number> = T extends 10
   ? 9
   : T extends 9
-  ? 8
-  : T extends 8
-  ? 7
-  : T extends 7
-  ? 6
-  : T extends 6
-  ? 5
-  : T extends 5
-  ? 4
-  : T extends 4
-  ? 3
-  : T extends 3
-  ? 2
-  : T extends 2
-  ? 1
-  : T extends 1
-  ? 0
-  : never;
+    ? 8
+    : T extends 8
+      ? 7
+      : T extends 7
+        ? 6
+        : T extends 6
+          ? 5
+          : T extends 5
+            ? 4
+            : T extends 4
+              ? 3
+              : T extends 3
+                ? 2
+                : T extends 2
+                  ? 1
+                  : T extends 1
+                    ? 0
+                    : never;
 
 /**
  * Valid Kro Simple Schema field types with proper nesting support
@@ -151,28 +150,28 @@ export interface KroSchemaField {
 export type KroCompatibleValue<Depth extends number = 10> = Depth extends 0
   ? never
   :
-  | string
-  | number
-  | boolean
-  | string[]
-  | number[]
-  | boolean[]
-  | string[][] // Nested arrays
-  | number[][]
-  | boolean[][]
-  | Record<string, string> // Maps of basic types
-  | Record<string, number>
-  | Record<string, boolean>
-  | Record<string, string[]> // Maps of arrays
-  | Record<string, number[]>
-  | Record<string, boolean[]>
-  | Record<string, string>[] // Arrays of maps
-  | Record<string, number>[]
-  | Record<string, boolean>[]
-  | Record<string, Record<string, string>> // Nested maps
-  | Record<string, Record<string, number>>
-  | Record<string, Record<string, boolean>>
-  | KroCompatibleType<Prev<Depth>>; // Nested objects (with depth limit)
+      | string
+      | number
+      | boolean
+      | string[]
+      | number[]
+      | boolean[]
+      | string[][] // Nested arrays
+      | number[][]
+      | boolean[][]
+      | Record<string, string> // Maps of basic types
+      | Record<string, number>
+      | Record<string, boolean>
+      | Record<string, string[]> // Maps of arrays
+      | Record<string, number[]>
+      | Record<string, boolean[]>
+      | Record<string, string>[] // Arrays of maps
+      | Record<string, number>[]
+      | Record<string, boolean>[]
+      | Record<string, Record<string, string>> // Nested maps
+      | Record<string, Record<string, number>>
+      | Record<string, Record<string, boolean>>
+      | KroCompatibleType<Prev<Depth>>; // Nested objects (with depth limit)
 
 /**
  * Constraint type for TypeScript types that can be used with Kro schemas
@@ -311,9 +310,9 @@ export interface ValidationResult {
 
 // Magic assignable type for status field mappings with recursive support
 export type MagicAssignableShape<T> = {
-  [K in keyof T]: T[K] extends object 
-    ? MagicAssignableShape<T[K]>  // Recursively handle nested objects
-    : MagicAssignable<T[K]>;      // Apply MagicAssignable to primitive types
+  [K in keyof T]: T[K] extends object
+    ? MagicAssignableShape<T[K]> // Recursively handle nested objects
+    : MagicAssignable<T[K]>; // Apply MagicAssignable to primitive types
 };
 
 export type ResourceBuilder<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType> = (
@@ -322,13 +321,14 @@ export type ResourceBuilder<TSpec extends KroCompatibleType, TStatus extends Kro
 
 // Type that preserves Enhanced resources exactly as they are
 // Enhanced resources already have the correct MagicProxy types for spec and status
-export type StatusBuilderResources<TResources extends Record<string, Enhanced<any, any>>> = TResources;
+export type StatusBuilderResources<TResources extends Record<string, Enhanced<any, any>>> =
+  TResources;
 
 // The StatusBuilder type itself can be simplified, as the key logic will move to the toResourceGraph function.
 export type StatusBuilder<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any>> // Define it with a generic for the resources
+  TResources extends Record<string, Enhanced<any, any>>, // Define it with a generic for the resources
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here

@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'bun:test';
-import { helmRelease, simpleHelmChart } from '../../../src/factories/helm/index.js';
-import { toResourceGraph } from '../../../src/core/serialization/index.js';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { toResourceGraph } from '../../../src/core/serialization/index.js';
+import { helmRelease, simpleHelmChart } from '../../../src/factories/helm/index.js';
 
 describe('Helm Integration with TypeKro Magic Proxy System', () => {
   const TestSpecSchema = type({
@@ -101,19 +101,14 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
         status: TestStatusSchema,
       },
       (schema) => ({
-        redis: simpleHelmChart(
-          'redis',
-          'https://charts.bitnami.com/bitnami',
-          'redis',
-          {
-            auth: {
-              enabled: false,
-            },
-            replica: {
-              replicaCount: schema.spec.replicas,
-            },
-          }
-        ),
+        redis: simpleHelmChart('redis', 'https://charts.bitnami.com/bitnami', 'redis', {
+          auth: {
+            enabled: false,
+          },
+          replica: {
+            replicaCount: schema.spec.replicas,
+          },
+        }),
       }),
       () => ({ ready: true })
     );

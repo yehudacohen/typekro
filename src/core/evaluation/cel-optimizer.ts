@@ -1,26 +1,26 @@
 /**
  * CEL Expression Optimizer for Compile-time Resolution
- * 
+ *
  * This module performs compile-time optimization of CEL expressions and resource references.
  * It does NOT evaluate CEL expressions at runtime - that's handled by:
  * - Kro operator (for Kro mode deployment)
  * - ReferenceResolver (for Direct mode deployment)
- * 
+ *
  * Purpose:
  * - Resolve known resource references to concrete values when possible
  * - Optimize CEL expressions by substituting known values
  * - Prepare expressions for serialization to ResourceGraphDefinitions
- * 
+ *
  * When to use:
  * - During ResourceGraphDefinition generation
  * - For status mapping optimization before serialization
  * - When preparing CEL expressions for Kro operator consumption
  */
 
-import type { CelExpression, KubernetesResource, KubernetesRef } from '../types.js';
-import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { getInnerCelPath } from '../../utils/helpers.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import type { CelExpression, KubernetesRef, KubernetesResource } from '../types.js';
 
 export interface EvaluationContext {
   resources: Record<string, KubernetesResource>;
@@ -36,7 +36,10 @@ export interface EvaluationResult {
 /**
  * Attempts to resolve a resource reference to its actual value if known at compile time
  */
-function resolveResourceReference(ref: KubernetesRef<unknown>, context: EvaluationContext): string | null {
+function resolveResourceReference(
+  ref: KubernetesRef<unknown>,
+  context: EvaluationContext
+): string | null {
   const { resourceId, fieldPath } = ref;
 
   // Handle schema references
@@ -45,7 +48,7 @@ function resolveResourceReference(ref: KubernetesRef<unknown>, context: Evaluati
   }
 
   // Find the resource
-  const resource = Object.values(context.resources).find(r => r.id === resourceId);
+  const resource = Object.values(context.resources).find((r) => r.id === resourceId);
   if (!resource) {
     return null;
   }
@@ -76,7 +79,7 @@ function resolveResourceReference(ref: KubernetesRef<unknown>, context: Evaluati
 
 /**
  * Optimizes a CEL expression by resolving known values at compile time
- * 
+ *
  * NOTE: This does NOT evaluate CEL expressions at runtime. It only performs
  * compile-time optimizations by substituting known resource values.
  */
@@ -91,7 +94,7 @@ export function optimizeCelExpression(
     return {
       expression,
       wasOptimized: false,
-      optimizations: []
+      optimizations: [],
     };
   }
 
@@ -99,7 +102,7 @@ export function optimizeCelExpression(
     return {
       expression: String(expression),
       wasOptimized: false,
-      optimizations: []
+      optimizations: [],
     };
   }
 
@@ -111,7 +114,7 @@ export function optimizeCelExpression(
   optimizedExpression = optimizedExpression.replace(concatPattern, (match, prefix, resourceRef) => {
     // Extract resource ID from the reference
     const resourceId = resourceRef.split('.')[0];
-    const resource = Object.values(context.resources).find(r => r.id === resourceId);
+    const resource = Object.values(context.resources).find((r) => r.id === resourceId);
 
     if (resource?.metadata?.name) {
       optimizations.push(`Resolved ${resourceRef} to "${resource.metadata.name}"`);
@@ -124,30 +127,34 @@ export function optimizeCelExpression(
 
   // Pattern 2: Conditional expressions with known boolean values
   // Example: condition ? "value1" : "value2" where condition can be evaluated
-  const conditionalPattern = /([a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z0-9.]*) ([><=!]+) (\d+) \? "([^"]*)" : "([^"]*)"/g;
-  optimizedExpression = optimizedExpression.replace(conditionalPattern, (match, leftSide, _operator, _rightSide, _trueValue, _falseValue) => {
-    // For now, we can't evaluate the condition at compile time without actual resource status
-    // But we can validate that the reference exists
-    const resourceId = leftSide.split('.')[0];
-    const resource = Object.values(context.resources).find(r => r.id === resourceId);
+  const conditionalPattern =
+    /([a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z0-9.]*) ([><=!]+) (\d+) \? "([^"]*)" : "([^"]*)"/g;
+  optimizedExpression = optimizedExpression.replace(
+    conditionalPattern,
+    (match, leftSide, _operator, _rightSide, _trueValue, _falseValue) => {
+      // For now, we can't evaluate the condition at compile time without actual resource status
+      // But we can validate that the reference exists
+      const resourceId = leftSide.split('.')[0];
+      const resource = Object.values(context.resources).find((r) => r.id === resourceId);
 
-    if (!resource) {
-      optimizations.push(`Warning: Referenced resource '${resourceId}' not found`);
+      if (!resource) {
+        optimizations.push(`Warning: Referenced resource '${resourceId}' not found`);
+      }
+
+      return match; // Return unchanged for now
     }
-
-    return match; // Return unchanged for now
-  });
+  );
 
   return {
     expression: optimizedExpression,
     wasOptimized,
-    optimizations
+    optimizations,
   };
 }
 
 /**
  * Optimizes all CEL expressions in a status mapping object for serialization
- * 
+ *
  * This prepares status mappings for ResourceGraphDefinition serialization by:
  * - Resolving known resource references to concrete values
  * - Optimizing CEL expressions where possible
@@ -164,7 +171,9 @@ export function optimizeStatusMappings(
     if (isKubernetesRef(value)) {
       const resolved = resolveResourceReference(value, context);
       if (resolved) {
-        allOptimizations.push(`Resolved reference at ${path}: ${getInnerCelPath(value)} -> ${resolved}`);
+        allOptimizations.push(
+          `Resolved reference at ${path}: ${getInnerCelPath(value)} -> ${resolved}`
+        );
         // For status field serialization, preserve KubernetesRef objects instead of converting to strings
         // The serializeStatusMappingsToCel function expects KubernetesRef objects to generate proper CEL expressions
         if (resolved === `${value.resourceId}.${value.fieldPath}`) {
@@ -174,7 +183,7 @@ export function optimizeStatusMappings(
           // If the resolved value is different (e.g., a concrete value), convert to CelExpression
           return {
             [CEL_EXPRESSION_BRAND]: true,
-            expression: resolved.startsWith('"') ? resolved.slice(1, -1) : resolved
+            expression: resolved.startsWith('"') ? resolved.slice(1, -1) : resolved,
           } as CelExpression<unknown>;
         }
       }
@@ -184,13 +193,15 @@ export function optimizeStatusMappings(
     if (isCelExpression(value)) {
       const result = optimizeCelExpression(value, context);
       if (result.wasOptimized) {
-        allOptimizations.push(`Optimized CEL expression at ${path}: ${value.expression} -> ${result.expression}`);
-        allOptimizations.push(...result.optimizations.map(opt => `  ${opt}`));
+        allOptimizations.push(
+          `Optimized CEL expression at ${path}: ${value.expression} -> ${result.expression}`
+        );
+        allOptimizations.push(...result.optimizations.map((opt) => `  ${opt}`));
       }
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression: result.expression,
-        ...(((value as any).__isTemplate) && { __isTemplate: true })
+        ...((value as any).__isTemplate && { __isTemplate: true }),
       } as CelExpression<unknown>;
     }
 
@@ -211,6 +222,6 @@ export function optimizeStatusMappings(
 
   return {
     mappings: optimizedMappings,
-    optimizations: allOptimizations
+    optimizations: allOptimizations,
   };
 }

@@ -11,8 +11,35 @@
 
     <!-- Main Content Layout -->
     <div class="step-content">
-      <!-- Code Example -->
-      <div class="code-section">
+      <!-- Multiple Code Blocks -->
+      <div v-if="step.codeBlocks && step.codeBlocks.length > 0" class="code-section">
+        <div v-for="(block, index) in step.codeBlocks" :key="index" class="code-block-container">
+          <h4 v-if="block.title" class="code-block-title">{{ block.title }}</h4>
+          <div class="code-wrapper">
+            <div class="code-header">
+              <span class="code-language">{{ block.example.language }}</span>
+              <button 
+                class="copy-button"
+                @click="copyBlockCode(block.example.code)"
+                :aria-label="'Copy code to clipboard'"
+              >
+                <svg v-if="!copied" class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+                <svg v-else class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <polyline points="20,6 9,17 4,12"></polyline>
+                </svg>
+                {{ copied ? 'Copied!' : 'Copy' }}
+              </button>
+            </div>
+            <pre class="code-block"><code :class="`language-${block.example.language}`" v-html="highlightCode(block.example.code, block.example.language)"></code></pre>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Single Code Example (fallback) -->
+      <div v-else-if="step.codeExample" class="code-section">
         <div class="code-header">
           <span class="code-language">{{ step.codeExample.language }}</span>
           <button 
@@ -93,13 +120,29 @@ const { highlightCode, isLoaded } = usePrismHighlighting();
 
 // Computed
 const highlightedCode = computed(() => {
-  return highlightCode(props.step.codeExample.code, props.step.codeExample.language);
+  if (props.step.codeExample) {
+    return highlightCode(props.step.codeExample.code, props.step.codeExample.language);
+  }
+  return '';
 });
 
 // Methods
 const copyCode = async () => {
+  if (!props.step.codeExample) return;
   try {
     await navigator.clipboard.writeText(props.step.codeExample.code);
+    copied.value = true;
+    setTimeout(() => {
+      copied.value = false;
+    }, 2000);
+  } catch (err) {
+    console.error('Failed to copy code:', err);
+  }
+};
+
+const copyBlockCode = async (code: string) => {
+  try {
+    await navigator.clipboard.writeText(code);
     copied.value = true;
     setTimeout(() => {
       copied.value = false;
@@ -179,6 +222,7 @@ onMounted(() => {
   height: 100%;
   min-height: 500px;
   max-height: 450px;
+  overflow-y: auto;
 }
 
 .code-header {
@@ -492,7 +536,8 @@ onMounted(() => {
 }
 
 .next-step-button--primary:hover {
-  background: var(--vp-c-brand-dark);
+  background: var(--vp-c-brand-darker, #1e40af);
+  color: white;
   transform: translateY(-1px);
 }
 
@@ -517,6 +562,7 @@ onMounted(() => {
 .step--mobile .code-section {
   min-height: 250px;
   max-height: 250px;
+  overflow-y: auto;
 }
 
 .step--mobile .explanation-section {
@@ -548,6 +594,7 @@ onMounted(() => {
   .code-section {
     min-height: 250px;
     max-height: 250px;
+    overflow-y: auto;
   }
 
   .explanation-section {
@@ -573,5 +620,130 @@ onMounted(() => {
     flex: 1;
     min-width: 120px;
   }
+}
+
+/* Multiple Code Blocks Styling */
+.code-block-container {
+  margin-bottom: 1.5rem;
+}
+
+.code-block-container:last-child {
+  margin-bottom: 0;
+}
+
+.code-block-title {
+  color: var(--vp-c-text-1);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--vp-c-divider-light);
+}
+
+.code-wrapper {
+  background: var(--vp-c-bg-soft);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
+}
+
+.code-wrapper .code-block {
+  margin: 0;
+  min-height: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Mobile adjustments for multiple blocks */
+.step--mobile .code-block-container {
+  margin-bottom: 1rem;
+}
+
+.step--mobile .code-block-title {
+  font-size: 0.9rem;
+}
+
+.step--mobile .code-wrapper .code-block {
+  max-height: 150px;
+  font-size: 0.75rem;
+}
+
+
+/* Multiple Code Blocks Styling */
+.code-block-container {
+  margin-bottom: 1.5rem;
+}
+
+.code-block-container:last-child {
+  margin-bottom: 0;
+}
+
+.code-block-title {
+  color: var(--vp-c-text-1);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--vp-c-divider-light);
+}
+
+.code-wrapper {
+  background: var(--vp-c-bg-soft);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
+}
+
+.code-wrapper .code-block {
+  margin: 0;
+  min-height: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Multiple Code Blocks Styling */
+.code-block-container {
+  margin-bottom: 1.5rem;
+}
+
+.code-block-container:last-child {
+  margin-bottom: 0;
+}
+
+.code-block-title {
+  color: var(--vp-c-text-1);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--vp-c-divider-light);
+}
+
+.code-wrapper {
+  background: var(--vp-c-bg-soft);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
+}
+
+.code-wrapper .code-block {
+  margin: 0;
+  min-height: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Mobile adjustments for multiple blocks */
+.step--mobile .code-block-container {
+  margin-bottom: 1rem;
+}
+
+.step--mobile .code-block-title {
+  font-size: 0.9rem;
+}
+
+.step--mobile .code-wrapper .code-block {
+  max-height: 150px;
+  font-size: 0.75rem;
 }
 </style>

@@ -80,14 +80,14 @@ export interface ConditionCheckResult {
 
 /**
  * Interface for accessing live cluster state
- * 
+ *
  * This interface provides methods for readiness evaluators to query
  * the current state of resources in the Kubernetes cluster.
  */
 export interface ClusterStateAccessor {
   /**
    * Get a specific resource from the cluster
-   * 
+   *
    * @param identifier Resource to retrieve
    * @param options Query options
    * @returns Promise resolving to the resource state
@@ -99,7 +99,7 @@ export interface ClusterStateAccessor {
 
   /**
    * List resources matching the given criteria
-   * 
+   *
    * @param identifier Resource type and namespace to list
    * @param options Query options including selectors
    * @returns Promise resolving to the list of resources
@@ -111,7 +111,7 @@ export interface ClusterStateAccessor {
 
   /**
    * Check if a resource has a specific condition
-   * 
+   *
    * @param identifier Resource to check
    * @param conditionType Type of condition to check (e.g., 'Ready', 'Available')
    * @param expectedStatus Expected status of the condition (e.g., 'True', 'False')
@@ -127,7 +127,7 @@ export interface ClusterStateAccessor {
 
   /**
    * Check if multiple resources are ready
-   * 
+   *
    * @param identifiers Array of resources to check
    * @param options Query options
    * @returns Promise resolving to readiness status for each resource
@@ -139,7 +139,7 @@ export interface ClusterStateAccessor {
 
   /**
    * Wait for a resource to meet a specific condition
-   * 
+   *
    * @param identifier Resource to wait for
    * @param conditionType Type of condition to wait for
    * @param expectedStatus Expected status of the condition
@@ -155,21 +155,21 @@ export interface ClusterStateAccessor {
 
   /**
    * Get the current namespace context
-   * 
+   *
    * @returns The current namespace, or undefined if not set
    */
   getCurrentNamespace(): string | undefined;
 
   /**
    * Set the default namespace for operations
-   * 
+   *
    * @param namespace Namespace to use as default
    */
   setDefaultNamespace(namespace: string): void;
 
   /**
    * Check if the cluster is accessible
-   * 
+   *
    * @returns Promise resolving to true if cluster is accessible
    */
   isClusterAccessible(): Promise<boolean>;
@@ -199,7 +199,11 @@ export class ClusterStateError extends Error {
     );
   }
 
-  static timeout(operation: string, timeout: number, resource?: ResourceIdentifier): ClusterStateError {
+  static timeout(
+    operation: string,
+    timeout: number,
+    resource?: ResourceIdentifier
+  ): ClusterStateError {
     return new ClusterStateError(
       `Operation '${operation}' timed out after ${timeout}ms${resource ? ` for ${resource.kind}/${resource.name}` : ''}`,
       operation,
@@ -207,7 +211,12 @@ export class ClusterStateError extends Error {
     );
   }
 
-  static apiError(operation: string, statusCode: number, message: string, resource?: ResourceIdentifier): ClusterStateError {
+  static apiError(
+    operation: string,
+    statusCode: number,
+    message: string,
+    resource?: ResourceIdentifier
+  ): ClusterStateError {
     return new ClusterStateError(
       `API error during '${operation}': ${message}`,
       operation,
@@ -259,8 +268,8 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
   ): Promise<ClusterStateResult<T>> {
     try {
       const namespace = identifier.namespace || this.defaultNamespace;
-      
-      const timeoutPromise = options.timeout 
+
+      const timeoutPromise = options.timeout
         ? this.createTimeoutPromise(options.timeout, 'getResource', identifier)
         : null;
 
@@ -273,7 +282,7 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         },
       });
 
-      const result = timeoutPromise 
+      const result = timeoutPromise
         ? await Promise.race([resourcePromise, timeoutPromise])
         : await resourcePromise;
 
@@ -305,9 +314,13 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
   ): Promise<ClusterStateListResult<T>> {
     try {
       const namespace = identifier.namespace || this.defaultNamespace;
-      
-      const timeoutPromise = options.timeout 
-        ? this.createTimeoutPromise(options.timeout, 'listResources', identifier as ResourceIdentifier)
+
+      const timeoutPromise = options.timeout
+        ? this.createTimeoutPromise(
+            options.timeout,
+            'listResources',
+            identifier as ResourceIdentifier
+          )
         : null;
 
       const resourcePromise = this.k8sApi.list(
@@ -321,12 +334,12 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         options.labelSelector
       );
 
-      const result = timeoutPromise 
+      const result = timeoutPromise
         ? await Promise.race([resourcePromise, timeoutPromise])
         : await resourcePromise;
 
       const items = (result.body as any)?.items || [];
-      
+
       return {
         items: items as T[],
         totalItems: items.length,
@@ -350,7 +363,7 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
   ): Promise<ConditionCheckResult> {
     try {
       const resourceResult = await this.getResource(identifier, options);
-      
+
       if (!resourceResult.exists || !resourceResult.resource) {
         return {
           satisfied: false,
@@ -369,7 +382,7 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
       }
 
       const condition = conditions.find((c: any) => c.type === conditionType);
-      
+
       if (!condition) {
         return {
           satisfied: false,
@@ -377,7 +390,9 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         };
       }
 
-      const satisfied = expectedStatus ? condition.status === expectedStatus : condition.status === 'True';
+      const satisfied = expectedStatus
+        ? condition.status === expectedStatus
+        : condition.status === 'True';
 
       return {
         satisfied,
@@ -402,13 +417,18 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
     options: ClusterStateOptions = {}
   ): Promise<Record<string, boolean>> {
     const results: Record<string, boolean> = {};
-    
+
     // Execute all checks in parallel for better performance
     const checks = identifiers.map(async (identifier) => {
       const key = `${identifier.kind}/${identifier.name}${identifier.namespace ? `@${identifier.namespace}` : ''}`;
-      
+
       try {
-        const conditionResult = await this.checkResourceCondition(identifier, 'Ready', 'True', options);
+        const conditionResult = await this.checkResourceCondition(
+          identifier,
+          'Ready',
+          'True',
+          options
+        );
         results[key] = conditionResult.satisfied;
       } catch (_error) {
         results[key] = false;
@@ -430,19 +450,28 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
     const pollInterval = 2000; // 2 seconds
 
     while (Date.now() - startTime < timeout) {
-      const result = await this.checkResourceCondition(identifier, conditionType, expectedStatus, options);
-      
+      const result = await this.checkResourceCondition(
+        identifier,
+        conditionType,
+        expectedStatus,
+        options
+      );
+
       if (result.satisfied) {
         return result;
       }
 
       // If there's an error other than condition not being met, return it
-      if (result.error && !result.error.includes('not found') && !result.error.includes('status conditions')) {
+      if (
+        result.error &&
+        !result.error.includes('not found') &&
+        !result.error.includes('status conditions')
+      ) {
         return result;
       }
 
       // Wait before next check
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
     }
 
     throw ClusterStateError.timeout('waitForCondition', timeout, identifier);
@@ -469,7 +498,11 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
   /**
    * Create a timeout promise that rejects after the specified time
    */
-  private createTimeoutPromise(timeout: number, operation: string, resource?: ResourceIdentifier): Promise<never> {
+  private createTimeoutPromise(
+    timeout: number,
+    operation: string,
+    resource?: ResourceIdentifier
+  ): Promise<never> {
     return new Promise((_, reject) => {
       setTimeout(() => {
         reject(ClusterStateError.timeout(operation, timeout, resource));
@@ -500,7 +533,7 @@ export class ClusterStateAccessorFactory {
     defaultNamespace?: string
   ): ClusterStateAccessor {
     const kubeConfig = new k8s.KubeConfig();
-    
+
     if (kubeconfigPath) {
       kubeConfig.loadFromFile(kubeconfigPath);
     } else {
@@ -538,7 +571,7 @@ export class MockClusterStateAccessor implements ClusterStateAccessor {
   async getResource<T = any>(identifier: ResourceIdentifier): Promise<ClusterStateResult<T>> {
     const key = this.getResourceKey(identifier);
     const resource = this.mockData[key];
-    
+
     return {
       resource: resource as T,
       exists: !!resource,
@@ -547,11 +580,13 @@ export class MockClusterStateAccessor implements ClusterStateAccessor {
     } as ClusterStateResult<T>;
   }
 
-  async listResources<T = any>(identifier: Omit<ResourceIdentifier, 'name'>): Promise<ClusterStateListResult<T>> {
+  async listResources<T = any>(
+    identifier: Omit<ResourceIdentifier, 'name'>
+  ): Promise<ClusterStateListResult<T>> {
     const prefix = `${identifier.kind}/${identifier.namespace || 'default'}/`;
     const items = Object.keys(this.mockData)
-      .filter(key => key.startsWith(prefix))
-      .map(key => this.mockData[key])
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => this.mockData[key])
       .filter(Boolean) as T[];
 
     return {
@@ -567,7 +602,7 @@ export class MockClusterStateAccessor implements ClusterStateAccessor {
     expectedStatus?: string
   ): Promise<ConditionCheckResult> {
     const resourceResult = await this.getResource(identifier);
-    
+
     if (!resourceResult.exists || !resourceResult.resource) {
       return {
         satisfied: false,
@@ -578,7 +613,7 @@ export class MockClusterStateAccessor implements ClusterStateAccessor {
     const resource = resourceResult.resource as any;
     const conditions = resource.status?.conditions || [];
     const condition = conditions.find((c: any) => c.type === conditionType);
-    
+
     if (!condition) {
       return {
         satisfied: false,
@@ -586,7 +621,9 @@ export class MockClusterStateAccessor implements ClusterStateAccessor {
       };
     }
 
-    const satisfied = expectedStatus ? condition.status === expectedStatus : condition.status === 'True';
+    const satisfied = expectedStatus
+      ? condition.status === expectedStatus
+      : condition.status === 'True';
 
     return {
       satisfied,
@@ -594,9 +631,11 @@ export class MockClusterStateAccessor implements ClusterStateAccessor {
     };
   }
 
-  async checkMultipleResourcesReady(identifiers: ResourceIdentifier[]): Promise<Record<string, boolean>> {
+  async checkMultipleResourcesReady(
+    identifiers: ResourceIdentifier[]
+  ): Promise<Record<string, boolean>> {
     const results: Record<string, boolean> = {};
-    
+
     for (const identifier of identifiers) {
       const key = `${identifier.kind}/${identifier.name}${identifier.namespace ? `@${identifier.namespace}` : ''}`;
       const conditionResult = await this.checkResourceCondition(identifier, 'Ready', 'True');

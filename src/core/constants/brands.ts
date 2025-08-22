@@ -1,6 +1,6 @@
 /**
  * Brand symbols for TypeKro internal types
- * 
+ *
  * Using Symbol.for() ensures consistent brand checking across modules
  * and prevents property name collisions.
  */
@@ -30,9 +30,9 @@ export const BrandChecks = {
   isKubernetesRef(obj: unknown): obj is { [KUBERNETES_REF_BRAND]: true } {
     return Boolean(
       obj &&
-      (typeof obj === 'object' || typeof obj === 'function') &&
-      obj !== null &&
-      KUBERNETES_REF_BRAND in obj
+        (typeof obj === 'object' || typeof obj === 'function') &&
+        obj !== null &&
+        KUBERNETES_REF_BRAND in obj
     );
   },
 
@@ -40,23 +40,13 @@ export const BrandChecks = {
    * Check if an object has the CelExpression brand
    */
   isCelExpression(obj: unknown): obj is { [CEL_EXPRESSION_BRAND]: true } {
-    return Boolean(
-      obj &&
-      typeof obj === 'object' &&
-      obj !== null &&
-      CEL_EXPRESSION_BRAND in obj
-    );
+    return Boolean(obj && typeof obj === 'object' && obj !== null && CEL_EXPRESSION_BRAND in obj);
   },
 
   /**
    * Check if an object has the MixedTemplate brand
    */
   isMixedTemplate(obj: unknown): obj is { [MIXED_TEMPLATE_BRAND]: true } {
-    return Boolean(
-      obj &&
-      typeof obj === 'object' &&
-      obj !== null &&
-      MIXED_TEMPLATE_BRAND in obj
-    );
-  }
+    return Boolean(obj && typeof obj === 'object' && obj !== null && MIXED_TEMPLATE_BRAND in obj);
+  },
 };

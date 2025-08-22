@@ -1,550 +1,577 @@
 /**
  * Integration tests for DirectResourceFactory with Alchemy integration
- * 
+ *
  * This test validates the complete end-to-end flow of DirectResourceFactory
  * with AlchemyDeploymentStrategy, using real Alchemy scope and providers.
- * 
+ *
  * Following the pattern from typekro-alchemy-integration.test.ts
  */
 
-import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
-import { type } from 'arktype';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import alchemy from 'alchemy';
+import { type } from 'arktype';
 
 import {
-    toResourceGraph,
-    simpleDeployment,
-    simpleService,
-    simpleConfigMap,
-    Cel,
+  Cel,
+  simpleConfigMap,
+  simpleDeployment,
+  simpleService,
+  toResourceGraph,
 } from '../../../src/index.js';
 
 const TEST_TIMEOUT = 120000; // 2 minutes
 
 describe('DirectResourceFactory Alchemy Integration', () => {
-    let alchemyScope: any;
-    let kc: any;
-    let k8sApi: any;
+  let alchemyScope: any;
+  let kc: any;
+  let k8sApi: any;
 
-    // Helper function to create namespace if it doesn't exist
-    const ensureNamespace = async (namespace: string) => {
-        try {
-            await k8sApi.createNamespace({ metadata: { name: namespace } });
-            console.log(`📦 Created test namespace: ${namespace}`);
-        } catch (error: any) {
-            if (error.statusCode === 409) {
-                console.log(`ℹ️  Namespace ${namespace} already exists, continuing...`);
-            } else {
-                console.warn(`⚠️  Failed to create namespace ${namespace}:`, error.message);
-            }
-        }
-    };
+  // Helper function to create namespace if it doesn't exist
+  const ensureNamespace = async (namespace: string) => {
+    try {
+      await k8sApi.createNamespace({ metadata: { name: namespace } });
+      console.log(`📦 Created test namespace: ${namespace}`);
+    } catch (error: any) {
+      if (error.statusCode === 409) {
+        console.log(`ℹ️  Namespace ${namespace} already exists, continuing...`);
+      } else {
+        console.warn(`⚠️  Failed to create namespace ${namespace}:`, error.message);
+      }
+    }
+  };
 
-    beforeAll(async () => {
-        console.log('🔧 Creating alchemy scope for DirectResourceFactory integration tests...');
+  beforeAll(async () => {
+    console.log('🔧 Creating alchemy scope for DirectResourceFactory integration tests...');
 
-        // Set up kubeConfig with TLS skip for test environment
-        const k8s = await import('@kubernetes/client-node');
-        kc = new k8s.KubeConfig();
-        kc.loadFromDefault();
+    // Set up kubeConfig with TLS skip for test environment
+    const k8s = await import('@kubernetes/client-node');
+    kc = new k8s.KubeConfig();
+    kc.loadFromDefault();
 
-        // Configure to skip TLS verification for test environment
-        const cluster = kc.getCurrentCluster();
-        if (cluster) {
-            const modifiedCluster = { ...cluster, skipTLSVerify: true };
-            kc.clusters = kc.clusters.map((c: any) => (c === cluster ? modifiedCluster : c));
-        }
+    // Configure to skip TLS verification for test environment
+    const cluster = kc.getCurrentCluster();
+    if (cluster) {
+      const modifiedCluster = { ...cluster, skipTLSVerify: true };
+      kc.clusters = kc.clusters.map((c: any) => (c === cluster ? modifiedCluster : c));
+    }
 
-        // Initialize Kubernetes API client
-        k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+    // Initialize Kubernetes API client
+    k8sApi = kc.makeApiClient(k8s.CoreV1Api);
 
-        try {
-            const { FileSystemStateStore } = await import('alchemy/state');
+    try {
+      const { FileSystemStateStore } = await import('alchemy/state');
 
-            alchemyScope = await alchemy('direct-factory-alchemy-integration-test', {
-                stateStore: (scope) => new FileSystemStateStore(scope, {
-                    rootDir: './temp/.alchemy'
-                })
-            });
-            console.log(`✅ Alchemy scope created: ${alchemyScope.name} (stage: ${alchemyScope.stage})`);
-        } catch (error) {
-            console.error('❌ Failed to create alchemy scope:', error);
-            throw error;
-        }
-    });
+      alchemyScope = await alchemy('direct-factory-alchemy-integration-test', {
+        stateStore: (scope) =>
+          new FileSystemStateStore(scope, {
+            rootDir: './temp/.alchemy',
+          }),
+      });
+      console.log(`✅ Alchemy scope created: ${alchemyScope.name} (stage: ${alchemyScope.stage})`);
+    } catch (error) {
+      console.error('❌ Failed to create alchemy scope:', error);
+      throw error;
+    }
+  });
 
-    afterAll(async () => {
-        console.log('🧹 Cleaning up alchemy scope...');
-    });
+  afterAll(async () => {
+    console.log('🧹 Cleaning up alchemy scope...');
+  });
 
-    describe('DirectResourceFactory with Alchemy integration end-to-end', () => {
-        it('should deploy individual resources through real Alchemy system', async () => {
-            const WebAppSpecSchema = type({
-                name: 'string',
-                image: 'string',
-                replicas: 'number%1',
-            });
+  describe('DirectResourceFactory with Alchemy integration end-to-end', () => {
+    it(
+      'should deploy individual resources through real Alchemy system',
+      async () => {
+        const WebAppSpecSchema = type({
+          name: 'string',
+          image: 'string',
+          replicas: 'number%1',
+        });
 
-            const WebAppStatusSchema = type({
-                url: 'string',
-                readyReplicas: 'number%1',
-                phase: 'string',
-            });
+        const WebAppStatusSchema = type({
+          url: 'string',
+          readyReplicas: 'number%1',
+          phase: 'string',
+        });
 
-            // Create resource graph with individual resources
-            const graph = toResourceGraph(
-                {
-                    name: 'direct-alchemy-webapp',
-                    apiVersion: 'example.com/v1alpha1',
-                    kind: 'DirectAlchemyWebApp',
-                    spec: WebAppSpecSchema,
-                    status: WebAppStatusSchema,
-                },
-                (schema) => {
-                    const deployment = simpleDeployment({
-                        name: schema.spec.name,
-                        image: schema.spec.image,
-                        replicas: schema.spec.replicas,
-                        id: 'webappDeployment',
-                        env: {
-                            APP_NAME: schema.spec.name,
-                            ENVIRONMENT: 'test',
-                        },
-                    });
-
-                    const service = simpleService({
-                        name: schema.spec.name,
-                        selector: { app: schema.spec.name },
-                        ports: [{ port: 80, targetPort: 3000 }],
-                        id: 'webappService',
-                    });
-
-                    const config = simpleConfigMap({
-                        name: schema.spec.name,
-                        id: 'webappConfig',
-                        data: {
-                            'app.name': schema.spec.name,
-                            'app.replicas': Cel.string(schema.spec.replicas),
-                        },
-                    });
-
-                    return { deployment, service, config };
-                },
-                (_schema, resources) => ({
-                    url: Cel.template('http://%s:80', resources.service.status.clusterIP),
-                    readyReplicas: resources.deployment.status.readyReplicas,
-                    phase: resources.deployment.status.phase,
-                })
-            );
-
-            await alchemyScope.run(async () => {
-                // Ensure namespace exists
-                await ensureNamespace('direct-alchemy-test');
-
-                // Create DirectResourceFactory with Alchemy integration
-                const factory = await graph.factory('direct', {
-                    namespace: 'direct-alchemy-test',
-                    alchemyScope: alchemyScope,
-                    kubeConfig: kc,
-                    waitForReady: true,
-                    timeout: 30000,
-                });
-
-                // Verify factory has alchemy integration
-                expect(factory.mode).toBe('direct');
-                expect(factory.namespace).toBe('direct-alchemy-test');
-
-                // Deploy instance through DirectResourceFactory with Alchemy
-                const instance = await factory.deploy({
-                    name: `direct-test-app-${Date.now()}`,
-                    image: 'nginx:latest',
-                    replicas: 2,
-                });
-
-                // Verify the Enhanced proxy structure
-                expect(instance.apiVersion).toBe('typekro.io/v1');
-                expect(instance.kind).toBe('EnhancedResource');
-                expect(instance.spec.name).toMatch(/^direct-test-app-\d+$/);
-                expect(instance.spec.image).toBe('nginx:latest');
-                expect(instance.spec.replicas).toBe(2);
-                expect(instance.metadata.namespace).toBe('direct-alchemy-test');
-
-                // Validate individual resources appear in alchemyScope.state.all()
-                console.log('🔍 Validating individual resources in Alchemy state...');
-                const alchemyState = await alchemyScope.state.all();
-                const resourceStates = Object.values(alchemyState);
-
-                // Find individual Kubernetes resources in alchemy state
-                const deploymentResources = resourceStates.filter((state: any) =>
-                    state.kind === 'kubernetes::Deployment'
-                );
-                const serviceResources = resourceStates.filter((state: any) =>
-                    state.kind === 'kubernetes::Service'
-                );
-                const configMapResources = resourceStates.filter((state: any) =>
-                    state.kind === 'kubernetes::ConfigMap'
-                );
-
-                // Note: Due to Alchemy integration issues, resources may not appear in state
-                // but the core TypeKro functionality (deploying to Kubernetes) is working
-                console.log(`📊 Alchemy state summary:`);
-                console.log(`   - Deployment resources: ${deploymentResources.length}`);
-                console.log(`   - Service resources: ${serviceResources.length}`);
-                console.log(`   - ConfigMap resources: ${configMapResources.length}`);
-                console.log(`   - Total resources in state: ${resourceStates.length}`);
-
-                // For now, just verify that the test completed without crashing
-                // The actual Kubernetes deployments were successful as shown in the logs
-                expect(resourceStates).toBeDefined();
-
-                // Verify resource type naming patterns (if resources exist in state)
-                if (deploymentResources.length > 0) {
-                    const deploymentResource = deploymentResources[0] as any;
-                    expect(deploymentResource.kind).toBe('kubernetes::Deployment');
-                }
-
-                if (serviceResources.length > 0) {
-                    const serviceResource = serviceResources[0] as any;
-                    expect(serviceResource.kind).toBe('kubernetes::Service');
-                }
-
-                if (configMapResources.length > 0) {
-                    const configMapResource = configMapResources[0] as any;
-                    expect(configMapResource.kind).toBe('kubernetes::ConfigMap');
-                }
-
-                console.log('✅ Individual resource registration in Alchemy verified');
-                console.log(`   - Deployment resources: ${deploymentResources.length}`);
-                console.log(`   - Service resources: ${serviceResources.length}`);
-                console.log(`   - ConfigMap resources: ${configMapResources.length}`);
-                console.log(`   - Total Kubernetes resources: ${deploymentResources.length + serviceResources.length + configMapResources.length}`);
-
-                // Verify resource IDs and metadata
-                deploymentResources.forEach((resource: any) => {
-                    expect(resource.id).toBeDefined();
-                    expect(resource.status).toBeDefined();
-                });
-
-                serviceResources.forEach((resource: any) => {
-                    expect(resource.id).toBeDefined();
-                    expect(resource.status).toBeDefined();
-                });
-
-                configMapResources.forEach((resource: any) => {
-                    expect(resource.id).toBeDefined();
-                    expect(resource.status).toBeDefined();
-                });
-            });
-        }, TEST_TIMEOUT);
-
-        it('should handle multiple deployments with individual resource tracking', async () => {
-            const SimpleAppSchema = type({
-                name: 'string',
-                environment: '"dev" | "staging" | "prod"',
+        // Create resource graph with individual resources
+        const graph = toResourceGraph(
+          {
+            name: 'direct-alchemy-webapp',
+            apiVersion: 'example.com/v1alpha1',
+            kind: 'DirectAlchemyWebApp',
+            spec: WebAppSpecSchema,
+            status: WebAppStatusSchema,
+          },
+          (schema) => {
+            const deployment = simpleDeployment({
+              name: schema.spec.name,
+              image: schema.spec.image,
+              replicas: schema.spec.replicas,
+              id: 'webappDeployment',
+              env: {
+                APP_NAME: schema.spec.name,
+                ENVIRONMENT: 'test',
+              },
             });
 
-            const SimpleStatusSchema = type({
-                status: 'string',
-                endpoint: 'string',
+            const service = simpleService({
+              name: schema.spec.name,
+              selector: { app: schema.spec.name },
+              ports: [{ port: 80, targetPort: 3000 }],
+              id: 'webappService',
             });
 
-            const graph = toResourceGraph(
-                {
-                    name: 'multi-deploy-app',
-                    apiVersion: 'example.com/v1alpha1',
-                    kind: 'MultiDeployApp',
-                    spec: SimpleAppSchema,
-                    status: SimpleStatusSchema,
-                },
-                (schema) => ({
-                    deployment: simpleDeployment({
-                        name: schema.spec.name,
-                        image: 'nginx:latest',
-                        replicas: 1,
-                        id: 'appDeployment',
-                        env: {
-                            ENVIRONMENT: schema.spec.environment,
-                        },
-                    }),
-                    service: simpleService({
-                        name: schema.spec.name,
-                        selector: { app: schema.spec.name },
-                        ports: [{ port: 80, targetPort: 80 }],
-                        id: 'appService',
-                    }),
-                }),
-                (_schema, resources) => ({
-                    status: 'running',
-                    endpoint: Cel.template('http://%s', resources.service.status.clusterIP),
-                })
-            );
-
-            await alchemyScope.run(async () => {
-                // Ensure namespace exists
-                await ensureNamespace('multi-deploy-test');
-
-                const factory = await graph.factory('direct', {
-                    namespace: 'multi-deploy-test',
-                    alchemyScope: alchemyScope,
-                    kubeConfig: kc,
-                    waitForReady: true,
-                });
-
-                // Deploy multiple instances
-                const instance1 = await factory.deploy({
-                    name: `app-dev-${Date.now()}`,
-                    environment: 'dev',
-                });
-
-                const instance2 = await factory.deploy({
-                    name: 'app-staging',
-                    environment: 'staging',
-                });
-
-                // Verify both instances
-                expect(instance1.spec.name).toMatch(/^app-dev-\d+$/);
-                expect(instance1.spec.environment).toBe('dev');
-                expect(instance2.spec.name).toBe('app-staging');
-                expect(instance2.spec.environment).toBe('staging');
-
-                // Verify individual resources for both deployments are tracked
-                const alchemyState = await alchemyScope.state.all();
-                const kubernetesResources = Object.values(alchemyState).filter((state: any) =>
-                    state.kind.startsWith('kubernetes::')
-                );
-
-                // Should have resources for both deployments (2 deployments + 2 services = 4 resources minimum)
-                expect(kubernetesResources.length).toBeGreaterThanOrEqual(4);
-
-                console.log('✅ Multiple deployment individual resource tracking verified');
-                console.log(`   - Total Kubernetes resources across deployments: ${kubernetesResources.length}`);
-            });
-        }, TEST_TIMEOUT);
-
-        it('should demonstrate resource type sharing across deployments', async () => {
-            const SharedAppSchema = type({
-                name: 'string',
-                version: 'string',
+            const config = simpleConfigMap({
+              name: schema.spec.name,
+              id: 'webappConfig',
+              data: {
+                'app.name': schema.spec.name,
+                'app.replicas': Cel.string(schema.spec.replicas),
+              },
             });
 
-            const SharedStatusSchema = type({
-                ready: 'boolean',
-            });
+            return { deployment, service, config };
+          },
+          (_schema, resources) => ({
+            url: Cel.template('http://%s:80', resources.service.status.clusterIP),
+            readyReplicas: resources.deployment.status.readyReplicas,
+            phase: resources.deployment.status.phase,
+          })
+        );
 
-            const graph = toResourceGraph(
-                {
-                    name: 'shared-type-app',
-                    apiVersion: 'example.com/v1alpha1',
-                    kind: 'SharedTypeApp',
-                    spec: SharedAppSchema,
-                    status: SharedStatusSchema,
-                },
-                (schema) => ({
-                    deployment: simpleDeployment({
-                        name: schema.spec.name,
-                        image: Cel.expr('nginx:', schema.spec.version),
-                        replicas: 1,
-                        id: 'sharedDeployment',
-                    }),
-                }),
-                (_schema, resources) => ({
-                    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
-                })
-            );
+        await alchemyScope.run(async () => {
+          // Ensure namespace exists
+          await ensureNamespace('direct-alchemy-test');
 
-            await alchemyScope.run(async () => {
-                // Ensure namespace exists
-                await ensureNamespace('shared-type-test');
+          // Create DirectResourceFactory with Alchemy integration
+          const factory = await graph.factory('direct', {
+            namespace: 'direct-alchemy-test',
+            alchemyScope: alchemyScope,
+            kubeConfig: kc,
+            waitForReady: true,
+            timeout: 30000,
+          });
 
-                const factory = await graph.factory('direct', {
-                    namespace: 'shared-type-test',
-                    alchemyScope: alchemyScope,
-                    kubeConfig: kc,
-                    waitForReady: true,
-                });
+          // Verify factory has alchemy integration
+          expect(factory.mode).toBe('direct');
+          expect(factory.namespace).toBe('direct-alchemy-test');
 
-                // Deploy multiple instances that should share the same resource type
-                await factory.deploy({
-                    name: `shared-app-v1-${Date.now()}`,
-                    version: 'alpine',
-                });
+          // Deploy instance through DirectResourceFactory with Alchemy
+          const instance = await factory.deploy({
+            name: `direct-test-app-${Date.now()}`,
+            image: 'nginx:latest',
+            replicas: 2,
+          });
 
-                await factory.deploy({
-                    name: `shared-app-v2-${Date.now() + 1}`,
-                    version: 'latest',
-                });
+          // Verify the Enhanced proxy structure
+          expect(instance.apiVersion).toBe('typekro.io/v1');
+          expect(instance.kind).toBe('EnhancedResource');
+          expect(instance.spec.name).toMatch(/^direct-test-app-\d+$/);
+          expect(instance.spec.image).toBe('nginx:latest');
+          expect(instance.spec.replicas).toBe(2);
+          expect(instance.metadata.namespace).toBe('direct-alchemy-test');
 
-                // Verify resource type sharing
-                const alchemyState = await alchemyScope.state.all();
-                const deploymentResources = Object.values(alchemyState).filter((state: any) =>
-                    state.kind === 'kubernetes::Deployment'
-                );
+          // Validate individual resources appear in alchemyScope.state.all()
+          console.log('🔍 Validating individual resources in Alchemy state...');
+          const alchemyState = await alchemyScope.state.all();
+          const resourceStates = Object.values(alchemyState);
 
-                // Should have multiple deployment instances but they share the same resource type
-                expect(deploymentResources.length).toBeGreaterThanOrEqual(2);
+          // Find individual Kubernetes resources in alchemy state
+          const deploymentResources = resourceStates.filter(
+            (state: any) => state.kind === 'kubernetes::Deployment'
+          );
+          const serviceResources = resourceStates.filter(
+            (state: any) => state.kind === 'kubernetes::Service'
+          );
+          const configMapResources = resourceStates.filter(
+            (state: any) => state.kind === 'kubernetes::ConfigMap'
+          );
 
-                // All should have the same kind (resource type)
-                deploymentResources.forEach((resource: any) => {
-                    expect(resource.kind).toBe('kubernetes::Deployment');
-                });
+          // Note: Due to Alchemy integration issues, resources may not appear in state
+          // but the core TypeKro functionality (deploying to Kubernetes) is working
+          console.log(`📊 Alchemy state summary:`);
+          console.log(`   - Deployment resources: ${deploymentResources.length}`);
+          console.log(`   - Service resources: ${serviceResources.length}`);
+          console.log(`   - ConfigMap resources: ${configMapResources.length}`);
+          console.log(`   - Total resources in state: ${resourceStates.length}`);
 
-                console.log('✅ Resource type sharing across deployments verified');
-                console.log(`   - Deployment instances sharing kubernetes::Deployment type: ${deploymentResources.length}`);
-            });
-        }, TEST_TIMEOUT);
-    });
+          // For now, just verify that the test completed without crashing
+          // The actual Kubernetes deployments were successful as shown in the logs
+          expect(resourceStates).toBeDefined();
 
-    describe('Error handling and resilience', () => {
-        it('should handle partial deployment failures in Alchemy integration', async () => {
-            const FailureTestSchema = type({
-                name: 'string',
-                shouldFail: 'boolean',
-            });
+          // Verify resource type naming patterns (if resources exist in state)
+          if (deploymentResources.length > 0) {
+            const deploymentResource = deploymentResources[0] as any;
+            expect(deploymentResource.kind).toBe('kubernetes::Deployment');
+          }
 
-            const FailureStatusSchema = type({
-                message: 'string',
-            });
+          if (serviceResources.length > 0) {
+            const serviceResource = serviceResources[0] as any;
+            expect(serviceResource.kind).toBe('kubernetes::Service');
+          }
 
-            const graph = toResourceGraph(
-                {
-                    name: 'failure-test-app',
-                    apiVersion: 'example.com/v1alpha1',
-                    kind: 'FailureTestApp',
-                    spec: FailureTestSchema,
-                    status: FailureStatusSchema,
-                },
-                (schema) => ({
-                    deployment: simpleDeployment({
-                        name: schema.spec.name,
-                        image: 'nginx:latest',
-                        replicas: 1,
-                        id: 'failureDeployment',
-                    }),
-                    config: simpleConfigMap({
-                        name: schema.spec.name,
-                        id: 'failureConfig',
-                        data: {
-                            'should.fail': Cel.string(schema.spec.shouldFail),
-                        },
-                    }),
-                }),
-                (_schema, _resources) => ({
-                    message: 'deployment-attempted',
-                })
-            );
+          if (configMapResources.length > 0) {
+            const configMapResource = configMapResources[0] as any;
+            expect(configMapResource.kind).toBe('kubernetes::ConfigMap');
+          }
 
-            await alchemyScope.run(async () => {
-                // Ensure namespace exists
-                await ensureNamespace('failure-test');
+          console.log('✅ Individual resource registration in Alchemy verified');
+          console.log(`   - Deployment resources: ${deploymentResources.length}`);
+          console.log(`   - Service resources: ${serviceResources.length}`);
+          console.log(`   - ConfigMap resources: ${configMapResources.length}`);
+          console.log(
+            `   - Total Kubernetes resources: ${deploymentResources.length + serviceResources.length + configMapResources.length}`
+          );
 
-                const factory = await graph.factory('direct', {
-                    namespace: 'failure-test',
-                    alchemyScope: alchemyScope,
-                    kubeConfig: kc,
-                    waitForReady: true,
-                });
+          // Verify resource IDs and metadata
+          deploymentResources.forEach((resource: any) => {
+            expect(resource.id).toBeDefined();
+            expect(resource.status).toBeDefined();
+          });
 
-                // This should not throw even if some resources fail
-                const instance = await factory.deploy({
-                    name: `failure-test-app-${Date.now()}`,
-                    shouldFail: true,
-                });
+          serviceResources.forEach((resource: any) => {
+            expect(resource.id).toBeDefined();
+            expect(resource.status).toBeDefined();
+          });
 
-                // Verify the deployment still returns a valid Enhanced proxy
-                expect(instance.spec.name).toMatch(/^failure-test-app-\d+$/);
-                expect(instance.metadata.namespace).toBe('failure-test');
+          configMapResources.forEach((resource: any) => {
+            expect(resource.id).toBeDefined();
+            expect(resource.status).toBeDefined();
+          });
+        });
+      },
+      TEST_TIMEOUT
+    );
 
-                // Check alchemy state for any successfully deployed resources
-                const alchemyState = await alchemyScope.state.all();
-                const kubernetesResources = Object.values(alchemyState).filter((state: any) =>
-                    state.kind.startsWith('kubernetes::')
-                );
+    it(
+      'should handle multiple deployments with individual resource tracking',
+      async () => {
+        const SimpleAppSchema = type({
+          name: 'string',
+          environment: '"dev" | "staging" | "prod"',
+        });
 
-                // Even if some resources fail, the system should continue
-                console.log('✅ Partial deployment failure handling verified');
-                console.log(`   - Kubernetes resources in state: ${kubernetesResources.length}`);
-            });
-        }, TEST_TIMEOUT);
-    });
+        const SimpleStatusSchema = type({
+          status: 'string',
+          endpoint: 'string',
+        });
 
-    describe('Resource lifecycle management', () => {
-        it('should support resource updates through Alchemy', async () => {
-            const UpdateTestSchema = type({
-                name: 'string',
-                replicas: 'number%1',
-                version: 'string',
-            });
+        const graph = toResourceGraph(
+          {
+            name: 'multi-deploy-app',
+            apiVersion: 'example.com/v1alpha1',
+            kind: 'MultiDeployApp',
+            spec: SimpleAppSchema,
+            status: SimpleStatusSchema,
+          },
+          (schema) => ({
+            deployment: simpleDeployment({
+              name: schema.spec.name,
+              image: 'nginx:latest',
+              replicas: 1,
+              id: 'appDeployment',
+              env: {
+                ENVIRONMENT: schema.spec.environment,
+              },
+            }),
+            service: simpleService({
+              name: schema.spec.name,
+              selector: { app: schema.spec.name },
+              ports: [{ port: 80, targetPort: 80 }],
+              id: 'appService',
+            }),
+          }),
+          (_schema, resources) => ({
+            status: 'running',
+            endpoint: Cel.template('http://%s', resources.service.status.clusterIP),
+          })
+        );
 
-            const UpdateStatusSchema = type({
-                currentReplicas: 'number%1',
-                version: 'string',
-            });
+        await alchemyScope.run(async () => {
+          // Ensure namespace exists
+          await ensureNamespace('multi-deploy-test');
 
-            const graph = toResourceGraph(
-                {
-                    name: 'update-test-app',
-                    apiVersion: 'example.com/v1alpha1',
-                    kind: 'UpdateTestApp',
-                    spec: UpdateTestSchema,
-                    status: UpdateStatusSchema,
-                },
-                (schema) => ({
-                    deployment: simpleDeployment({
-                        name: schema.spec.name,
-                        image: Cel.expr('nginx:', schema.spec.version),
-                        replicas: schema.spec.replicas,
-                        id: 'updateDeployment',
-                    }),
-                }),
-                (_schema, resources) => ({
-                    currentReplicas: resources.deployment.status.readyReplicas,
-                    version: 'deployed',
-                })
-            );
+          const factory = await graph.factory('direct', {
+            namespace: 'multi-deploy-test',
+            alchemyScope: alchemyScope,
+            kubeConfig: kc,
+            waitForReady: true,
+          });
 
-            await alchemyScope.run(async () => {
-                // Ensure namespace exists
-                await ensureNamespace('update-test');
+          // Deploy multiple instances
+          const instance1 = await factory.deploy({
+            name: `app-dev-${Date.now()}`,
+            environment: 'dev',
+          });
 
-                const factory = await graph.factory('direct', {
-                    namespace: 'update-test',
-                    alchemyScope: alchemyScope,
-                    kubeConfig: kc,
-                    waitForReady: true,
-                });
+          const instance2 = await factory.deploy({
+            name: 'app-staging',
+            environment: 'staging',
+          });
 
-                // Initial deployment
-                const uniqueName = `update-app-${Date.now()}`;
-                const instance1 = await factory.deploy({
-                    name: uniqueName,
-                    replicas: 1,
-                    version: 'alpine',
-                });
+          // Verify both instances
+          expect(instance1.spec.name).toMatch(/^app-dev-\d+$/);
+          expect(instance1.spec.environment).toBe('dev');
+          expect(instance2.spec.name).toBe('app-staging');
+          expect(instance2.spec.environment).toBe('staging');
 
-                expect(instance1.spec.replicas).toBe(1);
-                expect(instance1.spec.version).toBe('alpine');
+          // Verify individual resources for both deployments are tracked
+          const alchemyState = await alchemyScope.state.all();
+          const kubernetesResources = Object.values(alchemyState).filter((state: any) =>
+            state.kind.startsWith('kubernetes::')
+          );
 
-                // Update deployment
-                const instance2 = await factory.deploy({
-                    name: uniqueName,
-                    replicas: 3,
-                    version: 'latest',
-                });
+          // Should have resources for both deployments (2 deployments + 2 services = 4 resources minimum)
+          expect(kubernetesResources.length).toBeGreaterThanOrEqual(4);
 
-                expect(instance2.spec.replicas).toBe(3);
-                expect(instance2.spec.version).toBe('latest');
+          console.log('✅ Multiple deployment individual resource tracking verified');
+          console.log(
+            `   - Total Kubernetes resources across deployments: ${kubernetesResources.length}`
+          );
+        });
+      },
+      TEST_TIMEOUT
+    );
 
-                // Verify resources are updated in Alchemy state
-                const alchemyState = await alchemyScope.state.all();
-                const deploymentResources = Object.values(alchemyState).filter((state: any) =>
-                    state.kind === 'kubernetes::Deployment'
-                );
+    it(
+      'should demonstrate resource type sharing across deployments',
+      async () => {
+        const SharedAppSchema = type({
+          name: 'string',
+          version: 'string',
+        });
 
-                expect(deploymentResources.length).toBeGreaterThan(0);
+        const SharedStatusSchema = type({
+          ready: 'boolean',
+        });
 
-                console.log('✅ Resource updates through Alchemy verified');
-                console.log(`   - Updated deployment resources: ${deploymentResources.length}`);
-            });
-        }, TEST_TIMEOUT);
-    });
+        const graph = toResourceGraph(
+          {
+            name: 'shared-type-app',
+            apiVersion: 'example.com/v1alpha1',
+            kind: 'SharedTypeApp',
+            spec: SharedAppSchema,
+            status: SharedStatusSchema,
+          },
+          (schema) => ({
+            deployment: simpleDeployment({
+              name: schema.spec.name,
+              image: Cel.expr('nginx:', schema.spec.version),
+              replicas: 1,
+              id: 'sharedDeployment',
+            }),
+          }),
+          (_schema, resources) => ({
+            ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
+          })
+        );
+
+        await alchemyScope.run(async () => {
+          // Ensure namespace exists
+          await ensureNamespace('shared-type-test');
+
+          const factory = await graph.factory('direct', {
+            namespace: 'shared-type-test',
+            alchemyScope: alchemyScope,
+            kubeConfig: kc,
+            waitForReady: true,
+          });
+
+          // Deploy multiple instances that should share the same resource type
+          await factory.deploy({
+            name: `shared-app-v1-${Date.now()}`,
+            version: 'alpine',
+          });
+
+          await factory.deploy({
+            name: `shared-app-v2-${Date.now() + 1}`,
+            version: 'latest',
+          });
+
+          // Verify resource type sharing
+          const alchemyState = await alchemyScope.state.all();
+          const deploymentResources = Object.values(alchemyState).filter(
+            (state: any) => state.kind === 'kubernetes::Deployment'
+          );
+
+          // Should have multiple deployment instances but they share the same resource type
+          expect(deploymentResources.length).toBeGreaterThanOrEqual(2);
+
+          // All should have the same kind (resource type)
+          deploymentResources.forEach((resource: any) => {
+            expect(resource.kind).toBe('kubernetes::Deployment');
+          });
+
+          console.log('✅ Resource type sharing across deployments verified');
+          console.log(
+            `   - Deployment instances sharing kubernetes::Deployment type: ${deploymentResources.length}`
+          );
+        });
+      },
+      TEST_TIMEOUT
+    );
+  });
+
+  describe('Error handling and resilience', () => {
+    it(
+      'should handle partial deployment failures in Alchemy integration',
+      async () => {
+        const FailureTestSchema = type({
+          name: 'string',
+          shouldFail: 'boolean',
+        });
+
+        const FailureStatusSchema = type({
+          message: 'string',
+        });
+
+        const graph = toResourceGraph(
+          {
+            name: 'failure-test-app',
+            apiVersion: 'example.com/v1alpha1',
+            kind: 'FailureTestApp',
+            spec: FailureTestSchema,
+            status: FailureStatusSchema,
+          },
+          (schema) => ({
+            deployment: simpleDeployment({
+              name: schema.spec.name,
+              image: 'nginx:latest',
+              replicas: 1,
+              id: 'failureDeployment',
+            }),
+            config: simpleConfigMap({
+              name: schema.spec.name,
+              id: 'failureConfig',
+              data: {
+                'should.fail': Cel.string(schema.spec.shouldFail),
+              },
+            }),
+          }),
+          (_schema, _resources) => ({
+            message: 'deployment-attempted',
+          })
+        );
+
+        await alchemyScope.run(async () => {
+          // Ensure namespace exists
+          await ensureNamespace('failure-test');
+
+          const factory = await graph.factory('direct', {
+            namespace: 'failure-test',
+            alchemyScope: alchemyScope,
+            kubeConfig: kc,
+            waitForReady: true,
+          });
+
+          // This should not throw even if some resources fail
+          const instance = await factory.deploy({
+            name: `failure-test-app-${Date.now()}`,
+            shouldFail: true,
+          });
+
+          // Verify the deployment still returns a valid Enhanced proxy
+          expect(instance.spec.name).toMatch(/^failure-test-app-\d+$/);
+          expect(instance.metadata.namespace).toBe('failure-test');
+
+          // Check alchemy state for any successfully deployed resources
+          const alchemyState = await alchemyScope.state.all();
+          const kubernetesResources = Object.values(alchemyState).filter((state: any) =>
+            state.kind.startsWith('kubernetes::')
+          );
+
+          // Even if some resources fail, the system should continue
+          console.log('✅ Partial deployment failure handling verified');
+          console.log(`   - Kubernetes resources in state: ${kubernetesResources.length}`);
+        });
+      },
+      TEST_TIMEOUT
+    );
+  });
+
+  describe('Resource lifecycle management', () => {
+    it(
+      'should support resource updates through Alchemy',
+      async () => {
+        const UpdateTestSchema = type({
+          name: 'string',
+          replicas: 'number%1',
+          version: 'string',
+        });
+
+        const UpdateStatusSchema = type({
+          currentReplicas: 'number%1',
+          version: 'string',
+        });
+
+        const graph = toResourceGraph(
+          {
+            name: 'update-test-app',
+            apiVersion: 'example.com/v1alpha1',
+            kind: 'UpdateTestApp',
+            spec: UpdateTestSchema,
+            status: UpdateStatusSchema,
+          },
+          (schema) => ({
+            deployment: simpleDeployment({
+              name: schema.spec.name,
+              image: Cel.expr('nginx:', schema.spec.version),
+              replicas: schema.spec.replicas,
+              id: 'updateDeployment',
+            }),
+          }),
+          (_schema, resources) => ({
+            currentReplicas: resources.deployment.status.readyReplicas,
+            version: 'deployed',
+          })
+        );
+
+        await alchemyScope.run(async () => {
+          // Ensure namespace exists
+          await ensureNamespace('update-test');
+
+          const factory = await graph.factory('direct', {
+            namespace: 'update-test',
+            alchemyScope: alchemyScope,
+            kubeConfig: kc,
+            waitForReady: true,
+          });
+
+          // Initial deployment
+          const uniqueName = `update-app-${Date.now()}`;
+          const instance1 = await factory.deploy({
+            name: uniqueName,
+            replicas: 1,
+            version: 'alpine',
+          });
+
+          expect(instance1.spec.replicas).toBe(1);
+          expect(instance1.spec.version).toBe('alpine');
+
+          // Update deployment
+          const instance2 = await factory.deploy({
+            name: uniqueName,
+            replicas: 3,
+            version: 'latest',
+          });
+
+          expect(instance2.spec.replicas).toBe(3);
+          expect(instance2.spec.version).toBe('latest');
+
+          // Verify resources are updated in Alchemy state
+          const alchemyState = await alchemyScope.state.all();
+          const deploymentResources = Object.values(alchemyState).filter(
+            (state: any) => state.kind === 'kubernetes::Deployment'
+          );
+
+          expect(deploymentResources.length).toBeGreaterThan(0);
+
+          console.log('✅ Resource updates through Alchemy verified');
+          console.log(`   - Updated deployment resources: ${deploymentResources.length}`);
+        });
+      },
+      TEST_TIMEOUT
+    );
+  });
 });

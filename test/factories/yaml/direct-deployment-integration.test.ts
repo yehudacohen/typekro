@@ -1,13 +1,12 @@
-import { describe, it, expect } from 'bun:test';
-import { yamlFile, yamlDirectory } from '../../../src/factories/kubernetes/yaml/index.js';
-
+import { describe, expect, it } from 'bun:test';
+import { yamlDirectory, yamlFile } from '../../../src/factories/kubernetes/yaml/index.js';
 
 describe('YAML Factory Deployment Integration', () => {
   describe('yamlFile deployment closures', () => {
     it('should return a deployment closure', () => {
       const yaml = yamlFile({
         name: 'test-config',
-        path: './test-manifests/configmap.yaml'
+        path: './test-manifests/configmap.yaml',
       });
 
       // Should be a function (closure)
@@ -20,12 +19,12 @@ describe('YAML Factory Deployment Integration', () => {
     it('should return a deployment closure', () => {
       const yamlDir = yamlDirectory({
         name: 'helm-controller',
-        path: 'git:github.com/fluxcd/helm-controller/config/default@main'
+        path: 'git:github.com/fluxcd/helm-controller/config/default@main',
       });
 
       // Should be a function (closure)
       expect(typeof yamlDir).toBe('function');
-      
+
       // Should be callable with deployment context
       expect(yamlDir).toBeInstanceOf(Function);
     });
@@ -35,18 +34,18 @@ describe('YAML Factory Deployment Integration', () => {
     it('should return deployment closures', () => {
       const helmController = yamlDirectory({
         name: 'helm-controller',
-        path: 'git:github.com/fluxcd/helm-controller/config/default@main'
+        path: 'git:github.com/fluxcd/helm-controller/config/default@main',
       });
 
       const appConfig = yamlFile({
         name: 'app-config',
-        path: './config/app-config.yaml'
+        path: './config/app-config.yaml',
       });
 
       // Both should be functions (closures)
       expect(typeof helmController).toBe('function');
       expect(typeof appConfig).toBe('function');
-      
+
       // Should be different closure instances
       expect(helmController).not.toBe(appConfig);
     });
@@ -56,18 +55,18 @@ describe('YAML Factory Deployment Integration', () => {
     it('should support cross-references between YAML resources', () => {
       const namespace = yamlFile({
         name: 'app-namespace',
-        path: './manifests/namespace.yaml'
+        path: './manifests/namespace.yaml',
       });
 
       const deployment = yamlFile({
         name: 'app-deployment',
-        path: './manifests/deployment.yaml'
+        path: './manifests/deployment.yaml',
       });
 
       // Should be deployment closures
       expect(typeof namespace).toBe('function');
       expect(typeof deployment).toBe('function');
-      
+
       // Closures should be different instances
       expect(namespace).not.toBe(deployment);
     });
@@ -76,12 +75,12 @@ describe('YAML Factory Deployment Integration', () => {
       // Simulate a composition that uses YAML resources with cross-references
       const helmController = yamlDirectory({
         name: 'helm-controller',
-        path: 'git:github.com/fluxcd/helm-controller/config/default@main'
+        path: 'git:github.com/fluxcd/helm-controller/config/default@main',
       });
 
       const helmRelease = yamlFile({
         name: 'my-app-release',
-        path: './helm-releases/my-app.yaml'
+        path: './helm-releases/my-app.yaml',
       });
 
       // Should be deployment closures
@@ -94,7 +93,7 @@ describe('YAML Factory Deployment Integration', () => {
     it('should create closures with Git URLs', () => {
       const gitYaml = yamlDirectory({
         name: 'flux-system',
-        path: 'git:github.com/fluxcd/flux2/manifests/install@v2.2.0'
+        path: 'git:github.com/fluxcd/flux2/manifests/install@v2.2.0',
       });
 
       // Should be a function (closure)
@@ -105,7 +104,7 @@ describe('YAML Factory Deployment Integration', () => {
     it('should create closures for YAML files', () => {
       const yaml = yamlFile({
         name: 'test-config',
-        path: './test.yaml'
+        path: './test.yaml',
       });
 
       // Should be a function (closure)

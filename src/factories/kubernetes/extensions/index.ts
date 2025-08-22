@@ -1,6 +1,6 @@
 /**
  * Kubernetes Extension Resource Factories
- * 
+ *
  * This module provides factory functions for Kubernetes extension resources
  * including CustomResourceDefinitions and custom resources.
  */

@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
-import { toResourceGraph, simpleConfigMap } from '../../src/index.js';
 import { type } from 'arktype';
+import { simpleConfigMap, toResourceGraph } from '../../src/index.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {

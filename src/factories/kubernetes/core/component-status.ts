@@ -10,8 +10,8 @@ export function componentStatus(resource: V1ComponentStatus): Enhanced<object, u
     metadata: resource.metadata ?? { name: 'unnamed-componentstatus' },
   }).withReadinessEvaluator((liveResource: V1ComponentStatus) => {
     const conditions = liveResource.conditions || [];
-    const healthyCondition = conditions.find(c => c.type === 'Healthy');
-    
+    const healthyCondition = conditions.find((c) => c.type === 'Healthy');
+
     if (healthyCondition?.status === 'True') {
       return {
         ready: true,
@@ -20,7 +20,7 @@ export function componentStatus(resource: V1ComponentStatus): Enhanced<object, u
     }
 
     const message = healthyCondition?.message || 'Component health status unknown';
-    
+
     return {
       ready: false,
       reason: healthyCondition?.error || 'HealthUnknown',

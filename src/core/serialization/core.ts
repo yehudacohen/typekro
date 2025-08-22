@@ -5,19 +5,19 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-
 import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
+import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy } from '../references/index.js';
 import type {
+  DeploymentClosure,
   FactoryForMode,
   FactoryOptions,
-  ResourceGraphResource,
   ResourceGraph,
+  ResourceGraphResource,
   TypedResourceGraph,
-  DeploymentClosure,
 } from '../types/deployment.js';
 import type {
   MagicAssignableShape,
@@ -32,20 +32,21 @@ import type {
   KroCompatibleType,
   KubernetesResource,
 } from '../types.js';
+import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
-import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
-import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 
 /**
  * Separate Enhanced<> resources from deployment closures in the builder result
  */
-function separateResourcesAndClosures<T extends Record<string, Enhanced<any, any> | DeploymentClosure>>(
+function separateResourcesAndClosures<
+  T extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+>(
   builderResult: T
 ): { resources: Record<string, Enhanced<any, any>>; closures: Record<string, DeploymentClosure> } {
   const resources: Record<string, Enhanced<any, any>> = {};
   const closures: Record<string, DeploymentClosure> = {};
-  
+
   for (const [key, value] of Object.entries(builderResult)) {
     if (typeof value === 'function') {
       // This is a deployment closure
@@ -58,16 +59,19 @@ function separateResourcesAndClosures<T extends Record<string, Enhanced<any, any
       resources[key] = value as Enhanced<any, any>;
     }
   }
-  
+
   return { resources, closures };
 }
 
 /**
  * Create a ResourceGraph from resources for deployment
  */
-function _createResourceGraph(name: string, resources: Record<string, KubernetesResource>): ResourceGraph {
+function _createResourceGraph(
+  name: string,
+  resources: Record<string, KubernetesResource>
+): ResourceGraph {
   const dependencyResolver = new DependencyResolver();
-  const resourceArray = Object.values(resources).map(resource => ({
+  const resourceArray = Object.values(resources).map((resource) => ({
     ...resource,
     id: resource.id || resource.metadata?.name || 'unknown',
   }));
@@ -78,7 +82,7 @@ function _createResourceGraph(name: string, resources: Record<string, Kubernetes
   const dependencyGraph = dependencyResolver.buildDependencyGraph(deployableResources);
 
   // Convert to ResourceGraphResource format
-  const resourceGraphResources: ResourceGraphResource[] = deployableResources.map(resource => ({
+  const resourceGraphResources: ResourceGraphResource[] = deployableResources.map((resource) => ({
     id: resource.id,
     manifest: resource,
   }));
@@ -102,13 +106,16 @@ export function toResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
   // This new generic captures the exact shape of your resources - can be Enhanced<> resources or DeploymentClosures
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   // The resourceBuilder is now defined as returning that specific shape
   resourceBuilder: (schema: SchemaProxy<TSpec, TStatus>) => TResources,
   // The statusBuilder is now defined as ACCEPTING that specific shape
-  statusBuilder: (schema: SchemaProxy<TSpec, TStatus>, resources: TResources) => MagicAssignableShape<TStatus>,
+  statusBuilder: (
+    schema: SchemaProxy<TSpec, TStatus>,
+    resources: TResources
+  ) => MagicAssignableShape<TStatus>,
   options?: SerializationOptions
 ): TypedResourceGraph<TSpec, TStatus> {
   // The implementation in createTypedResourceGraph must also be updated to match this signature.
@@ -121,38 +128,47 @@ export function toResourceGraph<
 function createTypedResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   resourceBuilder: (schema: SchemaProxy<TSpec, TStatus>) => TResources,
-  statusBuilder: (schema: SchemaProxy<TSpec, TStatus>, resources: TResources) => MagicAssignableShape<TStatus>,
+  statusBuilder: (
+    schema: SchemaProxy<TSpec, TStatus>,
+    resources: TResources
+  ) => MagicAssignableShape<TStatus>,
   options?: SerializationOptions
 ): TypedResourceGraph<TSpec, TStatus> {
-  const serializationLogger = getComponentLogger('resource-graph-serialization').child({ 
-    name: definition.name 
+  const serializationLogger = getComponentLogger('resource-graph-serialization').child({
+    name: definition.name,
   });
-  
+
   // Validate resource graph name early
   if (!definition.name || typeof definition.name !== 'string') {
-    throw new Error(`Invalid resource graph name: ${JSON.stringify(definition.name)}. Resource graph name must be a non-empty string.`);
+    throw new Error(
+      `Invalid resource graph name: ${JSON.stringify(definition.name)}. Resource graph name must be a non-empty string.`
+    );
   }
 
   const trimmedName = definition.name.trim();
   if (trimmedName.length === 0) {
-    throw new Error(`Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`);
+    throw new Error(
+      `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`
+    );
   }
 
   // Validate that the name will convert to a valid Kubernetes resource name
-  const kubernetesName = trimmedName
-    .replace(/([a-z])([A-Z])/g, '$1-$2')
-    .toLowerCase();
+  const kubernetesName = trimmedName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
 
   if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-    throw new Error(`Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`);
+    throw new Error(
+      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
+    );
   }
 
   if (kubernetesName.length > 253) {
-    throw new Error(`Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`);
+    throw new Error(
+      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
+    );
   }
 
   // Apply default apiVersion if not specified
@@ -164,38 +180,41 @@ function createTypedResourceGraph<
     spec: definition.spec,
     status: definition.status,
   };
-  
+
   const schema = createSchemaProxy<TSpec, TStatus>();
   const builderResult = resourceBuilder(schema);
-  
+
   // Separate Enhanced<> resources from deployment closures
   const { resources: resourcesWithKeys, closures } = separateResourcesAndClosures(builderResult);
-  
+
   // Pass Enhanced resources directly to StatusBuilder - they already have proper MagicProxy types
   const statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
-  
+
   // Validate resource IDs and CEL expressions
   const validation = validateResourceGraphDefinition(resourcesWithKeys, statusMappings);
   if (!validation.isValid) {
-    const errorMessages = validation.errors.map(err => `${err.field}: ${err.error}`).join('\n');
+    const errorMessages = validation.errors.map((err) => `${err.field}: ${err.error}`).join('\n');
     throw new Error(`ResourceGraphDefinition validation failed:\n${errorMessages}`);
   }
-  
+
   // Log warnings if any
   if (validation.warnings.length > 0) {
     serializationLogger.warn('ResourceGraphDefinition validation warnings', {
-      warnings: validation.warnings.map(w => ({
+      warnings: validation.warnings.map((w) => ({
         field: w.field,
         error: w.error,
-        suggestion: w.suggestion
-      }))
+        suggestion: w.suggestion,
+      })),
     });
   }
-  
+
   // Evaluate and optimize CEL expressions
   const evaluationContext = { resources: resourcesWithKeys, schema };
-  const { mappings: optimizedStatusMappings, optimizations } = optimizeStatusMappings(statusMappings, evaluationContext);
-  
+  const { mappings: optimizedStatusMappings, optimizations } = optimizeStatusMappings(
+    statusMappings,
+    evaluationContext
+  );
+
   // Log optimizations if any
   if (optimizations.length > 0) {
     serializationLogger.info('CEL expression optimizations applied', { optimizations });
@@ -238,7 +257,12 @@ function createTypedResourceGraph<
 
     toYaml(): string {
       // Generate ResourceGraphDefinition YAML with user-defined status mappings
-      const kroSchema = generateKroSchemaFromArktype(definition.name, schemaDefinition, resourcesWithKeys, optimizedStatusMappings);
+      const kroSchema = generateKroSchemaFromArktype(
+        definition.name,
+        schemaDefinition,
+        resourcesWithKeys,
+        optimizedStatusMappings
+      );
       return serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
     },
   };

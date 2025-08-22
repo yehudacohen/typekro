@@ -7,21 +7,19 @@ import { createResource } from '../shared.js';
 
 /**
  * Generic Kro custom resource factory with schema-based typing
- * 
+ *
  * Creates an Enhanced Kro custom resource with proper status field typing
  * that includes both user-defined and Kro-managed status fields.
- * 
+ *
  * @param resource - The Kro custom resource configuration
  * @returns Enhanced resource with Kro status fields and readiness evaluation
  */
-export function kroCustomResource<TSpec extends object, TStatus extends object>(
-  resource: {
-    apiVersion: string; // e.g., 'kro.run/v1alpha1'
-    kind: string;       // e.g., 'WebApplication'
-    metadata: { name: string; namespace?: string };
-    spec: TSpec;
-  }
-): Enhanced<TSpec, WithKroStatusFields<TStatus>> {
+export function kroCustomResource<TSpec extends object, TStatus extends object>(resource: {
+  apiVersion: string; // e.g., 'kro.run/v1alpha1'
+  kind: string; // e.g., 'WebApplication'
+  metadata: { name: string; namespace?: string };
+  spec: TSpec;
+}): Enhanced<TSpec, WithKroStatusFields<TStatus>> {
   // Capture kind in closure for readiness evaluation
   const resourceKind = resource.kind;
 
@@ -38,7 +36,7 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
           ready: false,
           reason: 'StatusMissing',
           message: `${resourceKind} status not yet available`,
-          details: { statusExists: false }
+          details: { statusExists: false },
         };
       }
 
@@ -54,14 +52,14 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
           details: {
             statusExists: true,
             stateExists: false,
-            conditions: conditions.length > 0 ? conditions : undefined
-          }
+            conditions: conditions.length > 0 ? conditions : undefined,
+          },
         };
       }
 
       // Check for failed state
       if (state === 'FAILED') {
-        const failedCondition = conditions.find(c => c.status === 'False');
+        const failedCondition = conditions.find((c) => c.status === 'False');
         return {
           ready: false,
           reason: 'KroInstanceFailed',
@@ -69,8 +67,8 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
           details: {
             state,
             conditions,
-            observedGeneration: status.observedGeneration
-          }
+            observedGeneration: status.observedGeneration,
+          },
         };
       }
 
@@ -83,8 +81,8 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
           details: {
             state,
             conditions,
-            observedGeneration: status.observedGeneration
-          }
+            observedGeneration: status.observedGeneration,
+          },
         };
       }
 
@@ -96,21 +94,21 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
           details: {
             state,
             conditions,
-            observedGeneration: status.observedGeneration
-          }
+            observedGeneration: status.observedGeneration,
+          },
         };
       }
 
       // For ACTIVE state, check for Ready condition (primary) or InstanceSynced condition (fallback)
-      const readyCondition = conditions.find(c => c.type === 'Ready');
-      const syncedCondition = conditions.find(c => c.type === 'InstanceSynced');
+      const readyCondition = conditions.find((c) => c.type === 'Ready');
+      const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
 
       // Prefer Ready condition if available
       if (readyCondition) {
         if (readyCondition.status === 'True') {
           return {
             ready: true,
-            message: `${resourceKind} instance is active and ready`
+            message: `${resourceKind} instance is active and ready`,
           };
         } else {
           return {
@@ -120,8 +118,8 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
             details: {
               state,
               conditions,
-              observedGeneration: status.observedGeneration
-            }
+              observedGeneration: status.observedGeneration,
+            },
           };
         }
       }
@@ -131,7 +129,7 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
         if (syncedCondition.status === 'True') {
           return {
             ready: true,
-            message: `${resourceKind} instance is active and synced`
+            message: `${resourceKind} instance is active and synced`,
           };
         } else {
           return {
@@ -141,8 +139,8 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
             details: {
               state,
               conditions,
-              observedGeneration: status.observedGeneration
-            }
+              observedGeneration: status.observedGeneration,
+            },
           };
         }
       }
@@ -155,15 +153,15 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
         details: {
           state,
           conditions,
-          observedGeneration: status.observedGeneration
-        }
+          observedGeneration: status.observedGeneration,
+        },
       };
     } catch (error) {
       return {
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating ${resourceKind} readiness: ${error}`,
-        details: { error: String(error) }
+        details: { error: String(error) },
       };
     }
   });

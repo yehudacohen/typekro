@@ -1,5 +1,5 @@
-import { createResource } from '../shared.js';
 import type { Enhanced } from '../../core/types/index.js';
+import { createResource } from '../shared.js';
 
 export interface HelmRepositorySpec {
   url: string;

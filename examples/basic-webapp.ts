@@ -3,11 +3,7 @@
  */
 
 import { type } from 'arktype';
-import {
-  toResourceGraph,
-  simpleDeployment,
-  simpleJob,
-} from '../src/index.js';
+import { simpleDeployment, simpleJob, toResourceGraph } from '../src/index.js';
 
 // Define the schema for our WebApp stack
 const WebAppSpecSchema = type({

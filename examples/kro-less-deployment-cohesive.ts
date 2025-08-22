@@ -3,7 +3,7 @@
  *
  * This example demonstrates the new cohesive factory pattern for kro-less deployment
  * with full ArkType integration and type safety.
- * 
+ *
  * NOTE: This file is currently for documentation purposes and may not compile
  * due to TypeScript configuration issues and the complexity of the magic proxy system.
  * See examples/README.md for more information.
@@ -17,6 +17,7 @@ import {
   simpleService,
   toResourceGraph,
 } from '../src/index.js';
+
 // Note: Alchemy imports would be used in real implementation
 // import alchemy from 'alchemy';
 // import { Vpc } from 'alchemy/aws';
@@ -246,9 +247,9 @@ async function demonstrateAlchemyDirectMode() {
           NODE_ENV: 'production',
           DOMAIN: 'fullstack.example.com',
           DATABASE_URL: mockDatabase.connectionString, // Mock value
-          DATABASE_HOST: mockDatabase.address,         // Mock value
-          APP_NAME: 'fullstack-webapp',                // Static value
-          REPLICAS: '3',                               // Static value
+          DATABASE_HOST: mockDatabase.address, // Mock value
+          APP_NAME: 'fullstack-webapp', // Static value
+          REPLICAS: '3', // Static value
         },
         ports: [{ name: 'http', containerPort: 3000, protocol: 'TCP' }],
         id: 'fullstackDeployment', // camelCase ID
@@ -445,7 +446,7 @@ async function demonstrateExternalReferences() {
 
   // Create factory for deployment with external dependencies
   const factory = await webappWithDbGraph.factory('direct');
-  
+
   console.log('✅ Factory with external references created successfully');
   console.log(`✅ Factory mode: ${factory.mode}`);
   console.log(`✅ Factory name: ${factory.name}`);
@@ -554,7 +555,6 @@ async function runAllDemonstrations() {
     console.log('✅ External references with full type safety');
     console.log('✅ Static resource graphs for simple use cases');
     console.log('✅ Compile-time and runtime type safety');
-
   } catch (error) {
     console.error('❌ Demonstration failed:', error);
   }
