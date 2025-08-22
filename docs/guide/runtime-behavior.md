@@ -71,7 +71,7 @@ Status hydration patterns:
 When resources are deployed, TypeKro tracks their metadata and references:
 
 ```typescript
-const factory = await webApp.factory('direct');
+const factory = webApp.factory('direct');
 await factory.deploy({
   name: 'my-webapp',
   image: 'nginx:latest',
@@ -431,7 +431,7 @@ Different deployment modes handle references differently:
 **Direct Mode**: References are resolved by querying the Kubernetes API:
 
 ```typescript
-const factory = await graph.factory('direct');
+const factory = graph.factory('direct');
 // TypeKro queries the cluster to resolve references
 await factory.deploy(spec);
 ```
@@ -961,14 +961,14 @@ Deploy applications that use external references:
 
 ```typescript
 // Deploy the external database first (separate operation)
-const databaseFactory = await databaseGraph.factory('direct');
+const databaseFactory = databaseGraph.factory('direct');
 await databaseFactory.deploy({ 
   name: 'shared-postgres', 
   storage: '100Gi' 
 });
 
 // Then deploy application that references it
-const appFactory = await appWithExternalDb.factory('direct');
+const appFactory = appWithExternalDb.factory('direct');
 await appFactory.deploy({ 
   name: 'my-app',
   image: 'nginx:latest' 
@@ -1006,7 +1006,7 @@ const yaml = appWithExternalDb.toYaml({
 In direct mode, TypeKro actively manages runtime behavior:
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   namespace: 'development',
   statusUpdateInterval: 30000  // Update every 30 seconds
 });
@@ -1087,7 +1087,7 @@ const optimizedStatus = (schema, resources) => ({
 ### Monitoring Runtime Behavior
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   statusUpdateInterval: 10000,
   onStatusHydrationError: (error) => {
     console.error('Status hydration failed:', error);
@@ -1197,7 +1197,7 @@ const logger = createLogger({
   pretty: true
 });
 
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   logger,
   debugStatusHydration: true,
   debugCrossReferences: true,

@@ -214,7 +214,7 @@ const apiApp = toResourceGraph(
 // Deploy the complete system
 async function deployDatabaseApp() {
   // Deploy database first
-  const dbFactory = await database.factory('direct', { namespace: 'database' });
+  const dbFactory = database.factory('direct', { namespace: 'database' });
   await dbFactory.deploy({
     name: 'postgres-main',
     replicas: 3,
@@ -226,7 +226,7 @@ async function deployDatabaseApp() {
   });
   
   // Deploy API application
-  const apiFactory = await apiApp.factory('direct', { namespace: 'default' });
+  const apiFactory = apiApp.factory('direct', { namespace: 'default' });
   await apiFactory.deploy({
     name: 'myapp-api',
     image: 'myapp/api:v1.0',
@@ -237,10 +237,10 @@ async function deployDatabaseApp() {
 
 // For GitOps workflow
 async function generateYaml() {
-  const dbFactory = await database.factory('kro', { namespace: 'database' });
+  const dbFactory = database.factory('kro', { namespace: 'database' });
   const dbYaml = dbFactory.toYaml();
   
-  const apiFactory = await apiApp.factory('kro', { namespace: 'default' });
+  const apiFactory = apiApp.factory('kro', { namespace: 'default' });
   const apiYaml = apiFactory.toYaml();
   
   // Write YAML files for GitOps deployment
@@ -469,7 +469,7 @@ const databaseWithBackup = toResourceGraph(
 ```typescript
 // Quick local development deployment
 async function deployDev() {
-  const factory = await database.factory('direct', { namespace: 'dev' });
+  const factory = database.factory('direct', { namespace: 'dev' });
   await factory.deploy({
     name: 'postgres-dev',
     replicas: 1,
@@ -487,7 +487,7 @@ async function deployDev() {
 ```typescript
 // GitOps production deployment
 async function deployProd() {
-  const factory = await database.factory('kro', { namespace: 'production' });
+  const factory = database.factory('kro', { namespace: 'production' });
   const yaml = factory.toYaml();
   
   // Save for GitOps deployment

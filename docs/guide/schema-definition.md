@@ -145,7 +145,7 @@ const webapp = toResourceGraph(
 );
 
 // Deploy with validation
-const factory = await webapp.factory('direct', { namespace: 'default' });
+const factory = webapp.factory('direct', { namespace: 'default' });
 
 // ✅ Valid input - passes Arktype validation
 await factory.deploy({
@@ -647,7 +647,7 @@ async function deployApplication(input: unknown) {
   }
   
   // Proceed with validated data
-  const factory = await app.factory('direct', { namespace: 'default' });
+  const factory = app.factory('direct', { namespace: 'default' });
   return factory.deploy(spec);
 }
 ```

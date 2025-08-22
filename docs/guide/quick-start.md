@@ -64,7 +64,7 @@ export const app = toResourceGraph(
 // deploy.ts
 import { app } from './simple-app.js';
 
-const factory = await app.factory('direct', { namespace: 'default' });
+const factory = app.factory('direct', { namespace: 'default' });
 await factory.deploy({
   name: 'hello-world',
   image: 'nginx:latest',

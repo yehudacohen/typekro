@@ -52,7 +52,7 @@ describe('DirectTypeKroDeployer', () => {
       selector: { matchLabels: { app: name } },
       template: {
         metadata: { labels: { app: name } },
-        spec: { containers: [{ name: 'app', image: 'nginx:1.20' }] }
+        spec: { containers: [{ name: 'app', image: 'nginx:alpine' }] }
       }
     }
   });
@@ -283,7 +283,7 @@ describe('DirectTypeKroDeployer', () => {
             spec: { 
               containers: [{ 
                 name: 'app', 
-                image: 'nginx:1.21',
+                image: 'nginx:latest',
                 env: [{ name: 'ENV', value: 'production' }]
               }] 
             }

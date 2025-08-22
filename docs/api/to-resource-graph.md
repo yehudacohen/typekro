@@ -367,7 +367,7 @@ Once you have a resource graph, you can deploy it using different strategies:
 Deploy immediately to your cluster:
 
 ```typescript
-const factory = await webapp.factory('direct', { namespace: 'development' });
+const factory = webapp.factory('direct', { namespace: 'development' });
 await factory.deploy({
   name: 'my-webapp',
   image: 'nginx:latest',
@@ -381,7 +381,7 @@ await factory.deploy({
 Deploy using Kubernetes Resource Orchestrator for advanced runtime features:
 
 ```typescript
-const factory = await webapp.factory('kro', { namespace: 'production' });
+const factory = webapp.factory('kro', { namespace: 'production' });
 await factory.deploy({
   name: 'webapp-prod',
   image: 'nginx:1.21',
@@ -395,7 +395,7 @@ await factory.deploy({
 Generate deterministic YAML for GitOps workflows:
 
 ```typescript
-const factory = await webapp.factory('kro', { namespace: 'staging' });
+const factory = webapp.factory('kro', { namespace: 'staging' });
 const yaml = factory.toYaml();
 
 // Write to file for GitOps deployment

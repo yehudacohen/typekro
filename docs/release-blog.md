@@ -284,7 +284,7 @@ Because TypeKro wants to provide you versatility in your workflow, the same reso
 **Direct Deployment** provides immediate, client-side deployment similar to tools like Pulumi:
 
 ```typescript
-const directFactory = await WebService.factory('direct');
+const directFactory = WebService.factory('direct');
 await directFactory.deploy({
   name: 'dev-app',
   image: 'nginx:latest',
@@ -296,7 +296,7 @@ await directFactory.deploy({
 **KRO Deployment** leverages the Kubernetes Resource Orchestrator for kubernetes-control plane managed dependency resolution and runtime intelligence:
 
 ```typescript
-const kroFactory = await WebService.factory('kro');
+const kroFactory = WebService.factory('kro');
 await kroFactory.deploy({
   name: 'prod-app',
   image: 'nginx:1.21',

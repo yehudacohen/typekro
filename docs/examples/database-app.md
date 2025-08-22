@@ -114,7 +114,8 @@ export const fullStack = toResourceGraph(
 
 ### Development
 ```typescript
-await fullStack.factory('direct').deploy({
+const factory = fullStack.factory('direct');
+await factory.deploy({
   name: 'dev-app',
   appImage: 'myapp:latest',
   replicas: 1,
@@ -125,7 +126,8 @@ await fullStack.factory('direct').deploy({
 
 ### Production
 ```typescript
-await fullStack.factory('kro').deploy({
+const factory = fullStack.factory('kro');
+await factory.deploy({
   name: 'prod-app', 
   appImage: 'myapp:v1.2.3',
   replicas: 5,

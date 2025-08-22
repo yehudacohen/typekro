@@ -59,7 +59,7 @@ const yaml = appGraph.toYaml();
 console.log(yaml);
 
 // Deploy with factory
-const factory = await appGraph.factory('kro');
+const factory = appGraph.factory('kro');
 await factory.deploy({
   name: 'my-nginx',
   version: '1.21.6',
@@ -370,7 +370,7 @@ const devGraph = toResourceGraph(
 );
 
 // Deploy to development
-const factory = await devGraph.factory('direct', { namespace: 'dev' });
+const factory = devGraph.factory('direct', { namespace: 'dev' });
 await factory.deploy({ name: 'my-dev-app', debug: true });
 ```
 
@@ -400,7 +400,7 @@ Integrate Helm deployments in CI/CD:
 ```typescript
 // ci-cd-deployment.ts
 async function deployApp(version: string, environment: string) {
-  const factory = await appGraph.factory('kro', { 
+  const factory = appGraph.factory('kro', { 
     namespace: environment 
   });
   
@@ -535,7 +535,7 @@ kubectl get helmrelease my-app -o yaml | yq '.spec.values'
 Monitor Helm deployments:
 
 ```typescript
-const factory = await helmGraph.factory('kro');
+const factory = helmGraph.factory('kro');
 await factory.deploy(spec);
 
 // Monitor deployment progress

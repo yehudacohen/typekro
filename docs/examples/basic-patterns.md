@@ -103,7 +103,7 @@ Perfect for development and testing:
 import { simpleWebApp } from './simple-webapp.js';
 
 async function deployDirect() {
-  const factory = await simpleWebApp.factory('direct', {
+  const factory = simpleWebApp.factory('direct', {
     namespace: 'development'
   });
 
@@ -445,7 +445,7 @@ const apiApp = toResourceGraph(
 // Deploy the complete system
 async function deployDatabaseApp() {
   // Deploy database first
-  const dbFactory = await database.factory('direct', { namespace: 'database' });
+  const dbFactory = database.factory('direct', { namespace: 'database' });
   await dbFactory.deploy({
     name: 'postgres-main',
     replicas: 3,
@@ -457,7 +457,7 @@ async function deployDatabaseApp() {
   });
   
   // Deploy API application
-  const apiFactory = await apiApp.factory('direct', { namespace: 'default' });
+  const apiFactory = apiApp.factory('direct', { namespace: 'default' });
   await apiFactory.deploy({
     name: 'myapp-api',
     image: 'myapp/api:v1.0',
@@ -766,7 +766,7 @@ async function deployApp(input: unknown) {
   }
   
   // Proceed with validated data
-  const factory = await app.factory('direct', { namespace: 'default' });
+  const factory = app.factory('direct', { namespace: 'default' });
   return factory.deploy(spec);
 }
 ```

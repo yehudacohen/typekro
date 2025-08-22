@@ -114,7 +114,7 @@ const status = {
 };
 
 // Factory deployment
-const factory = await graph.factory('direct', { namespace: 'prod' });
+const factory = graph.factory('direct', { namespace: 'prod' });
 await factory.deploy(spec);
 ```
 
@@ -188,7 +188,7 @@ interface FactoryOptions {
   skipTLSVerify?: boolean;
 }
 
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   namespace: 'production',
   timeout: 300000,  // 5 minutes
   dryRun: false

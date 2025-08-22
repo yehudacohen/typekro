@@ -91,7 +91,7 @@ const webApp = toResourceGraph(
 When resources are deployed, TypeKro tracks their metadata and references:
 
 ```typescript
-const factory = await webApp.factory('direct');
+const factory = webApp.factory('direct');
 await factory.deploy({
   name: 'my-webapp',
   image: 'nginx:latest',
@@ -418,7 +418,7 @@ const complexStatus = (schema, resources) => ({
 In direct mode, TypeKro actively queries the cluster:
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   namespace: 'development',
   statusUpdateInterval: 30000  // Update every 30 seconds
 });
@@ -492,7 +492,7 @@ const optimizedStatus = (schema, resources) => ({
 ### Monitoring Status Hydration
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   statusUpdateInterval: 10000,
   onStatusHydrationError: (error) => {
     console.error('Status hydration failed:', error);
@@ -535,7 +535,7 @@ const robustStatus = (schema, resources) => ({
 ### Retry Logic
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   statusUpdateRetries: 3,
   statusUpdateBackoff: 'exponential',
   statusUpdateTimeout: 30000
@@ -554,7 +554,7 @@ const logger = createLogger({
   pretty: true
 });
 
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   logger,
   debugStatusHydration: true
 });

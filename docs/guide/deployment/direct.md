@@ -18,7 +18,7 @@ import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
 const webApp = toResourceGraph(/* ... */);
 
 // Deploy directly to cluster
-const factory = await webApp.factory('direct', {
+const factory = webApp.factory('direct', {
   namespace: 'development'
 });
 
@@ -73,7 +73,7 @@ async function setupCluster() {
     kroVersion: '0.3.0'
   });
 
-  const factory = await bootstrap.factory('direct', {
+  const factory = bootstrap.factory('direct', {
     namespace: 'flux-system',
     waitForReady: true,
     timeout: 300000
@@ -102,7 +102,7 @@ For complete examples, see:
 ### Quick Direct Deployment
 ```typescript
 // 1. Create factory
-const factory = await webapp.factory('direct', { namespace: 'dev' });
+const factory = webapp.factory('direct', { namespace: 'dev' });
 
 // 2. Deploy application  
 await factory.deploy({
@@ -120,7 +120,7 @@ console.log('App ready:', status.ready);
 ### Deployment with Configuration
 
 ```typescript
-const factory = await simpleApp.factory('direct', {
+const factory = simpleApp.factory('direct', {
   namespace: 'development',
   timeout: 300000,           // 5 minute timeout
   waitForReady: true,        // Wait for resources to be ready
@@ -146,7 +146,7 @@ interface DirectFactoryOptions {
 ### Advanced Options
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   // Basic configuration
   namespace: 'production',
   timeout: 600000,          // 10 minutes
@@ -177,7 +177,7 @@ const factory = await graph.factory('direct', {
 ### 1. Resource Creation
 
 ```typescript
-const factory = await graph.factory('direct');
+const factory = graph.factory('direct');
 
 // Deploy resources
 const deployment = await factory.deploy({
@@ -233,7 +233,7 @@ await factory.delete();
 ### Development Environment
 
 ```typescript
-const devFactory = await graph.factory('direct', {
+const devFactory = graph.factory('direct', {
   namespace: 'development',
   waitForReady: false,      // Deploy quickly without waiting
   timeout: 60000,           // Short timeout for fast feedback
@@ -251,7 +251,7 @@ await devFactory.deploy({
 ### Staging Environment
 
 ```typescript
-const stagingFactory = await graph.factory('direct', {
+const stagingFactory = graph.factory('direct', {
   namespace: 'staging',
   waitForReady: true,       // Ensure readiness
   timeout: 300000,          // Moderate timeout
@@ -269,7 +269,7 @@ await stagingFactory.deploy({
 ### Production Environment
 
 ```typescript
-const prodFactory = await graph.factory('direct', {
+const prodFactory = graph.factory('direct', {
   namespace: 'production',
   waitForReady: true,       // Must be ready
   timeout: 600000,          // Longer timeout
@@ -341,7 +341,7 @@ const fullStack = toResourceGraph(
 );
 
 // Deploy with dependency ordering
-const factory = await fullStack.factory('direct', {
+const factory = fullStack.factory('direct', {
   namespace: 'default',
   waitForReady: true
 });
@@ -412,7 +412,7 @@ const microservices = toResourceGraph(
 
 ```typescript
 async function rollingDeployment() {
-  const factory = await graph.factory('direct');
+  const factory = graph.factory('direct');
   
   // Deploy new version with zero downtime
   await factory.update({
@@ -434,7 +434,7 @@ async function rollingDeployment() {
 
 ```typescript
 async function blueGreenDeployment() {
-  const factory = await graph.factory('direct');
+  const factory = graph.factory('direct');
   
   // Deploy green version alongside blue
   const greenDeployment = await factory.deploy({
@@ -462,7 +462,7 @@ async function blueGreenDeployment() {
 
 ```typescript
 async function canaryDeployment() {
-  const factory = await graph.factory('direct');
+  const factory = graph.factory('direct');
   
   // Deploy canary with 10% traffic
   await factory.deploy({
@@ -529,7 +529,7 @@ const healthyApp = toResourceGraph(
 );
 
 // Deploy with health monitoring
-const factory = await healthyApp.factory('direct', {
+const factory = healthyApp.factory('direct', {
   waitForReady: true,
   readinessTimeout: 120000  // 2 minutes for health checks
 });
@@ -630,7 +630,7 @@ const logger = createLogger({
   pretty: true
 });
 
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   logger,
   namespace: 'development'
 });
@@ -675,7 +675,7 @@ try {
 
 ```typescript
 // Test deployment without actually creating resources
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   dryRun: true,
   namespace: 'development'
 });
@@ -691,7 +691,7 @@ console.log('Would create resources:', dryRunResult.resources);
 
 ```typescript
 // Deploy multiple independent resources in parallel
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   parallelDeployment: true,
   maxConcurrency: 5
 });
@@ -700,7 +700,7 @@ const factory = await graph.factory('direct', {
 ### Resource Caching
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   cacheResourceDefinitions: true,
   cacheTTL: 300000  // 5 minutes
 });
@@ -733,7 +733,7 @@ async function deploy() {
   const environment = process.env.ENVIRONMENT || 'development';
   const imageTag = process.env.IMAGE_TAG || 'latest';
   
-  const factory = await webApp.factory('direct', {
+  const factory = webApp.factory('direct', {
     namespace: environment,
     context: config[environment].cluster,
     timeout: 600000
@@ -783,14 +783,14 @@ const environments = {
 const env = process.env.NODE_ENV || 'dev';
 const config = environments[env];
 
-const factory = await graph.factory('direct', config);
+const factory = graph.factory('direct', config);
 ```
 
 ### 2. Resource Naming
 
 ```typescript
 // ✅ Use consistent, descriptive names
-const factory = await graph.factory('direct');
+const factory = graph.factory('direct');
 await factory.deploy({
   name: Cel.template('%s-%s', appName, environment),
   image: Cel.template('%s/%s:%s', registry, appName, version),
@@ -803,7 +803,7 @@ await factory.deploy({
 ```typescript
 // ✅ Implement retry logic and rollback
 async function deployWithRollback() {
-  const factory = await graph.factory('direct');
+  const factory = graph.factory('direct');
   
   try {
     await factory.deploy(newVersion);

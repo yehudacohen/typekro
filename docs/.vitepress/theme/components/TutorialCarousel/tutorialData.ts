@@ -168,7 +168,7 @@ console.log(kroYaml);
     codeExample: {
       language: 'typescript',
       code: `// Create a direct deployment factory
-const directFactory = await webAppGraph.factory('direct', { 
+const directFactory = webAppGraph.factory('direct', { 
   namespace: 'production' 
 });
 
@@ -204,7 +204,7 @@ console.log('Deployed:', instance.status);
 // kubectl apply -f https://github.com/awslabs/kro/releases/latest/download/kro.yaml
 
 // Create a KRO factory for operator-style deployment
-const kroFactory = await webAppGraph.factory('kro', { 
+const kroFactory = webAppGraph.factory('kro', { 
   namespace: 'production' 
 });
 
@@ -268,7 +268,7 @@ const alchemyScope = await alchemy('my-webapp-project', {
 });
 
 // Create direct factory with Alchemy integration
-const alchemyFactory = await webAppGraph.factory('direct', {
+const alchemyFactory = webAppGraph.factory('direct', {
   namespace: 'production',
   alchemyScope: alchemyScope,
   kubeConfig: kc,

@@ -152,7 +152,7 @@ const cloudApp = toResourceGraph(
 
 // Deploy both cloud and Kubernetes resources
 await app.run(async () => {
-  const factory = await cloudApp.factory('direct', {
+  const factory = cloudApp.factory('direct', {
     namespace: 'production',
     alchemyScope: app  // Connect TypeKro to Alchemy scope
   });
@@ -533,7 +533,7 @@ async function deployDevelopment() {
   const cloudResources = await deployCloudInfrastructure(environment);
   
   // Deploy Kubernetes app with TypeKro
-  const k8sFactory = await app.factory('direct', {
+  const k8sFactory = app.factory('direct', {
     namespace: environment
   });
   
@@ -565,7 +565,7 @@ async function deployProduction() {
   const regions = ['us-west-2', 'us-east-1'];
   
   await Promise.all(regions.map(async (region) => {
-    const k8sFactory = await app.factory('kro', {
+    const k8sFactory = app.factory('kro', {
       namespace: Cel.template("%s-%s", environment, region),
       context: Cel.template("%s-%s", environment, region)
     });
@@ -832,7 +832,7 @@ const getInstanceSize = (environment: string) => {
 ```typescript
 // ✅ Robust error handling for cloud resources
 try {
-  const factory = await app.factory('direct');
+  const factory = app.factory('direct');
   await factory.deploy(spec);
 } catch (error) {
   if (error.code === 'ResourceNotFound') {

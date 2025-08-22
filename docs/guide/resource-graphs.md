@@ -204,7 +204,7 @@ const validatedApp = toResourceGraph(
 
 ```typescript
 try {
-  const factory = await graph.factory('direct');
+  const factory = graph.factory('direct');
   await factory.deploy(spec);
 } catch (error) {
   if (error instanceof SchemaValidationError) {
@@ -218,7 +218,7 @@ try {
 ### Direct Deployment
 
 ```typescript
-const factory = await graph.factory('direct', {
+const factory = graph.factory('direct', {
   namespace: 'development',
   timeout: 300000
 });
@@ -247,7 +247,7 @@ const instanceYaml = graph.toYaml({
 ### KRO Integration
 
 ```typescript
-const kroFactory = await graph.factory('kro', {
+const kroFactory = graph.factory('kro', {
   namespace: 'production'
 });
 

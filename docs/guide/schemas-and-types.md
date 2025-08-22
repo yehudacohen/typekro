@@ -781,7 +781,7 @@ async function deployApplication(input: unknown) {
   try {
     const validatedSpec = appValidator.validate(input);
     
-    const factory = await graph.factory('direct');
+    const factory = graph.factory('direct');
     return await factory.deploy(validatedSpec);
   } catch (error) {
     if (error instanceof ValidationError) {

@@ -95,7 +95,7 @@ const webapp = toResourceGraph(
 );
 
 // Deploy it directly to your cluster
-const factory = await webapp.factory('direct', { namespace: 'default' });
+const factory = webapp.factory('direct', { namespace: 'default' });
 await factory.deploy({ name: 'my-app', image: 'nginx', replicas: 3 });
 ```
 
@@ -145,21 +145,21 @@ const spec = { name: 'my-app', image: 'nginx:1.21', replicas: 3 };
 // Deploy the SAME code in different ways:
 
 // 1. Generate YAML for GitOps (no cluster interaction)
-const kroFactory = await webappGraph.factory('kro', { namespace: 'dev' });
+const kroFactory = webappGraph.factory('kro', { namespace: 'dev' });
 const yaml = kroFactory.toYaml();
 writeFileSync('k8s/webapp.yaml', yaml);
 
 // 2. Deploy directly to cluster (immediate)
-const directFactory = await webappGraph.factory('direct', { namespace: 'dev' });
+const directFactory = webappGraph.factory('direct', { namespace: 'dev' });
 const directInstance = await directFactory.deploy(spec);
 
 // 3. Integrate with Alchemy for multi-cloud coordination
 await alchemyScope.run(async () => {
-  const factory = await webappGraph.factory('direct', { 
+  const alchemyFactory = webappGraph.factory('direct', { 
     namespace: 'dev',
     alchemyScope: alchemyScope 
   });
-  await factory.deploy(spec);
+  await alchemyFactory.deploy(spec);
 });
 ```
 
@@ -173,7 +173,7 @@ Generate deterministic Kubernetes YAML that integrates with any GitOps workflow:
 
 ```typescript
 // Generate ResourceGraphDefinition YAML
-const kroFactory = await webappGraph.factory('kro', { namespace: 'default' });
+const kroFactory = webappGraph.factory('kro', { namespace: 'default' });
 const yaml = kroFactory.toYaml();
 
 // Save for GitOps deployment
@@ -201,7 +201,7 @@ Deploy directly to your cluster for rapid iteration:
 
 ```typescript
 // Create factory and deploy immediately
-const factory = await webappGraph.factory('direct', { namespace: 'development' });
+const factory = webappGraph.factory('direct', { namespace: 'development' });
 
 // Deploy with specific configuration
 const instance = await factory.deploy({
@@ -232,7 +232,7 @@ Leverage Kubernetes Resource Orchestrator for advanced runtime capabilities:
 
 ```typescript
 // Deploy as ResourceGraphDefinition with runtime resolution
-const kroFactory = await webappGraph.factory('kro', { namespace: 'production' });
+const kroFactory = webappGraph.factory('kro', { namespace: 'production' });
 
 // Apply the ResourceGraphDefinition to cluster
 await kroFactory.deploy({ 
@@ -268,7 +268,7 @@ Deploy the same graph to different environments with environment-specific config
 
 ```typescript
 // Development: Direct deployment for fast iteration
-const devFactory = await webappGraph.factory('direct', { namespace: 'dev' });
+const factory = webappGraph.factory('direct', { namespace: 'dev' });
 await devFactory.deploy({
   name: 'webapp-dev',
   image: 'nginx:latest',
@@ -276,7 +276,7 @@ await devFactory.deploy({
 });
 
 // Staging: Kro deployment for testing runtime dependencies  
-const stagingFactory = await webappGraph.factory('kro', { namespace: 'staging' });
+const factory = webappGraph.factory('kro', { namespace: 'staging' });
 await stagingFactory.deploy({
   name: 'webapp-staging',
   image: 'nginx:1.21-rc',
@@ -284,7 +284,7 @@ await stagingFactory.deploy({
 });
 
 // Production: GitOps deployment
-const prodFactory = await webappGraph.factory('kro', { namespace: 'production' });
+const factory = webappGraph.factory('kro', { namespace: 'production' });
 const prodYaml = prodFactory.toYaml();
 writeFileSync('k8s/production/webapp.yaml', prodYaml);
 // Deployed via ArgoCD/Flux
@@ -1074,20 +1074,24 @@ await app.run(async () => {
 
 #### Pattern 2: Kubernetes-First with Cloud Services
 ```typescript
-// Start with Kubernetes infrastructure
-const webappFactory = await webappGraph.factory('direct', { namespace: 'default' });
-
-// Add cloud resources that support the Kubernetes workloads
+// Start with cloud infrastructure first
 const app = await alchemy('support-services');
 const monitoring = await CloudWatch('webapp-metrics');
 const storage = await S3('webapp-data');
 
+// Deploy Kubernetes resources with access to cloud resources
 await app.run(async () => {
-  const factory = await webappGraph.factory('direct', { 
+  const factory = webappGraph.factory('direct', { 
     namespace: 'default',
     alchemyScope: app 
   });
-  await factory.deploy({ /* config */ });
+  await factory.deploy({ 
+    name: 'webapp',
+    image: 'myapp:latest',
+    // Kubernetes resources can reference cloud resources
+    monitoring: monitoring.endpoint,
+    storage: storage.bucketName
+  });
 });
 ```
 
