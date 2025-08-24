@@ -354,7 +354,6 @@ export class ReferenceResolver {
         // Use the resource key mapping to provide resources with their original keys
         for (const [originalKey, resource] of context.resourceKeyMapping) {
           resourcesMap.set(originalKey, resource);
-
         }
       } else {
         // Fallback to using deployed resource IDs

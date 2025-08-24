@@ -38,8 +38,9 @@ interface KubernetesApiClientConfig {
  * This client provides basic apply, get, and delete operations for Kubernetes resources.
  */
 export class KubernetesApi {
+  private kc: k8s.KubeConfig;
   private k8sApi: k8s.KubernetesObjectApi;
-  private kc: k8s.KubeConfig;  private logger = getComponentLogger('kubernetes-api');
+  private logger = getComponentLogger('kubernetes-api');
 
   constructor() {
     const config = this.loadConfigFromEnv();

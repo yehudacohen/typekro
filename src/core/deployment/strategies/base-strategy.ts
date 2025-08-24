@@ -6,11 +6,15 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { getComponentLogger } from '../../logging/index.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../../types/kubernetes.js';
-import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../../types/serialization.js';
+import type {
+  KroCompatibleType,
+  SchemaDefinition,
+  StatusBuilder,
+} from '../../types/serialization.js';
 import { createEnhancedMetadata, generateInstanceName, validateSpec } from '../shared-utilities.js';
-import { getComponentLogger } from '../../logging/index.js';
 
 /**
  * Base deployment strategy interface
@@ -107,7 +111,7 @@ export abstract class BaseDeploymentStrategy<
 
     // Build status using the status builder if available, otherwise extract from resources
     let status: TStatus = {} as TStatus;
-    
+
     this.logger.debug('Status building attempt', {
       instanceName,
       hasStatusBuilder: !!this.statusBuilder,
@@ -120,7 +124,7 @@ export abstract class BaseDeploymentStrategy<
       try {
         // Create enhanced resources for the status builder using original resource keys
         const enhancedResources: Record<string, Enhanced<any, any>> = {};
-        
+
         if (deploymentResult && 'resources' in deploymentResult && this.resourceKeys) {
           // Create a mapping from resource ID to deployed resource
           const deployedResourcesById: Record<string, any> = {};
@@ -129,12 +133,12 @@ export abstract class BaseDeploymentStrategy<
               deployedResourcesById[deployedResource.id] = deployedResource;
             }
           }
-          
+
           this.logger.debug('Resource mapping debug', {
             instanceName,
             originalResourceKeys: Object.keys(this.resourceKeys),
             deployedResourceIds: Object.keys(deployedResourcesById),
-            deployedResourceDetails: deploymentResult.resources.map(r => ({
+            deployedResourceDetails: deploymentResult.resources.map((r) => ({
               id: r.id,
               kind: r.manifest?.kind,
               name: r.manifest?.metadata?.name,
@@ -148,19 +152,20 @@ export abstract class BaseDeploymentStrategy<
               hasDeployedResource: !!(resource.id && deployedResourcesById[resource.id]),
             })),
           });
-          
+
           // Map original resource keys to deployed resources by matching kind and name
           for (const [originalKey, originalResource] of Object.entries(this.resourceKeys)) {
             // Find deployed resource by matching kind and name
-            const deployedResource = deploymentResult.resources.find(dr => 
-              dr.manifest?.kind === originalResource.kind &&
-              dr.manifest?.metadata?.name === originalResource.metadata?.name
+            const deployedResource = deploymentResult.resources.find(
+              (dr) =>
+                dr.manifest?.kind === originalResource.kind &&
+                dr.manifest?.metadata?.name === originalResource.metadata?.name
             );
-            
+
             if (deployedResource?.manifest) {
               // Try to get the actual resource status from the cluster
               let actualResource = deployedResource.manifest;
-              
+
               try {
                 // Query the cluster for the actual resource with current status
                 const resourceRef: k8s.KubernetesObject = {
@@ -168,21 +173,22 @@ export abstract class BaseDeploymentStrategy<
                   kind: deployedResource.manifest.kind,
                   metadata: {
                     name: deployedResource.manifest.metadata?.name,
-                    namespace: deployedResource.manifest.metadata?.namespace || this.namespace || 'default',
+                    namespace:
+                      deployedResource.manifest.metadata?.namespace || this.namespace || 'default',
                   } as k8s.V1ObjectMeta,
                 };
-                
-                const k8sApi = this.factoryOptions.kubeConfig?.makeApiClient(k8s.KubernetesObjectApi);
+
+                const k8sApi = this.factoryOptions.kubeConfig?.makeApiClient(
+                  k8s.KubernetesObjectApi
+                );
                 if (k8sApi) {
                   const response = await k8sApi.read(resourceRef as any);
                   actualResource = response.body as any;
-                  
-
                 }
-              } catch (error) {
-
+              } catch (_error) {
+                // Ignore CEL evaluation errors during status hydration
               }
-              
+
               enhancedResources[originalKey] = {
                 metadata: actualResource.metadata || {},
                 spec: (actualResource as any).spec || {},
@@ -190,28 +196,30 @@ export abstract class BaseDeploymentStrategy<
               } as Enhanced<any, any>;
             }
           }
-          
+
           this.logger.debug('Enhanced resources created', {
             instanceName,
             enhancedResourceKeys: Object.keys(enhancedResources),
-            enhancedResourcesWithStatus: Object.entries(enhancedResources).map(([key, resource]) => ({
-              key,
-              hasStatus: !!resource.status && Object.keys(resource.status).length > 0,
-              statusKeys: resource.status ? Object.keys(resource.status) : [],
-            })),
+            enhancedResourcesWithStatus: Object.entries(enhancedResources).map(
+              ([key, resource]) => ({
+                key,
+                hasStatus: !!resource.status && Object.keys(resource.status).length > 0,
+                statusKeys: resource.status ? Object.keys(resource.status) : [],
+              })
+            ),
           });
         }
-        
+
         // Create a schema proxy for the status builder
         const schemaProxy = {
           spec,
           status: {} as TStatus, // Empty status for the schema proxy
         };
-        
+
         // Call the status builder to get the computed status
         const computedStatus = this.statusBuilder(schemaProxy as any, enhancedResources);
         status = computedStatus as TStatus;
-        
+
         this.logger.debug('Status built using status builder', {
           instanceName,
           statusFields: Object.keys(status),
@@ -222,40 +230,44 @@ export abstract class BaseDeploymentStrategy<
           try {
             const { ReferenceResolver } = await import('../../references/resolver.js');
             const resolver = new ReferenceResolver(this.factoryOptions.kubeConfig, 'direct');
-            
+
             // Create resolution context with deployed resources
             const deployedResources = deploymentResult?.resources || [];
-            
+
             this.logger.debug('Available deployed resources for CEL resolution', {
               instanceName,
               hasDeploymentResult: !!deploymentResult,
               resourceCount: deployedResources.length,
-              resourceIds: deployedResources.map(r => r.id),
-              resourceNames: deployedResources.map(r => r.name),
-              resourceKinds: deployedResources.map(r => r.kind),
+              resourceIds: deployedResources.map((r) => r.id),
+              resourceNames: deployedResources.map((r) => r.name),
+              resourceKinds: deployedResources.map((r) => r.kind),
             });
-            
+
             // Create a mapping from original resource keys to deployed resources
             // The deployed resource IDs follow the pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey}
             // We need to extract the original key and map it back
             const resourceKeyMapping = new Map<string, any>();
-            
+
             // Convert instance name to camelCase for pattern matching
-            const camelCaseInstanceName = instanceName.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-            
+            const camelCaseInstanceName = instanceName.replace(/-([a-z])/g, (_, letter) =>
+              letter.toUpperCase()
+            );
+
             // Query the actual resources from the cluster to get their current status
-            const k8sApi = this.factoryOptions.kubeConfig?.makeApiClient(require('@kubernetes/client-node').KubernetesObjectApi);
-            
+            const k8sApi = this.factoryOptions.kubeConfig?.makeApiClient(
+              require('@kubernetes/client-node').KubernetesObjectApi
+            );
+
             for (const deployedResource of deployedResources) {
               // Extract the original resource key from the deployed resource ID
               // Pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey} -> originalKey
               const resourceIdPattern = new RegExp(`^${camelCaseInstanceName}Resource\\d+(.+)$`);
               const match = deployedResource.id.match(resourceIdPattern);
-              
-              if (match && match[1]) {
+
+              if (match?.[1]) {
                 // Convert from PascalCase to camelCase (e.g., "Webapp" -> "webapp")
                 const originalKey = match[1].charAt(0).toLowerCase() + match[1].slice(1);
-                
+
                 try {
                   // Query the actual resource from the cluster to get its current status
                   const resourceRef = {
@@ -266,10 +278,10 @@ export abstract class BaseDeploymentStrategy<
                       namespace: this.namespace,
                     },
                   };
-                  
+
                   const response = await (k8sApi as any)?.read(resourceRef);
                   const actualResource = response?.body;
-                  
+
                   if (actualResource) {
                     resourceKeyMapping.set(originalKey, actualResource);
                     this.logger.debug('Mapped resource key with cluster status', {
@@ -305,13 +317,13 @@ export abstract class BaseDeploymentStrategy<
                 });
               }
             }
-            
+
             this.logger.debug('Resource key mapping created', {
               instanceName,
               mappingSize: resourceKeyMapping.size,
               mappedKeys: Array.from(resourceKeyMapping.keys()),
             });
-            
+
             const resolutionContext = {
               deployedResources,
               kubeClient: this.factoryOptions.kubeConfig,
@@ -319,28 +331,33 @@ export abstract class BaseDeploymentStrategy<
               timeout: this.factoryOptions.timeout || 30000,
               resourceKeyMapping,
             };
-            
+
             // Resolve all CEL expressions in the status
-            status = await resolver.resolveReferences(status, resolutionContext) as TStatus;
-            
+            status = (await resolver.resolveReferences(status, resolutionContext)) as TStatus;
+
             this.logger.debug('Status CEL expressions resolved in direct mode', {
               instanceName,
               statusFields: Object.keys(status),
             });
           } catch (error) {
-            this.logger.warn('Failed to resolve CEL expressions in status, using unresolved status', {
-              instanceName,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            this.logger.warn(
+              'Failed to resolve CEL expressions in status, using unresolved status',
+              {
+                instanceName,
+                error: error instanceof Error ? error.message : String(error),
+              }
+            );
           }
         }
-        
       } catch (error) {
-        this.logger.warn('Failed to build status using status builder, falling back to resource extraction', {
-          instanceName,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        
+        this.logger.warn(
+          'Failed to build status using status builder, falling back to resource extraction',
+          {
+            instanceName,
+            error: error instanceof Error ? error.message : String(error),
+          }
+        );
+
         // Fallback to extracting status from the first deployed resource
         if (
           deploymentResult &&

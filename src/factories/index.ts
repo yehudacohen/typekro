@@ -19,11 +19,11 @@ export * from './kro/index.js';
 // KUBERNETES ECOSYSTEM
 // =============================================================================
 export * from './kubernetes/index.js';
+export type { CompositionContext } from './shared.js';
 // =============================================================================
 // SHARED UTILITIES
 // =============================================================================
 export { createResource, getCurrentCompositionContext } from './shared.js';
-export type { CompositionContext } from './shared.js';
 
 // =============================================================================
 // FUTURE ECOSYSTEMS (Placeholder structure created)

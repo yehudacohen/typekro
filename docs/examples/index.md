@@ -21,6 +21,11 @@ Complex multi-service platform with API gateway and service mesh.
 
 **Key concepts:** Service coordination, ingress routing, health aggregation
 
+### [Advanced Composition Patterns](./composition-patterns.md)
+Reusable components, composition nesting, and complex status aggregation.
+
+**Key concepts:** Component reuse, composition nesting, cross-component references, status aggregation
+
 ### [Helm Integration Patterns](./helm-patterns.md)
 Helm chart deployment and integration patterns.
 

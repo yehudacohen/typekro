@@ -44,13 +44,22 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
   const createRealBaseStrategy = () => {
     const mockEngine = {} as any; // Mock DirectDeploymentEngine
     const mockResolver = {
-      createResourceGraphForInstance: mock(() => ({ 
+      createResourceGraphForInstance: mock(() => ({
         name: 'test-graph',
         resources: [],
-        dependencyGraph: {} as any
-      }))
+        dependencyGraph: {} as any,
+      })),
     };
-    return new DirectDeploymentStrategy('test-factory', 'default', testSchema, undefined, undefined, factoryOptions, mockEngine, mockResolver);
+    return new DirectDeploymentStrategy(
+      'test-factory',
+      'default',
+      testSchema,
+      undefined,
+      undefined,
+      factoryOptions,
+      mockEngine,
+      mockResolver
+    );
   };
 
   let mockAlchemyScope: ReturnType<typeof createMockAlchemyScope>;
@@ -116,9 +125,9 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       // Strategy should throw on validation failure
-      await expect((invalidStrategy as any).executeDeployment(spec, 'test-instance')).rejects.toThrow(
-        'Alchemy deployment: Alchemy scope is required for alchemy deployment'
-      );
+      await expect(
+        (invalidStrategy as any).executeDeployment(spec, 'test-instance')
+      ).rejects.toThrow('Alchemy deployment: Alchemy scope is required for alchemy deployment');
     });
 
     it('should handle invalid alchemy scope without run function', async () => {
@@ -138,9 +147,9 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       // Alchemy scope without run function should fail validation
-      await expect((invalidStrategy as any).executeDeployment(spec, 'test-instance')).rejects.toThrow(
-        'Alchemy deployment: Alchemy scope is invalid (missing run function)'
-      );
+      await expect(
+        (invalidStrategy as any).executeDeployment(spec, 'test-instance')
+      ).rejects.toThrow('Alchemy deployment: Alchemy scope is invalid (missing run function)');
     });
   });
 

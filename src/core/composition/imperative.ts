@@ -8,8 +8,14 @@
  */
 
 import type { CompositionContext } from '../../factories/shared.js';
-import { runWithCompositionContext, createCompositionContext, getCurrentCompositionContext } from '../../factories/shared.js';
+import {
+  createCompositionContext,
+  getCurrentCompositionContext,
+  runWithCompositionContext,
+} from '../../factories/shared.js';
+import { CompositionDebugger, CompositionExecutionError } from '../errors.js';
 import { toResourceGraph } from '../serialization/core.js';
+import type { TypedResourceGraph } from '../types/deployment.js';
 import type {
   KroCompatibleType,
   MagicAssignableShape,
@@ -17,17 +23,7 @@ import type {
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
-import type { TypedResourceGraph } from '../types/deployment.js';
 import type { Enhanced } from '../types.js';
-import {
-  CompositionExecutionError,
-  CompositionDebugger,
-  UnsupportedPatternDetector
-} from '../errors.js';
-
-
-
-
 
 /**
  * Enable debug mode for composition execution
@@ -78,10 +74,16 @@ function executeNestedComposition<
   // Create a temporary context for the nested composition with unique identifier
   const uniqueNestedName = `${compositionName}-${++globalCompositionCounter}`;
   const nestedContext = createCompositionContext(uniqueNestedName);
-  
+
   // Execute the nested composition in its own context
   const nestedResult = runWithCompositionContext(nestedContext, () => {
-    return executeCompositionCore(definition, compositionFn, options, nestedContext, uniqueNestedName);
+    return executeCompositionCore(
+      definition,
+      compositionFn,
+      options,
+      nestedContext,
+      uniqueNestedName
+    );
   });
 
   // Merge the nested composition's resources and closures into the parent context
@@ -101,7 +103,8 @@ function executeNestedComposition<
     mergedClosureIds.push(uniqueId);
   }
 
-  CompositionDebugger.log('NESTED_COMPOSITION', 
+  CompositionDebugger.log(
+    'NESTED_COMPOSITION',
     `Merged ${mergedResourceIds.length} resources and ${mergedClosureIds.length} closures into parent context`
   );
 
@@ -117,7 +120,7 @@ function executeNestedComposition<
   enhancedResult._compositionMetadata = {
     name: compositionName,
     mergedResourceIds,
-    mergedClosureIds
+    mergedClosureIds,
   };
 
   return enhancedResult;
@@ -127,19 +130,19 @@ function executeNestedComposition<
  * Generate a unique resource ID for merged compositions
  */
 function generateUniqueResourceId(
-  compositionName: string, 
-  resourceId: string, 
+  compositionName: string,
+  resourceId: string,
   parentContext: CompositionContext
 ): string {
   let uniqueId = `${compositionName}-${resourceId}`;
   let counter = 1;
-  
+
   // Ensure uniqueness across all resources in parent context
   while (uniqueId in parentContext.resources) {
     uniqueId = `${compositionName}-${resourceId}-${counter}`;
     counter++;
   }
-  
+
   return uniqueId;
 }
 
@@ -147,19 +150,19 @@ function generateUniqueResourceId(
  * Generate a unique closure ID for merged compositions
  */
 function generateUniqueClosureId(
-  compositionName: string, 
-  closureId: string, 
+  compositionName: string,
+  closureId: string,
   parentContext: CompositionContext
 ): string {
   let uniqueId = `${compositionName}-${closureId}`;
   let counter = 1;
-  
+
   // Ensure uniqueness across all closures in parent context
   while (uniqueId in parentContext.closures) {
     uniqueId = `${compositionName}-${closureId}-${counter}`;
     counter++;
   }
-  
+
   return uniqueId;
 }
 
@@ -171,10 +174,7 @@ let globalCompositionCounter = 0;
 /**
  * Core composition execution logic shared between nested and top-level compositions
  */
-function executeCompositionCore<
-  TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType,
->(
+function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   options: SerializationOptions | undefined,
@@ -188,9 +188,9 @@ function executeCompositionCore<
 
     // Override addResource to include debug logging
     const originalAddResource = context.addResource;
-    context.addResource = function(id: string, resource: Enhanced<any, any>) {
+    context.addResource = function (id: string, resource: Enhanced<any, any>) {
       originalAddResource.call(this, id, resource);
-      
+
       // Log resource registration for debugging
       const resourceKind = (resource as any)?.kind || 'unknown';
       CompositionDebugger.logResourceRegistration(id, resourceKind, 'factory-function');
@@ -216,26 +216,26 @@ function executeCompositionCore<
             'Resource Building',
             resourceBuildStart,
             resourceBuildEnd,
-            { 
+            {
               resourceCount: Object.keys(context.resources).length,
-              closureCount: Object.keys(context.closures).length
+              closureCount: Object.keys(context.closures).length,
             }
           );
 
           // Create a combined object that separateResourcesAndClosures can handle
           // Use the resource IDs as keys for resources, and closure IDs as keys for closures
           const combined: Record<string, any> = {};
-          
+
           // Add Enhanced resources
           for (const [id, resource] of Object.entries(context.resources)) {
             combined[id] = resource;
           }
-          
+
           // Add deployment closures
           for (const [id, closure] of Object.entries(context.closures)) {
             combined[id] = closure;
           }
-          
+
           return combined;
         } catch (error) {
           throw CompositionExecutionError.withResourceContext(
@@ -250,7 +250,7 @@ function executeCompositionCore<
         }
       },
       // Status builder - return the captured status
-      (schema: SchemaProxy<TSpec, TStatus>, _resources: Record<string, Enhanced<any, any>>) => {
+      (_schema: SchemaProxy<TSpec, TStatus>, _resources: Record<string, Enhanced<any, any>>) => {
         try {
           CompositionDebugger.log('STATUS_BUILDING', 'Processing captured status object');
 
@@ -258,11 +258,7 @@ function executeCompositionCore<
           // as resource references appear as functions before serialization
           // Pattern validation should be done at a different stage if needed
 
-          CompositionDebugger.logStatusValidation(
-            compositionName,
-            capturedStatus,
-            'success'
-          );
+          CompositionDebugger.logStatusValidation(compositionName, capturedStatus, 'success');
 
           // Return the status captured during resource building
           // This avoids double execution and ensures resources are available
@@ -296,26 +292,18 @@ function executeCompositionCore<
       statusFields
     );
 
-    CompositionDebugger.logPerformanceMetrics(
-      'Total Composition',
-      startTime,
-      endTime,
-      {
-        resourceCount: Object.keys(context.resources).length,
-        closureCount: Object.keys(context.closures).length,
-        statusFieldCount: statusFields.length
-      }
-    );
+    CompositionDebugger.logPerformanceMetrics('Total Composition', startTime, endTime, {
+      resourceCount: Object.keys(context.resources).length,
+      closureCount: Object.keys(context.closures).length,
+      statusFieldCount: statusFields.length,
+    });
 
     return result;
   } catch (error) {
     const endTime = Date.now();
-    CompositionDebugger.logPerformanceMetrics(
-      'Failed Composition',
-      startTime,
-      endTime,
-      { error: error instanceof Error ? error.message : String(error) }
-    );
+    CompositionDebugger.logPerformanceMetrics('Failed Composition', startTime, endTime, {
+      error: error instanceof Error ? error.message : String(error),
+    });
 
     if (error instanceof CompositionExecutionError) {
       throw error;
@@ -352,16 +340,28 @@ export function kubernetesComposition<
 
   // Check if we're being called within another composition context
   const parentContext = getCurrentCompositionContext();
-  
+
   if (parentContext) {
     // We're nested within another composition - merge our resources into the parent context
-    return executeNestedComposition(definition, compositionFn, options, parentContext, compositionName);
+    return executeNestedComposition(
+      definition,
+      compositionFn,
+      options,
+      parentContext,
+      compositionName
+    );
   }
 
   // Execute the composition immediately and return the TypedResourceGraph
   const uniqueCompositionName = `${compositionName}-${++globalCompositionCounter}`;
   const context = createCompositionContext(uniqueCompositionName);
   return runWithCompositionContext(context, () => {
-    return executeCompositionCore(definition, compositionFn, options, context, uniqueCompositionName);
+    return executeCompositionCore(
+      definition,
+      compositionFn,
+      options,
+      context,
+      uniqueCompositionName
+    );
   });
 }

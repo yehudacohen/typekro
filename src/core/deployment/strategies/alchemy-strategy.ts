@@ -5,16 +5,20 @@
  * in alchemy resources with individual resource registration.
  */
 
-import { getComponentLogger } from '../../logging/index.js';
+import { ensureReadinessEvaluator } from '../../../utils/helpers.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
+import { getComponentLogger } from '../../logging/index.js';
 import type { DeploymentResult, FactoryOptions, ResourceGraph } from '../../types/deployment.js';
-import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../../types/serialization.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
-import type { Scope } from '../../types/serialization.js';
+import type {
+  KroCompatibleType,
+  SchemaDefinition,
+  Scope,
+  StatusBuilder,
+} from '../../types/serialization.js';
+import { validateAlchemyScope } from '../shared-utilities.js';
 import { BaseDeploymentStrategy, type DeploymentStrategy } from './base-strategy.js';
 import { DirectDeploymentStrategy } from './direct-strategy.js';
-import { validateAlchemyScope } from '../shared-utilities.js';
-import { ensureReadinessEvaluator } from '../../../utils/helpers.js';
 
 /**
  * Alchemy deployment strategy - wraps deployments in alchemy resources with individual resource registration

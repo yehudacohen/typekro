@@ -36,8 +36,6 @@ export class CelEvaluator {
       // Build the evaluation context for cel-js
       const celContext = await this.buildCelContext(expression, context);
 
-
-
       // Use cel-js to evaluate the expression with standard functions
       const functions = {
         // Standard CEL functions
@@ -158,8 +156,6 @@ export class CelEvaluator {
       // Add the entire resource to context using its ID
       if (!celContext[ref.resourceId]) {
         celContext[ref.resourceId] = resource;
-        
-
       }
     }
 

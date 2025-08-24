@@ -8,48 +8,60 @@ export const tutorialSteps: TutorialStep[] = [
     codeExample: {
       language: 'typescript',
       code: `import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+import { kubernetesComposition, simpleDeployment, simpleService, Cel } from 'typekro';
 
-const deploymentService = toResourceGraph(
+const webApp = kubernetesComposition(
   {
-    name: 'deployment-service',
+    name: 'webapp',
     apiVersion: 'example.com/v1alpha1',
-    kind: 'DeploymentService',
+    kind: 'WebApp',
     spec: type({ 
       name: 'string', 
+      image: 'string',
       environment: '"dev" | "staging" | "prod"' 
     }),
-    status: type({ ready: 'boolean', url: 'string' })
+    status: type({ ready: 'boolean', url: 'string', replicas: 'number' })
   },
-  (schema) => ({
-    deployment: simpleDeployment({
-      name: schema.spec.name,
-      image: 'nginx',
-      replicas: schema.spec.environment === 'prod' ? 3 : 1,
-      labels: { app: 'deployment', env: schema.spec.environment }
-    }),
+  (spec) => {
+    // Resources auto-register when created - no explicit builders!
+    const deployment = simpleDeployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.environment === 'prod' ? 3 : 1,
+      labels: { app: spec.name, env: spec.environment }
+    });
     
-    service: simpleService({
-      name: schema.spec.name,
-      selector: { app: 'deployment' },
+    const service = simpleService({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
-    })
-  })
+    });
+
+    // Return status with CEL expressions and resource references
+    return {
+      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+      url: Cel.template('http://%s', service.status.clusterIP),
+      replicas: deployment.status.readyReplicas
+    };
+  }
 );
 
-await deploymentService.factory('direct').deploy({
+// Deploy directly - no .toResourceGraph() needed!
+const factory = await webApp.factory('direct');
+await factory.deploy({
   name: 'my-app',
+  image: 'nginx:latest',
   environment: 'staging'
 });`,
       highlights: [
-        'Type-safe schemas',
-        'IDE autocomplete',
-        'Cross-resource references',
-        'Instant deployment',
+        'Imperative composition',
+        'Auto-registration',
+        'CEL expressions',
+        'Direct deployment',
       ],
     },
     explanation:
-      'This is what modern Kubernetes configuration should feel like. Write infrastructure in TypeScript with the same developer experience you get for application code.',
+      'This is what modern Kubernetes configuration should feel like. Write infrastructure code naturally with imperative composition - resources auto-register when created, and you return status directly.',
     nextSteps: [
       {
         text: 'Try TypeKro Now',
@@ -67,8 +79,12 @@ await deploymentService.factory('direct').deploy({
         title: '1. Direct Deployment',
         example: {
           language: 'typescript',
-          code: `const directFactory = deploymentService.factory('direct', { namespace: 'dev' });
-await directFactory.deploy({ name: 'dev-app', environment: 'dev' });`,
+          code: `const directFactory = await webApp.factory('direct', { namespace: 'dev' });
+await directFactory.deploy({ 
+  name: 'dev-app', 
+  image: 'nginx:latest',
+  environment: 'dev' 
+});`,
           highlights: ['Instant deployment', 'Development environments'],
         },
       },
@@ -76,8 +92,12 @@ await directFactory.deploy({ name: 'dev-app', environment: 'dev' });`,
         title: '2. KRO Orchestration',
         example: {
           language: 'typescript',
-          code: `const kroFactory = deploymentService.factory('kro', { namespace: 'staging' });
-await kroFactory.deploy({ name: 'app-1', environment: 'staging' });`,
+          code: `const kroFactory = await webApp.factory('kro', { namespace: 'staging' });
+await kroFactory.deploy({ 
+  name: 'staging-app',
+  image: 'myapp:v1.2.3', 
+  environment: 'staging' 
+});`,
           highlights: ['Runtime dependencies', 'Advanced orchestration'],
         },
       },
@@ -85,15 +105,23 @@ await kroFactory.deploy({ name: 'app-1', environment: 'staging' });`,
         title: '3. GitOps Workflows',
         example: {
           language: 'typescript',
-          code: `const gitopsFactory = deploymentService.factory('kro', { namespace: 'production' });
-const yaml = gitopsFactory.toYaml();
-writeFileSync('k8s/deployment-service.yaml', yaml);`,
+          code: `// Generate ResourceGraphDefinition YAML
+const rgdYaml = webApp.toYaml();
+writeFileSync('k8s/webapp-rgd.yaml', rgdYaml);
+
+// Generate instance YAML
+const instanceYaml = webApp.toYaml({
+  name: 'prod-app',
+  image: 'myapp:v2.0.0',
+  environment: 'prod'
+});
+writeFileSync('k8s/webapp-instance.yaml', instanceYaml);`,
           highlights: ['YAML generation', 'ArgoCD/Flux integration'],
         },
       },
     ],
     explanation:
-      'TypeKro adapts to your deployment strategy. Use direct deployment for development, KRO orchestration for advanced runtime dependencies, or generate YAML for GitOps workflows.',
+      'TypeKro adapts to your deployment strategy. Use direct deployment for rapid development, KRO orchestration for advanced runtime dependencies, or generate YAML for GitOps workflows.',
     nextSteps: [
       {
         text: 'Deployment Guide',
@@ -110,7 +138,7 @@ writeFileSync('k8s/deployment-service.yaml', yaml);`,
       language: 'typescript',
       code: `import alchemy from 'alchemy';
 import { Bucket, Function as Lambda } from 'alchemy/aws';
-import { toResourceGraph, simpleDeployment, type } from 'typekro';
+import { kubernetesComposition, simpleDeployment, type, Cel } from 'typekro';
 
 const app = await alchemy('cloud-native-app');
 
@@ -123,26 +151,33 @@ await app.run(async () => {
   });
 
   // Create Kubernetes resources that reference cloud resources
-  const cloudApp = toResourceGraph(
+  const cloudApp = kubernetesComposition(
     {
       name: 'cloud-app',
+      apiVersion: 'example.com/v1alpha1',
+      kind: 'CloudApp',
       spec: type({ name: 'string', replicas: 'number' }),
       status: type({ ready: 'boolean' })
     },
-    (schema) => ({
-      app: simpleDeployment({
-        name: schema.spec.name,
+    (spec) => {
+      const app = simpleDeployment({
+        name: spec.name,
         image: 'myapp:latest',
+        replicas: spec.replicas,
         env: {
           API_URL: apiFunction.url,
           UPLOAD_BUCKET: uploadBucket.name
         }
-      })
-    })
+      });
+
+      return {
+        ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
+      };
+    }
   );
 
   // Deploy unified infrastructure
-  const factory = cloudApp.factory('direct', { 
+  const factory = await cloudApp.factory('direct', { 
     namespace: 'production', 
     alchemyScope: app 
   });
@@ -224,67 +259,159 @@ const invalidSpec = WebAppSpec({
     ],
   },
   {
+    id: 'composition-nesting',
+    title: 'Compose and Nest Infrastructure Components',
+    description: 'Build complex systems by combining smaller, reusable compositions',
+    codeExample: {
+      language: 'typescript',
+      code: `import { type } from 'arktype';
+import { kubernetesComposition, simpleDeployment, simpleService, Cel } from 'typekro';
+
+// Reusable database composition
+const database = kubernetesComposition(
+  {
+    name: 'database',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'Database',
+    spec: type({ name: 'string', image: 'string' }),
+    status: type({ ready: 'boolean', host: 'string' })
+  },
+  (spec) => {
+    const postgres = simpleDeployment({
+      name: spec.name,
+      image: spec.image,
+      ports: [{ containerPort: 5432 }]
+    });
+
+    const service = simpleService({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
+      ports: [{ port: 5432, targetPort: 5432 }]
+    });
+
+    return {
+      ready: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0'),
+      host: service.status.clusterIP
+    };
+  }
+);
+
+// Full-stack composition that uses the database
+const fullStack = kubernetesComposition(
+  {
+    name: 'fullstack',
+    apiVersion: 'example.com/v1alpha1', 
+    kind: 'FullStack',
+    spec: type({ appName: 'string', appImage: 'string', dbImage: 'string' }),
+    status: type({ ready: 'boolean', appReady: 'boolean', dbReady: 'boolean' })
+  },
+  (spec) => {
+    // Nest the database composition - resources automatically merge
+    const db = database.withSpec({
+      name: Cel.template('%s-db', spec.appName),
+      image: spec.dbImage
+    });
+
+    const app = simpleDeployment({
+      name: spec.appName,
+      image: spec.appImage,
+      env: {
+        DATABASE_HOST: db.status.host  // Cross-composition reference
+      }
+    });
+
+    return {
+      ready: Cel.expr<boolean>(db.status.ready, ' && ', app.status.readyReplicas, ' > 0'),
+      appReady: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+      dbReady: db.status.ready
+    };
+  }
+);`,
+      highlights: [
+        'Reusable compositions',
+        'Automatic resource merging',
+        'Cross-composition references',
+        'Nested status objects',
+      ],
+    },
+    explanation:
+      'Build complex infrastructure by composing smaller, focused components. Resources and status automatically merge across composition boundaries, enabling powerful patterns like microservices architectures.',
+    nextSteps: [
+      {
+        text: 'Composition Guide',
+        url: '/guide/imperative-composition',
+        type: 'secondary',
+      },
+    ],
+  },
+  {
     id: 'kro-powered',
     title: 'Powered by Kubernetes Resource Orchestrator',
-    description: 'TypeKro compiles to KRO ResourceGraphDefinitions with CEL expressions',
+    description: 'Imperative composition compiles to KRO ResourceGraphDefinitions with CEL expressions',
     codeExample: {
       language: 'yaml',
-      code: `# That TypeScript compiles to this KRO ResourceGraphDefinition:
+      code: `# That imperative TypeScript compiles to this KRO ResourceGraphDefinition:
 
 apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
-  name: deployment-service
+  name: webapp
 spec:
   schema:
-    apiVersion: v1alpha1
-    kind: DeploymentService
+    apiVersion: example.com/v1alpha1
+    kind: WebApp
     spec:
       name: string
+      image: string
       environment: string
     status:
       ready: boolean
       url: string
+      replicas: number
   resources:
-    - id: deployment
+    - id: webapp-deployment-1
       template:
         apiVersion: apps/v1
         kind: Deployment
         metadata:
           name: \${schema.spec.name}
           labels:
-            app: deployment
+            app: \${schema.spec.name}
             env: \${schema.spec.environment}
         spec:
           replicas: \${schema.spec.environment == "prod" ? 3 : 1}
           selector:
             matchLabels:
-              app: deployment
+              app: \${schema.spec.name}
           template:
             metadata:
               labels:
-                app: deployment
+                app: \${schema.spec.name}
             spec:
               containers:
                 - name: \${schema.spec.name}
-                  image: nginx
+                  image: \${schema.spec.image}
                   ports:
                     - containerPort: 80
-    - id: service
+    - id: webapp-service-1
       template:
         apiVersion: v1
         kind: Service
         metadata:
-          name: \${schema.spec.name}
+          name: \${schema.spec.name}-service
         spec:
           selector:
-            app: deployment
+            app: \${schema.spec.name}
           ports:
             - port: 80
-              targetPort: 80`,
+              targetPort: 80
+  status:
+    ready: \${webapp-deployment-1.status.readyReplicas > 0}
+    url: \${webapp-service-1.status.clusterIP}
+    replicas: \${webapp-deployment-1.status.readyReplicas}`,
       highlights: [
-        'KRO ResourceGraphDefinition',
-        'CEL expressions',
+        'Auto-generated IDs',
+        'CEL status expressions',
         'Runtime dependencies',
         'GitOps ready',
       ],

@@ -27,7 +27,12 @@ import type {
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 // Alchemy integration
-import type { KroCompatibleType, SchemaDefinition, Scope, StatusBuilder } from '../types/serialization.js';
+import type {
+  KroCompatibleType,
+  SchemaDefinition,
+  Scope,
+  StatusBuilder,
+} from '../types/serialization.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
@@ -153,7 +158,7 @@ export class DirectResourceFactoryImpl<
 
     // Use the consolidated deployment strategy
     const strategy = this.getDeploymentStrategy();
-    
+
     this.logger.debug('Got deployment strategy', {
       strategyType: strategy.constructor.name,
     });
@@ -804,5 +809,11 @@ export function createDirectResourceFactory<
   statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
   options: FactoryOptions = {}
 ): DirectResourceFactory<TSpec, TStatus> {
-  return new DirectResourceFactoryImpl<TSpec, TStatus>(name, resources, schemaDefinition, statusBuilder, options);
+  return new DirectResourceFactoryImpl<TSpec, TStatus>(
+    name,
+    resources,
+    schemaDefinition,
+    statusBuilder,
+    options
+  );
 }

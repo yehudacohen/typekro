@@ -73,11 +73,11 @@ pnpm add -D @types/node
 
 ### 1. Create Your First App
 
-Create `simple-app.ts`:
+Create `simple-app.ts` using the **Imperative Composition Pattern** (recommended):
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { kubernetesComposition, simpleDeployment, simpleService, Cel } from 'typekro';
 
 const AppSpec = type({
   name: 'string',
@@ -90,7 +90,7 @@ const AppStatus = type({
   url: 'string'
 });
 
-export const app = toResourceGraph(
+export const app = kubernetesComposition(
   {
     name: 'simple-app',
     apiVersion: 'example.com/v1alpha1',
@@ -98,26 +98,41 @@ export const app = toResourceGraph(
     spec: AppSpec,
     status: AppStatus,
   },
-  (schema) => ({
-    deployment: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
+  (spec) => {
+    // Resources auto-register when created - no explicit builders needed!
+    const deployment = simpleDeployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
       ports: [{ containerPort: 80 }]
-    }),
+    });
     
-    service: simpleService({
-      name: Cel.expr(schema.spec.name, '-service'),
-      selector: { app: schema.spec.name },
+    const service = simpleService({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
-    })
-  }),
-  (schema, resources) => ({
-    ready: Cel.expr(resources.deployment.status.readyReplicas, '> 0'),
-    url: Cel.template('http://%s', resources.service.status.clusterIP)
-  })
+    });
+
+    // Return status with CEL expressions and resource references
+    return {
+      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+      url: Cel.template('http://%s', service.status.clusterIP)
+    };
+  }
 );
 ```
+
+::: tip Why Imperative Composition?
+The **imperative composition pattern** is TypeKro's primary approach because it:
+- **Feels natural**: Write code the way you think about resources
+- **Auto-registers resources**: No need for explicit resource builders
+- **Simplifies status**: Single function instead of separate builders
+- **Improves readability**: Linear flow from resources to status
+
+[Learn more about imperative composition →](./imperative-composition.md)
+
+**Declarative Alternative:** If you prefer explicit resource/status builders, `toResourceGraph` provides a declarative alternative. [See resource graphs documentation →](./resource-graphs.md)
+:::
 
 ### 2. Deploy It
 
@@ -127,7 +142,7 @@ export const app = toResourceGraph(
 // deploy.ts
 import { app } from './simple-app.js';
 
-const factory = app.factory('direct', { namespace: 'default' });
+const factory = await app.factory('direct', { namespace: 'default' });
 await factory.deploy({
   name: 'hello-world',
   image: 'nginx:latest',
@@ -172,12 +187,12 @@ kubectl get services
 
 ## Comprehensive Example: Full-Stack Web Application
 
-Now let's create a more realistic application with a database. Create `webapp.ts`:
+Now let's create a more realistic application with a database using the **imperative composition pattern**. Create `webapp.ts`:
 
 ```typescript
 import { type } from 'arktype';
 import { 
-  toResourceGraph, 
+  kubernetesComposition, 
   simpleDeployment, 
   simpleService,
   simpleConfigMap,
@@ -195,11 +210,12 @@ const WebAppSpec = type({
 const WebAppStatus = type({
   url: 'string',
   phase: 'string',
-  readyReplicas: 'number'
+  readyReplicas: 'number',
+  databaseReady: 'boolean'
 });
 
-// Create your resource graph
-export const webAppGraph = toResourceGraph(
+// Create your resource graph with imperative composition
+export const webAppGraph = kubernetesComposition(
   {
     name: 'webapp-stack',
     apiVersion: 'example.com/v1alpha1',
@@ -207,20 +223,19 @@ export const webAppGraph = toResourceGraph(
     spec: WebAppSpec,
     status: WebAppStatus,
   },
-  // ResourceBuilder function
-  (schema) => ({
-    // Configuration
-    config: simpleConfigMap({
-      name: Cel.expr(schema.spec.name, '-config'),
+  (spec) => {
+    // Configuration - auto-registers when created
+    const config = simpleConfigMap({
+      name: Cel.template('%s-config', spec.name),
       data: {
-        LOG_LEVEL: schema.spec.environment === 'production' ? 'info' : 'debug',
+        LOG_LEVEL: spec.environment === 'production' ? 'info' : 'debug',
         DATABASE_URL: 'postgresql://postgres:5432/webapp'
       }
-    }),
+    });
 
-    // Database
-    database: simpleDeployment({
-      name: Cel.expr(schema.spec.name, '-db'),
+    // Database - auto-registers when created
+    const database = simpleDeployment({
+      name: Cel.template('%s-db', spec.name),
       image: 'postgres:15',
       env: {
         POSTGRES_DB: 'webapp',
@@ -228,49 +243,72 @@ export const webAppGraph = toResourceGraph(
         POSTGRES_PASSWORD: 'password'
       },
       ports: [{ containerPort: 5432 }]
-    }),
+    });
 
-    // Database service
-    dbService: simpleService({
-      name: Cel.expr(schema.spec.name, '-db-service'),
-      selector: { app: Cel.expr(schema.spec.name, '-db') },
+    // Database service - auto-registers when created
+    const dbService = simpleService({
+      name: Cel.template('%s-db-service', spec.name),
+      selector: { app: Cel.template('%s-db', spec.name) },
       ports: [{ port: 5432, targetPort: 5432 }]
-    }),
+    });
 
-    // Web application
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
+    // Web application - auto-registers when created
+    const app = simpleDeployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
       env: {
-        NODE_ENV: schema.spec.environment,
-        // Reference the database service
-        DATABASE_HOST: Cel.template('%s.%s.svc.cluster.local', resources.dbService.metadata.name, resources.dbService.metadata.namespace)
+        NODE_ENV: spec.environment,
+        // Reference the database service using CEL template
+        DATABASE_HOST: Cel.template('%s.%s.svc.cluster.local', 
+          dbService.metadata.name, 
+          dbService.metadata.namespace
+        )
       },
       ports: [{ containerPort: 3000 }]
-    }),
+    });
 
-    // Web service
-    webService: simpleService({
-      name: Cel.expr(schema.spec.name, '-service'),
-      selector: { app: schema.spec.name },
+    // Web service - auto-registers when created
+    const webService = simpleService({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       type: 'LoadBalancer'
-    })
-  }),
-  // StatusBuilder function
-  (schema, resources) => ({
-    url: Cel.expr<string>(
-      resources.webService.status.loadBalancer.ingress,
-      '.size() > 0 ? "http://" + ',
-      resources.webService.status.loadBalancer.ingress[0].ip,
-      ': "pending"'
-    ),
-    phase: Cel.expr<string>(resources.app.status.readyReplicas, ' > 0 ? "ready" : "pending"'),
-    readyReplicas: resources.app.status.readyReplicas
-  })
+    });
+
+    // Return status with CEL expressions and resource references
+    return {
+      url: Cel.expr<string>(
+        webService.status.loadBalancer.ingress,
+        '.size() > 0 ? "http://" + ',
+        webService.status.loadBalancer.ingress[0].ip,
+        ' : "pending"'
+      ),
+      phase: Cel.expr<string>(app.status.readyReplicas, ' > 0 ? "ready" : "pending"'),
+      readyReplicas: app.status.readyReplicas,
+      databaseReady: Cel.expr<boolean>(database.status.readyReplicas, ' > 0')
+    };
+  }
 );
 ```
+
+::: tip Imperative vs Declarative
+Compare this imperative approach with the declarative `toResourceGraph` pattern:
+
+**Imperative (Primary):**
+- Single function with natural flow
+- Resources auto-register when created
+- Direct access to `spec` properties
+- Linear progression from resources to status
+
+**Declarative (Alternative):**
+- Separate resource and status builder functions
+- Explicit resource object management
+- Schema proxy access (`schema.spec.name`)
+- More verbose but explicit structure
+
+Both approaches generate identical output, but imperative composition is more intuitive for most developers.
+:::
 
 ## Common Patterns
 
@@ -297,11 +335,17 @@ const database = simpleDeployment({
   image: 'postgres:15'
 });
 
+const dbService = simpleService({
+  name: 'db-service',
+  selector: { app: 'db' },
+  ports: [{ port: 5432 }]
+});
+
 const app = simpleDeployment({
   name: 'app',
   image: 'myapp:latest',
   env: {
-    DATABASE_HOST: database.status.podIP  // Runtime reference
+    DATABASE_HOST: dbService.status.clusterIP  // Runtime reference
   }
 });
 ```
@@ -309,18 +353,66 @@ const app = simpleDeployment({
 ### Conditional Resources
 
 ```typescript
-const resources = {
-  app: simpleDeployment({ /* ... */ }),
+const composition = kubernetesComposition(definition, (spec) => {
+  const app = simpleDeployment({ name: spec.name, image: spec.image });
   
   // Only create ingress in production
-  ...(schema.spec.environment === 'production' && {
-    ingress: simpleIngress({
-      name: Cel.expr(schema.spec.name, '-ingress'),
-      host: Cel.template('%s.example.com', schema.spec.name),
-      serviceName: Cel.expr(schema.spec.name, '-service')
-    })
-  })
-};
+  const ingress = spec.environment === 'production'
+    ? simpleIngress({
+        name: Cel.template('%s-ingress', spec.name),
+        host: Cel.template('%s.example.com', spec.name),
+        serviceName: Cel.template('%s-service', spec.name)
+      })
+    : null;
+
+  return {
+    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    hasIngress: spec.environment === 'production'
+  };
+});
+```
+
+### Composition Nesting
+
+Build complex systems by combining smaller compositions:
+
+```typescript
+// Reusable database composition
+const database = kubernetesComposition(dbDefinition, (spec) => {
+  const postgres = simpleDeployment({ name: spec.name, image: spec.image });
+  const service = simpleService({ 
+    name: Cel.template('%s-service', spec.name), 
+    selector: { app: spec.name } 
+  });
+  
+  return {
+    ready: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0'),
+    host: service.status.clusterIP
+  };
+});
+
+// Full-stack composition that uses the database
+const fullStack = kubernetesComposition(fullStackDefinition, (spec) => {
+  // Use the database composition - resources automatically merge
+  const db = database.withSpec({
+    name: Cel.template('%s-db', spec.name),
+    image: 'postgres:15'
+  });
+
+  const app = simpleDeployment({
+    name: spec.name,
+    image: spec.image,
+    env: {
+      DATABASE_HOST: db.status.host  // Cross-composition reference
+    }
+  });
+
+  return {
+    ready: Cel.expr<boolean>(db.status.ready, ' && ', app.status.readyReplicas, ' > 0'),
+    databaseReady: db.status.ready,
+    appReady: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
+  };
+});
 ```
 
 ## Bootstrap TypeKro Runtime (Optional)
@@ -377,7 +469,7 @@ import { webAppGraph } from './webapp.js';
 
 async function deployApp() {
   // Create a direct deployment factory
-  const factory = webAppGraph.factory('direct', {
+  const factory = await webAppGraph.factory('direct', {
     namespace: 'development'
   });
 
@@ -443,7 +535,7 @@ Use the Kro controller for advanced reconciliation:
 import { webAppGraph } from './webapp.js';
 
 async function deployWithKro() {
-  const factory = webAppGraph.factory('kro', {
+  const factory = await webAppGraph.factory('kro', {
     namespace: 'production'
   });
 
@@ -510,6 +602,7 @@ Add a type-check script to your `package.json`:
 Now that you have TypeKro installed and working, explore these topics:
 
 ### Core Concepts
+- **[Imperative Composition](./imperative-composition.md)** - Master the recommended imperative composition pattern
 - **[Factories](./factories.md)** - Learn about built-in resource factories and how to create custom ones
 - **[Schemas & Types](./schemas-and-types.md)** - Master TypeKro's type system and schema definitions
 - **[Runtime Behavior](./runtime-behavior.md)** - Understand status hydration, cross-references, and external references

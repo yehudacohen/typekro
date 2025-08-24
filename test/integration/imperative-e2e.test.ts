@@ -1,9 +1,9 @@
 /**
  * End-to-End Integration Tests for Imperative Composition Pattern
- * 
+ *
  * This test suite validates the complete integration of the imperative composition
  * pattern with YAML generation, factory methods, and Alchemy integration.
- * 
+ *
  * Requirements tested: 6.1, 6.2, 6.3, 6.4, 6.5
  */
 
@@ -121,55 +121,52 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       console.log('🚀 Testing YAML generation compatibility...');
 
       // Create imperative composition using the exact same pattern as e2e-factory-pattern.test.ts
-      const imperativeComposition = kubernetesComposition(
-        definition,
-        (spec) => {
-          const appConfig = simpleConfigMap({
-            name: 'webapp-factory-config',
-            data: {
-              LOG_LEVEL: 'info',
-              DATABASE_URL: 'postgresql://localhost:5432/webapp',
-              FEATURE_FLAGS: 'auth,metrics,logging',
-            },
-            id: 'webappConfig',
-          });
+      const imperativeComposition = kubernetesComposition(definition, (_spec) => {
+        const _appConfig = simpleConfigMap({
+          name: 'webapp-factory-config',
+          data: {
+            LOG_LEVEL: 'info',
+            DATABASE_URL: 'postgresql://localhost:5432/webapp',
+            FEATURE_FLAGS: 'auth,metrics,logging',
+          },
+          id: 'webappConfig',
+        });
 
-          const webapp = simpleDeployment({
-            name: 'webapp-factory',
-            image: 'nginx:alpine',
-            replicas: 2,
-            env: {
-              LOG_LEVEL: 'info',
-              API_KEY: 'super-secret-api-key',
-              JWT_SECRET: 'jwt-signing-secret',
-            },
-            ports: [{ containerPort: 80, name: 'http' }],
-            id: 'webapp',
-          });
+        const webapp = simpleDeployment({
+          name: 'webapp-factory',
+          image: 'nginx:alpine',
+          replicas: 2,
+          env: {
+            LOG_LEVEL: 'info',
+            API_KEY: 'super-secret-api-key',
+            JWT_SECRET: 'jwt-signing-secret',
+          },
+          ports: [{ containerPort: 80, name: 'http' }],
+          id: 'webapp',
+        });
 
-          const webappService = simpleService({
-            name: 'webapp-factory-service',
-            selector: { app: 'webapp-factory' },
-            ports: [{ port: 80, targetPort: 80, name: 'http' }],
-            id: 'webappService',
-          });
+        const _webappService = simpleService({
+          name: 'webapp-factory-service',
+          selector: { app: 'webapp-factory' },
+          ports: [{ port: 80, targetPort: 80, name: 'http' }],
+          id: 'webappService',
+        });
 
-          return {
-            // Dynamic field - resolved by Kro
-            phase: Cel.conditional(
-              Cel.expr(webapp.status.readyReplicas, ' > 0'),
-              '"running"',
-              '"pending"'
-            ) as 'pending' | 'running' | 'failed',
+        return {
+          // Dynamic field - resolved by Kro
+          phase: Cel.conditional(
+            Cel.expr(webapp.status.readyReplicas, ' > 0'),
+            '"running"',
+            '"pending"'
+          ) as 'pending' | 'running' | 'failed',
 
-            // Static field - hydrated directly by TypeKro
-            url: 'http://webapp-factory-service',
+          // Static field - hydrated directly by TypeKro
+          url: 'http://webapp-factory-service',
 
-            // Dynamic field - resolved by Kro
-            readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
-          };
-        }
-      );
+          // Dynamic field - resolved by Kro
+          readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
+        };
+      });
 
       // Create equivalent traditional composition using the exact same pattern
       const traditionalComposition = toResourceGraph(
@@ -270,23 +267,23 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         application: {
           frontend: {
             ready: 'boolean',
-            url: 'string'
+            url: 'string',
           },
           backend: {
             ready: 'boolean',
-            replicas: 'number%1'
-          }
+            replicas: 'number%1',
+          },
         },
         infrastructure: {
           database: {
             connected: 'boolean',
-            host: 'string'
-          }
+            host: 'string',
+          },
         },
         metrics: {
           totalReplicas: 'number%1',
-          healthScore: 'number'
-        }
+          healthScore: 'number',
+        },
       });
 
       const complexDefinition = {
@@ -294,63 +291,64 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         apiVersion: 'example.com/v1alpha1',
         kind: 'ComplexImperativeApp',
         spec: WebAppSpecSchema,
-        status: ComplexStatusSchema
+        status: ComplexStatusSchema,
       };
 
-      const composition = kubernetesComposition(
-        complexDefinition,
-        (spec) => {
-          const frontendDeployment = simpleDeployment({
-            name: `${spec.name}-frontend`,
-            image: spec.image,
-            replicas: spec.replicas,
-            id: 'frontendDeployment'
-          });
+      const composition = kubernetesComposition(complexDefinition, (spec) => {
+        const frontendDeployment = simpleDeployment({
+          name: `${spec.name}-frontend`,
+          image: spec.image,
+          replicas: spec.replicas,
+          id: 'frontendDeployment',
+        });
 
-          const backendDeployment = simpleDeployment({
-            name: `${spec.name}-backend`,
-            image: 'backend:latest',
-            replicas: 2,
-            id: 'backendDeployment'
-          });
+        const backendDeployment = simpleDeployment({
+          name: `${spec.name}-backend`,
+          image: 'backend:latest',
+          replicas: 2,
+          id: 'backendDeployment',
+        });
 
-          const dbService = simpleService({
-            name: `${spec.name}-db`,
-            selector: { app: 'database' },
-            ports: [{ port: 5432, targetPort: 5432 }],
-            id: 'dbService'
-          });
+        const dbService = simpleService({
+          name: `${spec.name}-db`,
+          selector: { app: 'database' },
+          ports: [{ port: 5432, targetPort: 5432 }],
+          id: 'dbService',
+        });
 
-          return {
-            application: {
-              frontend: {
-                ready: Cel.expr<boolean>(frontendDeployment.status.readyReplicas, ' > 0'),
-                url: Cel.template('https://%s', spec.hostname)
-              },
-              backend: {
-                ready: Cel.expr<boolean>(backendDeployment.status.readyReplicas, ' > 0'),
-                replicas: backendDeployment.status.readyReplicas
-              }
+        return {
+          application: {
+            frontend: {
+              ready: Cel.expr<boolean>(frontendDeployment.status.readyReplicas, ' > 0'),
+              url: Cel.template('https://%s', spec.hostname),
             },
-            infrastructure: {
-              database: {
-                connected: Cel.expr<boolean>(dbService.status.loadBalancer.ingress?.length, ' > 0'),
-                host: Cel.template('%s.%s.svc.cluster.local', dbService.metadata.name, 'default')
-              }
+            backend: {
+              ready: Cel.expr<boolean>(backendDeployment.status.readyReplicas, ' > 0'),
+              replicas: backendDeployment.status.readyReplicas,
             },
-            metrics: {
-              totalReplicas: Cel.expr<number>(
-                frontendDeployment.status.readyReplicas, ' + ',
-                backendDeployment.status.readyReplicas
-              ),
-              healthScore: Cel.expr<number>(
-                '(', frontendDeployment.status.readyReplicas, ' + ',
-                backendDeployment.status.readyReplicas, ') / 4.0'
-              )
-            }
-          };
-        }
-      );
+          },
+          infrastructure: {
+            database: {
+              connected: Cel.expr<boolean>(dbService.status.loadBalancer.ingress?.length, ' > 0'),
+              host: Cel.template('%s.%s.svc.cluster.local', dbService.metadata.name, 'default'),
+            },
+          },
+          metrics: {
+            totalReplicas: Cel.expr<number>(
+              frontendDeployment.status.readyReplicas,
+              ' + ',
+              backendDeployment.status.readyReplicas
+            ),
+            healthScore: Cel.expr<number>(
+              '(',
+              frontendDeployment.status.readyReplicas,
+              ' + ',
+              backendDeployment.status.readyReplicas,
+              ') / 4.0'
+            ),
+          },
+        };
+      });
 
       const yaml = composition.toYaml();
 
@@ -375,47 +373,44 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         console.log('🚀 Testing Kro factory compatibility...');
 
         // Create imperative composition using proven patterns
-        const imperativeComposition = kubernetesComposition(
-          definition,
-          (spec) => {
-            const webapp = simpleDeployment({
-              name: 'webapp-factory',
-              image: 'nginx:alpine',
-              replicas: 2,
-              env: {
-                LOG_LEVEL: 'info',
-                API_KEY: 'super-secret-api-key',
-              },
-              ports: [{ containerPort: 80, name: 'http' }],
-              id: 'webapp',
-            });
+        const imperativeComposition = kubernetesComposition(definition, (_spec) => {
+          const webapp = simpleDeployment({
+            name: 'webapp-factory',
+            image: 'nginx:alpine',
+            replicas: 2,
+            env: {
+              LOG_LEVEL: 'info',
+              API_KEY: 'super-secret-api-key',
+            },
+            ports: [{ containerPort: 80, name: 'http' }],
+            id: 'webapp',
+          });
 
-            const webappService = simpleService({
-              name: 'webapp-factory-service',
-              selector: { app: 'webapp-factory' },
-              ports: [{ port: 80, targetPort: 80, name: 'http' }],
-              id: 'webappService',
-            });
+          const _webappService = simpleService({
+            name: 'webapp-factory-service',
+            selector: { app: 'webapp-factory' },
+            ports: [{ port: 80, targetPort: 80, name: 'http' }],
+            id: 'webappService',
+          });
 
-            return {
-              // Dynamic field - resolved by Kro
-              phase: Cel.conditional(
-                Cel.expr(webapp.status.readyReplicas, ' > 0'),
-                '"running"',
-                '"pending"'
-              ) as 'pending' | 'running' | 'failed',
+          return {
+            // Dynamic field - resolved by Kro
+            phase: Cel.conditional(
+              Cel.expr(webapp.status.readyReplicas, ' > 0'),
+              '"running"',
+              '"pending"'
+            ) as 'pending' | 'running' | 'failed',
 
-              // Static field - hydrated directly by TypeKro
-              url: 'http://webapp-factory-service',
+            // Static field - hydrated directly by TypeKro
+            url: 'http://webapp-factory-service',
 
-              // Dynamic field - resolved by Kro
-              readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
+            // Dynamic field - resolved by Kro
+            readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
 
-              // Static field for compatibility
-              ready: true
-            };
-          }
-        );
+            // Static field for compatibility
+            ready: true,
+          };
+        });
 
         // Create equivalent traditional composition using the exact same pattern
         const traditionalComposition = toResourceGraph(
@@ -455,7 +450,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             readyReplicas: Cel.expr(resources.webapp.status.readyReplicas) as number,
 
             // Static field for compatibility
-            ready: true
+            ready: true,
           })
         );
 
@@ -464,13 +459,13 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           const imperativeKroFactory = await imperativeComposition.factory('kro', {
             namespace: testNamespace,
             waitForReady: true,
-            kubeConfig: kc
+            kubeConfig: kc,
           });
 
           const traditionalKroFactory = await traditionalComposition.factory('kro', {
             namespace: testNamespace,
             waitForReady: true,
-            kubeConfig: kc
+            kubeConfig: kc,
           });
 
           // Both factories should have identical properties (except name)
@@ -485,7 +480,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             environment: 'development',
             image: 'nginx:alpine',
             replicas: 1,
-            hostname: 'imperative.example.com'
+            hostname: 'imperative.example.com',
           });
 
           const traditionalResult = await traditionalKroFactory.deploy({
@@ -493,7 +488,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             environment: 'development',
             image: 'nginx:alpine',
             replicas: 1,
-            hostname: 'traditional.example.com'
+            hostname: 'traditional.example.com',
           });
 
           // Both results should have the same structure
@@ -543,47 +538,44 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         console.log('🚀 Testing Direct factory compatibility...');
 
         // Create imperative composition using proven patterns
-        const imperativeComposition = kubernetesComposition(
-          definition,
-          (spec) => {
-            const webapp = simpleDeployment({
-              name: 'webapp-factory',
-              image: 'nginx:alpine',
-              replicas: 2,
-              env: {
-                LOG_LEVEL: 'info',
-                API_KEY: 'super-secret-api-key',
-              },
-              ports: [{ containerPort: 80, name: 'http' }],
-              id: 'webapp',
-            });
+        const imperativeComposition = kubernetesComposition(definition, (_spec) => {
+          const webapp = simpleDeployment({
+            name: 'webapp-factory',
+            image: 'nginx:alpine',
+            replicas: 2,
+            env: {
+              LOG_LEVEL: 'info',
+              API_KEY: 'super-secret-api-key',
+            },
+            ports: [{ containerPort: 80, name: 'http' }],
+            id: 'webapp',
+          });
 
-            const webappService = simpleService({
-              name: 'webapp-factory-service',
-              selector: { app: 'webapp-factory' },
-              ports: [{ port: 80, targetPort: 80, name: 'http' }],
-              id: 'webappService',
-            });
+          const _webappService = simpleService({
+            name: 'webapp-factory-service',
+            selector: { app: 'webapp-factory' },
+            ports: [{ port: 80, targetPort: 80, name: 'http' }],
+            id: 'webappService',
+          });
 
-            return {
-              // Dynamic field - resolved by Kro
-              phase: Cel.conditional(
-                Cel.expr(webapp.status.readyReplicas, ' > 0'),
-                '"running"',
-                '"pending"'
-              ) as 'pending' | 'running' | 'failed',
+          return {
+            // Dynamic field - resolved by Kro
+            phase: Cel.conditional(
+              Cel.expr(webapp.status.readyReplicas, ' > 0'),
+              '"running"',
+              '"pending"'
+            ) as 'pending' | 'running' | 'failed',
 
-              // Static field - hydrated directly by TypeKro
-              url: 'http://webapp-factory-service',
+            // Static field - hydrated directly by TypeKro
+            url: 'http://webapp-factory-service',
 
-              // Dynamic field - resolved by Kro
-              readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
+            // Dynamic field - resolved by Kro
+            readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
 
-              // Static field for compatibility
-              ready: true
-            };
-          }
-        );
+            // Static field for compatibility
+            ready: true,
+          };
+        });
 
         // Create equivalent traditional composition using the exact same pattern
         const traditionalComposition = toResourceGraph(
@@ -623,7 +615,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             readyReplicas: Cel.expr(resources.webapp.status.readyReplicas) as number,
 
             // Static field for compatibility
-            ready: true
+            ready: true,
           })
         );
 
@@ -631,13 +623,13 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         const imperativeDirectFactory = await imperativeComposition.factory('direct', {
           namespace: testNamespace,
           waitForReady: true,
-          kubeConfig: kc
+          kubeConfig: kc,
         });
 
         const traditionalDirectFactory = await traditionalComposition.factory('direct', {
           namespace: testNamespace,
           waitForReady: true,
-          kubeConfig: kc
+          kubeConfig: kc,
         });
 
         // Both factories should have identical properties (except name)
@@ -652,7 +644,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           environment: 'development',
           image: 'nginx:alpine',
           replicas: 1,
-          hostname: 'imperative-direct.example.com'
+          hostname: 'imperative-direct.example.com',
         });
 
         const traditionalResult = await traditionalDirectFactory.deploy({
@@ -660,7 +652,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           environment: 'development',
           image: 'nginx:alpine',
           replicas: 1,
-          hostname: 'traditional-direct.example.com'
+          hostname: 'traditional-direct.example.com',
         });
 
         // Both results should have the same structure
@@ -680,20 +672,25 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         // Verify underlying Kubernetes resources were created
         const expectedResources = [
           { kind: 'Deployment', name: 'webapp-factory' },
-          { kind: 'Service', name: 'webapp-factory-service' }
+          { kind: 'Service', name: 'webapp-factory-service' },
         ];
 
         for (const resource of expectedResources) {
           try {
             switch (resource.kind) {
-              case 'Deployment':
-                const deployment = await appsApi.readNamespacedDeployment(resource.name, testNamespace);
+              case 'Deployment': {
+                const deployment = await appsApi.readNamespacedDeployment(
+                  resource.name,
+                  testNamespace
+                );
                 expect(deployment.body.spec?.replicas).toBe(2);
                 break;
-              case 'Service':
+              }
+              case 'Service': {
                 const service = await k8sApi.readNamespacedService(resource.name, testNamespace);
                 expect(service.body.spec?.ports?.[0]?.port).toBe(80);
                 break;
+              }
             }
           } catch (error) {
             console.log(`❌ ${resource.kind}: ${resource.name} not found - ${error}`);
@@ -709,35 +706,32 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       await withTestNamespace('factory-management-test', async (testNamespace) => {
         console.log('🚀 Testing factory management methods...');
 
-        const composition = kubernetesComposition(
-          definition,
-          (spec) => {
-            const deployment = simpleDeployment({
-              name: spec.name,
-              image: spec.image,
-              replicas: spec.replicas,
-              id: 'managementTestDeployment'
-            });
+        const composition = kubernetesComposition(definition, (spec) => {
+          const deployment = simpleDeployment({
+            name: spec.name,
+            image: spec.image,
+            replicas: spec.replicas,
+            id: 'managementTestDeployment',
+          });
 
-            return {
-              ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-              url: Cel.template('https://%s', spec.hostname),
-              readyReplicas: deployment.status.readyReplicas,
-              phase: Cel.conditional(
-                Cel.expr(deployment.status.readyReplicas, ' > 0'),
-                '"running"',
-                '"pending"'
-              ) as 'pending' | 'running' | 'failed'
-            };
-          }
-        );
+          return {
+            ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+            url: Cel.template('https://%s', spec.hostname),
+            readyReplicas: deployment.status.readyReplicas,
+            phase: Cel.conditional(
+              Cel.expr(deployment.status.readyReplicas, ' > 0'),
+              '"running"',
+              '"pending"'
+            ) as 'pending' | 'running' | 'failed',
+          };
+        });
 
         try {
           // Test Kro factory management
           const kroFactory = await composition.factory('kro', {
             namespace: testNamespace,
             waitForReady: true,
-            kubeConfig: kc
+            kubeConfig: kc,
           });
 
           // Deploy an instance
@@ -746,7 +740,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             environment: 'development',
             image: 'nginx:alpine',
             replicas: 1,
-            hostname: 'management.example.com'
+            hostname: 'management.example.com',
           });
 
           // Test getStatus method
@@ -760,8 +754,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(kroInstances.length).toBeGreaterThan(0);
 
           // Find our instance
-          const ourInstance = kroInstances.find(instance =>
-            instance.metadata?.name === 'management-test-app'
+          const ourInstance = kroInstances.find(
+            (instance) => instance.metadata?.name === 'management-test-app'
           );
           expect(ourInstance).toBeDefined();
 
@@ -786,7 +780,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         const directFactory = await composition.factory('direct', {
           namespace: testNamespace,
           waitForReady: true,
-          kubeConfig: kc
+          kubeConfig: kc,
         });
 
         // Test getStatus method
@@ -802,53 +796,50 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       await withTestNamespace('alchemy-integration-test', async (testNamespace) => {
         console.log('🚀 Testing Alchemy integration...');
 
-        const composition = kubernetesComposition(
-          definition,
-          (spec) => {
-            const webapp = simpleDeployment({
-              name: 'webapp-factory',
-              image: 'nginx:alpine',
-              replicas: 1, // Use 1 replica for faster testing
-              env: {
-                LOG_LEVEL: 'info',
-              },
-              ports: [{ containerPort: 80, name: 'http' }],
-              id: 'webapp',
-            });
+        const composition = kubernetesComposition(definition, (_spec) => {
+          const webapp = simpleDeployment({
+            name: 'webapp-factory',
+            image: 'nginx:alpine',
+            replicas: 1, // Use 1 replica for faster testing
+            env: {
+              LOG_LEVEL: 'info',
+            },
+            ports: [{ containerPort: 80, name: 'http' }],
+            id: 'webapp',
+          });
 
-            const webappService = simpleService({
-              name: 'webapp-factory-service',
-              selector: { app: 'webapp-factory' },
-              ports: [{ port: 80, targetPort: 80, name: 'http' }],
-              id: 'webappService',
-            });
+          const _webappService = simpleService({
+            name: 'webapp-factory-service',
+            selector: { app: 'webapp-factory' },
+            ports: [{ port: 80, targetPort: 80, name: 'http' }],
+            id: 'webappService',
+          });
 
-            return {
-              // Dynamic field - resolved by Kro
-              phase: Cel.conditional(
-                Cel.expr(webapp.status.readyReplicas, ' > 0'),
-                '"running"',
-                '"pending"'
-              ) as 'pending' | 'running' | 'failed',
+          return {
+            // Dynamic field - resolved by Kro
+            phase: Cel.conditional(
+              Cel.expr(webapp.status.readyReplicas, ' > 0'),
+              '"running"',
+              '"pending"'
+            ) as 'pending' | 'running' | 'failed',
 
-              // Static field - hydrated directly by TypeKro
-              url: 'http://webapp-factory-service',
+            // Static field - hydrated directly by TypeKro
+            url: 'http://webapp-factory-service',
 
-              // Dynamic field - resolved by Kro
-              readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
+            // Dynamic field - resolved by Kro
+            readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
 
-              // Static field for compatibility
-              ready: true
-            };
-          }
-        );
+            // Static field for compatibility
+            ready: true,
+          };
+        });
 
         try {
           // Try to create a direct factory with Alchemy integration
           const directFactory = await composition.factory('direct', {
             namespace: testNamespace,
             waitForReady: true,
-            kubeConfig: kc
+            kubeConfig: kc,
           });
 
           // Deploy using the factory
@@ -857,7 +848,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             environment: 'development',
             image: 'nginx:alpine',
             replicas: 1,
-            hostname: 'alchemy.example.com'
+            hostname: 'alchemy.example.com',
           });
 
           // Verify the deployment result
@@ -867,10 +858,16 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(typeof result.status.readyReplicas).toBe('number');
 
           // Verify underlying resources were created through Alchemy
-          const deployment = await appsApi.readNamespacedDeployment('webapp-factory', testNamespace);
+          const deployment = await appsApi.readNamespacedDeployment(
+            'webapp-factory',
+            testNamespace
+          );
           expect(deployment.body.spec?.replicas).toBe(1);
 
-          const service = await k8sApi.readNamespacedService('webapp-factory-service', testNamespace);
+          const service = await k8sApi.readNamespacedService(
+            'webapp-factory-service',
+            testNamespace
+          );
           expect(service.body.spec?.ports?.[0]?.port).toBe(80);
 
           console.log('✅ Alchemy integration verified');
@@ -889,53 +886,50 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       await withTestNamespace('alchemy-readiness-test', async (testNamespace) => {
         console.log('🚀 Testing readiness evaluator preservation with Alchemy...');
 
-        const composition = kubernetesComposition(
-          definition,
-          (spec) => {
-            const webapp = simpleDeployment({
-              name: 'webapp-factory',
-              image: 'nginx:alpine',
-              replicas: 1, // Use 1 replica for faster testing
-              env: {
-                LOG_LEVEL: 'info',
-              },
-              ports: [{ containerPort: 80, name: 'http' }],
-              id: 'webapp',
-            });
+        const composition = kubernetesComposition(definition, (_spec) => {
+          const webapp = simpleDeployment({
+            name: 'webapp-factory',
+            image: 'nginx:alpine',
+            replicas: 1, // Use 1 replica for faster testing
+            env: {
+              LOG_LEVEL: 'info',
+            },
+            ports: [{ containerPort: 80, name: 'http' }],
+            id: 'webapp',
+          });
 
-            const webappService = simpleService({
-              name: 'webapp-factory-service',
-              selector: { app: 'webapp-factory' },
-              ports: [{ port: 80, targetPort: 80, name: 'http' }],
-              id: 'webappService',
-            });
+          const _webappService = simpleService({
+            name: 'webapp-factory-service',
+            selector: { app: 'webapp-factory' },
+            ports: [{ port: 80, targetPort: 80, name: 'http' }],
+            id: 'webappService',
+          });
 
-            return {
-              // Dynamic field - resolved by Kro
-              phase: Cel.conditional(
-                Cel.expr(webapp.status.readyReplicas, ' > 0'),
-                '"running"',
-                '"pending"'
-              ) as 'pending' | 'running' | 'failed',
+          return {
+            // Dynamic field - resolved by Kro
+            phase: Cel.conditional(
+              Cel.expr(webapp.status.readyReplicas, ' > 0'),
+              '"running"',
+              '"pending"'
+            ) as 'pending' | 'running' | 'failed',
 
-              // Static field - hydrated directly by TypeKro
-              url: 'http://webapp-factory-service',
+            // Static field - hydrated directly by TypeKro
+            url: 'http://webapp-factory-service',
 
-              // Dynamic field - resolved by Kro
-              readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
+            // Dynamic field - resolved by Kro
+            readyReplicas: Cel.expr(webapp.status.readyReplicas) as number,
 
-              // Static field for compatibility
-              ready: true
-            };
-          }
-        );
+            // Static field for compatibility
+            ready: true,
+          };
+        });
 
         try {
           // Create factory with readiness checking enabled
           const directFactory = await composition.factory('direct', {
             namespace: testNamespace,
             waitForReady: true, // This should work properly
-            kubeConfig: kc
+            kubeConfig: kc,
           });
 
           // Deploy and wait for readiness
@@ -944,7 +938,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             environment: 'development',
             image: 'nginx:alpine',
             replicas: 1,
-            hostname: 'readiness.example.com'
+            hostname: 'readiness.example.com',
           });
 
           // If we get here, readiness evaluation worked
@@ -973,14 +967,14 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         const composition = kubernetesComposition(
           {
             ...definition,
-            name: `sync-test-${i}`
+            name: `sync-test-${i}`,
           },
           (spec) => {
             const deployment = simpleDeployment({
               name: `${spec.name}-${i}`,
               image: spec.image,
               replicas: spec.replicas,
-              id: `syncTestDeployment${i}`
+              id: `syncTestDeployment${i}`,
             });
 
             return {
@@ -991,7 +985,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
                 Cel.expr(deployment.status.readyReplicas, ' > 0'),
                 '"running"',
                 '"pending"'
-              ) as 'pending' | 'running' | 'failed'
+              ) as 'pending' | 'running' | 'failed',
             };
           }
         );
@@ -1024,38 +1018,40 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
       // Create multiple compositions concurrently (though they execute synchronously)
       const compositionPromises = Array.from({ length: 3 }, (_, i) =>
-        Promise.resolve(kubernetesComposition(
-          {
-            ...definition,
-            name: `isolation-test-${i}`
-          },
-          (spec) => {
-            const deployment = simpleDeployment({
-              name: `${spec.name}-${i}`,
-              image: spec.image,
-              replicas: spec.replicas,
-              id: `isolationTestDeployment${i}`
-            });
+        Promise.resolve(
+          kubernetesComposition(
+            {
+              ...definition,
+              name: `isolation-test-${i}`,
+            },
+            (spec) => {
+              const deployment = simpleDeployment({
+                name: `${spec.name}-${i}`,
+                image: spec.image,
+                replicas: spec.replicas,
+                id: `isolationTestDeployment${i}`,
+              });
 
-            const service = simpleService({
-              name: `${spec.name}-service-${i}`,
-              selector: { app: `${spec.name}-${i}` },
-              ports: [{ port: 80, targetPort: 8080 }],
-              id: `isolationTestService${i}`
-            });
+              const _service = simpleService({
+                name: `${spec.name}-service-${i}`,
+                selector: { app: `${spec.name}-${i}` },
+                ports: [{ port: 80, targetPort: 8080 }],
+                id: `isolationTestService${i}`,
+              });
 
-            return {
-              ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-              url: Cel.template('https://%s', spec.hostname),
-              readyReplicas: deployment.status.readyReplicas,
-              phase: Cel.conditional(
-                Cel.expr(deployment.status.readyReplicas, ' > 0'),
-                '"running"',
-                '"pending"'
-              ) as 'pending' | 'running' | 'failed'
-            };
-          }
-        ))
+              return {
+                ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+                url: Cel.template('https://%s', spec.hostname),
+                readyReplicas: deployment.status.readyReplicas,
+                phase: Cel.conditional(
+                  Cel.expr(deployment.status.readyReplicas, ' > 0'),
+                  '"running"',
+                  '"pending"'
+                ) as 'pending' | 'running' | 'failed',
+              };
+            }
+          )
+        )
       );
 
       const compositions = await Promise.all(compositionPromises);
@@ -1069,7 +1065,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         expect(compositions[i]!.name).toBe(`isolation-test-${i}`);
 
         // Check resource IDs are unique to each composition
-        const resourceIds = compositions[i]!.resources.map(r => r.id);
+        const resourceIds = compositions[i]!.resources.map((r) => r.id);
         expect(resourceIds).toContain(`isolationTestDeployment${i}`);
         expect(resourceIds).toContain(`isolationTestService${i}`);
       }
@@ -1084,12 +1080,9 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
       // Test composition that throws an error
       expect(() => {
-        kubernetesComposition(
-          definition,
-          (_spec) => {
-            throw new Error('Intentional composition error');
-          }
-        );
+        kubernetesComposition(definition, (_spec) => {
+          throw new Error('Intentional composition error');
+        });
       }).toThrow('Intentional composition error');
 
       console.log('✅ Error handling verified');
@@ -1099,31 +1092,28 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       console.log('🚀 Testing invalid status object handling...');
 
       // This should work - the composition pattern is flexible with status objects
-      const composition = kubernetesComposition(
-        definition,
-        (spec) => {
-          const deployment = simpleDeployment({
-            name: spec.name,
-            image: spec.image,
-            replicas: spec.replicas,
-            id: 'invalidStatusDeployment'
-          });
+      const composition = kubernetesComposition(definition, (spec) => {
+        const deployment = simpleDeployment({
+          name: spec.name,
+          image: spec.image,
+          replicas: spec.replicas,
+          id: 'invalidStatusDeployment',
+        });
 
-          // Return status with extra fields (should be handled gracefully)
-          return {
-            ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-            url: Cel.template('https://%s', spec.hostname),
-            readyReplicas: deployment.status.readyReplicas,
-            phase: Cel.conditional(
-              Cel.expr(deployment.status.readyReplicas, ' > 0'),
-              '"running"',
-              '"pending"'
-            ) as 'pending' | 'running' | 'failed',
-            // Extra field not in schema - should be handled gracefully
-            extraField: 'this should not break the composition'
-          } as any;
-        }
-      );
+        // Return status with extra fields (should be handled gracefully)
+        return {
+          ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+          url: Cel.template('https://%s', spec.hostname),
+          readyReplicas: deployment.status.readyReplicas,
+          phase: Cel.conditional(
+            Cel.expr(deployment.status.readyReplicas, ' > 0'),
+            '"running"',
+            '"pending"'
+          ) as 'pending' | 'running' | 'failed',
+          // Extra field not in schema - should be handled gracefully
+          extraField: 'this should not break the composition',
+        } as any;
+      });
 
       // Should not throw during composition creation
       expect(composition).toBeDefined();
