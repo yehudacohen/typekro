@@ -8,7 +8,12 @@ export const tutorialSteps: TutorialStep[] = [
     codeExample: {
       language: 'typescript',
       code: `import { type } from 'arktype';
-import { kubernetesComposition, simpleDeployment, simpleService, Cel } from 'typekro';
+import { 
+  kubernetesComposition, 
+  simpleDeployment, 
+  simpleService, 
+  Cel 
+} from 'typekro';
 
 const webApp = kubernetesComposition(
   {
@@ -20,10 +25,14 @@ const webApp = kubernetesComposition(
       image: 'string',
       environment: '"dev" | "staging" | "prod"' 
     }),
-    status: type({ ready: 'boolean', url: 'string', replicas: 'number' })
+    status: type({ 
+      ready: 'boolean', 
+      url: 'string', 
+      replicas: 'number' 
+    })
   },
   (spec) => {
-    // Resources auto-register when created - no explicit builders!
+    // Resources auto-register when created!
     const deployment = simpleDeployment({
       name: spec.name,
       image: spec.image,
@@ -37,16 +46,20 @@ const webApp = kubernetesComposition(
       ports: [{ port: 80, targetPort: 80 }]
     });
 
-    // Return status with CEL expressions and resource references
+    // Return status with CEL expressions
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-      url: Cel.template('http://%s', service.status.clusterIP),
+      ready: Cel.expr<boolean>(
+        deployment.status.readyReplicas, ' > 0'
+      ),
+      url: Cel.template('http://%s', 
+        service.status.clusterIP
+      ),
       replicas: deployment.status.readyReplicas
     };
   }
 );
 
-// Deploy directly - no .toResourceGraph() needed!
+// Deploy directly!
 const factory = await webApp.factory('direct');
 await factory.deploy({
   name: 'my-app',
@@ -79,8 +92,10 @@ await factory.deploy({
         title: '1. Direct Deployment',
         example: {
           language: 'typescript',
-          code: `const directFactory = await webApp.factory('direct', { namespace: 'dev' });
-await directFactory.deploy({ 
+          code: `const factory = await webApp.factory('direct', { 
+  namespace: 'dev' 
+});
+await factory.deploy({ 
   name: 'dev-app', 
   image: 'nginx:latest',
   environment: 'dev' 
@@ -92,8 +107,10 @@ await directFactory.deploy({
         title: '2. KRO Orchestration',
         example: {
           language: 'typescript',
-          code: `const kroFactory = await webApp.factory('kro', { namespace: 'staging' });
-await kroFactory.deploy({ 
+          code: `const factory = await webApp.factory('kro', { 
+  namespace: 'staging' 
+});
+await factory.deploy({ 
   name: 'staging-app',
   image: 'myapp:v1.2.3', 
   environment: 'staging' 
@@ -265,7 +282,12 @@ const invalidSpec = WebAppSpec({
     codeExample: {
       language: 'typescript',
       code: `import { type } from 'arktype';
-import { kubernetesComposition, simpleDeployment, simpleService, Cel } from 'typekro';
+import { 
+  kubernetesComposition, 
+  simpleDeployment, 
+  simpleService, 
+  Cel 
+} from 'typekro';
 
 // Reusable database composition
 const database = kubernetesComposition(
@@ -321,8 +343,13 @@ const fullStack = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(db.status.ready, ' && ', app.status.readyReplicas, ' > 0'),
-      appReady: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+      ready: Cel.expr<boolean>(
+        db.status.ready, ' && ', 
+        app.status.readyReplicas, ' > 0'
+      ),
+      appReady: Cel.expr<boolean>(
+        app.status.readyReplicas, ' > 0'
+      ),
       dbReady: db.status.ready
     };
   }
