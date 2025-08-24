@@ -66,10 +66,10 @@ describe('ReplicationController Factory', () => {
 
     it('should handle legacy RC configuration', () => {
       const rcConfig = createTestReplicationController('legacyRc', 1);
-      rcConfig.spec!.template!.spec!.containers[0].image = 'httpd:2.4';
+      rcConfig.spec!.template!.spec!.containers![0]!.image = 'httpd:2.4';
       const enhanced = replicationController(rcConfig);
 
-      expect(enhanced.spec.template!.spec!.containers[0].image).toBe('httpd:2.4');
+      expect(enhanced.spec?.template?.spec?.containers?.[0]?.image).toBe('httpd:2.4');
       expect(enhanced.spec.replicas).toBe(1);
     });
 

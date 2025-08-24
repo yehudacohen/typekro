@@ -33,7 +33,7 @@ export class KroDeploymentStrategy<
     private resources: Record<string, KubernetesResource> = {},
     private statusMappings: Record<string, unknown> = {}
   ) {
-    super(factoryName, namespace, schemaDefinition, factoryOptions);
+    super(factoryName, namespace, schemaDefinition, undefined, resources, factoryOptions);
   }
 
   protected async executeDeployment(spec: TSpec, instanceName: string): Promise<DeploymentResult> {

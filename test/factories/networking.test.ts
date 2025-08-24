@@ -404,8 +404,8 @@ describe('Networking Factories', () => {
       expect(enhanced.spec).toEqual(complexPolicy.spec! as any);
       expect(enhanced.spec!.ingress).toHaveLength(1);
       expect(enhanced.spec!.egress).toHaveLength(2);
-      expect(enhanced.spec!.ingress![0].from).toHaveLength(2);
-      expect(enhanced.spec!.ingress![0].ports).toHaveLength(2);
+      expect(enhanced.spec?.ingress?.[0]?.from).toHaveLength(2);
+      expect(enhanced.spec?.ingress?.[0]?.ports).toHaveLength(2);
     });
 
     it('should handle minimal network policy specifications', () => {
@@ -419,7 +419,7 @@ describe('Networking Factories', () => {
       };
 
       const enhanced = networkPolicy(minimalPolicy);
-      expect(enhanced.spec!.podSelector).toEqual({});
+      expect(enhanced.spec?.podSelector).toEqual({} as any);
       expect(enhanced.metadata!.name).toBe('minimal-policy');
     });
 
@@ -477,7 +477,7 @@ describe('Networking Factories', () => {
 
       const expressionSelectorEnhanced = networkPolicy(expressionSelectorPolicy);
       expect(expressionSelectorEnhanced.spec.podSelector.matchExpressions).toHaveLength(1);
-      expect(expressionSelectorEnhanced.spec.podSelector.matchExpressions![0].operator).toBe('In');
+      expect(expressionSelectorEnhanced.spec?.podSelector?.matchExpressions?.[0]?.operator).toBe('In');
     });
   });
 

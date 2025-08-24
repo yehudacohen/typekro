@@ -281,7 +281,7 @@ describe('ResourceRollbackManager', () => {
       expect(result.status).toBe('failed');
       expect(result.rolledBackResources).toHaveLength(0);
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].error.message).toBe('Persistent finalizer');
+      expect(result.errors[0]?.error.message).toBe('Persistent finalizer');
 
       // Should have emitted a failed event
       const failedEvent = events.find((e) => e.type === 'failed');
@@ -315,7 +315,7 @@ describe('ResourceRollbackManager', () => {
       expect(result.status).toBe('partial');
       expect(result.rolledBackResources).toHaveLength(2); // 2 succeeded
       expect(result.errors).toHaveLength(1); // 1 failed
-      expect(result.errors[0].resourceId).toContain('Service/working-resource');
+      expect(result.errors[0]?.resourceId).toContain('Service/working-resource');
     });
 
     it('should collect and report all rollback errors', async () => {
@@ -331,10 +331,10 @@ describe('ResourceRollbackManager', () => {
 
       expect(result.status).toBe('failed');
       expect(result.errors).toHaveLength(2);
-      expect(result.errors[0].error.message).toBe('Deployment error');
-      expect(result.errors[1].error.message).toBe('Service error');
-      expect(result.errors[0].phase).toBe('rollback');
-      expect(result.errors[1].phase).toBe('rollback');
+      expect(result.errors[0]?.error.message).toBe('Deployment error');
+      expect(result.errors[1]?.error.message).toBe('Service error');
+      expect(result.errors[0]?.phase).toBe('rollback');
+      expect(result.errors[1]?.phase).toBe('rollback');
     });
 
     it('should handle resources with missing metadata gracefully', async () => {
@@ -352,7 +352,7 @@ describe('ResourceRollbackManager', () => {
 
       expect(result.status).toBe('failed');
       expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].error.message).toContain('Resource name is required');
+      expect(result.errors[0]?.error.message).toContain('Resource name is required');
     });
 
     it('should timeout appropriately during deletion waiting', async () => {
@@ -373,7 +373,7 @@ describe('ResourceRollbackManager', () => {
 
       expect(result.status).toBe('failed');
       expect(duration).toBeGreaterThan(1000); // Should have waited at least the timeout
-      expect(result.errors[0].error.message).toContain('Timeout waiting for resource deletion');
+      expect(result.errors[0]?.error.message).toContain('Timeout waiting for resource deletion');
     });
   });
 
@@ -491,7 +491,7 @@ describe('ResourceRollbackManager', () => {
       const result = await manager.rollbackResources([resourceWithoutMetadata]);
 
       expect(result.status).toBe('failed');
-      expect(result.errors[0].error.message).toContain('Resource name is required');
+      expect(result.errors[0]?.error.message).toContain('Resource name is required');
     });
 
     it('should calculate duration correctly', async () => {

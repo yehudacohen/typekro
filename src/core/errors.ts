@@ -213,6 +213,322 @@ function levenshteinDistance(str1: string, str2: string): number {
 
   return matrix[str2.length]?.[str1.length]!;
 }
+
+/**
+ * Utility functions for detecting and reporting unsupported patterns in compositions
+ */
+/**
+ * Debugging utilities for composition execution
+ */
+export class CompositionDebugger {
+  private static debugMode = false;
+  private static debugLog: string[] = [];
+
+  /**
+   * Enable debug mode for composition execution
+   */
+  static enableDebugMode(): void {
+    this.debugMode = true;
+    this.debugLog = [];
+  }
+
+  /**
+   * Disable debug mode
+   */
+  static disableDebugMode(): void {
+    this.debugMode = false;
+    this.debugLog = [];
+  }
+
+  /**
+   * Check if debug mode is enabled
+   */
+  static isDebugEnabled(): boolean {
+    return this.debugMode;
+  }
+
+  /**
+   * Add a debug log entry
+   */
+  static log(phase: string, message: string, context?: Record<string, any>): void {
+    if (!this.debugMode) return;
+    
+    const timestamp = new Date().toISOString();
+    const contextStr = context ? ` | Context: ${JSON.stringify(context)}` : '';
+    const logEntry = `[${timestamp}] ${phase}: ${message}${contextStr}`;
+    
+    this.debugLog.push(logEntry);
+    
+    // Also log to console if in development
+    if (process.env.NODE_ENV === 'development') {
+      console.debug(`[TypeKro Composition] ${logEntry}`);
+    }
+  }
+
+  /**
+   * Get all debug logs
+   */
+  static getDebugLogs(): string[] {
+    return [...this.debugLog];
+  }
+
+  /**
+   * Clear debug logs
+   */
+  static clearDebugLogs(): void {
+    this.debugLog = [];
+  }
+
+  /**
+   * Create a debug summary for composition execution
+   */
+  static createDebugSummary(
+    compositionName: string,
+    resourceCount: number,
+    executionTimeMs: number,
+    statusFields: string[]
+  ): string {
+    const summary = [
+      `=== Composition Debug Summary ===`,
+      `Composition: ${compositionName}`,
+      `Execution Time: ${executionTimeMs}ms`,
+      `Resources Created: ${resourceCount}`,
+      `Status Fields: ${statusFields.join(', ')}`,
+      ``,
+      `=== Debug Log ===`,
+      ...this.debugLog,
+      `=== End Debug Summary ===`
+    ];
+    
+    return summary.join('\n');
+  }
+
+  /**
+   * Log resource registration
+   */
+  static logResourceRegistration(
+    resourceId: string,
+    resourceKind: string,
+    factoryName: string
+  ): void {
+    this.log('RESOURCE_REGISTRATION', `Registered resource '${resourceId}'`, {
+      resourceKind,
+      factoryName
+    });
+  }
+
+  /**
+   * Log composition execution start
+   */
+  static logCompositionStart(compositionName: string): void {
+    this.log('COMPOSITION_START', `Starting composition execution`, {
+      compositionName
+    });
+  }
+
+  /**
+   * Log composition execution end
+   */
+  static logCompositionEnd(
+    compositionName: string,
+    resourceCount: number,
+    statusFields: string[]
+  ): void {
+    this.log('COMPOSITION_END', `Completed composition execution`, {
+      compositionName,
+      resourceCount,
+      statusFields
+    });
+  }
+
+  /**
+   * Log status object validation
+   */
+  static logStatusValidation(
+    compositionName: string,
+    statusObject: any,
+    validationResult: 'success' | 'failure',
+    issues?: string[]
+  ): void {
+    this.log('STATUS_VALIDATION', `Status validation ${validationResult}`, {
+      compositionName,
+      statusObjectKeys: Object.keys(statusObject || {}),
+      issues
+    });
+  }
+
+  /**
+   * Log performance metrics
+   */
+  static logPerformanceMetrics(
+    phase: string,
+    startTime: number,
+    endTime: number,
+    additionalMetrics?: Record<string, any>
+  ): void {
+    const duration = endTime - startTime;
+    this.log('PERFORMANCE', `${phase} completed in ${duration}ms`, {
+      duration,
+      ...additionalMetrics
+    });
+  }
+}
+
+export class UnsupportedPatternDetector {
+  /**
+   * Detect unsupported JavaScript patterns in status objects
+   */
+  static detectUnsupportedStatusPatterns(statusObject: any, fieldPath = ''): string[] {
+    const issues: string[] = [];
+    
+    if (typeof statusObject !== 'object' || statusObject === null) {
+      return issues;
+    }
+
+    for (const [key, value] of Object.entries(statusObject)) {
+      const currentPath = fieldPath ? `${fieldPath}.${key}` : key;
+      
+      // Skip CEL expressions and resource references - these are valid
+      if (this.isCelExpression(value) || this.isResourceReference(value)) {
+        continue;
+      }
+      
+      // Check for JavaScript-specific patterns that don't work in CEL
+      if (typeof value === 'string') {
+        // Template literals with JavaScript expressions (but not CEL templates)
+        if (value.includes('${') && !value.startsWith('${') && !value.endsWith('}')) {
+          issues.push(`Template literal with JavaScript expressions at '${currentPath}': ${value}`);
+        }
+        
+        // String concatenation patterns
+        if (value.includes(' + ') || value.includes('` + `')) {
+          issues.push(`String concatenation at '${currentPath}': ${value}`);
+        }
+      }
+      
+      // Check for function calls (but not CEL expressions or resource references)
+      if (typeof value === 'function') {
+        issues.push(`Function at '${currentPath}': Functions are not supported in status objects`);
+      }
+      
+      // Check for complex JavaScript expressions
+      if (typeof value === 'object' && value !== null) {
+        // Recursively check nested objects
+        issues.push(...this.detectUnsupportedStatusPatterns(value, currentPath));
+        
+        // Check for JavaScript-specific object patterns
+        if (Array.isArray(value)) {
+          // Check for array methods like .map, .filter, etc.
+          const stringified = JSON.stringify(value);
+          if (stringified.includes('.map(') || stringified.includes('.filter(') || stringified.includes('.reduce(')) {
+            issues.push(`Array method calls at '${currentPath}': Use CEL expressions instead`);
+          }
+        }
+      }
+    }
+    
+    return issues;
+  }
+
+  /**
+   * Check if a value is a CEL expression
+   */
+  private static isCelExpression(value: any): boolean {
+    return value && typeof value === 'object' && value.__brand === 'CelExpression';
+  }
+
+  /**
+   * Check if a value is a resource reference
+   */
+  private static isResourceReference(value: any): boolean {
+    // Check for KubernetesRef brand
+    if (value && typeof value === 'object' && value.__brand === 'KubernetesRef') {
+      return true;
+    }
+    
+    // Check for proxy objects that might be resource references
+    if (value && typeof value === 'object' && value.constructor && value.constructor.name === 'Object') {
+      // Check if it has resource reference properties
+      if (value.resourceId || value.fieldPath || value.__isProxy) {
+        return true;
+      }
+    }
+    
+    // Check for function proxies that represent resource references
+    if (typeof value === 'function' && value.__isResourceProxy) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Generate suggestions for fixing unsupported patterns
+   */
+  static generatePatternSuggestions(pattern: string): string[] {
+    const suggestions: string[] = [];
+    
+    if (pattern.includes('template literal')) {
+      suggestions.push('Use Cel.template() instead of JavaScript template literals');
+      suggestions.push('Example: Cel.template("https://%s", hostname) instead of `https://${hostname}`');
+    }
+    
+    if (pattern.includes('string concatenation')) {
+      suggestions.push('Use Cel.expr() for string concatenation');
+      suggestions.push('Example: Cel.expr(prefix, " + ", suffix) instead of prefix + suffix');
+    }
+    
+    if (pattern.includes('function')) {
+      suggestions.push('Functions are not supported in status objects');
+      suggestions.push('Use CEL expressions or move logic to the composition function');
+    }
+    
+    if (pattern.includes('array method')) {
+      suggestions.push('Use CEL expressions for array operations');
+      suggestions.push('Example: Cel.expr(array, ".size()") instead of array.length');
+    }
+    
+    if (pattern.includes('JavaScript expressions')) {
+      suggestions.push('Replace JavaScript expressions with CEL expressions');
+      suggestions.push('Use Cel.expr() for complex logic and Cel.template() for string formatting');
+    }
+    
+    // General suggestions
+    suggestions.push('Refer to the CEL documentation for supported operations');
+    suggestions.push('Use literal values for simple cases, CEL expressions for complex logic');
+    
+    return suggestions;
+  }
+
+  /**
+   * Create a comprehensive error for unsupported patterns
+   */
+  static createUnsupportedPatternError(
+    compositionName: string,
+    statusObject: any
+  ): CompositionExecutionError | null {
+    const issues = this.detectUnsupportedStatusPatterns(statusObject);
+    
+    if (issues.length === 0) {
+      return null;
+    }
+    
+    const allSuggestions = new Set<string>();
+    issues.forEach(issue => {
+      this.generatePatternSuggestions(issue).forEach(suggestion => {
+        allSuggestions.add(suggestion);
+      });
+    });
+    
+    const message = `Unsupported patterns detected in composition '${compositionName}':\n\n${issues.map((issue, i) => `  ${i + 1}. ${issue}`).join('\n')}`;
+    
+    return CompositionExecutionError.forUnsupportedPattern(
+      compositionName,
+      message,
+      Array.from(allSuggestions)
+    );
+  }
+}
 /**
 
  * Error thrown when ResourceGraphDefinition deployment fails
@@ -276,5 +592,200 @@ export class KroSchemaValidationError extends TypeKroError {
       suggestions,
     });
     this.name = 'KroSchemaValidationError';
+  }
+}
+
+/**
+ * Error thrown when imperative composition execution fails
+ * Provides detailed context about which resource or phase caused the failure
+ */
+export class CompositionExecutionError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly compositionName: string,
+    public readonly phase: 'resource-creation' | 'status-building' | 'validation' | 'context-setup',
+    public readonly resourceContext?: {
+      resourceId?: string;
+      resourceKind?: string;
+      factoryName?: string;
+    },
+    public readonly cause?: Error
+  ) {
+    super(message, 'COMPOSITION_EXECUTION_ERROR', {
+      compositionName,
+      phase,
+      resourceContext,
+      cause: cause?.message,
+      stack: cause?.stack,
+    });
+    this.name = 'CompositionExecutionError';
+  }
+
+  /**
+   * Create a composition error with resource context
+   */
+  static withResourceContext(
+    message: string,
+    compositionName: string,
+    phase: 'resource-creation' | 'status-building' | 'validation' | 'context-setup',
+    resourceId: string,
+    resourceKind: string,
+    factoryName: string,
+    cause?: Error
+  ): CompositionExecutionError {
+    const contextualMessage = `${message}\n  Resource: ${resourceId} (${resourceKind})\n  Factory: ${factoryName}`;
+    return new CompositionExecutionError(
+      contextualMessage,
+      compositionName,
+      phase,
+      { resourceId, resourceKind, factoryName },
+      cause
+    );
+  }
+
+  /**
+   * Create a composition error for status building failures
+   */
+  static forStatusBuilding(
+    compositionName: string,
+    fieldPath: string,
+    expectedType: string,
+    actualValue: unknown,
+    cause?: Error
+  ): CompositionExecutionError {
+    const message = `Status object validation failed in composition '${compositionName}' at field '${fieldPath}':\n  Expected: ${expectedType}\n  Received: ${typeof actualValue} (${JSON.stringify(actualValue)})`;
+    return new CompositionExecutionError(
+      message,
+      compositionName,
+      'status-building',
+      undefined,
+      cause
+    );
+  }
+
+  /**
+   * Create a composition error for unsupported patterns
+   */
+  static forUnsupportedPattern(
+    compositionName: string,
+    pattern: string,
+    suggestions: string[]
+  ): CompositionExecutionError {
+    const message = `Unsupported pattern in composition '${compositionName}': ${pattern}\n\nSuggestions:\n${suggestions.map(s => `  - ${s}`).join('\n')}`;
+    return new CompositionExecutionError(
+      message,
+      compositionName,
+      'validation'
+    );
+  }
+}
+
+/**
+ * Error thrown when resource registration with composition context fails
+ * Provides detailed context about the registration failure and suggestions for resolution
+ */
+export class ContextRegistrationError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly resourceId: string,
+    public readonly resourceKind: string,
+    public readonly factoryName: string,
+    public readonly registrationPhase: 'id-generation' | 'context-storage' | 'duplicate-detection' | 'validation',
+    public readonly suggestions?: string[],
+    public readonly cause?: Error
+  ) {
+    super(message, 'CONTEXT_REGISTRATION_ERROR', {
+      resourceId,
+      resourceKind,
+      factoryName,
+      registrationPhase,
+      suggestions,
+      cause: cause?.message,
+      stack: cause?.stack,
+    });
+    this.name = 'ContextRegistrationError';
+  }
+
+  /**
+   * Create an error for duplicate resource registration
+   */
+  static forDuplicateResource(
+    resourceId: string,
+    resourceKind: string,
+    factoryName: string,
+    existingFactoryName: string
+  ): ContextRegistrationError {
+    const message = `Duplicate resource registration: Resource '${resourceId}' (${resourceKind}) is already registered.\n  Original factory: ${existingFactoryName}\n  Attempted factory: ${factoryName}`;
+    
+    const suggestions = [
+      `Use a unique name for the ${resourceKind} resource`,
+      `Check if you're calling the same factory function multiple times`,
+      `Consider using different resource names or namespaces`,
+      `Use conditional logic to avoid creating duplicate resources`
+    ];
+
+    return new ContextRegistrationError(
+      message,
+      resourceId,
+      resourceKind,
+      factoryName,
+      'duplicate-detection',
+      suggestions
+    );
+  }
+
+  /**
+   * Create an error for context not available
+   */
+  static forMissingContext(
+    resourceId: string,
+    resourceKind: string,
+    factoryName: string
+  ): ContextRegistrationError {
+    const message = `Resource registration failed: No composition context available for resource '${resourceId}' (${resourceKind}).\n  Factory: ${factoryName}`;
+    
+    const suggestions = [
+      `Ensure the factory function is called within a kubernetesComposition() function`,
+      `Check that AsyncLocalStorage is properly configured`,
+      `Verify that the composition context is not being lost across async boundaries`,
+      `Consider using the factory function outside of composition if context is not needed`
+    ];
+
+    return new ContextRegistrationError(
+      message,
+      resourceId,
+      resourceKind,
+      factoryName,
+      'context-storage',
+      suggestions
+    );
+  }
+
+  /**
+   * Create an error for invalid resource ID generation
+   */
+  static forInvalidResourceId(
+    resourceId: string,
+    resourceKind: string,
+    factoryName: string,
+    reason: string
+  ): ContextRegistrationError {
+    const message = `Invalid resource ID generated: '${resourceId}' for ${resourceKind} resource.\n  Factory: ${factoryName}\n  Reason: ${reason}`;
+    
+    const suggestions = [
+      `Provide a valid 'name' property in the factory function config`,
+      `Ensure resource names follow Kubernetes naming conventions`,
+      `Check that the name doesn't contain invalid characters`,
+      `Use alphanumeric characters and hyphens only`
+    ];
+
+    return new ContextRegistrationError(
+      message,
+      resourceId,
+      resourceKind,
+      factoryName,
+      'id-generation',
+      suggestions
+    );
   }
 }

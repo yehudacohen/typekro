@@ -62,6 +62,9 @@ export {
 // =============================================================================
 export {
   CircularDependencyError,
+  CompositionDebugger,
+  CompositionExecutionError,
+  ContextRegistrationError,
   CRDInstanceError,
   formatArktypeError,
   formatCircularDependencyError,
@@ -70,6 +73,7 @@ export {
   ResourceGraphFactoryError,
   TypeKroError,
   TypeKroReferenceError,
+  UnsupportedPatternDetector,
   ValidationError,
 } from './core/errors.js';
 export type {
@@ -151,9 +155,9 @@ export { customResource } from './factories/kubernetes/extensions/custom-resourc
 // Factory types are now exported from the organized factories structure
 export type * from './factories/kubernetes/types.js';
 // =============================================================================
-// Resource Factory
+// Resource Factory and Composition Context
 // =============================================================================
-export { createResource } from './factories/shared.js';
+export { createResource, getCurrentCompositionContext } from './factories/shared.js';
 // =============================================================================
 // Core Utilities
 // =============================================================================

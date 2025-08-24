@@ -37,7 +37,7 @@ describe('Factory Pattern Types', () => {
         resources: [],
         schema: {} as any, // Mock schema proxy
 
-        async factory(_mode, _options) {
+        factory(_mode, _options) {
           // Mock implementation
           throw new Error('Not implemented');
         },
@@ -59,7 +59,7 @@ describe('Factory Pattern Types', () => {
         name: 'test-graph',
         resources: [],
 
-        async factory() {
+        factory() {
           throw new Error('Not implemented');
         },
 

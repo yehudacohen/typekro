@@ -17,7 +17,6 @@ describe('KroCustomResourceDefinition Factory', () => {
     kind: 'CustomResourceDefinition',
     metadata: {
       name,
-      namespace: undefined, // CRDs are cluster-scoped
       labels: {
         'kro.run/managed-by': 'kro-controller',
       },
@@ -37,7 +36,7 @@ describe('KroCustomResourceDefinition Factory', () => {
                   type: 'object',
                   properties: {
                     image: { type: 'string' },
-                    replicas: { type: 'integer', default: 1 },
+                    replicas: { type: 'integer', _default: 1 as any },
                   },
                 },
                 status: {
@@ -111,7 +110,7 @@ describe('KroCustomResourceDefinition Factory', () => {
                 spec: {
                   type: 'object',
                   properties: {
-                    version: { type: 'string', enum: ['12', '13', '14'] },
+                    version: { type: 'string', _enum: ['12', '13', '14'] as any },
                     replicas: { type: 'integer', minimum: 1, maximum: 10 },
                     storage: {
                       type: 'object',
@@ -133,8 +132,8 @@ describe('KroCustomResourceDefinition Factory', () => {
       const enhanced = kroCustomResourceDefinition(complexCRD);
 
       expect(enhanced.spec.versions).toHaveLength(1);
-      expect(enhanced.spec.versions[0].name).toBe('v1beta1');
-      expect(enhanced.spec.versions[0].schema.openAPIV3Schema.properties.spec.required).toContain(
+      expect(enhanced.spec?.versions?.[0]?.name).toBe('v1beta1');
+      expect(enhanced.spec?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec?.required).toContain(
         'version'
       );
     });

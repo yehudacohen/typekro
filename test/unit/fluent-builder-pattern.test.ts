@@ -146,4 +146,38 @@ describe('Fluent Builder Pattern', () => {
     expect(result.reason).toBe('StatusMissing');
     expect(result.message).toContain('status not available');
   });
+
+  it('should work unchanged outside composition context (backward compatibility)', () => {
+    // This test ensures that createResource works exactly as before when not in composition context
+    const resource = createResource({
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: { name: 'test-deployment' },
+      spec: { replicas: 1 },
+      status: {},
+    });
+
+    // Should have all the expected properties and methods
+    expect(resource.apiVersion).toBe('apps/v1');
+    expect(resource.kind).toBe('Deployment');
+    expect(resource.metadata?.name).toBe('test-deployment');
+    expect(resource.spec?.replicas).toBe(1);
+    expect(typeof resource.withReadinessEvaluator).toBe('function');
+    expect(typeof (resource as any).readinessEvaluator).toBe('function');
+
+    // Should have the resource ID
+    expect((resource as any).id).toBeDefined();
+    expect(typeof (resource as any).id).toBe('string');
+
+    // Should be serializable
+    const serialized = JSON.stringify(resource);
+    const parsed = JSON.parse(serialized);
+    expect(parsed.apiVersion).toBe('apps/v1');
+    expect(parsed.kind).toBe('Deployment');
+    expect(parsed.metadata.name).toBe('test-deployment');
+
+    // Should not include function properties in serialization
+    expect(parsed.readinessEvaluator).toBeUndefined();
+    expect(parsed.withReadinessEvaluator).toBeUndefined();
+  });
 });

@@ -279,6 +279,21 @@ export interface TypedResourceGraphFactory<
   definition: TypedKroResourceGraphDefinition<TSpec, TStatus>;
 }
 
+/**
+ * Factory interface for imperative compositions
+ * Provides the same interface as toResourceGraph result for compatibility
+ */
+export interface CompositionFactory<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+> {
+  /**
+   * Convert the composition to a TypedResourceGraph
+   * This provides compatibility with the existing toResourceGraph API
+   */
+  toResourceGraph(): import('./deployment.js').TypedResourceGraph<TSpec, TStatus>;
+}
+
 // =============================================================================
 // SERIALIZATION CONTEXT AND OPTIONS
 // =============================================================================

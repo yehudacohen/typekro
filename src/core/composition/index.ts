@@ -29,6 +29,9 @@ export type {
 } from './typekro-runtime/index.js';
 // Export TypeKro runtime bootstrap composition
 export { typeKroRuntimeBootstrap } from './typekro-runtime/index.js';
+// Export imperative composition pattern
+export { kubernetesComposition } from './imperative.js';
+export type { CompositionFactory } from '../types/serialization.js';
 // Export composition-specific types
 export type {
   SimpleConfigMapConfig,

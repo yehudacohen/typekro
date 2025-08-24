@@ -13,7 +13,8 @@ import type {
   ResourceGraph,
 } from '../../types/deployment.js';
 import { ResourceDeploymentError } from '../../types/deployment.js';
-import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
+import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../../types/serialization.js';
+import type { KubernetesResource } from '../../types/kubernetes.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';
@@ -29,11 +30,13 @@ export class DirectDeploymentStrategy<
     factoryName: string,
     namespace: string,
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined,
+    resourceKeys: Record<string, KubernetesResource> | undefined,
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
     public resourceResolver: { createResourceGraphForInstance(spec: TSpec): ResourceGraph } // Resource resolution logic
   ) {
-    super(factoryName, namespace, schemaDefinition, factoryOptions);
+    super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
   }
 
   protected async executeDeployment(spec: TSpec, _instanceName: string): Promise<DeploymentResult> {

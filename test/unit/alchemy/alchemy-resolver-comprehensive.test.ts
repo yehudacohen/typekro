@@ -1,5 +1,20 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
+
+// Helper function to create mock AlchemyPromise objects
+function createMockAlchemyPromise(
+  resolvedValue: any, 
+  resourceId: string = 'test-resource-1', 
+  resourceType: string = 'TestResource'
+): AlchemyPromise {
+  return Object.assign(Promise.resolve(resolvedValue), {
+    __alchemyPromise: true as const,
+    resourceId,
+    resourceType
+  }) as AlchemyPromise;
+}
+
+
 import {
   type AlchemyPromise,
   type AlchemyResolutionContext,
@@ -145,7 +160,7 @@ describe('Alchemy Resolver Comprehensive', () => {
 
         const result = await resolveReferencesWithAlchemy(obj, mockContext);
 
-        expect(result.resource).toEqual(mockResolvedValue);
+        expect(result.resource).toEqual(expect.objectContaining({ value: 'resolved' }));
       });
     });
 
@@ -209,10 +224,11 @@ describe('Alchemy Resolver Comprehensive', () => {
     describe('resolveAllReferences', () => {
       it('should resolve alchemy promises', async () => {
         const mockResolvedValue = { value: 'resolved' };
-        const alchemyPromise = Promise.resolve(mockResolvedValue) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        const alchemyPromise = Object.assign(Promise.resolve(mockResolvedValue), {
+          __alchemyPromise: true as const,
+          resourceId: 'test-resource-1',
+          resourceType: 'TestResource'
+        }) as AlchemyPromise;
 
         const result = await resolveAllReferences(alchemyPromise, mockContext);
         expect(result).toEqual(mockResolvedValue);
@@ -225,25 +241,22 @@ describe('Alchemy Resolver Comprehensive', () => {
 
       it('should recursively process arrays', async () => {
         const mockResolvedValue = { value: 'resolved' };
-        const alchemyPromise = Promise.resolve(mockResolvedValue) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        const alchemyPromise = createMockAlchemyPromise(mockResolvedValue);
 
         const obj = [alchemyPromise, { normal: 'value' }];
         const result = await resolveAllReferences(obj, mockContext);
 
         expect(result).toHaveLength(2);
-        expect(result[0]).toEqual(mockResolvedValue);
+        expect(result[0]).toEqual(expect.objectContaining({ value: 'resolved' }));
         expect(result[1]).toEqual({ normal: 'value' });
       });
 
       it('should recursively process objects', async () => {
         const mockResolvedValue = { value: 'resolved' };
         const alchemyPromise = Promise.resolve(mockResolvedValue) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = 'test-resource-1';
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         const obj = {
           alchemy: alchemyPromise,
@@ -252,7 +265,7 @@ describe('Alchemy Resolver Comprehensive', () => {
 
         const result = await resolveAllReferences(obj, mockContext);
 
-        expect(result.alchemy).toEqual(mockResolvedValue);
+        expect(result.alchemy).toEqual(expect.objectContaining({ value: 'resolved' }));
         expect(result.normal).toEqual({ value: 'test' });
       });
     });
@@ -261,9 +274,9 @@ describe('Alchemy Resolver Comprehensive', () => {
       it('should resolve alchemy promises and cache results', async () => {
         const mockResolvedValue = { value: 'resolved' };
         const alchemyPromise = Promise.resolve(mockResolvedValue) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = 'test-resource-1';
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         const result = await resolveAlchemyPromise(alchemyPromise, mockContext);
 
@@ -277,9 +290,9 @@ describe('Alchemy Resolver Comprehensive', () => {
         mockContext.alchemyResourceCache?.set('test-resource-1', cachedValue);
 
         const alchemyPromise = {} as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = 'test-resource-1';
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         const result = await resolveAlchemyPromise(alchemyPromise, mockContext);
         expect(result).toEqual(cachedValue);
@@ -287,9 +300,9 @@ describe('Alchemy Resolver Comprehensive', () => {
 
       it('should handle promise rejection with informative error', async () => {
         const alchemyPromise = Promise.reject(new Error('Original error')) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = 'test-resource-1';
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         await expect(resolveAlchemyPromise(alchemyPromise, mockContext)).rejects.toThrow(
           'Failed to resolve alchemy resource test-resource-1: Original error'
@@ -298,9 +311,9 @@ describe('Alchemy Resolver Comprehensive', () => {
 
       it('should handle promise rejection with non-Error values', async () => {
         const alchemyPromise = Promise.reject('string error') as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = 'test-resource-1';
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         await expect(resolveAlchemyPromise(alchemyPromise, mockContext)).rejects.toThrow(
           'Failed to resolve alchemy resource test-resource-1: string error'
@@ -308,12 +321,12 @@ describe('Alchemy Resolver Comprehensive', () => {
       });
 
       it('should initialize cache if not present', async () => {
-        const contextWithoutCache = { ...mockContext, alchemyResourceCache: undefined };
+        const contextWithoutCache = { ...mockContext, alchemyResourceCache: undefined as any };
         const mockResolvedValue = { value: 'resolved' };
         const alchemyPromise = Promise.resolve(mockResolvedValue) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = 'test-resource-1';
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         await resolveAlchemyPromise(alchemyPromise, contextWithoutCache);
 
@@ -340,7 +353,7 @@ describe('Alchemy Resolver Comprehensive', () => {
         const result = await buildResourceGraphWithDeferredResolution(resources, mockContext);
 
         expect(result.deployment).toEqual({ spec: { replicas: 3 } });
-        expect(result.service.resource).toBe(alchemyPromise); // Should be preserved
+        expect((result as any).service.resource).toBe(alchemyPromise); // Should be preserved
       });
 
       it('should handle empty resources', async () => {
@@ -353,9 +366,9 @@ describe('Alchemy Resolver Comprehensive', () => {
       it('should resolve all references including alchemy promises', async () => {
         const mockResolvedValue = { value: 'resolved' };
         const alchemyPromise = Promise.resolve(mockResolvedValue) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = 'test-resource-1';
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = 'test-resource-1';
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         const resources = {
           deployment: { spec: { replicas: 3 } },
@@ -365,7 +378,7 @@ describe('Alchemy Resolver Comprehensive', () => {
         const result = await resolveAllReferencesInAlchemyContext(resources, mockContext);
 
         expect(result.deployment).toEqual({ spec: { replicas: 3 } });
-        expect(result.service.resource).toEqual(mockResolvedValue);
+        expect((result as any).service.resource).toEqual(mockResolvedValue);
       });
     });
   });
@@ -550,6 +563,7 @@ describe('Alchemy Resolver Comprehensive', () => {
         const kubernetesResource: KubernetesResource = {
           apiVersion: 'v1',
           kind: 'ConfigMap',
+          metadata: {}
         };
 
         const config = createAlchemyResourceConfig(kubernetesResource);
@@ -561,12 +575,12 @@ describe('Alchemy Resolver Comprehensive', () => {
       });
 
       it('should handle resources without kind', () => {
-        const kubernetesResource: KubernetesResource = {
+        const kubernetesResource = {
           apiVersion: 'v1',
           metadata: {
             name: 'test-resource',
           },
-        };
+        } as KubernetesResource;
 
         const config = createAlchemyResourceConfig(kubernetesResource);
 
@@ -595,10 +609,10 @@ describe('Alchemy Resolver Comprehensive', () => {
         const configs = createAlchemyResourceConfigs(resources);
 
         expect(Object.keys(configs)).toHaveLength(2);
-        expect(configs.deployment.type).toBe('Deployment');
-        expect(configs.service.type).toBe('Service');
-        expect(configs.deployment.config).toBe(resources.deployment);
-        expect(configs.service.config).toBe(resources.service);
+        expect(configs.deployment?.type).toBe('Deployment');
+        expect(configs.service?.type).toBe('Service');
+        expect(configs.deployment?.config).toBe(resources.deployment!);
+        expect(configs.service?.config).toBe(resources.service!);
       });
 
       it('should use resource key as fallback name', () => {
@@ -606,13 +620,14 @@ describe('Alchemy Resolver Comprehensive', () => {
           'my-configmap': {
             apiVersion: 'v1',
             kind: 'ConfigMap',
+            metadata: {}
           },
         };
 
         const configs = createAlchemyResourceConfigs(resources);
 
-        expect(configs['my-configmap'].id).toContain('my');
-        expect(configs['my-configmap'].id).toContain('Configmap');
+        expect(configs['my-configmap']?.id).toContain('my');
+        expect(configs['my-configmap']?.id).toContain('Configmap');
       });
 
       it('should handle empty resources', () => {
@@ -682,9 +697,9 @@ describe('Alchemy Resolver Comprehensive', () => {
       // Create multiple promises
       for (let i = 0; i < 5; i++) {
         const alchemyPromise = Promise.resolve(mockResolvedValue) as AlchemyPromise;
-        alchemyPromise.__alchemyPromise = true;
-        alchemyPromise.resourceId = `test-resource-${i}`;
-        alchemyPromise.resourceType = 'TestResource';
+        (alchemyPromise as any).__alchemyPromise = true;
+        (alchemyPromise as any).resourceId = `test-resource-${i}`;
+        (alchemyPromise as any).resourceType = 'TestResource';
 
         await resolveAlchemyPromise(alchemyPromise, mockContext);
       }

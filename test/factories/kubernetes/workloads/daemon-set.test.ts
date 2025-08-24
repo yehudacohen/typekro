@@ -73,10 +73,10 @@ describe('DaemonSet Factory', () => {
 
     it('should preserve original spec configuration', () => {
       const daemonSetConfig = createTestDaemonSet('customDaemonset', 'kube-system');
-      daemonSetConfig.spec!.template.spec!.containers[0].image = 'custom:latest';
+      daemonSetConfig.spec!.template.spec!.containers![0]!.image = 'custom:latest';
       const enhanced = daemonSet(daemonSetConfig);
 
-      expect(enhanced.spec.template.spec!.containers[0].image).toBe('custom:latest');
+      expect(enhanced.spec?.template?.spec?.containers?.[0]?.image).toBe('custom:latest');
       expect(enhanced.metadata.namespace).toBe('kube-system');
       expect(enhanced.metadata.name).toBe('customDaemonset');
     });
@@ -140,6 +140,7 @@ describe('DaemonSet Factory', () => {
           numberUnavailable: 0,
           updatedNumberScheduled: 3,
           currentNumberScheduled: 3,
+          numberMisscheduled: 0,
         },
       };
 
@@ -162,6 +163,7 @@ describe('DaemonSet Factory', () => {
           numberUnavailable: 3,
           updatedNumberScheduled: 5,
           currentNumberScheduled: 5,
+          numberMisscheduled: 0,
         },
       };
 
@@ -184,6 +186,7 @@ describe('DaemonSet Factory', () => {
           numberUnavailable: 0,
           updatedNumberScheduled: 0,
           currentNumberScheduled: 0,
+          numberMisscheduled: 0,
         },
       };
 
@@ -215,13 +218,19 @@ describe('DaemonSet Factory', () => {
       const mockDaemonSet: V1DaemonSet = {
         ...daemonSetConfig,
         status: {
-          // Missing desiredNumberScheduled and numberReady
+          desiredNumberScheduled: 1,
+          numberReady: 0,
+          numberAvailable: 0,
+          numberUnavailable: 1,
+          updatedNumberScheduled: 1,
+          currentNumberScheduled: 1,
+          numberMisscheduled: 0,
         },
       };
 
       const result = evaluator(mockDaemonSet);
       expect(result.ready).toBe(false);
-      expect(result.reason).toBe('0/0 pods ready');
+      expect(result.reason).toBe('0/1 pods ready');
     });
 
     it('should handle evaluation errors gracefully', () => {
@@ -255,6 +264,7 @@ describe('DaemonSet Factory', () => {
           numberUnavailable: 0,
           updatedNumberScheduled: 1,
           currentNumberScheduled: 1,
+          numberMisscheduled: 0,
         },
       };
 

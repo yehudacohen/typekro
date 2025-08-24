@@ -8,6 +8,7 @@ import type {
 } from '../../../core/types/deployment.js';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
+import { registerDeploymentClosure } from '../../shared.js';
 
 /**
  * Parse YAML content into Kubernetes manifests
@@ -66,8 +67,11 @@ export interface YamlDirectoryConfig {
  * ```
  */
 export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<AppliedResource[]> {
-  // Return closure that will be executed during deployment
-  return async (deploymentContext: DeploymentContext): Promise<AppliedResource[]> => {
+  // Use generic deployment closure registration for composition context support
+  return registerDeploymentClosure(
+    () => {
+      // Create the deployment closure
+      const closure = async (deploymentContext: DeploymentContext): Promise<AppliedResource[]> => {
     const pathResolver = new PathResolver();
     const yamlFiles = await pathResolver.discoverYamlFiles(
       config.path,
@@ -190,6 +194,11 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
 
     return allResults;
   };
+
+      return closure;
+    },
+    config.name
+  );
 }
 
 /**

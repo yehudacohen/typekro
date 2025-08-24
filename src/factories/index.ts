@@ -22,7 +22,8 @@ export * from './kubernetes/index.js';
 // =============================================================================
 // SHARED UTILITIES
 // =============================================================================
-export { createResource } from './shared.js';
+export { createResource, getCurrentCompositionContext } from './shared.js';
+export type { CompositionContext } from './shared.js';
 
 // =============================================================================
 // FUTURE ECOSYSTEMS (Placeholder structure created)

@@ -191,7 +191,7 @@
   - Run linting to ensure code quality maintained: `bun run lint`
   - _Requirements: 8.1, 8.4_
 
-- [x] **3.7 Reorganize factory functions by resource type**
+- [ ] **3.7 Reorganize factory functions by resource type**
   - Create src/factories/ directory structure with ecosystem and resource-type organization
   - Split 865-line factory.ts into focused, single-responsibility files
   - Organize Kubernetes factories into logical categories:

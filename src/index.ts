@@ -28,6 +28,10 @@ export {
   type CelExpression,
   // Error types
   CircularDependencyError,
+  CompositionExecutionError,
+  ContextRegistrationError,
+  CompositionDebugger,
+  UnsupportedPatternDetector,
   // Logging functionality
   createContextLogger,
   createLogger,
@@ -85,6 +89,19 @@ export {
   toResourceGraph,
   validateResourceGraph,
 } from './core.js';
+
+// =============================================================================
+// IMPERATIVE COMPOSITION PATTERN
+// =============================================================================
+// New imperative composition API
+export { 
+  kubernetesComposition,
+  enableCompositionDebugging,
+  disableCompositionDebugging,
+  getCompositionDebugLogs,
+  clearCompositionDebugLogs
+} from './core/composition/imperative.js';
+export type { CompositionFactory } from './core/types/serialization.js';
 
 // Alchemy state inspection utilities removed - use alchemy's built-in state store instead
 // Access via: alchemyScope.state.all(), alchemyScope.state.get(id), etc.
