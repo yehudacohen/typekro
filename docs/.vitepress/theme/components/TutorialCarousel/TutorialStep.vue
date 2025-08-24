@@ -207,7 +207,7 @@ onMounted(() => {
 
 .step-content {
   display: grid;
-  grid-template-columns: 1.6fr 1fr;
+  grid-template-columns: 7fr 3fr;
   gap: 2.5rem;
   flex: 1;
   height: 100%;

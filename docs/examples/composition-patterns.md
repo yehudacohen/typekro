@@ -472,4 +472,4 @@ writeFileSync('k8s/prod-platform-instance.yaml', prodInstanceYaml);
 - **[Imperative Composition Guide](../guide/imperative-composition.md)** - Deep dive into composition patterns
 - **[CEL Expressions](../guide/cel-expressions.md)** - Advanced status logic
 - **[Deployment Strategies](../guide/deployment/)** - Different ways to deploy compositions
-- **[Testing Guide](../guide/testing.md)** - How to test complex compositions
+- **[Custom Factory Functions](../guide/custom-factories.md)** - Build your own factories
