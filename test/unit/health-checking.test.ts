@@ -55,7 +55,10 @@ describe('Health Checking with Readiness Evaluators', () => {
         spec: TestSpecSchema,
         status: TestStatusSchema,
       },
-      {}
+      (schema, resources) => ({
+        ready: true,
+        url: 'http://test-service',
+      })
     );
   });
 

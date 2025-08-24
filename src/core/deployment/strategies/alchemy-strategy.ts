@@ -8,7 +8,7 @@
 import { getComponentLogger } from '../../logging/index.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import type { DeploymentResult, FactoryOptions, ResourceGraph } from '../../types/deployment.js';
-import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
+import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../../types/serialization.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
 import type { Scope } from '../../types/serialization.js';
 import { BaseDeploymentStrategy, type DeploymentStrategy } from './base-strategy.js';
@@ -58,17 +58,19 @@ export class AlchemyDeploymentStrategy<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
 > extends BaseDeploymentStrategy<TSpec, TStatus> {
-  private logger = getComponentLogger('alchemy-deployment-strategy');
+  protected readonly alchemyLogger = getComponentLogger('alchemy-deployment-strategy');
 
   constructor(
     factoryName: string,
     namespace: string,
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined,
+    resourceKeys: Record<string, KubernetesResource> | undefined,
     factoryOptions: FactoryOptions,
     private alchemyScope: Scope,
     private baseStrategy: DeploymentStrategy<TSpec, TStatus>
   ) {
-    super(factoryName, namespace, schemaDefinition, factoryOptions);
+    super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
   }
 
   /**
@@ -202,8 +204,8 @@ export class AlchemyDeploymentStrategy<
                 deploymentStrategy: 'direct' as const,
                 kubeConfigOptions,
                 options: {
-                  waitForReady: this.factoryOptions.waitForReady ?? true,
-                  timeout: this.factoryOptions.timeout ?? 300000,
+                  waitForReady: this.factoryOptions.waitForReady ?? false, // Default to false for faster tests
+                  timeout: this.factoryOptions.timeout ?? 30000, // Default to 30 seconds instead of 5 minutes
                 },
               });
 

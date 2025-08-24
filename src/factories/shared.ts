@@ -5,6 +5,7 @@
  * across all factory modules for creating Kubernetes resources.
  */
 
+import { AsyncLocalStorage } from 'async_hooks';
 import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
 import { getComponentLogger } from '../core/logging/index.js';
@@ -24,6 +25,112 @@ const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
 
 // Logger for debug mode
 const debugLogger = getComponentLogger('factory-proxy');
+
+// =============================================================================
+// COMPOSITION CONTEXT INFRASTRUCTURE
+// =============================================================================
+
+/**
+ * Context for imperative composition pattern
+ * Tracks resources and deployment closures created during composition function execution
+ */
+export interface CompositionContext {
+  /** Map of resource ID to Enhanced resource */
+  resources: Record<string, Enhanced<any, any>>;
+  /** Map of closure ID to deployment closure */
+  closures: Record<string, any>; // Using 'any' to avoid circular dependency with DeploymentClosure
+  /** Counter for generating unique resource IDs */
+  resourceCounter: number;
+  /** Counter for generating unique closure IDs */
+  closureCounter: number;
+  /** Add a resource to the context */
+  addResource(id: string, resource: Enhanced<any, any>): void;
+  /** Add a deployment closure to the context */
+  addClosure(id: string, closure: any): void;
+  /** Generate a unique resource ID */
+  generateResourceId(kind: string, name?: string): string;
+  /** Generate a unique closure ID */
+  generateClosureId(name?: string): string;
+}
+
+/**
+ * AsyncLocalStorage for composition context
+ * Enables context-aware resource registration across async boundaries
+ */
+const COMPOSITION_CONTEXT = new AsyncLocalStorage<CompositionContext>();
+
+/**
+ * Get the current composition context if one is active
+ * @returns The active composition context or undefined if not in composition
+ */
+export function getCurrentCompositionContext(): CompositionContext | undefined {
+  return COMPOSITION_CONTEXT.getStore();
+}
+
+/**
+ * Run a function with a composition context
+ * @param context The composition context to use
+ * @param fn The function to run with the context
+ * @returns The result of the function
+ */
+export function runWithCompositionContext<T>(
+  context: CompositionContext,
+  fn: () => T
+): T {
+  return COMPOSITION_CONTEXT.run(context, fn);
+}
+
+/**
+ * Generic deployment closure registration wrapper
+ * Automatically registers any deployment closure with the active composition context
+ * 
+ * @param closureFactory Function that creates the deployment closure
+ * @param name Optional name for the closure (used for ID generation)
+ * @returns The deployment closure, registered with context if active
+ */
+export function registerDeploymentClosure<T>(
+  closureFactory: () => T,
+  name?: string
+): T {
+  const context = getCurrentCompositionContext();
+  
+  if (context) {
+    const closure = closureFactory();
+    const closureId = context.generateClosureId(name);
+    context.addClosure(closureId, closure);
+    return closure;
+  }
+  
+  // Outside composition context - return closure as-is
+  return closureFactory();
+}
+
+/**
+ * Create a new composition context with default implementations
+ * @param name Optional name for the composition (used in ID generation)
+ * @returns A new composition context
+ */
+export function createCompositionContext(name?: string): CompositionContext {
+  return {
+    resources: {},
+    closures: {},
+    resourceCounter: 0,
+    closureCounter: 0,
+    addResource(id: string, resource: Enhanced<any, any>) {
+      this.resources[id] = resource;
+    },
+    addClosure(id: string, closure: any) {
+      this.closures[id] = closure;
+    },
+    generateResourceId(kind: string, resourceName?: string) {
+      return resourceName || `${kind.toLowerCase()}-${++this.resourceCounter}`;
+    },
+    generateClosureId(closureName?: string) {
+      const prefix = name ? `${name}-` : '';
+      return closureName ? `${prefix}${closureName}` : `${prefix}closure-${++this.closureCounter}`;
+    }
+  };
+}
 
 // =============================================================================
 // PROXY ENGINE & BASE FACTORY
@@ -353,6 +460,12 @@ export function createResource<TSpec extends object, TStatus extends object>(
   }
 
   const enhanced = createGenericProxyResource(resourceId, resource);
+
+  // Auto-register with composition context if active
+  const context = getCurrentCompositionContext();
+  if (context) {
+    context.addResource(resourceId, enhanced);
+  }
 
   // Always provide a readiness evaluator for factory-created resources
   const defaultEvaluator = createDefaultReadinessEvaluator(resource.kind);

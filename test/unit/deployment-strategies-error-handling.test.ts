@@ -99,7 +99,9 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
           spec: type({ name: 'string' }),
           status: type({ status: 'string' }),
         },
-        {},
+        undefined, // statusBuilder
+        undefined, // resourceKeys
+        {}, // factoryOptions
         mockDeploymentEngine,
         mockResourceResolver
       );
@@ -178,7 +180,7 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
           spec: type({ name: 'string' }),
           status: type({ status: 'string' }),
         },
-        {},
+        {}, // factoryOptions
         mockKroEngine,
         {}, // resources
         {} // statusMappings
@@ -228,7 +230,7 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
           spec: type({ name: 'string' }),
           status: type({ status: 'string' }),
         },
-        {},
+        {}, // factoryOptions
         failingKroEngine,
         {}, // resources
         {} // statusMappings
@@ -252,7 +254,9 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
           spec: type({ name: 'string' }),
           status: type({ status: 'string' }),
         },
-        {},
+        undefined, // statusBuilder
+        undefined, // resourceKeys
+        {}, // factoryOptions
         mockDeploymentEngine,
         mockResourceResolver
       );

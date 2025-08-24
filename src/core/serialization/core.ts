@@ -229,15 +229,16 @@ function createTypedResourceGraph<
     // Store closures for access during factory creation
     closures,
 
-    async factory<TMode extends 'kro' | 'direct'>(
+    factory<TMode extends 'kro' | 'direct'>(
       mode: TMode,
       factoryOptions?: FactoryOptions
-    ): Promise<FactoryForMode<TMode, TSpec, TStatus>> {
+    ): FactoryForMode<TMode, TSpec, TStatus> {
       if (mode === 'direct') {
         const directFactory = createDirectResourceFactory<TSpec, TStatus>(
           definition.name,
           resourcesWithKeys,
           schemaDefinition,
+          statusBuilder,
           { ...factoryOptions, closures } // Pass closures to factory
         );
         return directFactory as FactoryForMode<TMode, TSpec, TStatus>;

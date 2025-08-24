@@ -195,7 +195,7 @@ describe('HelmRepository Factory', () => {
       const enhanced = helmRepository(config);
 
       // The factory doesn't throw but creates resource with undefined name
-      expect(enhanced.metadata.name).toBe(undefined);
+      expect(enhanced.metadata.name).toBeUndefined();
       expect(enhanced.spec.url).toBe(config.url);
     });
 
@@ -205,7 +205,7 @@ describe('HelmRepository Factory', () => {
 
       // The factory doesn't throw but creates resource with undefined url
       expect(enhanced.metadata.name).toBe('testRepo');
-      expect(enhanced.spec.url).toBe(undefined);
+      expect(enhanced.spec.url).toBeUndefined();
     });
   });
 
@@ -225,8 +225,8 @@ describe('HelmRepository Factory', () => {
 
       // These should compile without type errors
       expect(result.spec.url).toBe(config.url);
-      expect(result.spec.interval).toBe(config.interval);
-      expect(result.spec.type).toBe(config.type);
+      expect(result.spec.interval).toBe(config.interval as any);
+      expect(result.spec.type).toBe(config.type as any);
     });
   });
 });

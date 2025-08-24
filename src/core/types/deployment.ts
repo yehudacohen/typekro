@@ -193,7 +193,7 @@ export interface TypedResourceGraph<
   factory<TMode extends 'kro' | 'direct'>(
     mode: TMode,
     options?: FactoryOptions
-  ): Promise<FactoryForMode<TMode, TSpec, TStatus>>;
+  ): FactoryForMode<TMode, TSpec, TStatus>;
 
   // Utility methods
   toYaml(): string;
@@ -380,4 +380,5 @@ export interface ResolutionContext {
   timeout?: number;
   cache?: Map<string, unknown>;
   deploymentId?: string;
+  resourceKeyMapping?: Map<string, unknown>;
 }

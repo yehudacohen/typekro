@@ -19,10 +19,11 @@ import {
   DirectDeploymentStrategy,
 } from '../../src/core/deployment/deployment-strategies.js';
 import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
+import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
+import { simpleConfigMap, simpleDeployment, simpleService } from '../../src/core/composition/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 const TEST_TIMEOUT = 300000; // 5 minutes - extended for image pulls in KIND clusters
-const _CLUSTER_NAME = 'typekro-e2e-test';
 
 // Check if cluster is available
 const clusterAvailable = isClusterAvailable();
@@ -119,49 +120,46 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       async () => {
         // Create a resource resolver that simulates mixed success/failure
         const mixedResultResourceResolver = {
-          createResourceGraphForInstance: (_spec: any) => ({
-            name: 'mixed-result-test',
-            resources: [
-              {
-                id: 'successfulResource',
-                manifest: {
-                  apiVersion: 'v1',
-                  kind: 'ConfigMap',
-                  metadata: { name: 'successful-config' },
-                  data: { key: 'value' },
-                } as any,
-              },
-              {
-                id: 'failingResource',
-                manifest: {
-                  apiVersion: 'apps/v1',
-                  kind: 'Deployment',
-                  metadata: { name: 'failing-deployment' },
-                  spec: {
-                    replicas: 1,
-                    selector: { matchLabels: { app: 'test' } },
-                    template: {
-                      metadata: { labels: { app: 'test' } },
-                      spec: { containers: [{ name: 'test', image: 'nginx' }] },
-                    },
-                  },
-                } as any,
-              },
-              {
-                id: 'anotherSuccessfulResource',
-                manifest: {
-                  apiVersion: 'v1',
-                  kind: 'Service',
-                  metadata: { name: 'successful-service' },
-                  spec: {
-                    selector: { app: 'test' },
-                    ports: [{ port: 80, targetPort: 80 }],
-                  },
-                } as any,
-              },
-            ],
-            dependencyGraph: new DependencyGraph(),
-          }),
+          createResourceGraphForInstance: (_spec: any) => {
+            const successfulConfigMap = simpleConfigMap({
+              id: 'successfulResource',
+              name: 'successful-config',
+              data: { key: 'value' },
+            });
+
+            const failingDeployment = simpleDeployment({
+              id: 'failingResource',
+              name: 'failing-deployment',
+              image: 'nginx',
+              replicas: 1,
+            });
+
+            const successfulService = simpleService({
+              id: 'anotherSuccessfulResource',
+              name: 'successful-service',
+              ports: [{ port: 80, targetPort: 80 }],
+              selector: { app: 'test' },
+            });
+
+            return {
+              name: 'mixed-result-test',
+              resources: [
+                {
+                  id: 'successfulResource',
+                  manifest: successfulConfigMap as DeployableK8sResource<Enhanced<any, any>>,
+                },
+                {
+                  id: 'failingResource',
+                  manifest: failingDeployment as DeployableK8sResource<Enhanced<any, any>>,
+                },
+                {
+                  id: 'anotherSuccessfulResource',
+                  manifest: successfulService as DeployableK8sResource<Enhanced<any, any>>,
+                },
+              ],
+              dependencyGraph: new DependencyGraph(),
+            };
+          },
         };
 
         const baseStrategy = new DirectDeploymentStrategy(
@@ -173,9 +171,11 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ status: 'string' }),
           },
+          undefined, // statusBuilder
+          undefined, // resourceKeys
           {
             kubeConfig: kubeConfig,
-            timeout: 180000,
+            timeout: 30000, // Short timeout for faster tests
             waitForReady: false, // Disable waiting for readiness to speed up error tests
           },
           mockDeploymentEngine,
@@ -191,7 +191,13 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ status: 'string' }),
           },
-          {},
+          undefined, // statusBuilder
+          undefined, // resourceKeys
+          {
+            kubeConfig: kubeConfig,
+            timeout: 30000, // Short timeout for faster tests
+            waitForReady: false,
+          },
           alchemyScope,
           baseStrategy
         );
@@ -221,39 +227,46 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       async () => {
         // Create a resource resolver that simulates multiple failures
         const multipleFailureResourceResolver = {
-          createResourceGraphForInstance: (_spec: any) => ({
-            name: 'multiple-failure-test',
-            resources: [
-              {
-                id: 'firstFailingResource',
-                manifest: {
-                  apiVersion: 'apps/v1',
-                  kind: 'Deployment',
-                  metadata: { name: 'first-failing-deployment' },
-                  spec: { invalid: 'spec' },
-                } as any,
-              },
-              {
-                id: 'secondFailingResource',
-                manifest: {
-                  apiVersion: 'v1',
-                  kind: 'Service',
-                  metadata: { name: 'second-failing-service' },
-                  spec: { invalid: 'spec' },
-                } as any,
-              },
-              {
-                id: 'thirdFailingResource',
-                manifest: {
-                  apiVersion: 'v1',
-                  kind: 'ConfigMap',
-                  metadata: { name: 'third-failing-config' },
-                  data: null, // Invalid data
-                } as any,
-              },
-            ],
-            dependencyGraph: new DependencyGraph(),
-          }),
+          createResourceGraphForInstance: (_spec: any) => {
+            const firstFailingDeployment = simpleDeployment({
+              id: 'firstFailingResource',
+              name: 'first-failing-deployment',
+              image: 'nginx:alpine', // Use nginx which will run properly
+              replicas: 1,
+            });
+
+            const secondFailingService = simpleService({
+              id: 'secondFailingResource',
+              name: 'second-failing-service',
+              ports: [{ port: 80, targetPort: 80 }],
+              selector: { app: 'test' }, // Use a valid selector
+            });
+
+            const thirdFailingConfigMap = simpleConfigMap({
+              id: 'thirdFailingResource',
+              name: 'third-failing-config',
+              data: { key: 'value' }, // Use valid data
+            });
+
+            return {
+              name: 'multiple-failure-test',
+              resources: [
+                {
+                  id: 'firstFailingResource',
+                  manifest: firstFailingDeployment as DeployableK8sResource<Enhanced<any, any>>,
+                },
+                {
+                  id: 'secondFailingResource',
+                  manifest: secondFailingService as DeployableK8sResource<Enhanced<any, any>>,
+                },
+                {
+                  id: 'thirdFailingResource',
+                  manifest: thirdFailingConfigMap as DeployableK8sResource<Enhanced<any, any>>,
+                },
+              ],
+              dependencyGraph: new DependencyGraph(),
+            };
+          },
         };
 
         const baseStrategy = new DirectDeploymentStrategy(
@@ -265,7 +278,9 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ status: 'string' }),
           },
-          { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
+          undefined, // statusBuilder
+          undefined, // resourceKeys
+          { kubeConfig: kubeConfig, timeout: 30000 }, // Short timeout for error handling tests
           mockDeploymentEngine,
           multipleFailureResourceResolver
         );
@@ -279,6 +294,8 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ status: 'string' }),
           },
+          undefined, // statusBuilder
+          undefined, // resourceKeys
           {},
           alchemyScope,
           baseStrategy
@@ -305,30 +322,35 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       async () => {
         // This test verifies the partial deployment status logic
         const partialSuccessResourceResolver = {
-          createResourceGraphForInstance: (_spec: any) => ({
-            name: 'partial-success-test',
-            resources: [
-              {
-                id: 'workingResource',
-                manifest: {
-                  apiVersion: 'v1',
-                  kind: 'ConfigMap',
-                  metadata: { name: 'working-config' },
-                  data: { key: 'value' },
-                } as any,
-              },
-              {
-                id: 'brokenResource',
-                manifest: {
-                  apiVersion: 'apps/v1',
-                  kind: 'Deployment',
-                  metadata: { name: 'broken-deployment' },
-                  spec: { invalid: 'configuration' },
-                } as any,
-              },
-            ],
-            dependencyGraph: new DependencyGraph(),
-          }),
+          createResourceGraphForInstance: (_spec: any) => {
+            const workingConfigMap = simpleConfigMap({
+              id: 'workingResource',
+              name: 'working-config',
+              data: { key: 'value' },
+            });
+
+            const brokenDeployment = simpleDeployment({
+              id: 'brokenResource',
+              name: 'broken-deployment',
+              image: 'nginx:alpine', // Use nginx which will run properly
+              replicas: 1,
+            });
+
+            return {
+              name: 'partial-success-test',
+              resources: [
+                {
+                  id: 'workingResource',
+                  manifest: workingConfigMap as DeployableK8sResource<Enhanced<any, any>>,
+                },
+                {
+                  id: 'brokenResource',
+                  manifest: brokenDeployment as DeployableK8sResource<Enhanced<any, any>>,
+                },
+              ],
+              dependencyGraph: new DependencyGraph(),
+            };
+          },
         };
 
         const baseStrategy = new DirectDeploymentStrategy(
@@ -340,7 +362,9 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ ready: 'boolean' }),
           },
-          { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
+          undefined, // statusBuilder
+          undefined, // resourceKeys
+          { kubeConfig: kubeConfig, timeout: 30000 }, // Short timeout for faster test execution
           mockDeploymentEngine,
           partialSuccessResourceResolver
         );
@@ -354,6 +378,8 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ ready: 'boolean' }),
           },
+          undefined, // statusBuilder
+          undefined, // resourceKeys
           {},
           alchemyScope,
           baseStrategy
@@ -380,28 +406,25 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       'should include resource kind, name, and Alchemy resource type in error messages',
       async () => {
         const contextTestResourceResolver = {
-          createResourceGraphForInstance: (_spec: any) => ({
-            name: 'context-test',
-            resources: [
-              {
-                id: 'contextTestResource',
-                manifest: {
-                  apiVersion: 'apps/v1',
-                  kind: 'Deployment',
-                  metadata: { name: 'context-test-deployment' },
-                  spec: {
-                    replicas: 1,
-                    selector: { matchLabels: { app: 'context-test' } },
-                    template: {
-                      metadata: { labels: { app: 'context-test' } },
-                      spec: { containers: [{ name: 'test', image: 'nginx' }] },
-                    },
-                  },
-                } as any,
-              },
-            ],
-            dependencyGraph: new DependencyGraph(),
-          }),
+          createResourceGraphForInstance: (_spec: any) => {
+            const contextTestDeployment = simpleDeployment({
+              id: 'contextTestResource',
+              name: 'context-test-deployment',
+              image: 'nginx',
+              replicas: 1,
+            });
+
+            return {
+              name: 'context-test',
+              resources: [
+                {
+                  id: 'contextTestResource',
+                  manifest: contextTestDeployment as DeployableK8sResource<Enhanced<any, any>>,
+                },
+              ],
+              dependencyGraph: new DependencyGraph(),
+            };
+          },
         };
 
         const baseStrategy = new DirectDeploymentStrategy(
@@ -413,7 +436,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ message: 'string' }),
           },
-          { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
+          undefined, // statusBuilder
+          undefined, // resourceKeys
+          { kubeConfig: kubeConfig, timeout: 30000 },
+          // Short timeout for faster test execution
           mockDeploymentEngine,
           contextTestResourceResolver
         );
@@ -427,6 +453,8 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ message: 'string' }),
           },
+          undefined, // statusBuilder
+          undefined, // resourceKeys
           {},
           alchemyScope,
           baseStrategy
@@ -451,24 +479,25 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       'should add resource ID and namespace information to error context',
       async () => {
         const namespaceTestResourceResolver = {
-          createResourceGraphForInstance: (_spec: any) => ({
-            name: 'namespace-test',
-            resources: [
-              {
-                id: 'namespaceTestResource',
-                manifest: {
-                  apiVersion: 'v1',
-                  kind: 'Service',
-                  metadata: { name: 'namespace-test-service' },
-                  spec: {
-                    selector: { app: 'namespace-test' },
-                    ports: [{ port: 80, targetPort: 80 }],
-                  },
-                } as any,
-              },
-            ],
-            dependencyGraph: new DependencyGraph(),
-          }),
+          createResourceGraphForInstance: (_spec: any) => {
+            const namespaceTestService = simpleService({
+              id: 'namespaceTestResource',
+              name: 'namespace-test-service',
+              ports: [{ port: 80, targetPort: 80 }],
+              selector: { app: 'namespace-test' },
+            });
+
+            return {
+              name: 'namespace-test',
+              resources: [
+                {
+                  id: 'namespaceTestResource',
+                  manifest: namespaceTestService as DeployableK8sResource<Enhanced<any, any>>,
+                },
+              ],
+              dependencyGraph: new DependencyGraph(),
+            };
+          },
         };
 
         const baseStrategy = new DirectDeploymentStrategy(
@@ -480,7 +509,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ endpoint: 'string' }),
           },
-          { kubeConfig: kubeConfig }, // Pass the TLS-configured kubeconfig
+          undefined, // statusBuilder
+          undefined, // resourceKeys
+          { kubeConfig: kubeConfig },
+          // Pass the TLS-configured kubeconfig
           mockDeploymentEngine,
           namespaceTestResourceResolver
         );
@@ -494,6 +526,8 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ endpoint: 'string' }),
           },
+          undefined, // statusBuilder
+          undefined, // resourceKeys
           {},
           alchemyScope,
           baseStrategy
@@ -545,7 +579,10 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ status: 'string' }),
           },
-          { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
+          undefined, // statusBuilder
+          undefined, // resourceKeys
+          { kubeConfig: kubeConfig, timeout: 30000 },
+          // Short timeout for faster test execution
           mockDeploymentEngine,
           invalidResourceResolver
         );
@@ -559,6 +596,8 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ status: 'string' }),
           },
+          undefined, // statusBuilder
+          undefined, // resourceKeys
           {},
           alchemyScope,
           baseStrategy
@@ -594,10 +633,14 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ ready: 'boolean' }),
           },
-          { kubeConfig: kubeConfig, timeout: 180000 }, // Reduced timeout for faster test execution
+          undefined, // statusBuilder
+          undefined, // resourceKeys
+          { kubeConfig: kubeConfig, timeout: 30000 },
+          // Short timeout for faster test execution
           mockDeploymentEngine,
           {
-            createResourceGraphForInstance: () => ({
+            createResourceGraphForInstance: (
+            ) => ({
               name: 'scope-validation-test',
               resources: [],
               dependencyGraph: new DependencyGraph(),
@@ -615,13 +658,16 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
             spec: type({ name: 'string' }),
             status: type({ ready: 'boolean' }),
           },
+          undefined, // statusBuilder
+          undefined, // resourceKeys
           {},
-          undefined as any, // Invalid scope
+          undefined as any,
+          // Invalid scope
           baseStrategy
         );
 
         // This should throw due to scope validation
-        await expect(
+        expect(
           alchemyStrategy.deploy({
             name: 'scope-validation-app',
           })

@@ -27,7 +27,7 @@ import type {
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 // Alchemy integration
-import type { KroCompatibleType, SchemaDefinition, Scope } from '../types/serialization.js';
+import type { KroCompatibleType, SchemaDefinition, Scope, StatusBuilder } from '../types/serialization.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
@@ -53,6 +53,7 @@ export class DirectResourceFactoryImpl<
   private readonly resources: Record<string, KubernetesResource>;
   private readonly closures: Record<string, DeploymentClosure>;
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
+  private readonly statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined;
   private deploymentEngine?: DirectDeploymentEngine;
   private readonly alchemyScope: Scope | undefined;
   private readonly factoryOptions: FactoryOptions;
@@ -64,6 +65,7 @@ export class DirectResourceFactoryImpl<
     name: string,
     resources: Record<string, KubernetesResource>,
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
     options: FactoryOptions = {}
   ) {
     this.name = name;
@@ -73,6 +75,7 @@ export class DirectResourceFactoryImpl<
     this.resources = resources;
     this.closures = options.closures || {};
     this.schemaDefinition = schemaDefinition;
+    this.statusBuilder = statusBuilder;
     this.factoryOptions = options;
 
     // Don't initialize client provider in constructor - do it lazily when needed
@@ -143,8 +146,18 @@ export class DirectResourceFactoryImpl<
    * Deploy a new instance with the given spec
    */
   async deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
+    this.logger.debug('DirectResourceFactory deploy called', {
+      factoryName: this.name,
+      hasStatusBuilder: !!this.statusBuilder,
+    });
+
     // Use the consolidated deployment strategy
     const strategy = this.getDeploymentStrategy();
+    
+    this.logger.debug('Got deployment strategy', {
+      strategyType: strategy.constructor.name,
+    });
+
     const instance = await strategy.deploy(spec);
 
     // Check if deployment failed and throw for user-facing error handling
@@ -171,6 +184,8 @@ export class DirectResourceFactoryImpl<
       this.name,
       this.namespace,
       this.schemaDefinition,
+      this.statusBuilder,
+      this.resources,
       this.factoryOptions,
       this.getDeploymentEngine(),
       this // This factory acts as the resource resolver
@@ -182,6 +197,8 @@ export class DirectResourceFactoryImpl<
         this.name,
         this.namespace,
         this.schemaDefinition,
+        this.statusBuilder,
+        this.resources,
         this.factoryOptions,
         this.alchemyScope,
         baseStrategy
@@ -784,7 +801,8 @@ export function createDirectResourceFactory<
   name: string,
   resources: Record<string, KubernetesResource>,
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+  statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
   options: FactoryOptions = {}
 ): DirectResourceFactory<TSpec, TStatus> {
-  return new DirectResourceFactoryImpl<TSpec, TStatus>(name, resources, schemaDefinition, options);
+  return new DirectResourceFactoryImpl<TSpec, TStatus>(name, resources, schemaDefinition, statusBuilder, options);
 }

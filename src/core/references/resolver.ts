@@ -349,9 +349,18 @@ export class ReferenceResolver {
       // Build the resources map for CEL evaluation
       const resourcesMap = new Map<string, unknown>();
 
-      // Add deployed resources to the map
-      for (const deployedResource of context.deployedResources) {
-        resourcesMap.set(deployedResource.id, deployedResource.manifest);
+      // If we have a resource key mapping, use it to map original keys to resources
+      if (context.resourceKeyMapping && context.resourceKeyMapping.size > 0) {
+        // Use the resource key mapping to provide resources with their original keys
+        for (const [originalKey, resource] of context.resourceKeyMapping) {
+          resourcesMap.set(originalKey, resource);
+
+        }
+      } else {
+        // Fallback to using deployed resource IDs
+        for (const deployedResource of context.deployedResources) {
+          resourcesMap.set(deployedResource.id, deployedResource.manifest);
+        }
       }
 
       // Create CEL evaluation context

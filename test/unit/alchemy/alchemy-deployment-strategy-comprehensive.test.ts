@@ -16,6 +16,8 @@ import type { FactoryOptions } from '../../../src/core/types/deployment.js';
 describe('AlchemyDeploymentStrategy Comprehensive', () => {
   // Test schema
   const testSchema = {
+    apiVersion: 'test.com/v1',
+    kind: 'TestResource',
     spec: type({
       name: 'string',
       replicas: 'number',
@@ -28,7 +30,6 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
   const factoryOptions: FactoryOptions = {
     waitForReady: true,
     timeout: 30000,
-    dryRun: false,
   };
 
   // Mock alchemy scope
@@ -41,7 +42,15 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
 
   // Use real DirectDeploymentStrategy as base to get more realistic behavior
   const createRealBaseStrategy = () => {
-    return new DirectDeploymentStrategy('test-factory', 'default', testSchema, factoryOptions);
+    const mockEngine = {} as any; // Mock DirectDeploymentEngine
+    const mockResolver = {
+      createResourceGraphForInstance: mock(() => ({ 
+        name: 'test-graph',
+        resources: [],
+        dependencyGraph: {} as any
+      }))
+    };
+    return new DirectDeploymentStrategy('test-factory', 'default', testSchema, undefined, undefined, factoryOptions, mockEngine, mockResolver);
   };
 
   let mockAlchemyScope: ReturnType<typeof createMockAlchemyScope>;
@@ -56,6 +65,8 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       'test-factory',
       'default',
       testSchema,
+      undefined, // statusBuilder
+      undefined, // resourceKeys
       factoryOptions,
       mockAlchemyScope as any,
       baseStrategy
@@ -73,6 +84,8 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
         'custom-factory',
         'kube-system',
         testSchema,
+        undefined, // statusBuilder
+        undefined, // resourceKeys
         factoryOptions,
         mockAlchemyScope as any,
         baseStrategy
@@ -93,6 +106,8 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
         'test-factory',
         'default',
         testSchema,
+        undefined, // statusBuilder
+        undefined, // resourceKeys
         factoryOptions,
         null as any,
         baseStrategy
@@ -101,7 +116,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       // Strategy should throw on validation failure
-      await expect(invalidStrategy.executeDeployment(spec, 'test-instance')).rejects.toThrow(
+      await expect((invalidStrategy as any).executeDeployment(spec, 'test-instance')).rejects.toThrow(
         'Alchemy deployment: Alchemy scope is required for alchemy deployment'
       );
     });
@@ -113,6 +128,8 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
         'test-factory',
         'default',
         testSchema,
+        undefined, // statusBuilder
+        undefined, // resourceKeys
         factoryOptions,
         invalidScope,
         baseStrategy
@@ -121,7 +138,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       // Alchemy scope without run function should fail validation
-      await expect(invalidStrategy.executeDeployment(spec, 'test-instance')).rejects.toThrow(
+      await expect((invalidStrategy as any).executeDeployment(spec, 'test-instance')).rejects.toThrow(
         'Alchemy deployment: Alchemy scope is invalid (missing run function)'
       );
     });
@@ -131,7 +148,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
     it('should execute deployment and return structured result', async () => {
       const spec = { name: 'test-app', replicas: 2 };
 
-      const result = await strategy.executeDeployment(spec, 'test-instance');
+      const result = await (strategy as any).executeDeployment(spec, 'test-instance');
 
       // Verify result structure
       expect(result).toBeDefined();
@@ -153,7 +170,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
         replicas: 5,
       };
 
-      const result = await strategy.executeDeployment(complexSpec, 'complex-instance');
+      const result = await (strategy as any).executeDeployment(complexSpec, 'complex-instance');
 
       expect(result).toBeDefined();
       expect(result.duration).toBeGreaterThanOrEqual(0);
@@ -162,8 +179,8 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
     it('should handle different instance names', async () => {
       const spec = { name: 'test-app', replicas: 1 };
 
-      const result1 = await strategy.executeDeployment(spec, 'instance-1');
-      const result2 = await strategy.executeDeployment(spec, 'instance-2');
+      const result1 = await (strategy as any).executeDeployment(spec, 'instance-1');
+      const result2 = await (strategy as any).executeDeployment(spec, 'instance-2');
 
       expect(result1).toBeDefined();
       expect(result2).toBeDefined();
@@ -230,7 +247,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       // The strategy is designed to be resilient
       const spec = { name: 'resilient-app', replicas: 1 };
 
-      const result = await strategy.executeDeployment(spec, 'resilient-instance');
+      const result = await (strategy as any).executeDeployment(spec, 'resilient-instance');
 
       // Should complete with some status, not throw
       expect(result).toBeDefined();
@@ -240,7 +257,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
     it('should collect errors without stopping deployment', async () => {
       const spec = { name: 'error-app', replicas: 1 };
 
-      const result = await strategy.executeDeployment(spec, 'error-instance');
+      const result = await (strategy as any).executeDeployment(spec, 'error-instance');
 
       // Should have error collection mechanism
       expect(result.errors).toBeDefined();
@@ -252,7 +269,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
     it('should handle alchemy scope run execution', async () => {
       const spec = { name: 'scope-app', replicas: 1 };
 
-      const result = await strategy.executeDeployment(spec, 'scope-instance');
+      const result = await (strategy as any).executeDeployment(spec, 'scope-instance');
 
       // With empty resource graph from base strategy, alchemy scope run is not called
       // This is expected behavior when there are no resources to deploy
@@ -265,7 +282,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       // The strategy tries to import alchemy deployment functions
       const spec = { name: 'import-app', replicas: 1 };
 
-      const result = await strategy.executeDeployment(spec, 'import-instance');
+      const result = await (strategy as any).executeDeployment(spec, 'import-instance');
 
       // Should handle import failures and return a result
       expect(result).toBeDefined();
@@ -290,7 +307,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       const spec = { name: 'perf-app', replicas: 1 };
       const startTime = Date.now();
 
-      const result = await strategy.executeDeployment(spec, 'perf-instance');
+      const result = await (strategy as any).executeDeployment(spec, 'perf-instance');
       const duration = Date.now() - startTime;
 
       expect(result).toBeDefined();
@@ -302,9 +319,9 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       const spec = { name: 'parallel-app', replicas: 1 };
 
       const deployments = [
-        strategy.executeDeployment(spec, 'parallel-1'),
-        strategy.executeDeployment(spec, 'parallel-2'),
-        strategy.executeDeployment(spec, 'parallel-3'),
+        (strategy as any).executeDeployment(spec, 'parallel-1'),
+        (strategy as any).executeDeployment(spec, 'parallel-2'),
+        (strategy as any).executeDeployment(spec, 'parallel-3'),
       ];
 
       const results = await Promise.all(deployments);
@@ -341,7 +358,7 @@ describe('AlchemyDeploymentStrategy Comprehensive', () => {
       const spec = { name: 'logging-app', replicas: 1 };
 
       // The strategy provides extensive logging as seen in the output
-      const result = await strategy.executeDeployment(spec, 'logging-instance');
+      const result = await (strategy as any).executeDeployment(spec, 'logging-instance');
 
       expect(result).toBeDefined();
       // Logging is verified through the test output
