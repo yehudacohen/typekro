@@ -5,7 +5,7 @@
  * across all factory modules for creating Kubernetes resources.
  */
 
-import { AsyncLocalStorage } from 'async_hooks';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
 import { getComponentLogger } from '../core/logging/index.js';
@@ -73,34 +73,28 @@ export function getCurrentCompositionContext(): CompositionContext | undefined {
  * @param fn The function to run with the context
  * @returns The result of the function
  */
-export function runWithCompositionContext<T>(
-  context: CompositionContext,
-  fn: () => T
-): T {
+export function runWithCompositionContext<T>(context: CompositionContext, fn: () => T): T {
   return COMPOSITION_CONTEXT.run(context, fn);
 }
 
 /**
  * Generic deployment closure registration wrapper
  * Automatically registers any deployment closure with the active composition context
- * 
+ *
  * @param closureFactory Function that creates the deployment closure
  * @param name Optional name for the closure (used for ID generation)
  * @returns The deployment closure, registered with context if active
  */
-export function registerDeploymentClosure<T>(
-  closureFactory: () => T,
-  name?: string
-): T {
+export function registerDeploymentClosure<T>(closureFactory: () => T, name?: string): T {
   const context = getCurrentCompositionContext();
-  
+
   if (context) {
     const closure = closureFactory();
     const closureId = context.generateClosureId(name);
     context.addClosure(closureId, closure);
     return closure;
   }
-  
+
   // Outside composition context - return closure as-is
   return closureFactory();
 }
@@ -128,7 +122,7 @@ export function createCompositionContext(name?: string): CompositionContext {
     generateClosureId(closureName?: string) {
       const prefix = name ? `${name}-` : '';
       return closureName ? `${prefix}${closureName}` : `${prefix}closure-${++this.closureCounter}`;
-    }
+    },
   };
 }
 

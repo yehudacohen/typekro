@@ -163,9 +163,9 @@ describe('AlchemyDeploymentStrategy', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       // Should throw due to invalid scope
-      await expect((invalidStrategy as any).executeDeployment(spec, 'test-instance')).rejects.toThrow(
-        'Alchemy deployment: Alchemy scope is required for alchemy deployment'
-      );
+      await expect(
+        (invalidStrategy as any).executeDeployment(spec, 'test-instance')
+      ).rejects.toThrow('Alchemy deployment: Alchemy scope is required for alchemy deployment');
     });
 
     it('should create resource graph from base strategy', async () => {
@@ -312,7 +312,9 @@ describe('AlchemyDeploymentStrategy', () => {
 
       const spec = { name: 'test-app', replicas: 1 };
 
-      await expect((invalidStrategy as any).executeDeployment(spec, 'test-instance')).rejects.toThrow();
+      await expect(
+        (invalidStrategy as any).executeDeployment(spec, 'test-instance')
+      ).rejects.toThrow();
     });
 
     it('should handle resource graph creation errors', async () => {

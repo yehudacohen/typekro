@@ -83,7 +83,11 @@ Because nobody likes YAML and Kubernetes dependencies are hard. TypeKro provides
 - **🎯 CEL Expressions**: Use Google's Common Expression Language for dynamic resource configuration
 - **🔧 GitOps Native**: Generates standard Kubernetes YAML that works with any GitOps workflow
 
-TypeKro works in **Direct Mode** (no KRO required) for simple deployments, or **KRO Mode** for advanced orchestration with runtime dependencies.
+TypeKro offers two composition patterns:
+- **Imperative Composition** (`kubernetesComposition`): Natural, single-function approach
+- **Declarative Alternative** (`toResourceGraph`): Explicit resource/status builders
+
+Both work in **Direct Mode** (no KRO required) for simple deployments, or **KRO Mode** for advanced orchestration with runtime dependencies.
 
 **Learn more:** [KRO Documentation →](https://kro.run/)
 

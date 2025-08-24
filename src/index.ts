@@ -20,6 +20,18 @@ export {
   KroTypeKroDeployer,
 } from './alchemy/deployment.js';
 // =============================================================================
+// IMPERATIVE COMPOSITION PATTERN
+// =============================================================================
+// New imperative composition API
+export {
+  clearCompositionDebugLogs,
+  disableCompositionDebugging,
+  enableCompositionDebugging,
+  getCompositionDebugLogs,
+  kubernetesComposition,
+} from './core/composition/imperative.js';
+export type { CompositionFactory } from './core/types/serialization.js';
+// =============================================================================
 // CORE FUNCTIONALITY
 // =============================================================================
 // Export all core functionality (excluding createResource to avoid conflicts with factories)
@@ -28,10 +40,9 @@ export {
   type CelExpression,
   // Error types
   CircularDependencyError,
+  CompositionDebugger,
   CompositionExecutionError,
   ContextRegistrationError,
-  CompositionDebugger,
-  UnsupportedPatternDetector,
   // Logging functionality
   createContextLogger,
   createLogger,
@@ -87,21 +98,9 @@ export {
   TypeKroError,
   type TypeKroLogger,
   toResourceGraph,
+  UnsupportedPatternDetector,
   validateResourceGraph,
 } from './core.js';
-
-// =============================================================================
-// IMPERATIVE COMPOSITION PATTERN
-// =============================================================================
-// New imperative composition API
-export { 
-  kubernetesComposition,
-  enableCompositionDebugging,
-  disableCompositionDebugging,
-  getCompositionDebugLogs,
-  clearCompositionDebugLogs
-} from './core/composition/imperative.js';
-export type { CompositionFactory } from './core/types/serialization.js';
 
 // Alchemy state inspection utilities removed - use alchemy's built-in state store instead
 // Access via: alchemyScope.state.all(), alchemyScope.state.get(id), etc.

@@ -1,9 +1,9 @@
 /**
- * Basic web application example using the new TypeKro API with separate ResourceBuilder and StatusBuilder
+ * Basic web application example using TypeKro's imperative composition pattern
  */
 
 import { type } from 'arktype';
-import { simpleDeployment, simpleJob, toResourceGraph } from '../src/index.js';
+import { kubernetesComposition, simpleDeployment, simpleJob, simpleService, Cel } from '../src/index.js';
 
 // Define the schema for our WebApp stack
 const WebAppSpecSchema = type({
@@ -22,8 +22,8 @@ const WebAppStatusSchema = type({
   url: 'string',
 });
 
-// Create the resource graph using the new API
-const webappGraph = toResourceGraph(
+// Create the resource graph using imperative composition
+const webappGraph = kubernetesComposition(
   {
     name: 'webapp-stack',
     apiVersion: 'example.com/v1alpha1',
@@ -31,11 +31,11 @@ const webappGraph = toResourceGraph(
     spec: WebAppSpecSchema,
     status: WebAppStatusSchema,
   },
-  // ResourceBuilder function - defines the Kubernetes resources
-  (schema) => ({
-    database: simpleDeployment({
+  (spec) => {
+    // Resources auto-register when created - no explicit builders needed!
+    const database = simpleDeployment({
       name: 'postgres-db',
-      image: schema.spec.databaseImage,
+      image: spec.databaseImage,
       env: {
         POSTGRES_DB: 'webapp',
         POSTGRES_USER: 'webapp',
@@ -46,9 +46,9 @@ const webappGraph = toResourceGraph(
         requests: { cpu: '100m', memory: '256Mi' },
         limits: { cpu: '500m', memory: '512Mi' },
       },
-    }),
+    });
 
-    migration: simpleJob({
+    const migration = simpleJob({
       name: 'db-migration',
       image: 'migrate/migrate',
       command: [
@@ -61,40 +61,78 @@ const webappGraph = toResourceGraph(
       ],
       completions: 1,
       backoffLimit: 3,
-    }),
+    });
 
-    webapp: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.webImage,
-      replicas: schema.spec.replicas,
+    // Migration job is created but not referenced in status
+    void migration;
+
+    const webapp = simpleDeployment({
+      name: spec.name,
+      image: spec.webImage,
+      replicas: spec.replicas,
       env: {
         DATABASE_PORT: '5432',
-        NODE_ENV: schema.spec.environment,
+        NODE_ENV: spec.environment,
       },
       ports: [{ name: 'http', containerPort: 80, protocol: 'TCP' }],
       resources: {
         requests: { cpu: '50m', memory: '128Mi' },
         limits: { cpu: '200m', memory: '256Mi' },
       },
-    }),
-  }),
-  // StatusBuilder function - defines how status fields map to resource status
-  (_schema, resources) => ({
-    databaseReady: true, // Simple boolean value - CEL expressions are handled at serialization
-    webAppReady: true, // Simple boolean value
-    totalReplicas: resources.webapp?.spec.replicas || 0,
-    readyReplicas: resources.webapp?.status.readyReplicas || 0,
-    url: 'http://webapp.example.com', // Simple string value
-  })
+    });
+
+    const webappService = simpleService({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
+      ports: [{ port: 80, targetPort: 80 }],
+      type: 'ClusterIP'
+    });
+
+    // Return status with CEL expressions and resource references
+    return {
+      databaseReady: Cel.expr<boolean>(database.status.readyReplicas, ' > 0'),
+      webAppReady: Cel.expr<boolean>(webapp.status.readyReplicas, ' >= ', spec.replicas),
+      totalReplicas: webapp.spec.replicas,
+      readyReplicas: webapp.status.readyReplicas,
+      url: Cel.template('http://%s', webappService.status.clusterIP),
+    };
+  }
 );
 
-// Generate Kro YAML
-const kroYaml = webappGraph.toYaml();
 
-console.log(
-  'Generated Kro ResourceGraphDefinition:\n=====================================\n',
-  kroYaml
-);
 
-// Note: Resource validation would be done on actual Kubernetes resources
-console.log('\n✅ WebApp resource graph created successfully!');
+// =============================================================================
+// USAGE EXAMPLES
+// =============================================================================
+
+async function demonstrateUsage() {
+  console.log('=== TypeKro Basic WebApp Example ===\n');
+
+  console.log('1. Generate YAML:');
+  const yaml = webappGraph.toYaml();
+  console.log('Generated YAML length:', yaml.length, 'characters');
+
+  console.log('\n2. Deployment Example:');
+  try {
+    const factory = webappGraph.factory('direct', { namespace: 'development' });
+    const instance = await factory.deploy({
+      name: 'my-webapp',
+      databaseImage: 'postgres:15',
+      webImage: 'nginx:latest',
+      replicas: 2,
+      environment: 'development'
+    });
+    console.log('Deployed instance:', instance.metadata.name);
+  } catch (error) {
+    console.log('Deployment would happen with real cluster connection');
+  }
+}
+
+// Run examples if this file is executed directly
+if (import.meta.main) {
+  demonstrateUsage().catch(console.error);
+}
+
+export { webappGraph };
+
+console.log('\n✅ WebApp resource graphs created successfully!');

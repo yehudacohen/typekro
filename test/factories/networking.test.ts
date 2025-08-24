@@ -477,7 +477,9 @@ describe('Networking Factories', () => {
 
       const expressionSelectorEnhanced = networkPolicy(expressionSelectorPolicy);
       expect(expressionSelectorEnhanced.spec.podSelector.matchExpressions).toHaveLength(1);
-      expect(expressionSelectorEnhanced.spec?.podSelector?.matchExpressions?.[0]?.operator).toBe('In');
+      expect(expressionSelectorEnhanced.spec?.podSelector?.matchExpressions?.[0]?.operator).toBe(
+        'In'
+      );
     });
   });
 

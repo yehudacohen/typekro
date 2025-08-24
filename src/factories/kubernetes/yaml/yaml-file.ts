@@ -70,126 +70,123 @@ export interface YamlFileConfig {
  */
 export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResource[]> {
   // Use generic deployment closure registration for composition context support
-  return registerDeploymentClosure(
-    () => {
-      // Create the deployment closure
-      const closure = async (deploymentContext: DeploymentContext): Promise<AppliedResource[]> => {
-    const pathResolver = new PathResolver();
+  return registerDeploymentClosure(() => {
+    // Create the deployment closure
+    const closure = async (deploymentContext: DeploymentContext): Promise<AppliedResource[]> => {
+      const pathResolver = new PathResolver();
 
-    // Resolve any references in the config (e.g., namespace could reference another resource)
-    const resolvedNamespace =
-      config.namespace && isKubernetesRef(config.namespace)
-        ? await deploymentContext.resolveReference(config.namespace)
-        : config.namespace;
+      // Resolve any references in the config (e.g., namespace could reference another resource)
+      const resolvedNamespace =
+        config.namespace && isKubernetesRef(config.namespace)
+          ? await deploymentContext.resolveReference(config.namespace)
+          : config.namespace;
 
-    const resolvedContent = await pathResolver.resolveContent(config.path, config.name);
-    const manifests = parseYamlManifests(resolvedContent.content);
+      const resolvedContent = await pathResolver.resolveContent(config.path, config.name);
+      const manifests = parseYamlManifests(resolvedContent.content);
 
-    const results: AppliedResource[] = [];
-    const strategy = config.deploymentStrategy || 'replace';
+      const results: AppliedResource[] = [];
+      const strategy = config.deploymentStrategy || 'replace';
 
-    for (const manifest of manifests) {
-      if (resolvedNamespace && !manifest.metadata?.namespace) {
-        manifest.metadata = { ...manifest.metadata, namespace: resolvedNamespace as string };
-      }
-
-      try {
-        // Apply via alchemy if scope is configured, otherwise direct to Kubernetes
-        if (deploymentContext.alchemyScope) {
-          // For now, use the Kubernetes API even when alchemy scope is available
-          // TODO: Implement proper alchemy integration for YAML resources
-          if (deploymentContext.kubernetesApi) {
-            await deploymentContext.kubernetesApi.create(manifest);
-          } else {
-            throw new Error('No Kubernetes API available for YAML deployment');
-          }
-        } else if (deploymentContext.kubernetesApi) {
-          await deploymentContext.kubernetesApi.create(manifest);
-        } else {
-          throw new Error(
-            'No deployment method available: neither alchemyScope nor kubernetesApi provided'
-          );
+      for (const manifest of manifests) {
+        if (resolvedNamespace && !manifest.metadata?.namespace) {
+          manifest.metadata = { ...manifest.metadata, namespace: resolvedNamespace as string };
         }
 
-        results.push({
-          kind: manifest.kind || 'Unknown',
-          name: manifest.metadata?.name || 'unknown',
-          namespace: manifest.metadata?.namespace || undefined,
-          apiVersion: manifest.apiVersion || 'v1',
-        });
-      } catch (error: any) {
-        // Handle conflicts based on deployment strategy
-        if (error?.response?.statusCode === 409 || error?.statusCode === 409) {
-          const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
+        try {
+          // Apply via alchemy if scope is configured, otherwise direct to Kubernetes
+          if (deploymentContext.alchemyScope) {
+            // For now, use the Kubernetes API even when alchemy scope is available
+            // TODO: Implement proper alchemy integration for YAML resources
+            if (deploymentContext.kubernetesApi) {
+              await deploymentContext.kubernetesApi.create(manifest);
+            } else {
+              throw new Error('No Kubernetes API available for YAML deployment');
+            }
+          } else if (deploymentContext.kubernetesApi) {
+            await deploymentContext.kubernetesApi.create(manifest);
+          } else {
+            throw new Error(
+              'No deployment method available: neither alchemyScope nor kubernetesApi provided'
+            );
+          }
 
-          if (strategy === 'skipIfExists') {
-            console.log(`⚠️ Skipping existing resource: ${resourceName}`);
-            results.push({
-              kind: manifest.kind || 'Unknown',
-              name: manifest.metadata?.name || 'unknown',
-              namespace: manifest.metadata?.namespace || undefined,
-              apiVersion: manifest.apiVersion || 'v1',
-            });
-          } else if (strategy === 'replace') {
-            console.log(`🔄 Replacing existing resource: ${resourceName}`);
-            // Try to update/replace the resource
-            try {
-              if (deploymentContext.kubernetesApi) {
-                // Check if resource exists first
-                let existing: any;
-                try {
-                  const readResult = await deploymentContext.kubernetesApi.read({
-                    apiVersion: manifest.apiVersion,
-                    kind: manifest.kind,
-                    metadata: {
-                      name: manifest.metadata?.name || '',
-                      namespace: manifest.metadata?.namespace || 'default',
-                    },
-                  });
-                  existing = readResult.body;
-                } catch (error: any) {
-                  // If it's a 404, the resource doesn't exist
-                  if (error.statusCode !== 404) {
-                    throw error;
-                  }
-                }
+          results.push({
+            kind: manifest.kind || 'Unknown',
+            name: manifest.metadata?.name || 'unknown',
+            namespace: manifest.metadata?.namespace || undefined,
+            apiVersion: manifest.apiVersion || 'v1',
+          });
+        } catch (error: any) {
+          // Handle conflicts based on deployment strategy
+          if (error?.response?.statusCode === 409 || error?.statusCode === 409) {
+            const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
 
-                if (existing) {
-                  // Resource exists, use patch for safer updates
-                  await deploymentContext.kubernetesApi.patch(manifest);
-                } else {
-                  // Resource does not exist, create it
-                  await deploymentContext.kubernetesApi.create(manifest);
-                }
-              }
+            if (strategy === 'skipIfExists') {
+              console.log(`⚠️ Skipping existing resource: ${resourceName}`);
               results.push({
                 kind: manifest.kind || 'Unknown',
                 name: manifest.metadata?.name || 'unknown',
                 namespace: manifest.metadata?.namespace || undefined,
                 apiVersion: manifest.apiVersion || 'v1',
               });
-            } catch (replaceError) {
-              console.error(`❌ Failed to replace resource ${resourceName}:`, replaceError);
-              throw replaceError;
+            } else if (strategy === 'replace') {
+              console.log(`🔄 Replacing existing resource: ${resourceName}`);
+              // Try to update/replace the resource
+              try {
+                if (deploymentContext.kubernetesApi) {
+                  // Check if resource exists first
+                  let existing: any;
+                  try {
+                    const readResult = await deploymentContext.kubernetesApi.read({
+                      apiVersion: manifest.apiVersion,
+                      kind: manifest.kind,
+                      metadata: {
+                        name: manifest.metadata?.name || '',
+                        namespace: manifest.metadata?.namespace || 'default',
+                      },
+                    });
+                    existing = readResult.body;
+                  } catch (error: any) {
+                    // If it's a 404, the resource doesn't exist
+                    if (error.statusCode !== 404) {
+                      throw error;
+                    }
+                  }
+
+                  if (existing) {
+                    // Resource exists, use patch for safer updates
+                    await deploymentContext.kubernetesApi.patch(manifest);
+                  } else {
+                    // Resource does not exist, create it
+                    await deploymentContext.kubernetesApi.create(manifest);
+                  }
+                }
+                results.push({
+                  kind: manifest.kind || 'Unknown',
+                  name: manifest.metadata?.name || 'unknown',
+                  namespace: manifest.metadata?.namespace || undefined,
+                  apiVersion: manifest.apiVersion || 'v1',
+                });
+              } catch (replaceError) {
+                console.error(`❌ Failed to replace resource ${resourceName}:`, replaceError);
+                throw replaceError;
+              }
+            } else {
+              // strategy === 'fail' (default behavior)
+              throw error;
             }
           } else {
-            // strategy === 'fail' (default behavior)
+            // Non-conflict errors should always be thrown
             throw error;
           }
-        } else {
-          // Non-conflict errors should always be thrown
-          throw error;
         }
       }
-    }
 
-    return results;
-  };
+      return results;
+    };
 
-      return closure;
-    },
-    config.name
-  );
+    return closure;
+  }, config.name);
 }
 
 /**

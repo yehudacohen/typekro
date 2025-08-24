@@ -133,9 +133,9 @@ describe('KroCustomResourceDefinition Factory', () => {
 
       expect(enhanced.spec.versions).toHaveLength(1);
       expect(enhanced.spec?.versions?.[0]?.name).toBe('v1beta1');
-      expect(enhanced.spec?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec?.required).toContain(
-        'version'
-      );
+      expect(
+        enhanced.spec?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec?.required
+      ).toContain('version');
     });
 
     it('should handle missing metadata gracefully', () => {

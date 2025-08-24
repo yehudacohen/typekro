@@ -395,7 +395,8 @@ describe('CronJob Factory', () => {
         'pg_dump',
       ]);
       expect(
-        enhanced.spec?.jobTemplate?.spec?.template?.spec?.volumes?.[0]?.persistentVolumeClaim?.claimName
+        enhanced.spec?.jobTemplate?.spec?.template?.spec?.volumes?.[0]?.persistentVolumeClaim
+          ?.claimName
       ).toBe('backup-pvc');
 
       // Test readiness evaluation with complex job
@@ -535,7 +536,9 @@ describe('CronJob Factory', () => {
       const enhanced = cronJob(minimalCronJob);
       expect(enhanced.metadata.name).toBe('minimal');
       expect(enhanced.spec.schedule).toBe('0 1 * * *');
-      expect(enhanced.spec?.jobTemplate?.spec?.template?.spec?.containers?.[0]?.name).toBe('minimal');
+      expect(enhanced.spec?.jobTemplate?.spec?.template?.spec?.containers?.[0]?.name).toBe(
+        'minimal'
+      );
 
       // Test readiness evaluation with minimal spec
       const evaluator = (enhanced as any).readinessEvaluator;
@@ -554,10 +557,11 @@ describe('CronJob Factory', () => {
       const resourceConstrainedCronJob = createTestCronJob('resource-constrained');
 
       // Add resource requirements
-      resourceConstrainedCronJob.spec!.jobTemplate.spec!.template.spec!.containers![0]!.resources = {
-        requests: { cpu: '100m', memory: '128Mi' },
-        limits: { cpu: '500m', memory: '512Mi' },
-      };
+      resourceConstrainedCronJob.spec!.jobTemplate.spec!.template.spec!.containers![0]!.resources =
+        {
+          requests: { cpu: '100m', memory: '128Mi' },
+          limits: { cpu: '500m', memory: '512Mi' },
+        };
 
       // Add node selector and tolerations
       resourceConstrainedCronJob.spec!.jobTemplate.spec!.template.spec!.nodeSelector = {

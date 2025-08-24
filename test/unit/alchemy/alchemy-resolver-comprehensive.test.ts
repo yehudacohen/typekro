@@ -3,17 +3,16 @@ import type * as k8s from '@kubernetes/client-node';
 
 // Helper function to create mock AlchemyPromise objects
 function createMockAlchemyPromise(
-  resolvedValue: any, 
-  resourceId: string = 'test-resource-1', 
+  resolvedValue: any,
+  resourceId: string = 'test-resource-1',
   resourceType: string = 'TestResource'
 ): AlchemyPromise {
   return Object.assign(Promise.resolve(resolvedValue), {
     __alchemyPromise: true as const,
     resourceId,
-    resourceType
+    resourceType,
   }) as AlchemyPromise;
 }
-
 
 import {
   type AlchemyPromise,
@@ -227,7 +226,7 @@ describe('Alchemy Resolver Comprehensive', () => {
         const alchemyPromise = Object.assign(Promise.resolve(mockResolvedValue), {
           __alchemyPromise: true as const,
           resourceId: 'test-resource-1',
-          resourceType: 'TestResource'
+          resourceType: 'TestResource',
         }) as AlchemyPromise;
 
         const result = await resolveAllReferences(alchemyPromise, mockContext);
@@ -563,7 +562,7 @@ describe('Alchemy Resolver Comprehensive', () => {
         const kubernetesResource: KubernetesResource = {
           apiVersion: 'v1',
           kind: 'ConfigMap',
-          metadata: {}
+          metadata: {},
         };
 
         const config = createAlchemyResourceConfig(kubernetesResource);
@@ -620,7 +619,7 @@ describe('Alchemy Resolver Comprehensive', () => {
           'my-configmap': {
             apiVersion: 'v1',
             kind: 'ConfigMap',
-            metadata: {}
+            metadata: {},
           },
         };
 

@@ -2,14 +2,14 @@
 
 ## Phase 1: Foundation and Context-Aware Registration
 
-- [ ] 1. Add Composition Context Infrastructure
+- [x] 1. Add Composition Context Infrastructure
   - [x] 1.1 Add AsyncLocalStorage import and CompositionContext interface to shared.ts
   - [x] 1.2 Create getCurrentCompositionContext() helper function
   - [x] 1.3 Add context detection and registration logic to createResource()
   - [x] 1.4 Ensure backward compatibility - factory functions work unchanged outside context
   - _Requirements: 2.1, 2.2, 2.3, 4.1, 4.2_
 
-- [ ] 2. Create Basic kubernetesComposition Function
+- [x] 2. Create Basic kubernetesComposition Function
   - [x] 2.1 Create new file src/core/composition/imperative.ts
   - [x] 2.2 Implement kubernetesComposition with basic context management
   - [x] 2.3 Add CompositionFactory interface and toResourceGraph() method
@@ -24,13 +24,13 @@
   - [x] 3.5 Validate returned object matches status schema using existing validation
   - _Requirements: 3.1, 3.2, 3.4, 7.1, 7.2_
 
-- [ ] 4. Update Type Definitions
+- [x] 4. Update Type Definitions
   - [x] 4.1 Add CompositionFactory interface to types/serialization.ts
   - [x] 4.2 Add composition-related error types to core/errors.ts
   - [x] 4.3 Export new types and functions from index.ts
   - _Requirements: 7.1, 7.2, 7.3, 8.3_
 
-- [ ] 5. Create Basic Test Suite
+- [x] 5. Create Basic Test Suite
   - [x] 5.1 Create test/core/imperative-composition.test.ts
   - [x] 5.2 Test context-aware resource registration
   - [x] 5.3 Test basic composition function execution
@@ -40,7 +40,7 @@
 
 ## Phase 2: Integration and Polish
 
-- [ ] 6. Enhance Error Handling
+- [x] 6. Enhance Error Handling
   - [x] 6.1 Add CompositionError for composition-specific failures
   - [x] 6.2 Add ContextRegistrationError for resource registration failures
   - [x] 6.3 Provide clear error messages for unsupported patterns
@@ -95,7 +95,7 @@
   - [x] 12.5 Test that any future deployment closure automatically works
   - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
 
-- [ ] 13. Implement Direct API and Composition of Compositions
+- [x] 13. Implement Direct API and Composition of Compositions
   - [x] 13.1 Change kubernetesComposition to return TypedResourceGraph directly
   - [x] 13.2 Add transparent context passing for nested compositions
   - [x] 13.3 Implement resource and closure merging for composed compositions
@@ -104,11 +104,11 @@
   - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5_
 
 - [ ] 14. Add Examples and Documentation
-  - [ ] 14.1 Create examples/imperative-composition.ts
-  - [ ] 14.2 Add migration guide from toResourceGraph
-  - [ ] 14.3 Create examples showing deployment closures
-  - [ ] 14.4 Create examples showing composition of compositions
-  - [ ] 14.5 Add debugging and troubleshooting guide
+  - [x] 14.1 Create examples/imperative-composition.ts
+  - [x] 14.2 Add migration guide from toResourceGraph
+  - [x] 14.3 Create examples showing deployment closures
+  - [x] 14.4 Create examples showing composition of compositions
+  - [x] 14.5 Add debugging and troubleshooting guide
   - _Requirements: All requirements for demonstration_
 
 ## Success Metrics

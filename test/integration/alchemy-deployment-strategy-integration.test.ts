@@ -12,15 +12,18 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
+import {
+  simpleConfigMap,
+  simpleDeployment,
+  simpleService,
+} from '../../src/core/composition/index.js';
 import { DependencyGraph } from '../../src/core/dependencies/graph.js';
-
 import {
   AlchemyDeploymentStrategy,
   DirectDeploymentStrategy,
 } from '../../src/core/deployment/deployment-strategies.js';
 import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
-import { simpleConfigMap, simpleDeployment, simpleService } from '../../src/core/composition/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 const TEST_TIMEOUT = 300000; // 5 minutes - extended for image pulls in KIND clusters
@@ -639,8 +642,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
           // Short timeout for faster test execution
           mockDeploymentEngine,
           {
-            createResourceGraphForInstance: (
-            ) => ({
+            createResourceGraphForInstance: () => ({
               name: 'scope-validation-test',
               resources: [],
               dependencyGraph: new DependencyGraph(),

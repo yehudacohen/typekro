@@ -1,6 +1,6 @@
 /**
  * Unit Tests for CEL Resolution in Deployment Strategies
- * 
+ *
  * This test suite validates the CEL expression resolution functionality
  * added to the base deployment strategy, ensuring proper handling of
  * resource references, cluster status querying, and error scenarios.
@@ -9,8 +9,6 @@
 import { beforeEach, describe, expect, it, jest } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { BaseDeploymentStrategy } from '../../src/core/deployment/strategies/base-strategy.js';
-import { ReferenceResolver } from '../../src/core/references/resolver.js';
-import { CelEvaluator } from '../../src/core/references/cel-evaluator.js';
 
 // Create a test implementation of BaseDeploymentStrategy
 class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
@@ -33,7 +31,7 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
       undefined, // resourceKeys
       { kubeConfig: new k8s.KubeConfig(), timeout: 30000 }
     );
-    
+
     // Override private properties for testing
     (this as any).referenceResolver = mockReferenceResolver;
     (this as any).celEvaluator = mockCelEvaluator;
@@ -43,10 +41,10 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
     return 'direct';
   }
 
-  protected async executeDeployment(spec: any, instanceName: string): Promise<any> {
+  protected async executeDeployment(spec: any, _instanceName: string): Promise<any> {
     // Mock implementation that calls the CEL resolution logic
     const resourceGraph = this.mockResolver.createResourceGraphForInstance(spec);
-    
+
     // Simulate the CEL resolution logic from base-strategy.ts
     try {
       const resolvedReferences = await this.mockReferenceResolver.resolveReferences(
@@ -68,11 +66,11 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
           );
 
           let clusterData: Record<string, any> = {};
-          
+
           if (resourceKeys.length > 0) {
             try {
               clusterData = await this.mockEngine.queryClusterStatus(resourceKeys);
-            } catch (error) {
+            } catch (_error) {
               // Fall back to manifest data
               clusterData = {};
             }
@@ -104,13 +102,13 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
               }
               const lastKey = keys[keys.length - 1];
               if (lastKey) current[lastKey] = result;
-            } catch (error) {
+            } catch (_error) {
               // Skip failed CEL evaluations
             }
           }
         }
       }
-    } catch (error) {
+    } catch (_error) {
       // Continue with deployment even if CEL resolution fails
     }
 
@@ -182,7 +180,7 @@ describe('Deployment Strategy CEL Resolution', () => {
     it('should resolve CEL expressions with resource references', async () => {
       // Mock cluster status query to return resource data
       mockEngine.queryClusterStatus.mockResolvedValue({
-        'deployment': {
+        deployment: {
           apiVersion: 'apps/v1',
           kind: 'Deployment',
           metadata: { name: 'test-deployment' },
@@ -213,7 +211,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       expect(mockCelEvaluator.evaluateExpression).toHaveBeenCalledWith(
         'deployment.status.readyReplicas',
         expect.objectContaining({
-          'deployment': expect.objectContaining({
+          deployment: expect.objectContaining({
             status: { readyReplicas: 2 },
           }),
         })
@@ -243,7 +241,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       expect(mockCelEvaluator.evaluateExpression).toHaveBeenCalledWith(
         'true',
         expect.objectContaining({
-          'deployment': expect.any(Object),
+          deployment: expect.any(Object),
         })
       );
     });
@@ -274,7 +272,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       expect(mockCelEvaluator.evaluateExpression).toHaveBeenCalledWith(
         'deployment.spec.replicas',
         expect.objectContaining({
-          'deployment': expect.objectContaining({
+          deployment: expect.objectContaining({
             spec: { replicas: 3 },
           }),
         })
@@ -284,7 +282,7 @@ describe('Deployment Strategy CEL Resolution', () => {
     it('should handle CEL evaluation errors gracefully', async () => {
       // Mock cluster status query to succeed
       mockEngine.queryClusterStatus.mockResolvedValue({
-        'deployment': {
+        deployment: {
           apiVersion: 'apps/v1',
           kind: 'Deployment',
           metadata: { name: 'test-deployment' },
@@ -309,7 +307,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       });
 
       const spec = { name: 'test-app' };
-      
+
       // The deployment should still succeed, but CEL resolution should be skipped
       const result = await (strategy as any).executeDeployment(spec, 'test-instance');
       expect(result).toBeDefined();
@@ -336,7 +334,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       expect(mockCelEvaluator.evaluateExpression).toHaveBeenCalledWith(
         '"static-value"',
         expect.objectContaining({
-          'deployment': expect.any(Object),
+          deployment: expect.any(Object),
         })
       );
     });

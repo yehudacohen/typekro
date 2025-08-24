@@ -13,8 +13,12 @@ import type {
   ResourceGraph,
 } from '../../types/deployment.js';
 import { ResourceDeploymentError } from '../../types/deployment.js';
-import type { KroCompatibleType, SchemaDefinition, StatusBuilder } from '../../types/serialization.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
+import type {
+  KroCompatibleType,
+  SchemaDefinition,
+  StatusBuilder,
+} from '../../types/serialization.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';

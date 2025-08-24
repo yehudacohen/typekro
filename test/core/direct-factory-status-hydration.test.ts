@@ -1,14 +1,13 @@
 /**
  * Unit tests for DirectResourceFactory status hydration functionality
- * 
+ *
  * These tests verify that the status builder is correctly integrated into the direct factory
  * deployment pipeline and that status fields are properly hydrated from deployed resources.
  */
 
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
-import type { DirectResourceFactory } from '../../src/core/types/deployment.js';
 
 describe('DirectResourceFactory Status Hydration', () => {
   const WebAppSpecSchema = type({
@@ -24,9 +23,6 @@ describe('DirectResourceFactory Status Hydration', () => {
     readyReplicas: 'number%1',
     ready: 'boolean',
   });
-
-  type WebAppSpec = typeof WebAppSpecSchema.infer;
-  type WebAppStatus = typeof WebAppStatusSchema.infer;
 
   describe('Status Builder Integration', () => {
     it('should pass status builder to deployment strategies', async () => {
@@ -56,7 +52,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           // Static field - should be hydrated directly
           url: 'http://webapp-service',
           ready: true,
-          
+
           // Dynamic field - should be resolved from deployed resources
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.conditional(
@@ -74,7 +70,7 @@ describe('DirectResourceFactory Status Hydration', () => {
       // Verify factory has the status builder
       expect(factory).toBeDefined();
       expect(factory.mode).toBe('direct');
-      
+
       // The factory should have internal access to the status builder
       // We can't directly test this without exposing internals, but we can verify
       // that the factory was created successfully with a status builder
@@ -162,7 +158,7 @@ describe('DirectResourceFactory Status Hydration', () => {
 
       expect(factory).toBeDefined();
       expect(factory.name).toBe('resource-mapping-test');
-      
+
       // The factory should be able to generate YAML with the correct resource structure
       const yaml = factory.toYaml({
         name: 'test-app',
@@ -245,7 +241,7 @@ describe('DirectResourceFactory Status Hydration', () => {
 
       expect(factory).toBeDefined();
       expect(factory.name).toBe('static-fields-test');
-      
+
       // Static fields should be available in the status builder
       // We can't directly test deployment without a cluster, but we can verify
       // the factory structure is correct
@@ -280,7 +276,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           // Mix of static and dynamic fields
           url: 'http://dynamic-service',
           ready: true,
-          
+
           // Dynamic fields that should be resolved from deployed resources
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.conditional(
@@ -325,13 +321,13 @@ describe('DirectResourceFactory Status Hydration', () => {
         (schema, resources) => ({
           // Static field from schema
           url: `http://${schema.spec.hostname}`,
-          
+
           // Static boolean
           ready: true,
-          
+
           // Dynamic field from resource status
           readyReplicas: resources.webapp.status.readyReplicas,
-          
+
           // Dynamic field with CEL expression
           phase: Cel.conditional(
             Cel.expr(resources.webapp.status.readyReplicas, ' >= ', schema.spec.replicas),
@@ -385,7 +381,7 @@ describe('DirectResourceFactory Status Hydration', () => {
 
       expect(factory).toBeDefined();
       expect(factory.name).toBe('error-handling-test');
-      
+
       // The factory should be created successfully even if the status builder
       // might fail during actual deployment (when resources are not ready)
     });
@@ -393,7 +389,7 @@ describe('DirectResourceFactory Status Hydration', () => {
     it('should fallback to resource extraction when status builder fails', async () => {
       // This test verifies that the deployment strategy falls back to extracting
       // status from deployed resources when the status builder fails
-      
+
       const graph = toResourceGraph(
         {
           name: 'fallback-test',
@@ -415,7 +411,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           if (!resources.deployment) {
             throw new Error('Deployment resource not found');
           }
-          
+
           return {
             url: 'http://fallback-service',
             ready: true,
@@ -461,10 +457,10 @@ describe('DirectResourceFactory Status Hydration', () => {
         (_schema, resources) => ({
           // Reference deployment status
           readyReplicas: resources.deployment.status.readyReplicas,
-          
+
           // Reference service metadata
           url: `http://${resources.service.metadata.name}`,
-          
+
           // Static fields
           ready: true,
           phase: 'running' as const,
@@ -620,7 +616,7 @@ describe('DirectResourceFactory Status Hydration', () => {
       );
 
       const factory = await graph.factory('direct');
-      
+
       // All existing factory methods should still work
       expect(factory.mode).toBe('direct');
       expect(factory.name).toBe('backward-compatibility-test');
@@ -656,7 +652,7 @@ describe('DirectResourceFactory Status Hydration', () => {
       );
 
       const factory = await graph.factory('direct');
-      
+
       const yaml = factory.toYaml({
         name: 'yaml-test-app',
         image: 'nginx:alpine',

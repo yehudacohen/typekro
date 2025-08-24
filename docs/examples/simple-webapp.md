@@ -13,7 +13,7 @@ This example demonstrates the basics of TypeKro by creating a simple web applica
 ```typescript
 import { type } from 'arktype';
 import { 
-  toResourceGraph, 
+  kubernetesComposition, 
   simpleDeployment, 
   simpleService,
   Cel
@@ -33,8 +33,8 @@ const WebAppStatus = type({
   readyReplicas: 'number'
 });
 
-// Create the resource graph
-export const simpleWebApp = toResourceGraph(
+// Create the resource graph with imperative composition
+export const simpleWebApp = kubernetesComposition(
   {
     name: 'simple-webapp',
     apiVersion: 'example.com/v1alpha1',
@@ -42,39 +42,43 @@ export const simpleWebApp = toResourceGraph(
     spec: WebAppSpec,
     status: WebAppStatus,
   },
-  // ResourceBuilder function - defines the Kubernetes resources
-  (schema) => ({
-    // Web application deployment
-    deployment: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
+  (spec) => {
+    // Resources auto-register when created - no explicit builders needed!
+    const deployment = simpleDeployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
       ports: [{ containerPort: 80 }],
       
       // Environment-specific resource limits
-      resources: schema.spec.environment === 'production' 
+      resources: spec.environment === 'production' 
         ? { cpu: '500m', memory: '1Gi' }
         : { cpu: '100m', memory: '256Mi' }
-    }),
+    });
 
-    // Service to expose the application
-    service: simpleService({
-      name: Cel.expr(schema.spec.name, '-service'),
-      selector: { app: schema.spec.name },
+    const service = simpleService({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }],
       
       // LoadBalancer in production, ClusterIP elsewhere
-      type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
-    })
-  }),
-  // StatusBuilder function - defines how status fields map to resource status
-  (schema, resources) => ({
-    url: schema.spec.environment === 'production'
-      ? Cel.expr<string>(resources.service.status.loadBalancer.ingress[0].ip, ' != "" ? "http://" + ', resources.service.status.loadBalancer.ingress[0].ip, ' : "pending"')
-      : Cel.template('http://%s', resources.service.spec.clusterIP),
-    phase: Cel.expr<'pending' | 'running' | 'failed'>(resources.deployment.status.readyReplicas, ' == ', resources.deployment.spec.replicas, ' ? "running" : "pending"'),
-    readyReplicas: resources.deployment.status.readyReplicas
-  })
+      type: spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
+    });
+
+    // Return status with CEL expressions and resource references
+    return {
+      url: spec.environment === 'production'
+        ? Cel.expr<string>(
+            service.status.loadBalancer.ingress, '.size() > 0 ? "http://" + ',
+            service.status.loadBalancer.ingress[0].ip, ' : "pending"'
+          )
+        : Cel.template('http://%s', service.status.clusterIP),
+      phase: Cel.expr<'pending' | 'running' | 'failed'>(
+        deployment.status.readyReplicas, ' == ', deployment.spec.replicas, ' ? "running" : "pending"'
+      ),
+      readyReplicas: deployment.status.readyReplicas
+    };
+  }
 );
 ```
 
@@ -183,16 +187,16 @@ const invalidInstance = await factory.deploy({
 
 ### 2. Environment-Specific Configuration
 
-Resources adapt based on the environment:
+Resources adapt based on the environment using natural JavaScript conditionals:
 
 ```typescript
 // Production gets more resources
-resources: schema.spec.environment === 'production' 
+resources: spec.environment === 'production' 
   ? { cpu: '500m', memory: '1Gi' }
   : { cpu: '100m', memory: '256Mi' }
 
 // Production gets LoadBalancer, others get ClusterIP
-type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
+type: spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
 ```
 
 ### 3. Status Builder
@@ -269,24 +273,24 @@ const deployment = simpleDeployment({
 ```typescript
 import { simpleConfigMap } from 'typekro';
 
-const resources = {
-  config: simpleConfigMap({
-    name: Cel.expr(schema.spec.name, '-config'),
+const composition = kubernetesComposition(definition, (spec) => {
+  const config = simpleConfigMap({
+    name: Cel.template('%s-config', spec.name),
     data: {
-      'nginx.conf': `
+      'nginx.conf': Cel.template(`
         server {
           listen 80;
           location / {
-            return 200 'Hello from ${schema.spec.name}!';
+            return 200 'Hello from %s!';
           }
         }
-      `
+      `, spec.name)
     }
-  }),
+  });
   
-  deployment: simpleDeployment({
-    name: schema.spec.name,
-    image: schema.spec.image,
+  const deployment = simpleDeployment({
+    name: spec.name,
+    image: spec.image,
     volumeMounts: [{
       name: 'config',
       mountPath: '/etc/nginx/conf.d'
@@ -295,8 +299,13 @@ const resources = {
       name: 'config',
       configMap: { name: config.metadata.name }
     }]
-  })
-};
+  });
+
+  return {
+    ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+    configName: config.metadata.name
+  };
+});
 ```
 
 ### Add Ingress
@@ -304,28 +313,116 @@ const resources = {
 ```typescript
 import { simpleIngress } from 'typekro';
 
-// Only in production
-...(schema.spec.environment === 'production' && {
-  ingress: simpleIngress({
-    name: Cel.expr(schema.spec.name, '-ingress'),
-    rules: [{
-      host: Cel.template('%s.example.com', schema.spec.name),
-      http: {
-        paths: [{
-          path: '/',
-          pathType: 'Prefix',
-          backend: {
-            service: {
-              name: service.metadata.name,
-              port: { number: 80 }
-            }
+const composition = kubernetesComposition(definition, (spec) => {
+  const deployment = simpleDeployment({ name: spec.name, image: spec.image });
+  const service = simpleService({ name: Cel.template('%s-service', spec.name), selector: { app: spec.name } });
+  
+  // Only create ingress in production
+  const ingress = spec.environment === 'production' 
+    ? simpleIngress({
+        name: Cel.template('%s-ingress', spec.name),
+        rules: [{
+          host: Cel.template('%s.example.com', spec.name),
+          http: {
+            paths: [{
+              path: '/',
+              pathType: 'Prefix',
+              backend: {
+                service: {
+                  name: service.metadata.name,
+                  port: { number: 80 }
+                }
+              }
+            }]
           }
         }]
-      }
-    }]
-  })
-})
+      })
+    : null;
+
+  return {
+    ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+    hasIngress: spec.environment === 'production'
+  };
+});
 ```
+
+## Advanced Pattern: Composition of Compositions
+
+One powerful feature of imperative composition is the ability to nest and combine compositions:
+
+```typescript
+// Database composition
+const database = kubernetesComposition(
+  {
+    name: 'database',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'Database',
+    spec: type({ name: 'string', image: 'string' }),
+    status: type({ ready: 'boolean', host: 'string' })
+  },
+  (spec) => {
+    const postgres = simpleDeployment({
+      name: spec.name,
+      image: spec.image,
+      ports: [{ containerPort: 5432 }]
+    });
+
+    const service = simpleService({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
+      ports: [{ port: 5432, targetPort: 5432 }]
+    });
+
+    return {
+      ready: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0'),
+      host: service.status.clusterIP
+    };
+  }
+);
+
+// Full-stack composition that uses the database
+const fullStack = kubernetesComposition(
+  {
+    name: 'fullstack',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'FullStack',
+    spec: type({ 
+      appName: 'string', 
+      appImage: 'string', 
+      dbImage: 'string' 
+    }),
+    status: type({ 
+      ready: 'boolean', 
+      appReady: 'boolean', 
+      dbReady: 'boolean' 
+    })
+  },
+  (spec) => {
+    // Use the database composition - resources are automatically merged
+    const db = database.withSpec({
+      name: Cel.template('%s-db', spec.appName),
+      image: spec.dbImage
+    });
+
+    // Create the app that depends on the database
+    const app = simpleDeployment({
+      name: spec.appName,
+      image: spec.appImage,
+      env: {
+        DATABASE_HOST: db.status.host  // Reference the database status
+      }
+    });
+
+    return {
+      ready: Cel.expr<boolean>(db.status.ready, ' && ', app.status.readyReplicas, ' > 0'),
+      appReady: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+      dbReady: db.status.ready
+    };
+  }
+);
+```
+
+This demonstrates how compositions can be nested and combined, with resources and status automatically merged across composition boundaries.
 
 ## Next Steps
 
@@ -337,6 +434,7 @@ Now that you understand the basics, try these examples:
 
 Or explore advanced topics:
 
+- **[Imperative Composition Guide](../guide/imperative-composition.md)** - Deep dive into composition patterns
 - **[Cross-Resource References](../guide/cross-references.md)** - Connect resources dynamically
 - **[CEL Expressions](../guide/cel-expressions.md)** - Add runtime logic
 - **[Custom Factory Functions](../guide/custom-factories.md)** - Build your own factories
