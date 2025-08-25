@@ -360,7 +360,7 @@ const helmApp = toResourceGraph(
     });
     
     // Create HelmRelease using simple factory
-    const nginx = simpleHelmChart(
+    const nginx = simple.HelmChart(
       schema.spec.name,
       repository.spec.url,  // Reference repository URL by field  
       'nginx',
@@ -423,7 +423,7 @@ const microservicesApp = toResourceGraph(
     });
     
     // Create database using simple factory
-    const postgres = simpleHelmChart(
+    const postgres = simple.HelmChart(
       Cel.template('%s-postgres', schema.spec.name),
       bitnamiRepo.spec.url,  // Reference repository URL by field
       'postgresql',
@@ -445,7 +445,7 @@ const microservicesApp = toResourceGraph(
     );
     
     // Create redis cache using simple factory
-    const redis = simpleHelmChart(
+    const redis = simple.HelmChart(
       Cel.template('%s-redis', schema.spec.name),
       bitnamiRepo.spec.url,  // Reference repository URL by field
       'redis',
@@ -471,7 +471,7 @@ const microservicesApp = toResourceGraph(
         interval: '10m'
       });
       
-      const prometheus = simpleHelmChart(
+      const prometheus = simple.HelmChart(
         'prometheus',
         prometheusRepo.spec.url,  // Reference repository URL by field
         'kube-prometheus-stack',
@@ -944,7 +944,7 @@ const secureApp = toResourceGraph(
   (schema) => ({
     externalSecret,  // Include external secret
     
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       

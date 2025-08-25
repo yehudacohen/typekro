@@ -9,13 +9,13 @@ One of TypeKro's most powerful features is the ability to create dynamic referen
 Reference another resource's fields directly:
 
 ```typescript
-const database = simpleDeployment({
+const database = simple.Deployment({
   name: 'postgres',
   image: 'postgres:15',
   ports: [{ containerPort: 5432 }]
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   image: 'myapp:latest',
   env: {
@@ -31,13 +31,13 @@ const app = simpleDeployment({
 Reference services for stable DNS names:
 
 ```typescript
-const dbService = simpleService({
+const dbService = simple.Service({
   name: 'postgres-service',
   selector: { app: 'postgres' },
   ports: [{ port: 5432, targetPort: 5432 }]
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Use the service's cluster DNS name
@@ -53,7 +53,7 @@ const app = simpleDeployment({
 Use TypeScript's conditional logic with references:
 
 ```typescript
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Different database hosts based on environment
@@ -74,12 +74,12 @@ const app = simpleDeployment({
 Reference deeply nested fields:
 
 ```typescript
-const ingress = simpleIngress({
+const ingress = simple.Ingress({
   name: 'web-ingress',
   rules: [/* ... */]
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Reference nested ingress status
@@ -151,7 +151,7 @@ Combine references with CEL expressions for complex logic:
 ```typescript
 import { Cel } from 'typekro';
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Conditional based on replica count
@@ -256,7 +256,7 @@ DATABASE_URL: `postgresql://${database.status.podIP}:5432/app`
 ### 2. Provide Fallbacks
 
 ```typescript
-const app = simpleDeployment({
+const app = simple.Deployment({
   env: {
     // Fallback to default if external service unavailable
     CACHE_URL: externalCache?.status?.endpoint || 'redis://localhost:6379'
@@ -286,7 +286,7 @@ const databaseConfig = {
   user: 'postgres'
 };
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   env: {
     DATABASE_URL: `postgresql://${databaseConfig.user}@${databaseConfig.host}:${databaseConfig.port}/${databaseConfig.name}`
   }
@@ -299,12 +299,12 @@ const app = simpleDeployment({
 
 ```typescript
 const services = {
-  api: simpleService({ name: 'api-service' }),
-  cache: simpleService({ name: 'cache-service' }),
-  database: simpleService({ name: 'db-service' })
+  api: simple.Service({ name: 'api-service' }),
+  cache: simple.Service({ name: 'cache-service' }),
+  database: simple.Service({ name: 'db-service' })
 };
 
-const frontend = simpleDeployment({
+const frontend = simple.Deployment({
   name: 'frontend',
   env: {
     API_URL: Cel.template("http://%s", [reference]):${services.api.spec.ports[0].port}`,
@@ -317,12 +317,12 @@ const frontend = simpleDeployment({
 ### Load Balancer Integration
 
 ```typescript
-const webService = simpleService({
+const webService = simple.Service({
   name: 'web-service',
   type: 'LoadBalancer'
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Reference the external load balancer IP
@@ -337,7 +337,7 @@ const app = simpleDeployment({
 ### Configuration Propagation
 
 ```typescript
-const config = simpleConfigMap({
+const config = simple({
   name: 'app-config',
   data: {
     'database.host': database.status.podIP,
@@ -346,7 +346,7 @@ const config = simpleConfigMap({
   }
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   volumeMounts: [{
     name: 'config',
@@ -375,8 +375,8 @@ const graph = toResourceGraph(
     status: MyAppStatus,
   },
   (schema) => ({
-  database: simpleDeployment({ name: 'db' }),
-  app: simpleDeployment({
+  database: simple.Deployment({ name: 'db' }),
+  app: simple.Deployment({
     env: {
       DB_HOST: database.status.podIP  // ✅ database is defined above
     }
@@ -387,11 +387,11 @@ const graph = toResourceGraph(
 **Circular references:**
 ```typescript
 // ❌ Avoid circular references
-const serviceA = simpleService({
+const serviceA = simple.Service({
   selector: { app: serviceB.metadata.labels.app }  // References B
 });
 
-const serviceB = simpleService({
+const serviceB = simple.Service({
   selector: { app: serviceA.metadata.labels.app }  // References A
 });
 ```

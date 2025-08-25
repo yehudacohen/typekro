@@ -10,8 +10,8 @@
  */
 
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../src/index.js';
-
+import { Deployment, Service } from '../src/factories/simple/index.js';
+import { toResourceGraph, Cel } from '../src/index.js';
 // =============================================================================
 // 1. DEFINE ARKTYPE SCHEMAS
 // =============================================================================
@@ -43,7 +43,7 @@ const webappGraph = toResourceGraph(
   },
   // ResourceBuilder function - defines the Kubernetes resources
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -54,7 +54,7 @@ const webappGraph = toResourceGraph(
       id: 'webappDeployment', // Required for schema references (camelCase)
     }),
 
-    service: simpleService({
+    service: Service({
       name: 'webapp-service',
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],

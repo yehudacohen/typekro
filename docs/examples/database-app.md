@@ -6,7 +6,7 @@ A complete stack with PostgreSQL database and web application.
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, simpleConfigMap, Cel } from 'typekro';
+import { toResourceGraph, simple, Cel, simple } from 'typekro';
 
 const FullStackSpec = type({
   name: 'string',
@@ -33,7 +33,7 @@ export const fullStack = toResourceGraph(
   },
   (schema) => ({
     // Database configuration
-    dbConfig: simpleConfigMap({
+    dbConfig: simple({
       name: Cel.template('%s-db-config', schema.spec.name),
       data: {
         POSTGRES_DB: schema.spec.name,
@@ -42,7 +42,7 @@ export const fullStack = toResourceGraph(
     }),
 
     // Database deployment
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: Cel.template('%s-db', schema.spec.name),
       image: 'postgres:15',
       env: {
@@ -57,14 +57,14 @@ export const fullStack = toResourceGraph(
     }),
 
     // Database service
-    dbService: simpleService({
+    dbService: simple.Service({
       name: Cel.template('%s-db-service', schema.spec.name),
       selector: { app: Cel.template('%s-db', schema.spec.name) },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
 
     // Application deployment
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.appImage,
       replicas: schema.spec.replicas,
@@ -78,7 +78,7 @@ export const fullStack = toResourceGraph(
     }),
 
     // Application service
-    appService: simpleService({
+    appService: simple.Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],

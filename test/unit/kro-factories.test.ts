@@ -4,11 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node';
-import {
-  kroCustomResource,
-  kroCustomResourceDefinition,
-  resourceGraphDefinition,
-} from '../../src/factories/kro/index.js';
+import { kroCustomResource, kroCustomResourceDefinition, resourceGraphDefinition,  } from '../../src/factories/kro/index.js';
 
 describe('Kro Factory Functions', () => {
   describe('resourceGraphDefinition', () => {

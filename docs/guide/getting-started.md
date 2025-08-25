@@ -77,7 +77,7 @@ Create `simple-app.ts` using the **Imperative Composition Pattern** (recommended
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, simpleDeployment, simpleService, Cel } from 'typekro';
+import { kubernetesComposition, simple, Cel } from 'typekro';
 
 const AppSpec = type({
   name: 'string',
@@ -100,14 +100,14 @@ export const app = kubernetesComposition(
   },
   (spec) => {
     // Resources auto-register when created - no explicit builders needed!
-    const deployment = simpleDeployment({
+    const deployment = simple.Deployment({
       name: spec.name,
       image: spec.image,
       replicas: spec.replicas,
       ports: [{ containerPort: 80 }]
     });
     
-    const service = simpleService({
+    const service = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
@@ -142,7 +142,7 @@ The **imperative composition pattern** is TypeKro's primary approach because it:
 // deploy.ts
 import { app } from './simple-app.js';
 
-const factory = await app.factory('direct', { namespace: 'default' });
+const factory = app.factory('direct', { namespace: 'default' });
 await factory.deploy({
   name: 'hello-world',
   image: 'nginx:latest',
@@ -193,9 +193,7 @@ Now let's create a more realistic application with a database using the **impera
 import { type } from 'arktype';
 import { 
   kubernetesComposition, 
-  simpleDeployment, 
-  simpleService,
-  simpleConfigMap,
+  simple,
   Cel
 } from 'typekro';
 
@@ -225,7 +223,7 @@ export const webAppGraph = kubernetesComposition(
   },
   (spec) => {
     // Configuration - auto-registers when created
-    const config = simpleConfigMap({
+    const config = simple({
       name: Cel.template('%s-config', spec.name),
       data: {
         LOG_LEVEL: spec.environment === 'production' ? 'info' : 'debug',
@@ -234,7 +232,7 @@ export const webAppGraph = kubernetesComposition(
     });
 
     // Database - auto-registers when created
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: Cel.template('%s-db', spec.name),
       image: 'postgres:15',
       env: {
@@ -246,14 +244,14 @@ export const webAppGraph = kubernetesComposition(
     });
 
     // Database service - auto-registers when created
-    const dbService = simpleService({
+    const dbService = simple.Service({
       name: Cel.template('%s-db-service', spec.name),
       selector: { app: Cel.template('%s-db', spec.name) },
       ports: [{ port: 5432, targetPort: 5432 }]
     });
 
     // Web application - auto-registers when created
-    const app = simpleDeployment({
+    const app = simple.Deployment({
       name: spec.name,
       image: spec.image,
       replicas: spec.replicas,
@@ -269,7 +267,7 @@ export const webAppGraph = kubernetesComposition(
     });
 
     // Web service - auto-registers when created
-    const webService = simpleService({
+    const webService = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
@@ -319,7 +317,7 @@ const config = schema.spec.environment === 'production'
   ? { replicas: 5, resources: { cpu: '500m', memory: '1Gi' } }
   : { replicas: 1, resources: { cpu: '100m', memory: '256Mi' } };
 
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: config.replicas,
@@ -330,18 +328,18 @@ const deployment = simpleDeployment({
 ### Cross-Resource References
 
 ```typescript
-const database = simpleDeployment({
+const database = simple.Deployment({
   name: 'db',
   image: 'postgres:15'
 });
 
-const dbService = simpleService({
+const dbService = simple.Service({
   name: 'db-service',
   selector: { app: 'db' },
   ports: [{ port: 5432 }]
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'app',
   image: 'myapp:latest',
   env: {
@@ -354,11 +352,11 @@ const app = simpleDeployment({
 
 ```typescript
 const composition = kubernetesComposition(definition, (spec) => {
-  const app = simpleDeployment({ name: spec.name, image: spec.image });
+  const app = simple.Deployment({ name: spec.name, image: spec.image });
   
   // Only create ingress in production
   const ingress = spec.environment === 'production'
-    ? simpleIngress({
+    ? simple.Ingress({
         name: Cel.template('%s-ingress', spec.name),
         host: Cel.template('%s.example.com', spec.name),
         serviceName: Cel.template('%s-service', spec.name)
@@ -379,8 +377,8 @@ Build complex systems by combining smaller compositions:
 ```typescript
 // Reusable database composition
 const database = kubernetesComposition(dbDefinition, (spec) => {
-  const postgres = simpleDeployment({ name: spec.name, image: spec.image });
-  const service = simpleService({ 
+  const postgres = simple.Deployment({ name: spec.name, image: spec.image });
+  const service = simple.Service({ 
     name: Cel.template('%s-service', spec.name), 
     selector: { app: spec.name } 
   });
@@ -399,7 +397,7 @@ const fullStack = kubernetesComposition(fullStackDefinition, (spec) => {
     image: 'postgres:15'
   });
 
-  const app = simpleDeployment({
+  const app = simple.Deployment({
     name: spec.name,
     image: spec.image,
     env: {
@@ -469,7 +467,7 @@ import { webAppGraph } from './webapp.js';
 
 async function deployApp() {
   // Create a direct deployment factory
-  const factory = await webAppGraph.factory('direct', {
+  const factory = webAppGraph.factory('direct', {
     namespace: 'development'
   });
 
@@ -535,7 +533,7 @@ Use the Kro controller for advanced reconciliation:
 import { webAppGraph } from './webapp.js';
 
 async function deployWithKro() {
-  const factory = await webAppGraph.factory('kro', {
+  const factory = webAppGraph.factory('kro', {
     namespace: 'production'
   });
 

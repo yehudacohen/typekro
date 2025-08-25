@@ -14,7 +14,7 @@ Create `simple-app.ts`:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 const AppSpec = type({
   name: 'string',
@@ -36,14 +36,14 @@ export const app = toResourceGraph(
     status: AppStatus,
   },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
       ports: [{ containerPort: 80 }]
     }),
     
-    service: simpleService({
+    service: simple.Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }]
@@ -123,7 +123,7 @@ const config = schema.spec.environment === 'production'
   ? { replicas: 5, resources: { cpu: '500m', memory: '1Gi' } }
   : { replicas: 1, resources: { cpu: '100m', memory: '256Mi' } };
 
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: config.replicas,
@@ -134,12 +134,12 @@ const deployment = simpleDeployment({
 ### Cross-Resource References
 
 ```typescript
-const database = simpleDeployment({
+const database = simple.Deployment({
   name: 'db',
   image: 'postgres:15'
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'app',
   image: 'myapp:latest',
   env: {
@@ -152,11 +152,11 @@ const app = simpleDeployment({
 
 ```typescript
 const resources = {
-  app: simpleDeployment({ /* ... */ }),
+  app: simple.Deployment({ /* ... */ }),
   
   // Only create ingress in production
   ...(schema.spec.environment === 'production' && {
-    ingress: simpleIngress({
+    ingress: simple.Ingress({
       name: Cel.expr(schema.spec.name, '-ingress'),
       host: Cel.template('%s.example.com', schema.spec.name),
       serviceName: Cel.expr(schema.spec.name, '-service')

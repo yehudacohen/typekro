@@ -6,7 +6,7 @@ The most common TypeKro pattern - a web application with deployment and service.
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, simpleDeployment, simpleService, Cel } from 'typekro';
+import { kubernetesComposition, simple, Cel } from 'typekro';
 
 // Define the application schema
 const WebAppSpec = type({
@@ -22,7 +22,7 @@ const WebAppStatus = type({
   replicas: 'number'
 });
 
-// Create the resource graph with imperative composition
+// Create the resource graph with kubernetesComposition
 export const webapp = kubernetesComposition(
   {
     name: 'basic-webapp',
@@ -31,32 +31,31 @@ export const webapp = kubernetesComposition(
     spec: WebAppSpec,
     status: WebAppStatus,
   },
-  (spec) => {
-    // Resources auto-register when created - no explicit builders needed!
-    const deployment = simpleDeployment({
-      name: spec.name,
-      image: spec.image,
-      replicas: spec.replicas,
+  // Resource builder: create named resources
+  (schema) => ({
+    deployment: simple.Deployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
       ports: [{ containerPort: 3000 }],
       env: {
-        NODE_ENV: spec.environment
+        NODE_ENV: schema.spec.environment
       }
-    });
+    }),
     
-    const service = simpleService({
-      name: Cel.template('%s-service', spec.name),
-      selector: { app: spec.name },
+    service: simple.Service({
+      name: Cel.template('%s-service', schema.spec.name),
+      selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       type: 'ClusterIP'
-    });
-
-    // Return status with CEL expressions and resource references
-    return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' >= ', spec.replicas),
-      url: Cel.template('http://%s', service.status.clusterIP),
-      replicas: deployment.status.readyReplicas
-    };
-  }
+    })
+  }),
+  // Status builder: compute status from resources
+  (schema, resources) => ({
+    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
+    url: Cel.template('http://%s', resources.service.status.clusterIP),
+    replicas: resources.deployment.status.readyReplicas
+  })
 );
 ```
 
@@ -64,7 +63,7 @@ export const webapp = kubernetesComposition(
 
 ### Deploy Directly
 ```typescript
-const factory = await webapp.factory('direct', { namespace: 'dev' });
+const factory = webapp.factory('direct', { namespace: 'dev' });
 await factory.deploy({
   name: 'my-app',
   image: 'nginx:latest', 
@@ -85,7 +84,7 @@ const yaml = webapp.toYaml({
 
 ### KRO Deployment
 ```typescript
-const kroFactory = await webapp.factory('kro', { namespace: 'production' });
+const kroFactory = webapp.factory('kro', { namespace: 'production' });
 await kroFactory.deploy({
   name: 'prod-app',
   image: 'nginx:1.24',
@@ -96,10 +95,10 @@ await kroFactory.deploy({
 
 ## Key Concepts Demonstrated
 
-- **Imperative Composition**: Natural JavaScript flow with auto-registration
-- **Schema Definition**: Using ArkType for type-safe specifications
-- **Resource Creation**: `simpleDeployment` and `simpleService` factories
+- **Structured Composition**: Resource and status builders provide clear separation
+- **Schema Definition**: Using ArkType for type-safe specifications  
+- **Resource Creation**: `simple.Deployment` and `simple.Service` factories
 - **CEL Templates**: Using `Cel.template()` for dynamic string construction
 - **CEL Expressions**: Using `Cel.expr()` for dynamic boolean logic
-- **Resource References**: Direct access to resource status fields
-- **Environment Configuration**: Conditional logic based on environment
+- **Resource References**: Type-safe access to resource status fields
+- **Environment Configuration**: Schema-driven configuration patterns

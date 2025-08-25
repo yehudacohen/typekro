@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 describe('Status Field Integration', () => {
   it('should generate a complete ResourceGraphDefinition with proper status CEL expressions', () => {
@@ -30,13 +30,13 @@ describe('Status Field Integration', () => {
         status: WebAppStatusSchema,
       },
       (schema) => ({
-        deployment: simpleDeployment({
+        deployment: simple.Deployment({
           name: schema.spec.name,
           image: schema.spec.image,
           replicas: schema.spec.replicas,
           id: 'webappDeployment',
         }),
-        service: simpleService({
+        service: simple.Service({
           name: schema.spec.name,
           selector: { app: schema.spec.name },
           ports: [{ port: 80, targetPort: 3000 }],
@@ -108,13 +108,13 @@ describe('Status Field Integration', () => {
         status: AppStatusSchema,
       },
       (schema) => ({
-        deployment: simpleDeployment({
+        deployment: simple.Deployment({
           name: schema.spec.name,
           image: schema.spec.image,
           replicas: 3,
           id: 'deployment',
         }),
-        service: simpleService({
+        service: simple.Service({
           name: schema.spec.name,
           selector: { app: schema.spec.name },
           ports: [{ port: 80, targetPort: 80 }],

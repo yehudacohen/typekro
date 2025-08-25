@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { simpleConfigMap, toResourceGraph } from '../../src/index.js';
+import { toResourceGraph, simple } from '../../src/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Generate unique namespace for each test
@@ -48,7 +48,7 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
         status: type({ phase: 'string' }),
       },
       (_schema) => ({
-        testConfig: simpleConfigMap({
+        testConfig: simple.ConfigMap({
           name: 'tls-test-config',
           data: {
             TEST_VALUE: 'direct-factory-works',

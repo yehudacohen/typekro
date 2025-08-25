@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Builder Function Support', () => {
@@ -54,13 +54,13 @@ describe('Builder Function Support', () => {
           status: DatabaseStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'postgres:13',
             replicas: schema.spec.replicas,
             id: 'databaseDeployment',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: schema.spec.name,
             selector: { app: schema.spec.name },
             ports: [{ port: 5432, targetPort: 5432 }],
@@ -100,7 +100,7 @@ describe('Builder Function Support', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -141,7 +141,7 @@ describe('Builder Function Support', () => {
         (schema) => {
           capturedSchema = schema;
           return {
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name: schema.spec.name,
               image: 'nginx',
               id: 'testDeployment',
@@ -210,7 +210,7 @@ describe('Builder Function Support', () => {
           status: ComplexStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.app.name,
             image: 'nginx',
             env: {
@@ -262,12 +262,12 @@ describe('Builder Function Support', () => {
           status: SimpleStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             id: 'simpleDeployment',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: 'simple-service',
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 80 }],
@@ -310,7 +310,7 @@ describe('Builder Function Support', () => {
           status: TestStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.appName,
             image: `nginx:${schema.spec.version}`,
             id: 'testDeployment',

@@ -14,12 +14,12 @@ All networking factories return `Enhanced<TSpec, TStatus>` objects that integrat
 
 ## Core Networking Types
 
-### `simpleService()`
+### `simple.Service()`
 
 Creates a Kubernetes Service with simplified configuration.
 
 ```typescript
-function simpleService(config: SimpleServiceConfig): Enhanced<V1ServiceSpec, V1ServiceStatus>
+function simple.Service(config: SimpleServiceConfig): Enhanced<V1ServiceSpec, V1ServiceStatus>
 ```
 
 #### Parameters
@@ -43,7 +43,7 @@ Enhanced Service with automatic readiness evaluation based on service type.
 #### Example: ClusterIP Service
 
 ```typescript
-import { toResourceGraph, simpleService, simpleDeployment, type } from 'typekro';
+import { toResourceGraph, type, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -59,13 +59,13 @@ const webService = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       ports: [80]
     }),
 
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },  // Matches deployment labels
       ports: [{ port: 80, targetPort: 80 }],
@@ -81,7 +81,7 @@ const webService = toResourceGraph(
 #### Example: LoadBalancer Service
 
 ```typescript
-const publicService = simpleService({
+const publicService = simple.Service({
   name: 'api-public',
   selector: { app: 'api' },
   ports: [
@@ -98,12 +98,12 @@ const publicService = simpleService({
 - **LoadBalancer**: Ready when external IP/hostname is assigned
 - **ExternalName**: Ready when externalName is configured
 
-### `simpleIngress()`
+### `simple.Ingress()`
 
 Creates a Kubernetes Ingress with simplified configuration for HTTP/HTTPS traffic routing.
 
 ```typescript
-function simpleIngress(config: SimpleIngressConfig): Enhanced<V1IngressSpec, V1IngressStatus>
+function simple.Ingress(config: SimpleIngressConfig): Enhanced<V1IngressSpec, V1IngressStatus>
 ```
 
 #### Parameters
@@ -129,7 +129,7 @@ Enhanced Ingress with automatic readiness evaluation.
 #### Example: Basic HTTP Ingress
 
 ```typescript
-import { toResourceGraph, simpleIngress, simpleService, simpleDeployment, type } from 'typekro';
+import { toResourceGraph, type, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -145,19 +145,19 @@ const webIngress = toResourceGraph(
     status: type({ url: 'string' })
   },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       ports: [80]
     }),
 
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }]
     }),
 
-    ingress: simpleIngress({
+    ingress: simple.Ingress({
       name: schema.spec.name,
       host: schema.spec.host,                    // Schema reference
       serviceName: schema.spec.name,             // References service above

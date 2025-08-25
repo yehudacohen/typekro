@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'bun:test';
-import { Cel, simpleDeployment } from '../../src/index';
+import { Cel, simple } from '../../src/index';
 import { isCelExpression } from '../../src/utils/type-guards.js';
 
 describe('Type Safety', () => {
   it('should prevent KubernetesRef<number> assignment to environment variables', () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,
     });
 
     // This should compile - KubernetesRef<string> is allowed in EnvVarValue
-    const webapp1 = simpleDeployment({
+    const webapp1 = simple.Deployment({
       name: 'webapp1',
       image: 'nginx:latest',
       env: {
@@ -20,7 +20,7 @@ describe('Type Safety', () => {
     });
 
     // This should compile - CelExpression is allowed in EnvVarValue
-    const webapp2 = simpleDeployment({
+    const webapp2 = simple.Deployment({
       name: 'webapp2',
       image: 'nginx:latest',
       env: {
@@ -29,7 +29,7 @@ describe('Type Safety', () => {
     });
 
     // This should compile - plain string is allowed in EnvVarValue
-    const webapp3 = simpleDeployment({
+    const webapp3 = simple.Deployment({
       name: 'webapp3',
       image: 'nginx:latest',
       env: {
@@ -43,7 +43,7 @@ describe('Type Safety', () => {
   });
 
   it('should demonstrate that Cel.string() creates proper CEL expressions', () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,
@@ -58,7 +58,7 @@ describe('Type Safety', () => {
   });
 
   it('should demonstrate generic CelExpression type safety', () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,
@@ -71,7 +71,7 @@ describe('Type Safety', () => {
     const intExpr = Cel.int(database.status?.readyReplicas);
 
     // This should work - CelExpression<string> is allowed in EnvVarValue
-    const webapp1 = simpleDeployment({
+    const webapp1 = simple.Deployment({
       name: 'webapp1',
       image: 'nginx:latest',
       env: {

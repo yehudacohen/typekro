@@ -230,13 +230,13 @@ One of TypeKro's most powerful features is the ability to create dynamic referen
 Reference another resource's fields directly:
 
 ```typescript
-const database = simpleDeployment({
+const database = simple.Deployment({
   name: 'postgres',
   image: 'postgres:15',
   ports: [{ containerPort: 5432 }]
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   image: 'myapp:latest',
   env: {
@@ -252,13 +252,13 @@ const app = simpleDeployment({
 Reference services for stable DNS names:
 
 ```typescript
-const dbService = simpleService({
+const dbService = simple.Service({
   name: 'postgres-service',
   selector: { app: 'postgres' },
   ports: [{ port: 5432, targetPort: 5432 }]
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Use the service's cluster DNS name
@@ -277,7 +277,7 @@ const app = simpleDeployment({
 Use TypeScript's conditional logic with references:
 
 ```typescript
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Different database hosts based on environment
@@ -298,12 +298,12 @@ const app = simpleDeployment({
 Reference deeply nested fields:
 
 ```typescript
-const ingress = simpleIngress({
+const ingress = simple.Ingress({
   name: 'web-ingress',
   rules: [/* ... */]
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Reference nested ingress status
@@ -384,7 +384,7 @@ Combine references with CEL expressions for complex logic:
 ```typescript
 import { Cel } from 'typekro';
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Conditional based on replica count
@@ -468,7 +468,7 @@ const database = externalRef<DatabaseSpec, DatabaseStatus>(
 );
 
 // Use in your application
-const webapp = simpleDeployment({
+const webapp = simple.Deployment({
   name: 'webapp',
   image: 'nginx',
   env: {
@@ -488,7 +488,7 @@ Reference a shared database deployed by another team:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, externalRef } from 'typekro';
+import { toResourceGraph, externalRef, simple } from 'typekro';
 
 // Define expected external database schema
 const DatabaseSpec = type({
@@ -528,7 +528,7 @@ const userService = toResourceGraph(
     })
   },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: 'user-service',
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -539,7 +539,7 @@ const userService = toResourceGraph(
         DATABASE_PORT: sharedDatabase.status.port
       }
     }),
-    service: simpleService({
+    service: simple.Service({
       name: 'user-service',
       selector: { app: 'user-service' },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -583,7 +583,7 @@ const prometheus = externalRef<PrometheusSpec, PrometheusStatus>(
 const microservice = toResourceGraph(
   { name: 'payment-service', /* ... */ },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: 'payment-service',
       env: {
         // Cross-namespace cache reference
@@ -626,7 +626,7 @@ const webapp = toResourceGraph(
       : stagingDatabase;
     
     return {
-      app: simpleDeployment({
+      app: simple.Deployment({
         name: 'webapp',
         env: {
           DATABASE_URL: database.status.connectionString,
@@ -666,7 +666,7 @@ const messageQueue = externalRef<RabbitMQSpec, RabbitMQStatus>(
 const orderService = toResourceGraph(
   { name: 'order-service', /* ... */ },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: 'order-service',
       env: {
         // Database connection
@@ -730,7 +730,7 @@ const userDatabase = externalRef<UserDatabaseSpec, UserDatabaseStatus>(
 const webapp = toResourceGraph(
   { name: 'webapp', /* ... */ },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: 'webapp',
       env: {
         // Direct reference to mid-level service
@@ -782,7 +782,7 @@ const sharedServices = {
 const applicationPlatform = toResourceGraph(
   { name: 'platform', /* ... */ },
   (schema) => ({
-    gateway: simpleDeployment({
+    gateway: simple.Deployment({
       name: 'api-gateway',
       env: {
         DATABASE_URL: sharedServices.database.status.connectionString,
@@ -859,7 +859,7 @@ const optionalCache = externalRef<CacheSpec, CacheStatus>(
 const resilientApp = toResourceGraph(
   { name: 'resilient-app', /* ... */ },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: 'resilient-app',
       env: {
         // Fallback cache URL if external reference unavailable
@@ -909,7 +909,7 @@ const criticalDatabase = externalRef<DatabaseSpec, DatabaseStatus>(
 const businessApp = toResourceGraph(
   { name: 'business-app', /* ... */ },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: 'business-app',
       env: {
         DATABASE_URL: criticalDatabase.status.connectionString,

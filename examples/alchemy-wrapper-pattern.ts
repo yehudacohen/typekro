@@ -10,8 +10,8 @@
 
 import alchemy from 'alchemy';
 import { type } from 'arktype';
-
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../src/index.js';
+import { Deployment, Service } from '../src/factories/simple/index.js';
+import { toResourceGraph, Cel } from '../src/index.js';
 
 // Define schemas for our web application
 const WebAppSpecSchema = type({
@@ -58,13 +58,13 @@ async function demonstrateAlchemyDynamicRegistration() {
       status: WebAppStatusSchema,
     },
     (schema) => ({
-      deployment: simpleDeployment({
+      deployment: Deployment({
         id: 'webapp-deployment',
         name: schema.spec.name,
         image: schema.spec.image,
         replicas: schema.spec.replicas,
       }),
-      service: simpleService({
+      service: Service({
         id: 'webapp-service',
         name: schema.spec.name,
         selector: { app: schema.spec.name },

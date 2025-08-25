@@ -1,11 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import {
-  createLogger,
-  getComponentLogger,
-  getDeploymentLogger,
-  getResourceLogger,
-  type LoggerConfig,
-} from '../../src/core/logging/index.js';
+import { createLogger, getComponentLogger, getDeploymentLogger, getResourceLogger, type LoggerConfig,  } from '../../src/core/logging/index.js';
 
 describe('TypeKro Logging', () => {
   let originalEnv: Record<string, string | undefined>;

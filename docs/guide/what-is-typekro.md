@@ -32,7 +32,7 @@ Write infrastructure using familiar TypeScript syntax with full IDE support:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+import { toResourceGraph, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -49,13 +49,13 @@ const webapp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,    // Type-safe schema reference
       image: schema.spec.image,  // Full IDE autocomplete
       replicas: schema.spec.replicas
     }),
     
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }]
@@ -99,7 +99,7 @@ TypeKro's magic proxy system enables compile-time type safety with runtime flexi
 
 ```typescript
 // Schema references become CEL expressions at runtime
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,        // Type-safe reference
   image: schema.spec.image,      // Full autocomplete
   env: {
@@ -108,7 +108,7 @@ const deployment = simpleDeployment({
 });
 
 // Cross-resource references work naturally
-const ingress = simpleIngress({
+const ingress = simple.Ingress({
   name: schema.spec.name,
   host: schema.spec.hostname,
   serviceName: service.metadata.name,  // References other resource
@@ -138,19 +138,19 @@ TypeKro's core innovation is its **magic proxy system** that creates different b
 
 ```typescript
 // Static values (known at execution time)
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',      // Static string
   replicas: 3          // Static number
 });
 
 // Dynamic references (resolved at runtime)
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,    // Schema reference → CEL expression
   replicas: schema.spec.replicas
 });
 
 // Cross-resource references (runtime resolution)
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   env: {
     DB_HOST: database.service.spec.clusterIP  // Runtime cluster state
   }

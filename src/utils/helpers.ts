@@ -30,7 +30,7 @@ export function generateDeterministicResourceId(
     throw new Error(
       `Cannot generate deterministic resource ID for ${kind} with KubernetesRef name. ` +
         `Please provide an explicit 'id' field in the resource config, e.g.: ` +
-        `simpleDeployment({ name: schema.spec.name, image: 'nginx', id: 'my-deployment' })`
+        `simple.Deployment({ name: schema.spec.name, image: 'nginx', id: 'my-deployment' })`
     );
   }
 
@@ -41,7 +41,7 @@ export function generateDeterministicResourceId(
     throw new Error(
       `Cannot generate deterministic resource ID for ${kind} with CEL expression name. ` +
         `Please provide an explicit 'id' field in the resource config, e.g.: ` +
-        `simpleDeployment({ name: Cel.expr('my-', schema.spec.name), image: 'nginx', id: 'my-deployment' })`
+        `simple.Deployment({ name: Cel.expr('my-', schema.spec.name), image: 'nginx', id: 'my-deployment' })`
     );
   }
 

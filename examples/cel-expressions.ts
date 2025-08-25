@@ -5,15 +5,10 @@
  * evaluations while maintaining type safety with KubernetesRef types.
  */
 
-import {
-  Cel,
-  serializeResourceGraphToYaml,
-  simpleDeployment,
-  simpleService,
-} from '../src/index.js';
-
+import { Deployment, Service } from '../src/factories/simple/index.js';
+import { Cel, serializeResourceGraphToYaml } from '../src/index.js';
 // Create base resources
-const database = simpleDeployment({
+const database = Deployment({
   name: 'postgres',
   image: 'postgres:13',
   replicas: 1,
@@ -24,7 +19,7 @@ const database = simpleDeployment({
   },
 });
 
-const webapp = simpleDeployment({
+const webapp = Deployment({
   name: 'webapp',
   image: 'nginx:latest',
   replicas: 3,
@@ -60,7 +55,7 @@ const webapp = simpleDeployment({
   },
 });
 
-const service = simpleService({
+const _service = Service({
   name: 'webapp-service',
   selector: { app: 'webapp' },
   ports: [{ port: 80, targetPort: 80 }],
@@ -71,7 +66,7 @@ if (import.meta.main) {
   const yaml = serializeResourceGraphToYaml('webapp-with-cel', {
     database,
     webapp,
-    service,
+    _service,
   });
 
   console.log('CEL Expression Example:');
@@ -79,4 +74,4 @@ if (import.meta.main) {
   console.log(yaml);
 }
 
-export { database, webapp, service };
+export { database, webapp, _service as service };

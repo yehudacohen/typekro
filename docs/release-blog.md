@@ -224,7 +224,7 @@ This graph is then topologically sorted to produce a step-by-step deployment pla
 First, we define our component's interface using ArkType schemas. This provides both compile-time TypeScript validation and runtime schema validation:
 
 ```typescript
-import { toResourceGraph, simpleDeployment, simpleService, type, Cel } from 'typekro';
+import { toResourceGraph, type, Cel, simple } from 'typekro';
 
 const webServiceSpec = type({
   name: 'string',
@@ -253,14 +253,14 @@ const WebService = toResourceGraph(
   },
   // ResourceBuilder: Define the underlying Kubernetes resources
   (schema) => {
-    const deployment = simpleDeployment({
+    const deployment = simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
       ports: [{ containerPort: schema.spec.port }],
     });
 
-    const service = simpleService({
+    const service = simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: schema.spec.port }],
@@ -335,7 +335,7 @@ TypeKro's design philosophy is straightforward: known values should resolve stat
 **Known values** resolve statically because TypeKro can determine them at execution time:
 
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',           // Known: literal string
   replicas: 3,              // Known: literal number
   image: 'nginx:latest'     // Known: literal string
@@ -345,7 +345,7 @@ const deployment = simpleDeployment({
 **Unknown values** become references because they won't exist until runtime:
 
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,   // Unknown: becomes KubernetesRef<string>
   replicas: schema.spec.replicas,  // Unknown: becomes KubernetesRef<number>
 });
@@ -361,11 +361,11 @@ This works perfectly for schema references and status fields - they're clearly u
 **The challenge** arises when you want to reference a field on a resource you just defined:
 
 ```typescript
-const configMap = simpleConfigMap({
+const configMap = simple({
   data: { apiUrl: 'https://api.example.com' }
 });
 
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   env: {
     API_URL: configMap.data.apiUrl,     // Known: 'https://api.example.com'
     API_URL: configMap.data.$apiUrl,    // Unknown: whatever's in the cluster
@@ -399,7 +399,7 @@ This happens transparently. Your deployments work without "CRD not found" errors
 
 TypeKro uses raw `@kubernetes/client-node` types to ensure full compatibility with the Kubernetes ecosystem. No custom abstractions or simplified wrappers that break integration with existing tooling.
 
-But raw Kubernetes types are verbose and complex. So TypeKro wraps them in simple factory functions like `simpleDeployment()` and `simpleService()` that expose the most common configuration patterns while preserving access to the full API surface underneath.
+But raw Kubernetes types are verbose and complex. So TypeKro wraps them in simple factory functions like `simple.Deployment()` and `simple.Service()` that expose the most common configuration patterns while preserving access to the full API surface underneath.
 
 This approach gives you both accessibility for common use cases and full power when you need it, without sacrificing compatibility with kubectl, client-go, or other Kubernetes tools.
 

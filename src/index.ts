@@ -83,16 +83,6 @@ export {
   type StatusBuilder,
   // Serialization and YAML generation
   serializeResourceGraphToYaml,
-  simpleConfigMap,
-  // Composition functions
-  simpleDeployment,
-  simpleHpa,
-  simpleIngress,
-  simpleJob,
-  simpleNetworkPolicy,
-  simplePvc,
-  simpleSecret,
-  simpleService,
   type TypedKroResourceGraphDefinition,
   type TypedResourceGraphFactory,
   TypeKroError,

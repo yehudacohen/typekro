@@ -23,7 +23,7 @@ function serviceAccount(resource: V1ServiceAccount): Enhanced<V1ServiceAccountSp
 #### Example: Basic Service Account
 
 ```typescript
-import { toResourceGraph, serviceAccount, simpleDeployment, type } from 'typekro';
+import { toResourceGraph, serviceAccount, simple, type } from 'typekro';
 
 const SecureAppSpec = type({
   name: 'string',
@@ -49,7 +49,7 @@ const secureApp = toResourceGraph(
     }),
     
     // Application using the service account
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -73,7 +73,7 @@ function role(resource: V1Role): Enhanced<V1RoleSpec, unknown>
 #### Example: Application Role with Permissions
 
 ```typescript
-import { toResourceGraph, role, roleBinding, serviceAccount, simpleDeployment, type } from 'typekro';
+import { toResourceGraph, role, roleBinding, serviceAccount, simple, type } from 'typekro';
 
 const MicroserviceSpec = type({
   name: 'string',
@@ -138,7 +138,7 @@ const microservice = toResourceGraph(
     }),
     
     // Application with service account
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'microservice:latest',
       ports: [8080],
@@ -222,7 +222,7 @@ const monitoringService = toResourceGraph(
     }),
     
     // Monitoring deployment
-    prometheus: simpleDeployment({
+    prometheus: simple.Deployment({
       name: 'prometheus',
       image: 'prom/prometheus:latest',
       ports: [9090],
@@ -308,7 +308,7 @@ const multiTenantPlatform = toResourceGraph(
     
     // Tenant applications
     tenantApps: schema.spec.tenants.map(tenant =>
-      simpleDeployment({
+      simple.Deployment({
         name: Cel.expr(tenant, '-app'),
         image: 'tenant-app:latest',
         ports: [8080],
@@ -406,7 +406,7 @@ const customOperator = toResourceGraph(
     }),
     
     // Operator deployment
-    operatorDeployment: simpleDeployment({
+    operatorDeployment: simple.Deployment({
       name: 'custom-operator-controller',
       image: 'custom-operator:latest',
       ports: [8080, 9443],
@@ -483,7 +483,7 @@ const securePlatform = toResourceGraph(
     }),
     
     // Security-conscious application
-    secureApp: simpleDeployment({
+    secureApp: simple.Deployment({
       name: 'secure-application',
       image: 'secure-app:latest',
       ports: [8080],

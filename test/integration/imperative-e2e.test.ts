@@ -10,14 +10,7 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import {
-  Cel,
-  kubernetesComposition,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index';
+import { Cel, kubernetesComposition, toResourceGraph, simple } from '../../src/index';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
@@ -122,7 +115,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
       // Create imperative composition using the exact same pattern as e2e-factory-pattern.test.ts
       const imperativeComposition = kubernetesComposition(definition, (_spec) => {
-        const _appConfig = simpleConfigMap({
+        const _appConfig = simple.ConfigMap({
           name: 'webapp-factory-config',
           data: {
             LOG_LEVEL: 'info',
@@ -132,7 +125,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           id: 'webappConfig',
         });
 
-        const webapp = simpleDeployment({
+        const webapp = simple.Deployment({
           name: 'webapp-factory',
           image: 'nginx:alpine',
           replicas: 2,
@@ -145,7 +138,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           id: 'webapp',
         });
 
-        const _webappService = simpleService({
+        const _webappService = simple.Service({
           name: 'webapp-factory-service',
           selector: { app: 'webapp-factory' },
           ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -172,7 +165,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       const traditionalComposition = toResourceGraph(
         traditionalDefinition,
         (_schema) => ({
-          appConfig: simpleConfigMap({
+          appConfig: simple.ConfigMap({
             name: 'webapp-factory-config',
             data: {
               LOG_LEVEL: 'info',
@@ -182,7 +175,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             id: 'webappConfig',
           }),
 
-          webapp: simpleDeployment({
+          webapp: simple.Deployment({
             name: 'webapp-factory',
             image: 'nginx:alpine',
             replicas: 2,
@@ -195,7 +188,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             id: 'webapp',
           }),
 
-          webappService: simpleService({
+          webappService: simple.Service({
             name: 'webapp-factory-service',
             selector: { app: 'webapp-factory' },
             ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -295,21 +288,21 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       };
 
       const composition = kubernetesComposition(complexDefinition, (spec) => {
-        const frontendDeployment = simpleDeployment({
+        const frontendDeployment = simple.Deployment({
           name: `${spec.name}-frontend`,
           image: spec.image,
           replicas: spec.replicas,
           id: 'frontendDeployment',
         });
 
-        const backendDeployment = simpleDeployment({
+        const backendDeployment = simple.Deployment({
           name: `${spec.name}-backend`,
           image: 'backend:latest',
           replicas: 2,
           id: 'backendDeployment',
         });
 
-        const dbService = simpleService({
+        const dbService = simple.Service({
           name: `${spec.name}-db`,
           selector: { app: 'database' },
           ports: [{ port: 5432, targetPort: 5432 }],
@@ -374,7 +367,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
         // Create imperative composition using proven patterns
         const imperativeComposition = kubernetesComposition(definition, (_spec) => {
-          const webapp = simpleDeployment({
+          const webapp = simple.Deployment({
             name: 'webapp-factory',
             image: 'nginx:alpine',
             replicas: 2,
@@ -386,7 +379,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             id: 'webapp',
           });
 
-          const _webappService = simpleService({
+          const _webappService = simple.Service({
             name: 'webapp-factory-service',
             selector: { app: 'webapp-factory' },
             ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -416,7 +409,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         const traditionalComposition = toResourceGraph(
           traditionalDefinition,
           (_schema) => ({
-            webapp: simpleDeployment({
+            webapp: simple.Deployment({
               name: 'webapp-factory',
               image: 'nginx:alpine',
               replicas: 2,
@@ -428,7 +421,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
               id: 'webapp',
             }),
 
-            webappService: simpleService({
+            webappService: simple.Service({
               name: 'webapp-factory-service',
               selector: { app: 'webapp-factory' },
               ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -539,7 +532,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
         // Create imperative composition using proven patterns
         const imperativeComposition = kubernetesComposition(definition, (_spec) => {
-          const webapp = simpleDeployment({
+          const webapp = simple.Deployment({
             name: 'webapp-factory',
             image: 'nginx:alpine',
             replicas: 2,
@@ -551,7 +544,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             id: 'webapp',
           });
 
-          const _webappService = simpleService({
+          const _webappService = simple.Service({
             name: 'webapp-factory-service',
             selector: { app: 'webapp-factory' },
             ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -581,7 +574,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         const traditionalComposition = toResourceGraph(
           traditionalDefinition,
           (_schema) => ({
-            webapp: simpleDeployment({
+            webapp: simple.Deployment({
               name: 'webapp-factory',
               image: 'nginx:alpine',
               replicas: 2,
@@ -593,7 +586,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
               id: 'webapp',
             }),
 
-            webappService: simpleService({
+            webappService: simple.Service({
               name: 'webapp-factory-service',
               selector: { app: 'webapp-factory' },
               ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -707,7 +700,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         console.log('🚀 Testing factory management methods...');
 
         const composition = kubernetesComposition(definition, (spec) => {
-          const deployment = simpleDeployment({
+          const deployment = simple.Deployment({
             name: spec.name,
             image: spec.image,
             replicas: spec.replicas,
@@ -797,7 +790,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         console.log('🚀 Testing Alchemy integration...');
 
         const composition = kubernetesComposition(definition, (_spec) => {
-          const webapp = simpleDeployment({
+          const webapp = simple.Deployment({
             name: 'webapp-factory',
             image: 'nginx:alpine',
             replicas: 1, // Use 1 replica for faster testing
@@ -808,7 +801,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             id: 'webapp',
           });
 
-          const _webappService = simpleService({
+          const _webappService = simple.Service({
             name: 'webapp-factory-service',
             selector: { app: 'webapp-factory' },
             ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -887,7 +880,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         console.log('🚀 Testing readiness evaluator preservation with Alchemy...');
 
         const composition = kubernetesComposition(definition, (_spec) => {
-          const webapp = simpleDeployment({
+          const webapp = simple.Deployment({
             name: 'webapp-factory',
             image: 'nginx:alpine',
             replicas: 1, // Use 1 replica for faster testing
@@ -898,7 +891,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             id: 'webapp',
           });
 
-          const _webappService = simpleService({
+          const _webappService = simple.Service({
             name: 'webapp-factory-service',
             selector: { app: 'webapp-factory' },
             ports: [{ port: 80, targetPort: 80, name: 'http' }],
@@ -970,7 +963,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             name: `sync-test-${i}`,
           },
           (spec) => {
-            const deployment = simpleDeployment({
+            const deployment = simple.Deployment({
               name: `${spec.name}-${i}`,
               image: spec.image,
               replicas: spec.replicas,
@@ -1025,14 +1018,14 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
               name: `isolation-test-${i}`,
             },
             (spec) => {
-              const deployment = simpleDeployment({
+              const deployment = simple.Deployment({
                 name: `${spec.name}-${i}`,
                 image: spec.image,
                 replicas: spec.replicas,
                 id: `isolationTestDeployment${i}`,
               });
 
-              const _service = simpleService({
+              const _service = simple.Service({
                 name: `${spec.name}-service-${i}`,
                 selector: { app: `${spec.name}-${i}` },
                 ports: [{ port: 80, targetPort: 8080 }],
@@ -1093,7 +1086,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
       // This should work - the composition pattern is flexible with status objects
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,

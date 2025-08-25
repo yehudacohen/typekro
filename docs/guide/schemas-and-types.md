@@ -14,7 +14,7 @@ TypeKro provides multiple layers of type safety:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, Cel } from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 // 1. Schema validation with ArkType
 const AppSpec = type({
@@ -28,7 +28,7 @@ const app = toResourceGraph(
   { name: 'typed-app', schema: { spec: AppSpec } },
   (schema) => ({
     // 3. Typed factory functions
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,           // ✅ Typed access
       replicas: schema.spec.replicas    // ✅ Number type enforced
     })
@@ -345,7 +345,7 @@ const environmentalDatabase = toResourceGraph(
     status: type({ ready: 'boolean', endpoint: 'string' })
   },
   (schema) => ({
-    database: simpleStatefulSet({
+    database: simple.StatefulSet({
       name: schema.spec.engine,
       image: Cel.template('%s:%s', schema.spec.engine, schema.spec.version),
       env: {
@@ -422,7 +422,7 @@ const cluster = toResourceGraph(
   (schema) => ({
     // Create deployments for each service
     services: schema.spec.services.map(service =>
-      simpleDeployment({
+      simple.Deployment({
         name: service.name,
         image: service.image,
         replicas: service.replicas || 1,
@@ -432,7 +432,7 @@ const cluster = toResourceGraph(
     
     // Create services for each deployment
     serviceEndpoints: schema.spec.services.map(service =>
-      simpleService({
+      simple.Service({
         name: Cel.expr(service.name, '-service'),
         selector: { app: service.name },
         ports: [{ port: 80, targetPort: service.port }]
@@ -665,12 +665,12 @@ function createReference<T, K extends keyof T>(
 const typedGraph = toResourceGraph(
   { name: 'typed-references', schema: { spec: AppSpec } },
   (schema) => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: Cel.expr(schema.spec.name, "-db"),
       image: 'postgres:15'
     });
     
-    const app = simpleDeployment({
+    const app = simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
@@ -827,7 +827,7 @@ const customApp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -902,7 +902,7 @@ const modernApp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -939,7 +939,7 @@ type TestAppSpecType = Expect<Equal<
 
 // Test factory return types
 type TestFactoryType = Expect<Equal<
-  ReturnType<typeof simpleDeployment>,
+  ReturnType<typeof simple.Deployment>,
   Enhanced<V1Deployment, V1DeploymentStatus>
 >>;
 

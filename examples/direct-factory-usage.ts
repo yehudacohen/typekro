@@ -6,11 +6,10 @@
  */
 
 import { type } from 'arktype';
+import { Deployment, Service, ConfigMap } from '../src/factories/simple/index.js';
 import {
   Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
+  
   toResourceGraph,
 } from '../src/index.js';
 
@@ -51,7 +50,7 @@ const webappGraph = toResourceGraph(
   },
   (schema) => ({
     // Configuration
-    config: simpleConfigMap({
+    config: ConfigMap({
       name: 'webapp-config',
       data: {
         'app.properties': `
@@ -62,11 +61,11 @@ redis.url=redis://localhost:6379
 debug=false
         `.trim(),
       },
-      // id: 'webapp-config', // TODO: Add id support to simpleConfigMap
+      // id: 'webapp-config', // TODO: Add id support to ConfigMap
     }),
 
     // Main application deployment
-    deployment: simpleDeployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -86,7 +85,7 @@ debug=false
     }),
 
     // Service to expose the application
-    service: simpleService({
+    service: Service({
       name: `${schema.spec.name}-service`,
       selector: {
         app: schema.spec.name,

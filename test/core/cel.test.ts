@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 
-import { Cel, isCelExpression, simpleDeployment, toResourceGraph } from '../../src/index.js';
+import { Cel, isCelExpression, toResourceGraph, simple } from '../../src/index.js';
 
 describe('CEL Expression Builder', () => {
   it('should create CEL expressions with type safety', () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,
@@ -19,7 +19,7 @@ describe('CEL Expression Builder', () => {
   });
 
   it('should handle conditional expressions', () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,
@@ -33,13 +33,13 @@ describe('CEL Expression Builder', () => {
   });
 
   it('should serialize CEL expressions correctly in resource graphs', async () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,
     });
 
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'webapp',
       image: 'nginx:latest',
       replicas: 1,
@@ -69,7 +69,7 @@ describe('CEL Expression Builder', () => {
   });
 
   it('should support mathematical operations', () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,
@@ -83,7 +83,7 @@ describe('CEL Expression Builder', () => {
   });
 
   it('should support string templates', () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       replicas: 1,

@@ -2,15 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as yaml from 'js-yaml';
-import {
-  simpleConfigMap,
-  simpleDeployment,
-  simpleHpa,
-  simplePvc,
-  simpleSecret,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index';
+import { toResourceGraph, simple } from '../../src/index';
 
 describe('YAML Generation Integration Test', () => {
   it('should generate valid Kro YAML for a comprehensive application stack', async () => {
@@ -18,7 +10,7 @@ describe('YAML Generation Integration Test', () => {
 
     // Create a realistic application stack without cross-resource references
     // (focusing on YAML structure validation rather than reference resolution)
-    const appConfig = simpleConfigMap({
+    const appConfig = simple.ConfigMap({
       name: 'webapp-config',
       namespace: 'production',
       data: {
@@ -29,7 +21,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const appSecrets = simpleSecret({
+    const appSecrets = simple.Secret({
       name: 'webapp-secrets',
       namespace: 'production',
       stringData: {
@@ -40,7 +32,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const dbStorage = simplePvc({
+    const dbStorage = simple.Pvc({
       name: 'postgres-storage',
       namespace: 'production',
       size: '10Gi',
@@ -48,7 +40,7 @@ describe('YAML Generation Integration Test', () => {
       storageClass: 'fast-ssd',
     });
 
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres-db',
       namespace: 'production',
       image: 'postgres:15-alpine',
@@ -66,7 +58,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const redis = simpleDeployment({
+    const redis = simple.Deployment({
       name: 'redis-cache',
       namespace: 'production',
       image: 'redis:7-alpine',
@@ -81,7 +73,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'webapp',
       namespace: 'production',
       image: 'nginx:alpine',
@@ -103,28 +95,28 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const dbService = simpleService({
+    const dbService = simple.Service({
       name: 'postgres-service',
       namespace: 'production',
       selector: { app: 'postgres-db' },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
     });
 
-    const redisService = simpleService({
+    const redisService = simple.Service({
       name: 'redis-service',
       namespace: 'production',
       selector: { app: 'redis-cache' },
       ports: [{ port: 6379, targetPort: 6379, name: 'redis' }],
     });
 
-    const webService = simpleService({
+    const webService = simple.Service({
       name: 'webapp-service',
       namespace: 'production',
       selector: { app: 'webapp' },
       ports: [{ port: 80, targetPort: 8080, name: 'http' }],
     });
 
-    const webHpa = simpleHpa({
+    const webHpa = simple.Hpa({
       name: 'webapp-hpa',
       namespace: 'production',
       target: {
@@ -247,7 +239,7 @@ describe('YAML Generation Integration Test', () => {
     console.log('🔗 Testing multiple resource types...');
 
     // Create a simpler test focused on YAML structure validation
-    const config = simpleConfigMap({
+    const config = simple.ConfigMap({
       name: 'app-config',
       data: {
         DATABASE_HOST: 'postgres',
@@ -255,7 +247,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const secrets = simpleSecret({
+    const secrets = simple.Secret({
       name: 'app-secrets',
       stringData: {
         DB_PASSWORD: 'secret123',
@@ -263,7 +255,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const db = simpleDeployment({
+    const db = simple.Deployment({
       name: 'database',
       image: 'postgres:13',
       env: {
@@ -271,7 +263,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const cache = simpleDeployment({
+    const cache = simple.Deployment({
       name: 'cache',
       image: 'redis:6',
       env: {
@@ -279,7 +271,7 @@ describe('YAML Generation Integration Test', () => {
       },
     });
 
-    const app = simpleDeployment({
+    const app = simple.Deployment({
       name: 'application',
       image: 'myapp:latest',
       env: {

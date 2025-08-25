@@ -53,10 +53,10 @@ graph TD
 import { type } from 'arktype';
 import { 
   toResourceGraph, 
-  simpleDeployment, 
-  simpleService,
-  simpleConfigMap,
-  simpleSecret
+  simple, 
+  simple.Service,
+  simple,
+  simple.Secret
 } from 'typekro';
 
 // CI/CD-aware application schema
@@ -117,7 +117,7 @@ export const cicdApp = toResourceGraph(
     
     return {
       // Build metadata configuration
-      buildConfig: simpleConfigMap({
+      buildConfig: simple({
         name: `${appName}-build-config`,
         data: {
           VERSION: schema.spec.version,
@@ -143,7 +143,7 @@ export const cicdApp = toResourceGraph(
       }),
       
       // Application secrets (managed by CI/CD)
-      appSecrets: simpleSecret({
+      appSecrets: simple.Secret({
         name: `${appName}-secrets`,
         data: {
           // Secrets injected by CI/CD pipeline
@@ -158,7 +158,7 @@ export const cicdApp = toResourceGraph(
       }),
       
       // Main application deployment
-      app: simpleDeployment({
+      app: simple.Deployment({
         name: appName,
         image: fullImageName,
         replicas: schema.spec.deployment.replicas,
@@ -225,7 +225,7 @@ export const cicdApp = toResourceGraph(
       }),
       
       // Service for the application
-      appService: simpleService({
+      appService: simple.Service({
         name: appName,
         selector: { 
           app: appName,

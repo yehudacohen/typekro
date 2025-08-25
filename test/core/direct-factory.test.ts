@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 describe('DirectResourceFactory', () => {
   const WebAppSpecSchema = type({
@@ -34,13 +34,13 @@ describe('DirectResourceFactory', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webappDeployment',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: Cel.template('%s-service', schema.spec.name),
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: schema.spec.port }],
@@ -76,7 +76,7 @@ describe('DirectResourceFactory', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -110,7 +110,7 @@ describe('DirectResourceFactory', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -153,7 +153,7 @@ describe('DirectResourceFactory', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -194,7 +194,7 @@ describe('DirectResourceFactory', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -231,7 +231,7 @@ describe('DirectResourceFactory', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -261,7 +261,7 @@ describe('DirectResourceFactory', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -295,7 +295,7 @@ describe('DirectResourceFactory', () => {
             status: WebAppStatusSchema,
           },
           (schema) => ({
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name: schema.spec.name,
               image: schema.spec.image,
               replicas: schema.spec.replicas,

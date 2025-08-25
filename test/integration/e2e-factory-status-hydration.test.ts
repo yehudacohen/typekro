@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { hydrateStatus } from '../../src/core/deployment/status-hydrator.js';
 import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 import { isCelExpression } from '../../src/utils/type-guards.js';
 import { isClusterAvailable } from './shared-kubeconfig';
 
@@ -213,13 +213,13 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webapp',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: Cel.concat(schema.spec.name, '-service'),
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 8080 }],
@@ -295,7 +295,7 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:alpine',
             replicas: schema.spec.replicas,

@@ -16,12 +16,7 @@ Let's start with the basics: a simple web application with type-safe configurati
 
 ```typescript
 import { type } from 'arktype';
-import { 
-  toResourceGraph, 
-  simpleDeployment, 
-  simpleService,
-  Cel
-} from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 // Define the application interface
 const WebAppSpec = type({
@@ -49,7 +44,7 @@ export const simpleWebApp = toResourceGraph(
   // ResourceBuilder function - defines the Kubernetes resources
   (schema) => ({
     // Web application deployment
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -62,7 +57,7 @@ export const simpleWebApp = toResourceGraph(
     }),
 
     // Service to expose the application
-    service: simpleService({
+    service: simple.Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }],
@@ -251,15 +246,7 @@ Now let's build a more complex example with a PostgreSQL database, demonstrating
 
 ```typescript
 import { type } from 'arktype';
-import { 
-  toResourceGraph, 
-  simpleStatefulSet, 
-  simpleService, 
-  simpleConfigMap, 
-  simpleSecret,
-  simpleDeployment,
-  Cel 
-} from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 // Define the database schema
 const DatabaseSpec = type({
@@ -290,7 +277,7 @@ const database = toResourceGraph(
   },
   (schema) => ({
     // Configuration for the database
-    config: simpleConfigMap({
+    config: simple({
       name: Cel.template('%s-config', schema.spec.name),
       data: {
         // Database configuration
@@ -309,7 +296,7 @@ const database = toResourceGraph(
     }),
     
     // Secret for sensitive data
-    credentials: simpleSecret({
+    credentials: simple.Secret({
       name: Cel.template('%s-credentials', schema.spec.name),
       data: {
         POSTGRES_PASSWORD: schema.spec.password,
@@ -320,7 +307,7 @@ const database = toResourceGraph(
     }),
     
     // StatefulSet for PostgreSQL with persistent storage
-    statefulSet: simpleStatefulSet({
+    statefulSet: simple.StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15',
       replicas: schema.spec.replicas,
@@ -337,7 +324,7 @@ const database = toResourceGraph(
     }),
     
     // Headless service for StatefulSet pod discovery
-    headlessService: simpleService({
+    headlessService: simple.Service({
       name: Cel.template('%s-headless', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -345,7 +332,7 @@ const database = toResourceGraph(
     }),
     
     // Regular service for database access
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -354,7 +341,7 @@ const database = toResourceGraph(
     
     // Conditional external service
     ...(schema.spec.externalAccess && {
-      externalService: simpleService({
+      externalService: simple.Service({
         name: Cel.template('%s-external', schema.spec.name),
         selector: { app: schema.spec.name },
         ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -406,7 +393,7 @@ const apiApp = toResourceGraph(
   },
   (schema) => ({
     // API deployment that connects to database
-    api: simpleDeployment({
+    api: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -430,7 +417,7 @@ const apiApp = toResourceGraph(
     }),
     
     // Service for the API
-    apiService: simpleService({
+    apiService: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -472,7 +459,7 @@ async function deployDatabaseApp() {
 #### 1. StatefulSet with Persistent Storage
 
 ```typescript
-statefulSet: simpleStatefulSet({
+statefulSet: simple.StatefulSet({
   name: schema.spec.name,
   image: 'postgres:15',
   replicas: schema.spec.replicas,
@@ -491,14 +478,14 @@ StatefulSets provide:
 
 ```typescript
 // Headless service for StatefulSet internal communication
-headlessService: simpleService({
+headlessService: simple.Service({
   name: Cel.template('%s-headless', schema.spec.name),
   selector: { app: schema.spec.name },
   clusterIP: 'None'  // Makes it headless
 }),
 
 // Regular service for application access
-service: simpleService({
+service: simple.Service({
   name: schema.spec.name,
   selector: { app: schema.spec.name },
   type: 'ClusterIP'
@@ -509,7 +496,7 @@ service: simpleService({
 
 ```typescript
 // ConfigMap for non-sensitive configuration
-config: simpleConfigMap({
+config: simple({
   name: Cel.template('%s-config', schema.spec.name),
   data: {
     POSTGRES_DB: schema.spec.databaseName,
@@ -519,7 +506,7 @@ config: simpleConfigMap({
 }),
 
 // Secret for sensitive data
-credentials: simpleSecret({
+credentials: simple.Secret({
   name: Cel.template('%s-credentials', schema.spec.name),
   data: {
     POSTGRES_PASSWORD: schema.spec.password
@@ -531,7 +518,7 @@ credentials: simpleSecret({
 
 ```typescript
 // API deployment references database
-api: simpleDeployment({
+api: simple.Deployment({
   env: {
     DATABASE_URL: Cel.template(
       'postgres://app:password@%s:5432/%s',
@@ -547,7 +534,7 @@ api: simpleDeployment({
 ### Add Health Checks
 
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: schema.spec.replicas,
@@ -570,10 +557,10 @@ const deployment = simpleDeployment({
 ### Add ConfigMap
 
 ```typescript
-import { simpleConfigMap } from 'typekro';
+import { simple } from 'typekro';
 
 const resources = {
-  config: simpleConfigMap({
+  config: simple({
     name: Cel.expr(schema.spec.name, '-config'),
     data: {
       'nginx.conf': `
@@ -587,7 +574,7 @@ const resources = {
     }
   }),
   
-  deployment: simpleDeployment({
+  deployment: simple.Deployment({
     name: schema.spec.name,
     image: schema.spec.image,
     volumeMounts: [{
@@ -605,11 +592,11 @@ const resources = {
 ### Add Ingress
 
 ```typescript
-import { simpleIngress } from 'typekro';
+import { simple } from 'typekro';
 
 // Only in production
 ...(schema.spec.environment === 'production' && {
-  ingress: simpleIngress({
+  ingress: simple.Ingress({
     name: Cel.expr(schema.spec.name, '-ingress'),
     rules: [{
       host: Cel.template('%s.example.com', schema.spec.name),
@@ -636,11 +623,11 @@ Create resources only when certain conditions are met:
 
 ```typescript
 const resources = {
-  app: simpleDeployment({ /* ... */ }),
+  app: simple.Deployment({ /* ... */ }),
   
   // Only create external service if external access is enabled
   ...(schema.spec.externalAccess && {
-    externalService: simpleService({
+    externalService: simple.Service({
       name: Cel.template('%s-external', schema.spec.name),
       type: 'LoadBalancer'
     })
@@ -648,7 +635,7 @@ const resources = {
   
   // Only create ingress in production
   ...(schema.spec.environment === 'production' && {
-    ingress: simpleIngress({
+    ingress: simple.Ingress({
       name: Cel.expr(schema.spec.name, '-ingress'),
       host: Cel.template('%s.example.com', schema.spec.name)
     })
@@ -706,7 +693,7 @@ psql -h <EXTERNAL-IP> -p 5432 -U app -d myapp
 Always store sensitive data in Kubernetes Secrets:
 
 ```typescript
-credentials: simpleSecret({
+credentials: simple.Secret({
   name: 'db-credentials',
   data: {
     POSTGRES_PASSWORD: process.env.DB_PASSWORD  // From environment
@@ -719,7 +706,7 @@ credentials: simpleSecret({
 Set appropriate resource limits for your workloads:
 
 ```typescript
-deployment: simpleDeployment({
+deployment: simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   resources: {
@@ -733,12 +720,12 @@ deployment: simpleDeployment({
 
 ```typescript
 // ✅ Good
-const userApiDeployment = simpleDeployment({ name: 'user-api' });
-const userApiService = simpleService({ name: 'user-api-service' });
+const userApiDeployment = simple.Deployment({ name: 'user-api' });
+const userApiService = simple.Service({ name: 'user-api-service' });
 
 // ❌ Avoid
-const d1 = simpleDeployment({ name: 'app' });
-const s1 = simpleService({ name: 'svc' });
+const d1 = simple.Deployment({ name: 'app' });
+const s1 = simple.Service({ name: 'svc' });
 ```
 
 ### 4. Environment-Specific Configuration
@@ -748,7 +735,7 @@ const config = schema.spec.environment === 'production'
   ? { replicas: 5, resources: { cpu: '500m', memory: '1Gi' } }
   : { replicas: 1, resources: { cpu: '100m', memory: '256Mi' } };
 
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: config.replicas,

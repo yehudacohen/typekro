@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { simpleDeployment, toResourceGraph } from '../../src/index.js';
+import { toResourceGraph, simple } from '../../src/index.js';
 
 describe('RGD Metadata Validation', () => {
   const TestSchema = type({ name: 'string' });
@@ -22,7 +22,7 @@ describe('RGD Metadata Validation', () => {
         status: TestSchema,
       },
       (schema) => ({
-        deployment: simpleDeployment({
+        deployment: simple.Deployment({
           id: 'testDeployment',
           name: schema.spec.name,
           image: 'nginx:latest',

@@ -1,15 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { Cel } from '../src/core/references/index.js';
-import {
-  customResource,
-  formatArktypeError,
-  formatReferenceError,
-  simpleDeployment,
-  TypeKroReferenceError,
-  ValidationError,
-  validateResourceGraph,
-} from '../src/core.js';
+import { customResource, formatArktypeError, formatReferenceError, TypeKroReferenceError, ValidationError, validateResourceGraph } from '../src/core.js';
+import { simple } from '../src/index.js';
 
 describe('Error Handling', () => {
   describe('Arktype Validation Errors', () => {
@@ -72,12 +65,12 @@ describe('Error Handling', () => {
 
   describe('Reference Resolution Errors', () => {
     it('should provide helpful error messages for missing resource references', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
       });
 
-      const webapp = simpleDeployment({
+      const webapp = simple.Deployment({
         name: 'web-app',
         image: 'nginx:latest',
         env: {
@@ -112,12 +105,12 @@ describe('Error Handling', () => {
   describe('Circular Dependency Detection', () => {
     it('should detect and report circular dependencies', () => {
       // Create a circular dependency scenario
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
       });
 
-      const webapp = simpleDeployment({
+      const webapp = simple.Deployment({
         name: 'web-app',
         image: 'nginx:latest',
         env: {

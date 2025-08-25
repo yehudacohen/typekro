@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'bun:test';
-import { simpleDeployment, simpleHpa, toResourceGraph } from '../../src/index';
+import { toResourceGraph, simple } from '../../src/index';
 
 describe('HPA Factory', () => {
   it('should create HPA without type assertions', () => {
-    const _webapp = simpleDeployment({
+    const _webapp = simple.Deployment({
       name: 'test-app',
       image: 'nginx:latest',
       replicas: 2,
     });
 
-    const hpa = simpleHpa({
+    const hpa = simple.Hpa({
       name: 'test-hpa',
       target: { name: 'test-app', kind: 'Deployment' },
       minReplicas: 1,
@@ -24,7 +24,7 @@ describe('HPA Factory', () => {
   });
 
   it('should handle CPU utilization configuration properly', () => {
-    const hpa = simpleHpa({
+    const hpa = simple.Hpa({
       name: 'cpu-hpa',
       target: { name: 'my-app', kind: 'Deployment' },
       minReplicas: 2,
@@ -49,7 +49,7 @@ describe('HPA Factory', () => {
   });
 
   it('should work without CPU utilization specified', async () => {
-    const hpa = simpleHpa({
+    const hpa = simple.Hpa({
       name: 'basic-hpa',
       target: { name: 'basic-app', kind: 'Deployment' },
       minReplicas: 1,
@@ -83,12 +83,12 @@ describe('HPA Factory', () => {
   });
 
   it('should serialize HPA correctly in resource graph', async () => {
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
     });
 
-    const hpa = simpleHpa({
+    const hpa = simple.Hpa({
       name: 'web-hpa',
       target: { name: 'web-app', kind: 'Deployment' },
       minReplicas: 1,
@@ -118,12 +118,12 @@ describe('HPA Factory', () => {
   });
 
   it('should support cross-resource references', async () => {
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'ref-app',
       image: 'nginx:latest',
     });
 
-    const hpa = simpleHpa({
+    const hpa = simple.Hpa({
       name: 'ref-hpa',
       target: {
         name: webapp.metadata?.name || 'fallback',
@@ -140,7 +140,7 @@ describe('HPA Factory', () => {
 
   it('should demonstrate V2 API benefits over V1', () => {
     // V2 API allows for more sophisticated metrics configuration
-    const hpa = simpleHpa({
+    const hpa = simple.Hpa({
       name: 'advanced-hpa',
       target: { name: 'advanced-app', kind: 'Deployment' },
       minReplicas: 1,

@@ -1,7 +1,7 @@
 {
   "name": "typekro",
   "version": "0.1.0",
-  "description": "TypeScript-native library for defining Kro resource graphs with full type safety",
+  "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,6 +9,10 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./simple": {
+      "import": "./dist/factories/simple/index.js",
+      "types": "./dist/factories/simple/index.d.ts"
     }
   },
   "files": [
@@ -85,7 +89,8 @@
     "js-yaml": "^4.1.0",
     "pino": "^9.8.0",
     "pino-pretty": "^13.1.1",
-    "prismjs": "^1.30.0"
+    "prismjs": "^1.30.0",
+    "shiki": "^3.11.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.1.3",

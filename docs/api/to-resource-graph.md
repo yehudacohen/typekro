@@ -108,7 +108,7 @@ interface TypedResourceGraph<TSpec, TStatus> {
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { toResourceGraph, simple, Cel } from 'typekro';
 
 // Define the schema using arktype
 const WebAppSpec = type({
@@ -135,20 +135,20 @@ const webapp = toResourceGraph(
   },
   // Resource builder - creates the actual Kubernetes resources
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,        // Type-safe schema reference
       image: schema.spec.image,      // Full IDE autocomplete
       replicas: schema.spec.replicas,
       ports: [80]
     }),
     
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }]
     }),
     
-    ingress: simpleIngress({
+    ingress: simple.Ingress({
       name: schema.spec.name,
       host: schema.spec.host,        // Schema reference
       serviceName: schema.spec.name, // References service above
@@ -157,7 +157,7 @@ const webapp = toResourceGraph(
   }),
   // Status builder - computes dynamic status
   (schema, resources) => ({
-    ready: Cel.expr(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
+    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
     url: Cel.template('https://%s', schema.spec.host),
     replicas: resources.deployment.status.readyReplicas
   })
@@ -181,7 +181,7 @@ const microservices = toResourceGraph(
   },
   (schema) => ({
     // Database
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: Cel.template('%s-db', schema.spec.name),
       image: 'postgres:13',
       env: {
@@ -191,14 +191,14 @@ const microservices = toResourceGraph(
       }
     }),
     
-    dbService: simpleService({
+    dbService: simple.Service({
       name: Cel.template('%s-db', schema.spec.name),
       selector: { app: Cel.template('%s-db', schema.spec.name) },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // API server that references database
-    api: simpleDeployment({
+    api: simple.Deployment({
       name: Cel.template('%s-api', schema.spec.name),
       image: 'myapp/api:latest',
       env: {
@@ -212,14 +212,14 @@ const microservices = toResourceGraph(
       }
     }),
     
-    apiService: simpleService({
+    apiService: simple.Service({
       name: Cel.template('%s-api', schema.spec.name),
       selector: { app: Cel.template('%s-api', schema.spec.name) },
       ports: [{ port: 8080, targetPort: 8080 }]
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(
+    ready: Cel.expr<boolean>(
       resources.database.status.readyReplicas, ' > 0 && ',
       resources.api.status.readyReplicas, ' > 0'
     )
@@ -250,26 +250,18 @@ const app = toResourceGraph(
     })
   },
   (schema) => ({
-    config: simpleConfigMap({
+    config: simple.ConfigMap({
       name: Cel.template('%s-config', schema.spec.name),
       data: {
         ENVIRONMENT: schema.spec.environment,
         LOG_LEVEL: schema.spec.logLevel,
         // Environment-specific values using CEL
-        DEBUG: Cel.conditional(
-          schema.spec.environment === 'development',
-          'true',
-          'false'
-        ),
-        API_TIMEOUT: Cel.conditional(
-          schema.spec.environment === 'production',
-          '30000',
-          '10000'
-        )
+        DEBUG: Cel.expr<string>(schema.spec.environment, ' == "development" ? "true" : "false"'),
+        API_TIMEOUT: Cel.expr<string>(schema.spec.environment, ' == "production" ? "30000" : "10000"')
       }
     }),
     
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -280,7 +272,7 @@ const app = toResourceGraph(
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
+    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
     environment: schema.spec.environment
   })
 );
@@ -311,7 +303,7 @@ const cluster = toResourceGraph(
   (schema) => ({
     // Create services dynamically based on spec
     services: schema.spec.services.map(serviceName => 
-      simpleDeployment({
+      simple.Deployment({
         name: serviceName,
         image: `myapp/${serviceName}:latest`,
         replicas: schema.spec.minReplicas
@@ -320,38 +312,30 @@ const cluster = toResourceGraph(
   }),
   (schema, resources) => ({
     // Sum total replicas across all services
-    totalReplicas: Cel.expr(
+    totalReplicas: Cel.expr<number>(
       resources.services.map(svc => svc.spec.replicas).join(' + ')
     ),
     
     // Sum ready replicas across all services  
-    readyReplicas: Cel.expr(
+    readyReplicas: Cel.expr<number>(
       resources.services.map(svc => svc.status.readyReplicas).join(' + ')
     ),
     
     // Compute overall health status
-    healthStatus: Cel.conditional(
-      Cel.expr(
-        resources.services.map(svc => 
-          `${svc.status.readyReplicas} >= ${svc.spec.replicas}`
-        ).join(' && ')
-      ),
-      'healthy',
-      Cel.conditional(
-        Cel.expr(
-          resources.services.map(svc => svc.status.readyReplicas).join(' + '),
-          ' > 0'
-        ),
-        'degraded',
-        'unhealthy'
-      )
+    healthStatus: Cel.expr<'healthy' | 'degraded' | 'unhealthy'>(
+      resources.services.map(svc => 
+        `${svc.status.readyReplicas} >= ${svc.spec.replicas}`
+      ).join(' && '),
+      ' ? "healthy" : (',
+      resources.services.map(svc => svc.status.readyReplicas).join(' + '),
+      ' > 0 ? "degraded" : "unhealthy")'
     ),
     
     // Individual service statuses
     serviceStatuses: Object.fromEntries(
       resources.services.map((svc, i) => [
         schema.spec.services[i],
-        Cel.expr(svc.status.readyReplicas, ' >= ', svc.spec.replicas)
+        Cel.expr<boolean>(svc.status.readyReplicas, ' >= ', svc.spec.replicas)
       ])
     )
   })
@@ -426,7 +410,7 @@ Schema references are fully type-safe:
 
 ```typescript
 (schema) => ({
-  deployment: simpleDeployment({
+  deployment: simple.Deployment({
     name: schema.spec.name,        // ✅ Type: string
     replicas: schema.spec.count,   // ❌ Type error: 'count' doesn't exist
     image: schema.spec.image       // ✅ Type: string
@@ -440,9 +424,9 @@ Status builders must match the defined schema:
 
 ```typescript
 (schema, resources) => ({
-  ready: resources.deployment.status.readyReplicas > 0,  // ✅ Type: boolean
-  url: `https://${schema.spec.host}`,                    // ✅ Type: string
-  invalid: 'not-in-schema'                               // ❌ Type error
+  ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),  // ✅ Type: boolean
+  url: Cel.template('https://%s', schema.spec.host),                            // ✅ Type: string
+  invalid: 'not-in-schema'                                                       // ❌ Type error
 })
 ```
 
@@ -477,19 +461,19 @@ Group related resources logically in the resource builder:
 ```typescript
 (schema) => ({
   // Data layer
-  database: simpleDeployment({ /* ... */ }),
-  dbService: simpleService({ /* ... */ }),
+  database: simple.Deployment({ /* ... */ }),
+  dbService: simple.Service({ /* ... */ }),
   
   // Application layer  
-  api: simpleDeployment({ /* ... */ }),
-  apiService: simpleService({ /* ... */ }),
+  api: simple.Deployment({ /* ... */ }),
+  apiService: simple.Service({ /* ... */ }),
   
   // Presentation layer
-  frontend: simpleDeployment({ /* ... */ }),
-  frontendService: simpleService({ /* ... */ }),
+  frontend: simple.Deployment({ /* ... */ }),
+  frontendService: simple.Service({ /* ... */ }),
   
   // Infrastructure
-  ingress: simpleIngress({ /* ... */ })
+  ingress: simple.Ingress({ /* ... */ })
 })
 ```
 
@@ -501,7 +485,7 @@ Use CEL for dynamic values, but prefer static values when possible:
 // Good: Use CEL for dynamic computation
 env: {
   SERVICE_URL: Cel.template('http://%s:8080', schema.spec.name),
-  DEBUG: Cel.conditional(schema.spec.environment === 'development', 'true', 'false')
+  DEBUG: Cel.expr<string>(schema.spec.environment, ' == "development" ? "true" : "false"')
 }
 
 // Good: Use static values when known

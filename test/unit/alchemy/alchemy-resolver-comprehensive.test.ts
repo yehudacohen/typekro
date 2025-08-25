@@ -14,25 +14,7 @@ function createMockAlchemyPromise(
   }) as AlchemyPromise;
 }
 
-import {
-  type AlchemyPromise,
-  type AlchemyResolutionContext,
-  type AlchemyResource,
-  buildResourceGraphWithDeferredResolution,
-  containsAlchemyPromises,
-  createAlchemyReferenceResolver,
-  createAlchemyResourceConfig,
-  createAlchemyResourceConfigs,
-  extractAlchemyPromises,
-  hasMixedDependencies,
-  isAlchemyPromise,
-  isAlchemyResource,
-  resolveAlchemyPromise,
-  resolveAllReferences,
-  resolveAllReferencesInAlchemyContext,
-  resolveReferencesWithAlchemy,
-  resolveTypeKroReferencesOnly,
-} from '../../../src/alchemy/resolver.js';
+import { type AlchemyPromise, type AlchemyResolutionContext, type AlchemyResource, buildResourceGraphWithDeferredResolution, containsAlchemyPromises, createAlchemyReferenceResolver, createAlchemyResourceConfig, createAlchemyResourceConfigs, extractAlchemyPromises, hasMixedDependencies, isAlchemyPromise, isAlchemyResource, resolveAlchemyPromise, resolveAllReferences, resolveAllReferencesInAlchemyContext, resolveReferencesWithAlchemy, resolveTypeKroReferencesOnly,  } from '../../../src/alchemy/resolver.js';
 import type { KubernetesResource } from '../../../src/core/types/kubernetes.js';
 
 describe('Alchemy Resolver Comprehensive', () => {

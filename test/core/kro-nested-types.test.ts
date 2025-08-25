@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
-import { Cel, simpleConfigMap, simpleDeployment, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 // --- Test Suite 1: End-to-End Schema and Builder Validation ---
 
@@ -43,7 +43,7 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
         status: WebAppStatusSchema,
       },
       (schema) => ({
-        deployment: simpleDeployment({
+        deployment: simple.Deployment({
           name: schema.spec.app.name,
           image: schema.spec.app.deployment.image,
           env: {
@@ -97,12 +97,12 @@ describe.skip('Cross-Resource Reference Test (needs API update)', () => {
         status: TestStatusSchema,
       },
       (schema) => {
-        const configMapResource = simpleConfigMap({
+        const configMapResource = simple.ConfigMap({
           name: 'app-config',
           data: { greeting: schema.spec.greeting },
         });
 
-        const deploymentResource = simpleDeployment({
+        const deploymentResource = simple.Deployment({
           name: schema.spec.appName,
           image: 'nginx',
           env: {

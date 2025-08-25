@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, simpleDeployment, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 describe('toResourceGraph API', () => {
   const WebAppSpecSchema = type({
@@ -33,7 +33,7 @@ describe('toResourceGraph API', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -61,7 +61,7 @@ describe('toResourceGraph API', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -92,7 +92,7 @@ describe('toResourceGraph API', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -122,7 +122,7 @@ describe('toResourceGraph API', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -153,7 +153,7 @@ describe('toResourceGraph API', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -184,7 +184,7 @@ describe('toResourceGraph API', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -229,7 +229,7 @@ describe('toResourceGraph API', () => {
           const replicas = schema.spec.replicas; // Should be KubernetesRef<number>
 
           return {
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name,
               image,
               replicas,
@@ -276,7 +276,7 @@ describe('toResourceGraph API', () => {
           status: ComplexStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.metadata.name,
             image: 'nginx:latest',
             replicas: 1,

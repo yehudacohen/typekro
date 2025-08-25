@@ -27,7 +27,7 @@ import type { Enhanced, KubernetesResource } from '../types.js';
  * );
  *
  * // Use in resource template
- * const webapp = simpleDeployment({
+ * const webapp = simple.Deployment({
  *   name: 'webapp',
  *   image: 'nginx',
  *   env: {

@@ -57,7 +57,7 @@ const efficientGraph = toResourceGraph(
   (schema) => {
     // Only create resources that are needed
     const resources: Record<string, any> = {
-      app: simpleDeployment({
+      app: simple.Deployment({
         name: schema.spec.name,
         image: schema.spec.image,
         replicas: schema.spec.replicas
@@ -66,7 +66,7 @@ const efficientGraph = toResourceGraph(
 
     // Conditional resource creation
     if (schema.spec.needsDatabase) {
-      resources.database = simpleDeployment({
+      resources.database = simple.Deployment({
         name: Cel.expr(schema.spec.name, "-db"),
         image: 'postgres:15'
       });
@@ -85,10 +85,10 @@ const efficientGraph = toResourceGraph(
 const inefficientGraph = toResourceGraph(
   { name: 'inefficient-app', schema: { spec: AppSpec } },
   (schema) => ({
-    app: simpleDeployment({ /* ... */ }),
-    database: simpleDeployment({ /* ... */ }),      // Always created
+    app: simple.Deployment({ /* ... */ }),
+    database: simple.Deployment({ /* ... */ }),      // Always created
     monitoring: createMonitoringStack(),           // Always created
-    cache: simpleDeployment({ /* ... */ }),        // Always created
+    cache: simple.Deployment({ /* ... */ }),        // Always created
     logging: createLoggingStack()                  // Always created
   }),
   statusBuilder
@@ -102,11 +102,11 @@ const inefficientGraph = toResourceGraph(
 const coreAppGraph = toResourceGraph(
   { name: 'core-app', schema: { spec: CoreAppSpec } },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image
     }),
-    service: simpleService({
+    service: simple.Service({
       name: Cel.expr(schema.spec.name, "-service"),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -118,11 +118,11 @@ const coreAppGraph = toResourceGraph(
 const databaseGraph = toResourceGraph(
   { name: 'database', schema: { spec: DatabaseSpec } },
   (schema) => ({
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: schema.spec.name,
       image: 'postgres:15'
     }),
-    service: simpleService({
+    service: simple.Service({
       name: Cel.expr(schema.spec.name, "-service"),
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432 }]
@@ -190,7 +190,7 @@ const cachedGraph = toResourceGraph(
     const cacheKey = JSON.stringify(schema.spec);
     
     return getCachedResource(cacheKey, () => ({
-      app: simpleDeployment({
+      app: simple.Deployment({
         name: schema.spec.name,
         image: schema.spec.image
       })
@@ -700,7 +700,7 @@ async function loadTestGraphCreation() {
       const graph = toResourceGraph(
         { name: `test-app-${batch}-${i}`, schema: { spec: AppSpec } },
         (schema) => ({
-          app: simpleDeployment({
+          app: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: 3
@@ -746,7 +746,7 @@ async function benchmarkFactories() {
   const graphs1 = configs.map(config => 
     toResourceGraph(
       { name: config.name, schema: { spec: AppSpec } },
-      schema => ({ app: simpleDeployment(config) }),
+      schema => ({ app: simple.Deployment(config) }),
       statusBuilder
     )
   );

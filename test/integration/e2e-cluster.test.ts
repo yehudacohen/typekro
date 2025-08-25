@@ -5,13 +5,7 @@ import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { secret } from '../../src/factories/index';
-import {
-  Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index';
+import { Cel, toResourceGraph, simple } from '../../src/index';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
@@ -216,7 +210,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
     // 1. Create a comprehensive TypeKro resource graph with cross-resource references
     console.log('📝 STEP 1: Creating TypeKro resource definitions...');
 
-    const appConfig = simpleConfigMap({
+    const appConfig = simple.ConfigMap({
       name: 'webapp-config',
       namespace: NAMESPACE,
       data: {
@@ -236,7 +230,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       },
     });
 
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres-db',
       namespace: NAMESPACE,
       image: 'postgres:13-alpine',
@@ -250,7 +244,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       ports: [{ containerPort: 5432, name: 'postgres' }],
     });
 
-    const _webapp = simpleDeployment({
+    const _webapp = simple.Deployment({
       name: 'webapp',
       namespace: NAMESPACE,
       image: 'nginx:alpine',
@@ -267,14 +261,14 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       ports: [{ containerPort: 80, name: 'http' }],
     });
 
-    const _dbService = simpleService({
+    const _dbService = simple.Service({
       name: 'postgres-service',
       namespace: NAMESPACE,
       selector: { app: 'postgres-db' },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
     });
 
-    const _webService = simpleService({
+    const _webService = simple.Service({
       name: 'webapp-service',
       namespace: NAMESPACE,
       selector: { app: 'webapp' },
@@ -304,7 +298,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
         status: WebAppStatusSchema,
       },
       (_schema) => ({
-        appConfig: simpleConfigMap({
+        appConfig: simple.ConfigMap({
           name: 'webapp-config',
           namespace: NAMESPACE,
           data: {
@@ -324,7 +318,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
           },
         }),
 
-        database: simpleDeployment({
+        database: simple.Deployment({
           name: 'postgres-db',
           namespace: NAMESPACE,
           image: 'postgres:13-alpine',
@@ -339,7 +333,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
           id: 'postgresDb',
         }),
 
-        webapp: simpleDeployment({
+        webapp: simple.Deployment({
           name: 'webapp',
           namespace: NAMESPACE,
           image: 'nginx:alpine',
@@ -354,7 +348,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
           id: 'webapp',
         }),
 
-        dbService: simpleService({
+        dbService: simple.Service({
           name: 'postgres-service',
           namespace: NAMESPACE,
           selector: { app: 'postgres-db' },
@@ -362,7 +356,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
           id: 'postgresService',
         }),
 
-        webappService: simpleService({
+        webappService: simple.Service({
           name: 'webapp-service',
           namespace: NAMESPACE,
           selector: { app: 'webapp' },

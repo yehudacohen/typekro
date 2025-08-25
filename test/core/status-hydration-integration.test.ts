@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { simpleDeployment, toResourceGraph } from '../../src/index.js';
+import { toResourceGraph, simple } from '../../src/index.js';
 
 describe('Status Hydration Integration', () => {
   it('should demonstrate Enhanced proxy status hydration after deployment', async () => {
@@ -31,7 +31,7 @@ describe('Status Hydration Integration', () => {
         status: WebAppStatusSchema,
       },
       (schema) => ({
-        deployment: simpleDeployment({
+        deployment: simple.Deployment({
           name: schema.spec.name,
           image: schema.spec.image,
           replicas: schema.spec.replicas,

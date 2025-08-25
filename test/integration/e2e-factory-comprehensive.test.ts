@@ -19,13 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { File } from 'alchemy/fs';
 import { type } from 'arktype';
-import {
-  Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration - use e2e-setup script
@@ -78,7 +72,7 @@ const createTestResourceGraph = (testPrefix = '') => {
       status: WebAppStatusSchema,
     },
     (_schema) => ({
-      config: simpleConfigMap({
+      config: simple.ConfigMap({
         name: `${namePrefix}webapp-config`,
         data: {
           MESSAGE: 'Hello from E2E test',
@@ -88,7 +82,7 @@ const createTestResourceGraph = (testPrefix = '') => {
         id: 'webappConfig',
       }),
 
-      deployment: simpleDeployment({
+      deployment: simple.Deployment({
         name: `${namePrefix}webapp-deployment`,
         image: 'nginx:alpine',
         replicas: 2,
@@ -101,7 +95,7 @@ const createTestResourceGraph = (testPrefix = '') => {
         id: 'webappDeployment',
       }),
 
-      service: simpleService({
+      service: simple.Service({
         name: `${namePrefix}webapp-service`,
         selector: { app: `${namePrefix}webapp-deployment` },
         ports: [{ port: 80, targetPort: 3000 }],

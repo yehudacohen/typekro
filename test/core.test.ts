@@ -5,14 +5,7 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import {
-  Cel,
-  isKubernetesRef,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-  validateResourceGraph,
-} from '../src/index.js';
+import { Cel, isKubernetesRef, simple, toResourceGraph, validateResourceGraph,  } from '../src/index.js';
 
 // =============================================================================
 // 1. FACTORY AND PROXY SYSTEM TESTS
@@ -20,7 +13,7 @@ import {
 
 describe('Core Factory & Proxy System', () => {
   it('should access real properties without casting or errors', () => {
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
     });
@@ -33,7 +26,7 @@ describe('Core Factory & Proxy System', () => {
   });
 
   it('should create references to any property without casting', () => {
-    const webSvc = simpleService({
+    const webSvc = simple.Service({
       name: 'web-svc',
       selector: { app: 'web-app' },
       ports: [{ port: 80 }],
@@ -64,8 +57,8 @@ describe('Core Factory & Proxy System', () => {
 
 describe('Cross-Resource References', () => {
   it('should create a type-safe reference for an env var without casting', () => {
-    const database = simpleDeployment({ name: 'db', image: 'postgres' });
-    const webapp = simpleDeployment({
+    const database = simple.Deployment({ name: 'db', image: 'postgres' });
+    const webapp = simple.Deployment({
       name: 'app',
       image: 'my-app',
       env: {
@@ -88,8 +81,8 @@ describe('Cross-Resource References', () => {
   });
 
   it('should handle references from static metadata correctly', () => {
-    const webapp = simpleDeployment({ name: 'web-app', image: 'nginx' });
-    const webService = simpleService({
+    const webapp = simple.Deployment({ name: 'web-app', image: 'nginx' });
+    const webService = simple.Service({
       name: 'web-service',
       // Use '!' because we know the factory creates this label.
       selector: { app: webapp.metadata.labels?.app! },
@@ -107,12 +100,12 @@ describe('Cross-Resource References', () => {
 
 describe('Serialization Engine', () => {
   it('should convert resource references into CEL expressions', async () => {
-    const dbService = simpleService({
+    const dbService = simple.Service({
       name: 'db',
       selector: { app: 'db' },
       ports: [{ port: 5432 }],
     });
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'app',
       image: 'my-app',
       env: {
@@ -143,8 +136,8 @@ describe('Serialization Engine', () => {
   });
 
   it('should pass validation for a valid graph', () => {
-    const db = simpleDeployment({ name: 'db', image: 'postgres' });
-    const app = simpleDeployment({
+    const db = simple.Deployment({ name: 'db', image: 'postgres' });
+    const app = simple.Deployment({
       name: 'app',
       image: 'my-app',
       env: { DB_REPLICAS: Cel.string(db.status?.replicas) },

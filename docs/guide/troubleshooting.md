@@ -150,8 +150,8 @@ const graph = toResourceGraph(
     status: MyAppStatus,
   },
   (schema) => ({
-  database: simpleDeployment({ name: 'db' }),
-  app: simpleDeployment({
+  database: simple.Deployment({ name: 'db' }),
+  app: simple.Deployment({
     env: {
       DB_HOST: database.status.podIP  // Make sure 'database' is defined above
     }
@@ -200,14 +200,14 @@ const wrong2 = Cel.expr('deployment.status.readyReplicas > 0');  // Don't quote 
 **Solution:**
 ```typescript
 // ✅ Use proper types
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3  // number, not string
 });
 
 // ❌ Common type errors
-const badDeployment = simpleDeployment({
+const badDeployment = simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: '3'  // Error: string not assignable to number
@@ -283,14 +283,14 @@ yamllint generated.yaml
 **Common issues:**
 ```typescript
 // ✅ Proper string values
-const config = simpleConfigMap({
+const config = simple({
   data: {
     'key': 'value'  // String value
   }
 });
 
 // ❌ Non-string values in ConfigMap data
-const badConfig = simpleConfigMap({
+const badConfig = simple({
   data: {
     'key': 123  // Should be string
   }
@@ -304,7 +304,7 @@ const badConfig = simpleConfigMap({
 **Solution:**
 ```typescript
 // Ensure all required fields are provided
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',        // Required
   image: 'nginx:latest', // Required
   // Optional fields with defaults
@@ -423,7 +423,7 @@ When reporting issues, include:
 
 ```typescript
 // Minimal example that reproduces the issue
-import { toResourceGraph, simpleDeployment } from 'typekro';
+import { toResourceGraph, simple } from 'typekro';
 import { type } from 'arktype';
 
 const AppSpec = type({ name: 'string' });
@@ -437,7 +437,7 @@ const graph = toResourceGraph(
     status: TestAppStatus,
   },
   (schema) => ({
-  app: simpleDeployment({
+  app: simple.Deployment({
     name: schema.spec.name,
     image: 'nginx:latest'
   })

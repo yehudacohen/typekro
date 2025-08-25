@@ -7,12 +7,11 @@
  */
 
 import { type } from 'arktype';
+import { Deployment, Service, Pvc } from '../src/factories/simple/index.js';
 import {
   Cel,
   externalRef,
-  simpleDeployment,
-  simplePvc,
-  simpleService,
+  
   toResourceGraph,
 } from '../src/index.js';
 
@@ -70,7 +69,7 @@ const databaseFactory = toResourceGraph(
     status: DatabaseStatusSchema,
   },
   (_schema) => ({
-    deployment: simpleDeployment({
+    deployment: Deployment({
       name: 'database-deployment',
       image: 'postgres:13', // Simplified for now
       env: {
@@ -85,13 +84,13 @@ const databaseFactory = toResourceGraph(
       },
     }),
 
-    service: simpleService({
+    service: Service({
       name: 'database-service',
       selector: { app: 'database' },
       ports: [{ port: 5432, targetPort: 5432 }],
     }),
 
-    pvc: simplePvc({
+    pvc: Pvc({
       name: 'database-storage',
       size: '10Gi', // Simplified for now
       accessModes: ['ReadWriteOnce'],
@@ -128,7 +127,7 @@ const webappFactory = toResourceGraph(
     return {
       database, // Include the external reference in the resource graph
 
-      deployment: simpleDeployment({
+      deployment: Deployment({
         name: 'webapp-deployment',
         image: schema.spec.image,
         replicas: schema.spec.replicas,
@@ -146,7 +145,7 @@ const webappFactory = toResourceGraph(
         },
       }),
 
-      service: simpleService({
+      service: Service({
         name: 'webapp-service',
         selector: { app: 'webapp' },
         ports: [{ port: 80, targetPort: 3000 }],
@@ -268,7 +267,7 @@ const monitoringFactory = toResourceGraph(
       database,
       webapp,
 
-      deployment: simpleDeployment({
+      deployment: Deployment({
         name: 'monitoring-deployment',
         image: 'prometheus:latest',
         env: {

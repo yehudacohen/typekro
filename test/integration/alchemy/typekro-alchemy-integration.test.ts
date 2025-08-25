@@ -10,13 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import alchemy from 'alchemy';
 import { File } from 'alchemy/fs';
 import { type } from 'arktype';
-import {
-  Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../../src/index.js';
 
 const _TEST_TIMEOUT = 120000; // 2 minutes
 
@@ -75,7 +69,7 @@ describe('TypeKro-Alchemy Integration', () => {
         },
         (schema) => {
           // Create TypeKro resources
-          const database = simpleDeployment({
+          const database = simple.Deployment({
             name: 'postgres',
             image: 'postgres:13',
             replicas: 1,
@@ -87,7 +81,7 @@ describe('TypeKro-Alchemy Integration', () => {
             },
           });
 
-          const webapp = simpleDeployment({
+          const webapp = simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -233,7 +227,7 @@ describe('TypeKro-Alchemy Integration', () => {
           status: SimpleStatusSchema,
         },
         (schema) => ({
-          app: simpleDeployment({
+          app: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: 1,
@@ -359,7 +353,7 @@ describe('TypeKro-Alchemy Integration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          webapp: simpleDeployment({
+          webapp: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: 1,
@@ -379,7 +373,7 @@ describe('TypeKro-Alchemy Integration', () => {
             },
           }),
 
-          config: simpleConfigMap({
+          config: simple.ConfigMap({
             name: 'webapp-config',
             id: 'config',
             data: {
@@ -567,7 +561,7 @@ data:
           status: FullStackStatusSchema,
         },
         (schema) => {
-          const webapp = simpleDeployment({
+          const webapp = simple.Deployment({
             name: schema.spec.appName,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -582,7 +576,7 @@ data:
             },
           });
 
-          const service = simpleService({
+          const service = simple.Service({
             name: schema.spec.appName,
             selector: { app: schema.spec.appName },
             ports: [{ port: 80, targetPort: 3000 }],
@@ -652,7 +646,7 @@ data:
           status: AppStatusSchema,
         },
         (schema) => ({
-          app: simpleDeployment({
+          app: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: 1,
@@ -782,7 +776,7 @@ data:
         },
         (schema) => ({
           // TypeKro resources that may depend on Alchemy
-          app: simpleDeployment({
+          app: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: 1,
@@ -794,7 +788,7 @@ data:
           }),
 
           // Conditional TypeKro resource based on schema
-          internalDb: simpleDeployment({
+          internalDb: simple.Deployment({
             name: 'internal-postgres',
             image: 'postgres:13',
             replicas: 1,
@@ -1038,7 +1032,7 @@ resource "aws_s3_bucket" "webapp_assets" {
         },
         (schema) => ({
           // Application deployment
-          webapp: simpleDeployment({
+          webapp: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -1054,7 +1048,7 @@ resource "aws_s3_bucket" "webapp_assets" {
           }),
 
           // Service to expose the app
-          service: simpleService({
+          service: simple.Service({
             name: schema.spec.name,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 3000 }],
@@ -1062,7 +1056,7 @@ resource "aws_s3_bucket" "webapp_assets" {
           }),
 
           // Configuration
-          config: simpleConfigMap({
+          config: simple.ConfigMap({
             name: Cel.template('%s-config', schema.spec.name),
             id: 'config',
             data: {

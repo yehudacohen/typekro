@@ -18,12 +18,7 @@ We'll build a database system with:
 import { type } from 'arktype';
 import { 
   toResourceGraph, 
-  simpleStatefulSet, 
-  simpleService, 
-  simpleConfigMap, 
-  simpleSecret,
-  simpleDeployment,
-  simplePvc,
+  simple,
   Cel 
 } from 'typekro';
 
@@ -56,7 +51,7 @@ const database = toResourceGraph(
   },
   (schema) => ({
     // Configuration for the database
-    config: simpleConfigMap({
+    config: simple({
       name: Cel.template('%s-config', schema.spec.name),
       data: {
         // Database configuration
@@ -75,7 +70,7 @@ const database = toResourceGraph(
     }),
     
     // Secret for sensitive data
-    credentials: simpleSecret({
+    credentials: simple.Secret({
       name: Cel.template('%s-credentials', schema.spec.name),
       data: {
         POSTGRES_PASSWORD: schema.spec.password,
@@ -86,7 +81,7 @@ const database = toResourceGraph(
     }),
     
     // StatefulSet for PostgreSQL with persistent storage
-    statefulSet: simpleStatefulSet({
+    statefulSet: simple.StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15',
       replicas: schema.spec.replicas,
@@ -103,7 +98,7 @@ const database = toResourceGraph(
     }),
     
     // Headless service for StatefulSet pod discovery
-    headlessService: simpleService({
+    headlessService: simple.Service({
       name: Cel.template('%s-headless', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -111,7 +106,7 @@ const database = toResourceGraph(
     }),
     
     // Regular service for database access
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -121,7 +116,7 @@ const database = toResourceGraph(
     // Conditional external service
     externalService: Cel.conditional(
       schema.spec.externalAccess,
-      simpleService({
+      simple.Service({
         name: Cel.template('%s-external', schema.spec.name),
         selector: { app: schema.spec.name },
         ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -171,7 +166,7 @@ const apiApp = toResourceGraph(
     database: database,
     
     // API deployment that connects to database
-    api: simpleDeployment({
+    api: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -196,7 +191,7 @@ const apiApp = toResourceGraph(
     }),
     
     // Service for the API
-    apiService: simpleService({
+    apiService: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -254,7 +249,7 @@ async function generateYaml() {
 ### 1. **StatefulSet with Persistent Storage**
 
 ```typescript
-statefulSet: simpleStatefulSet({
+statefulSet: simple.StatefulSet({
   name: schema.spec.name,
   image: 'postgres:15',
   replicas: schema.spec.replicas,
@@ -273,14 +268,14 @@ StatefulSets provide:
 
 ```typescript
 // Headless service for StatefulSet internal communication
-headlessService: simpleService({
+headlessService: simple.Service({
   name: Cel.template('%s-headless', schema.spec.name),
   selector: { app: schema.spec.name },
   clusterIP: 'None'  // Makes it headless
 }),
 
 // Regular service for application access
-service: simpleService({
+service: simple.Service({
   name: schema.spec.name,
   selector: { app: schema.spec.name },
   type: 'ClusterIP'
@@ -291,7 +286,7 @@ service: simpleService({
 
 ```typescript
 // ConfigMap for non-sensitive configuration
-config: simpleConfigMap({
+config: simple({
   name: Cel.template('%s-config', schema.spec.name),
   data: {
     POSTGRES_DB: schema.spec.databaseName,
@@ -301,7 +296,7 @@ config: simpleConfigMap({
 }),
 
 // Secret for sensitive data
-credentials: simpleSecret({
+credentials: simple.Secret({
   name: Cel.template('%s-credentials', schema.spec.name),
   data: {
     POSTGRES_PASSWORD: schema.spec.password
@@ -313,7 +308,7 @@ credentials: simpleSecret({
 
 ```typescript
 // API deployment references database
-api: simpleDeployment({
+api: simple.Deployment({
   env: {
     DATABASE_URL: Cel.template(
       'postgres://app:password@%s:5432/%s',
@@ -330,7 +325,7 @@ api: simpleDeployment({
 // Only create external service if external access is enabled
 externalService: Cel.conditional(
   schema.spec.externalAccess,
-  simpleService({
+  simple.Service({
     name: Cel.template('%s-external', schema.spec.name),
     type: 'LoadBalancer'
   }),
@@ -357,7 +352,7 @@ const replicatedDatabase = toResourceGraph(
   },
   (schema) => ({
     // Master database
-    master: simpleStatefulSet({
+    master: simple.StatefulSet({
       name: Cel.template('%s-master', schema.spec.name),
       image: 'postgres:15',
       replicas: schema.spec.masterReplicas,
@@ -368,7 +363,7 @@ const replicatedDatabase = toResourceGraph(
     }),
     
     // Slave replicas
-    slaves: simpleStatefulSet({
+    slaves: simple.StatefulSet({
       name: Cel.template('%s-slave', schema.spec.name),
       image: 'postgres:15',
       replicas: schema.spec.slaveReplicas,
@@ -379,7 +374,7 @@ const replicatedDatabase = toResourceGraph(
     }),
     
     // Read-write service (points to master)
-    writeService: simpleService({
+    writeService: simple.Service({
       name: Cel.template('%s-write', schema.spec.name),
       selector: { 
         app: Cel.template('%s-master', schema.spec.name),
@@ -389,7 +384,7 @@ const replicatedDatabase = toResourceGraph(
     }),
     
     // Read-only service (points to slaves)
-    readService: simpleService({
+    readService: simple.Service({
       name: Cel.template('%s-read', schema.spec.name),
       selector: { 
         app: Cel.template('%s-slave', schema.spec.name),
@@ -428,13 +423,13 @@ const databaseWithBackup = toResourceGraph(
   },
   (schema) => ({
     // Main database
-    database: simpleStatefulSet({
+    database: simple.StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15'
     }),
     
     // Backup credentials
-    backupSecret: simpleSecret({
+    backupSecret: simple.Secret({
       name: Cel.template('%s-backup-creds', schema.spec.name),
       data: {
         S3_ACCESS_KEY: 'your-access-key',
@@ -443,7 +438,7 @@ const databaseWithBackup = toResourceGraph(
     }),
     
     // Backup CronJob
-    backup: simpleCronJob({
+    backup: simple.CronJob({
       name: Cel.template('%s-backup', schema.spec.name),
       image: 'postgres-backup:latest',
       schedule: schema.spec.backupSchedule,
@@ -502,7 +497,7 @@ async function deployProd() {
 Always store sensitive data in Kubernetes Secrets:
 
 ```typescript
-credentials: simpleSecret({
+credentials: simple.Secret({
   name: 'db-credentials',
   data: {
     POSTGRES_PASSWORD: process.env.DB_PASSWORD  // From environment
@@ -515,7 +510,7 @@ credentials: simpleSecret({
 Set appropriate resource limits for database workloads:
 
 ```typescript
-statefulSet: simpleStatefulSet({
+statefulSet: simple.StatefulSet({
   name: 'postgres',
   image: 'postgres:15',
   resources: {
@@ -548,7 +543,7 @@ volumeClaimTemplates: [{
 Include health checks and monitoring:
 
 ```typescript
-statefulSet: simpleStatefulSet({
+statefulSet: simple.StatefulSet({
   name: 'postgres',
   healthCheck: {
     readinessProbe: {

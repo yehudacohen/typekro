@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { kustomization, simpleDeployment, toResourceGraph } from '../../../src/index.js';
+import { kustomization, toResourceGraph, simple } from '../../../src/index.js';
 
 describe('Kustomize Integration', () => {
   it('should create Kustomization with basic configuration', () => {
@@ -44,7 +44,7 @@ describe('Kustomize Integration', () => {
         }),
       },
       (schema) => ({
-        database: simpleDeployment({
+        database: simple.Deployment({
           id: 'database',
           name: 'database',
           image: 'postgres:13',

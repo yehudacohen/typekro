@@ -3,11 +3,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import {
-  kroCustomResource,
-  kroCustomResourceDefinition,
-  resourceGraphDefinition,
-} from '../../src/factories/kro/index.js';
+import { kroCustomResource, kroCustomResourceDefinition, resourceGraphDefinition,  } from '../../src/factories/kro/index.js';
 
 describe('Kro Factory Integration', () => {
   it('should demonstrate complete Kro workflow with all factory types', () => {

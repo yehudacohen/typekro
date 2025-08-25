@@ -4,11 +4,18 @@ Complete reference for all TypeKro APIs, functions, and types.
 
 ## Core Functions
 
-### [toResourceGraph](./to-resource-graph.md)
-The primary function for creating typed resource graphs.
+### [kubernetesComposition](./kubernetes-composition.md) (Recommended)
+The imperative composition pattern for creating typed resource graphs.
 
 ```typescript
-const graph = toResourceGraph(name, builder, schema);
+const graph = kubernetesComposition(definition, compositionFunction);
+```
+
+### [toResourceGraph](./to-resource-graph.md) (Declarative)
+Alternative declarative function for creating typed resource graphs.
+
+```typescript
+const graph = toResourceGraph(definition, resourceBuilder, statusBuilder);
 ```
 
 ### [Factory Functions](./factories.md)
@@ -16,9 +23,9 @@ Pre-built functions for creating common Kubernetes resources.
 
 ```typescript
 import { 
-  simpleDeployment, 
-  simpleService, 
-  simpleConfigMap 
+  simple, 
+  kubernetesComposition,
+  toResourceGraph
 } from 'typekro';
 ```
 
@@ -37,32 +44,29 @@ const url = Cel.template('https://%s/api', service.status.loadBalancer.ingress[0
 All factory functions are documented in the [Factory Functions](./factories.md) reference. Key categories include:
 
 ### Workloads
-- `simpleDeployment` - Create Kubernetes Deployments
-- `simpleStatefulSet` - Create StatefulSets
-- `simpleDaemonSet` - Create DaemonSets
-- `simpleJob` - Create Jobs
-- `simpleCronJob` - Create CronJobs
+- `Deployment` / `simple.Deployment` - Create Kubernetes Deployments
+- `StatefulSet` / `simple.StatefulSet` - Create StatefulSets
+- `Job` / `simple.Job` - Create Jobs
+- `CronJob` / `simple.CronJob` - Create CronJobs
 
 ### Networking
-- `simpleService` - Create Services
-- `simpleIngress` - Create Ingress resources
-- `simpleNetworkPolicy` - Create NetworkPolicies
+- `Service` / `simple.Service` - Create Services
+- `Ingress` / `simple.Ingress` - Create Ingress resources
+- `NetworkPolicy` / `simple.NetworkPolicy` - Create NetworkPolicies
 
 ### Storage
-- `simplePvc` - Create PersistentVolumeClaims
-- `simplePv` - Create PersistentVolumes
-- `simpleStorageClass` - Create StorageClasses
+- `Pvc` / `simple.Pvc` - Create PersistentVolumeClaims
 
 ### Configuration
-- `simpleConfigMap` - Create ConfigMaps
-- `simpleSecret` - Create Secrets
+- `ConfigMap` / `simple` - Create ConfigMaps
+- `Secret` / `simple.Secret` - Create Secrets
 
-### RBAC
-- `simpleRole` - Create Roles
-- `simpleRoleBinding` - Create RoleBindings
-- `simpleServiceAccount` - Create ServiceAccounts
-- `simpleClusterRole` - Create ClusterRoles
-- `simpleClusterRoleBinding` - Create ClusterRoleBindings
+### Autoscaling
+- `Hpa` / `simple.Hpa` - Create Horizontal Pod Autoscalers
+
+### Helm & YAML
+- `HelmChart` / `simple.HelmChart` - Create Helm releases
+- `YamlFile` / `simple.YamlFile` - Include YAML files
 
 ## Types
 
@@ -95,15 +99,15 @@ const app = toResourceGraph(
     status: MyAppStatus,
   },
   (schema) => ({
-  deployment: simpleDeployment({
+  deployment: simple.Deployment({
     name: schema.spec.name,
     image: schema.spec.image
   })
 }), { spec: AppSpec, status: AppStatus });
 
 // Cross-resource references
-const database = simpleDeployment({ name: 'db' });
-const app = simpleDeployment({
+const database = simple.Deployment({ name: 'db' });
+const app = simple.Deployment({
   env: { DB_HOST: database.status.podIP }
 });
 
@@ -122,15 +126,21 @@ await factory.deploy(spec);
 
 ```typescript
 // Core functions
-import { toResourceGraph, Cel } from 'typekro';
+import { kubernetesComposition, toResourceGraph, Cel } from 'typekro';
 
-// Factory functions
-import { 
-  simpleDeployment, 
-  simpleService,
-  simpleConfigMap,
-  simpleSecret
-} from 'typekro';
+// Factory functions (recommended - direct imports)
+import { Deployment, Service, ConfigMap, Secret } from 'typekro/simple';
+
+// Or use simple namespace
+import { simple } from 'typekro';
+
+// Direct imports (cleaner)
+const deployment = Deployment({ /* ... */ });
+const service = Service({ /* ... */ });
+
+// Namespace imports (also valid)
+const configMap = simple({ /* ... */ });
+const secret = simple.Secret({ /* ... */ });
 
 // Types
 import type { 

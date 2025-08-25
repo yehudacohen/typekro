@@ -1,34 +1,16 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  // New Certificate Resources
-  certificateSigningRequest,
-  componentStatus,
-  csiDriver,
-  csiNode,
-  // New Extensions Resources
-  customResourceDefinition,
-  // New Autoscaling V1 Resources
-  horizontalPodAutoscalerV1,
-  // New Networking Resources
-  ingressClass,
-  isKubernetesRef,
-  // New Coordination Resources
-  lease,
-  // New Admission Resources
-  mutatingWebhookConfiguration,
-  // New Core Resources
-  node,
-  // New Priority and Runtime Resources
-  priorityClass,
-  // New Apps Resources
-  replicationController,
-  runtimeClass,
-  // Serialization
-  toResourceGraph,
-  validatingWebhookConfiguration,
-  // New Storage Resources
-  volumeAttachment,
-} from '../../src/index';
+import { // New Certificate Resources
+  certificateSigningRequest, componentStatus, csiDriver, csiNode, // New Extensions Resources
+  customResourceDefinition, // New Autoscaling V1 Resources
+  horizontalPodAutoscalerV1, // New Networking Resources
+  ingressClass, isKubernetesRef, // New Coordination Resources
+  lease, // New Admission Resources
+  mutatingWebhookConfiguration, // New Core Resources
+  node, // New Priority and Runtime Resources
+  priorityClass, // New Apps Resources
+  replicationController, runtimeClass, // Serialization
+  toResourceGraph, validatingWebhookConfiguration, // New Storage Resources
+  volumeAttachment,  } from '../../src/index';
 
 describe('New Resource Factory Coverage', () => {
   describe('Apps Resources', () => {

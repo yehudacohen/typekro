@@ -12,12 +12,12 @@ TypeKro storage factories provide:
 
 ## Core Storage Types
 
-### `simplePvc()`
+### `simple.Pvc()`
 
 Creates a Kubernetes Persistent Volume Claim with simplified configuration.
 
 ```typescript
-function simplePvc(config: SimplePvcConfig): Enhanced<V1PersistentVolumeClaimSpec, V1PersistentVolumeClaimStatus>
+function simple.Pvc(config: SimplePvcConfig): Enhanced<V1PersistentVolumeClaimSpec, V1PersistentVolumeClaimStatus>
 ```
 
 #### Parameters
@@ -41,7 +41,7 @@ Enhanced PersistentVolumeClaim with automatic readiness evaluation.
 #### Example: Basic PVC
 
 ```typescript
-import { toResourceGraph, simplePvc, simpleDeployment, type } from 'typekro';
+import { toResourceGraph, simple, type } from 'typekro';
 
 const StorageAppSpec = type({
   name: 'string',
@@ -58,7 +58,7 @@ const storageApp = toResourceGraph(
   },
   (schema) => ({
     // Persistent storage
-    storage: simplePvc({
+    storage: simple.Pvc({
       name: Cel.template('%s-storage', schema.spec.name),
       size: schema.spec.storageSize,
       accessModes: ['ReadWriteOnce'],
@@ -66,7 +66,7 @@ const storageApp = toResourceGraph(
     }),
     
     // Application that uses the storage
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       ports: [80],
@@ -94,7 +94,7 @@ const storageApp = toResourceGraph(
 #### Example: Database with Persistent Storage
 
 ```typescript
-import { toResourceGraph, simplePvc, simpleStatefulSet, type } from 'typekro';
+import { toResourceGraph, simple, type } from 'typekro';
 
 const DatabaseSpec = type({
   name: 'string',
@@ -112,7 +112,7 @@ const databaseWithStorage = toResourceGraph(
   },
   (schema) => ({
     // Database with persistent storage
-    database: simpleStatefulSet({
+    database: simple.StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15',
       replicas: schema.spec.replicas,
@@ -142,6 +142,89 @@ const databaseWithStorage = toResourceGraph(
 );
 ```
 
+
+### `simple.PersistentVolume()`
+
+Creates a Kubernetes PersistentVolume with simplified configuration for storage provisioning.
+
+```typescript
+function PersistentVolume(config: PersistentVolumeConfig): Enhanced<V1PvSpec, V1PvStatus>
+```
+
+#### Parameters
+
+- **`config`**: Simplified persistent volume configuration
+
+```typescript
+interface PersistentVolumeConfig {
+  name: string;
+  size: string;
+  storageClass?: string;
+  accessModes?: ('ReadWriteOnce' | 'ReadOnlyMany' | 'ReadWriteMany')[];
+  hostPath?: string;
+  nfs?: {
+    server: string;
+    path: string;
+  };
+  persistentVolumeReclaimPolicy?: 'Retain' | 'Recycle' | 'Delete';
+}
+```
+
+#### Returns
+
+Enhanced PersistentVolume with automatic readiness evaluation.
+
+#### Example: NFS Storage Volume
+
+```typescript
+import { toResourceGraph, simple, type } from 'typekro';
+
+const StorageVolumeSpec = type({
+  name: 'string',
+  nfsServer: 'string',
+  nfsPath: 'string',
+  size: 'string'
+});
+
+const storageVolume = toResourceGraph(
+  {
+    name: 'storage-volume',
+    apiVersion: 'storage.example.com/v1',
+    kind: 'StorageVolume',
+    spec: StorageVolumeSpec,
+    status: type({ phase: 'string', ready: 'boolean' })
+  },
+  (schema) => ({
+    // NFS-backed Persistent Volume
+    volume: simple.PersistentVolume({
+      name: schema.spec.name,
+      size: schema.spec.size,
+      accessModes: ['ReadWriteMany'],
+      nfs: {
+        server: schema.spec.nfsServer,
+        path: schema.spec.nfsPath
+      },
+      persistentVolumeReclaimPolicy: 'Retain'
+    }),
+    
+    // PVC to claim the volume
+    claim: simple.Pvc({
+      name: Cel.template('%s-claim', schema.spec.name),
+      size: schema.spec.size,
+      accessModes: ['ReadWriteMany']
+    })
+  }),
+  (schema, resources) => ({
+    phase: resources.volume.status.phase,
+    ready: Cel.expr(resources.volume.status.phase, ' == "Available" || " && resources.volume.status.phase ' == "Bound"')
+  })
+);
+```
+
+#### Readiness Logic
+
+- **Ready**: Volume phase is "Available" or "Bound"
+- **Status Details**: Tracks volume provisioning and binding status
 ## Advanced Storage Functions
 
 For scenarios requiring complete control, TypeKro provides full storage factory functions:
@@ -219,7 +302,7 @@ const multiTierApp = toResourceGraph(
   },
   (schema) => ({
     // Fast storage for database
-    dbStorage: simplePvc({
+    dbStorage: simple.Pvc({
       name: 'database-storage',
       size: '50Gi',
       storageClass: 'fast-ssd',
@@ -227,7 +310,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Slower storage for backups
-    backupStorage: simplePvc({
+    backupStorage: simple.Pvc({
       name: 'backup-storage', 
       size: '500Gi',
       storageClass: 'standard',
@@ -235,7 +318,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Shared storage for files
-    sharedStorage: simplePvc({
+    sharedStorage: simple.Pvc({
       name: 'shared-storage',
       size: '100Gi', 
       storageClass: 'nfs',
@@ -243,7 +326,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Database using fast storage
-    database: simpleStatefulSet({
+    database: simple.StatefulSet({
       name: 'postgres',
       image: 'postgres:15',
       volumeMounts: [{
@@ -257,7 +340,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Application using shared storage
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: 'web-app',
       image: 'nginx:1.21',
       replicas: 3,
@@ -311,7 +394,7 @@ const csiStorage = toResourceGraph(
     }),
     
     // PVC using CSI storage class
-    appStorage: simplePvc({
+    appStorage: simple.Pvc({
       name: 'csi-storage',
       size: '20Gi',
       storageClass: 'csi-cephfs',
@@ -319,7 +402,7 @@ const csiStorage = toResourceGraph(
     }),
     
     // Application using CSI storage
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       replicas: 3,
@@ -374,14 +457,14 @@ const backupEnabledApp = toResourceGraph(
     }),
     
     // Application storage
-    appStorage: simplePvc({
+    appStorage: simple.Pvc({
       name: 'app-storage',
       size: '10Gi',
       storageClass: 'snapshot-enabled'
     }),
     
     // Application
-    app: simpleStatefulSet({
+    app: simple.StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15',
       volumeMounts: [{
@@ -395,7 +478,7 @@ const backupEnabledApp = toResourceGraph(
     }),
     
     // Backup CronJob
-    backup: simpleCronJob({
+    backup: simple.CronJob({
       name: 'backup-job',
       image: 'snapshot-tool:latest',
       schedule: schema.spec.backupSchedule,
@@ -467,7 +550,7 @@ accessModes: ['ReadWriteMany']
 Always specify storage resource requirements:
 
 ```typescript
-const storage = simplePvc({
+const storage = simple.Pvc({
   name: 'app-storage',
   size: '10Gi',  // Specific size requirement
   storageClass: 'fast-ssd'  // Performance class
@@ -498,7 +581,7 @@ Include backup strategies in your storage design:
 storageClass: 'snapshot-enabled'
 
 // Include backup jobs
-backup: simpleCronJob({
+backup: simple.CronJob({
   name: 'backup',
   schedule: '0 2 * * *',  // Daily backups
   image: 'backup-tool:latest'

@@ -71,11 +71,9 @@ graph TB
 import { type } from 'arktype';
 import { 
   toResourceGraph, 
-  simpleDeployment, 
-  simpleService,
-  simpleConfigMap,
-  simpleSecret,
-  simplePvc
+  simple, 
+  simple.Service,
+  simple
 } from 'typekro';
 
 // Monitoring configuration schema
@@ -156,7 +154,7 @@ export const monitoringStack = toResourceGraph(
   (schema) => {
     return {
       // Prometheus Server
-      prometheusConfig: simpleConfigMap({
+      prometheusConfig: simple({
         name: 'prometheus-config',
         data: {
           'prometheus.yml': `
@@ -232,7 +230,7 @@ ${schema.spec.targets.map(target => `
       }),
       
       // Prometheus alert rules
-      prometheusRules: simpleConfigMap({
+      prometheusRules: simple({
         name: 'prometheus-rules',
         data: {
           'alerts.yml': `
@@ -283,7 +281,7 @@ groups:
       }),
       
       // Prometheus storage
-      prometheusStorage: simplePvc({
+      prometheusStorage: simple.Pvc({
         name: 'prometheus-storage',
         accessMode: 'ReadWriteOnce',
         size: schema.spec.prometheus.storageSize,
@@ -291,7 +289,7 @@ groups:
       }),
       
       // Prometheus deployment
-      prometheus: simpleDeployment({
+      prometheus: simple.Deployment({
         name: 'prometheus',
         image: schema.spec.prometheus.image,
         replicas: 1,
@@ -328,14 +326,14 @@ groups:
       }),
       
       // Prometheus service
-      prometheusService: simpleService({
+      prometheusService: simple.Service({
         name: 'prometheus',
         selector: { app: 'prometheus' },
         ports: [{ port: 9090, targetPort: 9090 }]
       }),
       
       // AlertManager configuration
-      alertManagerConfig: simpleConfigMap({
+      alertManagerConfig: simple({
         name: 'alertmanager-config',
         data: {
           'alertmanager.yml': `
@@ -390,7 +388,7 @@ receivers:
       }),
       
       // AlertManager deployment
-      alertManager: simpleDeployment({
+      alertManager: simple.Deployment({
         name: 'alertmanager',
         image: schema.spec.alerting.image,
         replicas: 1,
@@ -414,14 +412,14 @@ receivers:
       }),
       
       // AlertManager service
-      alertManagerService: simpleService({
+      alertManagerService: simple.Service({
         name: 'alertmanager',
         selector: { app: 'alertmanager' },
         ports: [{ port: 9093, targetPort: 9093 }]
       }),
       
       // Grafana configuration
-      grafanaConfig: simpleConfigMap({
+      grafanaConfig: simple({
         name: 'grafana-config',
         data: {
           'grafana.ini': `
@@ -474,7 +472,7 @@ providers:
       }),
       
       // Grafana secrets
-      grafanaSecrets: simpleSecret({
+      grafanaSecrets: simple.Secret({
         name: 'grafana-secrets',
         data: {
           admin_password: Buffer.from(schema.spec.grafana.adminPassword).toString('base64')
@@ -482,7 +480,7 @@ providers:
       }),
       
       // Grafana deployment
-      grafana: simpleDeployment({
+      grafana: simple.Deployment({
         name: 'grafana',
         image: schema.spec.grafana.image,
         replicas: 1,
@@ -515,7 +513,7 @@ providers:
       }),
       
       // Grafana service
-      grafanaService: simpleService({
+      grafanaService: simple.Service({
         name: 'grafana',
         selector: { app: 'grafana' },
         ports: [{ port: 3000, targetPort: 3000 }],
@@ -523,7 +521,7 @@ providers:
       }),
       
       // Node Exporter (if monitoring nodes)
-      nodeExporter: simpleDeployment({
+      nodeExporter: simple.Deployment({
         name: 'node-exporter',
         image: 'prom/node-exporter:latest',
         replicas: 1, // In real usage, this would be a DaemonSet
@@ -552,7 +550,7 @@ providers:
       }),
       
       // Node Exporter service
-      nodeExporterService: simpleService({
+      nodeExporterService: simple.Service({
         name: 'node-exporter',
         selector: { app: 'node-exporter' },
         ports: [{ port: 9100, targetPort: 9100 }]

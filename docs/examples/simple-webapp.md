@@ -14,8 +14,7 @@ This example demonstrates the basics of TypeKro by creating a simple web applica
 import { type } from 'arktype';
 import { 
   kubernetesComposition, 
-  simpleDeployment, 
-  simpleService,
+  simple,
   Cel
 } from 'typekro';
 
@@ -44,7 +43,7 @@ export const simpleWebApp = kubernetesComposition(
   },
   (spec) => {
     // Resources auto-register when created - no explicit builders needed!
-    const deployment = simpleDeployment({
+    const deployment = simple.Deployment({
       name: spec.name,
       image: spec.image,
       replicas: spec.replicas,
@@ -56,7 +55,7 @@ export const simpleWebApp = kubernetesComposition(
         : { cpu: '100m', memory: '256Mi' }
     });
 
-    const service = simpleService({
+    const service = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }],
@@ -248,7 +247,7 @@ curl http://<EXTERNAL-IP>
 ### Add Health Checks
 
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: schema.spec.replicas,
@@ -271,10 +270,10 @@ const deployment = simpleDeployment({
 ### Add ConfigMap
 
 ```typescript
-import { simpleConfigMap } from 'typekro';
+import { simple } from 'typekro';
 
 const composition = kubernetesComposition(definition, (spec) => {
-  const config = simpleConfigMap({
+  const config = simple({
     name: Cel.template('%s-config', spec.name),
     data: {
       'nginx.conf': Cel.template(`
@@ -288,7 +287,7 @@ const composition = kubernetesComposition(definition, (spec) => {
     }
   });
   
-  const deployment = simpleDeployment({
+  const deployment = simple.Deployment({
     name: spec.name,
     image: spec.image,
     volumeMounts: [{
@@ -311,15 +310,15 @@ const composition = kubernetesComposition(definition, (spec) => {
 ### Add Ingress
 
 ```typescript
-import { simpleIngress } from 'typekro';
+import { simple } from 'typekro';
 
 const composition = kubernetesComposition(definition, (spec) => {
-  const deployment = simpleDeployment({ name: spec.name, image: spec.image });
-  const service = simpleService({ name: Cel.template('%s-service', spec.name), selector: { app: spec.name } });
+  const deployment = simple.Deployment({ name: spec.name, image: spec.image });
+  const service = simple.Service({ name: Cel.template('%s-service', spec.name), selector: { app: spec.name } });
   
   // Only create ingress in production
   const ingress = spec.environment === 'production' 
-    ? simpleIngress({
+    ? simple.Ingress({
         name: Cel.template('%s-ingress', spec.name),
         rules: [{
           host: Cel.template('%s.example.com', spec.name),
@@ -361,13 +360,13 @@ const database = kubernetesComposition(
     status: type({ ready: 'boolean', host: 'string' })
   },
   (spec) => {
-    const postgres = simpleDeployment({
+    const postgres = simple.Deployment({
       name: spec.name,
       image: spec.image,
       ports: [{ containerPort: 5432 }]
     });
 
-    const service = simpleService({
+    const service = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 5432, targetPort: 5432 }]
@@ -405,7 +404,7 @@ const fullStack = kubernetesComposition(
     });
 
     // Create the app that depends on the database
-    const app = simpleDeployment({
+    const app = simple.Deployment({
       name: spec.appName,
       image: spec.appImage,
       env: {

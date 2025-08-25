@@ -26,12 +26,11 @@
 import alchemy from 'alchemy';
 import { FileSystemStateStore } from 'alchemy/state';
 import { type } from 'arktype';
+import { Deployment, Service, ConfigMap } from '../src/factories/simple/index.js';
 import type { AlchemyResourceState } from '../src/alchemy/types.js';
 import {
   Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
+  
   toResourceGraph,
 } from '../src/index.js';
 
@@ -87,7 +86,7 @@ async function demonstrateDirectModeAlchemyIntegration() {
     // ResourceBuilder - defines individual Kubernetes resources
     (schema) => ({
       // Configuration for the application
-      config: simpleConfigMap({
+      config: ConfigMap({
         name: `${schema.spec.name}-config`,
         id: 'appConfig',
         data: {
@@ -98,7 +97,7 @@ async function demonstrateDirectModeAlchemyIntegration() {
       }),
 
       // Main application deployment
-      deployment: simpleDeployment({
+      deployment: Deployment({
         name: schema.spec.name,
         image: schema.spec.image,
         replicas: schema.spec.replicas,
@@ -111,7 +110,7 @@ async function demonstrateDirectModeAlchemyIntegration() {
       }),
 
       // Service to expose the application
-      service: simpleService({
+      service: Service({
         name: `${schema.spec.name}-service`,
         selector: { app: schema.spec.name },
         ports: [{ port: 80, targetPort: 3000 }],
@@ -382,14 +381,14 @@ async function demonstrateErrorHandling() {
     },
     (schema) => ({
       // This deployment has an invalid image reference
-      deployment: simpleDeployment({
+      deployment: Deployment({
         name: schema.spec.name,
         image: 'invalid-registry/nonexistent:latest',
         replicas: 1,
         id: 'problematic-deployment',
       }),
       // This service is valid
-      service: simpleService({
+      service: Service({
         name: `${schema.spec.name}-service`,
         selector: { app: schema.spec.name },
         ports: [{ port: 80, targetPort: 3000 }],

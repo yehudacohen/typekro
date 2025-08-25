@@ -89,7 +89,7 @@ Integrate Arktype schemas with TypeKro resource graphs:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string>0',
@@ -115,7 +115,7 @@ const webapp = toResourceGraph(
     status: WebAppStatus        // Arktype schema for status
   },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -126,7 +126,7 @@ const webapp = toResourceGraph(
       }
     }),
     
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -207,7 +207,7 @@ const environmentalDatabase = toResourceGraph(
     status: type({ ready: 'boolean', endpoint: 'string' })
   },
   (schema) => ({
-    database: simpleStatefulSet({
+    database: simple.StatefulSet({
       name: schema.spec.engine,
       image: Cel.template('%s:%s', schema.spec.engine, schema.spec.version),
       env: {
@@ -293,7 +293,7 @@ const microserviceApp = toResourceGraph(
   },
   (schema) => ({
     // Frontend deployment
-    frontend: simpleDeployment({
+    frontend: simple.Deployment({
       name: 'frontend',
       image: schema.spec.services.frontend.image,
       replicas: schema.spec.services.frontend.replicas,
@@ -307,7 +307,7 @@ const microserviceApp = toResourceGraph(
     }),
     
     // Backend deployment
-    backend: simpleDeployment({
+    backend: simple.Deployment({
       name: 'backend',
       image: schema.spec.services.backend.image,
       replicas: schema.spec.services.backend.replicas,
@@ -323,12 +323,12 @@ const microserviceApp = toResourceGraph(
     // Optional worker
     ...(schema.spec.services.worker && {
       worker: schema.spec.services.worker.schedule ? 
-        simpleCronJob({
+        simple.CronJob({
           name: 'worker',
           image: schema.spec.services.worker.image,
           schedule: schema.spec.services.worker.schedule
         }) :
-        simpleDeployment({
+        simple.Deployment({
           name: 'worker',
           image: schema.spec.services.worker.image,
           replicas: schema.spec.services.worker.replicas
@@ -402,7 +402,7 @@ const cluster = toResourceGraph(
   (schema) => ({
     // Create deployments for each service
     services: schema.spec.services.map(service =>
-      simpleDeployment({
+      simple.Deployment({
         name: service.name,
         image: service.image,
         replicas: service.replicas || 1,
@@ -412,7 +412,7 @@ const cluster = toResourceGraph(
     
     // Create services for each deployment
     serviceEndpoints: schema.spec.services.map(service =>
-      simpleService({
+      simple.Service({
         name: Cel.expr(service.name, '-service'),
         selector: { app: service.name },
         ports: [{ port: 80, targetPort: service.port }]
@@ -519,7 +519,7 @@ const customApp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -594,7 +594,7 @@ const modernApp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,

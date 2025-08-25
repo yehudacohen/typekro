@@ -8,14 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import {
-  Cel,
-  getCurrentCompositionContext,
-  kubernetesComposition,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index.js';
+import { Cel, getCurrentCompositionContext, kubernetesComposition, toResourceGraph, simple } from '../../src/index.js';
 
 describe('Imperative Composition Pattern', () => {
   // Test schemas compatible with Kro
@@ -43,7 +36,7 @@ describe('Imperative Composition Pattern', () => {
   describe('kubernetesComposition function', () => {
     it('should create a composition factory', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -84,7 +77,7 @@ describe('Imperative Composition Pattern', () => {
 
     it('should return MagicAssignableShape<TStatus> from composition function', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -108,14 +101,14 @@ describe('Imperative Composition Pattern', () => {
     it('should automatically register resources created in composition context', () => {
       const composition = kubernetesComposition(definition, (spec) => {
         // Resources should auto-register when created
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'webappDeployment',
         });
 
-        const _service = simpleService({
+        const _service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -141,14 +134,14 @@ describe('Imperative Composition Pattern', () => {
     it('should track multiple resources with unique identifiers', () => {
       const composition = kubernetesComposition(definition, (spec) => {
         // Create multiple resources of the same type
-        const deployment1 = simpleDeployment({
+        const deployment1 = simple.Deployment({
           name: `${spec.name}-api`,
           image: spec.image,
           replicas: spec.replicas,
           id: 'apiDeployment',
         });
 
-        const deployment2 = simpleDeployment({
+        const deployment2 = simple.Deployment({
           name: `${spec.name}-worker`,
           image: spec.image,
           replicas: 1,
@@ -183,14 +176,14 @@ describe('Imperative Composition Pattern', () => {
 
     it('should handle resource dependencies automatically', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'appDeployment',
         });
 
-        const service = simpleService({
+        const service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: deployment.metadata.labels?.app || spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -225,7 +218,7 @@ describe('Imperative Composition Pattern', () => {
         // Capture the context during composition execution
         contextDuringExecution = getCurrentCompositionContext();
 
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -260,7 +253,7 @@ describe('Imperative Composition Pattern', () => {
 
       const _composition1 = kubernetesComposition(definition, (spec) => {
         contexts.push(getCurrentCompositionContext());
-        simpleDeployment({
+        simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: 1,
@@ -271,7 +264,7 @@ describe('Imperative Composition Pattern', () => {
 
       const _composition2 = kubernetesComposition(definition, (spec) => {
         contexts.push(getCurrentCompositionContext());
-        simpleDeployment({
+        simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: 1,
@@ -293,7 +286,7 @@ describe('Imperative Composition Pattern', () => {
   describe('backward compatibility', () => {
     it('should allow factory functions to work normally outside composition context', () => {
       // Factory functions should work without composition context
-      const deployment = simpleDeployment({
+      const deployment = simple.Deployment({
         name: 'standalone-deployment',
         image: 'nginx:latest',
         replicas: 1,
@@ -310,13 +303,13 @@ describe('Imperative Composition Pattern', () => {
 
     it('should not affect factory function behavior outside composition', () => {
       // Create resources outside composition context
-      const deployment1 = simpleDeployment({
+      const deployment1 = simple.Deployment({
         name: 'test-deployment-1',
         image: 'nginx:latest',
         replicas: 1,
       });
 
-      const deployment2 = simpleDeployment({
+      const deployment2 = simple.Deployment({
         name: 'test-deployment-2',
         image: 'nginx:latest',
         replicas: 2,
@@ -334,7 +327,7 @@ describe('Imperative Composition Pattern', () => {
       const startTime = performance.now();
 
       for (let i = 0; i < 100; i++) {
-        simpleDeployment({
+        simple.Deployment({
           name: `perf-test-${i}`,
           image: 'nginx:latest',
           replicas: 1,
@@ -353,7 +346,7 @@ describe('Imperative Composition Pattern', () => {
     it('should produce identical output to toResourceGraph', () => {
       // Create the same resource graph using both approaches
       const imperativeComposition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -370,7 +363,7 @@ describe('Imperative Composition Pattern', () => {
       const traditionalGraph = toResourceGraph(
         definition,
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -400,7 +393,7 @@ describe('Imperative Composition Pattern', () => {
 
     it('should support factory method creation', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -427,14 +420,14 @@ describe('Imperative Composition Pattern', () => {
 
     it('should work with existing tooling and serialization', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'toolingTestDeployment',
         });
 
-        const service = simpleService({
+        const service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -473,7 +466,7 @@ describe('Imperative Composition Pattern', () => {
     it('should maintain type safety through toResourceGraph conversion', () => {
       const composition = kubernetesComposition(definition, (spec) => {
         // These should all be properly typed without assertions
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name, // Should accept string from spec
           image: spec.image, // Should accept string from spec
           replicas: spec.replicas, // Should accept number from spec
@@ -519,14 +512,14 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(nestedDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'nestedTestDeployment',
         });
 
-        const _service = simpleService({
+        const _service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -589,14 +582,14 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(deeplyNestedDefinition, (spec) => {
-        const frontendDeployment = simpleDeployment({
+        const frontendDeployment = simple.Deployment({
           name: `${spec.name}-frontend`,
           image: spec.image,
           replicas: spec.replicas,
           id: 'frontendDeployment',
         });
 
-        const backendDeployment = simpleDeployment({
+        const backendDeployment = simple.Deployment({
           name: `${spec.name}-backend`,
           image: 'backend:latest',
           replicas: 2,
@@ -660,7 +653,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(arrayDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -710,7 +703,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(typeSafeDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -744,7 +737,7 @@ describe('Imperative Composition Pattern', () => {
   describe('status object validation', () => {
     it('should accept valid status objects', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -765,7 +758,7 @@ describe('Imperative Composition Pattern', () => {
 
     it('should handle literal values in status objects', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const _deployment = simpleDeployment({
+        const _deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -788,7 +781,7 @@ describe('Imperative Composition Pattern', () => {
   describe('MagicAssignableShape schema validation', () => {
     it('should validate MagicAssignableShape return type against status schema', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -829,7 +822,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(constrainedDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -885,7 +878,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(complexDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -941,7 +934,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(optionalDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -989,7 +982,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(unionDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -1022,7 +1015,7 @@ describe('Imperative Composition Pattern', () => {
     it('should provide type safety for MagicAssignableShape return values', () => {
       // This test validates that TypeScript enforces correct types
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -1050,14 +1043,14 @@ describe('Imperative Composition Pattern', () => {
 
     it('should validate MagicAssignableShape with resource references', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'resourceRefDeployment',
         });
 
-        const service = simpleService({
+        const service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -1119,21 +1112,21 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(complexDefinition, (spec) => {
-        const frontendDeployment = simpleDeployment({
+        const frontendDeployment = simple.Deployment({
           name: `${spec.name}-frontend`,
           image: spec.image,
           replicas: spec.replicas,
           id: 'frontendDeployment',
         });
 
-        const backendDeployment = simpleDeployment({
+        const backendDeployment = simple.Deployment({
           name: `${spec.name}-backend`,
           image: 'backend:latest',
           replicas: 2,
           id: 'backendDeployment',
         });
 
-        const databaseDeployment = simpleDeployment({
+        const databaseDeployment = simple.Deployment({
           name: `${spec.name}-database`,
           image: 'postgres:13',
           replicas: 1,
@@ -1225,14 +1218,14 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(mixedDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'mixedStatusDeployment',
         });
 
-        const _service = simpleService({
+        const _service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -1293,7 +1286,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(conditionalDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -1381,42 +1374,42 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(dependencyDefinition, (spec) => {
-        const appDeployment = simpleDeployment({
+        const appDeployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'appDeployment',
         });
 
-        const databaseDeployment = simpleDeployment({
+        const databaseDeployment = simple.Deployment({
           name: `${spec.name}-database`,
           image: 'postgres:13',
           replicas: 1,
           id: 'databaseDeployment',
         });
 
-        const cacheDeployment = simpleDeployment({
+        const cacheDeployment = simple.Deployment({
           name: `${spec.name}-cache`,
           image: 'redis:6',
           replicas: 1,
           id: 'cacheDeployment',
         });
 
-        const databaseService = simpleService({
+        const databaseService = simple.Service({
           name: `${spec.name}-database-service`,
           selector: { app: `${spec.name}-database` },
           ports: [{ port: 5432, targetPort: 5432 }],
           id: 'databaseService',
         });
 
-        const cacheService = simpleService({
+        const cacheService = simple.Service({
           name: `${spec.name}-cache-service`,
           selector: { app: `${spec.name}-cache` },
           ports: [{ port: 6379, targetPort: 6379 }],
           id: 'cacheService',
         });
 
-        const appService = simpleService({
+        const appService = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -1492,21 +1485,21 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(arrayDefinition, (spec) => {
-        const service1 = simpleService({
+        const service1 = simple.Service({
           name: `${spec.name}-api`,
           selector: { app: `${spec.name}-api` },
           ports: [{ port: 80, targetPort: 8080 }],
           id: 'apiService',
         });
 
-        const service2 = simpleService({
+        const service2 = simple.Service({
           name: `${spec.name}-ui`,
           selector: { app: `${spec.name}-ui` },
           ports: [{ port: 80, targetPort: 3000 }],
           id: 'uiService',
         });
 
-        const service3 = simpleService({
+        const service3 = simple.Service({
           name: `${spec.name}-metrics`,
           selector: { app: `${spec.name}-metrics` },
           ports: [{ port: 9090, targetPort: 9090 }],
@@ -1584,7 +1577,7 @@ describe('Imperative Composition Pattern', () => {
       };
 
       const composition = kubernetesComposition(stringDefinition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -1638,7 +1631,7 @@ describe('Imperative Composition Pattern', () => {
         // Context should be available during synchronous execution
         contextDuringExecution = getCurrentCompositionContext();
 
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -1662,14 +1655,14 @@ describe('Imperative Composition Pattern', () => {
 
     it('should handle multiple resources with context preservation', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
           id: 'multiResourceDeployment',
         });
 
-        const service = simpleService({
+        const service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -1698,7 +1691,7 @@ describe('Imperative Composition Pattern', () => {
       const composition1 = kubernetesComposition(definition, (spec) => {
         contexts.push(getCurrentCompositionContext());
 
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: `${spec.name}-1`,
           image: spec.image,
           replicas: spec.replicas,
@@ -1715,7 +1708,7 @@ describe('Imperative Composition Pattern', () => {
       const composition2 = kubernetesComposition(definition, (spec) => {
         contexts.push(getCurrentCompositionContext());
 
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: `${spec.name}-2`,
           image: spec.image,
           replicas: spec.replicas,
@@ -1754,7 +1747,7 @@ describe('Imperative Composition Pattern', () => {
       const composition = kubernetesComposition(definition, (spec) => {
         contextDuringExecution = getCurrentCompositionContext();
 
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -1812,7 +1805,7 @@ describe('Imperative Composition Pattern', () => {
           const level2 = () => {
             nestedContexts.push(getCurrentCompositionContext());
 
-            return simpleDeployment({
+            return simple.Deployment({
               name: spec.name,
               image: spec.image,
               replicas: spec.replicas,
@@ -1848,7 +1841,7 @@ describe('Imperative Composition Pattern', () => {
 
     it('should handle conditional resource creation', () => {
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -1856,7 +1849,7 @@ describe('Imperative Composition Pattern', () => {
         });
 
         // Always create service for this test
-        const service = simpleService({
+        const service = simple.Service({
           name: `${spec.name}-service`,
           selector: { app: spec.name },
           ports: [{ port: 80, targetPort: 8080 }],
@@ -1888,7 +1881,7 @@ describe('Imperative Composition Pattern', () => {
             throw new Error('Invalid name');
           }
 
-          const deployment = simpleDeployment({
+          const deployment = simple.Deployment({
             name: spec.name,
             image: spec.image,
             replicas: spec.replicas,
@@ -1902,7 +1895,7 @@ describe('Imperative Composition Pattern', () => {
           };
         } catch (_error) {
           // Fallback resource creation
-          const fallbackDeployment = simpleDeployment({
+          const fallbackDeployment = simple.Deployment({
             name: `${spec.name}-fallback`,
             image: spec.image,
             replicas: 1,
@@ -1969,7 +1962,7 @@ describe('Imperative Composition Pattern', () => {
       clearCompositionDebugLogs();
 
       const _composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -2008,7 +2001,7 @@ describe('Imperative Composition Pattern', () => {
       const error = ContextRegistrationError.forDuplicateResource(
         'test-resource',
         'Deployment',
-        'simpleDeployment',
+        'simple.Deployment',
         'existingFactory'
       );
 
@@ -2029,7 +2022,7 @@ describe('Imperative Composition Pattern', () => {
         'resource-creation',
         'test-resource-id',
         'Deployment',
-        'simpleDeployment',
+        'simple.Deployment',
         new Error('Original error')
       );
 
@@ -2037,7 +2030,7 @@ describe('Imperative Composition Pattern', () => {
       expect(error.message).toContain('Test error message');
       expect(error.message).toContain('test-resource-id');
       expect(error.message).toContain('Deployment');
-      expect(error.message).toContain('simpleDeployment');
+      expect(error.message).toContain('simple.Deployment');
       expect(error.compositionName).toBe('test-composition');
       expect(error.phase).toBe('resource-creation');
       expect(error.resourceContext).toBeDefined();
@@ -2088,7 +2081,7 @@ describe('Imperative Composition Pattern', () => {
       const { registerDeploymentClosure } = require('../../src/factories/shared.js');
 
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -2130,7 +2123,7 @@ describe('Imperative Composition Pattern', () => {
       const { yamlFile } = require('../../src/factories/kubernetes/yaml/yaml-file.js');
 
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -2163,7 +2156,7 @@ describe('Imperative Composition Pattern', () => {
       const { yamlDirectory } = require('../../src/factories/kubernetes/yaml/yaml-directory.js');
 
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -2196,7 +2189,7 @@ describe('Imperative Composition Pattern', () => {
       const { registerDeploymentClosure } = require('../../src/factories/shared.js');
 
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -2243,7 +2236,7 @@ describe('Imperative Composition Pattern', () => {
       const { yamlFile } = require('../../src/factories/kubernetes/yaml/yaml-file.js');
 
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,
@@ -2290,7 +2283,7 @@ describe('Imperative Composition Pattern', () => {
       const { registerDeploymentClosure } = require('../../src/factories/shared.js');
 
       const composition = kubernetesComposition(definition, (spec) => {
-        const deployment = simpleDeployment({
+        const deployment = simple.Deployment({
           name: spec.name,
           image: spec.image,
           replicas: spec.replicas,

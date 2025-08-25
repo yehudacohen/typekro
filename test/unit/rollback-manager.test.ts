@@ -7,11 +7,7 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
-import {
-  createRollbackManager,
-  createRollbackManagerWithKubeConfig,
-  ResourceRollbackManager,
-} from '../../src/core/deployment/rollback-manager.js';
+import { createRollbackManager, createRollbackManagerWithKubeConfig, ResourceRollbackManager,  } from '../../src/core/deployment/rollback-manager.js';
 import type { DeploymentEvent } from '../../src/core/types/deployment.js';
 import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';

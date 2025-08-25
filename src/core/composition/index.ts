@@ -7,21 +7,8 @@
  */
 
 export type { CompositionFactory } from '../types/serialization.js';
-// Export all composition functions
-export {
-  createWebService,
-  simpleConfigMap,
-  simpleCronJob,
-  simpleDeployment,
-  simpleHpa,
-  simpleIngress,
-  simpleJob,
-  simpleNetworkPolicy,
-  simplePvc,
-  simpleSecret,
-  simpleService,
-  simpleStatefulSet,
-} from './composition.js';
+// Export composition functions
+export { createWebService } from './composition.js';
 // Export imperative composition pattern
 export { kubernetesComposition } from './imperative.js';
 // Export TypeKro runtime bootstrap types
@@ -33,18 +20,4 @@ export type {
 // Export TypeKro runtime bootstrap composition
 export { typeKroRuntimeBootstrap } from './typekro-runtime/index.js';
 // Export composition-specific types
-export type {
-  SimpleConfigMapConfig,
-  SimpleCronJobConfig,
-  SimpleDeploymentConfig,
-  SimpleHpaConfig,
-  SimpleIngressConfig,
-  SimpleJobConfig,
-  SimpleNetworkPolicyConfig,
-  SimplePvcConfig,
-  SimpleSecretConfig,
-  SimpleServiceConfig,
-  SimpleStatefulSetConfig,
-  WebServiceComponent,
-  WebServiceConfig,
-} from './types.js';
+export type { WebServiceComponent, WebServiceConfig } from './types.js';

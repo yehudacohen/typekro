@@ -33,7 +33,7 @@ spec:
 */
 
 // Write this TypeScript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3,
@@ -45,13 +45,13 @@ const deployment = simpleDeployment({
 
 ### Workloads
 
-#### `simpleDeployment`
+#### `simple.Deployment`
 Creates a Kubernetes Deployment with sensible defaults.
 
 ```typescript
-import { simpleDeployment } from 'typekro';
+import { simple } from 'typekro';
 
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'web-app',
   image: 'nginx:latest',
   replicas: 3,
@@ -74,11 +74,11 @@ const deployment = simpleDeployment({
 - Environment variable support
 - Volume mounting
 
-#### `simpleStatefulSet`
+#### `simple.StatefulSet`
 Creates a StatefulSet for stateful applications.
 
 ```typescript
-const database = simpleStatefulSet({
+const database = simple.StatefulSet({
   name: 'postgres',
   image: 'postgres:15',
   replicas: 1,
@@ -100,11 +100,11 @@ const database = simpleStatefulSet({
 });
 ```
 
-#### `simpleJob`
+#### `simple.Job`
 Creates a Kubernetes Job for batch processing.
 
 ```typescript
-const migrationJob = simpleJob({
+const migrationJob = simple.Job({
   name: 'db-migration',
   image: 'myapp/migrations:latest',
   env: {
@@ -117,11 +117,11 @@ const migrationJob = simpleJob({
 
 ### Networking
 
-#### `simpleService`
+#### `simple.Service`
 Creates a Kubernetes Service to expose applications.
 
 ```typescript
-const service = simpleService({
+const service = simple.Service({
   name: 'web-service',
   selector: { app: 'web-app' },
   ports: [
@@ -138,11 +138,11 @@ const service = simpleService({
 - `LoadBalancer` - External load balancer
 - `ExternalName` - DNS CNAME record
 
-#### `simpleIngress`
+#### `simple.Ingress`
 Creates an Ingress resource for HTTP routing.
 
 ```typescript
-const ingress = simpleIngress({
+const ingress = simple.Ingress({
   name: 'web-ingress',
   rules: [{
     host: 'myapp.example.com',
@@ -168,11 +168,11 @@ const ingress = simpleIngress({
 
 ### Configuration
 
-#### `simpleConfigMap`
+#### `simple`
 Creates a ConfigMap for application configuration.
 
 ```typescript
-const config = simpleConfigMap({
+const config = simple({
   name: 'app-config',
   data: {
     'app.properties': `
@@ -192,11 +192,11 @@ const config = simpleConfigMap({
 });
 ```
 
-#### `simpleSecret`
+#### `simple.Secret`
 Creates a Secret for sensitive data.
 
 ```typescript
-const secret = simpleSecret({
+const secret = simple.Secret({
   name: 'app-secrets',
   data: {
     'database-password': 'c3VwZXJzZWNyZXQ=',  // base64 encoded
@@ -206,7 +206,7 @@ const secret = simpleSecret({
 });
 
 // Or use stringData for automatic base64 encoding
-const secretFromStrings = simpleSecret({
+const secretFromStrings = simple.Secret({
   name: 'app-secrets',
   stringData: {
     'database-password': 'supersecret',
@@ -217,11 +217,11 @@ const secretFromStrings = simpleSecret({
 
 ### Storage
 
-#### `simplePvc`
+#### `simple.Pvc`
 Creates a PersistentVolumeClaim for storage.
 
 ```typescript
-const storage = simplePvc({
+const storage = simple.Pvc({
   name: 'app-storage',
   size: '10Gi',
   storageClass: 'fast-ssd',
@@ -236,12 +236,12 @@ const storage = simplePvc({
 Factory functions can reference other resources:
 
 ```typescript
-const database = simpleDeployment({
+const database = simple.Deployment({
   name: 'postgres',
   image: 'postgres:15'
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   image: 'myapp:latest',
   env: {
@@ -251,7 +251,7 @@ const app = simpleDeployment({
   }
 });
 
-const service = simpleService({
+const service = simple.Service({
   name: 'web-service',
   // Reference the app's labels
   selector: { app: app.metadata.labels.app },
@@ -264,7 +264,7 @@ const service = simpleService({
 Use TypeScript's conditional logic:
 
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: schema.spec.environment === 'production' ? 5 : 2,
@@ -291,7 +291,7 @@ const deployment = simpleDeployment({
 ### Custom Labels and Annotations
 
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   
@@ -319,7 +319,7 @@ Create environment-specific factory functions:
 
 ```typescript
 function productionDeployment(config: DeploymentConfig) {
-  return simpleDeployment({
+  return simple.Deployment({
     ...config,
     replicas: Math.max(config.replicas, 3),  // Minimum 3 replicas
     resources: {
@@ -347,17 +347,17 @@ Combine multiple factory functions:
 
 ```typescript
 function webAppStack(config: WebAppConfig) {
-  const configMap = simpleConfigMap({
+  const configMap = simple({
     name: Cel.expr(config.name, '-config'),
     data: config.configData
   });
 
-  const secret = simpleSecret({
+  const secret = simple.Secret({
     name: Cel.expr(config.name, '-secrets'),
     stringData: config.secrets
   });
 
-  const deployment = simpleDeployment({
+  const deployment = simple.Deployment({
     name: config.name,
     image: config.image,
     replicas: config.replicas,
@@ -375,7 +375,7 @@ function webAppStack(config: WebAppConfig) {
     ]
   });
 
-  const service = simpleService({
+  const service = simple.Service({
     name: Cel.expr(config.name, '-service'),
     selector: { app: config.name },
     ports: config.ports
@@ -393,14 +393,14 @@ Factory functions provide full TypeScript validation:
 
 ```typescript
 // ✅ This works
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3
 });
 
 // ❌ TypeScript errors
-const badDeployment = simpleDeployment({
+const badDeployment = simple.Deployment({
   name: 123,           // Error: number not assignable to string
   image: 'nginx:latest',
   replicas: '3',       // Error: string not assignable to number
@@ -413,7 +413,7 @@ const badDeployment = simpleDeployment({
 Get full autocomplete and documentation:
 
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   // IDE shows all available options with documentation
@@ -480,26 +480,26 @@ export function customWebApp(config: CustomWebAppConfig) {
 ### 1. Use Descriptive Names
 ```typescript
 // ✅ Good
-const userApiDeployment = simpleDeployment({ name: 'user-api' });
-const userApiService = simpleService({ name: 'user-api-service' });
+const userApiDeployment = simple.Deployment({ name: 'user-api' });
+const userApiService = simple.Service({ name: 'user-api-service' });
 
 // ❌ Avoid
-const d1 = simpleDeployment({ name: 'app' });
-const s1 = simpleService({ name: 'svc' });
+const d1 = simple.Deployment({ name: 'app' });
+const s1 = simple.Service({ name: 'svc' });
 ```
 
 ### 2. Group Related Resources
 ```typescript
 const userService = {
-  deployment: simpleDeployment({ /* ... */ }),
-  service: simpleService({ /* ... */ }),
-  configMap: simpleConfigMap({ /* ... */ })
+  deployment: simple.Deployment({ /* ... */ }),
+  service: simple.Service({ /* ... */ }),
+  configMap: simple({ /* ... */ })
 };
 ```
 
 ### 3. Use Environment Variables for Configuration
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'api',
   image: process.env.API_IMAGE || 'api:latest',
   replicas: parseInt(process.env.API_REPLICAS || '3'),
@@ -527,7 +527,7 @@ function createDeployment(config: unknown) {
     throw new Error(Cel.template('Invalid config: %s', validConfig.summary));
   }
   
-  return simpleDeployment(validConfig);
+  return simple.Deployment(validConfig);
 }
 ```
 

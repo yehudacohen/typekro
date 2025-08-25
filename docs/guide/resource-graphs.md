@@ -13,7 +13,7 @@ A resource graph is a typed collection of Kubernetes resources that can referenc
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+import { toResourceGraph, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -28,24 +28,26 @@ const WebAppStatus = type({
 
 const webApp = toResourceGraph(
   // Graph definition
-  { name: 'webapp', schema: { spec: WebAppSpec, status: WebAppStatus } },
+  {
+    name: 'webapp',
+    apiVersion: 'example.com/v1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus
+  },
   
   // Resource builder - defines what resources to create
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas
     }),
-    service: simpleService({
-      name: Cel.expr(schema.spec.name, '-service'),
+    service: simple.Service({
+      name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     })
-  }),
-  (schema, resources) => ({
-    serviceEndpoint: Cel.template('http://%s:80', resources.service.spec.clusterIP)
-  })
   }),
   
   // Status builder - defines how to compute status
@@ -65,10 +67,10 @@ The first parameter defines the resource graph metadata:
 ```typescript
 const definition = {
   name: 'my-application',           // Must be a valid Kubernetes resource name
-  schema: {
-    spec: MyAppSpec,                // Input schema (required)
-    status: MyAppStatus             // Output schema (optional)
-  }
+  apiVersion: 'example.com/v1',     // Kubernetes-style API version
+  kind: 'MyApplication',            // Resource type name
+  spec: MyAppSpec,                  // Input schema (required)
+  status: MyAppStatus               // Output schema (optional)
 };
 ```
 
@@ -79,31 +81,31 @@ The resource builder function creates the actual Kubernetes resources:
 ```typescript
 const resourceBuilder = (schema) => ({
   // Each key becomes a resource ID
-    database: simpleDeployment({
-      name: Cel.expr(schema.spec.name, '-db'),
-      image: 'postgres:15',
-      env: {
-        POSTGRES_DB: schema.spec.database.name,
-        POSTGRES_USER: schema.spec.database.user,
-        POSTGRES_PASSWORD: schema.spec.database.password
-      },
-      ports: [{ containerPort: 5432 }]
-    }),
+  database: simple.Deployment({
+    name: Cel.template('%s-db', schema.spec.name),
+    image: 'postgres:15',
+    env: {
+      POSTGRES_DB: schema.spec.database.name,
+      POSTGRES_USER: schema.spec.database.user,
+      POSTGRES_PASSWORD: schema.spec.database.password
+    },
+    ports: [{ containerPort: 5432 }]
+  }),
   
-  app: simpleDeployment({
+  app: simple.Deployment({
     name: schema.spec.name,
     image: schema.spec.image,
     env: {
       // Cross-resource reference
-      DATABASE_HOST: database.status.podIP
+      DATABASE_HOST: 'postgres-service' // Use service name for DNS resolution
     }
   }),
   
-    service: simpleService({
-      name: Cel.expr(schema.spec.name, '-service'),
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }]
-    })
+  service: simple.Service({
+    name: Cel.template('%s-service', schema.spec.name),
+    selector: { app: schema.spec.name },
+    ports: [{ port: 80, targetPort: 3000 }]
+  })
 });
 ```
 
@@ -118,16 +120,19 @@ const statusBuilder = (schema, resources) => ({
   readyReplicas: resources.app.status.readyReplicas,
   
   // Computed values
-  url: schema.spec.environment === 'production'
-    ? Cel.template('https://%s', resources.service.status.loadBalancer.ingress[0].hostname)
-    : Cel.template('http://%s', resources.service.spec.clusterIP),
+  url: Cel.expr<string>(
+    schema.spec.environment, ' == "production" ? ',
+    Cel.template('https://%s', resources.service.status.loadBalancer.ingress[0].hostname),
+    ' : ',
+    Cel.template('http://%s', resources.service.spec.clusterIP)
+  ),
     
   // Complex logic with CEL expressions
-  ready: Cel.expr(
+  ready: Cel.expr<boolean>(
     resources.app.status.readyReplicas, 
-    '> 0 && ',
+    ' > 0 && ',
     resources.database.status.readyReplicas,
-    '> 0'
+    ' > 0'
   )
 });
 ```
@@ -138,38 +143,28 @@ const statusBuilder = (schema, resources) => ({
 
 ```typescript
 const basicStack = toResourceGraph(
-  { name: 'basic-stack', schema: { spec: BasicStackSpec } },
+  {
+    name: 'basic-stack',
+    apiVersion: 'example.com/v1',
+    kind: 'BasicStack',
+    spec: BasicStackSpec,
+    status: type({ ready: 'boolean' })
+  },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas
+    }),
+    
+    service: simple.Service({
+      name: Cel.template('%s-service', schema.spec.name),
+      selector: { app: schema.spec.name },
+      ports: [{ port: 80, targetPort: 3000 }]
+    })
   }),
-  
-  service: simpleService({
-    name: Cel.expr(schema.spec.name, '-service'),
-    selector: { app: schema.spec.name },
-    ports: [{ port: 80, targetPort: 3000 }]
-  })
-});
-    }
-    
-    // Main application
-    resources.app = simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      env: {
-        WORKER_COUNT: schema.spec.workers.count.toString()
-      }
-    });
-    
-    return resources;
-  },
   (schema, resources) => ({
-    workerCount: schema.spec.workers.count,
-    readyWorkers: Object.keys(resources)
-      .filter(key => key.startsWith('worker-'))
-      .reduce((sum, key) => sum + (resources[key].status.readyReplicas || 0), 0)
+    ready: Cel.expr<boolean>(resources.app.status.readyReplicas, ' > 0')
   })
 );
 ```
@@ -194,7 +189,13 @@ const StrictAppSpec = type({
 
 // Validation happens automatically
 const validatedApp = toResourceGraph(
-  { name: 'validated-app', schema: { spec: StrictAppSpec } },
+  {
+    name: 'validated-app',
+    apiVersion: 'example.com/v1',
+    kind: 'ValidatedApp',
+    spec: StrictAppSpec,
+    status: type({ ready: 'boolean' })
+  },
   resourceBuilder,
   statusBuilder
 );
@@ -261,18 +262,18 @@ await kroFactory.deploy(spec);
 ```typescript
 // ✅ Use consistent naming patterns
 const resources = {
-  database: simpleDeployment({ name: Cel.expr(schema.spec.name, '-db') }),
-  databaseService: simpleService({ name: Cel.expr(schema.spec.name, '-db-service') }),
-  app: simpleDeployment({ name: schema.spec.name }),
-  appService: simpleService({ name: Cel.expr(schema.spec.name, '-service') })
+  database: simple.Deployment({ name: Cel.template('%s-db', schema.spec.name) }),
+  databaseService: simple.Service({ name: Cel.template('%s-db-service', schema.spec.name) }),
+  app: simple.Deployment({ name: schema.spec.name }),
+  appService: simple.Service({ name: Cel.template('%s-service', schema.spec.name) })
 };
 
 // ❌ Avoid inconsistent naming
 const badResources = {
-  db: simpleDeployment({ name: 'database' }),
-  dbSvc: simpleService({ name: 'db-service' }),
-  application: simpleDeployment({ name: 'app' }),
-  service: simpleService({ name: 'svc' })
+  db: simple.Deployment({ name: 'database' }),
+  dbSvc: simple.Service({ name: 'db-service' }),
+  application: simple.Deployment({ name: 'app' }),
+  service: simple.Service({ name: 'svc' })
 };
 ```
 
@@ -293,16 +294,16 @@ const getConfig = (env: string) => ({
 // ✅ Group related resources logically
 const resources = {
   // Database tier
-  database: simpleDeployment({ /* ... */ }),
-  databaseService: simpleService({ /* ... */ }),
+  database: simple.Deployment({ /* ... */ }),
+  databaseService: simple.Service({ /* ... */ }),
   
   // Application tier
-  app: simpleDeployment({ /* ... */ }),
-  appService: simpleService({ /* ... */ }),
+  app: simple.Deployment({ /* ... */ }),
+  appService: simple.Service({ /* ... */ }),
   
   // Configuration
-  config: simpleConfigMap({ /* ... */ }),
-  secrets: simpleSecret({ /* ... */ })
+  config: simple.ConfigMap({ /* ... */ }),
+  secrets: simple.Secret({ /* ... */ })
 };
 ```
 
@@ -320,9 +321,9 @@ const statusBuilder = (schema, resources) => ({
   serviceEndpoint: Cel.template('http://%s:80', resources.service.spec.clusterIP),
   
   // Overall health
-  healthy: Cel.expr(
+  healthy: Cel.expr<boolean>(
     resources.app.status.readyReplicas, 
-    '== ', 
+    ' == ', 
     resources.app.spec.replicas
   ),
   
@@ -348,8 +349,8 @@ const AppSpec = type({
 ```typescript
 // Ensure referenced resources exist in the same graph
 const resources = {
-  database: simpleDeployment({ name: 'db' }),
-  app: simpleDeployment({
+  database: simple.Deployment({ name: 'db' }),
+  app: simple.Deployment({
     env: {
       DB_HOST: database.status.podIP  // 'database' must be defined above
     }
@@ -360,10 +361,10 @@ const resources = {
 **Circular dependencies:**
 ```typescript
 // ❌ Avoid circular references
-const serviceA = simpleService({
+const serviceA = simple.Service({
   selector: { app: serviceB.metadata.labels.app }  // References B
 });
-const serviceB = simpleService({
+const serviceB = simple.Service({
   selector: { app: serviceA.metadata.labels.app }  // References A
 });
 ```

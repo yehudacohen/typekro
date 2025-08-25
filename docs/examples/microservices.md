@@ -40,11 +40,11 @@ graph TB
 import { type } from 'arktype';
 import { 
   toResourceGraph, 
-  simpleDeployment, 
-  simpleService,
-  simpleConfigMap,
-  simpleSecret,
-  simpleIngress
+  simple, 
+  simple.Service,
+  simple,
+  simple.Secret,
+  simple.Ingress
 } from 'typekro';
 
 // Application-wide configuration schema
@@ -108,7 +108,7 @@ export const microservicesApp = toResourceGraph(
   // ResourceBuilder function - defines all Kubernetes resources
   (schema) => {
     // Shared configuration for all services
-    const appConfig = simpleConfigMap({
+    const appConfig = simple({
       name: 'app-config',
       data: {
         ENVIRONMENT: schema.spec.environment,
@@ -123,7 +123,7 @@ export const microservicesApp = toResourceGraph(
     });
 
     // Database connection secrets
-    const dbSecrets = simpleSecret({
+    const dbSecrets = simple.Secret({
       name: 'db-secrets',
       data: {
         USER_DB_PASSWORD: 'dXNlcl9wYXNzd29yZA==', // base64: user_password
@@ -138,7 +138,7 @@ export const microservicesApp = toResourceGraph(
       dbSecrets,
       
       // User Service
-      userDeployment: simpleDeployment({
+      userDeployment: simple.Deployment({
         name: 'user-service',
         image: schema.spec.services.user.image,
         replicas: schema.spec.services.user.replicas,
@@ -155,14 +155,14 @@ export const microservicesApp = toResourceGraph(
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
       
-      userService: simpleService({
+      userService: simple.Service({
         name: 'user-service',
         selector: { app: 'user-service' },  // Should match userDeployment labels
         ports: [{ port: 3000, targetPort: 3000 }]
       }),
       
       // Product Service  
-      productDeployment: simpleDeployment({
+      productDeployment: simple.Deployment({
         name: 'product-service',
         image: schema.spec.services.product.image,
         replicas: schema.spec.services.product.replicas,
@@ -178,14 +178,14 @@ export const microservicesApp = toResourceGraph(
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
       
-      productService: simpleService({
+      productService: simple.Service({
         name: 'product-service',
         selector: { app: 'product-service' },
         ports: [{ port: 3000, targetPort: 3000 }]
       }),
       
       // Order Service - depends on User and Product services
-      orderDeployment: simpleDeployment({
+      orderDeployment: simple.Deployment({
         name: 'order-service',
         image: schema.spec.services.order.image,
         replicas: schema.spec.services.order.replicas,
@@ -201,14 +201,14 @@ export const microservicesApp = toResourceGraph(
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
       
-      orderService: simpleService({
+      orderService: simple.Service({
         name: 'order-service',
         selector: { app: 'order-service' },
         ports: [{ port: 3000, targetPort: 3000 }]
       }),
       
       // API Gateway - routes to all services
-      gatewayDeployment: simpleDeployment({
+      gatewayDeployment: simple.Deployment({
         name: 'api-gateway',
         image: 'nginx:alpine',
         replicas: schema.spec.gateway.replicas,
@@ -220,7 +220,7 @@ export const microservicesApp = toResourceGraph(
         }]
       }),
       
-      gatewayService: simpleService({
+      gatewayService: simple.Service({
         name: 'api-gateway',
         selector: { app: 'api-gateway' },
         ports: [{ port: 80, targetPort: 80 }],
@@ -228,7 +228,7 @@ export const microservicesApp = toResourceGraph(
       }),
       
       // Gateway configuration
-      gatewayConfig: simpleConfigMap({
+      gatewayConfig: simple({
         name: 'gateway-config',
         data: {
           'nginx.conf': `
@@ -281,7 +281,7 @@ http {
       }),
       
       // Ingress for external access
-      ingress: simpleIngress({
+      ingress: simple.Ingress({
         name: 'microservices-ingress',
         rules: [{
           host: schema.spec.gateway.domain,

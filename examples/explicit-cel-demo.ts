@@ -5,16 +5,10 @@
  * instead of relying on implicit magic conversions.
  */
 
-import { Cel } from '../src/core/references/index.js';
-import {
-  serializeResourceGraphToYaml,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleSecret,
-} from '../src/index';
-
+import { Deployment, ConfigMap, Secret } from '../src/factories/simple/index.js';
+import { Cel, serializeResourceGraphToYaml } from '../src/index.js';
 // Create a database deployment
-const database = simpleDeployment({
+const database = Deployment({
   name: 'postgres-db',
   namespace: 'demo',
   image: 'postgres:13-alpine',
@@ -28,7 +22,7 @@ const database = simpleDeployment({
 });
 
 // Create configuration
-const appConfig = simpleConfigMap({
+const appConfig = ConfigMap({
   name: 'app-config',
   namespace: 'demo',
   data: {
@@ -38,7 +32,7 @@ const appConfig = simpleConfigMap({
 });
 
 // Create secrets
-const appSecrets = simpleSecret({
+const appSecrets = Secret({
   name: 'app-secrets',
   namespace: 'demo',
   stringData: {
@@ -48,7 +42,7 @@ const appSecrets = simpleSecret({
 });
 
 // Create webapp deployment with explicit CEL conversions
-const webapp = simpleDeployment({
+const webapp = Deployment({
   name: 'webapp',
   namespace: 'demo',
   image: 'nginx:alpine',

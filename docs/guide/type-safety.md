@@ -14,7 +14,7 @@ TypeKro provides several layers of type safety:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment } from 'typekro';
+import { toResourceGraph, simple } from 'typekro';
 
 // 1. Schema validation
 const AppSpec = type({
@@ -28,7 +28,7 @@ const app = toResourceGraph(
   { name: 'typed-app', schema: { spec: AppSpec } },
   (schema) => ({
     // 3. Typed factory functions
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,           // ✅ Typed access
       replicas: schema.spec.replicas    // ✅ Number type enforced
     })
@@ -411,12 +411,12 @@ function createReference<T, K extends keyof T>(
 const typedGraph = toResourceGraph(
   { name: 'typed-references', schema: { spec: AppSpec } },
   (schema) => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: Cel.expr(schema.spec.name, "-db"),
       image: 'postgres:15'
     });
     
-    const app = simpleDeployment({
+    const app = simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
@@ -454,12 +454,12 @@ function ref<T>(resource: T): ReferenceBuilder<T> {
 }
 
 // Usage
-const database = simpleDeployment({
+const database = simple.Deployment({
   name: 'db',
   image: 'postgres:15'
 });
 
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'app',
   image: 'myapp:latest',
   env: {
@@ -744,7 +744,7 @@ type TestAppSpecType = Expect<Equal<
 
 // Test factory return types
 type TestFactoryType = Expect<Equal<
-  ReturnType<typeof simpleDeployment>,
+  ReturnType<typeof simple.Deployment>,
   Enhanced<V1Deployment, V1DeploymentStatus>
 >>;
 
