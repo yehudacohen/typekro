@@ -12,16 +12,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
-import {
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-} from '../../src/core/composition/index.js';
+import { simple } from '../../src/index.js';
 import { DependencyGraph } from '../../src/core/dependencies/graph.js';
-import {
-  AlchemyDeploymentStrategy,
-  DirectDeploymentStrategy,
-} from '../../src/core/deployment/deployment-strategies.js';
+import { AlchemyDeploymentStrategy, DirectDeploymentStrategy,  } from '../../src/core/deployment/deployment-strategies.js';
 import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
@@ -124,20 +117,20 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
         // Create a resource resolver that simulates mixed success/failure
         const mixedResultResourceResolver = {
           createResourceGraphForInstance: (_spec: any) => {
-            const successfulConfigMap = simpleConfigMap({
+            const successfulConfigMap = simple.ConfigMap({
               id: 'successfulResource',
               name: 'successful-config',
               data: { key: 'value' },
             });
 
-            const failingDeployment = simpleDeployment({
+            const failingDeployment = simple.Deployment({
               id: 'failingResource',
               name: 'failing-deployment',
               image: 'nginx',
               replicas: 1,
             });
 
-            const successfulService = simpleService({
+            const successfulService = simple.Service({
               id: 'anotherSuccessfulResource',
               name: 'successful-service',
               ports: [{ port: 80, targetPort: 80 }],
@@ -231,21 +224,21 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
         // Create a resource resolver that simulates multiple failures
         const multipleFailureResourceResolver = {
           createResourceGraphForInstance: (_spec: any) => {
-            const firstFailingDeployment = simpleDeployment({
+            const firstFailingDeployment = simple.Deployment({
               id: 'firstFailingResource',
               name: 'first-failing-deployment',
               image: 'nginx:alpine', // Use nginx which will run properly
               replicas: 1,
             });
 
-            const secondFailingService = simpleService({
+            const secondFailingService = simple.Service({
               id: 'secondFailingResource',
               name: 'second-failing-service',
               ports: [{ port: 80, targetPort: 80 }],
               selector: { app: 'test' }, // Use a valid selector
             });
 
-            const thirdFailingConfigMap = simpleConfigMap({
+            const thirdFailingConfigMap = simple.ConfigMap({
               id: 'thirdFailingResource',
               name: 'third-failing-config',
               data: { key: 'value' }, // Use valid data
@@ -326,13 +319,13 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
         // This test verifies the partial deployment status logic
         const partialSuccessResourceResolver = {
           createResourceGraphForInstance: (_spec: any) => {
-            const workingConfigMap = simpleConfigMap({
+            const workingConfigMap = simple.ConfigMap({
               id: 'workingResource',
               name: 'working-config',
               data: { key: 'value' },
             });
 
-            const brokenDeployment = simpleDeployment({
+            const brokenDeployment = simple.Deployment({
               id: 'brokenResource',
               name: 'broken-deployment',
               image: 'nginx:alpine', // Use nginx which will run properly
@@ -410,7 +403,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       async () => {
         const contextTestResourceResolver = {
           createResourceGraphForInstance: (_spec: any) => {
-            const contextTestDeployment = simpleDeployment({
+            const contextTestDeployment = simple.Deployment({
               id: 'contextTestResource',
               name: 'context-test-deployment',
               image: 'nginx',
@@ -483,7 +476,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       async () => {
         const namespaceTestResourceResolver = {
           createResourceGraphForInstance: (_spec: any) => {
-            const namespaceTestService = simpleService({
+            const namespaceTestService = simple.Service({
               id: 'namespaceTestResource',
               name: 'namespace-test-service',
               ports: [{ port: 80, targetPort: 80 }],

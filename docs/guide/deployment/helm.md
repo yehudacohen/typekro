@@ -34,7 +34,7 @@ const appGraph = toResourceGraph(
     });
     
     // Create app using simple factory
-    const app = simpleHelmChart(
+    const app = simple.HelmChart(
       'nginx',
       repository.spec.url,  // Reference repository URL by field
       'nginx',
@@ -309,7 +309,7 @@ const privateChartGraph = toResourceGraph(
     });
     
     // Deploy using simple factory
-    const app = simpleHelmChart(
+    const app = simple.HelmChart(
       schema.spec.name,
       privateRepo.spec.url,  // Reference repository URL by field
       'private-app',
@@ -347,7 +347,7 @@ const devGraph = toResourceGraph(
     spec: type({ name: 'string', debug: 'boolean' })
   },
   (schema) => ({
-    app: simpleHelmChart(
+    app: simple.HelmChart(
       schema.spec.name,
       'https://charts.bitnami.com/bitnami',
       'nginx',

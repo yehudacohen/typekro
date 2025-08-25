@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { isCelExpression, processResourceReferences } from '../../src/core.js';
-import { Cel, simpleDeployment, toResourceGraph } from '../../src/index';
+import { Cel, toResourceGraph, simple } from '../../src/index';
 
 describe('CEL Expression Serialization Pipeline', () => {
   describe('KubernetesRef to CelExpression conversion', () => {
     it('should create properly typed CelExpressions from different KubernetesRef types', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
@@ -33,13 +33,13 @@ describe('CEL Expression Serialization Pipeline', () => {
     });
 
     it('should handle complex CEL expressions with multiple references', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
       });
 
-      const webapp = simpleDeployment({
+      const webapp = simple.Deployment({
         name: 'webapp',
         image: 'nginx:latest',
         replicas: 2,
@@ -74,7 +74,7 @@ describe('CEL Expression Serialization Pipeline', () => {
 
   describe('CelExpression serialization through processResourceReferences', () => {
     it('should serialize CelExpressions to their expression strings', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
@@ -104,7 +104,7 @@ describe('CEL Expression Serialization Pipeline', () => {
     });
 
     it('should serialize nested objects containing CelExpressions', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
@@ -146,7 +146,7 @@ describe('CEL Expression Serialization Pipeline', () => {
     });
 
     it('should serialize arrays containing CelExpressions', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
@@ -174,13 +174,13 @@ describe('CEL Expression Serialization Pipeline', () => {
 
   describe('End-to-end YAML generation with CelExpressions', () => {
     it('should generate correct Kro YAML with CelExpressions in environment variables', async () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
       });
 
-      const webapp = simpleDeployment({
+      const webapp = simple.Deployment({
         name: 'webapp',
         image: 'nginx:latest',
         env: {
@@ -222,13 +222,13 @@ describe('CEL Expression Serialization Pipeline', () => {
     });
 
     it('should handle mixed KubernetesRef and CelExpression references', async () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
       });
 
-      const webapp = simpleDeployment({
+      const webapp = simple.Deployment({
         name: 'webapp',
         image: 'nginx:latest',
         env: {
@@ -275,7 +275,7 @@ describe('CEL Expression Serialization Pipeline', () => {
     });
 
     it('should preserve type safety in serialized output', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,
@@ -319,7 +319,7 @@ describe('CEL Expression Serialization Pipeline', () => {
     });
 
     it('should handle deeply nested structures with mixed reference types', () => {
-      const database = simpleDeployment({
+      const database = simple.Deployment({
         name: 'postgres',
         image: 'postgres:13',
         replicas: 1,

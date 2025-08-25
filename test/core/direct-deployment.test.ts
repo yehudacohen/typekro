@@ -4,29 +4,9 @@
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { type } from 'arktype';
-import {
-  Cel,
-  DependencyGraph,
-  type DeployableK8sResource,
-  type DeployedResource,
-  type DeploymentOptions,
-  DirectDeploymentEngine,
-  type Enhanced,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/core.js';
-import {
-  configMap,
-  daemonSet,
-  deployment,
-  job,
-  persistentVolumeClaim,
-  pod,
-  secret,
-  service,
-  statefulSet,
-} from '../../src/factories/index.js';
+import { Cel, DependencyGraph, type DeployableK8sResource, type DeployedResource, type DeploymentOptions, DirectDeploymentEngine, type Enhanced, toResourceGraph } from '../../src/core.js';
+import { simple } from '../../src/index.js';
+import { configMap, daemonSet, deployment, job, persistentVolumeClaim, pod, secret, service, statefulSet,  } from '../../src/factories/index.js';
 
 // Helper function to create properly typed test resources
 function createMockResource(
@@ -1152,13 +1132,13 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           ...schemaDefinition,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             id: 'webappDeployment',
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
           }),
-          service: simpleService({
+          service: simple.Service({
             id: 'webappService',
             name: schema.spec.name,
             selector: { app: schema.spec.name },
@@ -1211,7 +1191,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           ...schemaDefinition,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             id: 'testDeployment',
             name: schema.spec.name,
             image: schema.spec.image,
@@ -1257,7 +1237,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           ...schemaDefinition,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             id: 'testDeployment',
             name: schema.spec.name,
             image: schema.spec.image,
@@ -1309,7 +1289,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           ...schemaDefinition,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             id: 'testDeployment',
             name: schema.spec.name,
             image: schema.spec.image,
@@ -1362,7 +1342,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           ...schemaDefinition,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             id: 'testDeployment',
             name: schema.spec.name,
             image: schema.spec.image,
@@ -1409,7 +1389,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           ...schemaDefinition,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             id: 'testDeployment',
             name: schema.spec.name,
             image: schema.spec.image,

@@ -11,7 +11,9 @@
 [![Coverage](https://codecov.io/gh/yehudacohen/typekro/branch/master/graph/badge.svg)](https://codecov.io/gh/yehudacohen/typekro)
 
 📚 **[Documentation](https://typekro.run)** • 💬 **[Discord Community](https://discord.gg/kKNSDDjW)** • 🚀 **[Getting Started](https://typekro.run/guide/getting-started)**
-## **TypeKro: IaC for Kubernetes Done Right - Statically Typed, Declarative Kubernetes Configuration with TypeScript**
+## **TypeKro: Kubernetes with TypeScript**
+
+**A control plane aware framework for orchestrating kubernetes resources like a programmer**
 
 TypeKro combines the type safety of TypeScript, the GitOps-friendly output of declarative YAML, and the runtime intelligence of **Kubernetes Resource Orchestrator (KRO)** - an open-source project that enables advanced resource orchestration with runtime dependencies and CEL expressions. Write infrastructure in pure TypeScript with full IDE support, then deploy directly to clusters or generate deterministic YAML for GitOps workflows.
 
@@ -36,10 +38,10 @@ Write Kubernetes infrastructure in pure TypeScript with full IDE support and typ
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { kubernetesComposition, simple, Cel } from 'typekro';
 
-// Build your infrastructure with full type safety
-const deploymentService = toResourceGraph(
+// Build your infrastructure with full type safety using imperative composition
+const deploymentService = kubernetesComposition(
   {
     name: 'deployment-service',
     apiVersion: 'example.com/v1alpha1',
@@ -47,28 +49,31 @@ const deploymentService = toResourceGraph(
     spec: type({ name: 'string', environment: '"dev" | "staging" | "prod"' }),
     status: type({ ready: 'boolean', url: 'string' })
   },
-  (schema) => ({
-    deployment: simpleDeployment({
-      name: schema.spec.name,                    // ← Full IDE autocomplete
+  (spec) => {
+    // Resources auto-register when created - no explicit builders needed!
+    const deployment = simple.Deployment({
+      name: spec.name,                    // ← Full IDE autocomplete
       image: 'nginx',
-      replicas: schema.spec.environment === 'prod' ? 3 : 1,  // ← Type-safe logic
+      replicas: spec.environment === 'prod' ? 3 : 1,  // ← Type-safe logic
       labels: { 
         app: 'deployment',
-        env: schema.spec.environment             // ← Validated enum
+        env: spec.environment             // ← Validated enum
       },
       ports: [{ containerPort: 80 }]
-    }),
+    });
     
-    service: simpleService({
-      name: schema.spec.name,
+    const service = simple.Service({
+      name: spec.name,
       selector: { app: 'deployment' },           // ← Cross-resource reference
       ports: [{ port: 80, targetPort: 80 }]
-    })
-  }),
-  (schema, resources) => ({
-    ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
-    url: Cel.template('http://%s.%s.svc', schema.spec.name, schema.spec.environment)
-  })
+    });
+
+    // Return status with CEL expressions and resource references
+    return {
+      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+      url: Cel.template('http://%s.%s.svc', spec.name, spec.environment)
+    };
+  }
 );
 
 // Deploy instantly with full type checking
@@ -86,6 +91,10 @@ await deploymentService.factory('direct').deploy({
 - **Instant deployment** - No kubectl, no YAML files
 
 **Deploy anywhere:** Generate KRO YAML for GitOps with `factory.toYaml()` or integrate with multi-cloud using Alchemy.
+
+::: tip Imperative vs Declarative
+This example uses TypeKro's **imperative composition pattern** (`kubernetesComposition`) - the recommended approach for most use cases. For teams preferring explicit resource/status builders, TypeKro also supports a **declarative pattern** (`toResourceGraph`). [Learn more about both patterns →](https://typekro.run/guide/imperative-composition)
+:::
 
 ---
 
@@ -117,21 +126,35 @@ TypeKro offers deployment flexibility.
  The same TypeScript code can be deployed in multiple ways without modification:
 
 ```typescript
-// Define your infrastructure once  
-const webappGraph = toResourceGraph(
-  {
-    name: 'my-webapp',
-    apiVersion: 'example.com/v1',
-    kind: 'WebApp', 
-    spec: WebAppSpec,
-    status: WebAppStatus
-  },
-  (schema) => ({
-    // ... your resources
-  }),
-  (schema, resources) => ({
-    // ... status builder
-  })
+// Define your infrastructure once with imperative composition
+const webappGraph = kubernetesComposition(
+  {
+    name: 'my-webapp',
+    apiVersion: 'example.com/v1',
+    kind: 'WebApp', 
+    spec: WebAppSpec,
+    status: WebAppStatus
+  },
+  (spec) => {
+    // Resources auto-register when created - no explicit builders needed!
+    const deployment = simple.Deployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas
+    });
+    
+    const service = simple.Service({
+      name: `${spec.name}-service`,
+      selector: { app: spec.name },
+      ports: [{ port: 80, targetPort: 80 }]
+    });
+
+    // Return status with CEL expressions and resource references
+    return {
+      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+      url: Cel.template('http://%s-service', spec.name)
+    };
+  }
 );
 
 const spec = { name: 'my-app', image: 'nginx:1.21', replicas: 3 };
@@ -310,10 +333,10 @@ TypeKro generates stable, deterministic YAML output perfect for GitOps workflows
 // generate-manifests.ts
 import { writeFileSync } from 'fs';
 
-const graph = toResourceGraph(/* ... */);
+const graph = kubernetesComposition(/* ... */);
 
 // Same input always generates identical YAML
-const factory = await graph.factory('kro', { namespace: 'default' });
+const factory = graph.factory('kro', { namespace: 'default' });
 const yaml = factory.toYaml();
 
 // Write to file for GitOps
@@ -329,7 +352,7 @@ const environments = ['development', 'staging', 'production'];
 
 for (const env of environments) {
   // Generate ResourceGraphDefinition YAML for this environment
-  const factory = await webappGraph.factory('kro', { namespace: env });
+  const factory = webappGraph.factory('kro', { namespace: env });
   const rgdYaml = factory.toYaml();
   writeFileSync(`k8s/${env}/webapp-rgd.yaml`, rgdYaml);
   
@@ -365,7 +388,7 @@ const InfraSpec = type({
   environment: 'string'
 });
 
-const infraGraph = toResourceGraph(
+const infraGraph = kubernetesComposition(
   {
     name: 'ingress-infrastructure',
     apiVersion: 'infrastructure.example.com/v1',
@@ -380,12 +403,12 @@ const infraGraph = toResourceGraph(
       url: 'https://kubernetes.github.io/ingress-nginx'
     });
     
-    // Create Helm release using simple factory
-    const controller = simpleHelmChart(
-      Cel.template('%s-ingress', schema.spec.name),
-      repository.spec.url,  // Reference repository URL by field
-      'ingress-nginx',
-      {
+    // Create Helm release using helmRelease factory
+    const controller = helmRelease({
+      name: Cel.template('%s-ingress', schema.spec.name),
+      repository: repository,  // Reference repository
+      chart: 'ingress-nginx',
+      values: {
         controller: {
           replicaCount: schema.spec.replicas,                    // Schema reference
           service: {
@@ -396,7 +419,7 @@ const infraGraph = toResourceGraph(
           }
         }
       }
-    );
+    });
 
     return { repository, controller };
   },
@@ -406,7 +429,7 @@ const infraGraph = toResourceGraph(
 );
 
 // Deploy via Flux
-const factory = await infraGraph.factory('kro', { namespace: 'flux-system' });
+const factory = infraGraph.factory('kro', { namespace: 'flux-system' });
 const yaml = factory.toYaml();
 writeFileSync('k8s/ingress-controller.yaml', yaml);
 ```
@@ -429,53 +452,55 @@ const AppSpec = type({
   image: 'string'
 });
 
-const hybridGraph = toResourceGraph(
-  {
-    name: 'hybrid-app',
-    apiVersion: 'apps.example.com/v1',
-    kind: 'HybridApp',
-    spec: AppSpec,
-    status: type({ ready: 'boolean' })
-  },
-  (schema) => ({
-    // Include external YAML files
-    monitoring: yamlFile({
-      path: './k8s/prometheus-operator.yaml',
-      namespace: schema.metadata.namespace  // Schema reference for namespace
-    }),
-    
-    // Include entire directories with Kustomization
-    monitoringStack: yamlDirectory({
-      path: './k8s/monitoring/',
-      recursive: true,
-      kustomization: {
-        namePrefix: Cel.template('%s-', schema.spec.name),     // Dynamic prefix
-        namespace: schema.metadata.namespace,
-        commonLabels: {
-          'app.kubernetes.io/instance': schema.spec.name        // Schema reference
-        }
-      }
-    }),
-    
-    // Include from Git repositories
-    kubePrometheus: yamlDirectory({
-      path: 'https://github.com/prometheus-operator/kube-prometheus.git//manifests',
-      ref: 'v0.12.0',
-      namespace: 'monitoring'
-    }),
-    
-    // TypeKro resources that reference external resources
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      env: {
-        PROMETHEUS_URL: 'http://prometheus-operated.monitoring.svc.cluster.local:9090'
-      }
-    })
-  }),
-  (schema, resources) => ({
-    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
-  })
+const hybridGraph = kubernetesComposition(
+  {
+    name: 'hybrid-app',
+    apiVersion: 'apps.example.com/v1',
+    kind: 'HybridApp',
+    spec: AppSpec,
+    status: type({ ready: 'boolean' })
+  },
+  (spec) => {
+    // Include external YAML files
+    const monitoring = yamlFile({
+      path: './k8s/prometheus-operator.yaml',
+      namespace: 'default'  // Can use static namespace or reference
+    });
+    
+    // Include entire directories with Kustomization
+    const monitoringStack = yamlDirectory({
+      path: './k8s/monitoring/',
+      recursive: true,
+      kustomization: {
+        namePrefix: Cel.template('%s-', spec.name),     // Dynamic prefix
+        namespace: 'default',
+        commonLabels: {
+          'app.kubernetes.io/instance': spec.name        // Schema reference
+        }
+      }
+    });
+    
+    // Include from Git repositories
+    const kubePrometheus = yamlDirectory({
+      path: 'https://github.com/prometheus-operator/kube-prometheus.git//manifests',
+      ref: 'v0.12.0',
+      namespace: 'monitoring'
+    });
+    
+    // TypeKro resources that reference external resources
+    const app = simple.Deployment({
+      name: spec.name,
+      image: spec.image,
+      env: {
+        PROMETHEUS_URL: 'http://prometheus-operated.monitoring.svc.cluster.local:9090'
+      }
+    });
+
+    // Return status
+    return {
+      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
+    };
+  }
 );
 ```
 
@@ -491,7 +516,7 @@ const hybridGraph = toResourceGraph(
 
 TypeKro provides 50+ factory functions for all major Kubernetes resources:
 
-**Core Resources:** `simpleDeployment()`, `simpleService()`, `simpleConfigMap()`, `simpleSecret()`, `simplePvc()`
+**Core Resources:** `simple.Deployment()`, `simple.Service()`, `simple.ConfigMap()`, `simple.Secret()`, `simple.Pvc()`
 
 **Advanced:** `helmRelease()`, `yamlFile()`, `customResource()`, `networkPolicy()`, `serviceAccount()`, plus comprehensive RBAC, storage, networking, and workload resources.
 
@@ -506,7 +531,7 @@ All resources support full type safety, cross-resource references, IDE autocompl
 ### 🆕 "I'm new to Kubernetes"
 **→ Use: Direct Deployment**
 ```typescript
-const factory = await graph.factory('direct', { namespace: 'default' });
+const factory = graph.factory('direct', { namespace: 'default' });
 await factory.deploy(spec);
 ```
 - Immediate feedback loop
@@ -517,24 +542,25 @@ await factory.deploy(spec);
 ### 🔄 "I have existing YAML and want to migrate gradually"  
 **→ Use: yamlFile() + gradual adoption**
 ```typescript
-const hybridGraph = toResourceGraph(
-  {
-    name: 'legacy-app',
-    apiVersion: 'apps.example.com/v1',
-    kind: 'LegacyApp',
-    spec: type({ name: 'string' }),
-    status: type({ ready: 'boolean' })
-  },
-  (schema) => ({
-    existing: yamlFile({ path: './existing/app.yaml' }),        // Keep existing
-    newService: simpleService({                                 // Add TypeKro gradually
-      name: schema.spec.name,
-      selector: { app: schema.spec.name }
-    })
-  }),
-  (schema, resources) => ({
-    ready: Cel.expr(resources.newService.status.ready, ' == true')
-  })
+const hybridGraph = kubernetesComposition(
+  {
+    name: 'legacy-app',
+    apiVersion: 'apps.example.com/v1',
+    kind: 'LegacyApp',
+    spec: type({ name: 'string' }),
+    status: type({ ready: 'boolean' })
+  },
+  (spec) => {
+    const existing = yamlFile({ path: './existing/app.yaml' });        // Keep existing
+    const newService = simple.Service({                                 // Add TypeKro gradually
+      name: spec.name,
+      selector: { app: spec.name }
+    });
+
+    return {
+      ready: Cel.expr<boolean>(newService.status.ready, ' == true')
+    };
+  }
 );
 ```
 - Preserve existing workflows
@@ -544,7 +570,7 @@ const hybridGraph = toResourceGraph(
 ### 🚀 "I want GitOps workflows"
 **→ Use: YAML Generation + Flux HelmRelease**
 ```typescript
-const factory = await graph.factory('kro', { namespace: 'production' });
+const factory = graph.factory('kro', { namespace: 'production' });
 const yaml = factory.toYaml();
 writeFileSync('k8s/app.yaml', yaml);
 ```
@@ -556,7 +582,7 @@ writeFileSync('k8s/app.yaml', yaml);
 **→ Use: [Alchemy Integration](#multi-cloud-integration-with-alchemy)**
 ```typescript
 await alchemyScope.run(async () => {
-  const factory = await graph.factory('direct', { 
+  const factory = graph.factory('direct', { 
     namespace: 'default',
     alchemyScope: alchemyScope 
   });
@@ -571,14 +597,15 @@ await alchemyScope.run(async () => {
 **→ Use: helmRelease() patterns**
 ```typescript
 helmRelease({
-  name: 'nginx',
-  chart: { /* ... */ },
-  values: {
-    replicaCount: schema.spec.replicas,  // Type-safe values
-    service: {
-      loadBalancerIP: schema.spec.ip     // Schema references
-    }
-  }
+  name: 'nginx',
+  repository: repository,
+  chart: 'nginx',
+  values: {
+    replicaCount: spec.replicas,  // Type-safe values
+    service: {
+      loadBalancerIP: spec.ip     // Schema references
+    }
+  }
 })
 ```
 - Type-safe Helm values
@@ -588,7 +615,7 @@ helmRelease({
 ### 🔗 "I have complex runtime dependencies"
 **→ Use: Kro Deployment + CEL expressions**
 ```typescript
-simpleDeployment({
+simple.Deployment({
   env: {
     DB_HOST: database.service.spec.clusterIP,           // Runtime resolution
     API_URL: Cel.template('http://%s:8080', 
@@ -642,32 +669,33 @@ const app = await alchemy('webapp-infrastructure');
 const bucket = await Bucket('webapp-uploads');
 
 // 3. Create Kubernetes resources that reference cloud resources
-const webappGraph = toResourceGraph(
-  {
-    name: 'webapp-with-cloud',
-    apiVersion: 'example.com/v1',
-    kind: 'CloudWebApp',
-    spec: type({ name: 'string', image: 'string', replicas: 'number' }),
-    status: type({ ready: 'boolean' })
-  },
-  (schema) => ({
-    app: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      env: {
-        BUCKET_NAME: bucket.name,  // Reference to Alchemy resource
-        API_URL: Cel.template('http://%s-service', schema.spec.name)
-      }
-    })
-  }),
-  (schema, resources) => ({
-    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
-  })
+const webappGraph = kubernetesComposition(
+  {
+    name: 'webapp-with-cloud',
+    apiVersion: 'example.com/v1',
+    kind: 'CloudWebApp',
+    spec: type({ name: 'string', image: 'string', replicas: 'number' }),
+    status: type({ ready: 'boolean' })
+  },
+  (spec) => {
+    const app = simple.Deployment({
+      name: spec.name,
+      image: spec.image,
+      env: {
+        BUCKET_NAME: bucket.name,  // Reference to Alchemy resource
+        API_URL: Cel.template('http://%s-service', spec.name)
+      }
+    });
+
+    return {
+      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
+    };
+  }
 );
 
 // Deploy TypeKro resources with Alchemy integration
 await app.run(async () => {
-  const factory = await webappGraph.factory('direct', { 
+  const factory = webappGraph.factory('direct', { 
     namespace: 'default',
     alchemyScope: app 
   });
@@ -686,7 +714,7 @@ Here's a complete example showing TypeKro + Alchemy for a production cloud-nativ
 ```typescript
 import alchemy from 'alchemy';
 import { Bucket, Function as LambdaFunction } from 'alchemy/aws';
-import { toResourceGraph, simpleDeployment, type } from 'typekro';
+import { kubernetesComposition, simple, type } from 'typekro';
 
 // 1. Create Alchemy scope
 const app = await alchemy('cloud-native-app');
@@ -708,27 +736,27 @@ const AppSpec = type({
   replicas: 'number'
 });
 
-const appGraph = toResourceGraph(
-  {
-    name: 'cloud-native-app',
-    apiVersion: 'example.com/v1',
-    kind: 'CloudNativeApp',
-    spec: AppSpec,
-    status: type({ ready: 'boolean' })
-  },
-  (schema) => {
+const appGraph = kubernetesComposition(
+  {
+    name: 'cloud-native-app',
+    apiVersion: 'example.com/v1',
+    kind: 'CloudNativeApp',
+    spec: AppSpec,
+    status: type({ ready: 'boolean' })
+  },
+  (spec) => {
     // Create redis first
-    const redis = simpleDeployment({
-      name: Cel.template('%s-redis', schema.spec.name),
+    const redis = simple.Deployment({
+      name: Cel.template('%s-redis', spec.name),
       image: 'redis:7',
-      labels: { app: Cel.template('%s-redis', schema.spec.name), component: 'cache' }
+      labels: { app: Cel.template('%s-redis', spec.name), component: 'cache' }
     });
     
     // Create app that references redis
-    const app = simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      labels: { app: schema.spec.name, component: 'web' },
+    const app = simple.Deployment({
+      name: spec.name,
+      image: spec.image,
+      labels: { app: spec.name, component: 'web' },
       env: {
         // Reference cloud resources
         API_URL: api.url,
@@ -738,16 +766,15 @@ const appGraph = toResourceGraph(
       }
     });
 
-    return { redis, app };
-  },
-  (schema, resources) => ({
-    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
-  })
+    return {
+      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
+    };
+  }
 );
 
 // 4. Deploy as unified infrastructure
 await app.run(async () => {
-  const factory = await appGraph.factory('direct', { 
+  const factory = appGraph.factory('direct', { 
     namespace: 'production',
     alchemyScope: app 
   });
@@ -771,9 +798,9 @@ const database = await RDS('main-db');
 const cache = await ElastiCache('redis-cluster');
 
 // Add Kubernetes workloads that use cloud resources
-const k8sWorkloads = await webappGraph.factory('kro', { namespace: 'apps' });
+const k8sWorkloads = webappGraph.factory('kro', { namespace: 'apps' });
 await app.run(async () => {
-  const factory = await k8sWorkloads.factory('kro', { 
+  const factory = k8sWorkloads.factory('kro', { 
     namespace: 'apps',
     alchemyScope: app 
   });
@@ -876,7 +903,7 @@ TypeKro's "magic" comes from its **proxy system** that creates different behavio
 
 #### Static Values (Known at Execution Time)
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',        // Static string
   replicas: 3,           // Static number
 });
@@ -887,7 +914,7 @@ console.log(deployment.spec.replicas); // Returns: 3
 
 #### Dynamic References (Unknown at Execution Time)
 ```typescript
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,  // Schema reference - unknown until runtime
 });
 
@@ -898,12 +925,12 @@ const statusRef = deployment.status.readyReplicas; // Creates: KubernetesRef<num
 
 #### The `$` Prefix for Explicit References
 ```typescript
-const configMap = simpleConfigMap({
+const configMap = simple.ConfigMap({
   name: 'config',
   data: { key: 'value' }  // Static value
 });
 
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'app',
   env: {
     // Static behavior: Uses the known value "value" at execution time
@@ -950,7 +977,7 @@ const kroResources = [
   kroInstance             // Instance depends on CRD
 ];
 
-const factory = await graph.factory('direct', { namespace: 'default' });
+const factory = graph.factory('direct', { namespace: 'default' });
 await factory.deploy(spec);  // ✅ Automatically waits for CRD readiness
 ```
 
@@ -996,7 +1023,7 @@ const graph = toResourceGraph(
     }),
   },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       // ✅ No optional chaining needed - TypeScript knows these exist
       name: schema.spec.name,           // Type: string (not string | undefined)
       image: schema.spec.image,         // Type: string (not string | undefined)
@@ -1066,7 +1093,7 @@ const staticName = 'my-app';                         // Remains: st
 const staticReplicas = 3;                            // Remains: number
 
 // Mixed usage in factory functions
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: schema.spec.name,        // Dynamic: KubernetesRef<string> → CEL expression
   replicas: 3,                   // Static: number → direct value
   image: 'nginx:latest'          // Static: string → direct value

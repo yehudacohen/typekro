@@ -8,10 +8,7 @@ import { type } from 'arktype';
 import { toResourceGraph } from '../../src/core/serialization/core.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { yamlDirectory, yamlFile } from '../../src/factories/kubernetes/yaml/index.js';
-import {
-  getIntegrationTestKubeConfig,
-  isClusterAvailable,
-} from '../integration/shared-kubeconfig.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable,  } from '../integration/shared-kubeconfig.js';
 
 describe('KroResourceFactory Closure Support', () => {
   let kubeConfig: any;

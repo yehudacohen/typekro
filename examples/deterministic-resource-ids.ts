@@ -6,9 +6,9 @@
  */
 
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../src/index.js';
+import { Deployment, Service } from '../src/factories/simple/index.js';
 import { generateDeterministicResourceId } from '../src/utils/helpers.js';
-
+import { toResourceGraph, Cel } from '../src/index.js';
 // Define the schema for our web application
 const WebAppSpecSchema = type({
   name: 'string',
@@ -42,13 +42,13 @@ async function demonstrateDeterministicIds() {
       status: WebAppStatusSchema,
     },
     (schema) => ({
-      deployment: simpleDeployment({
+      deployment: Deployment({
         name: schema.spec.name,
         image: schema.spec.image,
         replicas: schema.spec.replicas,
         id: 'webapp-deployment', // Explicit ID
       }),
-      service: simpleService({
+      service: Service({
         name: 'webapp-service',
         selector: { app: schema.spec.name },
         ports: [{ port: 80, targetPort: 8080 }],
@@ -71,13 +71,13 @@ async function demonstrateDeterministicIds() {
       status: WebAppStatusSchema,
     },
     (schema) => ({
-      deployment: simpleDeployment({
+      deployment: Deployment({
         name: schema.spec.name,
         image: schema.spec.image,
         replicas: schema.spec.replicas,
         id: 'webapp-deployment', // Same explicit ID
       }),
-      service: simpleService({
+      service: Service({
         name: 'webapp-service',
         selector: { app: schema.spec.name },
         ports: [{ port: 80, targetPort: 8080 }],

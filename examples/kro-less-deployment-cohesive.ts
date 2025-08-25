@@ -10,11 +10,11 @@
  */
 
 import { type } from 'arktype';
+import { Deployment, Service } from '../src/factories/simple/index.js';
 import {
   Cel,
   externalRef,
-  simpleDeployment,
-  simpleService,
+  
   toResourceGraph,
 } from '../src/index.js';
 
@@ -59,7 +59,7 @@ const webappGraph = toResourceGraph(
     status: WebAppStatusSchema,
   },
   (_schema) => ({
-    deployment: simpleDeployment({
+    deployment: Deployment({
       name: 'webapp',
       image: 'nginx:latest',
       replicas: 3,
@@ -76,7 +76,7 @@ const webappGraph = toResourceGraph(
       },
     }),
 
-    service: simpleService({
+    service: Service({
       name: 'webapp-service',
       selector: { app: 'webapp' },
       ports: [{ port: 80, targetPort: 3000 }],
@@ -239,7 +239,7 @@ async function demonstrateAlchemyDirectMode() {
       status: WebAppStatusSchema,
     },
     (_schema) => ({
-      deployment: simpleDeployment({
+      deployment: Deployment({
         name: 'fullstack-webapp',
         image: 'nginx:latest',
         replicas: 3,
@@ -255,7 +255,7 @@ async function demonstrateAlchemyDirectMode() {
         id: 'fullstackDeployment', // camelCase ID
       }),
 
-      service: simpleService({
+      service: Service({
         name: 'fullstack-service',
         selector: { app: 'fullstack' },
         ports: [{ port: 80, targetPort: 3000 }],
@@ -409,7 +409,7 @@ async function demonstrateExternalReferences() {
       return {
         database, // Include external reference in resource graph
 
-        deployment: simpleDeployment({
+        deployment: Deployment({
           name: schema.spec.name,
           image: schema.spec.image,
           replicas: schema.spec.replicas,
@@ -427,7 +427,7 @@ async function demonstrateExternalReferences() {
           id: 'webappDbDeployment', // camelCase ID
         }),
 
-        service: simpleService({
+        service: Service({
           name: 'webapp-db-service',
           selector: { app: 'webapp-db' },
           ports: [{ port: 80, targetPort: 3000 }],
@@ -519,7 +519,7 @@ function demonstrateTypeSafety() {
   // const invalidGraph = toResourceGraph(
   //   'invalid',
   //   (schema) => ({
-  //     deployment: simpleDeployment({
+  //     deployment: Deployment({
   //       name: schema.spec.nonExistentField, // ❌ Property doesn't exist
   //       image: 'nginx',
   //     }),

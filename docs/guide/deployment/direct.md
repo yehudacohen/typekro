@@ -13,7 +13,7 @@ Direct deployment provides:
 - **No additional dependencies** beyond kubectl access
 
 ```typescript
-import { toResourceGraph, simpleDeployment, simpleService } from 'typekro';
+import { toResourceGraph, simple } from 'typekro';
 
 const webApp = toResourceGraph(/* ... */);
 
@@ -295,7 +295,7 @@ const fullStack = toResourceGraph(
   { name: 'fullstack', schema: { spec: FullStackSpec } },
   (schema) => ({
     // Database
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: Cel.expr(schema.spec.name, '-db'),
       image: 'postgres:15',
       env: {
@@ -306,14 +306,14 @@ const fullStack = toResourceGraph(
       ports: [{ containerPort: 5432 }]
     }),
     
-    databaseService: simpleService({
+    databaseService: simple.Service({
       name: Cel.expr(schema.spec.name, '-db-service'),
       selector: { app: Cel.expr(schema.spec.name, '-db') },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // Wait for database before starting app
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
@@ -322,7 +322,7 @@ const fullStack = toResourceGraph(
       ports: [{ containerPort: 3000 }]
     }),
     
-    appService: simpleService({
+    appService: simple.Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -367,7 +367,7 @@ const microservices = toResourceGraph(
     
     // Create deployments for each service
     schema.spec.services.forEach(service => {
-      services[service.name] = simpleDeployment({
+      services[service.name] = simple.Deployment({
         name: service.name,
         image: service.image,
         replicas: service.replicas,
@@ -375,7 +375,7 @@ const microservices = toResourceGraph(
         env: service.env
       });
       
-      services[Cel.expr(service.name, 'Service')] = simpleService({
+      services[Cel.expr(service.name, 'Service')] = simple.Service({
         name: Cel.expr(service.name, '-service'),
         selector: { app: service.name },
         ports: [{ port: service.port, targetPort: service.port }]
@@ -496,7 +496,7 @@ async function canaryDeployment() {
 const healthyApp = toResourceGraph(
   { name: 'healthy-app', schema: { spec: AppSpec } },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       ports: [{ containerPort: 3000 }],
@@ -541,7 +541,7 @@ const factory = healthyApp.factory('direct', {
 const scalableApp = toResourceGraph(
   { name: 'scalable-app', schema: { spec: ScalableAppSpec } },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -560,7 +560,7 @@ const scalableApp = toResourceGraph(
     }),
     
     // Horizontal Pod Autoscaler
-    hpa: simpleHpa({
+    hpa: simple.Hpa({
       name: Cel.expr(schema.spec.name, '-hpa'),
       scaleTargetRef: {
         apiVersion: 'apps/v1',
@@ -586,14 +586,14 @@ const scalableApp = toResourceGraph(
 const statefulApp = toResourceGraph(
   { name: 'stateful-app', schema: { spec: StatefulAppSpec } },
   (schema) => ({
-    storage: simplePvc({
+    storage: simple.Pvc({
       name: Cel.expr(schema.spec.name, '-storage'),
       size: schema.spec.storage.size,
       storageClass: schema.spec.storage.class,
       accessModes: ['ReadWriteOnce']
     }),
     
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       

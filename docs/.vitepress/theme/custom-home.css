@@ -1,0 +1,371 @@
+/* Import coding fonts */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap');
+
+/* EXACT TypeKro VitePress Theme Colors */
+:root {
+  --vp-c-brand-1: #2563EB;
+  --vp-c-brand-2: #3B82F6;
+  --vp-c-brand-3: #1D4ED8;
+  --vp-c-brand-soft: rgba(37, 99, 235, 0.12);
+  --vp-c-brand-softer: rgba(37, 99, 235, 0.06);
+  --vp-c-brand-softest: rgba(37, 99, 235, 0.03);
+
+  /* Coding font variables */
+  --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  --vp-font-family-base: 'JetBrains Mono', 'Fira Code', system-ui, -apple-system, sans-serif;
+
+  /* Additional TypeKro theme colors */
+  --typekro-navy: #1E40AF;
+  --typekro-navy-light: #2563EB;
+  --typekro-emerald: #059669;
+  --typekro-emerald-light: #10B981;
+  --typekro-cyan: #0EA5E9;
+  --typekro-cyan-light: #38BDF8;
+
+  /* Light Mode - Soft Mint Green (harmonizes with emerald logo) */
+  --vp-c-bg: #F7FFFE;
+  --vp-c-bg-alt: #ECFFF8;
+  --vp-c-bg-soft: #D1FAE5;
+  --vp-c-bg-mute: #A7F3D0;
+  
+  /* Standard VitePress text colors */
+  --vp-c-text-1: #213547;
+  --vp-c-text-2: #476582;
+  --vp-c-text-3: #7c8b9c;
+  --vp-c-divider: rgba(60, 60, 67, 0.12);
+  --vp-c-border: rgba(60, 60, 67, 0.12);
+}
+
+.dark {
+  --vp-c-brand-1: #38BDF8;
+  --vp-c-brand-2: #0EA5E9;
+  --vp-c-brand-3: #0284C7;
+  --vp-c-brand-soft: rgba(56, 189, 248, 0.14);
+  --vp-c-brand-softer: rgba(56, 189, 248, 0.08);
+  --vp-c-brand-softest: rgba(56, 189, 248, 0.04);
+
+  --typekro-navy: #3B82F6;
+  --typekro-navy-light: #60A5FA;
+  --typekro-emerald: #10B981;
+  --typekro-emerald-light: #34D399;
+  --typekro-cyan: #38BDF8;
+  --typekro-cyan-light: #7DD3FC;
+
+  /* Dark Mode - Deep Forest Green (harmonizes with emerald logo) */
+  --vp-c-bg: #0F1B0F;
+  --vp-c-bg-alt: #152215;
+  --vp-c-bg-soft: #1B291B;
+  --vp-c-bg-mute: #213021;
+  
+  /* Better dark mode text colors */
+  --vp-c-text-1: #F0F6FC;
+  --vp-c-text-2: #C9D1D9;
+  --vp-c-text-3: #8B949E;
+  --vp-c-divider: rgba(240, 246, 252, 0.1);
+  --vp-c-border: rgba(240, 246, 252, 0.15);
+  --vp-c-bg: #0F1B0F;
+  --vp-c-bg-alt: #152215;
+  --vp-c-bg-soft: #1B291B;
+  --vp-c-bg-mute: #213021;
+  
+  /* Dark mode text colors */
+  --vp-c-text-1: #f6f6f7;
+  --vp-c-text-2: rgba(235, 235, 235, 0.64);
+  --vp-c-text-3: rgba(235, 235, 235, 0.38);
+  --vp-c-divider: rgba(84, 84, 84, 0.48);
+  --vp-c-border: rgba(84, 84, 84, 0.48);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Apply coding font to the entire site */
+body {
+  font-family: var(--vp-font-family-base);
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-1);
+  transition: background-color 0.3s ease, color 0.3s ease;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* EXACT VitePress Button Styling */
+.hero-button {
+  padding: 0.75rem 2rem;
+  border-radius: 6px;
+  font-family: var(--vp-font-family-mono);
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  display: inline-block;
+  border: none;
+  cursor: pointer;
+}
+
+.hero-button.primary {
+  background: var(--vp-c-brand-1);
+  color: white;
+}
+
+.hero-button.primary:hover {
+  background: var(--vp-c-brand-2);
+  transform: translateY(-2px);
+}
+
+.hero-button.secondary {
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1);
+  border: 1px solid var(--vp-c-divider);
+}
+
+.hero-button.secondary:hover {
+  background: var(--vp-c-bg-mute);
+  transform: translateY(-2px);
+}
+
+/* Typography matching VitePress */
+.hero-title {
+  font-family: var(--vp-font-family-mono);
+  font-size: 3.5rem;
+  font-weight: 700;
+  color: var(--vp-c-text-1);
+  line-height: 1.2;
+}
+
+.hero-tagline {
+  font-family: var(--vp-font-family-mono);
+  font-size: 1.4rem;
+  font-weight: 400;
+  color: var(--vp-c-text-2);
+  line-height: 1.6;
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Code styling */
+code {
+  font-family: var(--vp-font-family-mono);
+  background: var(--vp-c-bg-soft);
+  padding: 0.2rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+pre code {
+  background: transparent;
+  padding: 0;
+}
+
+/* Feature tiles */
+.feature-tile {
+  background: var(--vp-c-bg);
+  border: 1px solid var(--vp-c-divider);
+}
+
+/* Section titles with gradient */
+.section-title {
+  line-height: 1.2;
+  padding: 1rem 0;
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--typekro-emerald));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.dark .section-title {
+  line-height: 1.2;
+  padding: 1rem 0;
+  background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--typekro-emerald-light));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Ensure consistent theming */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--vp-c-text-1);
+}
+
+p {
+  color: var(--vp-c-text-2);
+}
+
+table {
+  background: var(--vp-c-bg);
+  border: 1px solid var(--vp-c-divider);
+}
+
+th {
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1);
+}
+
+td {
+  color: var(--vp-c-text-2);
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+/* Light theme code block styling */
+.code-container :deep(pre) {
+  background: #f8fafc !important;
+  color: #334155 !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.code-container :deep(.shiki) {
+  background: #f8fafc !important;
+}
+
+.fallback-code {
+  background: #f8fafc !important;
+  color: #334155 !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.tutorial-carousel .code-block {
+  background: #f8fafc !important;
+  color: #334155 !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.tutorial-carousel .code-wrapper {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.tutorial-carousel .code-header {
+  background: #f1f5f9 !important;
+  color: #334155 !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+
+.tutorial-carousel .code-block code,
+.code-container code {
+  color: #334155 !important;
+  background: transparent !important;
+}
+
+.tutorial-carousel .copy-button {
+  color: #334155 !important;
+  border: 1px solid #e2e8f0 !important;
+  background: transparent !important;
+}
+
+.tutorial-carousel .copy-button:hover {
+  background: #e2e8f0 !important;
+  color: #1e293b !important;
+}
+
+/* Dark theme code block styling */
+body.dark .code-container :deep(pre) {
+  background: #0d1117 !important;
+  color: #f0f6fc !important;
+  border: 1px solid #30363d !important;
+}
+
+body.dark .code-container :deep(.shiki) {
+  color: #f0f6fc !important;
+  background: #0d1117 !important;
+}
+
+/* Force all dark mode code text to be light */
+body.dark .code-container :deep(pre),
+body.dark .code-container :deep(pre *),
+body.dark .code-container :deep(.shiki),
+body.dark .code-container :deep(.shiki *) {
+  color: #f0f6fc !important;
+}
+
+body.dark .fallback-code {
+  background: #0d1117 !important;
+  color: #f0f6fc !important;
+  border: 1px solid #30363d !important;
+}
+
+body.dark .tutorial-carousel .code-block {
+  background: #0d1117 !important;
+  color: #f0f6fc !important;
+  border: 1px solid #30363d !important;
+}
+
+body.dark .tutorial-carousel .code-wrapper {
+  background: #161b22 !important;
+  border: 1px solid #30363d !important;
+}
+
+body.dark .tutorial-carousel .code-header {
+  background: #21262d !important;
+  color: #f0f6fc !important;
+  border-bottom: 1px solid #30363d !important;
+}
+
+body.dark .tutorial-carousel .code-block code,
+.dark .code-container code {
+  color: #f0f6fc !important;
+  background: transparent !important;
+}
+
+body.dark .tutorial-carousel .copy-button {
+  color: #f0f6fc !important;
+  border: 1px solid #30363d !important;
+  background: transparent !important;
+}
+
+body.dark .tutorial-carousel .copy-button:hover {
+  background: #30363d !important;
+  color: #ffffff !important;
+}
+
+/* Dark mode syntax highlighting with proper contrast */
+body.dark .code-container :deep(.token.keyword),
+body.dark .code-container :deep(.shiki .keyword) { 
+  color: #ff7b72 !important; 
+}
+
+body.dark .code-container :deep(.token.function),
+body.dark .code-container :deep(.shiki .function) { 
+  color: #d2a8ff !important; 
+}
+
+body.dark .code-container :deep(.token.string),
+body.dark .code-container :deep(.shiki .string) { 
+  color: #a5d6ff !important; 
+}
+
+body.dark .code-container :deep(.token.number),
+body.dark .code-container :deep(.shiki .number) { 
+  color: #79c0ff !important; 
+}
+
+body.dark .code-container :deep(.token.comment),
+body.dark .code-container :deep(.shiki .comment) { 
+  color: #8b949e !important; 
+}
+
+body.dark .code-container :deep(.token.property),
+body.dark .code-container :deep(.shiki .property) { 
+  color: #ffa657 !important; 
+}
+
+body.dark .code-container :deep(.token.operator),
+body.dark .code-container :deep(.shiki .operator) { 
+  color: #f0f6fc !important; 
+}
+
+/* Ensure Shiki dark theme colors are used properly */
+body.dark .code-container :deep(.shiki) {
+  --shiki-light: #f0f6fc;
+  --shiki-dark: #f0f6fc;
+}
+
+/* Fallback for any missed text elements */
+body.dark .code-container :deep(code) {
+  color: #f0f6fc !important;
+}

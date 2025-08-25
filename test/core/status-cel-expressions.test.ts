@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 describe('Status CEL Expression Generation', () => {
   it('should generate correct CEL expressions for deployment readiness', () => {
@@ -31,13 +31,13 @@ describe('Status CEL Expression Generation', () => {
         status: WebAppStatusSchema,
       },
       (schema) => ({
-        webappDeployment: simpleDeployment({
+        webappDeployment: simple.Deployment({
           id: 'webappDeployment',
           name: schema.spec.name,
           image: schema.spec.image,
           replicas: schema.spec.replicas,
         }),
-        webappService: simpleService({
+        webappService: simple.Service({
           id: 'webappService',
           name: 'webapp-service',
           selector: { app: schema.spec.name },
@@ -83,7 +83,7 @@ describe('Status CEL Expression Generation', () => {
         status: AppStatusSchema,
       },
       (schema) => ({
-        myDeployment: simpleDeployment({
+        myDeployment: simple.Deployment({
           id: 'myDeployment',
           name: schema.spec.name,
           image: schema.spec.image,
@@ -120,7 +120,7 @@ describe('Status CEL Expression Generation', () => {
         status: SimpleStatusSchema,
       },
       (schema) => ({
-        deployment: simpleDeployment({
+        deployment: simple.Deployment({
           id: 'deployment',
           name: schema.spec.name,
           image: 'nginx',

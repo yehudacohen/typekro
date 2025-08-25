@@ -6,10 +6,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import {
-  type HelmRepositoryConfig,
-  helmRepository,
-} from '../../../src/factories/helm/helm-repository.js';
+import { type HelmRepositoryConfig, helmRepository,  } from '../../../src/factories/helm/helm-repository.js';
 
 describe('HelmRepository Factory', () => {
   const createTestConfig = (

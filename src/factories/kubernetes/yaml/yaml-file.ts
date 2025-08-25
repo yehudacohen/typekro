@@ -58,7 +58,7 @@ export interface YamlFileConfig {
  *     }),
  *
  *     // This is a normal Enhanced<> resource
- *     webapp: simpleDeployment({
+ *     webapp: simple.Deployment({
  *       name: 'nginx',
  *       image: 'nginx',
  *       replicas: schema.spec.replicas
@@ -193,9 +193,12 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
  * Simplified YAML file factory for quick usage
  * @example
  * ```typescript
- * simpleYamlFile('./manifests/configmap.yaml')
- * simpleYamlFile('git:github.com/fluxcd/flux2/manifests/install/flux-system.yaml@main', 'flux-system')
+ * simple.YamlFile('./manifests/configmap.yaml')
+ * simple.YamlFile('git:github.com/fluxcd/flux2/manifests/install/flux-system.yaml@main', 'flux-system')
  * ```
+ */
+/**
+ * @deprecated Use simple.YamlFile() instead - import { simple } from 'typekro'; simple.YamlFile(...)
  */
 export function simpleYamlFile(
   path: string,

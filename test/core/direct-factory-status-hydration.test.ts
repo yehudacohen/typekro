@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 describe('DirectResourceFactory Status Hydration', () => {
   const WebAppSpecSchema = type({
@@ -35,13 +35,13 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webapp',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: `${schema.spec.name}-service`,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 80 }],
@@ -88,7 +88,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -126,13 +126,13 @@ describe('DirectResourceFactory Status Hydration', () => {
         },
         (schema) => ({
           // These keys should be preserved for status builder
-          webapp: simpleDeployment({
+          webapp: simple.Deployment({
             name: 'webapp-factory',
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webapp',
           }),
-          webappService: simpleService({
+          webappService: simple.Service({
             name: 'webapp-factory-service',
             selector: { app: 'webapp-factory' },
             ports: [{ port: 80, targetPort: 80 }],
@@ -181,13 +181,13 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'deployment',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: `${schema.spec.name}-svc`,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 8080 }],
@@ -219,7 +219,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -265,7 +265,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -305,13 +305,13 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          webapp: simpleDeployment({
+          webapp: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webapp',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: `${schema.spec.name}-service`,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 8080 }],
@@ -357,7 +357,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -399,7 +399,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -441,13 +441,13 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webapp',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: `${schema.spec.name}-service`,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 8080 }],
@@ -485,7 +485,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -521,7 +521,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -556,7 +556,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -600,7 +600,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -636,7 +636,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -678,7 +678,7 @@ describe('DirectResourceFactory Status Hydration', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,

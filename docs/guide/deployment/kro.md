@@ -113,7 +113,7 @@ kubectl get helmrelease -n kro
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -138,14 +138,14 @@ const kroWebApp = toResourceGraph(
     status: WebAppStatus,
   },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
       ports: [{ containerPort: 3000 }]
     }),
     
-    service: simpleService({
+    service: simple.Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
@@ -223,7 +223,7 @@ const databaseStack = toResourceGraph(
   },
   (schema) => ({
     // Database deployment
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: Cel.expr(schema.spec.name, '-db'),
       image: 'postgres:15',
       env: {
@@ -235,14 +235,14 @@ const databaseStack = toResourceGraph(
     }),
     
     // Database service
-    databaseService: simpleService({
+    databaseService: simple.Service({
       name: Cel.expr(schema.spec.name, '-db-service'),
       selector: { app: Cel.expr(schema.spec.name, '-db') },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // Application waits for database to be ready
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       
@@ -272,7 +272,7 @@ const databaseStack = toResourceGraph(
       }
     }),
     
-    appService: simpleService({
+    appService: simple.Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -309,7 +309,7 @@ const databaseStack = toResourceGraph(
 const autoScalingStack = toResourceGraph(
   { name: 'autoscaling-stack', schema: { spec: AutoScalingSpec, status: AutoScalingStatus } },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       
@@ -334,13 +334,13 @@ const autoScalingStack = toResourceGraph(
       }
     }),
     
-    service: simpleService({
+    service: simple.Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
     }),
     
-    hpa: simpleHpa({
+    hpa: simple.Hpa({
       name: Cel.expr(schema.spec.name, '-hpa'),
       scaleTargetRef: {
         apiVersion: 'apps/v1',
@@ -379,7 +379,7 @@ KRO makes it easy to deploy the same application across different environments u
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -403,7 +403,7 @@ const multiEnvApp = toResourceGraph(
   },
   (schema) => ({
     // Simple deployment with environment-aware configuration
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: Cel.conditional(
@@ -423,7 +423,7 @@ const multiEnvApp = toResourceGraph(
     }),
     
     // Service with environment-appropriate type
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }],
@@ -611,12 +611,12 @@ kubectl get rgd webapp -o jsonpath='{.spec.statusMappings}'
 const conditionalStack = toResourceGraph(
   { name: 'conditional-stack', schema: { spec: ConditionalSpec } },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image
     }),
     
-    service: simpleService({
+    service: simple.Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -644,7 +644,7 @@ const conditionalStack = toResourceGraph(
     
     // Only create ingress for external environments
     ...(schema.spec.external && {
-      ingress: simpleIngress({
+      ingress: simple.Ingress({
         name: Cel.expr(schema.spec.name, '-ingress'),
         rules: [{
           host: schema.spec.hostname,
@@ -686,23 +686,23 @@ const conditionalStack = toResourceGraph(
 const infraGraph = toResourceGraph(
   { name: 'infrastructure', schema: { spec: InfraSpec, status: InfraStatus } },
   (schema) => ({
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: 'shared-database',
       image: 'postgres:15'
     }),
     
-    databaseService: simpleService({
+    databaseService: simple.Service({
       name: 'shared-database-service',
       selector: { app: 'shared-database' },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
-    redis: simpleDeployment({
+    redis: simple.Deployment({
       name: 'shared-redis',
       image: 'redis:7'
     }),
     
-    redisService: simpleService({
+    redisService: simple.Service({
       name: 'shared-redis-service',
       selector: { app: 'shared-redis' },
       ports: [{ port: 6379, targetPort: 6379 }]
@@ -730,7 +730,7 @@ const infraGraph = toResourceGraph(
 const appWithInfra = toResourceGraph(
   { name: 'app-with-infra', schema: { spec: AppWithInfraSpec } },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
@@ -768,7 +768,7 @@ const appWithInfra = toResourceGraph(
 const reconcilableStack = toResourceGraph(
   definition,
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       
@@ -831,12 +831,12 @@ const statusBuilder = (schema, resources) => ({
 const dependentStack = toResourceGraph(
   definition,
   (schema) => ({
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: 'database',
       image: 'postgres:15'
     }),
     
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: 'app',
       image: schema.spec.image,
       

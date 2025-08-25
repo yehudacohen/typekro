@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { simpleDeployment, simplePvc, simpleService } from '../../../src/core/composition/index.js';
+import { simple } from '../../../src/index.js';
 import { Cel } from '../../../src/core/references/index.js';
 import { toResourceGraph } from '../../../src/core/serialization/core.js';
 
@@ -94,12 +94,12 @@ function createComprehensiveResourceGraph() {
       ...schemas.definition,
     },
     (schema) => ({
-      storage: simplePvc({
+      storage: simple.Pvc({
         name: 'webapp-storage', // Use static name to avoid schema reference issues
         size: schema.spec.storage || '1Gi',
         storageClass: 'standard',
       }),
-      deployment: simpleDeployment({
+      deployment: simple.Deployment({
         id: 'webappDeployment',
         name: schema.spec.name,
         image: schema.spec.image,
@@ -109,7 +109,7 @@ function createComprehensiveResourceGraph() {
           STORAGE_PATH: '/data',
         },
       }),
-      service: simpleService({
+      service: simple.Service({
         id: 'webappService',
         name: schema.spec.name,
         selector: { app: schema.spec.name },
@@ -519,14 +519,14 @@ describe('Comprehensive Factory Tests', () => {
 
           // Create multiple deployments
           for (let i = 0; i < 5; i++) {
-            resources[`deployment-${i}`] = simpleDeployment({
+            resources[`deployment-${i}`] = simple.Deployment({
               id: `webappDeployment${i}`,
               name: `${schema.spec.name}-${i}`,
               image: schema.spec.image,
               replicas: schema.spec.replicas,
             });
 
-            resources[`service-${i}`] = simpleService({
+            resources[`service-${i}`] = simple.Service({
               id: `webappService${i}`,
               name: `${schema.spec.name}-${i}`,
               selector: { app: `${schema.spec.name}-${i}` },

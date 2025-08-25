@@ -4,7 +4,8 @@ import { withMermaid } from 'vitepress-plugin-mermaid';
 export default withMermaid(
   defineConfig({
     title: 'TypeKro',
-    description: 'Statically Typed, Declarative Kubernetes Configuration with TypeScript',
+    description:
+      'A Kubernetes control plane aware framework for operating kubernetes like a programmer.',
     base: '/',
 
     head: [
@@ -47,6 +48,7 @@ export default withMermaid(
             text: 'Core Concepts',
             items: [
               { text: 'Schema Definition', link: '/guide/schema-definition' },
+              { text: 'kubernetesComposition', link: '/guide/imperative-composition' },
               { text: 'Factory Functions', link: '/guide/factory-functions' },
               { text: 'Resource Graphs', link: '/guide/resource-graphs' },
               { text: 'Cross-Resource References', link: '/guide/cross-references' },
@@ -79,6 +81,7 @@ export default withMermaid(
           {
             text: 'Core API',
             items: [
+              { text: 'kubernetesComposition', link: '/api/kubernetes-composition' },
               { text: 'toResourceGraph', link: '/api/to-resource-graph' },
               { text: 'Factory Functions', link: '/api/factories' },
               { text: 'CEL Expressions', link: '/api/cel' },

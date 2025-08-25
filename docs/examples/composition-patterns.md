@@ -8,7 +8,7 @@ Create a reusable database composition that can be used across multiple applicat
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, simpleDeployment, simpleService, simplePvc, simpleIngress, Cel } from 'typekro';
+import { kubernetesComposition, simple, Cel } from 'typekro';
 
 const DatabaseSpec = type({
   name: 'string',
@@ -34,14 +34,14 @@ export const database = kubernetesComposition(
   },
   (spec) => {
     // Persistent storage for the database
-    const storage = simplePvc({
+    const storage = simple.Pvc({
       name: Cel.template('%s-storage', spec.name),
       size: spec.storageSize,
       accessModes: ['ReadWriteOnce']
     });
 
     // Database deployment
-    const postgres = simpleDeployment({
+    const postgres = simple.Deployment({
       name: spec.name,
       image: spec.image,
       env: {
@@ -61,7 +61,7 @@ export const database = kubernetesComposition(
     });
 
     // Service to expose the database
-    const service = simpleService({
+    const service = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 5432, targetPort: 5432 }]
@@ -105,7 +105,7 @@ export const apiService = kubernetesComposition(
     status: ApiServiceStatus,
   },
   (spec) => {
-    const deployment = simpleDeployment({
+    const deployment = simple.Deployment({
       name: spec.name,
       image: spec.image,
       replicas: spec.replicas,
@@ -120,7 +120,7 @@ export const apiService = kubernetesComposition(
         : { cpu: '100m', memory: '256Mi' }
     });
 
-    const service = simpleService({
+    const service = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -193,7 +193,7 @@ export const fullStackApp = kubernetesComposition(
 
     // Create ingress for external access (production only)
     const ingress = spec.environment === 'production'
-      ? simpleIngress({
+      ? simple.Ingress({
           name: Cel.template('%s-ingress', spec.appName),
           rules: [{
             host: Cel.template('%s.example.com', spec.appName),
@@ -314,7 +314,7 @@ export const microservicesPlatform = kubernetesComposition(
     });
 
     // Frontend service
-    const frontend = simpleDeployment({
+    const frontend = simple.Deployment({
       name: Cel.template('%s-frontend', spec.name),
       image: spec.services.frontend.image,
       replicas: spec.services.frontend.replicas,
@@ -326,7 +326,7 @@ export const microservicesPlatform = kubernetesComposition(
       ports: [{ containerPort: 3000 }]
     });
 
-    const frontendService = simpleService({
+    const frontendService = simple.Service({
       name: Cel.template('%s-frontend-service', spec.name),
       selector: { app: Cel.template('%s-frontend', spec.name) },
       ports: [{ port: 80, targetPort: 3000 }],
@@ -334,13 +334,13 @@ export const microservicesPlatform = kubernetesComposition(
     });
 
     // API Gateway (simple nginx proxy)
-    const apiGateway = simpleDeployment({
+    const apiGateway = simple.Deployment({
       name: Cel.template('%s-api-gateway', spec.name),
       image: 'nginx:alpine',
       ports: [{ containerPort: 80 }]
     });
 
-    const apiGatewayService = simpleService({
+    const apiGatewayService = simple.Service({
       name: Cel.template('%s-api-gateway-service', spec.name),
       selector: { app: Cel.template('%s-api-gateway', spec.name) },
       ports: [{ port: 80, targetPort: 80 }]
@@ -391,7 +391,7 @@ export const microservicesPlatform = kubernetesComposition(
 ### Deploy Development Environment
 
 ```typescript
-const devFactory = await fullStackApp.factory('direct', { namespace: 'development' });
+const devFactory = fullStackApp.factory('direct', { namespace: 'development' });
 
 await devFactory.deploy({
   appName: 'myapp-dev',
@@ -405,7 +405,7 @@ await devFactory.deploy({
 ### Deploy Production Microservices
 
 ```typescript
-const prodFactory = await microservicesPlatform.factory('kro', { namespace: 'production' });
+const prodFactory = microservicesPlatform.factory('kro', { namespace: 'production' });
 
 await prodFactory.deploy({
   name: 'ecommerce-platform',

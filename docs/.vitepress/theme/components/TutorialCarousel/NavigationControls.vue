@@ -82,7 +82,7 @@ defineEmits<Emits>();
   flex-direction: column;
   gap: 1rem;
   align-items: center;
-  padding: 1rem 0;
+  padding: 0.5rem 0;
 }
 
 .nav-buttons {
@@ -96,9 +96,9 @@ defineEmits<Emits>();
   align-items: center;
   gap: 0.5rem;
   padding: 0.75rem 1.5rem;
-  border: 2px solid var(--vp-c-brand);
+  border: 2px solid var(--vp-c-brand-1);
   background: transparent;
-  color: var(--vp-c-brand);
+  color: var(--vp-c-brand-1);
   border-radius: 0.5rem;
   font-weight: 500;
   cursor: pointer;
@@ -106,8 +106,8 @@ defineEmits<Emits>();
 }
 
 .nav-button:hover:not(:disabled) {
-  background: var(--vp-c-brand);
-  color: var(--vp-c-bg);
+  background: var(--vp-c-brand-1);
+  color: white;
   transform: translateY(-1px);
 }
 
@@ -129,31 +129,32 @@ defineEmits<Emits>();
 }
 
 .step-dot {
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 50%;
-  border: 2px solid var(--vp-c-divider);
-  background: var(--vp-c-bg);
+  width: 2rem;
+  height: 2rem;
+  border-radius: 4px;
+  border: 1px solid var(--vp-c-divider);
+  background: transparent;
   color: var(--vp-c-text-2);
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: all 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.875rem;
+  font-size: 0.8rem;
   font-weight: 500;
+  font-family: var(--vp-font-family-mono);
 }
 
 .step-dot:hover {
-  border-color: var(--vp-c-brand);
-  transform: scale(1.1);
+  border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1);
 }
 
 .step-dot--active {
-  background: var(--vp-c-brand);
-  border-color: var(--vp-c-brand);
-  color: var(--vp-c-bg);
-  transform: scale(1.1);
+  background: var(--vp-c-brand-1);
+  border-color: var(--vp-c-brand-1);
+  color: white;
 }
 
 .step-number {
@@ -171,7 +172,7 @@ defineEmits<Emits>();
 
 .progress-fill {
   height: 100%;
-  background: var(--vp-c-brand);
+  background: var(--vp-c-brand-1);
   border-radius: 0.125rem;
   transition: width 0.3s ease;
 }
@@ -195,8 +196,8 @@ defineEmits<Emits>();
   }
 
   .step-dot {
-    width: 2rem;
-    height: 2rem;
+    width: 1.8rem;
+    height: 1.8rem;
     font-size: 0.75rem;
   }
 }

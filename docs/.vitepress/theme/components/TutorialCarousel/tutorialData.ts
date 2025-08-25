@@ -10,8 +10,7 @@ export const tutorialSteps: TutorialStep[] = [
       code: `import { type } from 'arktype';
 import { 
   kubernetesComposition, 
-  simpleDeployment, 
-  simpleService, 
+  simple.Deployment, 
   Cel 
 } from 'typekro';
 
@@ -33,14 +32,14 @@ const webApp = kubernetesComposition(
   },
   (spec) => {
     // Resources auto-register when created!
-    const deployment = simpleDeployment({
+    const deployment = simple.Deployment({
       name: spec.name,
       image: spec.image,
       replicas: spec.environment === 'prod' ? 3 : 1,
       labels: { app: spec.name, env: spec.environment }
     });
     
-    const service = simpleService({
+    const service = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
@@ -60,7 +59,7 @@ const webApp = kubernetesComposition(
 );
 
 // Deploy directly!
-const factory = await webApp.factory('direct');
+const factory = webApp.factory('direct');
 await factory.deploy({
   name: 'my-app',
   image: 'nginx:latest',
@@ -92,7 +91,7 @@ await factory.deploy({
         title: '1. Direct Deployment',
         example: {
           language: 'typescript',
-          code: `const factory = await webApp.factory('direct', { 
+          code: `const factory = webApp.factory('direct', { 
   namespace: 'dev' 
 });
 await factory.deploy({ 
@@ -107,7 +106,7 @@ await factory.deploy({
         title: '2. KRO Orchestration',
         example: {
           language: 'typescript',
-          code: `const factory = await webApp.factory('kro', { 
+          code: `const factory = webApp.factory('kro', { 
   namespace: 'staging' 
 });
 await factory.deploy({ 
@@ -155,7 +154,7 @@ writeFileSync('k8s/webapp-instance.yaml', instanceYaml);`,
       language: 'typescript',
       code: `import alchemy from 'alchemy';
 import { Bucket, Function as Lambda } from 'alchemy/aws';
-import { kubernetesComposition, simpleDeployment, type, Cel } from 'typekro';
+import { kubernetesComposition, simple.Deployment, type, Cel } from 'typekro';
 
 const app = await alchemy('cloud-native-app');
 
@@ -177,7 +176,7 @@ await app.run(async () => {
       status: type({ ready: 'boolean' })
     },
     (spec) => {
-      const app = simpleDeployment({
+      const app = simple.Deployment({
         name: spec.name,
         image: 'myapp:latest',
         replicas: spec.replicas,
@@ -194,7 +193,7 @@ await app.run(async () => {
   );
 
   // Deploy unified infrastructure
-  const factory = await cloudApp.factory('direct', { 
+  const factory = cloudApp.factory('direct', { 
     namespace: 'production', 
     alchemyScope: app 
   });
@@ -284,8 +283,7 @@ const invalidSpec = WebAppSpec({
       code: `import { type } from 'arktype';
 import { 
   kubernetesComposition, 
-  simpleDeployment, 
-  simpleService, 
+  simple.Deployment, 
   Cel 
 } from 'typekro';
 
@@ -299,13 +297,13 @@ const database = kubernetesComposition(
     status: type({ ready: 'boolean', host: 'string' })
   },
   (spec) => {
-    const postgres = simpleDeployment({
+    const postgres = simple.Deployment({
       name: spec.name,
       image: spec.image,
       ports: [{ containerPort: 5432 }]
     });
 
-    const service = simpleService({
+    const service = simple.Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 5432, targetPort: 5432 }]
@@ -329,12 +327,12 @@ const fullStack = kubernetesComposition(
   },
   (spec) => {
     // Nest the database composition - resources automatically merge
-    const db = database.withSpec({
+    const db = database({
       name: Cel.template('%s-db', spec.appName),
       image: spec.dbImage
     });
 
-    const app = simpleDeployment({
+    const app = simple.Deployment({
       name: spec.appName,
       image: spec.appImage,
       env: {
@@ -374,7 +372,8 @@ const fullStack = kubernetesComposition(
   {
     id: 'kro-powered',
     title: 'Powered by Kubernetes Resource Orchestrator',
-    description: 'Imperative composition compiles to KRO ResourceGraphDefinitions with CEL expressions',
+    description:
+      'Imperative composition compiles to KRO ResourceGraphDefinitions with CEL expressions',
     codeExample: {
       language: 'yaml',
       code: `# That imperative TypeScript compiles to this KRO ResourceGraphDefinition:

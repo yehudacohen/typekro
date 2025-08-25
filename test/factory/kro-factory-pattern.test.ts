@@ -14,7 +14,7 @@ import type {
   TypedKroResourceGraphDefinition,
   TypedResourceGraphFactory,
 } from '../../src/index';
-import { externalRef, simpleDeployment, simpleService } from '../../src/index';
+import { externalRef, simple } from '../../src/index';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Kro Factory Pattern - Types Only (Task 1)', () => {
@@ -87,7 +87,7 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
 
         // Should return a record of resources
         return {
-          testResource: simpleDeployment({
+          testResource: simple.Deployment({
             name: 'test',
             image: 'nginx',
             id: 'testResource',
@@ -255,7 +255,7 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
         expect(urlRef).toBeDefined();
 
         return {
-          testResource: simpleDeployment({
+          testResource: simple.Deployment({
             name: 'test',
             image: 'nginx',
             id: 'testResource',
@@ -270,12 +270,12 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
       // This test validates that ResourceBuilder can return mixed types
       const mixedBuilder: ResourceBuilder<WebAppSpec, WebAppStatus> = (_schema) => {
         return {
-          pod: simpleDeployment({
+          pod: simple.Deployment({
             name: 'test-pod',
             image: 'nginx',
             id: 'testPod',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: 'test-service',
             selector: { app: 'test' },
             ports: [{ port: 80, targetPort: 80 }],

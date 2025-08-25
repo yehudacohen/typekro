@@ -1,13 +1,7 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import {
-  Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
@@ -96,7 +90,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
       },
       (schema) => ({
         // Configuration
-        appConfig: simpleConfigMap({
+        appConfig: simple.ConfigMap({
           name: Cel.concat(schema.spec.name, '-config'),
           namespace: NAMESPACE,
           data: {
@@ -108,7 +102,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
         }),
 
         // Main application deployment
-        webapp: simpleDeployment({
+        webapp: simple.Deployment({
           name: schema.spec.name,
           namespace: NAMESPACE,
           image: schema.spec.image,
@@ -122,7 +116,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
         }),
 
         // Service for the application
-        webappService: simpleService({
+        webappService: simple.Service({
           name: Cel.concat(schema.spec.name, '-service'),
           namespace: NAMESPACE,
           selector: { app: schema.spec.name },

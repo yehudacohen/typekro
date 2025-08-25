@@ -84,6 +84,8 @@ body {
   font-family: var(--vp-font-family-mono);
   font-size: 3.5rem;
   font-weight: 700;
+  line-height: 1.2;
+  padding: 1rem 0;
   color: var(--vp-c-text-1);
   margin: 0 0 2rem 0;
   line-height: 1.2;
@@ -212,6 +214,8 @@ body {
 .VPHero .name {
   font-family: var(--vp-font-family-mono);
   font-weight: 700;
+  line-height: 1.2;
+  padding: 1rem 0;
   font-size: clamp(2rem, 5vw, 3.5rem);
   line-height: 1.2;
   text-align: center !important;
@@ -682,6 +686,8 @@ body {
   margin-bottom: 2rem;
   font-size: 2.5rem;
   font-weight: 700;
+  line-height: 1.2;
+  padding: 1rem 0;
   background: linear-gradient(120deg, var(--vp-c-brand-1) 30%, var(--typekro-emerald));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -712,6 +718,8 @@ body {
   margin-bottom: 2rem;
   font-size: 2.5rem;
   font-weight: 700;
+  line-height: 1.2;
+  padding: 1rem 0;
 }
 
 /* Ensure the gradient effect works in both light and dark modes */
@@ -821,3 +829,90 @@ body {
     padding: 0.3rem 0.8rem;
   }
 }
+
+/* HOME PAGE HERO - 40% Container Left Aligned with room for code block */
+.VPHome .VPHero .container {
+  width: 40% !important;
+  text-align: left !important;
+  align-items: flex-start !important;
+  margin-left: 4rem !important;
+  margin-right: auto !important;
+  gap: 0.5rem !important;
+  padding-left: 1rem !important;
+  position: relative !important;
+  overflow: visible !important;
+}
+
+.VPHome .VPHero .image {
+  order: -1 !important;
+  align-self: flex-start !important;
+  width: 300px !important;
+  margin: 0 !important;
+}
+
+.VPHome .VPHero .image .VPImage {
+  width: 300px !important;
+  margin: 0 !important;
+}
+
+.VPHome .VPHero .image img {
+  width: 300px !important;
+  height: 300px !important;
+  margin: 0 !important;
+  display: block !important;
+}
+
+.VPHome .VPHero .main {
+  text-align: left !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  width: 100% !important;
+}
+
+.VPHome .VPHero .name {
+  text-align: left !important;
+  margin-left: 0 !important;
+  margin-top: 0 !important;
+  max-width: none !important;
+  width: 100% !important;
+}
+
+.VPHome .VPHero .tagline {
+  text-align: left !important;
+  margin-left: 0 !important;
+  margin-top: 0 !important;
+  max-width: none !important;
+  width: 100% !important;
+}
+
+.VPHome .VPHero .actions {
+  justify-content: flex-start !important;
+  margin-left: 0 !important;
+  margin-top: 0 !important;
+}
+
+/* Minimal CSS - just try to move it */
+.typekro-hero-code {
+  position: fixed;
+  top: 150px;
+  right: 2rem;
+  width: 45%;
+  z-index: 100;
+}
+
+
+
+/* Only style positioning and typography, let VitePress handle colors */
+.VPHome .hero-code-sidebar pre {
+  margin: 0 !important;
+  padding: 1.5rem !important;
+  font-size: 0.85rem !important;
+  line-height: 1.4 !important;
+  overflow-x: auto !important;
+}
+
+.VPHome .hero-code-sidebar code {
+  font-family: var(--vp-font-family-mono) !important;
+}
+
+/* Remove all custom styling - let VitePress handle everything */

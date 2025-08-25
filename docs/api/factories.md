@@ -20,10 +20,10 @@ Simple factories provide streamlined configuration for common Kubernetes resourc
 Create application workloads with simplified configuration:
 
 ```typescript
-import { simpleDeployment, simpleJob, simpleStatefulSet, simpleCronJob } from 'typekro';
+import { simple } from 'typekro';
 
 // Deployment with minimal configuration
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   image: 'nginx:1.21',
   replicas: 3,
@@ -35,7 +35,7 @@ const app = simpleDeployment({
 });
 
 // Job for batch processing
-const dataJob = simpleJob({
+const dataJob = simple.Job({
   name: 'data-processor',
   image: 'data-processor:v1.0',
   command: ['process-data'],
@@ -46,7 +46,7 @@ const dataJob = simpleJob({
 });
 
 // StatefulSet for databases
-const database = simpleStatefulSet({
+const database = simple.StatefulSet({
   name: 'postgres',
   image: 'postgres:13',
   replicas: 3,
@@ -59,7 +59,7 @@ const database = simpleStatefulSet({
 });
 
 // CronJob for scheduled tasks
-const backup = simpleCronJob({
+const backup = simple.CronJob({
   name: 'daily-backup',
   image: 'backup-tool:latest',
   schedule: '0 2 * * *',  // Daily at 2 AM
@@ -72,11 +72,11 @@ const backup = simpleCronJob({
 Create networking resources with simplified configuration:
 
 ```typescript
-import { simpleService, simpleIngress, simpleNetworkPolicy } from 'typekro';
+import { simple } from 'typekro';
 
 // Service for load balancing
 // In a resource graph context where you have a deployment:
-const webService = simpleService({
+const webService = simple.Service({
   name: 'web-service',
   selector: resources.webDeployment.spec.selector.matchLabels,  // Reference deployment labels
   ports: [{ port: 80, targetPort: 8080 }],
@@ -84,7 +84,7 @@ const webService = simpleService({
 });
 
 // Ingress for external access
-const webIngress = simpleIngress({
+const webIngress = simple.Ingress({
   name: 'web-ingress',
   host: 'app.example.com',
   serviceName: 'web-service',
@@ -94,7 +94,7 @@ const webIngress = simpleIngress({
 });
 
 // Network policy for security
-const appPolicy = simpleNetworkPolicy({
+const appPolicy = simple.NetworkPolicy({
   name: 'app-network-policy',
   podSelector: { matchLabels: { app: 'web' } },
   policyTypes: ['Ingress'],
@@ -110,10 +110,10 @@ const appPolicy = simpleNetworkPolicy({
 Create configuration resources:
 
 ```typescript
-import { simpleConfigMap, simpleSecret } from 'typekro';
+import { simple } from 'typekro';
 
 // ConfigMap for application configuration
-const appConfig = simpleConfigMap({
+const appConfig = simple({
   name: 'app-config',
   data: {
     apiUrl: 'https://api.example.com',
@@ -123,7 +123,7 @@ const appConfig = simpleConfigMap({
 });
 
 // Secret for sensitive data
-const appSecrets = simpleSecret({
+const appSecrets = simple.Secret({
   name: 'app-secrets',
   data: {
     dbPassword: 'encoded-password',
@@ -137,10 +137,10 @@ const appSecrets = simpleSecret({
 Create storage resources:
 
 ```typescript
-import { simplePvc } from 'typekro';
+import { simple } from 'typekro';
 
 // Persistent Volume Claim
-const appStorage = simplePvc({
+const appStorage = simple.Pvc({
   name: 'app-storage',
   accessModes: ['ReadWriteOnce'],
   size: '10Gi',
@@ -153,10 +153,10 @@ const appStorage = simplePvc({
 Create autoscaling resources:
 
 ```typescript
-import { simpleHpa } from 'typekro';
+import { simple } from 'typekro';
 
 // Horizontal Pod Autoscaler
-const appAutoscaler = simpleHpa({
+const appAutoscaler = simple.Hpa({
   name: 'app-hpa',
   targetRef: {
     apiVersion: 'apps/v1',
@@ -175,7 +175,7 @@ Factory functions are designed to work seamlessly with `toResourceGraph()`:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, simpleConfigMap, Cel } from 'typekro';
+import { toResourceGraph, simple, Cel } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -194,7 +194,7 @@ const webapp = toResourceGraph(
   },
   (schema) => ({
     // Configuration first
-    config: simpleConfigMap({
+    config: simple({
       name: Cel.template('%s-config', schema.spec.name),
       data: {
         environment: schema.spec.environment,
@@ -207,7 +207,7 @@ const webapp = toResourceGraph(
     }),
     
     // Application deployment
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -219,7 +219,7 @@ const webapp = toResourceGraph(
     }),
     
     // Service for the deployment
-    service: simpleService({
+    service: simple.Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -303,7 +303,7 @@ const microservices = toResourceGraph(
   },
   (schema) => ({
     // Database configuration
-    dbConfig: simpleConfigMap({
+    dbConfig: simple({
       name: 'db-config',
       data: {
         host: 'postgres',
@@ -313,7 +313,7 @@ const microservices = toResourceGraph(
     }),
     
     // Database deployment
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
       labels: { app: 'postgres', component: 'database' },  // Labels for service selector
@@ -324,14 +324,14 @@ const microservices = toResourceGraph(
     }),
     
     // Database service
-    dbService: simpleService({
+    dbService: simple.Service({
       name: 'postgres',
       selector: resources.database.spec.selector.matchLabels,  // Reference database deployment labels
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // API server that references database
-    api: simpleDeployment({
+    api: simple.Deployment({
       name: 'api',
       image: 'myapp/api:latest',
       labels: { app: 'api', component: 'backend' },  // Labels for service selector
@@ -346,7 +346,7 @@ const microservices = toResourceGraph(
     }),
     
     // API service
-    apiService: simpleService({
+    apiService: simple.Service({
       name: 'api',
       selector: resources.api.spec.selector.matchLabels,  // Reference API deployment labels
       ports: [{ port: 8080, targetPort: 8080 }]
@@ -364,23 +364,25 @@ const microservices = toResourceGraph(
 ## Function Categories
 
 ### Core Workloads
-- `simpleDeployment()` - Stateless applications
-- `simpleStatefulSet()` - Stateful applications
-- `simpleJob()` - Batch processing
-- `simpleCronJob()` - Scheduled tasks
+- `simple.Deployment()` - Stateless applications
+- `simple.DaemonSet()` - Node-level services
+- `simple.StatefulSet()` - Stateful applications
+- `simple.Job()` - Batch processing
+- `simple.CronJob()` - Scheduled tasks
 
 ### Networking
-- `simpleService()` - Load balancing and service discovery
-- `simpleIngress()` - External HTTP/HTTPS access
-- `simpleNetworkPolicy()` - Network security policies
+- `simple.Service()` - Load balancing and service discovery
+- `simple.Ingress()` - External HTTP/HTTPS access
+- `simple.NetworkPolicy()` - Network security policies
 
 ### Configuration & Storage
-- `simpleConfigMap()` - Configuration data
-- `simpleSecret()` - Sensitive data
-- `simplePvc()` - Persistent storage
+- `simple.ConfigMap()` - Configuration data
+- `simple.Secret()` - Sensitive data
+- `simple.Pvc()` - Persistent storage
+- `simple.PersistentVolume()` - Storage volumes
 
 ### Autoscaling
-- `simpleHpa()` - Horizontal Pod Autoscaler
+- `simple.Hpa()` - Horizontal Pod Autoscaler
 
 ### Advanced Resources
 - `deployment()`, `job()`, `statefulSet()`, etc. - Full Kubernetes specifications
@@ -396,7 +398,7 @@ Begin with simple factory functions and only use full factories when you need ad
 
 ```typescript
 // Good: Start simple
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3
@@ -415,7 +417,7 @@ Leverage schema references for dynamic configuration:
 
 ```typescript
 (schema) => ({
-  deployment: simpleDeployment({
+  deployment: simple.Deployment({
     name: schema.spec.name,           // Dynamic from input
     image: schema.spec.image,         // Dynamic from input
     replicas: schema.spec.replicas,   // Dynamic from input
@@ -433,15 +435,15 @@ Organize related resources together in your resource builder:
 ```typescript
 (schema) => ({
   // Storage layer
-  database: simpleStatefulSet({ /* ... */ }),
-  dbService: simpleService({ /* ... */ }),
+  database: simple.StatefulSet({ /* ... */ }),
+  dbService: simple.Service({ /* ... */ }),
   
   // Application layer
-  api: simpleDeployment({ /* ... */ }),
-  apiService: simpleService({ /* ... */ }),
+  api: simple.Deployment({ /* ... */ }),
+  apiService: simple.Service({ /* ... */ }),
   
   // Ingress layer
-  ingress: simpleIngress({ /* ... */ })
+  ingress: simple.Ingress({ /* ... */ })
 })
 ```
 
@@ -451,19 +453,19 @@ Choose descriptive names that reflect the resource's purpose:
 
 ```typescript
 // Good
-const userApiDeployment = simpleDeployment({
+const userApiDeployment = simple.Deployment({
   name: 'user-api',
   image: 'myapp/user-api:v1.0'
 });
 
-const userApiService = simpleService({
+const userApiService = simple.Service({
   name: 'user-api-service',
   selector: { app: 'user-api' }
 });
 
 // Avoid
-const deploy1 = simpleDeployment({ /* ... */ });
-const svc = simpleService({ /* ... */ });
+const deploy1 = simple.Deployment({ /* ... */ });
+const svc = simple.Service({ /* ... */ });
 ```
 
 ## Type Safety
@@ -472,7 +474,7 @@ All factory functions provide full TypeScript type safety:
 
 ```typescript
 // TypeScript will validate all parameters
-const deployment = simpleDeployment({
+const deployment = simple.Deployment({
   name: 'my-app',           // ✅ string
   image: 'nginx:latest',    // ✅ string
   replicas: 3,              // ✅ number
@@ -482,7 +484,7 @@ const deployment = simpleDeployment({
 
 // Schema references are also type-safe
 (schema) => ({
-  deployment: simpleDeployment({
+  deployment: simple.Deployment({
     name: schema.spec.name,     // ✅ Type: string
     replicas: schema.spec.count // ❌ Type error if 'count' doesn't exist
   })

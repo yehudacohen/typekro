@@ -12,12 +12,12 @@ TypeKro configuration factories provide:
 
 ## Core Configuration Types
 
-### `simpleConfigMap()`
+### `simple()`
 
 Creates a Kubernetes ConfigMap with simplified configuration.
 
 ```typescript
-function simpleConfigMap(config: SimpleConfigMapConfig): Enhanced<V1ConfigMapData, unknown>
+function ConfigMap(config: SimpleConfigMapConfig): Enhanced<V1ConfigMapData, unknown>
 ```
 
 #### Parameters
@@ -39,7 +39,7 @@ Enhanced ConfigMap with automatic readiness evaluation.
 #### Example: Basic Configuration
 
 ```typescript
-import { toResourceGraph, simpleConfigMap, simpleDeployment, type } from 'typekro';
+import { toResourceGraph, simple, type } from 'typekro';
 
 const AppSpec = type({
   name: 'string',
@@ -58,7 +58,7 @@ const configuredApp = toResourceGraph(
   },
   (schema) => ({
     // Configuration from schema
-    config: simpleConfigMap({
+    config: simple({
       name: Cel.template('%s-config', schema.spec.name),
       data: {
         // Direct schema references
@@ -83,7 +83,7 @@ const configuredApp = toResourceGraph(
     }),
     
     // Application using the configuration
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -100,12 +100,12 @@ const configuredApp = toResourceGraph(
 );
 ```
 
-### `simpleSecret()`
+### `simple.Secret()`
 
-Creates a Kubernetes Secret with simplified configuration for sensitive data.
+Creates a Kubernetes Secret with simplified configuration.
 
 ```typescript
-function simpleSecret(config: SimpleSecretConfig): Enhanced<V1SecretData, unknown>
+function Secret(config: SimpleSecretConfig): Enhanced<V1SecretData, unknown>
 ```
 
 #### Parameters
@@ -129,7 +129,7 @@ Enhanced Secret with automatic readiness evaluation.
 #### Example: Database Credentials
 
 ```typescript
-import { toResourceGraph, simpleSecret, simpleDeployment, type } from 'typekro';
+import { toResourceGraph, simple, type } from 'typekro';
 
 const DatabaseAppSpec = type({
   name: 'string',
@@ -148,7 +148,7 @@ const databaseApp = toResourceGraph(
   },
   (schema) => ({
     // Sensitive database credentials
-    dbSecret: simpleSecret({
+    dbSecret: simple.Secret({
       name: Cel.template('%s-db-creds', schema.spec.name),
       stringData: {
         username: schema.spec.dbUser,
@@ -166,7 +166,7 @@ const databaseApp = toResourceGraph(
     }),
     
     // Application using the secrets
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -225,7 +225,7 @@ const multiEnvConfig = toResourceGraph(
   },
   (schema) => ({
     // Environment-specific application config
-    appConfig: simpleConfigMap({
+    appConfig: simple({
       name: 'app-config',
       data: {
         // Static values
@@ -262,7 +262,7 @@ const multiEnvConfig = toResourceGraph(
     }),
     
     // Environment-specific secrets
-    secrets: simpleSecret({
+    secrets: simple.Secret({
       name: 'app-secrets',
       stringData: {
         // Different API keys per environment
@@ -285,7 +285,7 @@ const multiEnvConfig = toResourceGraph(
       }
     }),
     
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       replicas: Cel.conditional(
@@ -323,7 +323,7 @@ const sharedConfigPlatform = toResourceGraph(
   },
   (schema) => ({
     // Shared platform configuration
-    platformConfig: simpleConfigMap({
+    platformConfig: simple({
       name: 'platform-config',
       data: {
         PLATFORM_NAME: schema.spec.platformName,
@@ -345,7 +345,7 @@ const sharedConfigPlatform = toResourceGraph(
     }),
     
     // Shared platform secrets
-    platformSecrets: simpleSecret({
+    platformSecrets: simple.Secret({
       name: 'platform-secrets',
       stringData: {
         JWT_SECRET: 'shared-jwt-secret-key',
@@ -355,7 +355,7 @@ const sharedConfigPlatform = toResourceGraph(
     }),
     
     // Frontend application
-    frontend: simpleDeployment({
+    frontend: simple.Deployment({
       name: 'frontend',
       image: 'frontend:latest',
       ports: [3000],
@@ -371,7 +371,7 @@ const sharedConfigPlatform = toResourceGraph(
     }),
     
     // Backend API
-    backend: simpleDeployment({
+    backend: simple.Deployment({
       name: 'backend-api',
       image: 'backend:latest', 
       ports: [8080],
@@ -417,7 +417,7 @@ const fileBasedConfig = toResourceGraph(
   },
   (schema) => ({
     // Configuration files
-    appConfig: simpleConfigMap({
+    appConfig: simple({
       name: 'app-file-config',
       data: {
         // JSON configuration file
@@ -461,7 +461,7 @@ server {
     }),
     
     // Application with mounted config files
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -501,7 +501,7 @@ const tlsApp = toResourceGraph(
   },
   (schema) => ({
     // TLS certificate secret
-    tlsCert: simpleSecret({
+    tlsCert: simple.Secret({
       name: 'tls-certificate',
       type: 'kubernetes.io/tls',
       stringData: {
@@ -511,7 +511,7 @@ const tlsApp = toResourceGraph(
     }),
     
     // Application 
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       ports: [443, 80],
@@ -528,7 +528,7 @@ const tlsApp = toResourceGraph(
     }),
     
     // Ingress with TLS
-    ingress: simpleIngress({
+    ingress: simple.Ingress({
       name: schema.spec.name,
       host: schema.spec.domain,
       serviceName: schema.spec.name,
@@ -616,7 +616,7 @@ Keep configuration external to container images:
 
 ```typescript
 // Good: External configuration
-config: simpleConfigMap({
+config: simple({
   name: 'app-config',
   data: {
     API_URL: schema.spec.apiUrl,
@@ -633,7 +633,7 @@ Never put sensitive data in ConfigMaps:
 
 ```typescript
 // Good: Sensitive data in Secret
-secret: simpleSecret({
+secret: simple.Secret({
   name: 'db-creds',
   stringData: {
     password: schema.spec.dbPassword,
@@ -642,7 +642,7 @@ secret: simpleSecret({
 })
 
 // Bad: Sensitive data in ConfigMap
-config: simpleConfigMap({
+config: simple({
   data: {
     password: 'secret-password'  // ❌ Visible in plain text
   }
@@ -669,7 +669,7 @@ Group related configuration together:
 
 ```typescript
 // Database configuration
-dbConfig: simpleConfigMap({
+dbConfig: simple({
   name: 'database-config',
   data: {
     DB_HOST: schema.spec.database.host,
@@ -679,7 +679,7 @@ dbConfig: simpleConfigMap({
 }),
 
 // Application configuration  
-appConfig: simpleConfigMap({
+appConfig: simple({
   name: 'app-config',
   data: {
     LOG_LEVEL: schema.spec.logLevel,
@@ -694,13 +694,13 @@ Choose clear, descriptive names for configuration resources:
 
 ```typescript
 // Good
-userServiceConfig: simpleConfigMap({
+userServiceConfig: simple({
   name: 'user-service-config',
   data: { /* ... */ }
 })
 
 // Avoid
-config: simpleConfigMap({
+config: simple({
   name: 'config',
   data: { /* ... */ }  
 })

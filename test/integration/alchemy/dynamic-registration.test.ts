@@ -3,12 +3,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
-import {
-  clearRegisteredTypes,
-  DirectTypeKroDeployer,
-  ensureResourceTypeRegistered,
-  inferAlchemyTypeFromTypeKroResource,
-} from '../../../src/alchemy/deployment.js';
+import { clearRegisteredTypes, DirectTypeKroDeployer, ensureResourceTypeRegistered, inferAlchemyTypeFromTypeKroResource,  } from '../../../src/alchemy/deployment.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 import { deployment } from '../../../src/factories/kubernetes/workloads/deployment.js';
 

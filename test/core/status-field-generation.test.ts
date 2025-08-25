@@ -5,13 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import {
-  Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 describe('Status Field Generation', () => {
   const WebAppSpecSchema = type({
@@ -37,13 +31,13 @@ describe('Status Field Generation', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webappDeployment',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: schema.spec.name,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 3000 }],
@@ -92,7 +86,7 @@ describe('Status Field Generation', () => {
           }),
         },
         (schema) => ({
-          webDeployment: simpleDeployment({
+          webDeployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -133,7 +127,7 @@ describe('Status Field Generation', () => {
           }),
         },
         (schema) => ({
-          webService: simpleService({
+          webService: simple.Service({
             name: schema.spec.name,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 3000 }],
@@ -171,13 +165,13 @@ describe('Status Field Generation', () => {
           }),
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'appDeployment',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: schema.spec.name,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 3000 }],
@@ -217,7 +211,7 @@ describe('Status Field Generation', () => {
         },
         () => ({
           // No deployment or service, just a config map
-          configMap: simpleConfigMap({
+          configMap: simple.ConfigMap({
             name: 'test-config',
             id: 'testConfig',
             data: { key: 'value' },

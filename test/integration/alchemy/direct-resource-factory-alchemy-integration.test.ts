@@ -11,13 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
 
-import {
-  Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../../src/index.js';
 
 const TEST_TIMEOUT = 120000; // 2 minutes
 
@@ -104,7 +98,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             status: WebAppStatusSchema,
           },
           (schema) => {
-            const deployment = simpleDeployment({
+            const deployment = simple.Deployment({
               name: schema.spec.name,
               image: schema.spec.image,
               replicas: schema.spec.replicas,
@@ -115,14 +109,14 @@ describe('DirectResourceFactory Alchemy Integration', () => {
               },
             });
 
-            const service = simpleService({
+            const service = simple.Service({
               name: schema.spec.name,
               selector: { app: schema.spec.name },
               ports: [{ port: 80, targetPort: 3000 }],
               id: 'webappService',
             });
 
-            const config = simpleConfigMap({
+            const config = simple.ConfigMap({
               name: schema.spec.name,
               id: 'webappConfig',
               data: {
@@ -266,7 +260,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             status: SimpleStatusSchema,
           },
           (schema) => ({
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name: schema.spec.name,
               image: 'nginx:latest',
               replicas: 1,
@@ -275,7 +269,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
                 ENVIRONMENT: schema.spec.environment,
               },
             }),
-            service: simpleService({
+            service: simple.Service({
               name: schema.spec.name,
               selector: { app: schema.spec.name },
               ports: [{ port: 80, targetPort: 80 }],
@@ -355,7 +349,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             status: SharedStatusSchema,
           },
           (schema) => ({
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name: schema.spec.name,
               image: Cel.expr('nginx:', schema.spec.version),
               replicas: 1,
@@ -435,13 +429,13 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             status: FailureStatusSchema,
           },
           (schema) => ({
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name: schema.spec.name,
               image: 'nginx:latest',
               replicas: 1,
               id: 'failureDeployment',
             }),
-            config: simpleConfigMap({
+            config: simple.ConfigMap({
               name: schema.spec.name,
               id: 'failureConfig',
               data: {
@@ -514,7 +508,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             status: UpdateStatusSchema,
           },
           (schema) => ({
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name: schema.spec.name,
               image: Cel.expr('nginx:', schema.spec.version),
               replicas: schema.spec.replicas,

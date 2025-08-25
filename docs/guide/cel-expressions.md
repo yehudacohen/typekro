@@ -273,7 +273,7 @@ const graph = toResourceGraph(
 Use CEL for dynamic environment configuration:
 
 ```typescript
-const app = simpleDeployment({
+const app = simple.Deployment({
   name: 'web-app',
   env: {
     // Static values
@@ -298,11 +298,11 @@ const app = simpleDeployment({
 
 ```typescript
 const resources = {
-  app: simpleDeployment({ /* ... */ }),
+  app: simple.Deployment({ /* ... */ }),
   
   // Conditional ingress based on CEL
   ...(Cel.expr(`"${schema.spec.environment}" == "production"`) && {
-    ingress: simpleIngress({ /* ... */ })
+    ingress: simple.Ingress({ /* ... */ })
   })
 };
 ```

@@ -57,7 +57,7 @@ export interface YamlDirectoryConfig {
  *     }),
  *
  *     // Enhanced<> resources deploy in parallel
- *     app: simpleDeployment({
+ *     app: simple.Deployment({
  *       name: 'my-app',
  *       image: 'nginx'
  *     })

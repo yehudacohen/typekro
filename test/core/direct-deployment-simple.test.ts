@@ -3,14 +3,7 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import {
-  DependencyGraph,
-  type DeployableK8sResource,
-  type DeployedResource,
-  type DeploymentOptions,
-  DirectDeploymentEngine,
-  type Enhanced,
-} from '../../src/core.js';
+import { DependencyGraph, type DeployableK8sResource, type DeployedResource, type DeploymentOptions, DirectDeploymentEngine, type Enhanced,  } from '../../src/core.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 

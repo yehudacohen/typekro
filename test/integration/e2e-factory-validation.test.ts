@@ -15,13 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
-import {
-  Cel,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-factory-validation';
@@ -117,7 +111,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          configMap: simpleConfigMap({
+          configMap: simple.ConfigMap({
             name: `${schema.spec.name}-config`,
             data: {
               'app.properties': `port=${schema.spec.port}\\nreplicas=${schema.spec.replicas}`,
@@ -125,7 +119,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
             id: 'webappConfig',
           }),
 
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -149,7 +143,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
             id: 'webappDeployment',
           }),
 
-          service: simpleService({
+          service: simple.Service({
             name: `${schema.spec.name}-service`,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: schema.spec.port }],
@@ -164,7 +158,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
       );
 
       // Create factory with alchemy scope
-      const factory = await resourceGraph.factory('kro', {
+      const factory = resourceGraph.factory('kro', {
         namespace: testNamespace,
         alchemyScope: kroAlchemyScope,
       });
@@ -229,14 +223,14 @@ describe('E2E Factory Pattern Validation Tests', () => {
           status: SimpleAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.appName,
             image: `nginx:${schema.spec.version}`,
             replicas: 1,
             id: 'simpleDeployment',
           }),
 
-          service: simpleService({
+          service: simple.Service({
             name: `${schema.spec.appName}-svc`,
             selector: { app: schema.spec.appName },
             ports: [{ port: 80, targetPort: 80 }],
@@ -249,7 +243,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
       );
 
       // Create factory WITHOUT alchemy scope
-      const factory = await resourceGraph.factory('kro', {
+      const factory = resourceGraph.factory('kro', {
         namespace: testNamespace,
       });
 
@@ -303,7 +297,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
           status: DatabaseStatusSchema,
         },
         (schema) => ({
-          configMap: simpleConfigMap({
+          configMap: simple.ConfigMap({
             name: Cel.expr(schema.spec.name, '-db-config'),
             data: {
               'postgresql.conf': `max_connections = 100\\nshared_buffers = 128MB`,
@@ -312,7 +306,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
             id: 'dbConfig',
           }),
 
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: Cel.expr(schema.spec.name, '-db'),
             image: 'postgres:13',
             replicas: schema.spec.replicas,
@@ -338,7 +332,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
             id: 'dbDeployment',
           }),
 
-          service: simpleService({
+          service: simple.Service({
             name: Cel.expr(schema.spec.name, '-db-service'),
             selector: { app: Cel.expr(schema.spec.name, '-db') },
             ports: [{ port: 5432, targetPort: 5432 }],
@@ -454,7 +448,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
           status: ApiStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.serviceName,
             image: schema.spec.image,
             replicas: 2,
@@ -466,7 +460,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
             id: 'apiDeployment',
           }),
 
-          service: simpleService({
+          service: simple.Service({
             name: Cel.expr(schema.spec.serviceName, '-api'),
             selector: { app: schema.spec.serviceName },
             ports: [{ port: 80, targetPort: schema.spec.port }],
@@ -550,14 +544,14 @@ describe('E2E Factory Pattern Validation Tests', () => {
             status: AppStatusSchema,
           },
           (schema) => ({
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name: schema.spec.name,
               image: schema.spec.image,
               replicas: schema.spec.replicas,
               id: 'appDeployment',
             }),
 
-            service: simpleService({
+            service: simple.Service({
               name: `${schema.spec.name}-svc`,
               selector: { app: schema.spec.name },
               ports: [{ port: 80, targetPort: 80 }],
@@ -634,7 +628,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             ports: [{ containerPort: 8080 }],
@@ -696,7 +690,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
           status: AppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             id: 'errorDeployment',

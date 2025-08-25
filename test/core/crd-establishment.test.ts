@@ -3,13 +3,7 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import {
-  DependencyGraph,
-  type DeployableK8sResource,
-  DirectDeploymentEngine,
-  type Enhanced,
-  type ResourceGraph,
-} from '../../src/core.js';
+import { DependencyGraph, type DeployableK8sResource, DirectDeploymentEngine, type Enhanced, type ResourceGraph,  } from '../../src/core.js';
 
 // Mock the Kubernetes client
 const mockK8sApi = {

@@ -11,19 +11,19 @@ import {
   inferAlchemyTypeFromTypeKroResource,
   type TypeKroDeployer,
 } from '../src/alchemy/deployment.js';
-import { simpleDeployment, simpleService } from '../src/core/composition/index.js';
 import type { DeploymentOptions } from '../src/core/types/deployment.js';
 import type { Enhanced } from '../src/core/types/kubernetes.js';
+import { Deployment, Service } from '../src/factories/simple/index.js';
 
 // Example: Create some TypeKro resources
-const webAppDeployment = simpleDeployment({
+const webAppDeployment = Deployment({
   name: 'webapp',
   image: 'nginx:latest',
   replicas: 3,
   ports: [{ name: 'http', containerPort: 80, protocol: 'TCP' }],
 });
 
-const webAppService = simpleService({
+const webAppService = Service({
   name: 'webapp-service',
   selector: { app: 'webapp' },
   ports: [{ port: 80, targetPort: 80 }],

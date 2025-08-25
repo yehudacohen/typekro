@@ -9,8 +9,8 @@
 import alchemy from 'alchemy';
 import { File } from 'alchemy/fs';
 import { type } from 'arktype';
-
-import { simpleConfigMap, simpleDeployment, simpleService, toResourceGraph } from '../src/index.js';
+import { Deployment, Service, ConfigMap } from '../src/factories/simple/index.js';
+import { toResourceGraph } from '../src/index.js';
 
 // Define schemas for our full-stack application
 const FullStackAppSpecSchema = type({
@@ -126,7 +126,7 @@ async function demonstrateKroStatusFieldsAndAlchemyIntegration() {
     // ResourceBuilder function - defines the Kubernetes resources
     (schema) => ({
       // Application configuration
-      config: simpleConfigMap({
+      config: ConfigMap({
         name: 'app-config',
         id: 'appConfig',
         data: {
@@ -141,7 +141,7 @@ async function demonstrateKroStatusFieldsAndAlchemyIntegration() {
       }),
 
       // Main application deployment
-      webapp: simpleDeployment({
+      webapp: Deployment({
         name: schema.spec.appName,
         image: schema.spec.image,
         replicas: schema.spec.replicas,
@@ -156,7 +156,7 @@ async function demonstrateKroStatusFieldsAndAlchemyIntegration() {
       }),
 
       // Service to expose the application
-      service: simpleService({
+      service: Service({
         name: schema.spec.appName,
         selector: { app: schema.spec.appName },
         ports: [{ port: 80, targetPort: 3000 }],

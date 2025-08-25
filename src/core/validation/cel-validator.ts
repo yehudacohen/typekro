@@ -39,8 +39,17 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
     }
 
     // Convert snake_case to camelCase
-    if (id.includes('_')) {
+
+    // Convert dot.case to camelCase
+    if (id.includes(".")) {
+      suggestion = id.replace(/\.([a-z])/g, (_, letter) => letter.toUpperCase());
+    }    if (id.includes('_')) {
       suggestion = id.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    }
+
+    // Convert dot.case to camelCase
+    if (id.includes('.')) {
+      suggestion = id.replace(/\.([a-z])/g, (_, letter) => letter.toUpperCase());
     }
 
     // Ensure first letter is lowercase

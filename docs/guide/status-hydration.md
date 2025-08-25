@@ -33,7 +33,7 @@ const hydratedStatus = {
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simpleDeployment, simpleService, Cel } from 'typekro';
+import { toResourceGraph, Cel, simple } from 'typekro';
 
 const WebAppStatus = type({
   url: 'string',
@@ -45,12 +45,12 @@ const WebAppStatus = type({
 const webApp = toResourceGraph(
   { name: 'webapp', schema: { spec: WebAppSpec, status: WebAppStatus } },
   (schema) => ({
-    deployment: simpleDeployment({
+    deployment: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas
     }),
-    service: simpleService({
+    service: simple.Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
@@ -282,7 +282,7 @@ Reference status from other deployed graphs:
 const databaseGraph = toResourceGraph(
   { name: 'shared-database', schema: { spec: DatabaseSpec, status: DatabaseStatus } },
   (schema) => ({
-    database: simpleDeployment({
+    database: simple.Deployment({
       name: schema.spec.name,
       image: 'postgres:15'
     })
@@ -298,7 +298,7 @@ const databaseGraph = toResourceGraph(
 const appGraph = toResourceGraph(
   { name: 'app-with-shared-db', schema: { spec: AppSpec, status: AppStatus } },
   (schema) => ({
-    app: simpleDeployment({
+    app: simple.Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {

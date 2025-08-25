@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { generateDeterministicResourceId, simpleDeployment } from '../../src/core.js';
+import { generateDeterministicResourceId } from '../../src/core.js';
+import { simple } from '../../src/index.js';
 
 describe('Deterministic Resource IDs', () => {
   it('should generate consistent IDs based on kind, namespace, and name', () => {
@@ -27,12 +28,12 @@ describe('Deterministic Resource IDs', () => {
   });
 
   it('should use deterministic IDs in resource creation', () => {
-    const webapp1 = simpleDeployment({
+    const webapp1 = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
     });
 
-    const webapp2 = simpleDeployment({
+    const webapp2 = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
     });
@@ -43,7 +44,7 @@ describe('Deterministic Resource IDs', () => {
   });
 
   it('should support explicit IDs', () => {
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
       id: 'myCustomId',
@@ -53,7 +54,7 @@ describe('Deterministic Resource IDs', () => {
   });
 
   it('should handle namespace in config', () => {
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
       namespace: 'production',

@@ -147,13 +147,13 @@ export function helmRelease(
  * @example
  * Basic usage:
  * ```typescript
- * simpleHelmChart('nginx', 'https://charts.bitnami.com/bitnami', 'nginx')
+ * simple.HelmChart('nginx', 'https://charts.bitnami.com/bitnami', 'nginx')
  * ```
  *
  * @example
  * With static values:
  * ```typescript
- * simpleHelmChart('redis', 'https://charts.bitnami.com/bitnami', 'redis', {
+ * simple.HelmChart('redis', 'https://charts.bitnami.com/bitnami', 'redis', {
  *   auth: { enabled: false },
  *   replica: { replicaCount: 3 }
  * })
@@ -162,7 +162,7 @@ export function helmRelease(
  * @example
  * With TypeKro schema references:
  * ```typescript
- * simpleHelmChart('database', 'https://charts.bitnami.com/bitnami', 'postgresql', {
+ * simple.HelmChart('database', 'https://charts.bitnami.com/bitnami', 'postgresql', {
  *   auth: {
  *     postgresPassword: schema.spec.dbPassword,
  *     database: schema.spec.dbName
@@ -180,13 +180,16 @@ export function helmRelease(
  * ```typescript
  * const configMap = configMap({ name: 'app-config', data: { ... } });
  *
- * simpleHelmChart('app', 'https://charts.example.com', 'my-app', {
+ * simple.HelmChart('app', 'https://charts.example.com', 'my-app', {
  *   config: {
  *     configMapName: configMap.metadata.name,
  *     replicas: schema.spec.replicas
  *   }
  * })
  * ```
+ */
+/**
+ * @deprecated Use simple.HelmChart() instead - import { simple } from 'typekro'; simple.HelmChart(...)
  */
 export function simpleHelmChart(
   name: string,

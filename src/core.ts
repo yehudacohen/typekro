@@ -20,22 +20,9 @@ export {
 // Alchemy conversion utilities removed - using dynamic registration approach
 export type { WebServiceComponent } from './core/composition/index.js';
 // =============================================================================
-// Composition Functions (Simple Resource Builders)
+// Composition Functions
 // =============================================================================
-export {
-  createWebService,
-  simpleConfigMap,
-  simpleCronJob,
-  simpleDeployment,
-  simpleHpa,
-  simpleIngress,
-  simpleJob,
-  simpleNetworkPolicy,
-  simplePvc,
-  simpleSecret,
-  simpleService,
-  simpleStatefulSet,
-} from './core/composition/index.js';
+export { createWebService } from './core/composition/index.js';
 export type { DependencyNode } from './core/dependencies/index.js';
 // =============================================================================
 // Dependencies Module

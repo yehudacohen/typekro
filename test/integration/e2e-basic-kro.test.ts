@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
@@ -124,14 +124,14 @@ describeOrSkip('Basic E2E Kro Test', () => {
         status: AppStatusSchema,
       },
       (schema) => ({
-        deployment: simpleDeployment({
+        deployment: simple.Deployment({
           name: schema.spec.name,
           image: schema.spec.image,
           replicas: 1,
           id: 'appDeployment',
         }),
 
-        service: simpleService({
+        service: simple.Service({
           name: Cel.expr(schema.spec.name, ' + "-svc"'),
           selector: { app: schema.spec.name },
           ports: [{ port: 80, targetPort: 80 }],

@@ -43,11 +43,7 @@ graph LR
 import { type } from 'arktype';
 import { 
   toResourceGraph, 
-  simpleDeployment, 
-  simpleService,
-  simpleConfigMap,
-  simpleSecret,
-  simplePvc
+  simple
 } from 'typekro';
 
 // Environment configuration schema
@@ -114,7 +110,7 @@ export const multiEnvApp = toResourceGraph(
     
     return {
       // Application configuration
-      appConfig: simpleConfigMap({
+      appConfig: simple({
         name: Cel.expr(appName, '-config'),
         data: {
           ENVIRONMENT: schema.spec.environment,
@@ -136,7 +132,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database secrets (different per environment)
-      dbSecret: simpleSecret({
+      dbSecret: simple.Secret({
         name: Cel.expr(appName, '-db-secret'),
         data: {
           // Use different passwords per environment
@@ -150,7 +146,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database persistent volume
-      dbStorage: simplePvc({
+      dbStorage: simple.Pvc({
         name: Cel.expr(appName, '-db-storage'),
         accessMode: 'ReadWriteOnce',
         size: schema.spec.database.storageSize,
@@ -161,7 +157,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database deployment
-      database: simpleDeployment({
+      database: simple.Deployment({
         name: Cel.expr(appName, '-db'),
         image: schema.spec.database.image,
         replicas: 1, // Single DB instance for all environments
@@ -198,14 +194,14 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database service
-      dbService: simpleService({
+      dbService: simple.Service({
         name: Cel.expr(appName, '-db'),
         selector: { app: Cel.expr(appName, '-db') },
         ports: [{ port: 5432, targetPort: 5432 }]
       }),
       
       // Application deployment
-      app: simpleDeployment({
+      app: simple.Deployment({
         name: appName,
         image: Cel.template('%s:%s', schema.spec.app.image, schema.spec.app.version),
         replicas: schema.spec.app.replicas,
@@ -246,7 +242,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Application service
-      appService: simpleService({
+      appService: simple.Service({
         name: appName,
         selector: { app: appName },
         ports: [{ port: 80, targetPort: 3000 }],

@@ -12,7 +12,7 @@ The examples in this directory demonstrate the intended API design for the new f
 
 ```typescript
 import { type } from 'arktype';
-import { simpleDeployment, simpleService, toResourceGraph } from '../src/index.js';
+import { simple, toResourceGraph } from '../src/index.js';
 
 // Define ArkType schemas
 const WebAppSpecSchema = type({
@@ -32,18 +32,18 @@ const WebAppStatusSchema = type({
 const webappGraph = toResourceGraph(
   'webapp-stack',
   (schema) => ({
-    deployment: simpleDeployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
-      id: 'webapp-deployment',
-    }),
-    service: simpleService({
-      name: 'webapp-service',
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }],
-      id: 'webapp-service',
-    }),
+     deployment: simple.Deployment({
+       name: schema.spec.name,
+       image: schema.spec.image,
+       replicas: schema.spec.replicas,
+       id: 'webapp-deployment',
+     }),
+     service: simple.Service({
+       name: 'webapp-service',
+       selector: { app: schema.spec.name },
+       ports: [{ port: 80, targetPort: 3000 }],
+       id: 'webapp-service',
+     }),
   }),
   {
     apiVersion: 'example.com/v1alpha1',

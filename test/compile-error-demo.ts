@@ -9,9 +9,9 @@
  * To see the type errors: bun run typecheck:demo (should show TypeScript errors)
  */
 
-import { Cel, simpleDeployment } from '../src/index';
+import { Cel, simple } from '../src/index';
 
-const database = simpleDeployment({
+const database = simple.Deployment({
   name: 'postgres',
   image: 'postgres:13',
   replicas: 1,
@@ -20,7 +20,7 @@ const database = simpleDeployment({
 // ❌ This should cause a TypeScript compilation error
 // because readyReplicas is KubernetesRef<number> but EnvVarValue only accepts
 // string | KubernetesRef<string> | CelExpression<string>
-const webappWithTypeError = simpleDeployment({
+const webappWithTypeError = simple.Deployment({
   name: 'webapp-bad',
   image: 'nginx:latest',
   env: {
@@ -29,7 +29,7 @@ const webappWithTypeError = simpleDeployment({
 });
 
 // ✅ This should work - using explicit conversion
-const webappCorrect = simpleDeployment({
+const webappCorrect = simple.Deployment({
   name: 'webapp-good',
   image: 'nginx:latest',
   env: {

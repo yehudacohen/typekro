@@ -1,14 +1,7 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import {
-  Cel,
-  secret,
-  simpleConfigMap,
-  simpleDeployment,
-  simpleService,
-  toResourceGraph,
-} from '../../src/index';
+import { Cel, secret, toResourceGraph, simple } from '../../src/index';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
@@ -105,7 +98,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
           status: WebAppStatusSchema,
         },
         (_schema) => ({
-          appConfig: simpleConfigMap({
+          appConfig: simple.ConfigMap({
             name: 'webapp-factory-config',
             data: {
               LOG_LEVEL: 'info',
@@ -129,7 +122,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
             )
           ),
 
-          webapp: simpleDeployment({
+          webapp: simple.Deployment({
             name: 'webapp-factory',
             image: 'nginx:alpine',
             replicas: 2,
@@ -142,7 +135,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
             id: 'webapp',
           }),
 
-          webappService: simpleService({
+          webappService: simple.Service({
             name: 'webapp-factory-service',
             selector: { app: 'webapp-factory' },
             ports: [{ port: 80, targetPort: 80, name: 'http' }],

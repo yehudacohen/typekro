@@ -8,10 +8,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import {
-  DirectDeploymentStrategy,
-  KroDeploymentStrategy,
-} from '../../src/core/deployment/deployment-strategies.js';
+import { DirectDeploymentStrategy, KroDeploymentStrategy,  } from '../../src/core/deployment/deployment-strategies.js';
 
 describe('Deployment Strategy Error Handling (Unit Tests)', () => {
   let mockDeploymentEngine: any;

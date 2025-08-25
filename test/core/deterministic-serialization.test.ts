@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import { Cel } from '../../src';
-import { simpleDeployment, toResourceGraph } from '../../src/core.js';
+import { toResourceGraph } from '../../src/core.js';
+import { simple } from '../../src/index.js';
 
 describe('Deterministic Serialization', () => {
   it('should generate consistent YAML with deterministic resource IDs', async () => {
-    const webapp1 = simpleDeployment({
+    const webapp1 = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
     });
 
-    const webapp2 = simpleDeployment({
+    const webapp2 = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
     });
@@ -49,12 +50,12 @@ describe('Deterministic Serialization', () => {
   });
 
   it('should handle different namespaces in deterministic IDs', async () => {
-    const defaultApp = simpleDeployment({
+    const defaultApp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
     });
 
-    const prodApp = simpleDeployment({
+    const prodApp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
       namespace: 'production',
@@ -93,7 +94,7 @@ describe('Deterministic Serialization', () => {
   });
 
   it('should support explicit IDs in serialization', async () => {
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
       id: 'myCustomWebappId',
@@ -119,12 +120,12 @@ describe('Deterministic Serialization', () => {
   });
 
   it('should maintain deterministic cross-resource references', async () => {
-    const database = simpleDeployment({
+    const database = simple.Deployment({
       name: 'postgres',
       image: 'postgres:13',
     });
 
-    const webapp = simpleDeployment({
+    const webapp = simple.Deployment({
       name: 'web-app',
       image: 'nginx:latest',
       env: {

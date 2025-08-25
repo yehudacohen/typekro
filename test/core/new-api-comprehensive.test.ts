@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, simpleDeployment, simpleService, toResourceGraph } from '../../src/index.js';
+import { Cel, toResourceGraph, simple } from '../../src/index.js';
 
 describe('New toResourceGraph API with StatusBuilder', () => {
   const WebAppSpecSchema = type({
@@ -33,7 +33,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -86,13 +86,13 @@ describe('New toResourceGraph API with StatusBuilder', () => {
         },
         // ResourceBuilder - defines Kubernetes resources
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
             id: 'webappDeployment',
           }),
-          service: simpleService({
+          service: simple.Service({
             name: schema.spec.name,
             selector: { app: schema.spec.name },
             ports: [{ port: 80, targetPort: 3000 }],
@@ -123,7 +123,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -162,7 +162,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -190,7 +190,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -218,7 +218,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -260,7 +260,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           status: NestedStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
@@ -304,7 +304,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           const environment = schema.spec.environment;
 
           return {
-            deployment: simpleDeployment({
+            deployment: simple.Deployment({
               name,
               image,
               replicas,
@@ -344,7 +344,7 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           status: WebAppStatusSchema,
         },
         (schema) => ({
-          deployment: simpleDeployment({
+          deployment: simple.Deployment({
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
