@@ -14,7 +14,7 @@ All workload factories return `Enhanced<TSpec, TStatus>` objects that can be use
 
 ## Core Workload Types
 
-### `simple.Deployment()`
+### `Deployment()`
 
 Creates a Kubernetes Deployment with simplified configuration.
 
@@ -47,7 +47,8 @@ Enhanced Deployment with automatic readiness evaluation.
 #### Example
 
 ```typescript
-import { toResourceGraph, type, simple } from 'typekro';
+import { kubernetesComposition, Cel, type } from 'typekro';
+import { Deployment, Service, Secret, Job, CronJob, StatefulSet, DaemonSet } from 'typekro/simple';
 
 const WebAppSpec = type({
   name: 'string',
@@ -55,7 +56,7 @@ const WebAppSpec = type({
   replicas: 'number'
 });
 
-const webApp = toResourceGraph(
+const webApp = kubernetesComposition({
   {
     name: 'web-app',
     apiVersion: 'example.com/v1',
@@ -65,7 +66,7 @@ const webApp = toResourceGraph(
   },
   (schema) => ({
     // Simple deployment with schema references
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,        // Type-safe schema reference
       image: schema.spec.image,      // Full IDE autocomplete  
       replicas: schema.spec.replicas,
@@ -92,7 +93,7 @@ const webApp = toResourceGraph(
 - **Handles**: Rolling updates, scaling events, replica failures
 - **Status Details**: Includes replica counts and update progress
 
-### `simple.Job()`
+### `Job()`
 
 Creates a Kubernetes Job with simplified configuration for batch/one-time workloads.
 
@@ -123,7 +124,7 @@ Enhanced Job with automatic readiness evaluation.
 #### Example
 
 ```typescript
-import { toResourceGraph, simple, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, simple, simple, type } from 'typekro';
 
 const BatchSpec = type({
   name: 'string',
@@ -131,7 +132,7 @@ const BatchSpec = type({
   outputPath: 'string'
 });
 
-const dataProcessing = toResourceGraph(
+const dataProcessing = kubernetesComposition({
   {
     name: 'data-processing',
     apiVersion: 'batch.example.com/v1',
@@ -148,7 +149,7 @@ const dataProcessing = toResourceGraph(
       }
     }),
 
-    job: simple.Job({
+    job: Job({
       name: schema.spec.name,
       image: 'data-processor:v1.0',
       command: ['process-data'],
@@ -173,12 +174,12 @@ const dataProcessing = toResourceGraph(
 - **Failed**: Failed attempts exceed backoff limit
 - **Status Details**: Includes active, succeeded, and failed pod counts
 
-### `simple.StatefulSet()`
+### `StatefulSet()`
 
 Creates a Kubernetes StatefulSet with simplified configuration for stateful applications.
 
 ```typescript
-function simple.StatefulSet(config: SimpleStatefulSetConfig): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus>
+function StatefulSet(config: SimpleStatefulSetConfig): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus>
 ```
 
 #### Parameters
@@ -204,7 +205,7 @@ Enhanced StatefulSet with automatic readiness evaluation.
 #### Example
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, simple, type } from 'typekro';
 
 const DatabaseSpec = type({
   name: 'string',
@@ -212,7 +213,7 @@ const DatabaseSpec = type({
   storageSize: 'string'
 });
 
-const database = toResourceGraph(
+const database = kubernetesComposition({
   {
     name: 'database',
     apiVersion: 'data.example.com/v1',
@@ -221,7 +222,7 @@ const database = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    statefulSet: simple.StatefulSet({
+    statefulSet: StatefulSet({
       name: schema.spec.name,
       image: 'postgres:13',
       replicas: schema.spec.replicas,
@@ -234,7 +235,7 @@ const database = toResourceGraph(
       }
     }),
 
-    service: simple.Service({
+    service: Service({
       name: 'postgres-headless',
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432 }],
@@ -252,7 +253,7 @@ const database = toResourceGraph(
 - **Ready**: All replicas are ready and updated according to update strategy
 - **Status Details**: Includes update strategy and replica state
 
-### `simple.CronJob()`
+### `CronJob()`
 
 Creates a Kubernetes CronJob with simplified configuration for scheduled workloads.
 
@@ -282,7 +283,7 @@ Enhanced CronJob with automatic readiness evaluation.
 #### Example
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, simple, type } from 'typekro';
 
 const BackupSpec = type({
   name: 'string',
@@ -291,7 +292,7 @@ const BackupSpec = type({
   awsSecretKey: 'string'
 });
 
-const backupSystem = toResourceGraph(
+const backupSystem = kubernetesComposition({
   {
     name: 'backup-system',
     apiVersion: 'backup.example.com/v1',
@@ -300,7 +301,7 @@ const backupSystem = toResourceGraph(
     status: type({ lastBackup: 'string' })
   },
   (schema) => ({
-    credentials: simple.Secret({
+    credentials: Secret({
       name: 'backup-creds',
       data: {
         awsAccessKey: schema.spec.awsAccessKey,
@@ -308,7 +309,7 @@ const backupSystem = toResourceGraph(
       }
     }),
 
-    cronJob: simple.CronJob({
+    cronJob: CronJob({
       name: schema.spec.name,
       image: 'backup-tool:latest',
       schedule: schema.spec.schedule,  // e.g., '0 2 * * *' for daily at 2 AM
@@ -331,7 +332,7 @@ const backupSystem = toResourceGraph(
 - **Status Details**: Includes active job count and schedule state
 
 
-### `simple.DaemonSet()`
+### `DaemonSet()`
 
 Creates a Kubernetes DaemonSet with simplified configuration for running a pod on every node.
 
@@ -364,7 +365,7 @@ Enhanced DaemonSet with automatic readiness evaluation.
 #### Example: Logging Agent
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, simple, type } from 'typekro';
 
 const LoggingAgentSpec = type({
   name: 'string',
@@ -372,7 +373,7 @@ const LoggingAgentSpec = type({
   logLevel: '"debug" | "info" | "warn" | "error"'
 });
 
-const loggingAgent = toResourceGraph(
+const loggingAgent = kubernetesComposition({
   {
     name: 'logging-agent',
     apiVersion: 'logging.example.com/v1',
@@ -382,7 +383,7 @@ const loggingAgent = toResourceGraph(
   },
   (schema) => ({
     // DaemonSet to run on every node
-    agent: simple.DaemonSet({
+    agent: DaemonSet({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {

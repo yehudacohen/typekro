@@ -40,12 +40,14 @@ const simpleWebApp = kubernetesComposition(
       name: spec.name,
       image: spec.image,
       replicas: spec.replicas,
+      id: 'deployment', // Required for schema references
     });
 
     const _service = Service({
       name: `${spec.name}-service`,
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 8080 }],
+      id: 'service', // Required for schema references
     });
 
     // Return status - resources are auto-captured
@@ -95,12 +97,14 @@ const fullStackApp = kubernetesComposition(
         POSTGRES_USER: 'app',
         POSTGRES_PASSWORD: 'secret',
       },
+      id: 'postgres', // Required for schema references
     });
 
     const _postgresService = Service({
       name: 'postgres-service',
       selector: { app: 'postgres' },
       ports: [{ port: 5432 }],
+      id: 'postgresService', // Required for schema references
     });
 
     // Application tier
@@ -109,14 +113,16 @@ const fullStackApp = kubernetesComposition(
       image: spec.appImage,
       replicas: spec.replicas,
       env: {
-        DATABASE_URL: `postgres://app:secret@postgres-service:5432/${spec.dbName}`,
+        DATABASE_URL: Cel.template('postgres://app:secret@postgres-service:5432/%s', spec.dbName),
       },
+      id: 'app', // Required for schema references
     });
 
     const _appService = Service({
       name: 'app-service',
       selector: { app: spec.appName },
       ports: [{ port: 80, targetPort: 8080 }],
+      id: 'appService', // Required for schema references
     });
 
     const _ingress = Ingress({
@@ -140,6 +146,7 @@ const fullStackApp = kubernetesComposition(
           },
         },
       ],
+      id: 'ingress', // Required for schema references
     });
 
     // Return status
@@ -196,13 +203,14 @@ const configDrivenApp = kubernetesComposition(
   },
   (spec) => {
     const appConfig = ConfigMap({
-      name: `${spec.name}-config`,
+      name: Cel.template('%s-config', spec.name),
       data: {
         'database.host': spec.config.database.host,
         'database.port': spec.config.database.port.toString(),
         'features.auth': spec.config.features.enableAuth.toString(),
         'features.metrics': spec.config.features.enableMetrics.toString(),
       },
+      id: 'appConfig', // Required for schema references
     });
 
     const deployment = Deployment({
@@ -214,7 +222,7 @@ const configDrivenApp = kubernetesComposition(
       volumes: [
         {
           name: 'config',
-          configMap: { name: `${spec.name}-config` },
+          configMap: { name: Cel.template('%s-config', spec.name) },
         },
       ],
       volumeMounts: [
@@ -223,6 +231,7 @@ const configDrivenApp = kubernetesComposition(
           mountPath: '/etc/config',
         },
       ],
+      id: 'deployment', // Required for schema references
     });
 
     return {

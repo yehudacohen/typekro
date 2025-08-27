@@ -14,7 +14,8 @@ TypeKro provides several layers of type safety:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simple } from 'typekro';
+import { kubernetesComposition } from 'typekro';
+import { Deployment } from 'typekro/simple';
 
 // 1. Schema validation
 const AppSpec = type({
@@ -23,21 +24,21 @@ const AppSpec = type({
   environment: '"dev" | "staging" | "prod"'  // Enum validation
 });
 
-// 2. Type-safe resource graph
-const app = toResourceGraph(
-  { name: 'typed-app', schema: { spec: AppSpec } },
-  (schema) => ({
-    // 3. Typed factory functions
-    deployment: simple.Deployment({
-      name: schema.spec.name,           // ✅ Typed access
-      replicas: schema.spec.replicas    // ✅ Number type enforced
-    })
-  }),
-  (schema, resources) => ({
-    // 4. Typed status mapping
-    ready: resources.deployment.status.readyReplicas > 0  // ✅ Number comparison
-  })
-);
+// 2. Type-safe resource composition
+const app = kubernetesComposition({
+  name: 'typed-app',
+  apiVersion: 'example.com/v1',
+  kind: 'App',
+  spec: AppSpec
+}, (schema) => {
+  // 3. Typed factory functions with full autocomplete
+  const deployment = Deployment({
+    name: schema.spec.name,           // ✅ Typed access
+    replicas: schema.spec.replicas    // ✅ Number type enforced
+  });
+  
+  return { deployment };
+});
 ```
 
 ## Advanced Schema Patterns
@@ -408,15 +409,15 @@ function createReference<T, K extends keyof T>(
 }
 
 // Usage in resource graphs
-const typedGraph = toResourceGraph(
+const typedGraph = kubernetesComposition({
   { name: 'typed-references', schema: { spec: AppSpec } },
   (schema) => {
-    const database = simple.Deployment({
+    const database = Deployment({
       name: Cel.expr(schema.spec.name, "-db"),
       image: 'postgres:15'
     });
     
-    const app = simple.Deployment({
+    const app = Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
@@ -454,12 +455,12 @@ function ref<T>(resource: T): ReferenceBuilder<T> {
 }
 
 // Usage
-const database = simple.Deployment({
+const database = Deployment({
   name: 'db',
   image: 'postgres:15'
 });
 
-const app = simple.Deployment({
+const app = Deployment({
   name: 'app',
   image: 'myapp:latest',
   env: {
@@ -744,7 +745,7 @@ type TestAppSpecType = Expect<Equal<
 
 // Test factory return types
 type TestFactoryType = Expect<Equal<
-  ReturnType<typeof simple.Deployment>,
+  ReturnType<typeof Deployment>,
   Enhanced<V1Deployment, V1DeploymentStatus>
 >>;
 

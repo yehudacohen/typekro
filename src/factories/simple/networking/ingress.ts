@@ -5,9 +5,9 @@
  * Kubernetes Ingress resources with sensible defaults.
  */
 
+import type { Enhanced } from '../../../core/types.js';
 import { ingress } from '../../kubernetes/networking/ingress.js';
 import type { V1IngressSpec } from '../../kubernetes/types.js';
-import type { Enhanced } from '../../../core/types.js';
 import type { IngressConfig } from '../types.js';
 
 /**
@@ -16,10 +16,9 @@ import type { IngressConfig } from '../types.js';
  * @param config - Configuration for the ingress
  * @returns Enhanced Ingress resource
  */
-export function Ingress(
-  config: IngressConfig
-): Enhanced<V1IngressSpec, any> {
+export function Ingress(config: IngressConfig): Enhanced<V1IngressSpec, any> {
   return ingress({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),

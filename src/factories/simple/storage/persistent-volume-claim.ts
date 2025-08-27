@@ -5,12 +5,9 @@
  * Kubernetes PersistentVolumeClaim resources with sensible defaults.
  */
 
-import { persistentVolumeClaim } from '../../kubernetes/storage/persistent-volume-claim.js';
-import type {
-  V1PvcSpec,
-  V1PvcStatus,
-} from '../../kubernetes/types.js';
 import type { Enhanced } from '../../../core/types.js';
+import { persistentVolumeClaim } from '../../kubernetes/storage/persistent-volume-claim.js';
+import type { V1PvcSpec, V1PvcStatus } from '../../kubernetes/types.js';
 import type { PvcConfig } from '../types.js';
 
 /**
@@ -19,9 +16,7 @@ import type { PvcConfig } from '../types.js';
  * @param config - Configuration for the persistent volume claim
  * @returns Enhanced PersistentVolumeClaim resource
  */
-export function Pvc(
-  config: PvcConfig
-): Enhanced<V1PvcSpec, V1PvcStatus> {
+export function Pvc(config: PvcConfig): Enhanced<V1PvcSpec, V1PvcStatus> {
   return persistentVolumeClaim({
     metadata: {
       name: config.name,

@@ -1,6 +1,6 @@
 import { simple } from '../../factories/simple/index.js';
 
-import type { WebServiceComponent } from "./types.js";
+import type { WebServiceComponent } from './types.js';
 export function createWebService(config: {
   name: string;
   image: string;

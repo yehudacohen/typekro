@@ -12,6 +12,52 @@ import type { CelExpression, KubernetesRef } from '../core/types/common.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
 import type { KroSimpleSchema, SerializationContext } from '../core/types/serialization.js';
 import { isCelExpression, isKubernetesRef } from './type-guards.js';
+
+/**
+ * Convert a template string with ${...} placeholders to a CEL concatenation expression
+ * 
+ * Examples:
+ * - "https://${schema.spec.hostname}" -> "https://" + schema.spec.hostname
+ * - "prefix-${name}-suffix" -> "prefix-" + name + "-suffix"
+ */
+function convertTemplateToCelConcat(templateStr: string): string {
+  // Split the template string into parts
+  const parts: string[] = [];
+  let currentPos = 0;
+  
+  // Find all ${...} expressions
+  const regex = /\$\{([^}]+)\}/g;
+  let match: RegExpExecArray | null = regex.exec(templateStr);
+  
+  while (match !== null) {
+    // Add the literal string before the expression
+    if (match.index > currentPos) {
+      const literalPart = templateStr.slice(currentPos, match.index);
+      if (literalPart) {
+        parts.push(`"${literalPart}"`);
+      }
+    }
+    
+    // Add the CEL expression (without ${})
+    parts.push(match[1] || '');
+    currentPos = match.index + match[0].length;
+    
+    // Get next match
+    match = regex.exec(templateStr);
+  }
+  
+  // Add any remaining literal string
+  if (currentPos < templateStr.length) {
+    const literalPart = templateStr.slice(currentPos);
+    if (literalPart) {
+      parts.push(`"${literalPart}"`);
+    }
+  }
+  
+  // Join with + operator
+  return parts.join(' + ');
+}
+
 /**
  * Generate deterministic resource ID based on resource metadata
  * This ensures stable IDs across multiple applications for GitOps workflows
@@ -152,8 +198,13 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   if (isCelExpression(obj)) {
     // Check if this is a template expression (mixed string with embedded CEL)
     if ((obj as any).__isTemplate) {
-      // Template expressions already contain ${...} placeholders, don't wrap again
-      return obj.expression;
+      // Convert template expressions to proper CEL concatenation
+      // Transform "https://${schema.spec.hostname}" to ${"https://" + schema.spec.hostname}
+      const templateExpr = obj.expression;
+      
+      // Parse template string and convert to CEL concatenation
+      const celExpression = convertTemplateToCelConcat(templateExpr);
+      return `\${${celExpression}}`;
     }
     // Regular CEL expressions need to be wrapped with ${} for Kro
     return `\${${obj.expression}}`;
@@ -305,8 +356,13 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
     if (isCelExpression(value)) {
       // Check if this is a template expression (mixed string with embedded CEL)
       if ((value as any).__isTemplate) {
-        // Template expressions already contain ${...} placeholders, don't wrap again
-        return value.expression;
+        // Convert template expressions to proper CEL concatenation
+        // Transform "https://${schema.spec.hostname}" to ${"https://" + schema.spec.hostname}
+        const templateExpr = value.expression;
+        
+        // Parse template string and convert to CEL concatenation
+        const celExpression = convertTemplateToCelConcat(templateExpr);
+        return `\${${celExpression}}`;
       }
       return `\${${value.expression}}`;
     }

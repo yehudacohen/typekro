@@ -11,7 +11,7 @@ import {
   ensureResourceTypeRegistered,
   KroTypeKroDeployer,
 } from '../../alchemy/deployment.js';
-import { kroCustomResourceDefinition } from '../../factories/kro/kro-crd.js';
+
 import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
 import {
@@ -68,8 +68,8 @@ export class KroResourceFactoryImpl<
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
   private readonly statusMappings: any;
   private readonly alchemyScope: Scope | undefined;
-  private readonly factoryOptions: FactoryOptions;
   private readonly logger = getComponentLogger('kro-factory');
+  private readonly factoryOptions: FactoryOptions;
   private clientProvider?: KubernetesClientProvider;
 
   constructor(
@@ -707,6 +707,12 @@ ${Object.entries(spec as Record<string, any>)
     // Create Enhanced RGD with readiness evaluator
     const enhancedRGD = resourceGraphDefinition(rgdWithMetadata);
 
+    // Debug: Log the RGD being deployed
+    this.logger.debug('Deploying RGD', {
+      rgdName: this.rgdName,
+      rgdManifest: JSON.stringify(rgdWithMetadata, null, 2)
+    });
+
     try {
       // Deploy RGD using DirectDeploymentEngine with readiness checking
       await deploymentEngine.deployResource(enhancedRGD as any, {
@@ -719,6 +725,23 @@ ${Object.entries(spec as Record<string, any>)
       // Wait for the CRD to be created by Kro using DirectDeploymentEngine
       await this.waitForCRDReadyWithEngine(deploymentEngine);
     } catch (error) {
+      // Debug: Check the actual RGD status when it fails
+      try {
+        const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
+        const rgdStatus = await k8sApi.read({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name: this.rgdName, namespace: this.namespace }
+        });
+        this.logger.error('RGD deployment failed, current status:', undefined, {
+          rgdName: this.rgdName,
+          status: (rgdStatus.body as any).status,
+          conditions: (rgdStatus.body as any).status?.conditions
+        });
+      } catch (statusError) {
+        this.logger.error('Could not fetch RGD status for debugging', statusError as Error);
+      }
+      
       throw new Error(
         `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -731,35 +754,16 @@ ${Object.entries(spec as Record<string, any>)
   private async waitForCRDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
     const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
 
-    // Create Enhanced CRD for readiness checking
-    const crdManifest = {
-      apiVersion: 'apiextensions.k8s.io/v1',
-      kind: 'CustomResourceDefinition',
-      metadata: {
-        name: crdName,
-        // CRDs are cluster-scoped, so no namespace
-      },
-    };
+    // Debug: Check if the method exists
+    if (typeof deploymentEngine.waitForCRDReady !== 'function') {
+      throw new Error(
+        `deploymentEngine.waitForCRDReady is not a function. Available methods: ${Object.getOwnPropertyNames(Object.getPrototypeOf(deploymentEngine)).join(', ')}`
+      );
+    }
 
-    const enhancedCRD = kroCustomResourceDefinition(crdManifest as any);
-
-    // Use DirectDeploymentEngine to wait for CRD readiness
-    const deployedCRD = {
-      id: crdName,
-      kind: 'CustomResourceDefinition',
-      name: crdName,
-      namespace: '', // CRDs are cluster-scoped
-      manifest: enhancedCRD,
-      status: 'deployed' as const,
-      deployedAt: new Date(),
-    };
-
-    // This will use the custom readiness evaluator from kroCustomResourceDefinition()
-    await deploymentEngine.waitForResourceReadiness(deployedCRD, {
-      mode: 'direct',
-      namespace: '', // CRDs are cluster-scoped
-      timeout: this.factoryOptions.timeout || 60000,
-    });
+    // Use the deployment engine's built-in CRD readiness checking
+    // This will wait for the CRD to be created by Kro and become ready
+    await deploymentEngine.waitForCRDReady(crdName, this.factoryOptions.timeout || 60000);
   }
 
   /**

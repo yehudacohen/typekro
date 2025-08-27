@@ -35,7 +35,8 @@ export default {
     const highlightedCode = ref('');
 
     const codeExample = `import { type } from 'arktype';
-import { kubernetesComposition, simple, Cel } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
 const webapp = kubernetesComposition(
   {
@@ -46,13 +47,13 @@ const webapp = kubernetesComposition(
     status: type({ ready: 'boolean' })
   },
   (spec) => {
-    const deployment = simple.Deployment({
+    const deployment = Deployment({
       name: 'webapp',
       image: 'nginx',
       replicas: spec.replicas
     });
     
-    const service = simple.Service({
+    const service = Service({
       name: 'webapp-service',
       selector: { app: 'webapp' },
       ports: [{ port: 80 }]

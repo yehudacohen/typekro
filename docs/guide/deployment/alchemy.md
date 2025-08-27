@@ -17,14 +17,14 @@ TypeKro integrates seamlessly with Alchemy to provide multi-cloud infrastructure
 ```typescript
 import alchemy from 'alchemy';
 import { Bucket } from 'alchemy/aws';
-import { toResourceGraph, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service, ServiceAccount } from 'typekro/simple';
 
 // Alchemy handles cloud resources
 const app = await alchemy('my-app');
 const bucket = await Bucket('uploads');
 
 // TypeKro handles Kubernetes resources that reference cloud resources
-const k8sApp = toResourceGraph(
+const k8sApp = kubernetesComposition({
   {
     name: 'cloud-app',
     apiVersion: 'example.com/v1',
@@ -33,7 +33,7 @@ const k8sApp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       env: {
@@ -84,7 +84,7 @@ npm install alchemy typekro
 import alchemy from 'alchemy';
 import { RDS } from 'alchemy/aws';
 import { type } from 'arktype';
-import { toResourceGraph, Cel, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
 
 // Create Alchemy scope
 const app = await alchemy('cloud-native-app');
@@ -112,7 +112,7 @@ const CloudAppStatus = type({
   appUrl: 'string'
 });
 
-const cloudApp = toResourceGraph(
+const cloudApp = kubernetesComposition({
   {
     name: 'cloud-app',
     apiVersion: 'cloud.example.com/v1',
@@ -121,7 +121,7 @@ const cloudApp = toResourceGraph(
     status: CloudAppStatus
   },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -134,7 +134,7 @@ const cloudApp = toResourceGraph(
       }
     }),
     
-    service: simple.Service({
+    service: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
@@ -193,10 +193,10 @@ const dnsRecord = await DNSRecord('app-dns', {
 });
 
 // Kubernetes application using both clouds
-const hybridApp = toResourceGraph(
+const hybridApp = kubernetesComposition({
   { name: 'hybrid-app', schema: { spec: HybridAppSpec } },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       
@@ -258,10 +258,10 @@ const storageAccount = new azure.storage.Account('myappstorage', {
   accountReplicationType: 'LRS'
 });
 
-const azureApp = toResourceGraph(
+const azureApp = kubernetesComposition({
   { name: 'azure-app', schema: { spec: AzureAppSpec } },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       
@@ -392,10 +392,10 @@ const infrastructure = new CloudInfrastructure('myapp', {
   }
 });
 
-const enterpriseApp = toResourceGraph(
+const enterpriseApp = kubernetesComposition({
   { name: 'enterprise-app', schema: { spec: EnterpriseAppSpec } },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -485,10 +485,10 @@ const drDatabase = new gcp.sql.DatabaseInstance('dr-database', {
   region: 'us-central1'
 });
 
-const drApp = toResourceGraph(
+const drApp = kubernetesComposition({
   { name: 'dr-app', schema: { spec: DrAppSpec } },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: Cel.expr(schema.spec.name, "-dr"),
       image: schema.spec.image,
       replicas: 1,  // Minimal replicas for DR
@@ -590,11 +590,11 @@ async function deployProduction() {
 
 ```typescript
 // Monitoring stack with cloud and k8s metrics
-const monitoringStack = toResourceGraph(
+const monitoringStack = kubernetesComposition({
   { name: 'monitoring', schema: { spec: MonitoringSpec } },
   (schema) => ({
     // Prometheus for Kubernetes metrics
-    prometheus: simple.Deployment({
+    prometheus: Deployment({
       name: 'prometheus',
       image: 'prom/prometheus:latest',
       ports: [{ containerPort: 9090 }],
@@ -611,7 +611,7 @@ const monitoringStack = toResourceGraph(
     }),
     
     // Grafana for visualization
-    grafana: simple.Deployment({
+    grafana: Deployment({
       name: 'grafana',
       image: 'grafana/grafana:latest',
       ports: [{ containerPort: 3000 }],
@@ -674,11 +674,11 @@ const dbSecretVersion = new aws.secretsmanager.SecretVersion('db-credentials-ver
   })
 });
 
-const secureApp = toResourceGraph(
+const secureApp = kubernetesComposition({
   { name: 'secure-app', schema: { spec: SecureAppSpec } },
   (schema) => ({
     // Secret sync from cloud to k8s
-    dbSecret: simple.Secret({
+    dbSecret: Secret({
       name: 'db-credentials',
       stringData: {
         username: 'postgres',  // This would be populated by external-secrets operator
@@ -690,7 +690,7 @@ const secureApp = toResourceGraph(
       }
     }),
     
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       
@@ -737,7 +737,7 @@ const appPolicy = new aws.iam.Policy('app-policy', {
 });
 
 // Kubernetes ServiceAccount with IAM role
-const serviceAccount = simple.ServiceAccount({
+const serviceAccount = ServiceAccount({
   name: 'myapp-service-account',
   annotations: {
     'eks.amazonaws.com/role-arn': appRole.arn
@@ -793,7 +793,7 @@ const cloudDatabase = new aws.rds.Instance(Cel.expr(prefix, "-database"), {
   // ... configuration
 });
 
-const k8sApp = simple.Deployment({
+const k8sApp = Deployment({
   name: Cel.expr(prefix, "-app"),
   // ... configuration
 });

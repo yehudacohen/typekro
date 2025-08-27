@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import alchemy from 'alchemy';
 import { File } from 'alchemy/fs';
 import { type } from 'arktype';
-import { Cel, toResourceGraph, simple } from '../../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../../src/index.js';
 
 const _TEST_TIMEOUT = 120000; // 2 minutes
 
@@ -603,9 +603,9 @@ data:
       expect(yaml).toContain('value: ${schema.spec.environment}');
       expect(yaml).toContain('name: ${schema.spec.appName}');
 
-      // Status fields that could flow back to Alchemy - now with intelligent CEL expressions
-      expect(yaml).toContain('appUrl: http://${');
-      // Static status fields should NOT be in YAML (they're hydrated directly by TypeKro)
+      // Status fields with schema references are now correctly treated as static fields
+      // They should NOT be in YAML (they're hydrated directly by TypeKro)
+      expect(yaml).not.toContain('appUrl:');
       expect(yaml).not.toContain('databaseStatus:');
       expect(yaml).not.toContain('storageStatus:');
 
@@ -1085,9 +1085,9 @@ resource "aws_s3_bucket" "webapp_assets" {
       expect(yaml).toContain('value: ${schema.spec.name}');
       expect(yaml).toContain('name: ${schema.spec.name}');
 
-      // Verify status fields that could flow back to Alchemy - now with intelligent CEL expressions
-      expect(yaml).toContain('appUrl: http://${');
-      // Static status fields should NOT be in YAML (they're hydrated directly by TypeKro)
+      // Status fields with schema references are now correctly treated as static fields
+      // They should NOT be in YAML (they're hydrated directly by TypeKro)
+      expect(yaml).not.toContain('appUrl:');
       expect(yaml).not.toContain('databaseConnected:');
       expect(yaml).not.toContain('healthStatus:');
 

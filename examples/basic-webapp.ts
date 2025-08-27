@@ -42,6 +42,7 @@ const webApp = kubernetesComposition(
         POSTGRES_USER: 'webapp',
         POSTGRES_PASSWORD: 'secret',
       },
+      id: 'database', // Required for schema references
     });
 
     // Database service - auto-registered
@@ -49,6 +50,7 @@ const webApp = kubernetesComposition(
       name: `${spec.name}-db-service`,
       selector: { app: `${spec.name}-db` },
       ports: [{ port: 5432, targetPort: 5432 }],
+      id: 'dbService', // Required for schema references
     });
 
     // Web application deployment - auto-registered
@@ -59,8 +61,9 @@ const webApp = kubernetesComposition(
       ports: [{ containerPort: 3000 }],
       env: {
         NODE_ENV: spec.environment,
-        DATABASE_URL: `postgresql://webapp:secret@${spec.name}-db-service:5432/webapp`,
+        DATABASE_URL: Cel.template('postgresql://webapp:secret@%s-db-service:5432/webapp', spec.name),
       },
+      id: 'webDeployment', // Required for schema references
     });
 
     // Web service - auto-registered
@@ -68,6 +71,7 @@ const webApp = kubernetesComposition(
       name: `${spec.name}-service`,
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
+      id: 'webService', // Required for schema references
     });
 
     // Ingress for external access - auto-registered
@@ -92,13 +96,14 @@ const webApp = kubernetesComposition(
           },
         },
       ],
+      id: 'ingress', // Required for schema references
     });
 
     // Database migration job - auto-registered
     const _migration = Job({
       name: `${spec.name}-migration`,
       image: spec.webImage,
-      command: ['npm', 'run', 'migrate'],
+      command: ['npm', 'run', 'migrate']
     });
 
     // Return status (resources are auto-captured)

@@ -281,17 +281,27 @@ type ResourceGraphDefinition<T> = (schema: SchemaProxy<T>) => Record<string, Enh
 #### Example
 
 ```typescript
-import { createResourceGraph, deployment, service } from 'typekro';
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
+import { type } from 'arktype';
 
-interface WebAppSchema {
-  name: string;
-  replicas: number;
-  image: string;
-}
+const WebAppSpec = type({
+  name: 'string',
+  replicas: 'number', 
+  image: 'string'
+});
 
-const webApp = createResourceGraph<WebAppSchema>('web-app', (schema) => {
-  const deploy = deployment({
-    metadata: { name: schema.name },
+const webApp = kubernetesComposition(
+  {
+    name: 'web-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: type({ ready: 'boolean' })
+  },
+  (schema) => ({
+    deploy: Deployment({
+      name: schema.spec.name,
     spec: {
       replicas: schema.replicas,
       template: {

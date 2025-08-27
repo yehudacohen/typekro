@@ -18,7 +18,8 @@ The `kubernetesComposition` function allows you to write intuitive, imperative c
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, simple, Cel } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service, Pvc } from 'typekro/simple';
 
 const WebAppSpec = type({
   name: 'string',
@@ -41,13 +42,13 @@ const webApp = kubernetesComposition(
   },
   (spec) => {
     // Resources auto-register - no explicit builders needed!
-    const deployment = simple.Deployment({
+    const deployment = Deployment({
       name: spec.name,
       image: spec.image,
       replicas: spec.replicas,
     });
 
-    const service = simple.Service({
+    const service = Service({
       name: `${spec.name}-service`,
       selector: { app: spec.name },
     });
@@ -75,8 +76,8 @@ TypeKro offers two approaches for creating resource graphs:
 const webapp = kubernetesComposition(
   definition,
   (spec) => {
-    const deployment = simple.Deployment({ name: spec.name });
-    const service = simple.Service({ name: spec.name });
+    const deployment = Deployment({ name: spec.name });
+    const service = Service({ name: spec.name });
     
     return {
       ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
@@ -92,8 +93,8 @@ const webapp = kubernetesComposition(
 const webapp = toResourceGraph(
   definition,
   (schema) => ({
-    deployment: simple.Deployment({ name: schema.spec.name }),
-    service: simple.Service({ name: schema.spec.name }),
+    deployment: Deployment({ name: schema.spec.name }),
+    service: Service({ name: schema.spec.name }),
   }),
   (schema, resources) => ({
     ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
@@ -117,9 +118,9 @@ Both approaches generate identical output and support the same features. Choose 
 
 ```typescript
 const complexApp = kubernetesComposition(definition, (spec) => {
-  const database = simple.Deployment({ name: 'db', image: 'postgres' });
-  const api = simple.Deployment({ name: 'api', image: spec.apiImage });
-  const frontend = simple.Deployment({ name: 'frontend', image: spec.frontendImage });
+  const database = Deployment({ name: 'db', image: 'postgres' });
+  const api = Deployment({ name: 'api', image: spec.apiImage });
+  const frontend = Deployment({ name: 'frontend', image: spec.frontendImage });
 
   return {
     phase: Cel.expr<string>(
@@ -155,12 +156,12 @@ const complexApp = kubernetesComposition(definition, (spec) => {
 ```typescript
 // Individual compositions
 const database = kubernetesComposition(dbDefinition, (spec) => {
-  const postgres = simple.Deployment({ name: 'postgres', image: spec.image });
+  const postgres = Deployment({ name: 'postgres', image: spec.image });
   return { ready: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0') };
 });
 
 const api = kubernetesComposition(apiDefinition, (spec) => {
-  const deployment = simple.Deployment({ name: 'api', image: spec.image });
+  const deployment = Deployment({ name: 'api', image: spec.image });
   return { ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0') };
 });
 
@@ -194,7 +195,7 @@ const configApp = kubernetesComposition(definition, (spec) => {
   });
 
   // Use configuration in deployment
-  const deployment = simple.Deployment({
+  const deployment = Deployment({
     name: spec.name,
     image: spec.image,
     env: {
@@ -303,7 +304,7 @@ console.log('Composition logs:', logs);
 
 ```typescript
 // ❌ Wrong - resource created outside composition
-const globalDeployment = simple.Deployment({ name: 'global' });
+const globalDeployment = Deployment({ name: 'global' });
 
 const composition = kubernetesComposition(definition, (spec) => {
   // This won't be registered
@@ -316,7 +317,7 @@ const composition = kubernetesComposition(definition, (spec) => {
 ```typescript
 // ✅ Correct - resource created inside composition
 const composition = kubernetesComposition(definition, (spec) => {
-  const deployment = simple.Deployment({ name: spec.name });
+  const deployment = Deployment({ name: spec.name });
   return { ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0') };
 });
 ```
@@ -336,7 +337,7 @@ const StatusSchema = type({
 const composition = kubernetesComposition(
   { /* ... */, status: StatusSchema },
   (spec) => {
-    const deployment = simple.Deployment({ name: spec.name });
+    const deployment = Deployment({ name: spec.name });
     
     // ✅ Matches schema exactly
     return {
@@ -356,15 +357,15 @@ Create focused compositions that handle a single concern:
 ```typescript
 // ✅ Good - focused on web application
 const webApp = kubernetesComposition(webAppDefinition, (spec) => {
-  const deployment = simple.Deployment({ /* ... */ });
-  const service = simple.Service({ /* ... */ });
+  const deployment = Deployment({ /* ... */ });
+  const service = Service({ /* ... */ });
   return { /* web app status */ };
 });
 
 // ✅ Good - focused on database
 const database = kubernetesComposition(databaseDefinition, (spec) => {
-  const deployment = simple.Deployment({ /* ... */ });
-  const pvc = simple.Pvc({ /* ... */ });
+  const deployment = Deployment({ /* ... */ });
+  const pvc = Pvc({ /* ... */ });
   return { /* database status */ };
 });
 ```
@@ -374,9 +375,9 @@ const database = kubernetesComposition(databaseDefinition, (spec) => {
 ```typescript
 const composition = kubernetesComposition(definition, (spec) => {
   // ✅ Good - descriptive names
-  const webDeployment = simple.Deployment({ name: `${spec.name}-web` });
-  const webService = simple.Service({ name: `${spec.name}-web-service` });
-  const dbDeployment = simple.Deployment({ name: `${spec.name}-database` });
+  const webDeployment = Deployment({ name: `${spec.name}-web` });
+  const webService = Service({ name: `${spec.name}-web-service` });
+  const dbDeployment = Deployment({ name: `${spec.name}-database` });
   
   return { /* ... */ };
 });
@@ -386,8 +387,8 @@ const composition = kubernetesComposition(definition, (spec) => {
 
 ```typescript
 const composition = kubernetesComposition(definition, (spec) => {
-  const web = simple.Deployment({ /* ... */ });
-  const db = simple.Deployment({ /* ... */ });
+  const web = Deployment({ /* ... */ });
+  const db = Deployment({ /* ... */ });
   
   return {
     // High-level status
@@ -419,11 +420,11 @@ const composition = kubernetesComposition(definition, (spec) => {
 ```typescript
 const composition = kubernetesComposition(definition, (spec) => {
   // Create dependencies first
-  const database = simple.Deployment({ name: 'database', image: 'postgres' });
-  const databaseService = simple.Service({ name: 'database-service', selector: { app: 'database' } });
+  const database = Deployment({ name: 'database', image: 'postgres' });
+  const databaseService = Service({ name: 'database-service', selector: { app: 'database' } });
   
   // Then create dependents
-  const api = simple.Deployment({
+  const api = Deployment({
     name: 'api',
     image: spec.apiImage,
     env: {
@@ -444,7 +445,7 @@ const composition = kubernetesComposition(definition, (spec) => {
 
 ## Next Steps
 
-- Explore the [examples](../examples/imperative-composition.ts) for more patterns
+- Explore the [examples](../../examples/imperative-composition.ts) for more patterns
 - Learn about [CEL expressions](./cel-expressions.md) for dynamic status
 - Understand [deployment strategies](./deployment/index.md) for different environments
 - Check out [factory functions](./factories.md) for available resource types

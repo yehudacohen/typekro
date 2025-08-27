@@ -1,6 +1,6 @@
 /**
  * Simple Config Factories
- * 
+ *
  * This module provides simplified factory functions for creating common
  * Kubernetes configuration resources with sensible defaults.
  */

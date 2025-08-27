@@ -44,6 +44,29 @@ function resolveResourceReference(
 
   // Handle schema references
   if (resourceId === '__schema__') {
+    // Try to resolve schema references to actual values if schema context is available
+    if (context.schema) {
+      const pathParts = fieldPath.split('.');
+      let current: any = context.schema;
+
+      for (const part of pathParts) {
+        if (current && typeof current === 'object' && part in current) {
+          current = current[part];
+        } else {
+          // Can't resolve further, return the CEL reference
+          return `schema.${fieldPath}`;
+        }
+      }
+
+      // If we resolved to a concrete value, return it as a literal
+      if (typeof current === 'string') {
+        return `"${current}"`;
+      } else if (typeof current === 'number' || typeof current === 'boolean') {
+        return String(current);
+      }
+    }
+    
+    // Fallback to CEL reference if we can't resolve
     return `schema.${fieldPath}`;
   }
 

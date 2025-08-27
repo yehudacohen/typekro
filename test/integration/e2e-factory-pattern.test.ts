@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { Cel, secret, toResourceGraph, simple } from '../../src/index';
+import { Cel, secret, simple, toResourceGraph } from '../../src/index';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration

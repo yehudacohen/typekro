@@ -11,7 +11,6 @@
             <th>CDK8s</th>
             <th>Helm</th>
             <th>Kustomize</th>
-            <th>Crossplane</th>
           </tr>
         </thead>
         <tbody>
@@ -22,7 +21,6 @@
             <td>✅ TypeScript</td>
             <td>❌ Templates</td>
             <td>❌ YAML</td>
-            <td>❌ YAML</td>
           </tr>
           <tr>
             <td><strong>GitOps Ready</strong></td>
@@ -30,7 +28,6 @@
             <td>❌ State backend</td>
             <td>✅ YAML output</td>
             <td>✅ Charts</td>
-            <td>✅ YAML</td>
             <td>✅ YAML</td>
           </tr>
           <tr>
@@ -40,14 +37,12 @@
             <td>❌ Static</td>
             <td>❌ Templates</td>
             <td>❌ Static</td>
-            <td>✅ Compositions</td>
           </tr>
           <tr>
             <td><strong>IDE Support</strong></td>
             <td>✅ Full autocomplete</td>
             <td>✅ Language support</td>
             <td>✅ TypeScript</td>
-            <td>❌ Limited</td>
             <td>❌ Limited</td>
             <td>❌ Limited</td>
           </tr>
@@ -57,8 +52,7 @@
             <td>🔴 New concepts</td>
             <td>🟡 TypeScript + K8s</td>
             <td>🔴 Templates</td>
-            <td>🔴 YAML hell</td>
-            <td>🔴 Complex</td>
+            <td>🔴 YAML complexity</td>
           </tr>
           <tr>
             <td><strong>Kubernetes Native</strong></td>
@@ -67,7 +61,6 @@
             <td>✅ Pure K8s</td>
             <td>✅ K8s resources</td>
             <td>✅ K8s resources</td>
-            <td>✅ K8s + CRDs</td>
           </tr>
           <tr>
             <td><strong>Cross-Resource Refs</strong></td>
@@ -76,16 +69,14 @@
             <td>❌ Manual</td>
             <td>❌ Manual</td>
             <td>❌ Manual</td>
-            <td>✅ Built-in</td>
           </tr>
           <tr>
             <td><strong>Multi-Cloud</strong></td>
-            <td>🟡 Via Alchemy</td>
+            <td>✅ Via Alchemy</td>
             <td>✅ Native</td>
             <td>❌ K8s only</td>
             <td>❌ K8s only</td>
             <td>❌ K8s only</td>
-            <td>✅ Native</td>
           </tr>
           <tr>
             <td><strong>State Management</strong></td>
@@ -94,16 +85,6 @@
             <td>✅ Stateless</td>
             <td>✅ Stateless</td>
             <td>✅ Stateless</td>
-            <td>✅ Controller</td>
-          </tr>
-          <tr>
-            <td><strong>CRD Timing</strong></td>
-            <td>✅ Automatic</td>
-            <td>❌ Manual</td>
-            <td>❌ Manual</td>
-            <td>❌ Manual</td>
-            <td>❌ Manual</td>
-            <td>✅ Built-in</td>
           </tr>
         </tbody>
       </table>

@@ -33,7 +33,8 @@ const hydratedStatus = {
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, Cel, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
 const WebAppStatus = type({
   url: 'string',
@@ -42,15 +43,19 @@ const WebAppStatus = type({
   healthy: 'boolean'
 });
 
-const webApp = toResourceGraph(
-  { name: 'webapp', schema: { spec: WebAppSpec, status: WebAppStatus } },
-  (schema) => ({
-    deployment: simple.Deployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
+const webApp = kubernetesComposition({
+  name: 'webapp',
+  apiVersion: 'example.com/v1',
+  kind: 'WebApp',
+  spec: WebAppSpec,
+  status: WebAppStatus
+}, (schema) => {
+  const deployment = Deployment({
+    name: schema.spec.name,
+    image: schema.spec.image,
       replicas: schema.spec.replicas
     }),
-    service: simple.Service({
+    service: Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
@@ -279,10 +284,10 @@ Reference status from other deployed graphs:
 
 ```typescript
 // Shared database graph
-const databaseGraph = toResourceGraph(
+const databaseGraph = kubernetesComposition({
   { name: 'shared-database', schema: { spec: DatabaseSpec, status: DatabaseStatus } },
   (schema) => ({
-    database: simple.Deployment({
+    database: Deployment({
       name: schema.spec.name,
       image: 'postgres:15'
     })
@@ -295,10 +300,10 @@ const databaseGraph = toResourceGraph(
 );
 
 // Application that references shared database status
-const appGraph = toResourceGraph(
+const appGraph = kubernetesComposition({
   { name: 'app-with-shared-db', schema: { spec: AppSpec, status: AppStatus } },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
@@ -429,10 +434,9 @@ await factory.deploy(spec);
 const status = await factory.getStatus();
 console.log('Live status:', status);
 
-// Listen for status updates
-factory.onStatusUpdate((newStatus) => {
-  console.log('Status updated:', newStatus);
-});
+// Check status periodically
+const status = await factory.getStatus();
+console.log('Current status:', status);
 ```
 
 ### KRO Mode Hydration
@@ -441,7 +445,7 @@ In KRO mode, status hydration is handled by the KRO controller:
 
 ```typescript
 // Generated ResourceGraphDefinition includes status mappings as CEL expressions
-const yaml = graph.toYaml(spec);
+const yaml = graph.toYaml();
 console.log(yaml);
 // Output includes:
 // status:

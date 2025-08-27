@@ -6,7 +6,8 @@ A complete stack with PostgreSQL database and web application.
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simple, Cel, simple } from 'typekro';
+import { kubernetesComposition, Cel simple, Cel } from 'typekro';
+import { Deployment, Service } from 'typekro/simple'; import { Deployment, Service } from 'typekro/simple';
 
 const FullStackSpec = type({
   name: 'string',
@@ -23,7 +24,7 @@ const FullStackStatus = type({
   url: 'string'
 });
 
-export const fullStack = toResourceGraph(
+export const fullStack = kubernetesComposition({
   {
     name: 'fullstack-app',
     apiVersion: 'example.com/v1alpha1',
@@ -42,7 +43,7 @@ export const fullStack = toResourceGraph(
     }),
 
     // Database deployment
-    database: simple.Deployment({
+    database: Deployment({
       name: Cel.template('%s-db', schema.spec.name),
       image: 'postgres:15',
       env: {
@@ -57,14 +58,14 @@ export const fullStack = toResourceGraph(
     }),
 
     // Database service
-    dbService: simple.Service({
+    dbService: Service({
       name: Cel.template('%s-db-service', schema.spec.name),
       selector: { app: Cel.template('%s-db', schema.spec.name) },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
 
     // Application deployment
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.appImage,
       replicas: schema.spec.replicas,
@@ -78,7 +79,7 @@ export const fullStack = toResourceGraph(
     }),
 
     // Application service
-    appService: simple.Service({
+    appService: Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],

@@ -38,6 +38,8 @@ export function createDeploymentOptions(
     hydrateStatus: factoryOptions.hydrateStatus ?? true,
     ...(factoryOptions.retryPolicy && { retryPolicy: factoryOptions.retryPolicy }),
     ...(factoryOptions.progressCallback && { progressCallback: factoryOptions.progressCallback }),
+    ...(factoryOptions.eventMonitoring && { eventMonitoring: factoryOptions.eventMonitoring }),
+    ...(factoryOptions.debugLogging && { debugLogging: factoryOptions.debugLogging }),
   };
 }
 

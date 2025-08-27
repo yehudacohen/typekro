@@ -627,7 +627,7 @@ metadata:
       };
 
       // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-      const originalResource = resource as any;
+      const originalResource = resource as { readinessEvaluator?: (resource: unknown) => boolean };
       if (
         originalResource.readinessEvaluator &&
         typeof originalResource.readinessEvaluator === 'function'
@@ -768,7 +768,8 @@ metadata:
       }
 
       // FIX: Explicitly check for and preserve the non-enumerable readinessEvaluator property.
-      const evaluator = (resource as any).readinessEvaluator;
+      const evaluator = (resource as { readinessEvaluator?: (resource: unknown) => boolean })
+        .readinessEvaluator;
       if (typeof evaluator === 'function') {
         this.logger.trace('Preserving readiness evaluator for resource', { path });
         Object.defineProperty(resolved, 'readinessEvaluator', {

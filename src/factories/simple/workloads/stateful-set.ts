@@ -6,13 +6,9 @@
  */
 
 import type { V1EnvVar } from '@kubernetes/client-node';
-
-import { statefulSet } from '../../kubernetes/workloads/stateful-set.js';
-import type {
-  V1StatefulSetSpec,
-  V1StatefulSetStatus,
-} from '../../kubernetes/types.js';
 import type { Enhanced } from '../../../core/types.js';
+import type { V1StatefulSetSpec, V1StatefulSetStatus } from '../../kubernetes/types.js';
+import { statefulSet } from '../../kubernetes/workloads/stateful-set.js';
 import type { StatefulSetConfig } from '../types.js';
 
 /**

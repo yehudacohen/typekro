@@ -69,12 +69,8 @@ graph TB
 
 ```typescript
 import { type } from 'arktype';
-import { 
-  toResourceGraph, 
-  simple, 
-  simple.Service,
-  simple
-} from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service, Secret, Pvc } from 'typekro/simple';
 
 // Monitoring configuration schema
 const MonitoringSpec = type({
@@ -142,7 +138,7 @@ const MonitoringStatus = type({
   healthStatus: '"healthy" | "degraded" | "unhealthy"'
 });
 
-export const monitoringStack = toResourceGraph(
+export const monitoringStack = kubernetesComposition({
   {
     name: 'monitoring-stack',
     apiVersion: 'monitoring.example.com/v1alpha1',
@@ -281,7 +277,7 @@ groups:
       }),
       
       // Prometheus storage
-      prometheusStorage: simple.Pvc({
+      prometheusStorage: Pvc({
         name: 'prometheus-storage',
         accessMode: 'ReadWriteOnce',
         size: schema.spec.prometheus.storageSize,
@@ -289,7 +285,7 @@ groups:
       }),
       
       // Prometheus deployment
-      prometheus: simple.Deployment({
+      prometheus: Deployment({
         name: 'prometheus',
         image: schema.spec.prometheus.image,
         replicas: 1,
@@ -326,7 +322,7 @@ groups:
       }),
       
       // Prometheus service
-      prometheusService: simple.Service({
+      prometheusService: Service({
         name: 'prometheus',
         selector: { app: 'prometheus' },
         ports: [{ port: 9090, targetPort: 9090 }]
@@ -388,7 +384,7 @@ receivers:
       }),
       
       // AlertManager deployment
-      alertManager: simple.Deployment({
+      alertManager: Deployment({
         name: 'alertmanager',
         image: schema.spec.alerting.image,
         replicas: 1,
@@ -412,7 +408,7 @@ receivers:
       }),
       
       // AlertManager service
-      alertManagerService: simple.Service({
+      alertManagerService: Service({
         name: 'alertmanager',
         selector: { app: 'alertmanager' },
         ports: [{ port: 9093, targetPort: 9093 }]
@@ -472,7 +468,7 @@ providers:
       }),
       
       // Grafana secrets
-      grafanaSecrets: simple.Secret({
+      grafanaSecrets: Secret({
         name: 'grafana-secrets',
         data: {
           admin_password: Buffer.from(schema.spec.grafana.adminPassword).toString('base64')
@@ -480,7 +476,7 @@ providers:
       }),
       
       // Grafana deployment
-      grafana: simple.Deployment({
+      grafana: Deployment({
         name: 'grafana',
         image: schema.spec.grafana.image,
         replicas: 1,
@@ -513,7 +509,7 @@ providers:
       }),
       
       // Grafana service
-      grafanaService: simple.Service({
+      grafanaService: Service({
         name: 'grafana',
         selector: { app: 'grafana' },
         ports: [{ port: 3000, targetPort: 3000 }],
@@ -521,7 +517,7 @@ providers:
       }),
       
       // Node Exporter (if monitoring nodes)
-      nodeExporter: simple.Deployment({
+      nodeExporter: Deployment({
         name: 'node-exporter',
         image: 'prom/node-exporter:latest',
         replicas: 1, // In real usage, this would be a DaemonSet
@@ -550,7 +546,7 @@ providers:
       }),
       
       // Node Exporter service
-      nodeExporterService: simple.Service({
+      nodeExporterService: Service({
         name: 'node-exporter',
         selector: { app: 'node-exporter' },
         ports: [{ port: 9100, targetPort: 9100 }]
@@ -802,5 +798,5 @@ const retentionConfig = {
 ## Learn More
 
 - **[Performance Optimization](../guide/performance.md)** - Monitoring performance patterns
-- **[Factory Functions](../guide/factory-functions.md)** - Reusable monitoring components
+- **[Factory Functions](../guide/factories.md)** - Reusable monitoring components
 - **[Cross-Resource References](../guide/cross-references.md)** - Service discovery patterns

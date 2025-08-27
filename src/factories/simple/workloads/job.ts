@@ -5,9 +5,9 @@
  * Kubernetes Job resources with sensible defaults.
  */
 
-import { job } from '../../kubernetes/workloads/job.js';
-import type { V1JobSpec, V1JobStatus } from '../../kubernetes/types.js';
 import type { Enhanced } from '../../../core/types.js';
+import type { V1JobSpec, V1JobStatus } from '../../kubernetes/types.js';
+import { job } from '../../kubernetes/workloads/job.js';
 import type { JobConfig } from '../types.js';
 
 /**
@@ -16,9 +16,7 @@ import type { JobConfig } from '../types.js';
  * @param config - Configuration for the job
  * @returns Enhanced Job resource
  */
-export function Job(
-  config: JobConfig
-): Enhanced<V1JobSpec, V1JobStatus> {
+export function Job(config: JobConfig): Enhanced<V1JobSpec, V1JobStatus> {
   return job({
     metadata: {
       name: config.name,

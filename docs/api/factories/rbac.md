@@ -23,14 +23,15 @@ function serviceAccount(resource: V1ServiceAccount): Enhanced<V1ServiceAccountSp
 #### Example: Basic Service Account
 
 ```typescript
-import { toResourceGraph, serviceAccount, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, serviceAccount, type } from 'typekro';
+import { Deployment } from 'typekro/simple';
 
 const SecureAppSpec = type({
   name: 'string',
   permissions: 'string[]'
 });
 
-const secureApp = toResourceGraph(
+const secureApp = kubernetesComposition({
   {
     name: 'secure-app',
     apiVersion: 'security.example.com/v1',
@@ -49,7 +50,7 @@ const secureApp = toResourceGraph(
     }),
     
     // Application using the service account
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -73,7 +74,7 @@ function role(resource: V1Role): Enhanced<V1RoleSpec, unknown>
 #### Example: Application Role with Permissions
 
 ```typescript
-import { toResourceGraph, role, roleBinding, serviceAccount, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, role, roleBinding, serviceAccount, simple, type } from 'typekro';
 
 const MicroserviceSpec = type({
   name: 'string',
@@ -81,7 +82,7 @@ const MicroserviceSpec = type({
   needsSecretAccess: 'boolean'
 });
 
-const microservice = toResourceGraph(
+const microservice = kubernetesComposition({
   {
     name: 'microservice-rbac',
     apiVersion: 'apps.example.com/v1',
@@ -138,7 +139,7 @@ const microservice = toResourceGraph(
     }),
     
     // Application with service account
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'microservice:latest',
       ports: [8080],
@@ -162,7 +163,7 @@ function clusterRole(resource: V1ClusterRole): Enhanced<V1ClusterRoleSpec, unkno
 #### Example: Monitoring Service with Cluster Access
 
 ```typescript
-const monitoringService = toResourceGraph(
+const monitoringService = kubernetesComposition({
   {
     name: 'monitoring-service',
     apiVersion: 'monitoring.example.com/v1',
@@ -222,7 +223,7 @@ const monitoringService = toResourceGraph(
     }),
     
     // Monitoring deployment
-    prometheus: simple.Deployment({
+    prometheus: Deployment({
       name: 'prometheus',
       image: 'prom/prometheus:latest',
       ports: [9090],
@@ -242,7 +243,7 @@ const monitoringService = toResourceGraph(
 Create isolated permissions for different tenants:
 
 ```typescript
-const multiTenantPlatform = toResourceGraph(
+const multiTenantPlatform = kubernetesComposition({
   {
     name: 'multi-tenant-platform',
     apiVersion: 'platform.example.com/v1',
@@ -308,7 +309,7 @@ const multiTenantPlatform = toResourceGraph(
     
     // Tenant applications
     tenantApps: schema.spec.tenants.map(tenant =>
-      simple.Deployment({
+      Deployment({
         name: Cel.expr(tenant, '-app'),
         image: 'tenant-app:latest',
         ports: [8080],
@@ -334,7 +335,7 @@ const multiTenantPlatform = toResourceGraph(
 Create RBAC for Kubernetes operators:
 
 ```typescript
-const customOperator = toResourceGraph(
+const customOperator = kubernetesComposition({
   {
     name: 'custom-operator',
     apiVersion: 'operators.example.com/v1',
@@ -406,7 +407,7 @@ const customOperator = toResourceGraph(
     }),
     
     // Operator deployment
-    operatorDeployment: simple.Deployment({
+    operatorDeployment: Deployment({
       name: 'custom-operator-controller',
       image: 'custom-operator:latest',
       ports: [8080, 9443],
@@ -427,7 +428,7 @@ const customOperator = toResourceGraph(
 Implement Pod Security Standards with RBAC:
 
 ```typescript
-const securePlatform = toResourceGraph(
+const securePlatform = kubernetesComposition({
   {
     name: 'secure-platform',
     apiVersion: 'security.example.com/v1',
@@ -483,7 +484,7 @@ const securePlatform = toResourceGraph(
     }),
     
     // Security-conscious application
-    secureApp: simple.Deployment({
+    secureApp: Deployment({
       name: 'secure-application',
       image: 'secure-app:latest',
       ports: [8080],

@@ -1,17 +1,21 @@
 # Custom Factory Functions
 
-While TypeKro provides comprehensive built-in factory functions, you can create custom factories for organization-specific patterns, complex resources, or specialized workflows. This guide shows you how to build reusable, type-safe factory functions.
+While TypeKro provides comprehensive built-in factory functions, you can create custom factories for organization-specific patterns, complex resources, or specialized workflows. This guide shows you how to build reusable, type-safe factory functions using TypeKro's Enhanced type system.
 
 ## Understanding Factory Functions
 
 Factory functions in TypeKro are functions that return Enhanced Kubernetes resources with:
 
-- **Type safety** - Full TypeScript validation
-- **Cross-resource references** - Ability to reference other resources
-- **Status tracking** - Runtime status information
-- **Consistent patterns** - Standardized configuration interfaces
+- **Type safety** - Full TypeScript validation with magic proxy system
+- **Cross-resource references** - Ability to reference other resources via proxy properties
+- **Status tracking** - Runtime status information accessible through proxies
+- **Automatic registration** - Resources are automatically registered in composition contexts
+- **Readiness evaluation** - Built-in readiness checking with custom evaluator support
 
 ```typescript
+import { createResource } from 'typekro';
+import type { Enhanced } from 'typekro';
+
 // Basic factory function signature
 function customFactory(config: ConfigType): Enhanced<SpecType, StatusType> {
   return createResource({
@@ -20,13 +24,28 @@ function customFactory(config: ConfigType): Enhanced<SpecType, StatusType> {
 }
 ```
 
+### The Enhanced Type System
+
+Enhanced resources are proxy objects that provide magic property access:
+
+```typescript
+const deployment = Deployment({ name: 'my-app', image: 'nginx:latest' });
+
+// Direct property access (normal values)
+console.log(deployment.metadata.name); // 'my-app'
+
+// Cross-resource references (returns KubernetesRef)
+const serviceRef = deployment.metadata.name; // Can be used in other resources
+const statusRef = deployment.status.readyReplicas; // References for status builders
+```
+
 ## Basic Custom Factory
 
 ### Simple Custom Deployment Factory
 
 ```typescript
-import { createResource } from 'typekro';
-import type { V1Deployment, V1DeploymentStatus } from '@kubernetes/client-node';
+import { createResource, type Enhanced } from 'typekro';
+import type { V1Deployment, V1DeploymentSpec, V1DeploymentStatus } from '@kubernetes/client-node';
 
 interface CustomDeploymentConfig {
   name: string;
@@ -35,21 +54,24 @@ interface CustomDeploymentConfig {
   environment: 'development' | 'staging' | 'production';
   team: string;
   monitoring?: boolean;
+  id?: string; // Optional explicit resource ID
 }
 
 export function customDeployment(
   config: CustomDeploymentConfig
-): Enhanced<V1Deployment, V1DeploymentStatus> {
+): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   const {
     name,
     image,
     replicas = 1,
     environment,
     team,
-    monitoring = false
+    monitoring = false,
+    id
   } = config;
 
   return createResource({
+    ...(id && { id }), // Optional explicit ID for dependency tracking
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: {
@@ -161,880 +183,507 @@ const myApp = customDeployment({
   replicas: 3,
   environment: 'production',
   team: 'backend',
-  monitoring: true
+  monitoring: true,
+  id: 'userService' // Explicit ID for cross-resource references
+});
+
+// The Enhanced resource can be referenced in other resources
+const service = Service({
+  name: myApp.metadata.name, // Cross-resource reference
+  selector: myApp.spec.selector.matchLabels, // Reference to deployment's labels
 });
 ```
 
-## Advanced Custom Factories
+## Using Custom Factories in Compositions
 
-### Multi-Resource Factory
-
-Create factories that generate multiple related resources:
+Custom factories create **single resources**. To use them in compositions alongside other resources:
 
 ```typescript
-interface WebApplicationConfig {
-  name: string;
-  image: string;
-  replicas: number;
-  environment: string;
-  team: string;
-  database?: {
-    enabled: boolean;
-    size?: string;
-    storageClass?: string;
-  };
-  ingress?: {
-    enabled: boolean;
-    hostname?: string;
-    tls?: boolean;
-  };
-}
+import { type } from 'arktype';
+import { kubernetesComposition, Cel } from 'typekro';
+import { customDeployment } from './custom-deployment.js';
+import { Service, ConfigMap } from 'typekro/simple';
 
-interface WebApplicationResources {
-  deployment: Enhanced<V1Deployment, V1DeploymentStatus>;
-  service: Enhanced<V1Service, V1ServiceStatus>;
-  configMap: Enhanced<V1ConfigMap, {}>;
-  database?: Enhanced<V1StatefulSet, V1StatefulSetStatus>;
-  databaseService?: Enhanced<V1Service, V1ServiceStatus>;
-  storage?: Enhanced<V1PersistentVolumeClaim, V1PersistentVolumeClaimStatus>;
-  ingress?: Enhanced<V1Ingress, V1IngressStatus>;
-}
+// Define the composition schema
+const WebAppSpec = type({
+  name: 'string',
+  image: 'string',
+  replicas: 'number',
+  environment: '"development" | "staging" | "production"',
+  team: 'string'
+});
 
-export function webApplication(
-  config: WebApplicationConfig
-): WebApplicationResources {
-  const { name, image, replicas, environment, team, database, ingress } = config;
-  
-  // Configuration ConfigMap
-  const configMap = createResource({
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: {
-      name: Cel.expr(name, '-config'),
-      labels: { app: name, team, environment }
-    },
-    data: {
-      'app.properties': `
-        app.name=${name}
-        app.environment=${environment}
-        app.team=${team}
-        logging.level=${environment === 'production' ? 'INFO' : 'DEBUG'}
-      `,
-      'features.json': JSON.stringify({
-        database: database?.enabled || false,
-        monitoring: environment === 'production',
-        debugging: environment !== 'production'
-      })
-    }
-  });
+const WebAppStatus = type({
+  ready: 'boolean',
+  url: 'string',
+  deploymentReady: 'boolean'
+});
 
-  // Main application deployment
-  const deployment = createResource({
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: {
-      name,
-      labels: { app: name, team, environment }
-    },
-    spec: {
-      replicas,
-      selector: { matchLabels: { app: name } },
-      template: {
-        metadata: { labels: { app: name, team, environment } },
-        spec: {
-          containers: [{
-            name,
-            image,
-            ports: [{ containerPort: 3000 }],
-            env: [
-              { name: 'CONFIG_PATH', value: '/etc/config' },
-              ...(database?.enabled ? [
-                { name: 'DATABASE_HOST', value: Cel.expr(name, '-database-service') },
-                { name: 'DATABASE_PORT', value: '5432' }
-              ] : [])
-            ],
-            volumeMounts: [{
-              name: 'config',
-              mountPath: '/etc/config'
-            }],
-            resources: getResourcesByEnvironment(environment)
-          }],
-          volumes: [{
-            name: 'config',
-            configMap: { name: configMap.metadata.name }
-          }]
-        }
-      }
-    }
-  });
+// Create a composition that uses custom factories
+export const webAppComposition = kubernetesComposition(
+  {
+    name: 'web-application',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: WebAppSpec,
+    status: WebAppStatus,
+  },
+  (spec) => {
+    // Use your custom factory for the deployment
+    const app = customDeployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
+      environment: spec.environment,
+      team: spec.team,
+      monitoring: spec.environment === 'production'
+    });
 
-  // Service for the application
-  const service = createResource({
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: {
-      name: Cel.expr(name, '-service'),
-      labels: { app: name, team, environment }
-    },
-    spec: {
-      selector: { app: name },
-      ports: [{ port: 80, targetPort: 3000 }],
-      type: 'ClusterIP'
-    }
-  });
-
-  const resources: WebApplicationResources = {
-    deployment,
-    service,
-    configMap
-  };
-
-  // Optional database
-  if (database?.enabled) {
-    const storage = createResource({
-      apiVersion: 'v1',
-      kind: 'PersistentVolumeClaim',
-      metadata: {
-        name: Cel.expr(name, '-database-storage'),
-        labels: { app: name, component: 'database', team, environment }
-      },
-      spec: {
-        accessModes: ['ReadWriteOnce'],
-        resources: {
-          requests: { storage: database.size || '10Gi' }
-        },
-        ...(database.storageClass && {
-          storageClassName: database.storageClass
-        })
+    // Use built-in factories for other resources
+    const configMap = ConfigMap({
+      name: Cel.template('%s-config', spec.name),
+      data: {
+        'app.env': spec.environment,
+        'app.team': spec.team
       }
     });
 
-    const databaseDeployment = createResource({
-      apiVersion: 'apps/v1',
-      kind: 'StatefulSet',
-      metadata: {
-        name: Cel.expr(name, '-database'),
-        labels: { app: name, component: 'database', team, environment }
-      },
-      spec: {
-        serviceName: Cel.expr(name, '-database-service'),
-        replicas: 1,
-        selector: { matchLabels: { app: name, component: 'database' } },
-        template: {
-          metadata: { labels: { app: name, component: 'database', team, environment } },
-          spec: {
-            containers: [{
-              name: 'postgres',
-              image: 'postgres:15',
-              ports: [{ containerPort: 5432 }],
-              env: [
-                { name: 'POSTGRES_DB', value: name },
-                { name: 'POSTGRES_USER', value: 'app' },
-                { name: 'POSTGRES_PASSWORD', value: 'password' }  // Use secrets in production
-              ],
-              volumeMounts: [{
-                name: 'data',
-                mountPath: '/var/lib/postgresql/data'
-              }]
-            }],
-            volumes: [{
-              name: 'data',
-              persistentVolumeClaim: { claimName: storage.metadata.name }
-            }]
-          }
-        }
-      }
+    const service = Service({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
+      ports: [{ port: 80, targetPort: 3000 }]
     });
 
-    const databaseService = createResource({
-      apiVersion: 'v1',
-      kind: 'Service',
-      metadata: {
-        name: Cel.expr(name, '-database-service'),
-        labels: { app: name, component: 'database', team, environment }
-      },
-      spec: {
-        selector: { app: name, component: 'database' },
-        ports: [{ port: 5432, targetPort: 5432 }],
-        type: 'ClusterIP'
-      }
-    });
-
-    resources.database = databaseDeployment;
-    resources.databaseService = databaseService;
-    resources.storage = storage;
+    // Status is computed from the resources created within the composition
+    return {
+      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+      url: Cel.template('http://%s', service.status.clusterIP),
+      deploymentReady: Cel.expr<boolean>(app.status.readyReplicas, ' >= ', spec.replicas)
+    };
   }
-
-  // Optional ingress
-  if (ingress?.enabled) {
-    const ingressResource = createResource({
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'Ingress',
-      metadata: {
-        name: Cel.expr(name, '-ingress'),
-        labels: { app: name, team, environment },
-        annotations: {
-          'nginx.ingress.kubernetes.io/rewrite-target': '/',
-          ...(ingress.tls && {
-            'cert-manager.io/cluster-issuer': 'letsencrypt-prod'
-          })
-        }
-      },
-      spec: {
-        rules: [{
-          host: ingress.hostname || Cel.template('%s.%s.example.com', name, environment),
-          http: {
-            paths: [{
-              path: '/',
-              pathType: 'Prefix',
-              backend: {
-                service: {
-                  name: service.metadata.name,
-                  port: { number: 80 }
-                }
-              }
-            }]
-          }
-        }],
-        ...(ingress.tls && {
-          tls: [{
-            secretName: Cel.expr(name, '-tls'),
-            hosts: [ingress.hostname || Cel.template('%s.%s.example.com', name, environment)]
-          }]
-        })
-      }
-    });
-
-    resources.ingress = ingressResource;
-  }
-
-  return resources;
-}
+);
 ```
 
-### Typed Factory with Status
+## Advanced Custom Factory Patterns
+
+### Factory with Custom Readiness Evaluation
 
 ```typescript
-import type { Enhanced } from 'typekro';
+import { createResource, type ResourceStatus, type ReadinessEvaluator } from 'typekro';
+import type { V1StatefulSet, V1StatefulSetSpec, V1StatefulSetStatus } from '@kubernetes/client-node';
 
-interface MonitoringStackConfig {
+interface DatabaseConfig {
   name: string;
-  namespace: string;
-  prometheus: {
-    retention: string;
-    storage: string;
-    storageClass?: string;
-  };
-  grafana: {
-    adminPassword: string;
-    plugins?: string[];
-  };
-  alertmanager?: {
-    enabled: boolean;
-    webhookUrl?: string;
-  };
+  image: string;
+  storage: string;
+  storageClass?: string;
+  replicas?: number;
+  environment: string;
+  id?: string;
 }
 
-interface MonitoringStackStatus {
-  prometheusReady: boolean;
-  grafanaReady: boolean;
-  alertmanagerReady: boolean;
-  dashboardUrl: string;
-  metricsEndpoint: string;
-}
+// Custom readiness evaluator
+const databaseReadinessEvaluator: ReadinessEvaluator = (liveResource: V1StatefulSet): ResourceStatus => {
+  const status = liveResource.status;
+  const replicas = liveResource.spec?.replicas || 1;
+  
+  if (!status) {
+    return { ready: false, reason: 'NoStatus', message: 'StatefulSet status not available' };
+  }
 
-export function monitoringStack(
-  config: MonitoringStackConfig
-): {
-  prometheus: Enhanced<V1StatefulSet, V1StatefulSetStatus>;
-  prometheusSvc: Enhanced<V1Service, V1ServiceStatus>;
-  grafana: Enhanced<V1Deployment, V1DeploymentStatus>;
-  grafanaSvc: Enhanced<V1Service, V1ServiceStatus>;
-  alertmanager?: Enhanced<V1Deployment, V1DeploymentStatus>;
-} {
-  const { name, namespace, prometheus: promConfig, grafana: grafanaConfig, alertmanager } = config;
+  if (status.readyReplicas === replicas && status.currentReplicas === replicas) {
+    return { ready: true, reason: 'AllReplicasReady', message: `All ${replicas} database replicas are ready` };
+  }
 
-  // Prometheus StatefulSet
-  const prometheus = createResource({
+  return {
+    ready: false,
+    reason: 'ReplicasNotReady',
+    message: `Database replicas not ready: ${status.readyReplicas || 0}/${replicas}`
+  };
+};
+
+export function postgresDatabase(
+  config: DatabaseConfig
+): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus> {
+  const { name, image, storage, storageClass, replicas = 1, environment, id } = config;
+
+  return createResource({
+    ...(id && { id }),
     apiVersion: 'apps/v1',
     kind: 'StatefulSet',
     metadata: {
-      name: Cel.expr(name, '-prometheus'),
-      namespace,
-      labels: { app: Cel.expr(name, '-prometheus'), component: 'monitoring' }
+      name,
+      labels: {
+        app: name,
+        component: 'database',
+        environment,
+        'managed-by': 'typekro'
+      }
     },
     spec: {
-      serviceName: Cel.expr(name, '-prometheus'),
-      replicas: 1,
-      selector: { matchLabels: { app: Cel.expr(name, '-prometheus') } },
+      serviceName: name,
+      replicas,
+      selector: {
+        matchLabels: { app: name, component: 'database' }
+      },
       template: {
-        metadata: { labels: { app: Cel.expr(name, '-prometheus') } },
+        metadata: {
+          labels: { app: name, component: 'database', environment }
+        },
         spec: {
           containers: [{
-            name: 'prometheus',
-            image: 'prom/prometheus:latest',
-            ports: [{ containerPort: 9090 }],
-            args: [
-              '--config.file=/etc/prometheus/prometheus.yml',
-              '--storage.tsdb.path=/prometheus/',
-              Cel.template('--storage.tsdb.retention.time=%s', promConfig.retention),
-              '--web.console.libraries=/etc/prometheus/console_libraries',
-              '--web.console.templates=/etc/prometheus/consoles',
-              '--web.enable-lifecycle'
+            name: 'postgres',
+            image,
+            ports: [{ containerPort: 5432 }],
+            env: [
+              { name: 'POSTGRES_DB', value: name },
+              { name: 'POSTGRES_USER', value: 'app' },
+              { name: 'POSTGRES_PASSWORD', value: 'changeme' }
             ],
-            volumeMounts: [
-              { name: 'prometheus-config', mountPath: '/etc/prometheus' },
-              { name: 'prometheus-storage', mountPath: '/prometheus' }
-            ],
-            resources: {
-              requests: { cpu: '200m', memory: '1Gi' },
-              limits: { cpu: '500m', memory: '2Gi' }
-            }
-          }],
-          volumes: [{
-            name: 'prometheus-config',
-            configMap: { name: Cel.expr(name, '-prometheus-config') }
+            volumeMounts: [{
+              name: 'data',
+              mountPath: '/var/lib/postgresql/data'
+            }],
+            resources: getResourcesByEnvironment(environment)
           }]
         }
       },
       volumeClaimTemplates: [{
-        metadata: { name: 'prometheus-storage' },
+        metadata: {
+          name: 'data',
+          labels: { app: name, component: 'database' }
+        },
         spec: {
           accessModes: ['ReadWriteOnce'],
-          resources: { requests: { storage: promConfig.storage } },
-          ...(promConfig.storageClass && {
-            storageClassName: promConfig.storageClass
-          })
+          resources: {
+            requests: { storage }
+          },
+          ...(storageClass && { storageClassName: storageClass })
         }
       }]
     }
-  });
+  }).withReadinessEvaluator(databaseReadinessEvaluator);
+}
+```
 
-  // Prometheus Service
-  const prometheusSvc = createResource({
+### Configurable Factory with Validation
+
+```typescript
+import { createResource, type Enhanced } from 'typekro';
+import type { V1Service, V1ServiceSpec, V1ServiceStatus } from '@kubernetes/client-node';
+
+interface ServiceConfig {
+  name: string;
+  selector: Record<string, string>;
+  ports: Array<{
+    port: number;
+    targetPort?: number | string;
+    protocol?: 'TCP' | 'UDP';
+    name?: string;
+  }>;
+  type?: 'ClusterIP' | 'NodePort' | 'LoadBalancer' | 'ExternalName';
+  sessionAffinity?: 'ClientIP' | 'None';
+  loadBalancerSourceRanges?: string[];
+  id?: string;
+}
+
+function validateServiceConfig(config: ServiceConfig): void {
+  if (!config.name || config.name.length < 1 || config.name.length > 63) {
+    throw new Error('Service name must be 1-63 characters');
+  }
+
+  if (!config.selector || Object.keys(config.selector).length === 0) {
+    throw new Error('Service selector cannot be empty');
+  }
+
+  if (!config.ports || config.ports.length === 0) {
+    throw new Error('Service must have at least one port');
+  }
+
+  for (const port of config.ports) {
+    if (port.port < 1 || port.port > 65535) {
+      throw new Error(`Invalid port: ${port.port}. Must be 1-65535`);
+    }
+  }
+}
+
+export function customService(
+  config: ServiceConfig
+): Enhanced<V1ServiceSpec, V1ServiceStatus> {
+  // Validate configuration
+  validateServiceConfig(config);
+
+  const {
+    name,
+    selector,
+    ports,
+    type = 'ClusterIP',
+    sessionAffinity = 'None',
+    loadBalancerSourceRanges,
+    id
+  } = config;
+
+  return createResource({
+    ...(id && { id }),
     apiVersion: 'v1',
     kind: 'Service',
     metadata: {
-      name: Cel.expr(name, '-prometheus'),
-      namespace,
-      labels: { app: Cel.expr(name, '-prometheus') }
+      name,
+      labels: {
+        'managed-by': 'typekro',
+        'service-type': type.toLowerCase()
+      },
+      annotations: {
+        'typekro.io/created-by': 'custom-service-factory'
+      }
     },
     spec: {
-      selector: { app: Cel.expr(name, '-prometheus') },
-      ports: [{ port: 9090, targetPort: 9090 }],
-      type: 'ClusterIP'
+      selector,
+      type,
+      sessionAffinity,
+      ports: ports.map(port => ({
+        port: port.port,
+        targetPort: port.targetPort || port.port,
+        protocol: port.protocol || 'TCP',
+        ...(port.name && { name: port.name })
+      })),
+      ...(loadBalancerSourceRanges && { loadBalancerSourceRanges })
     }
   });
+}
+```
 
-  // Grafana Deployment
-  const grafana = createResource({
+## Factory Composition Patterns
+
+### Environment-Specific Factory
+
+```typescript
+interface EnvironmentConfig {
+  resources: {
+    requests: { cpu: string; memory: string };
+    limits: { cpu: string; memory: string };
+  };
+  replicas: number;
+  healthCheck: {
+    initialDelaySeconds: number;
+    periodSeconds: number;
+  };
+}
+
+const environmentConfigs: Record<string, EnvironmentConfig> = {
+  development: {
+    resources: {
+      requests: { cpu: '100m', memory: '128Mi' },
+      limits: { cpu: '200m', memory: '256Mi' }
+    },
+    replicas: 1,
+    healthCheck: {
+      initialDelaySeconds: 10,
+      periodSeconds: 30
+    }
+  },
+  staging: {
+    resources: {
+      requests: { cpu: '250m', memory: '512Mi' },
+      limits: { cpu: '500m', memory: '1Gi' }
+    },
+    replicas: 2,
+    healthCheck: {
+      initialDelaySeconds: 15,
+      periodSeconds: 15
+    }
+  },
+  production: {
+    resources: {
+      requests: { cpu: '500m', memory: '1Gi' },
+      limits: { cpu: '1000m', memory: '2Gi' }
+    },
+    replicas: 3,
+    healthCheck: {
+      initialDelaySeconds: 30,
+      periodSeconds: 10
+    }
+  }
+};
+
+export function environmentAwareApp(config: {
+  name: string;
+  image: string;
+  environment: 'development' | 'staging' | 'production';
+  team: string;
+  id?: string;
+}): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
+  const envConfig = environmentConfigs[config.environment];
+  
+  return createResource({
+    ...(config.id && { id: config.id }),
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: {
-      name: Cel.expr(name, '-grafana'),
-      namespace,
-      labels: { app: Cel.expr(name, '-grafana'), component: 'monitoring' }
-    },
-    spec: {
-      replicas: 1,
-      selector: { matchLabels: { app: Cel.expr(name, '-grafana') } },
-      template: {
-        metadata: { labels: { app: Cel.expr(name, '-grafana') } },
-        spec: {
-          containers: [{
-            name: 'grafana',
-            image: 'grafana/grafana:latest',
-            ports: [{ containerPort: 3000 }],
-            env: [
-              { name: 'GF_SECURITY_ADMIN_PASSWORD', value: grafanaConfig.adminPassword },
-              { name: 'GF_INSTALL_PLUGINS', value: grafanaConfig.plugins?.join(',') || '' }
-            ],
-            volumeMounts: [
-              { name: 'grafana-storage', mountPath: '/var/lib/grafana' },
-              { name: 'grafana-config', mountPath: '/etc/grafana/provisioning' }
-            ],
-            resources: {
-              requests: { cpu: '100m', memory: '256Mi' },
-              limits: { cpu: '200m', memory: '512Mi' }
-            }
-          }],
-          volumes: [
-            { name: 'grafana-storage', emptyDir: {} },
-            { name: 'grafana-config', configMap: { name: Cel.expr(name, '-grafana-config') } }
-          ]
-        }
+      name: config.name,
+      labels: {
+        app: config.name,
+        team: config.team,
+        environment: config.environment
       }
-    }
-  });
-
-  // Grafana Service
-  const grafanaSvc = createResource({
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: {
-      name: Cel.expr(name, '-grafana'),
-      namespace,
-      labels: { app: Cel.expr(name, '-grafana') }
     },
     spec: {
-      selector: { app: Cel.expr(name, '-grafana') },
-      ports: [{ port: 3000, targetPort: 3000 }],
-      type: 'ClusterIP'
-    }
-  });
-
-  const result: any = {
-    prometheus,
-    prometheusSvc,
-    grafana,
-    grafanaSvc
-  };
-
-  // Optional Alertmanager
-  if (alertmanager?.enabled) {
-    const alertmanagerDeployment = createResource({
-      apiVersion: 'apps/v1',
-      kind: 'Deployment',
-      metadata: {
-        name: Cel.expr(name, '-alertmanager'),
-        namespace,
-        labels: { app: Cel.expr(name, '-alertmanager'), component: 'monitoring' }
+      replicas: envConfig.replicas,
+      selector: {
+        matchLabels: { app: config.name }
       },
-      spec: {
-        replicas: 1,
-        selector: { matchLabels: { app: Cel.expr(name, '-alertmanager') } },
-        template: {
-          metadata: { labels: { app: Cel.expr(name, '-alertmanager') } },
-          spec: {
-            containers: [{
-              name: 'alertmanager',
-              image: 'prom/alertmanager:latest',
-              ports: [{ containerPort: 9093 }],
-              args: [
-                '--config.file=/etc/alertmanager/alertmanager.yml',
-                '--storage.path=/alertmanager'
-              ],
-              volumeMounts: [{
-                name: 'alertmanager-config',
-                mountPath: '/etc/alertmanager'
-              }]
-            }],
-            volumes: [{
-              name: 'alertmanager-config',
-              configMap: { name: Cel.expr(name, '-alertmanager-config') }
-            }]
-          }
-        }
-      }
-    });
-
-    result.alertmanager = alertmanagerDeployment;
-  }
-
-  return result;
-}
-```
-
-## Factory Patterns
-
-### Composition Pattern
-
-```typescript
-// Base factory for common functionality
-function baseApplication(config: BaseApplicationConfig) {
-  return {
-    deployment: createResource({
-      // Common deployment configuration
-    }),
-    service: createResource({
-      // Common service configuration
-    })
-  };
-}
-
-// Specialized factories that extend the base
-export function webApplication(config: WebApplicationConfig) {
-  const base = baseApplication(config);
-  
-  return {
-    ...base,
-    ingress: createResource({
-      // Web-specific ingress configuration
-    })
-  };
-}
-
-export function apiApplication(config: ApiApplicationConfig) {
-  const base = baseApplication(config);
-  
-  return {
-    ...base,
-    serviceMonitor: createResource({
-      // API-specific monitoring configuration
-    })
-  };
-}
-```
-
-### Builder Pattern
-
-```typescript
-export class ApplicationBuilder {
-  private config: Partial<ApplicationConfig> = {};
-  
-  name(name: string): ApplicationBuilder {
-    this.config.name = name;
-    return this;
-  }
-  
-  image(image: string): ApplicationBuilder {
-    this.config.image = image;
-    return this;
-  }
-  
-  replicas(replicas: number): ApplicationBuilder {
-    this.config.replicas = replicas;
-    return this;
-  }
-  
-  environment(env: string): ApplicationBuilder {
-    this.config.environment = env;
-    return this;
-  }
-  
-  withDatabase(config?: DatabaseConfig): ApplicationBuilder {
-    this.config.database = { enabled: true, ...config };
-    return this;
-  }
-  
-  withIngress(hostname?: string): ApplicationBuilder {
-    this.config.ingress = { enabled: true, hostname };
-    return this;
-  }
-  
-  withMonitoring(): ApplicationBuilder {
-    this.config.monitoring = true;
-    return this;
-  }
-  
-  build(): WebApplicationResources {
-    if (!this.config.name || !this.config.image) {
-      throw new Error('Name and image are required');
-    }
-    
-    return webApplication(this.config as ApplicationConfig);
-  }
-}
-
-// Usage
-const app = new ApplicationBuilder()
-  .name('user-service')
-  .image('myregistry/user-service:v1.0.0')
-  .replicas(3)
-  .environment('production')
-  .withDatabase({ size: '50Gi', storageClass: 'fast-ssd' })
-  .withIngress('users.example.com')
-  .withMonitoring()
-  .build();
-```
-
-### Plugin Pattern
-
-```typescript
-interface ApplicationPlugin {
-  name: string;
-  apply(resources: any, config: any): any;
-}
-
-class MonitoringPlugin implements ApplicationPlugin {
-  name = 'monitoring';
-  
-  apply(resources: any, config: any) {
-    return {
-      ...resources,
-      serviceMonitor: createResource({
-        apiVersion: 'monitoring.coreos.com/v1',
-        kind: 'ServiceMonitor',
+      template: {
         metadata: {
-          name: Cel.expr(config.name, '-monitor'),
-          labels: { app: config.name }
+          labels: { app: config.name, team: config.team, environment: config.environment }
         },
         spec: {
-          selector: { matchLabels: { app: config.name } },
-          endpoints: [{ port: 'metrics' }]
+          containers: [{
+            name: config.name,
+            image: config.image,
+            resources: envConfig.resources,
+            livenessProbe: {
+              httpGet: { path: '/health', port: 8080 },
+              initialDelaySeconds: envConfig.healthCheck.initialDelaySeconds,
+              periodSeconds: envConfig.healthCheck.periodSeconds
+            },
+            readinessProbe: {
+              httpGet: { path: '/ready', port: 8080 },
+              initialDelaySeconds: 5,
+              periodSeconds: 5
+            }
+          }]
         }
-      })
-    };
-  }
+      }
+    }
+  });
 }
-
-class LoggingPlugin implements ApplicationPlugin {
-  name = 'logging';
-  
-  apply(resources: any, config: any) {
-    // Add logging sidecar to deployment
-    const deployment = { ...resources.deployment };
-    deployment.spec.template.spec.containers.push({
-      name: 'fluentd',
-      image: 'fluentd:latest',
-      // Fluentd configuration
-    });
-    
-    return {
-      ...resources,
-      deployment
-    };
-  }
-}
-
-function pluggableApplication(
-  config: ApplicationConfig,
-  plugins: ApplicationPlugin[] = []
-): any {
-  let resources = webApplication(config);
-  
-  for (const plugin of plugins) {
-    resources = plugin.apply(resources, config);
-  }
-  
-  return resources;
-}
-
-// Usage
-const app = pluggableApplication(config, [
-  new MonitoringPlugin(),
-  new LoggingPlugin()
-]);
 ```
 
-## Testing Custom Factories
-
-### Unit Testing
+### Template-Based Factory
 
 ```typescript
-// __tests__/custom-deployment.test.ts
-import { describe, it, expect } from 'bun:test';
-import { customDeployment } from '../factories/custom-deployment.js';
+interface MicroserviceConfig {
+  name: string;
+  image: string;
+  port: number;
+  team: string;
+  environment: string;
+  monitoring?: {
+    metrics?: boolean;
+    tracing?: boolean;
+    logging?: boolean;
+  };
+  id?: string;
+}
 
-describe('customDeployment', () => {
-  it('should create a deployment with correct labels', () => {
-    const result = customDeployment({
-      name: 'test-app',
-      image: 'test:latest',
-      environment: 'development',
-      team: 'platform'
-    });
-    
-    expect(result.metadata.labels).toEqual({
-      app: 'test-app',
-      team: 'platform',
-      environment: 'development',
-      'managed-by': 'typekro'
-    });
-  });
-  
-  it('should set environment-specific resources', () => {
-    const prodApp = customDeployment({
-      name: 'prod-app',
-      image: 'app:v1.0.0',
-      environment: 'production',
-      team: 'backend'
-    });
-    
-    const container = prodApp.spec.template.spec.containers[0];
-    expect(container.resources.requests.cpu).toBe('500m');
-    expect(container.resources.limits.memory).toBe('2Gi');
-  });
-  
-  it('should enable monitoring when requested', () => {
-    const monitoredApp = customDeployment({
-      name: 'monitored-app',
-      image: 'app:latest',
-      environment: 'production',
-      team: 'backend',
-      monitoring: true
-    });
-    
-    expect(monitoredApp.metadata.labels['monitoring.enabled']).toBe('true');
-  });
-});
-```
+export function microservice(
+  config: MicroserviceConfig
+): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
+  const {
+    name,
+    image,
+    port,
+    team,
+    environment,
+    monitoring = {},
+    id
+  } = config;
 
-### Integration Testing
+  const labels = {
+    app: name,
+    team,
+    environment,
+    'service-type': 'microservice'
+  };
 
-```typescript
-// __tests__/web-application.integration.test.ts
-import { describe, it, expect } from 'bun:test';
-import { toResourceGraph } from 'typekro';
-import { webApplication } from '../factories/web-application.js';
+  const annotations: Record<string, string> = {
+    'typekro.io/factory': 'microservice',
+    'typekro.io/team': team
+  };
 
-describe('webApplication integration', () => {
-  it('should create a complete web application stack', () => {
-    const config = {
-      name: 'test-webapp',
-      image: 'webapp:latest',
-      replicas: 2,
-      environment: 'staging',
-      team: 'frontend',
-      database: { enabled: true, size: '10Gi' },
-      ingress: { enabled: true, hostname: 'test.example.com' }
-    };
-    
-    const resources = webApplication(config);
-    
-    // Check all resources are created
-    expect(resources.deployment).toBeDefined();
-    expect(resources.service).toBeDefined();
-    expect(resources.configMap).toBeDefined();
-    expect(resources.database).toBeDefined();
-    expect(resources.databaseService).toBeDefined();
-    expect(resources.storage).toBeDefined();
-    expect(resources.ingress).toBeDefined();
-    
-    // Check database connection configuration
-    const appContainer = resources.deployment.spec.template.spec.containers[0];
-    const dbHostEnv = appContainer.env.find(e => e.name === 'DATABASE_HOST');
-    expect(dbHostEnv?.value).toBe('test-webapp-database-service');
-  });
-  
-  it('should work with toResourceGraph', () => {
-    const webAppGraph = toResourceGraph(
-      {
-        name: 'webapp-stack',
-        apiVersion: 'example.com/v1alpha1',
-        kind: 'WebApp',
-        spec: WebAppSpec,
-        status: WebAppStatus,
+  // Add monitoring annotations
+  if (monitoring.metrics) annotations['prometheus.io/scrape'] = 'true';
+  if (monitoring.metrics) annotations['prometheus.io/port'] = port.toString();
+  if (monitoring.tracing) annotations['jaeger.io/inject'] = 'true';
+
+  return createResource({
+    ...(id && { id }),
+    apiVersion: 'apps/v1',
+    kind: 'Deployment',
+    metadata: {
+      name,
+      labels,
+      annotations
+    },
+    spec: {
+      replicas: environment === 'production' ? 3 : 1,
+      selector: {
+        matchLabels: { app: name }
       },
-      (schema) => webApplication({
-        name: schema.spec.name,
-        image: schema.spec.image,
-        replicas: schema.spec.replicas,
-        environment: schema.spec.environment,
-        team: schema.spec.team,
-        database: { enabled: true }
-      }),
-      (schema, resources) => ({
-        ready: resources.deployment.status.readyReplicas > 0,
-        url: Cel.template('http://%s', resources.service.spec.clusterIP)
-      })
-    );
-    
-    expect(webAppGraph).toBeDefined();
-    expect(typeof webAppGraph.toYaml).toBe('function');
+      template: {
+        metadata: {
+          labels,
+          annotations: {
+            ...annotations,
+            // Service mesh injection
+            'istio.io/inject': environment === 'production' ? 'true' : 'false'
+          }
+        },
+        spec: {
+          containers: [{
+            name,
+            image,
+            ports: [{ containerPort: port }],
+            env: [
+              { name: 'PORT', value: port.toString() },
+              { name: 'ENVIRONMENT', value: environment },
+              { name: 'TEAM', value: team },
+              { name: 'SERVICE_NAME', value: name }
+            ],
+            resources: getResourcesByEnvironment(environment),
+            livenessProbe: {
+              httpGet: { path: '/health', port },
+              initialDelaySeconds: 30,
+              periodSeconds: 10
+            },
+            readinessProbe: {
+              httpGet: { path: '/ready', port },
+              initialDelaySeconds: 5,
+              periodSeconds: 5
+            }
+          }]
+        }
+      }
+    }
   });
-});
-```
-
-## Publishing Custom Factories
-
-### Package Structure
-
-```
-my-typekro-factories/
-├── src/
-│   ├── factories/
-│   │   ├── web-application.ts
-│   │   ├── monitoring-stack.ts
-│   │   └── index.ts
-│   └── types/
-│       └── index.ts
-├── __tests__/
-│   ├── web-application.test.ts
-│   └── monitoring-stack.test.ts
-├── package.json
-├── tsconfig.json
-└── README.md
-```
-
-### Package Configuration
-
-```json
-// package.json
-{
-  "name": "@myorg/typekro-factories",
-  "version": "1.0.0",
-  "description": "Custom TypeKro factory functions for MyOrg",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist/**/*"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "test": "bun test",
-    "prepublishOnly": "bun run build && bun run test"
-  },
-  "peerDependencies": {
-    "typekro": "^1.0.0",
-    "@kubernetes/client-node": "^0.20.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
-  },
-  "keywords": [
-    "typekro",
-    "kubernetes",
-    "infrastructure-as-code",
-    "typescript"
-  ]
 }
-```
-
-### Documentation
-
-```markdown
-# @myorg/typekro-factories
-
-Custom TypeKro factory functions for MyOrg applications.
-
-## Installation
-
-```bash
-bun add @myorg/typekro-factories
-```
-
-## Usage
-
-```typescript
-import { webApplication, monitoringStack } from '@myorg/typekro-factories';
-
-const app = webApplication({
-  name: 'my-app',
-  image: 'myregistry/my-app:v1.0.0',
-  environment: 'production',
-  team: 'backend'
-});
-```
-
-## Factories
-
-### webApplication
-
-Creates a complete web application with optional database and ingress.
-
-**Configuration:**
-- `name` (string) - Application name
-- `image` (string) - Container image
-- `environment` (string) - Environment name
-- `team` (string) - Team name
-- `database` (optional) - Database configuration
-- `ingress` (optional) - Ingress configuration
-
-### monitoringStack
-
-Creates a monitoring stack with Prometheus and Grafana.
-
-**Configuration:**
-- `name` (string) - Stack name
-- `prometheus` (object) - Prometheus configuration
-- `grafana` (object) - Grafana configuration
 ```
 
 ## Best Practices
 
-### 1. Use TypeScript Strictly
+### 1. Single Resource Responsibility
+
+Each factory function should create **exactly one Kubernetes resource**:
+
+```typescript
+// ✅ Good: Single resource factory
+export function customDeployment(config: DeploymentConfig): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
+  return createResource({
+    // Single deployment resource
+  });
+}
+
+// ❌ Avoid: Multi-resource factories (use compositions instead)
+export function webApplication(config: Config) {
+  return {
+    deployment: createResource({...}),
+    service: createResource({...}),
+    ingress: createResource({...})
+  }; // This pattern doesn't work with TypeKro's Enhanced system
+}
+```
+
+### 2. Use TypeScript Strictly
 
 ```typescript
 // ✅ Define strict interfaces
@@ -1045,34 +694,45 @@ interface StrictConfig {
   environment: 'dev' | 'staging' | 'prod';
 }
 
-// ✅ Use generic types
-function typedFactory<T extends BaseConfig>(
-  config: T
-): Enhanced<V1Deployment, V1DeploymentStatus> {
-  // Implementation
+// ✅ Use proper Enhanced types
+function typedFactory(
+  config: StrictConfig
+): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
+  return createResource({
+    // Implementation with proper typing
+  });
+}
+
+// ❌ Avoid any types
+function untypedFactory(config: any): any {
+  // This breaks TypeKro's type safety
 }
 ```
 
-### 2. Provide Sensible Defaults
+### 3. Provide Sensible Defaults
 
 ```typescript
-// ✅ Merge with defaults
-function factoryWithDefaults(config: Config) {
+export function factoryWithDefaults(config: Config) {
   const defaults = {
     replicas: 1,
-    resources: { cpu: '100m', memory: '256Mi' },
+    resources: {
+      requests: { cpu: '100m', memory: '256Mi' },
+      limits: { cpu: '500m', memory: '512Mi' }
+    },
     healthChecks: true
   };
   
   const finalConfig = { ...defaults, ...config };
-  // Use finalConfig
+  
+  return createResource({
+    // Use finalConfig for complete configuration
+  });
 }
 ```
 
-### 3. Validate Configuration
+### 4. Validate Configuration
 
 ```typescript
-// ✅ Validate inputs
 function validateConfig(config: Config): Config {
   if (!config.name || config.name.length < 3) {
     throw new Error('Name must be at least 3 characters');
@@ -1084,39 +744,116 @@ function validateConfig(config: Config): Config {
   
   return config;
 }
-```
 
-### 4. Document Thoroughly
-
-```typescript
-/**
- * Creates a production-ready web application deployment
- * 
- * @param config - Application configuration
- * @param config.name - Application name (3-63 characters, DNS-1123 compliant)
- * @param config.image - Container image with tag
- * @param config.replicas - Number of replicas (1-100)
- * @param config.environment - Deployment environment
- * @returns Enhanced deployment resource with typed status
- * 
- * @example
- * ```typescript
- * const app = webApplication({
- *   name: 'user-service',
- *   image: 'myregistry/user-service:v1.0.0',
- *   replicas: 3,
- *   environment: 'production'
- * });
- * ```
- */
-export function webApplication(config: WebApplicationConfig) {
-  // Implementation
+export function validatedFactory(config: Config) {
+  const validConfig = validateConfig(config);
+  return createResource({
+    // Use validConfig
+  });
 }
 ```
 
-## Next Steps
+### 5. Support Custom IDs
 
-- **[Type Safety](./type-safety.md)** - Ensure your factories are type-safe
-- **[Performance](./performance.md)** - Optimize factory performance
-- **[Testing](./troubleshooting.md)** - Test and debug custom factories
-- **[Examples](../examples/)** - See complete custom factory examples
+```typescript
+export function factory(config: Config & { id?: string }) {
+  return createResource({
+    ...(config.id && { id: config.id }), // Optional explicit ID
+    // Rest of resource definition
+  });
+}
+```
+
+### 6. Use Readiness Evaluators
+
+```typescript
+const customReadinessEvaluator = (liveResource: V1Deployment): ResourceStatus => {
+  const status = liveResource.status;
+  const expectedReplicas = liveResource.spec?.replicas || 1;
+  
+  if (status?.readyReplicas === expectedReplicas) {
+    return { ready: true, reason: 'AllReady', message: `All ${expectedReplicas} replicas ready` };
+  }
+  
+  return { 
+    ready: false, 
+    reason: 'NotReady', 
+    message: `${status?.readyReplicas || 0}/${expectedReplicas} replicas ready` 
+  };
+};
+
+export function factoryWithReadiness(config: Config) {
+  return createResource({
+    // Resource definition
+  }).withReadinessEvaluator(customReadinessEvaluator);
+}
+```
+
+## What's Next?
+
+Now that you understand custom factories, explore more advanced TypeKro patterns:
+
+### Next: [CEL Expressions →](./cel-expressions.md)
+Learn how to create dynamic status expressions using CEL.
+
+**In this learning path:**
+- ✅ Your First App - Built your first TypeKro application
+- ✅ Factory Functions - Mastered resource creation  
+- ✅ Magic Proxy System - TypeKro's unique reference system
+- ✅ Custom Factories - Created reusable factory functions
+- 🎯 **Next**: CEL Expressions - Dynamic status computation
+- **Coming**: External References - Cross-composition coordination
+
+## Quick Reference
+
+### Basic Custom Factory Pattern
+```typescript
+import { createResource, type Enhanced } from 'typekro';
+
+export function customFactory(
+  config: ConfigType
+): Enhanced<SpecType, StatusType> {
+  return createResource({
+    ...(config.id && { id: config.id }),
+    apiVersion: 'apps/v1',
+    kind: 'ResourceKind',
+    metadata: {
+      name: config.name,
+      // metadata
+    },
+    spec: {
+      // resource specification
+    }
+  });
+}
+```
+
+### With Custom Readiness
+```typescript
+const evaluator = (resource: ResourceType): ResourceStatus => {
+  // Custom readiness logic
+  return { ready: true, reason: 'Ready', message: 'Resource is ready' };
+};
+
+export function factoryWithReadiness(config: ConfigType) {
+  return createResource({
+    // resource definition
+  }).withReadinessEvaluator(evaluator);
+}
+```
+
+### Using in Compositions
+```typescript
+const composition = kubernetesComposition(definition, (spec) => {
+  const resource = customFactory({
+    name: spec.name,
+    // configuration from spec
+  });
+
+  return {
+    ready: Cel.expr<boolean>(resource.status.readyReplicas, ' > 0')
+  };
+});
+```
+
+Ready to create dynamic status? Continue to [CEL Expressions →](./cel-expressions.md)

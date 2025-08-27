@@ -16,7 +16,7 @@ Let's start with the basics: a simple web application with type-safe configurati
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, Cel, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
 
 // Define the application interface
 const WebAppSpec = type({
@@ -33,7 +33,7 @@ const WebAppStatus = type({
 });
 
 // Create the resource graph
-export const simpleWebApp = toResourceGraph(
+export const simpleWebApp = kubernetesComposition({
   {
     name: 'simple-webapp',
     apiVersion: 'example.com/v1alpha1',
@@ -44,7 +44,7 @@ export const simpleWebApp = toResourceGraph(
   // ResourceBuilder function - defines the Kubernetes resources
   (schema) => ({
     // Web application deployment
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -57,7 +57,7 @@ export const simpleWebApp = toResourceGraph(
     }),
 
     // Service to expose the application
-    service: simple.Service({
+    service: Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }],
@@ -246,7 +246,7 @@ Now let's build a more complex example with a PostgreSQL database, demonstrating
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, Cel, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
 
 // Define the database schema
 const DatabaseSpec = type({
@@ -267,7 +267,7 @@ const DatabaseStatus = type({
 });
 
 // Create the database resource graph
-const database = toResourceGraph(
+const database = kubernetesComposition({
   {
     name: 'postgres-database',
     apiVersion: 'data.example.com/v1',
@@ -296,7 +296,7 @@ const database = toResourceGraph(
     }),
     
     // Secret for sensitive data
-    credentials: simple.Secret({
+    credentials: Secret({
       name: Cel.template('%s-credentials', schema.spec.name),
       data: {
         POSTGRES_PASSWORD: schema.spec.password,
@@ -307,7 +307,7 @@ const database = toResourceGraph(
     }),
     
     // StatefulSet for PostgreSQL with persistent storage
-    statefulSet: simple.StatefulSet({
+    statefulSet: StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15',
       replicas: schema.spec.replicas,
@@ -324,7 +324,7 @@ const database = toResourceGraph(
     }),
     
     // Headless service for StatefulSet pod discovery
-    headlessService: simple.Service({
+    headlessService: Service({
       name: Cel.template('%s-headless', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -332,7 +332,7 @@ const database = toResourceGraph(
     }),
     
     // Regular service for database access
-    service: simple.Service({
+    service: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -341,7 +341,7 @@ const database = toResourceGraph(
     
     // Conditional external service
     ...(schema.spec.externalAccess && {
-      externalService: simple.Service({
+      externalService: Service({
         name: Cel.template('%s-external', schema.spec.name),
         selector: { app: schema.spec.name },
         ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
@@ -383,7 +383,7 @@ const ApiAppSpec = type({
   databaseName: 'string'
 });
 
-const apiApp = toResourceGraph(
+const apiApp = kubernetesComposition({
   {
     name: 'api-with-database',
     apiVersion: 'apps.example.com/v1',
@@ -393,7 +393,7 @@ const apiApp = toResourceGraph(
   },
   (schema) => ({
     // API deployment that connects to database
-    api: simple.Deployment({
+    api: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -417,7 +417,7 @@ const apiApp = toResourceGraph(
     }),
     
     // Service for the API
-    apiService: simple.Service({
+    apiService: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -459,7 +459,7 @@ async function deployDatabaseApp() {
 #### 1. StatefulSet with Persistent Storage
 
 ```typescript
-statefulSet: simple.StatefulSet({
+statefulSet: StatefulSet({
   name: schema.spec.name,
   image: 'postgres:15',
   replicas: schema.spec.replicas,
@@ -478,14 +478,14 @@ StatefulSets provide:
 
 ```typescript
 // Headless service for StatefulSet internal communication
-headlessService: simple.Service({
+headlessService: Service({
   name: Cel.template('%s-headless', schema.spec.name),
   selector: { app: schema.spec.name },
   clusterIP: 'None'  // Makes it headless
 }),
 
 // Regular service for application access
-service: simple.Service({
+service: Service({
   name: schema.spec.name,
   selector: { app: schema.spec.name },
   type: 'ClusterIP'
@@ -506,7 +506,7 @@ config: simple({
 }),
 
 // Secret for sensitive data
-credentials: simple.Secret({
+credentials: Secret({
   name: Cel.template('%s-credentials', schema.spec.name),
   data: {
     POSTGRES_PASSWORD: schema.spec.password
@@ -518,7 +518,7 @@ credentials: simple.Secret({
 
 ```typescript
 // API deployment references database
-api: simple.Deployment({
+api: Deployment({
   env: {
     DATABASE_URL: Cel.template(
       'postgres://app:password@%s:5432/%s',
@@ -529,12 +529,165 @@ api: simple.Deployment({
 })
 ```
 
+## YAML Integration
+
+Integrate existing YAML manifests with TypeKro resources for gradual migration or leveraging existing infrastructure.
+
+### What You'll Build
+
+- Bootstrap existing Kubernetes manifests
+- Combine YAML files with TypeKro Enhanced resources
+- Environment-specific YAML configuration
+
+### Complete Example
+
+```typescript
+import { type } from 'arktype';
+import { kubernetesComposition, Cel, yamlFile, yamlDirectory } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
+
+// Define schema
+const HybridAppSpec = type({
+  name: 'string',
+  image: 'string',
+  environment: '"development" | "staging" | "production"',
+  useFlux: 'boolean'
+});
+
+const HybridAppStatus = type({
+  ready: 'boolean',
+  bootstrapped: 'boolean',
+  endpoint: 'string',
+  environment: 'string'
+});
+
+// Hybrid TypeKro + YAML composition
+export const hybridApp = kubernetesComposition(
+  {
+    name: 'hybrid-app',
+    apiVersion: 'example.com/v1alpha1', 
+    kind: 'HybridApp',
+    spec: HybridAppSpec,
+    status: HybridAppStatus,
+  },
+  (spec) => {
+    // Bootstrap with Flux CD (if requested)
+    const fluxBootstrap = spec.useFlux ? yamlFile({
+      name: 'flux-system',
+      path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+      deploymentStrategy: 'skipIfExists'
+    }) : null;
+
+    // Environment-specific configuration
+    const envConfig = yamlDirectory({
+      name: 'env-config',
+      path: `./manifests/${spec.environment}`,
+      recursive: false,
+      include: ['*.yaml', '*.yml'],
+      exclude: ['*-secret.yaml'] // Handle secrets separately
+    });
+
+    // TypeKro managed application
+    const app = Deployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.environment === 'production' ? 3 : 1,
+      env: {
+        ENVIRONMENT: spec.environment,
+        FLUX_ENABLED: spec.useFlux.toString()
+      }
+    });
+
+    const service = Service({
+      name: `${spec.name}-service`,
+      selector: { app: spec.name },
+      ports: [{ port: 80, targetPort: 8080 }],
+      type: spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
+    });
+
+    return {
+      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+      bootstrapped: spec.useFlux ? true : true, // YAML files don't have status
+      endpoint: service.status.clusterIP,
+      environment: spec.environment
+    };
+  }
+);
+```
+
+### Directory Structure
+
+Your project might look like:
+
+```
+my-app/
+├── src/
+│   └── hybrid-app.ts
+├── manifests/
+│   ├── development/
+│   │   ├── configmap.yaml
+│   │   └── storage.yaml
+│   ├── staging/
+│   │   ├── configmap.yaml
+│   │   ├── storage.yaml
+│   │   └── monitoring.yaml
+│   └── production/
+│       ├── configmap.yaml
+│       ├── storage.yaml
+│       ├── monitoring.yaml
+│       └── backup.yaml
+└── package.json
+```
+
+### Deploy the Hybrid Application
+
+```typescript
+// deploy-hybrid.ts
+import { hybridApp } from './src/hybrid-app.js';
+
+async function deployHybridApp() {
+  const factory = hybridApp.factory('direct', {
+    namespace: 'hybrid-apps'
+  });
+
+  // Development deployment
+  await factory.deploy({
+    name: 'my-hybrid-app-dev',
+    image: 'myapp:dev-latest',
+    environment: 'development',
+    useFlux: false
+  });
+
+  console.log('✅ Development environment deployed');
+
+  // Production deployment with Flux
+  await factory.deploy({
+    name: 'my-hybrid-app-prod',
+    image: 'myapp:v1.0.0',
+    environment: 'production', 
+    useFlux: true
+  });
+
+  console.log('✅ Production environment deployed with Flux CD');
+}
+
+deployHybridApp().catch(console.error);
+```
+
+### Key Benefits
+
+- **Gradual Migration**: Keep existing YAML while adopting TypeKro
+- **Environment Consistency**: Same structure across environments
+- **Type Safety**: TypeKro resources get full type checking
+- **Status Awareness**: Enhanced resources provide live cluster state
+- **Deployment Strategy**: Control how YAML resources are applied
+
 ## Common Pattern Extensions
 
 ### Add Health Checks
 
 ```typescript
-const deployment = simple.Deployment({
+const deployment = Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: schema.spec.replicas,
@@ -557,7 +710,7 @@ const deployment = simple.Deployment({
 ### Add ConfigMap
 
 ```typescript
-import { simple } from 'typekro';
+import { } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
 
 const resources = {
   config: simple({
@@ -574,7 +727,7 @@ const resources = {
     }
   }),
   
-  deployment: simple.Deployment({
+  deployment: Deployment({
     name: schema.spec.name,
     image: schema.spec.image,
     volumeMounts: [{
@@ -592,11 +745,11 @@ const resources = {
 ### Add Ingress
 
 ```typescript
-import { simple } from 'typekro';
+import { } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
 
 // Only in production
 ...(schema.spec.environment === 'production' && {
-  ingress: simple.Ingress({
+  ingress: Ingress({
     name: Cel.expr(schema.spec.name, '-ingress'),
     rules: [{
       host: Cel.template('%s.example.com', schema.spec.name),
@@ -623,11 +776,11 @@ Create resources only when certain conditions are met:
 
 ```typescript
 const resources = {
-  app: simple.Deployment({ /* ... */ }),
+  app: Deployment({ /* ... */ }),
   
   // Only create external service if external access is enabled
   ...(schema.spec.externalAccess && {
-    externalService: simple.Service({
+    externalService: Service({
       name: Cel.template('%s-external', schema.spec.name),
       type: 'LoadBalancer'
     })
@@ -635,7 +788,7 @@ const resources = {
   
   // Only create ingress in production
   ...(schema.spec.environment === 'production' && {
-    ingress: simple.Ingress({
+    ingress: Ingress({
       name: Cel.expr(schema.spec.name, '-ingress'),
       host: Cel.template('%s.example.com', schema.spec.name)
     })
@@ -693,7 +846,7 @@ psql -h <EXTERNAL-IP> -p 5432 -U app -d myapp
 Always store sensitive data in Kubernetes Secrets:
 
 ```typescript
-credentials: simple.Secret({
+credentials: Secret({
   name: 'db-credentials',
   data: {
     POSTGRES_PASSWORD: process.env.DB_PASSWORD  // From environment
@@ -706,7 +859,7 @@ credentials: simple.Secret({
 Set appropriate resource limits for your workloads:
 
 ```typescript
-deployment: simple.Deployment({
+deployment: Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   resources: {
@@ -720,12 +873,12 @@ deployment: simple.Deployment({
 
 ```typescript
 // ✅ Good
-const userApiDeployment = simple.Deployment({ name: 'user-api' });
-const userApiService = simple.Service({ name: 'user-api-service' });
+const userApiDeployment = Deployment({ name: 'user-api' });
+const userApiService = Service({ name: 'user-api-service' });
 
 // ❌ Avoid
-const d1 = simple.Deployment({ name: 'app' });
-const s1 = simple.Service({ name: 'svc' });
+const d1 = Deployment({ name: 'app' });
+const s1 = Service({ name: 'svc' });
 ```
 
 ### 4. Environment-Specific Configuration
@@ -735,7 +888,7 @@ const config = schema.spec.environment === 'production'
   ? { replicas: 5, resources: { cpu: '500m', memory: '1Gi' } }
   : { replicas: 1, resources: { cpu: '100m', memory: '256Mi' } };
 
-const deployment = simple.Deployment({
+const deployment = Deployment({
   name: schema.spec.name,
   image: schema.spec.image,
   replicas: config.replicas,
@@ -764,12 +917,11 @@ Now that you understand the basic patterns, try these examples:
 
 - **[Microservices](./microservices.md)** - Multiple interconnected services
 - **[Multi-Environment](./multi-environment.md)** - Deploy across environments
-- **[CI/CD](./cicd.md)** - Continuous integration and deployment
 - **[Monitoring](./monitoring.md)** - Set up monitoring and observability
 
 Or explore advanced topics:
 
-- **[Runtime Behavior](../guide/runtime-behavior.md)** - Status hydration and cross-references
+- **[Status Hydration](../guide/status-hydration.md)** - Status hydration and cross-references
 - **[CEL Expressions](../guide/cel-expressions.md)** - Add dynamic logic
 - **[Factories](../guide/factories.md)** - Build custom factory functions
 - **[Deployment Strategies](../guide/deployment/)** - Learn different deployment methods

@@ -9,15 +9,22 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
-import { simple } from '../../src/index.js';
 import { DependencyGraph } from '../../src/core/dependencies/graph.js';
-import { AlchemyDeploymentStrategy, DirectDeploymentStrategy,  } from '../../src/core/deployment/deployment-strategies.js';
+import {
+  AlchemyDeploymentStrategy,
+  DirectDeploymentStrategy,
+} from '../../src/core/deployment/deployment-strategies.js';
 import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import { simple } from '../../src/index.js';
+import {
+  createCoreV1ApiClient,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 const TEST_TIMEOUT = 300000; // 5 minutes - extended for image pulls in KIND clusters
 
@@ -53,7 +60,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
     // Use shared kubeconfig helper for consistent TLS configuration
     kubeConfig = getIntegrationTestKubeConfig();
 
-    k8sApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
+    k8sApi = createCoreV1ApiClient(kubeConfig);
 
     // Create a test namespace to avoid TLS errors from non-existent namespaces
     testNamespace = `alchemy-test-${Date.now().toString().slice(-6)}`;

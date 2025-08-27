@@ -39,7 +39,8 @@ Enhanced ConfigMap with automatic readiness evaluation.
 #### Example: Basic Configuration
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, type } from 'typekro';
+import { Deployment, Ingress, Secret } from 'typekro/simple';
 
 const AppSpec = type({
   name: 'string',
@@ -48,7 +49,7 @@ const AppSpec = type({
   logLevel: '"debug" | "info" | "warn" | "error"'
 });
 
-const configuredApp = toResourceGraph(
+const configuredApp = kubernetesComposition({
   {
     name: 'configured-app',
     apiVersion: 'config.example.com/v1',
@@ -83,7 +84,7 @@ const configuredApp = toResourceGraph(
     }),
     
     // Application using the configuration
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -100,7 +101,7 @@ const configuredApp = toResourceGraph(
 );
 ```
 
-### `simple.Secret()`
+### `Secret()`
 
 Creates a Kubernetes Secret with simplified configuration.
 
@@ -129,7 +130,7 @@ Enhanced Secret with automatic readiness evaluation.
 #### Example: Database Credentials
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, simple, type } from 'typekro';
 
 const DatabaseAppSpec = type({
   name: 'string',
@@ -138,7 +139,7 @@ const DatabaseAppSpec = type({
   dbHost: 'string'
 });
 
-const databaseApp = toResourceGraph(
+const databaseApp = kubernetesComposition({
   {
     name: 'database-app',
     apiVersion: 'db.example.com/v1',
@@ -148,7 +149,7 @@ const databaseApp = toResourceGraph(
   },
   (schema) => ({
     // Sensitive database credentials
-    dbSecret: simple.Secret({
+    dbSecret: Secret({
       name: Cel.template('%s-db-creds', schema.spec.name),
       stringData: {
         username: schema.spec.dbUser,
@@ -166,7 +167,7 @@ const databaseApp = toResourceGraph(
     }),
     
     // Application using the secrets
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -212,7 +213,7 @@ const databaseApp = toResourceGraph(
 Create configuration that adapts to different environments:
 
 ```typescript
-const multiEnvConfig = toResourceGraph(
+const multiEnvConfig = kubernetesComposition({
   {
     name: 'multi-env-config',
     apiVersion: 'config.example.com/v1',
@@ -262,7 +263,7 @@ const multiEnvConfig = toResourceGraph(
     }),
     
     // Environment-specific secrets
-    secrets: simple.Secret({
+    secrets: Secret({
       name: 'app-secrets',
       stringData: {
         // Different API keys per environment
@@ -285,7 +286,7 @@ const multiEnvConfig = toResourceGraph(
       }
     }),
     
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       replicas: Cel.conditional(
@@ -309,7 +310,7 @@ const multiEnvConfig = toResourceGraph(
 Share configuration between multiple applications:
 
 ```typescript
-const sharedConfigPlatform = toResourceGraph(
+const sharedConfigPlatform = kubernetesComposition({
   {
     name: 'shared-config-platform',
     apiVersion: 'platform.example.com/v1',
@@ -345,7 +346,7 @@ const sharedConfigPlatform = toResourceGraph(
     }),
     
     // Shared platform secrets
-    platformSecrets: simple.Secret({
+    platformSecrets: Secret({
       name: 'platform-secrets',
       stringData: {
         JWT_SECRET: 'shared-jwt-secret-key',
@@ -355,7 +356,7 @@ const sharedConfigPlatform = toResourceGraph(
     }),
     
     // Frontend application
-    frontend: simple.Deployment({
+    frontend: Deployment({
       name: 'frontend',
       image: 'frontend:latest',
       ports: [3000],
@@ -371,7 +372,7 @@ const sharedConfigPlatform = toResourceGraph(
     }),
     
     // Backend API
-    backend: simple.Deployment({
+    backend: Deployment({
       name: 'backend-api',
       image: 'backend:latest', 
       ports: [8080],
@@ -404,7 +405,7 @@ const sharedConfigPlatform = toResourceGraph(
 Mount configuration files into containers:
 
 ```typescript
-const fileBasedConfig = toResourceGraph(
+const fileBasedConfig = kubernetesComposition({
   {
     name: 'file-based-config',
     apiVersion: 'config.example.com/v1',
@@ -461,7 +462,7 @@ server {
     }),
     
     // Application with mounted config files
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'myapp:latest',
       ports: [8080],
@@ -488,7 +489,7 @@ server {
 Manage TLS certificates with Secrets:
 
 ```typescript
-const tlsApp = toResourceGraph(
+const tlsApp = kubernetesComposition({
   {
     name: 'tls-app',
     apiVersion: 'security.example.com/v1',
@@ -501,7 +502,7 @@ const tlsApp = toResourceGraph(
   },
   (schema) => ({
     // TLS certificate secret
-    tlsCert: simple.Secret({
+    tlsCert: Secret({
       name: 'tls-certificate',
       type: 'kubernetes.io/tls',
       stringData: {
@@ -511,7 +512,7 @@ const tlsApp = toResourceGraph(
     }),
     
     // Application 
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       ports: [443, 80],
@@ -528,7 +529,7 @@ const tlsApp = toResourceGraph(
     }),
     
     // Ingress with TLS
-    ingress: simple.Ingress({
+    ingress: Ingress({
       name: schema.spec.name,
       host: schema.spec.domain,
       serviceName: schema.spec.name,
@@ -633,7 +634,7 @@ Never put sensitive data in ConfigMaps:
 
 ```typescript
 // Good: Sensitive data in Secret
-secret: simple.Secret({
+secret: Secret({
   name: 'db-creds',
   stringData: {
     password: schema.spec.dbPassword,

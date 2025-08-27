@@ -1,8 +1,12 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { toResourceGraph, simple } from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import { simple, toResourceGraph } from '../../src/index.js';
+import {
+  createCoreV1ApiClient,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
@@ -30,12 +34,18 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
     console.log('🧪 Testing DirectResourceFactory with TLS skip configuration...');
 
     // Create test namespace
-    const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+    const k8sApi = createCoreV1ApiClient(kc);
     try {
       await k8sApi.createNamespace({ metadata: { name: NAMESPACE } });
       console.log(`📦 Created test namespace: ${NAMESPACE}`);
-    } catch (error) {
-      console.warn(`⚠️ Namespace ${NAMESPACE} might already exist:`, error);
+    } catch (error: any) {
+      // Only ignore if namespace already exists (409 conflict)
+      if (error?.response?.statusCode === 409) {
+        console.log(`📦 Namespace ${NAMESPACE} already exists, continuing...`);
+      } else {
+        console.error(`❌ Failed to create namespace ${NAMESPACE}:`, error);
+        throw error;
+      }
     }
 
     // Create a simple resource graph

@@ -343,7 +343,7 @@ export type StatusBuilderResources<TResources extends Record<string, Enhanced<an
 export type StatusBuilder<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any>>, // Define it with a generic for the resources
+  TResources extends Record<string, Enhanced<any, any>> = Record<string, Enhanced<any, any>>, // Keep any for compatibility
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here

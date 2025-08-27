@@ -35,8 +35,11 @@ import type {
   Enhanced,
   KubernetesResource,
 } from '../types.js';
+import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { StatusHydrator } from './status-hydrator.js';
+import { type EventMonitor, createEventMonitor } from './event-monitor.js';
+import type { EventFilter } from './event-filter.js';
 
 export class DirectDeploymentEngine {
   private dependencyResolver: DependencyResolver;
@@ -44,6 +47,9 @@ export class DirectDeploymentEngine {
   private k8sApi: k8s.KubernetesObjectApi;
   private readinessChecker: ResourceReadinessChecker;
   private statusHydrator: StatusHydrator;
+  private debugLogger?: DebugLogger;
+  private eventMonitor?: EventMonitor;
+  private eventFilter?: EventFilter;
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
   private readyResources: Set<string> = new Set(); // Track resources that are already ready
   private logger = getComponentLogger('deployment-engine');
@@ -60,6 +66,7 @@ export class DirectDeploymentEngine {
     this.k8sApi = k8sApi || kubeClient.makeApiClient(k8s.KubernetesObjectApi);
     this.readinessChecker = new ResourceReadinessChecker(this.k8sApi);
     this.statusHydrator = new StatusHydrator(this.k8sApi);
+    // this.eventFilter = createEventFilter();
 
     // Set up callback to track ready resources
     this.readinessChecker.setOnResourceReady((resource) => {
@@ -107,17 +114,34 @@ export class DirectDeploymentEngine {
         // Use the factory-provided readiness evaluator
         const result = readinessEvaluator(liveResource.body);
 
+        let readinessResult: { ready: boolean; reason?: string; details?: Record<string, unknown> };
+
         if (typeof result === 'boolean') {
-          return result;
+          readinessResult = { ready: result };
         } else if (result && typeof result === 'object' && 'ready' in result) {
-          return result.ready;
+          readinessResult = result as {
+            ready: boolean;
+            reason?: string;
+            details?: Record<string, unknown>;
+          };
         } else {
           this.logger.warn('Readiness evaluator returned unexpected result', {
             resourceId: deployedResource.id,
             result,
           });
-          return false;
+          readinessResult = { ready: false, reason: 'Invalid evaluator result' };
         }
+
+        // Debug logging for readiness evaluation
+        if (this.debugLogger) {
+          this.debugLogger.logReadinessEvaluation(
+            deployedResource,
+            readinessEvaluator,
+            readinessResult
+          );
+        }
+
+        return readinessResult.ready;
       } else {
         // Fallback to generic readiness checker
         const resourceRef = {
@@ -187,7 +211,33 @@ export class DirectDeploymentEngine {
         maxParallelism: deploymentPlan.maxParallelism,
       });
 
-      // 3. Create resolution context
+      // 3. Initialize and start event monitoring if enabled
+      if (options.eventMonitoring?.enabled) {
+        try {
+          this.eventMonitor = createEventMonitor(this.kubeClient, {
+            namespace: options.namespace || 'default',
+            eventTypes: options.eventMonitoring.eventTypes || ['Warning', 'Error'],
+            includeChildResources: options.eventMonitoring.includeChildResources ?? true,
+            startTime: new Date(startTime),
+            ...(options.progressCallback && { progressCallback: options.progressCallback }),
+          });
+
+          // Start monitoring immediately to capture all deployment events
+          await this.eventMonitor.startMonitoring([]);
+          deploymentLogger.debug('Event monitoring started for deployment');
+        } catch (error) {
+          deploymentLogger.warn('Failed to initialize event monitoring, continuing without it', error as Error);
+        }
+      }
+
+      // 3.1. Initialize debug logging if enabled
+      if (options.debugLogging?.enabled) {
+        this.debugLogger = createDebugLoggerFromDeploymentOptions(options);
+        this.readinessChecker.setDebugLogger(this.debugLogger);
+        deploymentLogger.debug('Debug logging initialized');
+      }
+
+      // 4. Create resolution context
       const context: ResolutionContext = {
         deployedResources,
         kubeClient: this.kubeClient,
@@ -195,7 +245,7 @@ export class DirectDeploymentEngine {
         timeout: options.timeout || 30000,
       };
 
-      // 4. Deploy resources in parallel stages
+      // 5. Deploy resources in parallel stages
       for (let levelIndex = 0; levelIndex < deploymentPlan.levels.length; levelIndex++) {
         const currentLevel = deploymentPlan.levels[levelIndex];
         if (!currentLevel) {
@@ -248,6 +298,26 @@ export class DirectDeploymentEngine {
 
             // FIX: Unconditionally ensure the readiness evaluator is attached just before deployment.
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
+
+            // Add resource to event monitoring before deployment to capture creation events
+            if (this.eventMonitor) {
+              const preDeployedResource: DeployedResource = {
+                id: resourceId,
+                kind: resourceWithEvaluator.kind,
+                name: resourceWithEvaluator.metadata?.name || 'unknown',
+                namespace: resourceWithEvaluator.metadata?.namespace || options.namespace || 'default',
+                manifest: resourceWithEvaluator,
+                status: 'deployed',
+                deployedAt: new Date(),
+              };
+              try {
+                await this.eventMonitor.addResources([preDeployedResource]);
+                resourceLogger.debug('Added resource to event monitoring before deployment');
+              } catch (error) {
+                resourceLogger.warn('Failed to add resource to event monitoring, continuing deployment', error as Error);
+              }
+            }
+
             const deployedResource = await this.deploySingleResource(
               resourceWithEvaluator,
               context,
@@ -312,6 +382,8 @@ export class DirectDeploymentEngine {
           }
         }
 
+        // Resources are now added to event monitoring before deployment (see individual resource deployment above)
+
         // Handle rollback if there are failures and rollback is enabled
         if (levelHasFailures && options.rollbackOnFailure) {
           levelLogger.warn('Level deployment failed, initiating rollback');
@@ -341,10 +413,8 @@ export class DirectDeploymentEngine {
         const failedCount = levelResults.filter(
           (r) => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)
         ).length;
-        const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-        // Use debug level in test environments to reduce noise, info level in production
-        const logLevel = isTestEnvironment ? 'debug' : 'info';
-        levelLogger[logLevel](`Level ${levelIndex + 1} deployment completed`, {
+
+        levelLogger.info(`Level ${levelIndex + 1} deployment completed`, {
           successful: successfulCount,
           failed: failedCount,
           duration: levelDuration,
@@ -359,10 +429,7 @@ export class DirectDeploymentEngine {
         errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
 
       // Log comprehensive performance metrics
-      const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-      // Use debug level in test environments to reduce noise, info level in production
-      const logLevel = isTestEnvironment ? 'debug' : 'info';
-      deploymentLogger[logLevel]('Parallel deployment performance metrics', {
+      deploymentLogger.info('Parallel deployment performance metrics', {
         totalDuration: duration,
         totalResources: deploymentPlan.totalResources,
         parallelLevels: deploymentPlan.levels.length,
@@ -374,7 +441,7 @@ export class DirectDeploymentEngine {
           (deploymentPlan.totalResources /
             deploymentPlan.levels.length /
             deploymentPlan.maxParallelism) *
-            100
+          100
         ),
         status,
       });
@@ -384,6 +451,16 @@ export class DirectDeploymentEngine {
         message: `Deployment ${status} in ${duration}ms (${deploymentPlan.levels.length} parallel levels, max ${deploymentPlan.maxParallelism} concurrent)`,
         timestamp: new Date(),
       });
+
+      // Stop event monitoring
+      if (this.eventMonitor) {
+        try {
+          await this.eventMonitor.stopMonitoring();
+          deploymentLogger.debug('Event monitoring stopped');
+        } catch (error) {
+          deploymentLogger.warn('Failed to stop event monitoring cleanly', error as Error);
+        }
+      }
 
       // Store deployment state for rollback
       this.deploymentState.set(deploymentId, {
@@ -417,6 +494,15 @@ export class DirectDeploymentEngine {
         timestamp: new Date(),
         error: error as Error,
       });
+
+      // Stop event monitoring on error
+      if (this.eventMonitor) {
+        try {
+          await this.eventMonitor.stopMonitoring();
+        } catch (_cleanupError) {
+          // Ignore cleanup errors in error path
+        }
+      }
 
       // Store deployment state even for failed deployments (for rollback)
       this.deploymentState.set(deploymentId, {
@@ -860,9 +946,8 @@ export class DirectDeploymentEngine {
         // Calculate level performance metrics
         const levelDuration = Date.now() - levelStartTime;
         const totalOperations = currentLevel.resources.length + currentLevel.closures.length;
-        const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-        const logLevel = isTestEnvironment ? 'debug' : 'info';
-        levelLogger[logLevel](`Level ${levelIndex + 1} deployment completed`, {
+
+        levelLogger.info(`Level ${levelIndex + 1} deployment completed`, {
           resources: { successful: successfulResources, failed: failedResources },
           closures: { successful: successfulClosures, failed: failedClosures },
           duration: levelDuration,
@@ -878,9 +963,7 @@ export class DirectDeploymentEngine {
         errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
 
       // Log comprehensive performance metrics
-      const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-      const logLevel = isTestEnvironment ? 'debug' : 'info';
-      deploymentLogger[logLevel]('Parallel deployment with closures performance metrics', {
+      deploymentLogger.info('Parallel deployment with closures performance metrics', {
         totalDuration: duration,
         totalResources: enhancedPlan.totalResources,
         totalClosures: enhancedPlan.totalClosures,
@@ -1638,6 +1721,19 @@ export class DirectDeploymentEngine {
     const plural = kind.endsWith('s') ? kind : `${kind}s`;
 
     return `${plural}.${group}`;
+  }
+
+  /**
+   * Public method to wait for CRD readiness by name
+   */
+  async waitForCRDReady(crdName: string, timeout: number = 300000): Promise<void> {
+    const logger = this.logger.child({ crdName, timeout });
+    const options: DeploymentOptions = {
+      mode: this.deploymentMode as 'direct' | 'kro' | 'alchemy' | 'auto',
+      timeout,
+    };
+
+    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger);
   }
 
   /**

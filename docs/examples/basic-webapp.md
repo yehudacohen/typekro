@@ -6,7 +6,8 @@ The most common TypeKro pattern - a web application with deployment and service.
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, simple, Cel } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
 // Define the application schema
 const WebAppSpec = type({
@@ -33,7 +34,7 @@ export const webapp = kubernetesComposition(
   },
   // Resource builder: create named resources
   (schema) => ({
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -43,7 +44,7 @@ export const webapp = kubernetesComposition(
       }
     }),
     
-    service: simple.Service({
+    service: Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],

@@ -5,9 +5,9 @@
  * Kubernetes Service resources with sensible defaults.
  */
 
+import type { Enhanced } from '../../../core/types.js';
 import { service } from '../../kubernetes/networking/service.js';
 import type { V1ServiceSpec, V1ServiceStatus } from '../../kubernetes/types.js';
-import type { Enhanced } from '../../../core/types.js';
 import type { ServiceConfig } from '../types.js';
 
 /**
@@ -16,9 +16,7 @@ import type { ServiceConfig } from '../types.js';
  * @param config - Configuration for the service
  * @returns Enhanced Service resource
  */
-export function Service(
-  config: ServiceConfig
-): Enhanced<V1ServiceSpec, V1ServiceStatus> {
+export function Service(config: ServiceConfig): Enhanced<V1ServiceSpec, V1ServiceStatus> {
   return service({
     ...(config.id && { id: config.id }),
     metadata: { name: config.name, ...(config.namespace && { namespace: config.namespace }) },

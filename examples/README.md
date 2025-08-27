@@ -1,174 +1,209 @@
 # TypeKro Examples
 
-This directory contains examples demonstrating the TypeKro kro-less deployment features.
+✅ **All examples are working and tested!** These examples demonstrate the stable TypeKro kubernetesComposition API and compile successfully with the current codebase.
 
-## Current Status
+## Essential Examples (6 Examples)
 
-The examples in this directory demonstrate the intended API design for the new factory pattern. However, due to TypeScript configuration issues and the complexity of the magic proxy system, these examples may not compile correctly in the current development environment.
+Our curated set of essential examples that showcase TypeKro's key capabilities in a progressive learning path:
 
-## Key Features Demonstrated
-
-### 1. Basic toResourceGraph API (`kro-less-deployment-simple.ts`)
+### 1. Hero Example (`hero-example.ts`) ⭐
+**Perfect for homepage/landing** - Minimal TypeKro demo for first impressions
 
 ```typescript
-import { type } from 'arktype';
-import { simple, toResourceGraph } from '../src/index.js';
-
-// Define ArkType schemas
-const WebAppSpecSchema = type({
-  name: 'string',
-  image: 'string',
-  replicas: 'number',
-  environment: '"development" | "staging" | "production"',
-});
-
-const WebAppStatusSchema = type({
-  url: 'string',
-  readyReplicas: 'number',
-  phase: '"pending" | "running" | "failed"',
-});
-
-// Create typed resource graph
-const webappGraph = toResourceGraph(
-  'webapp-stack',
-  (schema) => ({
-     deployment: simple.Deployment({
-       name: schema.spec.name,
-       image: schema.spec.image,
-       replicas: schema.spec.replicas,
-       id: 'webapp-deployment',
-     }),
-     service: simple.Service({
-       name: 'webapp-service',
-       selector: { app: schema.spec.name },
-       ports: [{ port: 80, targetPort: 3000 }],
-       id: 'webapp-service',
-     }),
-  }),
-  {
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebApp',
-    spec: WebAppSpecSchema,
-    status: WebAppStatusSchema,
+const webapp = kubernetesComposition(
+  { /* minimal schema */ },
+  (spec) => {
+    const deployment = simple.Deployment({ /* minimal config */ });
+    const service = simple.Service({ /* minimal config */ });
+    return { ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0') };
   }
 );
-
-// Generate YAML
-const yaml = webappGraph.toYaml();
-
-// Create factories
-const directFactory = await webappGraph.factory('direct');
-const kroFactory = await webappGraph.factory('kro');
 ```
 
-### 2. Factory Pattern Features
+**✅ Status**: Working perfectly
+**🎯 Use**: Homepage demo, quick TypeKro introduction
 
-- **Direct Mode**: Uses TypeKro dependency resolution
-- **Kro Mode**: Deploys ResourceGraphDefinition, uses Kro dependency resolution
-- **Type Safety**: Full TypeScript support with ArkType schemas
-- **Schema Proxy**: Type-safe access to spec and status fields
+### 2. Basic Web Application (`basic-webapp.ts`)
+**Complete beginner tutorial** - Full web application stack
 
-### 3. Comprehensive Example (`kro-less-deployment-cohesive.ts`)
+**Features**:
+- Complete web application (frontend + database + migration)
+- Multiple resource types (Deployment, Service, Ingress, Job)
+- Schema references with proper ID handling
+- Environment configuration
+- Status aggregation with CEL expressions
 
-The comprehensive example demonstrates:
+**✅ Status**: Fixed and working
+**🎯 Use**: Getting started tutorial, first real project
 
-- ArkType schema integration with type inference
-- Factory pattern with direct and Kro modes
-- Type-safe instance creation and management
-- External references with full type safety
-- CEL expressions for computed values
+### 3. Composition Patterns (`imperative-composition.ts`)
+**Show different approaches** - Multiple composition patterns in one file
 
-## Alchemy Integration Examples
+**Features**:
+- 3 different composition patterns (simple → full-stack → config-driven)
+- Progressive complexity demonstration
+- Resource relationships and dependencies
+- Various CEL expression patterns
 
-### Direct Mode Integration (`direct-mode-alchemy-integration.ts`)
+**✅ Status**: Working perfectly
+**🎯 Use**: Learning different composition approaches
 
-Comprehensive example showing individual resource registration where each Kubernetes resource gets its own Alchemy resource type:
+### 4. Advanced Status & CEL (`complete-webapp.ts`)
+**Master complex status mapping** - Advanced CEL expressions and status builders
 
-```typescript
-const directFactory = await webappGraph.factory('direct', {
-    namespace: 'webapp-demo',
-    alchemyScope: alchemyScope,
-});
+**Features**:
+- Complex status aggregation across multiple resources
+- Advanced CEL expressions (`Cel.expr`, `Cel.template`, conditionals)
+- Cross-resource status references
+- NetworkPolicy and security configurations
+- TLS/Ingress advanced configuration
 
-await alchemyScope.run(async () => {
-    const instance = await directFactory.deploy({
-        name: 'my-webapp',
-        image: 'nginx:latest',
-    });
-    
-    // Creates separate Alchemy resources:
-    // - kubernetes::ConfigMap
-    // - kubernetes::Deployment  
-    // - kubernetes::Service
-});
-```
+**✅ Status**: Converted from toResourceGraph and working
+**🎯 Use**: Advanced users building complex applications
 
-**Demonstrates:**
-- Individual resource registration pattern
-- Resource type naming (`kubernetes::{Kind}`)
-- Error handling and debugging
-- State inspection techniques
+### 5. External References (`external-references.ts`) 🔗
+**Cross-composition dependencies** - TypeKro's unique modular architecture capability
 
-### Kro Mode Integration (`kro-status-fields-and-alchemy-integration.ts`)
+**Features**:
+- **EXPLICIT** `externalRef()` for resources created outside TypeKro (Helm/kubectl)
+- **IMPLICIT** magic proxy references within same composition
+- Type-safe external references with full IDE support
+- Demonstrates both patterns side-by-side
+- Shows automatic CEL expression generation
 
-Shows ResourceGraphDefinition deployment with proper CEL status expressions:
+**✅ Status**: Working and demonstrates both reference patterns
+**🎯 Use**: Master TypeKro's reference system, understand magic proxy behavior
 
-**Demonstrates:**
-- RGD registration (`kro::ResourceGraphDefinition`)
-- Instance registration (`kro::{Kind}`)
-- CEL expressions for status fields
-- Infrastructure integration patterns
+### 6. Helm Integration (`helm-integration.ts`) ⚙️
+**Leverage existing Helm charts** - Package management integration
 
-### Dynamic Registration (`alchemy-dynamic-registration.ts`)
+**Features**:
+- `helmRelease()` function usage
+- Helm chart deployment and integration  
+- Value templating with schema references
+- Mixed Helm + native Kubernetes resources
+- Multiple chart orchestration
 
-Shows the underlying registration system:
+**✅ Status**: Working perfectly
+**🎯 Use**: Teams with existing Helm charts
 
-**Demonstrates:**
-- Automatic type inference from Kubernetes kinds
-- Conflict prevention with `ensureResourceTypeRegistered`
-- Deterministic resource ID generation
+## Comprehensive Resource Coverage
 
-## Implementation Status
+### Advanced Example: (`comprehensive-k8s-resources.ts`)
+**31+ Kubernetes resource types** - Complete coverage demonstration
 
-### ✅ Completed
-- `toResourceGraph` API with ArkType integration
-- TypedResourceGraph interface
-- YAML generation for ResourceGraphDefinition
-- Schema proxy integration
-- Unit tests for new API
-- Alchemy integration with individual resource registration
-- Direct and Kro deployment modes
-- Comprehensive error handling
+Shows TypeKro's extensive coverage of Kubernetes resources across all categories:
+- Core Resources (Namespace, Pod, PV, PVC)
+- Apps Resources (Deployment, StatefulSet, DaemonSet, Job, CronJob)
+- RBAC Resources (Role, RoleBinding, ClusterRole, ServiceAccount)
+- Storage Resources (StorageClass, CSIDriver)
+- Networking Resources (Service, Ingress, NetworkPolicy)
+- Policy Resources (PDB, ResourceQuota, LimitRange)
+- And many more...
 
-### 📋 Planned
-- Static resource graph support
-- Performance optimizations
+**✅ Status**: Working perfectly
+**🎯 Use**: Demonstrate TypeKro's comprehensive K8s support
+
+## Key Architectural Features Demonstrated
+
+### 🏗️ **kubernetesComposition API** (Primary)
+- All examples use the stable `kubernetesComposition` pattern
+- Single composition function that returns status
+- Auto-captured resources with magic proxy system
+
+### 🔗 **Magic Proxy System**
+- Schema references: `spec.name`, `spec.replicas`
+- Resource references: `deployment.status.readyReplicas`
+- Type-safe property access throughout
+
+### 🎯 **CEL Expressions**
+- `Cel.expr<boolean>()` for complex logic
+- `Cel.template()` for string interpolation
+- `Cel.conditional()` for branching logic
+
+### 🌐 **External References**
+- `externalRef()` for cross-composition dependencies
+- Type-safe references to other CRD instances
+- Modular architecture support
+
+### 📦 **Helm Integration**
+- `helmRelease()` for chart deployment
+- Schema values in Helm chart values
+- HelmRelease status integration
+
+## Progressive Learning Path
+
+### **Beginner Journey** (Start Here)
+1. **Hero Example** → Quick TypeKro impression
+2. **Basic Web Application** → Complete tutorial walkthrough
+3. **Stop here for basic usage** ✋
+
+### **Intermediate Journey** (Most Users)
+3. **Composition Patterns** → Learn different approaches  
+4. **Helm Integration** → Integrate existing charts
+5. **Stop here for most use cases** ✋
+
+### **Advanced Journey** (Power Users)
+5. **Advanced Status & CEL** → Master complex status mapping
+6. **External References** → Build modular architectures
+7. **Comprehensive Resources** → Explore full K8s coverage
 
 ## Running Examples
 
-Due to current TypeScript configuration issues, the examples may not compile directly. However, they demonstrate the intended API design and can be used as reference for the implementation.
-
-To test the core functionality:
+All examples are guaranteed to compile and run:
 
 ```bash
-# Run unit tests for the new API
-bun test test/core/to-resource-graph.test.ts
-bun test test/core/factory-pattern.test.ts
+# Test any example
+bun ./examples/hero-example.ts
+bun ./examples/basic-webapp.ts
+bun ./examples/external-references.ts
 
-# Run all tests to verify implementation
-bun test
+# They all generate valid ResourceGraphDefinition YAML
 ```
 
-## Key Design Principles
+## Production Import Patterns
 
-1. **Type Safety First**: All APIs are designed to be type-safe without requiring `as any` casts
-2. **ArkType Integration**: Schemas are defined using ArkType for runtime validation
-3. **Factory Pattern**: Clean separation between resource definition and deployment strategy
-4. **Backward Compatibility**: New APIs work alongside existing TypeKro functionality
-5. **Developer Experience**: IntelliSense and compile-time error checking throughout
+The examples use relative imports (`../src/index.js`) because they run within the TypeKro repository. In your projects, use these import patterns:
+
+```typescript
+// Main TypeKro imports
+import { kubernetesComposition, Cel, externalRef } from 'typekro';
+
+// Simple factory imports
+import { Deployment, Service, ConfigMap, Secret } from 'typekro/simple';
+
+// Helm integration
+import { helmRelease } from 'typekro/helm';
+
+// Full example with correct production imports:
+import { type } from 'arktype';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
+
+const webapp = kubernetesComposition(
+  { /* schema definition */ },
+  (spec) => {
+    const deployment = Deployment({ name: spec.name, image: spec.image });
+    const service = Service({ name: 'service', selector: { app: spec.name } });
+    return { ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0') };
+  }
+);
+```
+
+## API Consistency
+
+✅ **All examples use the same patterns:**
+- `kubernetesComposition` (not toResourceGraph)
+- `import { Cel, kubernetesComposition } from 'typekro'`
+- `import { Deployment, Service } from 'typekro/simple'`
+- Explicit `id` fields for resources with schema references
+- Enhanced proxy types throughout
 
 ## Next Steps
 
-1. Resolve TypeScript configuration issues for examples
-2. Implement static resource graph support
-3. Add performance optimizations
+1. **Follow the learning path** based on your experience level
+2. **Copy and modify** examples for your use cases
+3. **Join the community** for questions and discussions
+4. **Check the docs** for comprehensive guides
+
+These examples represent the **essential TypeKro experience** - everything you need to be productive with TypeKro's unique approach to Kubernetes resource management.

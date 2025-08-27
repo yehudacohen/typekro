@@ -98,6 +98,44 @@ export interface DeploymentOptions {
 
   /** Hydrate Enhanced proxy status fields with live cluster data (default: true) */
   hydrateStatus?: boolean;
+
+  /** Event monitoring configuration */
+  eventMonitoring?: {
+    /** Enable event monitoring (default: false) */
+    enabled?: boolean;
+    /** Event types to monitor (default: ['Warning', 'Error']) */
+    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
+    /** Include child resources in monitoring (default: true) */
+    includeChildResources?: boolean;
+    /** Deduplication window in seconds (default: 60) */
+    deduplicationWindow?: number;
+    /** Maximum events per resource per minute (default: 100) */
+    maxEventsPerSecond?: number;
+  };
+
+  /** Debug logging configuration */
+  debugLogging?: {
+    /** Enable debug logging (default: false) */
+    enabled?: boolean;
+    /** Enable status polling debug logs (default: true when enabled) */
+    statusPolling?: boolean;
+    /** Enable readiness evaluation debug logs (default: true when enabled) */
+    readinessEvaluation?: boolean;
+    /** Maximum status object size to log in bytes (default: 1024) */
+    maxStatusObjectSize?: number;
+    /** Enable verbose mode with additional diagnostic information (default: false) */
+    verboseMode?: boolean;
+  };
+
+  /** Output configuration */
+  outputOptions?: {
+    /** Enable console logging (default: true) */
+    consoleLogging?: boolean;
+    /** Log level for console output (default: 'info') */
+    logLevel?: 'error' | 'warn' | 'info' | 'debug';
+    /** Event types to deliver via progress callbacks (default: all) */
+    progressCallbackEvents?: ('kubernetes-event' | 'status-debug' | 'child-resource-discovered')[];
+  };
 }
 
 export interface AlchemyDeploymentOptions {
@@ -136,12 +174,66 @@ export interface DeploymentEvent {
     | 'status-hydrated'
     | 'resource-warning'
     | 'resource-status'
-    | 'resource-ready';
+    | 'resource-ready'
+    | 'kubernetes-event'
+    | 'status-debug'
+    | 'child-resource-discovered';
   resourceId?: string;
   message: string;
   timestamp?: Date;
   error?: Error;
   details?: any;
+}
+
+/**
+ * Kubernetes event data delivered via progress callbacks
+ */
+export interface KubernetesEventData extends DeploymentEvent {
+  type: 'kubernetes-event';
+  eventType: 'Normal' | 'Warning' | 'Error';
+  reason: string;
+  source: {
+    component: string;
+    host?: string;
+  };
+  involvedObject: {
+    kind: string;
+    name: string;
+    namespace?: string;
+    uid?: string;
+  };
+  count?: number;
+  firstTimestamp?: Date;
+  lastTimestamp?: Date;
+  eventMessage: string;
+}
+
+/**
+ * Status debug information delivered via progress callbacks
+ */
+export interface StatusDebugEvent extends DeploymentEvent {
+  type: 'status-debug';
+  resourceId: string;
+  currentStatus: Record<string, unknown>;
+  readinessResult: boolean | { ready: boolean; reason?: string };
+  context: {
+    attempt: number;
+    elapsedTime: number;
+    isTimeout: boolean;
+  };
+}
+
+/**
+ * Child resource discovery event
+ */
+export interface ChildResourceDiscoveredEvent extends DeploymentEvent {
+  type: 'child-resource-discovered';
+  parentResource: string;
+  childResource: {
+    kind: string;
+    name: string;
+    namespace?: string;
+  };
 }
 
 export interface DeploymentError {
@@ -226,6 +318,34 @@ export interface FactoryOptions {
    * @default false (secure by default)
    */
   skipTLSVerify?: boolean;
+
+  /** Event monitoring configuration */
+  eventMonitoring?: {
+    /** Enable event monitoring (default: false) */
+    enabled?: boolean;
+    /** Event types to monitor (default: ['Warning', 'Error']) */
+    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
+    /** Include child resources in monitoring (default: true) */
+    includeChildResources?: boolean;
+    /** Deduplication window in seconds (default: 60) */
+    deduplicationWindow?: number;
+    /** Maximum events per resource per minute (default: 100) */
+    maxEventsPerSecond?: number;
+  };
+
+  /** Debug logging configuration */
+  debugLogging?: {
+    /** Enable debug logging (default: false) */
+    enabled?: boolean;
+    /** Enable status polling debug logs (default: true when enabled) */
+    statusPolling?: boolean;
+    /** Enable readiness evaluation debug logs (default: true when enabled) */
+    readinessEvaluation?: boolean;
+    /** Maximum status object size to log in bytes (default: 1024) */
+    maxStatusObjectSize?: number;
+    /** Enable verbose mode with additional diagnostic information (default: false) */
+    verboseMode?: boolean;
+  };
 }
 
 // Type mapping for factory selection

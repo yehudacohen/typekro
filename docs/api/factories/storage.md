@@ -12,12 +12,12 @@ TypeKro storage factories provide:
 
 ## Core Storage Types
 
-### `simple.Pvc()`
+### `Pvc()`
 
 Creates a Kubernetes Persistent Volume Claim with simplified configuration.
 
 ```typescript
-function simple.Pvc(config: SimplePvcConfig): Enhanced<V1PersistentVolumeClaimSpec, V1PersistentVolumeClaimStatus>
+function Pvc(config: SimplePvcConfig): Enhanced<V1PersistentVolumeClaimSpec, V1PersistentVolumeClaimStatus>
 ```
 
 #### Parameters
@@ -41,14 +41,15 @@ Enhanced PersistentVolumeClaim with automatic readiness evaluation.
 #### Example: Basic PVC
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, type } from 'typekro';
+import { Deployment, CronJob, Pvc, StatefulSet, PersistentVolume } from 'typekro/simple';
 
 const StorageAppSpec = type({
   name: 'string',
   storageSize: 'string'
 });
 
-const storageApp = toResourceGraph(
+const storageApp = kubernetesComposition({
   {
     name: 'storage-app',
     apiVersion: 'storage.example.com/v1',
@@ -58,7 +59,7 @@ const storageApp = toResourceGraph(
   },
   (schema) => ({
     // Persistent storage
-    storage: simple.Pvc({
+    storage: Pvc({
       name: Cel.template('%s-storage', schema.spec.name),
       size: schema.spec.storageSize,
       accessModes: ['ReadWriteOnce'],
@@ -66,7 +67,7 @@ const storageApp = toResourceGraph(
     }),
     
     // Application that uses the storage
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       ports: [80],
@@ -94,7 +95,7 @@ const storageApp = toResourceGraph(
 #### Example: Database with Persistent Storage
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, simple, type } from 'typekro';
 
 const DatabaseSpec = type({
   name: 'string',
@@ -102,7 +103,7 @@ const DatabaseSpec = type({
   replicas: 'number'
 });
 
-const databaseWithStorage = toResourceGraph(
+const databaseWithStorage = kubernetesComposition({
   {
     name: 'database-storage',
     apiVersion: 'data.example.com/v1', 
@@ -112,7 +113,7 @@ const databaseWithStorage = toResourceGraph(
   },
   (schema) => ({
     // Database with persistent storage
-    database: simple.StatefulSet({
+    database: StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15',
       replicas: schema.spec.replicas,
@@ -143,7 +144,7 @@ const databaseWithStorage = toResourceGraph(
 ```
 
 
-### `simple.PersistentVolume()`
+### `PersistentVolume()`
 
 Creates a Kubernetes PersistentVolume with simplified configuration for storage provisioning.
 
@@ -177,7 +178,7 @@ Enhanced PersistentVolume with automatic readiness evaluation.
 #### Example: NFS Storage Volume
 
 ```typescript
-import { toResourceGraph, simple, type } from 'typekro';
+import { kubernetesComposition, Cel, simple, type } from 'typekro';
 
 const StorageVolumeSpec = type({
   name: 'string',
@@ -186,7 +187,7 @@ const StorageVolumeSpec = type({
   size: 'string'
 });
 
-const storageVolume = toResourceGraph(
+const storageVolume = kubernetesComposition({
   {
     name: 'storage-volume',
     apiVersion: 'storage.example.com/v1',
@@ -196,7 +197,7 @@ const storageVolume = toResourceGraph(
   },
   (schema) => ({
     // NFS-backed Persistent Volume
-    volume: simple.PersistentVolume({
+    volume: PersistentVolume({
       name: schema.spec.name,
       size: schema.spec.size,
       accessModes: ['ReadWriteMany'],
@@ -208,7 +209,7 @@ const storageVolume = toResourceGraph(
     }),
     
     // PVC to claim the volume
-    claim: simple.Pvc({
+    claim: Pvc({
       name: Cel.template('%s-claim', schema.spec.name),
       size: schema.spec.size,
       accessModes: ['ReadWriteMany']
@@ -292,7 +293,7 @@ const fastStorage = storageClass({
 Configure different storage classes for different performance needs:
 
 ```typescript
-const multiTierApp = toResourceGraph(
+const multiTierApp = kubernetesComposition({
   {
     name: 'multi-tier-storage',
     apiVersion: 'storage.example.com/v1',
@@ -302,7 +303,7 @@ const multiTierApp = toResourceGraph(
   },
   (schema) => ({
     // Fast storage for database
-    dbStorage: simple.Pvc({
+    dbStorage: Pvc({
       name: 'database-storage',
       size: '50Gi',
       storageClass: 'fast-ssd',
@@ -310,7 +311,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Slower storage for backups
-    backupStorage: simple.Pvc({
+    backupStorage: Pvc({
       name: 'backup-storage', 
       size: '500Gi',
       storageClass: 'standard',
@@ -318,7 +319,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Shared storage for files
-    sharedStorage: simple.Pvc({
+    sharedStorage: Pvc({
       name: 'shared-storage',
       size: '100Gi', 
       storageClass: 'nfs',
@@ -326,7 +327,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Database using fast storage
-    database: simple.StatefulSet({
+    database: StatefulSet({
       name: 'postgres',
       image: 'postgres:15',
       volumeMounts: [{
@@ -340,7 +341,7 @@ const multiTierApp = toResourceGraph(
     }),
     
     // Application using shared storage
-    app: simple.Deployment({
+    app: Deployment({
       name: 'web-app',
       image: 'nginx:1.21',
       replicas: 3,
@@ -371,7 +372,7 @@ const multiTierApp = toResourceGraph(
 Configure Container Storage Interface (CSI) drivers:
 
 ```typescript
-const csiStorage = toResourceGraph(
+const csiStorage = kubernetesComposition({
   {
     name: 'csi-storage',
     apiVersion: 'storage.example.com/v1',
@@ -394,7 +395,7 @@ const csiStorage = toResourceGraph(
     }),
     
     // PVC using CSI storage class
-    appStorage: simple.Pvc({
+    appStorage: Pvc({
       name: 'csi-storage',
       size: '20Gi',
       storageClass: 'csi-cephfs',
@@ -402,7 +403,7 @@ const csiStorage = toResourceGraph(
     }),
     
     // Application using CSI storage
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       replicas: 3,
@@ -430,7 +431,7 @@ const csiStorage = toResourceGraph(
 Integrate storage snapshots and backup workflows:
 
 ```typescript
-const backupEnabledApp = toResourceGraph(
+const backupEnabledApp = kubernetesComposition({
   {
     name: 'backup-enabled-app',
     apiVersion: 'backup.example.com/v1',
@@ -457,14 +458,14 @@ const backupEnabledApp = toResourceGraph(
     }),
     
     // Application storage
-    appStorage: simple.Pvc({
+    appStorage: Pvc({
       name: 'app-storage',
       size: '10Gi',
       storageClass: 'snapshot-enabled'
     }),
     
     // Application
-    app: simple.StatefulSet({
+    app: StatefulSet({
       name: schema.spec.name,
       image: 'postgres:15',
       volumeMounts: [{
@@ -478,7 +479,7 @@ const backupEnabledApp = toResourceGraph(
     }),
     
     // Backup CronJob
-    backup: simple.CronJob({
+    backup: CronJob({
       name: 'backup-job',
       image: 'snapshot-tool:latest',
       schedule: schema.spec.backupSchedule,
@@ -550,7 +551,7 @@ accessModes: ['ReadWriteMany']
 Always specify storage resource requirements:
 
 ```typescript
-const storage = simple.Pvc({
+const storage = Pvc({
   name: 'app-storage',
   size: '10Gi',  // Specific size requirement
   storageClass: 'fast-ssd'  // Performance class
@@ -581,7 +582,7 @@ Include backup strategies in your storage design:
 storageClass: 'snapshot-enabled'
 
 // Include backup jobs
-backup: simple.CronJob({
+backup: CronJob({
   name: 'backup',
   schedule: '0 2 * * *',  // Daily backups
   image: 'backup-tool:latest'

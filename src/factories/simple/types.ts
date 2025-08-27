@@ -98,6 +98,7 @@ export interface IngressConfig {
   rules?: V1IngressRule[];
   tls?: V1IngressTLS[];
   annotations?: Record<string, string>;
+  id?: string;
 }
 
 /**
@@ -110,6 +111,7 @@ export interface NetworkPolicyConfig {
   policyTypes?: ('Ingress' | 'Egress')[];
   ingress?: V1NetworkPolicyIngressRule[];
   egress?: V1NetworkPolicyEgressRule[];
+  id?: string;
 }
 
 /**

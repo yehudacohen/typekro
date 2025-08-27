@@ -7,11 +7,11 @@
  * Following the pattern from typekro-alchemy-integration.test.ts
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
 
-import { Cel, toResourceGraph, simple } from '../../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../../src/index.js';
 
 const TEST_TIMEOUT = 120000; // 2 minutes
 
@@ -37,23 +37,20 @@ describe('DirectResourceFactory Alchemy Integration', () => {
   beforeAll(async () => {
     console.log('🔧 Creating alchemy scope for DirectResourceFactory integration tests...');
 
-    // Set up kubeConfig with TLS skip for test environment
-    const k8s = await import('@kubernetes/client-node');
-    kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
-
-    // Configure to skip TLS verification for test environment
-    const cluster = kc.getCurrentCluster();
-    if (cluster) {
-      const modifiedCluster = { ...cluster, skipTLSVerify: true };
-      kc.clusters = kc.clusters.map((c: any) => (c === cluster ? modifiedCluster : c));
-    }
-
-    // Initialize Kubernetes API client
-    k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-
     try {
+      // Set up kubeConfig with TLS skip for test environment
+      const { getIntegrationTestKubeConfig, createCoreV1ApiClient } = await import(
+        '../shared-kubeconfig.js'
+      );
+
+      kc = getIntegrationTestKubeConfig();
+
+      // Initialize Kubernetes API client using our helper to avoid makeApiClient issues
+      k8sApi = createCoreV1ApiClient(kc);
+      console.log('✅ Kubernetes API client initialized');
+
       const { FileSystemStateStore } = await import('alchemy/state');
+      console.log('✅ Alchemy state store imported');
 
       alchemyScope = await alchemy('direct-factory-alchemy-integration-test', {
         stateStore: (scope) =>
@@ -61,9 +58,15 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             rootDir: './temp/.alchemy',
           }),
       });
+
+      if (!alchemyScope) {
+        throw new Error('Alchemy scope creation returned undefined');
+      }
+
       console.log(`✅ Alchemy scope created: ${alchemyScope.name} (stage: ${alchemyScope.stage})`);
     } catch (error) {
-      console.error('❌ Failed to create alchemy scope:', error);
+      console.error('❌ Failed to setup integration test environment:', error);
+      console.error('Error details:', error instanceof Error ? error.stack : error);
       throw error;
     }
   });
@@ -73,6 +76,12 @@ describe('DirectResourceFactory Alchemy Integration', () => {
   });
 
   describe('DirectResourceFactory with Alchemy integration end-to-end', () => {
+    beforeEach(() => {
+      if (!alchemyScope) {
+        throw new Error('Alchemy scope not initialized. Check beforeAll setup.');
+      }
+    });
+
     it(
       'should deploy individual resources through real Alchemy system',
       async () => {

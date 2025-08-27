@@ -2,6 +2,8 @@
 
 Complete reference for all TypeKro APIs, functions, and types.
 
+> **Note**: TypeKro is currently v0.1.0 and APIs may change before v1.0. Examples use the current recommended patterns: `kubernetesComposition()` and `import { Resource } from 'typekro/simple'`.
+
 ## Core Functions
 
 ### [kubernetesComposition](./kubernetes-composition.md) (Recommended)
@@ -22,11 +24,8 @@ const graph = toResourceGraph(definition, resourceBuilder, statusBuilder);
 Pre-built functions for creating common Kubernetes resources.
 
 ```typescript
-import { 
-  simple, 
-  kubernetesComposition,
-  toResourceGraph
-} from 'typekro';
+import { kubernetesComposition, toResourceGraph } from 'typekro';
+import { Deployment, Secret } from 'typekro/simple';
 ```
 
 ### CEL Expressions
@@ -99,15 +98,15 @@ const app = toResourceGraph(
     status: MyAppStatus,
   },
   (schema) => ({
-  deployment: simple.Deployment({
+  deployment: Deployment({
     name: schema.spec.name,
     image: schema.spec.image
   })
 }), { spec: AppSpec, status: AppStatus });
 
 // Cross-resource references
-const database = simple.Deployment({ name: 'db' });
-const app = simple.Deployment({
+const database = Deployment({ name: 'db' });
+const app = Deployment({
   env: { DB_HOST: database.status.podIP }
 });
 
@@ -139,7 +138,7 @@ const deployment = Deployment({ /* ... */ });
 const service = Service({ /* ... */ });
 
 // Namespace imports (also valid)
-const configMap = simple({ /* ... */ });
+const configMap = simple.ConfigMap({ /* ... */ });
 const secret = simple.Secret({ /* ... */ });
 
 // Types
@@ -274,24 +273,6 @@ const graph = toResourceGraph(
   statusBuilder
 );
 ```
-
-## Migration Guide
-
-### From v1.x to v2.x
-
-```typescript
-// Old API (v1.x)
-import { createResourceGraph } from 'typekro';
-
-// New API (v2.x)
-import { toResourceGraph } from 'typekro';
-```
-
-### Breaking Changes
-
-- `createResourceGraph` → `toResourceGraph`
-- Factory options now use `FactoryOptions` interface
-- CEL expressions require explicit `Cel.expr()` or `Cel.template()`
 
 ## Support
 

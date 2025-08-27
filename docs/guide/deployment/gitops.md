@@ -13,7 +13,7 @@ TypeKro enables GitOps by:
 
 ```typescript
 // TypeScript source (checked into Git)
-const webApp = toResourceGraph(/* ... */);
+const webApp = kubernetesComposition({/* ... */);
 
 // Generated YAML (automatically created)
 const yaml = webApp.toYaml(productionConfig);
@@ -31,6 +31,7 @@ Before setting up TypeKro GitOps workflows, you need a GitOps controller in your
 
 ```typescript
 import { typeKroRuntimeBootstrap } from 'typekro';
+import { HelmChart } from 'typekro/simple';
 
 async function setupFluxGitOps() {
   const bootstrap = typeKroRuntimeBootstrap({
@@ -119,7 +120,8 @@ async function generateYaml() {
     const config = configs[env];
     
     Object.entries(graphs).forEach(([name, graph]) => {
-      const instanceYaml = graph.toYaml(config[name]);
+      const factory = graph.factory('kro');
+      const instanceYaml = factory.toYaml(config[name]);
       writeFileSync(Cel.template("deploy/instances/%s/%s.yaml", env, name), instanceYaml);
       console.log(Cel.template("Generated %s instance for %s", name, env));
     });
@@ -334,7 +336,7 @@ TypeKro supports Helm chart deployment through Flux CD's HelmRelease resources, 
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, helmRelease, helmRepository, Cel } from 'typekro';
+import { kubernetesComposition, Cel helmRelease, helmRepository, Cel } from 'typekro';
 
 const HelmAppSpec = type({
   name: 'string',
@@ -343,7 +345,7 @@ const HelmAppSpec = type({
   environment: '"development" | "staging" | "production"'
 });
 
-const helmApp = toResourceGraph(
+const helmApp = kubernetesComposition({
   {
     name: 'helm-webapp',
     apiVersion: 'helm.example.com/v1',
@@ -360,7 +362,7 @@ const helmApp = toResourceGraph(
     });
     
     // Create HelmRelease using simple factory
-    const nginx = simple.HelmChart(
+    const nginx = HelmChart(
       schema.spec.name,
       repository.spec.url,  // Reference repository URL by field  
       'nginx',
@@ -402,7 +404,7 @@ writeFileSync('deploy/helm-webapp.yaml', yaml);
 ### Multi-Chart Application
 
 ```typescript
-const microservicesApp = toResourceGraph(
+const microservicesApp = kubernetesComposition({
   {
     name: 'microservices',
     apiVersion: 'platform.example.com/v1',
@@ -423,7 +425,7 @@ const microservicesApp = toResourceGraph(
     });
     
     // Create database using simple factory
-    const postgres = simple.HelmChart(
+    const postgres = HelmChart(
       Cel.template('%s-postgres', schema.spec.name),
       bitnamiRepo.spec.url,  // Reference repository URL by field
       'postgresql',
@@ -445,7 +447,7 @@ const microservicesApp = toResourceGraph(
     );
     
     // Create redis cache using simple factory
-    const redis = simple.HelmChart(
+    const redis = HelmChart(
       Cel.template('%s-redis', schema.spec.name),
       bitnamiRepo.spec.url,  // Reference repository URL by field
       'redis',
@@ -471,7 +473,7 @@ const microservicesApp = toResourceGraph(
         interval: '10m'
       });
       
-      const prometheus = simple.HelmChart(
+      const prometheus = HelmChart(
         'prometheus',
         prometheusRepo.spec.url,  // Reference repository URL by field
         'kube-prometheus-stack',
@@ -939,12 +941,12 @@ const externalSecret = {
 };
 
 // Use in TypeKro graph
-const secureApp = toResourceGraph(
+const secureApp = kubernetesComposition({
   definition,
   (schema) => ({
     externalSecret,  // Include external secret
     
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       

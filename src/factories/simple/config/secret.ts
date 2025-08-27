@@ -5,9 +5,9 @@
  * Kubernetes Secret resources with sensible defaults.
  */
 
+import type { Enhanced } from '../../../core/types.js';
 import { secret } from '../../kubernetes/config/secret.js';
 import type { V1SecretData } from '../../kubernetes/types.js';
-import type { Enhanced } from '../../../core/types.js';
 import type { SecretConfig } from '../types.js';
 
 /**
@@ -16,9 +16,7 @@ import type { SecretConfig } from '../types.js';
  * @param config - Configuration for the secret
  * @returns Enhanced Secret resource
  */
-export function Secret(
-  config: SecretConfig
-): Enhanced<V1SecretData, unknown> {
+export function Secret(config: SecretConfig): Enhanced<V1SecretData, unknown> {
   return secret({
     metadata: {
       name: config.name,

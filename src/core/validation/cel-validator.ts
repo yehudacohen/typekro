@@ -41,9 +41,10 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
     // Convert snake_case to camelCase
 
     // Convert dot.case to camelCase
-    if (id.includes(".")) {
+    if (id.includes('.')) {
       suggestion = id.replace(/\.([a-z])/g, (_, letter) => letter.toUpperCase());
-    }    if (id.includes('_')) {
+    }
+    if (id.includes('_')) {
       suggestion = id.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
     }
 
@@ -76,6 +77,12 @@ function requiresKroResolution(value: any): boolean {
     // Check if the CEL expression contains resource references
     const expression = value.expression;
     const resourceRefPattern = /([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./;
+    
+    // Exclude schema references - they can be resolved at compile time
+    if (expression.includes('schema.')) {
+      return false;
+    }
+    
     return resourceRefPattern.test(expression);
   }
 

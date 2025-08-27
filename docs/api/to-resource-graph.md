@@ -108,7 +108,8 @@ interface TypedResourceGraph<TSpec, TStatus> {
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simple, Cel } from 'typekro';
+import { toResourceGraph, Cel } from 'typekro';
+import { Deployment, Service, Ingress, ConfigMap } from 'typekro/simple';
 
 // Define the schema using arktype
 const WebAppSpec = type({
@@ -135,20 +136,20 @@ const webapp = toResourceGraph(
   },
   // Resource builder - creates the actual Kubernetes resources
   (schema) => ({
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,        // Type-safe schema reference
       image: schema.spec.image,      // Full IDE autocomplete
       replicas: schema.spec.replicas,
       ports: [80]
     }),
     
-    service: simple.Service({
+    service: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }]
     }),
     
-    ingress: simple.Ingress({
+    ingress: Ingress({
       name: schema.spec.name,
       host: schema.spec.host,        // Schema reference
       serviceName: schema.spec.name, // References service above
@@ -181,7 +182,7 @@ const microservices = toResourceGraph(
   },
   (schema) => ({
     // Database
-    database: simple.Deployment({
+    database: Deployment({
       name: Cel.template('%s-db', schema.spec.name),
       image: 'postgres:13',
       env: {
@@ -191,14 +192,14 @@ const microservices = toResourceGraph(
       }
     }),
     
-    dbService: simple.Service({
+    dbService: Service({
       name: Cel.template('%s-db', schema.spec.name),
       selector: { app: Cel.template('%s-db', schema.spec.name) },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // API server that references database
-    api: simple.Deployment({
+    api: Deployment({
       name: Cel.template('%s-api', schema.spec.name),
       image: 'myapp/api:latest',
       env: {
@@ -212,7 +213,7 @@ const microservices = toResourceGraph(
       }
     }),
     
-    apiService: simple.Service({
+    apiService: Service({
       name: Cel.template('%s-api', schema.spec.name),
       selector: { app: Cel.template('%s-api', schema.spec.name) },
       ports: [{ port: 8080, targetPort: 8080 }]
@@ -250,7 +251,7 @@ const app = toResourceGraph(
     })
   },
   (schema) => ({
-    config: simple.ConfigMap({
+    config: ConfigMap({
       name: Cel.template('%s-config', schema.spec.name),
       data: {
         ENVIRONMENT: schema.spec.environment,
@@ -261,7 +262,7 @@ const app = toResourceGraph(
       }
     }),
     
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -303,7 +304,7 @@ const cluster = toResourceGraph(
   (schema) => ({
     // Create services dynamically based on spec
     services: schema.spec.services.map(serviceName => 
-      simple.Deployment({
+      Deployment({
         name: serviceName,
         image: `myapp/${serviceName}:latest`,
         replicas: schema.spec.minReplicas
@@ -410,7 +411,7 @@ Schema references are fully type-safe:
 
 ```typescript
 (schema) => ({
-  deployment: simple.Deployment({
+  deployment: Deployment({
     name: schema.spec.name,        // ✅ Type: string
     replicas: schema.spec.count,   // ❌ Type error: 'count' doesn't exist
     image: schema.spec.image       // ✅ Type: string
@@ -461,19 +462,19 @@ Group related resources logically in the resource builder:
 ```typescript
 (schema) => ({
   // Data layer
-  database: simple.Deployment({ /* ... */ }),
-  dbService: simple.Service({ /* ... */ }),
+  database: Deployment({ /* ... */ }),
+  dbService: Service({ /* ... */ }),
   
   // Application layer  
-  api: simple.Deployment({ /* ... */ }),
-  apiService: simple.Service({ /* ... */ }),
+  api: Deployment({ /* ... */ }),
+  apiService: Service({ /* ... */ }),
   
   // Presentation layer
-  frontend: simple.Deployment({ /* ... */ }),
-  frontendService: simple.Service({ /* ... */ }),
+  frontend: Deployment({ /* ... */ }),
+  frontendService: Service({ /* ... */ }),
   
   // Infrastructure
-  ingress: simple.Ingress({ /* ... */ })
+  ingress: Ingress({ /* ... */ })
 })
 ```
 

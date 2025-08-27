@@ -1,829 +1,677 @@
-# Factories
+# Factory Functions
 
-Factory functions are the building blocks of TypeKro. They provide type-safe, pre-configured ways to create common Kubernetes resources with sensible defaults and full TypeScript support. This guide covers both the built-in factories and how to create your own custom ones.
+Factory functions are TypeKro's building blocks for creating Kubernetes resources with type safety and intelligent defaults. They handle the complexity of Kubernetes resource configuration while providing a clean, intuitive API.
 
-## Built-in Factory Functions
-
-Instead of writing verbose Kubernetes YAML, factory functions let you create resources with clean, typed APIs:
+## Quick Start with Factories
 
 ```typescript
-// Instead of this YAML...
-/*
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: my-app
-  labels:
-    app: my-app
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: my-app
-  template:
-    metadata:
-      labels:
-        app: my-app
-    spec:
-      containers:
-      - name: my-app
-        image: nginx:latest
-        ports:
-        - containerPort: 80
-*/
+import { Deployment, Service, Ingress, ConfigMap, Secret, Job, StatefulSet, NetworkPolicy, PersistentVolumeClaim } from 'typekro/simple';
 
-// Write this TypeScript
-const deployment = simple.Deployment({
-  name: 'my-app',
-  image: 'nginx:latest',
-  replicas: 3,
-  ports: [{ containerPort: 80 }]
-});
-```
-
-## Core Factory Functions
-
-### Workloads
-
-#### `simple.Deployment`
-Creates a Kubernetes Deployment with sensible defaults.
-
-```typescript
-import { simple } from 'typekro';
-
-const deployment = simple.Deployment({
+// Create resources with sensible defaults
+const app = Deployment({
   name: 'web-app',
   image: 'nginx:latest',
-  replicas: 3,
-  ports: [{ containerPort: 80 }],
-  env: {
-    NODE_ENV: 'production',
-    API_URL: 'https://api.example.com'
-  },
-  resources: {
-    cpu: '500m',
-    memory: '1Gi'
-  }
+  replicas: 3
+});
+
+const service = Service({
+  name: 'web-service', 
+  selector: { app: 'web-app' },
+  ports: [{ port: 80, targetPort: 80 }]
 });
 ```
 
-**Key Features:**
-- Automatic label generation (`app: name`)
-- Health check configuration
-- Resource limits and requests
-- Environment variable support
-- Volume mounting
+Each factory function:
+- **Generates valid Kubernetes YAML** with proper defaults
+- **Provides type safety** with TypeScript autocomplete
+- **Handles complexity** - you focus on what matters
+- **Integrates seamlessly** with TypeKro's composition system
 
-#### `simple.StatefulSet`
-Creates a StatefulSet for stateful applications.
+## Factory Categories
+
+### Workloads (`simple.*`)
+
+Control how your applications run:
 
 ```typescript
-const database = simple.StatefulSet({
+// Deployments - stateless applications
+const app = Deployment({
+  name: 'api-server',
+  image: 'myapp:v1.0.0',
+  replicas: 3,
+  env: {
+    NODE_ENV: 'production',
+    PORT: '3000'
+  },
+  ports: [{ containerPort: 3000 }]
+});
+
+// StatefulSets - stateful applications  
+const database = StatefulSet({
   name: 'postgres',
   image: 'postgres:15',
   replicas: 1,
-  ports: [{ containerPort: 5432 }],
   env: {
     POSTGRES_DB: 'myapp',
-    POSTGRES_USER: 'user',
-    POSTGRES_PASSWORD: 'password'
+    POSTGRES_PASSWORD: 'secret'
   },
-  volumeClaimTemplates: [{
-    name: 'data',
+  volumeClaimTemplate: {
     size: '10Gi',
     storageClass: 'fast-ssd'
-  }],
-  volumeMounts: [{
-    name: 'data',
-    mountPath: '/var/lib/postgresql/data'
-  }]
+  }
 });
-```
 
-#### `simple.Job`
-Creates a Kubernetes Job for batch processing.
-
-```typescript
-const migrationJob = simple.Job({
+// Jobs - run-to-completion workloads
+const migration = Job({
   name: 'db-migration',
-  image: 'myapp/migrations:latest',
-  env: {
-    DATABASE_URL: database.status.podIP
-  },
-  restartPolicy: 'OnFailure',
-  backoffLimit: 3
+  image: 'myapp:v1.0.0',
+  command: ['npm', 'run', 'migrate']
 });
 ```
 
-### Networking
+### Networking (`simple.*`)
 
-#### `simple.Service`
-Creates a Kubernetes Service to expose applications.
+Connect your applications:
 
 ```typescript
-const service = simple.Service({
-  name: 'web-service',
-  selector: { app: 'web-app' },
-  ports: [
-    { port: 80, targetPort: 8080 },
-    { port: 443, targetPort: 8443, name: 'https' }
-  ],
-  type: 'LoadBalancer'
+// Services - stable network endpoints
+const apiService = Service({
+  name: 'api-service',
+  selector: { app: 'api-server' },
+  ports: [{ port: 80, targetPort: 3000 }],
+  type: 'ClusterIP' // or LoadBalancer, NodePort
 });
-```
 
-**Service Types:**
-- `ClusterIP` (default) - Internal cluster access
-- `NodePort` - Access via node ports
-- `LoadBalancer` - External load balancer
-- `ExternalName` - DNS CNAME record
+// Ingress - external access with routing
+const ingress = Ingress({
+  name: 'api-ingress',
+  host: 'api.example.com',
+  serviceName: 'api-service',
+  servicePort: 80,
+  tls: {
+    secretName: 'api-tls-cert'
+  }
+});
 
-#### `simple.Ingress`
-Creates an Ingress resource for HTTP routing.
-
-```typescript
-const ingress = simple.Ingress({
-  name: 'web-ingress',
-  rules: [{
-    host: 'myapp.example.com',
-    http: {
-      paths: [{
-        path: '/',
-        pathType: 'Prefix',
-        backend: {
-          service: {
-            name: service.metadata.name,
-            port: { number: 80 }
-          }
-        }
-      }]
-    }
-  }],
-  tls: [{
-    secretName: 'web-tls',
-    hosts: ['myapp.example.com']
+// Network Policies - security rules
+const policy = NetworkPolicy({
+  name: 'api-policy',
+  selector: { app: 'api-server' },
+  ingress: [{
+    from: [{ namespaceSelector: { app: 'frontend' } }],
+    ports: [{ port: 3000 }]
   }]
 });
 ```
 
-### Configuration
+### Configuration (`simple.*`)
 
-#### `simple`
-Creates a ConfigMap for application configuration.
+Manage application configuration:
 
 ```typescript
-const config = simple({
+// ConfigMaps - configuration data
+const config = ConfigMap({
   name: 'app-config',
   data: {
-    'app.properties': `
-      server.port=8080
-      database.url=jdbc:postgresql://postgres:5432/myapp
-      logging.level=INFO
-    `,
-    'nginx.conf': `
-      server {
-        listen 80;
-        location / {
-          proxy_pass http://backend:8080;
-        }
-      }
-    `
+    'database.host': 'postgres-service',
+    'database.port': '5432',
+    'cache.enabled': 'true'
   }
 });
-```
 
-#### `simple.Secret`
-Creates a Secret for sensitive data.
-
-```typescript
-const secret = simple.Secret({
-  name: 'app-secrets',
-  data: {
-    'database-password': 'c3VwZXJzZWNyZXQ=',  // base64 encoded
-    'api-key': 'YWJjZGVmZ2hpams='
-  },
-  type: 'Opaque'
-});
-
-// Or use stringData for automatic base64 encoding
-const secretFromStrings = simple.Secret({
+// Secrets - sensitive data
+const secret = Secret({
   name: 'app-secrets',
   stringData: {
-    'database-password': 'supersecret',
-    'api-key': 'abcdefghijk'
+    'database.password': 'supersecret',
+    'api.key': 'abc123'
   }
 });
 ```
 
-### Storage
+### Storage (`simple.*`)
 
-#### `simple.Pvc`
-Creates a PersistentVolumeClaim for storage.
+Manage persistent data:
 
 ```typescript
-const storage = simple.Pvc({
-  name: 'app-storage',
-  size: '10Gi',
+// Persistent Volume Claims
+const storage = PersistentVolumeClaim({
+  name: 'app-data',
+  size: '50Gi',
   storageClass: 'fast-ssd',
   accessModes: ['ReadWriteOnce']
 });
 ```
 
-## Advanced Built-in Factory Usage
+## Working with Factory Outputs
 
-### Cross-Resource References
+Every factory function returns an **Enhanced** resource with magical properties:
 
-Factory functions can reference other resources. For a complete example showing database and application integration, see [Database + Application Pattern](../examples/database-app.md).
-
-Key cross-reference patterns:
-- **Service Discovery**: Services reference deployment labels via selectors
-- **Environment Variables**: Applications reference other resources' runtime values
-- **Configuration**: ConfigMaps and Secrets referenced by multiple deployments
-
-### Conditional Configuration
-
-Use TypeScript's conditional logic:
+### Access Resource Properties
 
 ```typescript
-const deployment = simple.Deployment({
-  name: schema.spec.name,
-  image: schema.spec.image,
-  replicas: schema.spec.environment === 'production' ? 5 : 2,
-  
-  // Production gets more resources
-  resources: schema.spec.environment === 'production' 
-    ? { cpu: '1000m', memory: '2Gi' }
-    : { cpu: '100m', memory: '256Mi' },
-    
-  // Enable health checks in production
-  ...(schema.spec.environment === 'production' && {
-    livenessProbe: {
-      httpGet: { path: '/health', port: 3000 },
-      initialDelaySeconds: 30
-    },
-    readinessProbe: {
-      httpGet: { path: '/ready', port: 3000 },
-      initialDelaySeconds: 5
-    }
-  })
-});
-```
-
-### Custom Labels and Annotations
-
-```typescript
-const deployment = simple.Deployment({
-  name: 'my-app',
-  image: 'nginx:latest',
-  
-  // Custom labels (merged with defaults)
-  labels: {
-    version: 'v1.2.3',
-    team: 'platform',
-    environment: 'production'
-  },
-  
-  // Custom annotations
-  annotations: {
-    'deployment.kubernetes.io/revision': '1',
-    'prometheus.io/scrape': 'true',
-    'prometheus.io/port': '9090'
-  }
-});
-```
-
-## Built-in Factory Patterns
-
-### Environment-Specific Factories
-
-Create environment-specific factory functions:
-
-```typescript
-function productionDeployment(config: DeploymentConfig) {
-  return simple.Deployment({
-    ...config,
-    replicas: Math.max(config.replicas, 3),  // Minimum 3 replicas
-    resources: {
-      cpu: '500m',
-      memory: '1Gi',
-      ...config.resources
-    },
-    livenessProbe: {
-      httpGet: { path: '/health', port: config.port || 3000 },
-      initialDelaySeconds: 30,
-      periodSeconds: 10
-    },
-    readinessProbe: {
-      httpGet: { path: '/ready', port: config.port || 3000 },
-      initialDelaySeconds: 5,
-      periodSeconds: 5
-    }
-  });
-}
-```
-
-### Composition Patterns
-
-Combine multiple factory functions to create application stacks. For complete examples:
-- **[Basic WebApp Pattern](../examples/basic-webapp.md)** - Simple app with deployment + service
-- **[Database + Application](../examples/database-app.md)** - Full stack with database integration  
-- **[Microservices Architecture](../examples/microservices.md)** - Multi-service composition
-
-Key composition techniques:
-- **Resource Dependencies**: ConfigMaps/Secrets created before deployments that use them
-- **Cross-Resource References**: Services reference deployment selectors
-- **Volume Mounting**: ConfigMaps and Secrets mounted into deployments
-
-## Creating Custom Factory Functions
-
-While TypeKro provides comprehensive built-in factory functions, you can create custom factories for organization-specific patterns, complex resources, or specialized workflows.
-
-### Understanding Custom Factories
-
-Factory functions in TypeKro are functions that return Enhanced Kubernetes resources with:
-
-- **Type safety** - Full TypeScript validation
-- **Cross-resource references** - Ability to reference other resources
-- **Status tracking** - Runtime status information
-- **Consistent patterns** - Standardized configuration interfaces
-
-```typescript
-// Basic factory function signature
-function customFactory(config: ConfigType): Enhanced<SpecType, StatusType> {
-  return createResource({
-    // Kubernetes resource definition
-  });
-}
-```
-
-### Basic Custom Factory
-
-```typescript
-import { createResource, Cel } from 'typekro';
-import type { V1Deployment, V1DeploymentStatus } from '@kubernetes/client-node';
-
-interface CustomDeploymentConfig {
-  name: string;
-  image: string;
-  replicas?: number;
-  environment: 'development' | 'staging' | 'production';
-  team: string;
-  monitoring?: boolean;
-}
-
-export function customDeployment(
-  config: CustomDeploymentConfig
-): Enhanced<V1Deployment, V1DeploymentStatus> {
-  const {
-    name,
-    image,
-    replicas = 1,
-    environment,
-    team,
-    monitoring = false
-  } = config;
-
-  return createResource({
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: {
-      name,
-      labels: {
-        app: name,
-        team,
-        environment,
-        'managed-by': 'typekro',
-        ...(monitoring && { 'monitoring.enabled': 'true' })
-      },
-      annotations: {
-        'typekro.io/created-by': 'custom-deployment-factory',
-        'typekro.io/team': team,
-        'typekro.io/environment': environment
-      }
-    },
-    spec: {
-      replicas,
-      selector: {
-        matchLabels: { app: name }
-      },
-      template: {
-        metadata: {
-          labels: {
-            app: name,
-            team,
-            environment
-          }
-        },
-        spec: {
-          containers: [{
-            name,
-            image,
-            ports: [{ containerPort: 3000 }],
-            
-            // Environment-specific configuration
-            resources: getResourcesByEnvironment(environment),
-            
-            // Standard environment variables
-            env: [
-              { name: 'NODE_ENV', value: environment },
-              { name: 'TEAM', value: team },
-              { name: 'APP_NAME', value: name }
-            ],
-            
-            // Standard health checks
-            livenessProbe: {
-              httpGet: { path: '/health', port: 3000 },
-              initialDelaySeconds: 30,
-              periodSeconds: 10
-            },
-            readinessProbe: {
-              httpGet: { path: '/ready', port: 3000 },
-              initialDelaySeconds: 5,
-              periodSeconds: 5
-            },
-            
-            // Security context
-            securityContext: {
-              runAsNonRoot: true,
-              runAsUser: 1000,
-              allowPrivilegeEscalation: false,
-              readOnlyRootFilesystem: true
-            }
-          }],
-          
-          // Pod security context
-          securityContext: {
-            runAsNonRoot: true,
-            runAsUser: 1000,
-            fsGroup: 1000
-          }
-        }
-      }
-    }
-  });
-}
-
-// Helper function for environment-specific resources
-function getResourcesByEnvironment(environment: string) {
-  const resourceConfigs = {
-    development: {
-      requests: { cpu: '100m', memory: '256Mi' },
-      limits: { cpu: '200m', memory: '512Mi' }
-    },
-    staging: {
-      requests: { cpu: '200m', memory: '512Mi' },
-      limits: { cpu: '500m', memory: '1Gi' }
-    },
-    production: {
-      requests: { cpu: '500m', memory: '1Gi' },
-      limits: { cpu: '1000m', memory: '2Gi' }
-    }
-  };
-  
-  return resourceConfigs[environment] || resourceConfigs.development;
-}
-```
-
-### Multi-Resource Custom Factory
-
-Create factories that generate multiple related resources. For complete examples:
-- **[Database + Application Stack](../examples/database-app.md)** - Full stack with optional database
-- **[Microservices Platform](../examples/microservices.md)** - Complex multi-service architecture
-
-Key patterns for multi-resource factories:
-  const { name, image, replicas, environment, team, database, ingress } = config;
-  
-  // Configuration ConfigMap
-  const configMap = createResource({
-    apiVersion: 'v1',
-    kind: 'ConfigMap',
-    metadata: {
-      name: Cel.expr(name, '-config'),
-      labels: { app: name, team, environment }
-    },
-    data: {
-      'app.properties': `
-        app.name=${name}
-        app.environment=${environment}
-        app.team=${team}
-        logging.level=${environment === 'production' ? 'INFO' : 'DEBUG'}
-      `,
-      'features.json': JSON.stringify({
-        database: database?.enabled || false,
-        monitoring: environment === 'production',
-        debugging: environment !== 'production'
-      })
-    }
-  });
-
-  // Main application deployment
-  const deployment = createResource({
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: {
-      name,
-      labels: { app: name, team, environment }
-    },
-    spec: {
-      replicas,
-      selector: { matchLabels: { app: name } },
-      template: {
-        metadata: { labels: { app: name, team, environment } },
-        spec: {
-          containers: [{
-            name,
-            image,
-            ports: [{ containerPort: 3000 }],
-            env: [
-              { name: 'CONFIG_PATH', value: '/etc/config' },
-              ...(database?.enabled ? [
-                { name: 'DATABASE_HOST', value: Cel.expr(name, '-database-service') },
-                { name: 'DATABASE_PORT', value: '5432' }
-              ] : [])
-            ],
-            volumeMounts: [{
-              name: 'config',
-              mountPath: '/etc/config'
-            }],
-            resources: getResourcesByEnvironment(environment)
-          }],
-          volumes: [{
-            name: 'config',
-            configMap: { name: configMap.metadata.name }
-          }]
-        }
-      }
-    }
-  });
-
-  // Service for the application
-  const service = createResource({
-    apiVersion: 'v1',
-    kind: 'Service',
-    metadata: {
-      name: Cel.expr(name, '-service'),
-      labels: { app: name, team, environment }
-    },
-    spec: {
-      selector: { app: name },
-      ports: [{ port: 80, targetPort: 3000 }],
-      type: 'ClusterIP'
-    }
-  });
-
-  const resources: WebApplicationResources = {
-    deployment,
-    service,
-    configMap
-  };
-
-  // Optional database
-  if (database?.enabled) {
-    // Optional database resources would be created here
-    // See database-app.md example for complete implementation
-    
-    resources.database = databaseDeployment;
-    resources.databaseService = databaseService; 
-    resources.storage = storage;
-  }
-
-  return resources;
-}
-```
-
-## Custom Factory Patterns
-
-### Composition Pattern
-Create base factories with common functionality, then extend them for specific use cases. This promotes code reuse and consistency.
-
-### Builder Pattern  
-Use fluent interfaces to create complex factories with optional features. See examples in the [Microservices Pattern](../examples/microservices.md).
-
-## Type Safety Features
-
-### Compile-Time Validation
-
-Factory functions provide full TypeScript validation:
-
-```typescript
-// ✅ This works
-const deployment = simple.Deployment({
-  name: 'my-app',
-  image: 'nginx:latest',
-  replicas: 3
+const deployment = Deployment({
+  name: 'web-app',
+  image: 'nginx:latest'
 });
 
-// ❌ TypeScript errors
-const badDeployment = simple.Deployment({
-  name: 123,           // Error: number not assignable to string
-  image: 'nginx:latest',
-  replicas: '3',       // Error: string not assignable to number
-  invalidField: true   // Error: object literal may only specify known properties
+// Access metadata
+console.log(deployment.metadata.name);      // 'web-app'
+console.log(deployment.metadata.namespace); // 'default' (or inherited)
+
+// Access spec 
+console.log(deployment.spec.replicas);      // 1 (default)
+console.log(deployment.spec.template);      // Full pod template
+
+// Access status (live from cluster)
+console.log(deployment.status.readyReplicas);   // Number of ready pods
+console.log(deployment.status.availableReplicas); // Available replicas
+```
+
+### Use in CEL Expressions
+
+Enhanced resources work seamlessly with CEL:
+
+```typescript
+const app = Deployment({
+  name: 'api',
+  image: 'myapi:latest'
 });
-```
 
-### IDE Support
-
-Get full autocomplete and documentation:
-
-```typescript
-const deployment = simple.Deployment({
-  name: 'my-app',
-  image: 'nginx:latest',
-  // IDE shows all available options with documentation
-  resources: {
-    // Autocomplete for cpu, memory, etc.
-  },
-  // Hover for parameter documentation
+const service = Service({
+  name: 'api-service',
+  selector: { app: 'api' },
+  ports: [{ port: 80 }]
 });
-```
 
-## Testing Custom Factories
-
-Test your custom factories to ensure they generate the expected Kubernetes resources:
-- **Unit tests** for factory logic and resource generation
-- **Integration tests** for cross-resource references
-- **Schema validation** for input parameters
-
-## Best Practices
-
-### 1. Use Descriptive Names
-```typescript
-// ✅ Good
-const userApiDeployment = simple.Deployment({ name: 'user-api' });
-const userApiService = simple.Service({ name: 'user-api-service' });
-
-// ❌ Avoid
-const d1 = simple.Deployment({ name: 'app' });
-const s1 = simple.Service({ name: 'svc' });
-```
-
-### 2. Group Related Resources
-```typescript
-const userService = {
-  deployment: simple.Deployment({ /* ... */ }),
-  service: simple.Service({ /* ... */ }),
-  configMap: simple({ /* ... */ })
+// Create dynamic status based on resource state
+return {
+  ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+  endpoint: Cel.template('http://%s:80', service.status.clusterIP),
+  healthy: Cel.expr<boolean>(
+    app.status.readyReplicas, 
+    ' == ', 
+    app.spec.replicas
+  )
 };
 ```
 
-### 3. Use Environment Variables for Configuration
+### Chain Resource References
+
+Resources can reference each other naturally:
+
 ```typescript
-const deployment = simple.Deployment({
-  name: 'api',
-  image: process.env.API_IMAGE || 'api:latest',
-  replicas: parseInt(process.env.API_REPLICAS || '3'),
+const database = Deployment({
+  name: 'postgres',
+  image: 'postgres:15'
+});
+
+const dbService = Service({
+  name: 'postgres-service',
+  selector: { app: 'postgres' }, // Matches deployment
+  ports: [{ port: 5432 }]
+});
+
+const app = Deployment({
+  name: 'web-app',
+  image: 'myapp:latest',
   env: {
-    NODE_ENV: process.env.NODE_ENV || 'production',
-    LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+    // Reference the database service
+    DATABASE_HOST: dbService.status.clusterIP,
+    DATABASE_PORT: '5432'
   }
 });
 ```
 
-### 4. Validate Configuration
+## Advanced Factory Patterns
+
+### Environment-Specific Configuration
+
 ```typescript
-import { type } from 'arktype';
+const createApp = (env: 'dev' | 'staging' | 'prod') => {
+  const config = {
+    dev: { replicas: 1, resources: { cpu: '100m', memory: '128Mi' } },
+    staging: { replicas: 2, resources: { cpu: '250m', memory: '256Mi' } },
+    prod: { replicas: 5, resources: { cpu: '500m', memory: '1Gi' } }
+  }[env];
 
-const DeploymentConfig = type({
-  name: 'string>2',  // At least 3 characters
-  image: 'string',
-  replicas: 'number>0',  // At least 1
-  environment: '"dev" | "staging" | "prod"'
-});
-
-function createDeployment(config: unknown) {
-  const validConfig = DeploymentConfig(config);
-  if (validConfig instanceof type.errors) {
-    throw new Error(Cel.template('Invalid config: %s', validConfig.summary));
-  }
-  
-  return simple.Deployment(validConfig);
-}
+  return Deployment({
+    name: `app-${env}`,
+    image: 'myapp:latest',
+    replicas: config.replicas,
+    resources: config.resources
+  });
+};
 ```
 
-### 5. Use TypeScript Strictly
+### Resource Templates
 
 ```typescript
-// ✅ Define strict interfaces
-interface StrictConfig {
-  name: string;
-  image: string;
-  replicas: number;
-  environment: 'dev' | 'staging' | 'prod';
-}
+const createMicroservice = (name: string, image: string, port: number) => {
+  const deployment = Deployment({
+    name,
+    image,
+    ports: [{ containerPort: port }],
+    resources: {
+      requests: { cpu: '100m', memory: '128Mi' },
+      limits: { cpu: '500m', memory: '512Mi' }
+    }
+  });
 
-// ✅ Use generic types
-function typedFactory<T extends BaseConfig>(
-  config: T
-): Enhanced<V1Deployment, V1DeploymentStatus> {
-  // Implementation
-}
+  const service = Service({
+    name: `${name}-service`,
+    selector: { app: name },
+    ports: [{ port: 80, targetPort: port }]
+  });
+
+  return { deployment, service };
+};
+
+// Usage
+const { deployment: api, service: apiService } = createMicroservice(
+  'api-server', 
+  'myapi:v1.0.0', 
+  3000
+);
 ```
 
-### 6. Provide Sensible Defaults
+### Conditional Resources
 
 ```typescript
-// ✅ Merge with defaults
-function factoryWithDefaults(config: Config) {
-  const defaults = {
-    replicas: 1,
-    resources: { cpu: '100m', memory: '256Mi' },
-    healthChecks: true
+const composition = kubernetesComposition(definition, (spec) => {
+  const app = Deployment({
+    name: spec.name,
+    image: spec.image
+  });
+
+  // Only create ingress in production
+  const ingress = spec.environment === 'production' 
+    ? Ingress({
+        name: `${spec.name}-ingress`,
+        host: `${spec.name}.example.com`,
+        serviceName: `${spec.name}-service`
+      })
+    : null;
+
+  return {
+    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    hasIngress: spec.environment === 'production'
   };
-  
-  const finalConfig = { ...defaults, ...config };
-  // Use finalConfig
-}
+});
 ```
 
-### 7. Document Thoroughly
+## Factory Configuration Options
+
+### Common Options
+
+All factories support common Kubernetes resource options:
 
 ```typescript
-/**
- * Creates a production-ready web application deployment
- * 
- * @param config - Application configuration
- * @param config.name - Application name (3-63 characters, DNS-1123 compliant)
- * @param config.image - Container image with tag
- * @param config.replicas - Number of replicas (1-100)
- * @param config.environment - Deployment environment
- * @returns Enhanced deployment resource with typed status
- * 
- * @example
- * ```typescript
- * const app = webApplication({
- *   name: 'user-service',
- *   image: 'myregistry/user-service:v1.0.0',
- *   replicas: 3,
- *   environment: 'production'
- * });
- * ```
- */
-export function webApplication(config: WebApplicationConfig) {
-  // Implementation
+const deployment = Deployment({
+  name: 'my-app',
+  namespace: 'custom-namespace',  // Override namespace
+  labels: {                       // Additional labels
+    team: 'platform',
+    version: 'v1.0.0'
+  },
+  annotations: {                  // Additional annotations
+    'deployment.kubernetes.io/revision': '1'
+  },
+  
+  // Resource-specific options
+  image: 'myapp:latest',
+  replicas: 3
+});
+```
+
+### Resource-Specific Options
+
+Each factory has its own configuration:
+
+```typescript
+// Deployment-specific options
+const app = Deployment({
+  name: 'api',
+  image: 'myapi:latest',
+  replicas: 3,
+  strategy: {                    // Update strategy
+    type: 'RollingUpdate',
+    rollingUpdate: {
+      maxSurge: 1,
+      maxUnavailable: 0
+    }
+  },
+  securityContext: {             // Security settings
+    runAsNonRoot: true,
+    runAsUser: 1001
+  }
+});
+
+// Service-specific options  
+const service = Service({
+  name: 'api-service',
+  type: 'LoadBalancer',          // Service type
+  selector: { app: 'api' },
+  ports: [{ 
+    port: 80, 
+    targetPort: 3000,
+    protocol: 'TCP' 
+  }],
+  sessionAffinity: 'ClientIP'    // Session stickiness
+});
+```
+
+## Validation and Defaults
+
+Factories provide intelligent validation and defaults:
+
+```typescript
+// ✅ This works - sensible defaults applied
+const deployment = Deployment({
+  name: 'my-app',
+  image: 'nginx:latest'
+  // replicas: 1 (default)
+  // resources: reasonable defaults applied
+  // securityContext: secure defaults
+});
+
+// ❌ This fails at compile time
+const invalid = Deployment({
+  name: 'my-app',
+  // image is required!
+  replicas: -1  // Must be positive
+});
+```
+
+## YAML Integration
+
+TypeKro provides specialized deployment closures for integrating existing YAML manifests into your compositions:
+
+### `yamlFile()` - Single YAML File
+
+Deploy YAML files from local filesystem or remote Git repositories:
+
+```typescript
+import { yamlFile } from 'typekro';
+
+const composition = kubernetesComposition(definition, (spec) => {
+  // Local YAML file
+  const localManifests = yamlFile({
+    name: 'nginx-config',
+    path: './manifests/nginx.yaml',
+    namespace: spec.namespace
+  });
+
+  // Remote Git repository 
+  const fluxSystem = yamlFile({
+    name: 'flux-system',
+    path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+    deploymentStrategy: 'skipIfExists'
+  });
+
+  // Git repository with specific path
+  const helmController = yamlFile({
+    name: 'helm-controller',
+    path: 'git:github.com/fluxcd/helm-controller/config/default@main',
+    deploymentStrategy: 'replace'
+  });
+
+  const app = Deployment({
+    name: spec.name,
+    image: spec.image
+  });
+
+  return {
+    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    // YAML files don't have status - use static values
+    fluxReady: true
+  };
+});
+```
+
+### `yamlDirectory()` - Multiple YAML Files
+
+Deploy entire directories of YAML files with filtering:
+
+```typescript
+import { yamlDirectory } from 'typekro';
+
+const composition = kubernetesComposition(definition, (spec) => {
+  // Deploy all YAML files in a directory
+  const manifests = yamlDirectory({
+    name: 'app-manifests',
+    path: './k8s-manifests',
+    recursive: true,
+    include: ['*.yaml', '*.yml'],
+    exclude: ['*-test.yaml'],
+    namespace: spec.namespace
+  });
+
+  // Remote directory from Git
+  const crdManifests = yamlDirectory({
+    name: 'custom-crds',
+    path: 'git:github.com/example/crds/manifests@v1.0.0',
+    recursive: false,
+    include: ['crd-*.yaml'],
+    deploymentStrategy: 'skipIfExists'
+  });
+
+  const app = Deployment({
+    name: spec.name,
+    image: spec.image
+  });
+
+  return {
+    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    manifestsDeployed: true
+  };
+});
+```
+
+### Configuration Options
+
+Both functions support these configuration options:
+
+```typescript
+interface YamlFileConfig {
+  name: string;                    // Unique identifier
+  path: string;                    // File path or Git URL
+  namespace?: string;              // Target namespace
+  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail';
+}
+
+interface YamlDirectoryConfig extends YamlFileConfig {
+  recursive?: boolean;             // Search subdirectories
+  include?: string[];              // Glob patterns to include
+  exclude?: string[];              // Glob patterns to exclude
 }
 ```
 
-## Publishing Custom Factories
+### Path Formats
 
-### Package Structure
+YAML deployment closures support multiple path formats:
 
-```
-my-typekro-factories/
-├── src/
-│   ├── factories/
-│   │   ├── web-application.ts
-│   │   ├── monitoring-stack.ts
-│   │   └── index.ts
-│   └── types/
-│       └── index.ts
-├── __tests__/
-│   ├── web-application.test.ts
-│   └── monitoring-stack.test.ts
-├── package.json
-├── tsconfig.json
-└── README.md
-```
+```typescript
+// Local relative paths
+path: './manifests/app.yaml'
+path: './k8s'
 
-### Package Configuration
+// Local absolute paths  
+path: '/home/user/manifests/app.yaml'
 
-```json
-// package.json
-{
-  "name": "@myorg/typekro-factories",
-  "version": "1.0.0",
-  "description": "Custom TypeKro factory functions for MyOrg",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist/**/*"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "test": "bun test",
-    "prepublishOnly": "bun run build && bun run test"
-  },
-  "peerDependencies": {
-    "typekro": "^1.0.0",
-    "@kubernetes/client-node": "^0.20.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
-  },
-  "keywords": [
-    "typekro",
-    "kubernetes",
-    "infrastructure-as-code",
-    "typescript"
-  ]
-}
+// HTTPS URLs (for direct file downloads)
+path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml'
+
+// Git repository paths (git:host/org/repo/path@ref)
+path: 'git:github.com/fluxcd/helm-controller/config/default@main'
+path: 'git:gitlab.com/company/manifests/prod@v1.2.0'
+path: 'git:bitbucket.org/team/configs/k8s@feature-branch'
 ```
 
-## Next Steps
+### Deployment Strategies
 
-- **[Schemas & Types](./schemas-and-types.md)** - Master TypeKro's type system
-- **[Runtime Behavior](./runtime-behavior.md)** - Understand status, references, and external dependencies  
-- **[CEL Expressions](./cel-expressions.md)** - Add dynamic runtime logic
-- **[API Reference](../api/factories/)** - Complete factory function reference
-- **[Examples](../examples/)** - See factories in real applications
+Control how YAML resources are handled during deployment:
+
+```typescript
+// 'replace' (default) - Replace existing resources
+yamlFile({
+  name: 'app-config',
+  path: './config.yaml',
+  deploymentStrategy: 'replace'
+});
+
+// 'skipIfExists' - Only deploy if resource doesn't exist
+yamlFile({
+  name: 'one-time-setup',
+  path: './setup.yaml', 
+  deploymentStrategy: 'skipIfExists'
+});
+
+// 'fail' - Fail deployment if resource already exists
+yamlFile({
+  name: 'critical-config',
+  path: './critical.yaml',
+  deploymentStrategy: 'fail'
+});
+```
+
+### Integration with Enhanced Resources
+
+YAML deployment closures integrate seamlessly with TypeKro's Enhanced resources:
+
+```typescript
+const composition = kubernetesComposition(definition, (spec) => {
+  // YAML deployment closure - deploys during execution
+  const externalConfig = yamlFile({
+    name: 'external-config',
+    path: './external-manifests/config.yaml'
+  });
+
+  // Enhanced resource - provides type-safe status
+  const app = Deployment({
+    name: spec.name,
+    image: spec.image,
+    env: {
+      EXTERNAL_CONFIG_LOADED: 'true'
+    }
+  });
+
+  const service = Service({
+    name: `${spec.name}-service`,
+    selector: { app: spec.name },
+    ports: [{ port: 80 }]
+  });
+
+  return {
+    // Enhanced resources have live status
+    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    endpoint: service.status.clusterIP,
+    
+    // YAML closures don't have status - use static values
+    externalConfigDeployed: true
+  };
+});
+```
+
+### Common Use Cases
+
+**1. Bootstrap Infrastructure**
+```typescript
+// Deploy Flux CD system from official manifests
+const fluxBootstrap = yamlFile({
+  name: 'flux-system',
+  path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+  deploymentStrategy: 'skipIfExists'
+});
+```
+
+**2. Third-Party CRDs**
+```typescript
+// Deploy custom resource definitions
+const operatorCRDs = yamlDirectory({
+  name: 'operator-crds',
+  path: 'git:github.com/prometheus-operator/prometheus-operator/example/rbac@main',
+  include: ['*-crd.yaml']
+});
+```
+
+**3. Legacy Manifest Migration**
+```typescript
+// Gradually migrate existing YAML to TypeKro
+const legacyManifests = yamlDirectory({
+  name: 'legacy-configs',
+  path: './legacy-k8s',
+  recursive: true,
+  exclude: ['*-temp.yaml', 'old-*']
+});
+```
+
+**4. Multi-Environment Configs**
+```typescript
+const envManifests = yamlFile({
+  name: 'env-config',
+  path: `./environments/${spec.environment}.yaml`,
+  namespace: spec.namespace
+});
+```
+
+### Important Notes
+
+- **No Status Monitoring**: YAML deployment closures return `DeploymentClosure<AppliedResource[]>`, not `Enhanced<>` resources
+- **Use Static Values**: In status builders, use static values like `true` instead of referencing YAML closure status
+- **Automatic Registration**: Both functions automatically register as deployment closures in the composition context
+- **Git Authentication**: Git URLs use the same authentication as your local git configuration
+- **Namespace Override**: The `namespace` parameter applies to all resources in the YAML files
+
+## What's Next?
+
+Now that you understand factories, let's explore TypeKro's unique capabilities:
+
+### Next: [Magic Proxy System →](./magic-proxy.md)
+Discover how TypeKro creates seamless references between resources.
+
+**In this learning path:**
+- ✅ Your First App - Built your first TypeKro application
+- ✅ Factory Functions - Mastered resource creation  
+- 🎯 **Next**: Magic Proxy System - TypeKro's unique reference system
+- **Coming**: External References - Cross-composition coordination
+- **Finally**: Advanced Architecture - Deep technical understanding
+
+## Quick Reference
+
+### Essential Factory Imports
+```typescript
+import { Deployment, Service, ConfigMap, Secret } from 'typekro/simple';
+```
+
+### Most Common Factories
+```typescript
+// Workloads
+Deployment({ name, image, replicas?, env?, ports? })
+StatefulSet({ name, image, replicas?, volumeClaimTemplate? })
+Job({ name, image, command? })
+
+// Networking  
+Service({ name, selector, ports, type? })
+Ingress({ name, host, serviceName, servicePort })
+
+// Configuration
+ConfigMap({ name, data })
+Secret({ name, stringData })
+```
+
+### Working with Factory Outputs
+```typescript
+const resource = Deployment({ /* config */ });
+
+// Access properties
+resource.metadata.name
+resource.spec.replicas  
+resource.status.readyReplicas
+
+// Use in CEL expressions
+Cel.expr<boolean>(resource.status.readyReplicas, ' > 0')
+Cel.template('http://%s:80', resource.status.clusterIP)
+```
+
+Ready to see the magic? Continue to [Magic Proxy System →](./magic-proxy.md)

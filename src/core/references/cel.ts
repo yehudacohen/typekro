@@ -1,4 +1,4 @@
-import { getInnerCelPath, isCelExpression, isKubernetesRef } from '../../utils/index.js';
+import { getInnerCelPath, isCelExpression, isKubernetesRef } from '../../utils/index';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
 

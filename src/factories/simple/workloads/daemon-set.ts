@@ -6,13 +6,9 @@
  */
 
 import type { V1EnvVar } from '@kubernetes/client-node';
-
-import { daemonSet } from '../../kubernetes/workloads/daemon-set.js';
-import type {
-  V1DaemonSetSpec,
-  V1DaemonSetStatus,
-} from '../../kubernetes/workloads/daemon-set.js';
 import type { Enhanced } from '../../../core/types.js';
+import type { V1DaemonSetSpec, V1DaemonSetStatus } from '../../kubernetes/workloads/daemon-set.js';
+import { daemonSet } from '../../kubernetes/workloads/daemon-set.js';
 import type { DaemonSetConfig } from '../types.js';
 
 /**
@@ -21,9 +17,7 @@ import type { DaemonSetConfig } from '../types.js';
  * @param config - Configuration for the daemon set
  * @returns Enhanced DaemonSet resource
  */
-export function DaemonSet(
-  config: DaemonSetConfig
-): Enhanced<V1DaemonSetSpec, V1DaemonSetStatus> {
+export function DaemonSet(config: DaemonSetConfig): Enhanced<V1DaemonSetSpec, V1DaemonSetStatus> {
   const env: V1EnvVar[] = config.env
     ? Object.entries(config.env).map(([name, value]) => ({ name, value }))
     : [];

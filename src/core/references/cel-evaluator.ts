@@ -21,7 +21,7 @@
  */
 
 import { evaluate, parse } from 'cel-js';
-import { isKubernetesRef } from '../../utils/index.js';
+import { isKubernetesRef } from '../../utils/index';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import { CelEvaluationError } from '../types/references.js';
