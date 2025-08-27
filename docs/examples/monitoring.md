@@ -792,11 +792,11 @@ const retentionConfig = {
 ## Related Examples
 
 - **[Microservices](./microservices.md)** - Monitoring distributed systems
-- **[CI/CD Integration](./cicd.md)** - Deployment and pipeline monitoring
+- **[GitOps Guide](../guide/deployment/gitops.md)** - Deployment pipeline monitoring
 - **[Multi-Environment](./multi-environment.md)** - Environment-specific monitoring
 
 ## Learn More
 
-- **[Performance Optimization](../guide/performance.md)** - Monitoring performance patterns
+- **[Debugging Guide](../guide/debugging.md)** - Monitoring troubleshooting patterns
 - **[Factory Functions](../guide/factories.md)** - Reusable monitoring components
 - **[Cross-Resource References](../guide/cross-references.md)** - Service discovery patterns

@@ -712,4 +712,4 @@ config: simple({
 - [Workloads API](/api/factories/workloads) - Using configuration in deployments
 - [Storage API](/api/factories/storage) - Persistent configuration storage
 - [Types API](/api/types) - TypeScript type definitions
-- [Database Example](/examples/database) - Real-world configuration patterns
+- [Database Example](/examples/database-app) - Real-world configuration patterns

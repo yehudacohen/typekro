@@ -525,4 +525,4 @@ Or explore related topics:
 
 - **[Status Hydration](../status-hydration.md)** - Understanding status and references
 - **[Examples](../../examples/)** - Real-world deployment examples
-- **[Performance](../performance.md)** - Optimizing deployments
+- **[Debugging Guide](../debugging.md)** - Debug deployment issues

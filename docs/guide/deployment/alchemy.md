@@ -867,6 +867,5 @@ try {
 ## Next Steps
 
 - **[GitOps Workflows](./gitops.md)** - Deploy Alchemy + TypeKro with GitOps
-- **[Performance](../performance.md)** - Optimize multi-cloud deployments
-- **[Troubleshooting](../troubleshooting.md)** - Debug cloud integration issues
+- **[Debugging Guide](../debugging.md)** - Debug cloud integration issues
 - **[Examples](../../examples/)** - See real-world Alchemy + TypeKro applications

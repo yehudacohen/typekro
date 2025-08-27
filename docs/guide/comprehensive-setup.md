@@ -469,4 +469,4 @@ Now that you have a comprehensive setup, explore these advanced topics:
 - **[External References](./external-references.md)** - Cross-composition coordination
 - **[Advanced Architecture](./architecture.md)** - Deep technical understanding
 
-Need more help? Check our [Troubleshooting Guide](./troubleshooting.md) or [open an issue](https://github.com/yehudacohen/typekro/issues) on GitHub.
+Need more help? Check our [Debugging Guide](./debugging.md) or [open an issue](https://github.com/yehudacohen/typekro/issues) on GitHub.

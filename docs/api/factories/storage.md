@@ -610,4 +610,4 @@ metadata: {
 - [Workloads API](/api/factories/workloads) - StatefulSets and persistent workloads
 - [Configuration API](/api/factories/config) - ConfigMaps and Secrets
 - [Types API](/api/types) - TypeScript type definitions
-- [Database Example](/examples/database) - Real-world storage patterns
+- [Database Example](/examples/database-app) - Real-world storage patterns

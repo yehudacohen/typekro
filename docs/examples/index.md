@@ -26,12 +26,7 @@ Single codebase deployed across dev/staging/production with environment-specific
 
 **Learn:** Environment parametrization, resource scaling, GitOps workflows, deployment strategies
 
-### 5. [CI/CD Integration](./cicd.md) 🚀
-Complete CI/CD pipeline with GitHub Actions, ArgoCD, and automated testing.
-
-**Learn:** GitOps integration, automated deployments, testing strategies, production workflows
-
-### 6. [Monitoring Stack](./monitoring.md) 📊
+### 5. [Monitoring Stack](./monitoring.md) 📊
 Comprehensive observability with Prometheus, Grafana, and custom metrics.
 
 **Learn:** Infrastructure monitoring, custom metrics, alerting, operational patterns
@@ -101,8 +96,7 @@ Follow this path to master TypeKro systematically:
 Skip basics and focus on TypeKro's unique features:
 
 1. **[Microservices](./microservices.md)** - Complex service coordination
-2. **[CI/CD Integration](./cicd.md)** - Production GitOps workflows
-3. **[Monitoring Stack](./monitoring.md)** - Operational excellence
+2. **[Monitoring Stack](./monitoring.md)** - Operational excellence
 
 ### **🔵 Infrastructure as Code Background?**
 Compare TypeKro with your current tools:
@@ -110,21 +104,21 @@ Compare TypeKro with your current tools:
 - **vs Pulumi**: See [Basic WebApp](./basic-webapp.md) for type-safety comparison
 - **vs CDK8s**: See [Database Integration](./database-app.md) for runtime intelligence
 - **vs Helm**: See [Multi-Environment](./multi-environment.md) for deterministic YAML
-- **vs Kustomize**: See [CI/CD Integration](./cicd.md) for programmatic flexibility
+- **vs Kustomize**: See [Multi-Environment](./multi-environment.md) for programmatic flexibility
 
 ## 🎯 **Choose Your Path**
 
 ### **I want to build...**
 - **Web Applications**: Start with [Basic WebApp](./basic-webapp.md) → [Database Integration](./database-app.md)
 - **API Services**: [Database Integration](./database-app.md) → [Microservices](./microservices.md)  
-- **Production Infrastructure**: [Multi-Environment](./multi-environment.md) → [CI/CD Integration](./cicd.md)
+- **Production Infrastructure**: [Multi-Environment](./multi-environment.md) → [Monitoring](./monitoring.md)
 - **Observability**: [Monitoring Stack](./monitoring.md)
 
 ### **I want to learn...**
 - **TypeKro Basics**: [Basic WebApp](./basic-webapp.md)
 - **Resource Dependencies**: [Database Integration](./database-app.md)
 - **Complex Orchestration**: [Microservices](./microservices.md)
-- **GitOps Workflows**: [CI/CD Integration](./cicd.md)
+- **GitOps Workflows**: See [GitOps Guide](../guide/deployment/gitops.md)
 - **Production Patterns**: [Multi-Environment](./multi-environment.md) + [Monitoring](./monitoring.md)
 
 ## 🏃‍♂️ **Running the Examples**

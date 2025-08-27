@@ -671,4 +671,4 @@ const graph = kubernetesComposition({
 - **[KRO Integration](./kro.md)** - Advanced orchestration with KRO
 - **[GitOps](./gitops.md)** - Production GitOps workflows  
 - **[Examples](../../examples/)** - Real-world Helm integration examples
-- **[Performance](../performance.md)** - Optimizing Helm deployments
+- **[Debugging Guide](../debugging.md)** - Debug deployment issues

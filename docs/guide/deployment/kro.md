@@ -959,4 +959,4 @@ const rollbackPlan = {
 - **[GitOps Workflows](./gitops.md)** - Use KRO with GitOps for production deployments
 - **[Alchemy Integration](./alchemy.md)** - Extend to multi-cloud with Alchemy
 - **[Status Hydration](../status-hydration.md)** - Deep dive into KRO status management
-- **[Performance](../performance.md)** - Optimize KRO deployments for scale
+- **[Debugging Guide](../debugging.md)** - Debug KRO deployment issues

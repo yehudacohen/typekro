@@ -473,7 +473,7 @@ const scaling = {
 
 - **[Database Integration](./database-app.md)** - Learn about database patterns used in each service
 - **[Multi-Environment](./multi-environment.md)** - Deploy this application across environments
-- **[CI/CD Integration](./cicd.md)** - Automate deployment of microservices
+- **[GitOps Guide](../guide/deployment/gitops.md)** - Automate deployment of microservices
 
 ## Learn More
 

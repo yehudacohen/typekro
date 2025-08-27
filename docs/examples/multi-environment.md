@@ -508,11 +508,11 @@ const resources = {
 
 - **[Database Integration](./database-app.md)** - Database patterns used across environments
 - **[Microservices](./microservices.md)** - Multi-service environment deployment
-- **[CI/CD Integration](./cicd.md)** - Automated environment promotion
+- **[GitOps Guide](../guide/deployment/gitops.md)** - Automated environment promotion
 
 ## Learn More
 
 - **[GitOps Workflows](../guide/deployment/gitops.md)** - YAML generation and CD integration
 - **[Direct Deployment](../guide/deployment/direct.md)** - Development environment setup
 - **[KRO Integration](../guide/deployment/kro.md)** - Production orchestration
-- **[Performance Optimization](../guide/performance.md)** - Environment-specific tuning
+- **[Debugging Guide](../guide/debugging.md)** - Environment-specific troubleshooting
