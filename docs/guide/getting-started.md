@@ -158,4 +158,4 @@ Ready to dive deeper? Follow the **Learning Path** for a structured progression:
 kubectl cluster-info
 ```
 
-**Need more help?** [Open an issue](https://github.com/yehudacohen/typekro/issues) or check our [Troubleshooting Guide](./troubleshooting.md).
+**Need more help?** [Open an issue](https://github.com/yehudacohen/typekro/issues) or check our [Debugging Guide](./debugging.md).

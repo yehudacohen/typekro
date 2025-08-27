@@ -941,4 +941,4 @@ process.on('SIGINT', async () => {
 - **[KRO Integration](./kro.md)** - Advanced orchestration with KRO
 - **[GitOps Workflows](./gitops.md)** - Deploy via GitOps with YAML generation
 - **[Status Hydration](../status-hydration.md)** - Monitor deployment status
-- **[Troubleshooting](../troubleshooting.md)** - Debug deployment issues
+- **[Debugging Guide](../debugging.md)** - Debug deployment issues

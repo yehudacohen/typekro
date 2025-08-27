@@ -1116,7 +1116,7 @@ This architecture documentation provides the foundation for advanced TypeKro usa
 
 ### **Next Steps:**
 - **[Custom Factories](./custom-factories.md)** - Build your own resource types
-- **[Performance & Troubleshooting](./troubleshooting.md)** - Debug and optimize  
+- **[Debugging Guide](./debugging.md)** - Debug and optimize  
 - **[Deployment Guides](./deployment/)** - Production deployment strategies
 
 ### **Architecture Summary:**
@@ -1590,11 +1590,10 @@ Congratulations! You now have a deep understanding of TypeKro's architecture and
 
 #### **Advanced Topics**
 - [Custom Factory Functions](./custom-factories.md) - Build your own resource factories
-- [Performance Optimization](./performance.md) - Optimize large deployments  
-- [Troubleshooting](./troubleshooting.md) - Debug complex issues
+- [Debugging Guide](./debugging.md) - Debug complex issues
 
 #### **Community & Contribution**
-- [Contributing Guide](../../CONTRIBUTING.md) - Help improve TypeKro
+- [Contributing Guide](https://github.com/yehudacohen/typekro/blob/main/CONTRIBUTING.md) - Help improve TypeKro
 - [Discord Community](https://discord.gg/kKNSDDjW) - Connect with other users
 - [GitHub Issues](https://github.com/yehudacohen/typekro/issues) - Report bugs or request features
 

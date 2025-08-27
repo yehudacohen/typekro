@@ -1202,6 +1202,5 @@ flux reconcile kustomization webapp-production
 ## Next Steps
 
 - **[Type Safety](../type-safety.md)** - Ensure configuration correctness
-- **[Performance](../performance.md)** - Optimize GitOps workflows  
-- **[Troubleshooting](../troubleshooting.md)** - Debug GitOps deployment issues
+- **[Debugging Guide](../debugging.md)** - Debug GitOps deployment issues
 - **[Examples](../../examples/)** - See complete GitOps examples

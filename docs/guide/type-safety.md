@@ -942,7 +942,6 @@ function assertValidConfig(input: unknown): asserts input is AppConfig {
 
 ## Next Steps
 
-- **[Performance](./performance.md)** - Optimize type checking performance
 - **[Custom Factories](./custom-factories.md)** - Build type-safe custom factories
-- **[Troubleshooting](./troubleshooting.md)** - Debug type-related issues
+- **[Debugging Guide](./debugging.md)** - Debug type-related issues
 - **[Examples](../examples/)** - See type safety in action
