@@ -4,13 +4,22 @@ TypeKro supports multiple deployment strategies to fit different workflows, envi
 
 ## Deployment Methods Overview
 
-| Method | Best For | Complexity | Live Status | GitOps | Enterprise |
-|--------|----------|------------|-------------|--------|------------|
-| **[Direct](./direct.md)** | Development, Testing | Low | ✅ Yes | ❌ No | ❌ No |
-| **[GitOps](./gitops.md)** | Production, Teams | Medium | ❌ No | ✅ Yes | ✅ Yes |
-| **[KRO](./kro.md)** | Advanced Orchestration | High | ✅ Yes | ✅ Yes | ✅ Yes |
-| **[Alchemy](./alchemy.md)** | Enterprise Grade | High | ✅ Yes | ✅ Yes | ✅ Yes |
-| **[Helm](./helm.md)** | Package Management | Medium | ❌ No | ✅ Yes | ✅ Yes |
+TypeKro provides two core factory modes that can be enhanced with optional integrations:
+
+### Core Factory Modes
+
+| Mode | Best For | Complexity | Live Status | GitOps Ready |
+|------|----------|------------|-------------|--------------|
+| **[Direct](./direct.md)** | Development, Testing | Low | ✅ Yes | ✅ Yes |
+| **[KRO](./kro.md)** | Production, Advanced Orchestration | High | ✅ Yes | ✅ Yes |
+
+### Optional Enhancements
+
+| Enhancement | Works With | Purpose |
+|-------------|------------|----------|
+| **[Alchemy Integration](./alchemy.md)** | Direct + KRO | Infrastructure state tracking and multi-cloud resources |
+| **[Helm Resources](./helm.md)** | Direct + KRO | Deploy and manage Helm charts as Enhanced resources |
+| **[YAML Integration](../factories.md#yaml-integration)** | Direct + KRO | Deploy existing YAML manifests alongside Enhanced resources |
 
 ## Quick Decision Guide
 
@@ -25,52 +34,121 @@ const factory = graph.factory('direct', { namespace: 'dev' });
 await factory.deploy(spec);
 ```
 
-### Choose **GitOps** if:
-- You want version-controlled infrastructure
-- You need audit trails and approval workflows
-- You're deploying to production environments
-- You're working with a team
-
-```typescript
-const yaml = graph.toYaml(spec);
-writeFileSync('deployment.yaml', yaml);
-// Commit to Git → ArgoCD/Flux deploys
-```
-
-### Choose **KRO Integration** if:
+### Choose **KRO Deployment** if:
 - You need advanced resource orchestration
-- You want declarative status management
+- You want declarative status management  
 - You need complex dependency handling
-- You're building platform abstractions
+- You're deploying to production environments
 
 ```typescript
 const factory = graph.factory('kro', { namespace: 'prod' });
 await factory.deploy(spec);
 ```
 
-### Choose **Alchemy** if:
-- You need enterprise-grade deployment capabilities
-- You want advanced traffic management
-- You need multi-cluster deployments
-- You require compliance and governance
+### Use **GitOps Workflow** with:
+- Version-controlled infrastructure deployments
+- Audit trails and approval workflows
+- Team collaboration requirements
 
 ```typescript
-const factory = graph.factory('alchemy', { 
+// Generate YAML for GitOps tools (works with both modes)
+const factory = graph.factory('kro');
+const yaml = factory.toYaml(spec);
+writeFileSync('deployment.yaml', yaml);
+// Commit to Git → ArgoCD/Flux deploys
+```
+
+### Choose **Direct** for:
+- Development and testing
+- Immediate feedback and iteration
+- Simple deployment workflows
+
+```typescript
+const factory = graph.factory('direct', { namespace: 'dev' });
+await factory.deploy(spec);
+```
+
+### Choose **KRO** for:
+- Production deployments
+- Advanced resource orchestration
+- Declarative status management
+- Complex dependency handling
+
+```typescript
+const factory = graph.factory('kro', { namespace: 'prod' });
+await factory.deploy(spec);
+```
+
+### Add **Alchemy Integration** when:
+- You need infrastructure state tracking
+- You want multi-cloud resource management
+- You require resource lifecycle management
+
+```typescript
+// Works with both Direct and KRO modes
+const factory = graph.factory('direct', { 
   namespace: 'prod',
-  cluster: 'us-west-2'
+  alchemyScope: myAlchemyScope  // Alchemy state tracking
 });
 await factory.deploy(spec);
 ```
 
-### Choose **Helm** if:
-- You're packaging applications for distribution
-- You need templated deployments
-- You want to leverage the Helm ecosystem
-- You're migrating from existing Helm charts
+### Use **Helm Resources** when:
+- You want to deploy existing Helm charts
+- You need templated deployments with values
+- You want HelmRelease status monitoring
 
 ```typescript
-const helmChart = graph.toHelmChart(spec);
-writeFileSync('Chart.yaml', helmChart);
+import { helmRelease } from 'typekro';
+
+// Helm resources work with any factory mode
+const graph = kubernetesComposition(definition, (spec) => ({
+  myApp: helmRelease({
+    name: 'nginx',
+    chart: { repository: 'https://charts.bitnami.com/bitnami', name: 'nginx' },
+    values: { replicaCount: spec.replicas }
+  })
+}));
+
+// Deploy using any factory mode
+const factory = graph.factory('direct'); // or 'kro'
+await factory.deploy(spec);
+```
+
+### Use **YAML Integration** when:
+- You have existing YAML manifests to integrate
+- You're migrating from pure YAML to TypeKro
+- You need to bootstrap infrastructure from external sources
+
+```typescript
+import { yamlFile, yamlDirectory } from 'typekro';
+
+// YAML deployment closures work with any factory mode
+const graph = kubernetesComposition(definition, (spec) => ({
+  // Bootstrap Flux system
+  fluxSystem: yamlFile({
+    name: 'flux-bootstrap',
+    path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+    deploymentStrategy: 'skipIfExists'
+  }),
+  
+  // Deploy environment-specific manifests
+  envManifests: yamlDirectory({
+    name: 'env-config',
+    path: `./manifests/${spec.environment}`,
+    include: ['*.yaml']
+  }),
+
+  // TypeKro Enhanced resources alongside YAML
+  app: Deployment({
+    name: spec.name,
+    image: spec.image
+  })
+}));
+
+// Deploy using any factory mode
+const factory = graph.factory('kro'); // or 'direct'
+await factory.deploy(spec);
 ```
 
 ## Deployment Patterns
@@ -92,10 +170,9 @@ await devFactory.deploy({
   environment: 'development'
 });
 
-// 2. Watch for changes
-devFactory.onStatusUpdate((status) => {
-  console.log('App status:', status);
-});
+// 2. Get status
+const status = await devFactory.getStatus();
+console.log('App status:', status);
 ```
 
 ### Staging/Production Workflow
@@ -103,15 +180,18 @@ devFactory.onStatusUpdate((status) => {
 For production-ready deployments:
 
 ```typescript
-// 1. Generate YAML for staging
-const stagingYaml = graph.toYaml({
+// 1. Generate ResourceGraphDefinition YAML once
+const rgdYaml = graph.toYaml();
+
+// 2. Create factory for instance YAML generation  
+const factory = graph.factory('kro');
+const stagingYaml = factory.toYaml({
   name: 'my-app-staging',
   image: 'my-app:v1.2.3',
   environment: 'staging'
 });
 
-// 2. Generate YAML for production
-const prodYaml = graph.toYaml({
+const prodYaml = factory.toYaml({
   name: 'my-app-prod',
   image: 'my-app:v1.2.3',
   environment: 'production'
@@ -124,24 +204,69 @@ writeFileSync('k8s/production/app.yaml', prodYaml);
 // 4. GitOps tool (ArgoCD/Flux) deploys automatically
 ```
 
-### Multi-Environment Deployment
+### Multi-Environment Deployment with Enhancements
 
-Deploy the same application across multiple environments:
+Deploy the same application across multiple environments using different factory configurations and optional enhancements:
 
 ```typescript
-const environments = ['dev', 'staging', 'prod'];
+import { kubernetesComposition, yamlFile, helmRelease } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
+
+// Composition using multiple optional enhancements
+const hybridApp = kubernetesComposition(definition, (spec) => ({
+  // YAML Integration - Bootstrap infrastructure
+  fluxSystem: yamlFile({
+    name: 'flux-bootstrap',
+    path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+    deploymentStrategy: 'skipIfExists'
+  }),
+  
+  // Helm Resource - Database
+  database: helmRelease({
+    name: 'postgres',
+    chart: { repository: 'https://charts.bitnami.com/bitnami', name: 'postgresql' },
+    values: { 
+      auth: { database: spec.name },
+      primary: { persistence: { size: spec.environment === 'prod' ? '100Gi' : '10Gi' } }
+    }
+  }),
+  
+  // TypeKro Enhanced Resource - Application
+  app: Deployment({
+    name: spec.name,
+    image: spec.image,
+    replicas: spec.environment === 'prod' ? 5 : 2,
+    env: {
+      DATABASE_HOST: 'postgres-postgresql'
+    }
+  }),
+
+  service: Service({
+    name: `${spec.name}-service`,
+    selector: { app: spec.name },
+    ports: [{ port: 80 }]
+  })
+}));
+
+// Deploy across environments with different configurations
+const environments = [
+  { name: 'dev', mode: 'direct', alchemy: false },
+  { name: 'staging', mode: 'kro', alchemy: false },
+  { name: 'prod', mode: 'kro', alchemy: true }
+] as const;
 
 for (const env of environments) {
-  const factory = graph.factory(
-    env === 'dev' ? 'direct' : 'kro',
-    { namespace: env }
-  );
+  const factoryOptions = {
+    namespace: env.name,
+    ...(env.alchemy && { alchemyScope: productionAlchemyScope })
+  };
+  
+  const factory = hybridApp.factory(env.mode, factoryOptions);
   
   await factory.deploy({
-    name: `my-app-${env}`,
-    image: env === 'prod' ? 'my-app:v1.2.3' : 'my-app:latest',
-    replicas: env === 'prod' ? 5 : 2,
-    environment: env
+    name: `my-app-${env.name}`,
+    image: env.name === 'prod' ? 'my-app:v1.2.3' : 'my-app:latest',
+    environment: env.name
   });
 }
 ```
@@ -153,17 +278,11 @@ for (const env of environments) {
 All deployment methods support common configuration:
 
 ```typescript
-const factory = graph.factory('method', {
+const factory = graph.factory('direct', {
   namespace: 'my-namespace',        // Target namespace
   timeout: 300000,                  // Deployment timeout (5 minutes)
   waitForReady: true,               // Wait for resources to be ready
-  labels: {                         // Additional labels
-    'managed-by': 'typekro',
-    'team': 'platform'
-  },
-  annotations: {                    // Additional annotations
-    'deployment.kubernetes.io/revision': '1'
-  }
+  // Note: labels and annotations are set per resource, not at factory level
 });
 ```
 
@@ -202,25 +321,32 @@ const factory = graph.factory('kro', config[environment]);
 
 ### Live Status Updates
 
-Direct and KRO deployments provide live status:
+Both Direct and KRO factories provide live status, with or without Alchemy integration:
 
 ```typescript
-const factory = graph.factory('direct');
+// Works with any factory configuration
+const factory = graph.factory('direct', { 
+  namespace: 'prod',
+  alchemyScope: myAlchemyScope  // Optional Alchemy integration
+});
+
 await factory.deploy(spec);
 
 // Get current status
 const status = await factory.getStatus();
 console.log('Current status:', status);
+console.log('Alchemy managed:', factory.isAlchemyManaged);
 
-// Listen for updates
-factory.onStatusUpdate((newStatus) => {
-  console.log('Status changed:', newStatus);
-});
+// Get all instances
+const instances = await factory.getInstances();
+console.log('All instances:', instances);
 
-// Monitor specific fields
-factory.onFieldChange('ready', (ready) => {
-  console.log('Readiness changed:', ready);
-});
+// Status includes both Kubernetes and Alchemy state (if enabled)
+const checkStatus = async () => {
+  const status = await factory.getStatus();
+  console.log('Deployment status:', status);
+};
+setInterval(checkStatus, 5000);
 ```
 
 ### GitOps Status Checking
@@ -360,13 +486,9 @@ const factory = graph.factory('kro', {
 
 ```typescript
 // Use external secret management
-const factory = graph.factory('alchemy', {
-  namespace: 'production',
-  secretProvider: {
-    type: 'vault',
-    endpoint: 'https://vault.company.com',
-    path: 'secret/myapp'
-  }
+const factory = graph.factory('kro', {
+  namespace: 'production'
+  // Note: Secret management would be handled differently
 });
 ```
 
@@ -386,16 +508,21 @@ const factory = graph.factory('kro', {
 
 ## Next Steps
 
-Choose your deployment method and dive deeper:
+Choose your deployment strategy and dive deeper:
 
-- **[Direct Deployment](./direct.md)** - Quick start for development
-- **[GitOps](./gitops.md)** - Production-ready workflows
-- **[KRO Integration](./kro.md)** - Advanced orchestration
-- **[Alchemy Integration](./alchemy.md)** - Enterprise deployment
-- **[Helm Integration](./helm.md)** - Package management
+**Core Factory Modes:**
+- **[Direct Deployment](./direct.md)** - Immediate deployment for development and testing
+- **[KRO Integration](./kro.md)** - Advanced orchestration for production
+
+**Enhancement Options:**
+- **[Alchemy Integration](./alchemy.md)** - Add infrastructure state tracking to any factory mode
+- **[Helm Integration](./helm.md)** - Use Helm charts as Enhanced resources
+
+**Deployment Workflows:**
+- **[GitOps Workflows](./gitops.md)** - Version-controlled deployments using generated YAML
 
 Or explore related topics:
 
-- **[Runtime Behavior](../runtime-behavior.md)** - Understanding status and references
+- **[Status Hydration](../status-hydration.md)** - Understanding status and references
 - **[Examples](../../examples/)** - Real-world deployment examples
 - **[Performance](../performance.md)** - Optimizing deployments

@@ -5,9 +5,9 @@
  * Kubernetes CronJob resources with sensible defaults.
  */
 
-import { cronJob } from '../../kubernetes/workloads/cron-job.js';
-import type { V1CronJobSpec, V1CronJobStatus } from '../../kubernetes/types.js';
 import type { Enhanced } from '../../../core/types.js';
+import type { V1CronJobSpec, V1CronJobStatus } from '../../kubernetes/types.js';
+import { cronJob } from '../../kubernetes/workloads/cron-job.js';
 import type { CronJobConfig } from '../types.js';
 
 /**
@@ -16,9 +16,7 @@ import type { CronJobConfig } from '../types.js';
  * @param config - Configuration for the cron job
  * @returns Enhanced CronJob resource
  */
-export function CronJob(
-  config: CronJobConfig
-): Enhanced<V1CronJobSpec, V1CronJobStatus> {
+export function CronJob(config: CronJobConfig): Enhanced<V1CronJobSpec, V1CronJobStatus> {
   return cronJob({
     metadata: {
       name: config.name,

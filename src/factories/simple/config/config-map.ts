@@ -5,9 +5,9 @@
  * Kubernetes ConfigMap resources with sensible defaults.
  */
 
+import type { Enhanced } from '../../../core/types.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import type { V1ConfigMapData } from '../../kubernetes/types.js';
-import type { Enhanced } from '../../../core/types.js';
 import type { ConfigMapConfig } from '../types.js';
 
 /**
@@ -16,9 +16,7 @@ import type { ConfigMapConfig } from '../types.js';
  * @param config - Configuration for the config map
  * @returns Enhanced ConfigMap resource
  */
-export function ConfigMap(
-  config: ConfigMapConfig
-): Enhanced<V1ConfigMapData, unknown> {
+export function ConfigMap(config: ConfigMapConfig): Enhanced<V1ConfigMapData, unknown> {
   return configMap({
     ...(config.id && { id: config.id }),
     metadata: {

@@ -2,7 +2,7 @@
  * Schema generation functionality for Kro ResourceGraphDefinitions
  */
 
-import { arktypeToKroSchema, pascalCase } from '../../utils/index.js';
+import { arktypeToKroSchema, pascalCase } from '../../utils/index';
 import type { SchemaDefinition } from '../types/serialization.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
 

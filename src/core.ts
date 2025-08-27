@@ -160,4 +160,4 @@ export {
   isResourceReference,
   pascalCase,
   processResourceReferences,
-} from './utils/index.js';
+} from './utils/index';

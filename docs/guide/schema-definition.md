@@ -89,7 +89,7 @@ Integrate Arktype schemas with TypeKro resource graphs:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, Cel, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service, Ingress } from 'typekro/simple';
 
 const WebAppSpec = type({
   name: 'string>0',
@@ -106,7 +106,7 @@ const WebAppStatus = type({
   activeReplicas: 'number>=0'
 });
 
-const webapp = toResourceGraph(
+const webapp = kubernetesComposition({
   {
     name: 'webapp-with-validation',
     apiVersion: 'apps.example.com/v1',
@@ -115,7 +115,7 @@ const webapp = toResourceGraph(
     status: WebAppStatus        // Arktype schema for status
   },
   (schema) => ({
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -126,7 +126,7 @@ const webapp = toResourceGraph(
       }
     }),
     
-    service: simple.Service({
+    service: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -198,7 +198,7 @@ const DatabaseConfigSpec = type({
 });
 
 // Use with environment-specific defaults
-const environmentalDatabase = toResourceGraph(
+const environmentalDatabase = kubernetesComposition({
   {
     name: 'environmental-database',
     apiVersion: 'data.example.com/v1', 
@@ -207,7 +207,7 @@ const environmentalDatabase = toResourceGraph(
     status: type({ ready: 'boolean', endpoint: 'string' })
   },
   (schema) => ({
-    database: simple.StatefulSet({
+    database: StatefulSet({
       name: schema.spec.engine,
       image: Cel.template('%s:%s', schema.spec.engine, schema.spec.version),
       env: {
@@ -276,7 +276,7 @@ const MicroserviceArchitectureSpec = type({
   }
 });
 
-const microserviceApp = toResourceGraph(
+const microserviceApp = kubernetesComposition({
   {
     name: 'microservice-architecture',
     apiVersion: 'platform.example.com/v1',
@@ -293,7 +293,7 @@ const microserviceApp = toResourceGraph(
   },
   (schema) => ({
     // Frontend deployment
-    frontend: simple.Deployment({
+    frontend: Deployment({
       name: 'frontend',
       image: schema.spec.services.frontend.image,
       replicas: schema.spec.services.frontend.replicas,
@@ -307,7 +307,7 @@ const microserviceApp = toResourceGraph(
     }),
     
     // Backend deployment
-    backend: simple.Deployment({
+    backend: Deployment({
       name: 'backend',
       image: schema.spec.services.backend.image,
       replicas: schema.spec.services.backend.replicas,
@@ -323,12 +323,12 @@ const microserviceApp = toResourceGraph(
     // Optional worker
     ...(schema.spec.services.worker && {
       worker: schema.spec.services.worker.schedule ? 
-        simple.CronJob({
+        CronJob({
           name: 'worker',
           image: schema.spec.services.worker.image,
           schedule: schema.spec.services.worker.schedule
         }) :
-        simple.Deployment({
+        Deployment({
           name: 'worker',
           image: schema.spec.services.worker.image,
           replicas: schema.spec.services.worker.replicas
@@ -387,7 +387,7 @@ const ClusterSpec = type({
   }
 });
 
-const cluster = toResourceGraph(
+const cluster = kubernetesComposition({
   {
     name: 'service-cluster',
     apiVersion: 'cluster.example.com/v1',
@@ -402,7 +402,7 @@ const cluster = toResourceGraph(
   (schema) => ({
     // Create deployments for each service
     services: schema.spec.services.map(service =>
-      simple.Deployment({
+      Deployment({
         name: service.name,
         image: service.image,
         replicas: service.replicas || 1,
@@ -412,7 +412,7 @@ const cluster = toResourceGraph(
     
     // Create services for each deployment
     serviceEndpoints: schema.spec.services.map(service =>
-      simple.Service({
+      Service({
         name: Cel.expr(service.name, '-service'),
         selector: { app: service.name },
         ports: [{ port: 80, targetPort: service.port }]
@@ -510,7 +510,7 @@ const CustomValidatedSpec = type({
 });
 
 // Use in resource graph
-const customApp = toResourceGraph(
+const customApp = kubernetesComposition({
   {
     name: 'custom-validated-app',
     apiVersion: 'custom.example.com/v1',
@@ -519,7 +519,7 @@ const customApp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -585,7 +585,7 @@ function migrateToV3(input: any): any {
 }
 
 // Use latest schema version
-const modernApp = toResourceGraph(
+const modernApp = kubernetesComposition({
   {
     name: 'modern-app',
     apiVersion: 'apps.example.com/v3',  // Version in API version
@@ -594,7 +594,7 @@ const modernApp = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -733,6 +733,7 @@ const ApiServerSpec = type({
 ## Related Topics
 
 - [Resource Graphs Guide](./resource-graphs.md) - Using schemas in resource graphs
-- [toResourceGraph API](../api/to-resource-graph.md) - Complete API reference
+- [kubernetesComposition API](../api/kubernetes-composition.md) - Primary API reference (recommended)
+- [toResourceGraph API](../api/to-resource-graph.md) - Declarative alternative API
 - [Type Safety Guide](./type-safety.md) - Advanced TypeScript patterns
 - [CEL Expressions](./cel-expressions.md) - Dynamic schema references

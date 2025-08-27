@@ -20,10 +20,10 @@ Simple factories provide streamlined configuration for common Kubernetes resourc
 Create application workloads with simplified configuration:
 
 ```typescript
-import { simple } from 'typekro';
+import { Deployment, Service, Ingress, ConfigMap, Secret, Job, CronJob, Hpa, Pvc, StatefulSet, DaemonSet, NetworkPolicy } from 'typekro/simple';
 
 // Deployment with minimal configuration
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   image: 'nginx:1.21',
   replicas: 3,
@@ -35,7 +35,7 @@ const app = simple.Deployment({
 });
 
 // Job for batch processing
-const dataJob = simple.Job({
+const dataJob = Job({
   name: 'data-processor',
   image: 'data-processor:v1.0',
   command: ['process-data'],
@@ -46,7 +46,7 @@ const dataJob = simple.Job({
 });
 
 // StatefulSet for databases
-const database = simple.StatefulSet({
+const database = StatefulSet({
   name: 'postgres',
   image: 'postgres:13',
   replicas: 3,
@@ -59,7 +59,7 @@ const database = simple.StatefulSet({
 });
 
 // CronJob for scheduled tasks
-const backup = simple.CronJob({
+const backup = CronJob({
   name: 'daily-backup',
   image: 'backup-tool:latest',
   schedule: '0 2 * * *',  // Daily at 2 AM
@@ -72,11 +72,11 @@ const backup = simple.CronJob({
 Create networking resources with simplified configuration:
 
 ```typescript
-import { simple } from 'typekro';
+import { Deployment, Service, Ingress, ConfigMap, Secret, Job, CronJob, Hpa, Pvc, StatefulSet, DaemonSet, NetworkPolicy } from 'typekro/simple';
 
 // Service for load balancing
 // In a resource graph context where you have a deployment:
-const webService = simple.Service({
+const webService = Service({
   name: 'web-service',
   selector: resources.webDeployment.spec.selector.matchLabels,  // Reference deployment labels
   ports: [{ port: 80, targetPort: 8080 }],
@@ -84,7 +84,7 @@ const webService = simple.Service({
 });
 
 // Ingress for external access
-const webIngress = simple.Ingress({
+const webIngress = Ingress({
   name: 'web-ingress',
   host: 'app.example.com',
   serviceName: 'web-service',
@@ -94,7 +94,7 @@ const webIngress = simple.Ingress({
 });
 
 // Network policy for security
-const appPolicy = simple.NetworkPolicy({
+const appPolicy = NetworkPolicy({
   name: 'app-network-policy',
   podSelector: { matchLabels: { app: 'web' } },
   policyTypes: ['Ingress'],
@@ -123,7 +123,7 @@ const appConfig = simple({
 });
 
 // Secret for sensitive data
-const appSecrets = simple.Secret({
+const appSecrets = Secret({
   name: 'app-secrets',
   data: {
     dbPassword: 'encoded-password',
@@ -140,7 +140,7 @@ Create storage resources:
 import { simple } from 'typekro';
 
 // Persistent Volume Claim
-const appStorage = simple.Pvc({
+const appStorage = Pvc({
   name: 'app-storage',
   accessModes: ['ReadWriteOnce'],
   size: '10Gi',
@@ -156,7 +156,7 @@ Create autoscaling resources:
 import { simple } from 'typekro';
 
 // Horizontal Pod Autoscaler
-const appAutoscaler = simple.Hpa({
+const appAutoscaler = Hpa({
   name: 'app-hpa',
   targetRef: {
     apiVersion: 'apps/v1',
@@ -169,13 +169,67 @@ const appAutoscaler = simple.Hpa({
 });
 ```
 
+### YAML Integration
+
+Integrate existing YAML manifests into TypeKro compositions:
+
+```typescript
+import { yamlFile, yamlDirectory } from 'typekro';
+
+// Deploy single YAML file
+const fluxSystem = yamlFile({
+  name: 'flux-system',
+  path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+  deploymentStrategy: 'skipIfExists'
+});
+
+// Deploy YAML directory with filtering
+const appManifests = yamlDirectory({
+  name: 'legacy-manifests',
+  path: './k8s-manifests',
+  recursive: true,
+  include: ['*.yaml', '*.yml'],
+  exclude: ['*-test.yaml'],
+  namespace: 'production'
+});
+
+// Use in compositions alongside Enhanced resources
+const composition = kubernetesComposition(definition, (spec) => {
+  // YAML deployment closures
+  const externalConfig = yamlFile({
+    name: 'external-config',
+    path: './manifests/config.yaml'
+  });
+
+  // Enhanced resources
+  const app = Deployment({
+    name: spec.name,
+    image: spec.image
+  });
+
+  return {
+    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    // YAML files don't have status - use static values
+    configDeployed: true
+  };
+});
+```
+
+**Configuration Options:**
+
+- **`path`**: Local file/directory path or Git URL (`git:github.com/org/repo/path@ref`)
+- **`deploymentStrategy`**: `'replace'` (default), `'skipIfExists'`, or `'fail'`
+- **`namespace`**: Target namespace for all resources
+- **`recursive`**: Search subdirectories (yamlDirectory only)
+- **`include`/`exclude`**: Glob patterns for file filtering (yamlDirectory only)
+
 ## Using Factory Functions in Resource Graphs
 
-Factory functions are designed to work seamlessly with `toResourceGraph()`:
+Factory functions are designed to work seamlessly with `kubernetesComposition({)`:
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simple, Cel } from 'typekro';
+import { kubernetesComposition, Cel, simple, Cel } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
@@ -184,7 +238,7 @@ const WebAppSpec = type({
   environment: 'string'
 });
 
-const webapp = toResourceGraph(
+const webapp = kubernetesComposition({
   {
     name: 'full-webapp',
     apiVersion: 'example.com/v1',
@@ -207,7 +261,7 @@ const webapp = toResourceGraph(
     }),
     
     // Application deployment
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -219,7 +273,7 @@ const webapp = toResourceGraph(
     }),
     
     // Service for the deployment
-    service: simple.Service({
+    service: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
@@ -293,7 +347,7 @@ const advancedDeployment = deployment({
 Factory functions support cross-resource references through the magic proxy system:
 
 ```typescript
-const microservices = toResourceGraph(
+const microservices = kubernetesComposition({
   {
     name: 'microservices',
     apiVersion: 'platform.example.com/v1',
@@ -313,7 +367,7 @@ const microservices = toResourceGraph(
     }),
     
     // Database deployment
-    database: simple.Deployment({
+    database: Deployment({
       name: 'postgres',
       image: 'postgres:13',
       labels: { app: 'postgres', component: 'database' },  // Labels for service selector
@@ -324,14 +378,14 @@ const microservices = toResourceGraph(
     }),
     
     // Database service
-    dbService: simple.Service({
+    dbService: Service({
       name: 'postgres',
       selector: resources.database.spec.selector.matchLabels,  // Reference database deployment labels
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // API server that references database
-    api: simple.Deployment({
+    api: Deployment({
       name: 'api',
       image: 'myapp/api:latest',
       labels: { app: 'api', component: 'backend' },  // Labels for service selector
@@ -346,7 +400,7 @@ const microservices = toResourceGraph(
     }),
     
     // API service
-    apiService: simple.Service({
+    apiService: Service({
       name: 'api',
       selector: resources.api.spec.selector.matchLabels,  // Reference API deployment labels
       ports: [{ port: 8080, targetPort: 8080 }]
@@ -364,25 +418,25 @@ const microservices = toResourceGraph(
 ## Function Categories
 
 ### Core Workloads
-- `simple.Deployment()` - Stateless applications
-- `simple.DaemonSet()` - Node-level services
-- `simple.StatefulSet()` - Stateful applications
-- `simple.Job()` - Batch processing
-- `simple.CronJob()` - Scheduled tasks
+- `Deployment()` - Stateless applications
+- `DaemonSet()` - Node-level services
+- `StatefulSet()` - Stateful applications
+- `Job()` - Batch processing
+- `CronJob()` - Scheduled tasks
 
 ### Networking
-- `simple.Service()` - Load balancing and service discovery
-- `simple.Ingress()` - External HTTP/HTTPS access
-- `simple.NetworkPolicy()` - Network security policies
+- `Service()` - Load balancing and service discovery
+- `Ingress()` - External HTTP/HTTPS access
+- `NetworkPolicy()` - Network security policies
 
 ### Configuration & Storage
-- `simple.ConfigMap()` - Configuration data
-- `simple.Secret()` - Sensitive data
-- `simple.Pvc()` - Persistent storage
-- `simple.PersistentVolume()` - Storage volumes
+- `ConfigMap()` - Configuration data
+- `Secret()` - Sensitive data
+- `Pvc()` - Persistent storage
+- `PersistentVolume()` - Storage volumes
 
 ### Autoscaling
-- `simple.Hpa()` - Horizontal Pod Autoscaler
+- `Hpa()` - Horizontal Pod Autoscaler
 
 ### Advanced Resources
 - `deployment()`, `job()`, `statefulSet()`, etc. - Full Kubernetes specifications
@@ -398,7 +452,7 @@ Begin with simple factory functions and only use full factories when you need ad
 
 ```typescript
 // Good: Start simple
-const app = simple.Deployment({
+const app = Deployment({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3
@@ -417,7 +471,7 @@ Leverage schema references for dynamic configuration:
 
 ```typescript
 (schema) => ({
-  deployment: simple.Deployment({
+  deployment: Deployment({
     name: schema.spec.name,           // Dynamic from input
     image: schema.spec.image,         // Dynamic from input
     replicas: schema.spec.replicas,   // Dynamic from input
@@ -435,15 +489,15 @@ Organize related resources together in your resource builder:
 ```typescript
 (schema) => ({
   // Storage layer
-  database: simple.StatefulSet({ /* ... */ }),
-  dbService: simple.Service({ /* ... */ }),
+  database: StatefulSet({ /* ... */ }),
+  dbService: Service({ /* ... */ }),
   
   // Application layer
-  api: simple.Deployment({ /* ... */ }),
-  apiService: simple.Service({ /* ... */ }),
+  api: Deployment({ /* ... */ }),
+  apiService: Service({ /* ... */ }),
   
   // Ingress layer
-  ingress: simple.Ingress({ /* ... */ })
+  ingress: Ingress({ /* ... */ })
 })
 ```
 
@@ -453,19 +507,19 @@ Choose descriptive names that reflect the resource's purpose:
 
 ```typescript
 // Good
-const userApiDeployment = simple.Deployment({
+const userApiDeployment = Deployment({
   name: 'user-api',
   image: 'myapp/user-api:v1.0'
 });
 
-const userApiService = simple.Service({
+const userApiService = Service({
   name: 'user-api-service',
   selector: { app: 'user-api' }
 });
 
 // Avoid
-const deploy1 = simple.Deployment({ /* ... */ });
-const svc = simple.Service({ /* ... */ });
+const deploy1 = Deployment({ /* ... */ });
+const svc = Service({ /* ... */ });
 ```
 
 ## Type Safety
@@ -474,7 +528,7 @@ All factory functions provide full TypeScript type safety:
 
 ```typescript
 // TypeScript will validate all parameters
-const deployment = simple.Deployment({
+const deployment = Deployment({
   name: 'my-app',           // ✅ string
   image: 'nginx:latest',    // ✅ string
   replicas: 3,              // ✅ number
@@ -484,7 +538,7 @@ const deployment = simple.Deployment({
 
 // Schema references are also type-safe
 (schema) => ({
-  deployment: simple.Deployment({
+  deployment: Deployment({
     name: schema.spec.name,     // ✅ Type: string
     replicas: schema.spec.count // ❌ Type error if 'count' doesn't exist
   })

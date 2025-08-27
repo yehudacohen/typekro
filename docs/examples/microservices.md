@@ -38,14 +38,8 @@ graph TB
 
 ```typescript
 import { type } from 'arktype';
-import { 
-  toResourceGraph, 
-  simple, 
-  simple.Service,
-  simple,
-  simple.Secret,
-  simple.Ingress
-} from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service, Ingress, Secret } from 'typekro/simple';
 
 // Application-wide configuration schema
 const MicroservicesSpec = type({
@@ -97,7 +91,7 @@ const MicroservicesStatus = type({
 ### 2. Create the Microservices Resource Graph
 
 ```typescript
-export const microservicesApp = toResourceGraph(
+export const microservicesApp = kubernetesComposition({
   {
     name: 'microservices-app',
     apiVersion: 'example.com/v1alpha1',
@@ -123,7 +117,7 @@ export const microservicesApp = toResourceGraph(
     });
 
     // Database connection secrets
-    const dbSecrets = simple.Secret({
+    const dbSecrets = Secret({
       name: 'db-secrets',
       data: {
         USER_DB_PASSWORD: 'dXNlcl9wYXNzd29yZA==', // base64: user_password
@@ -138,7 +132,7 @@ export const microservicesApp = toResourceGraph(
       dbSecrets,
       
       // User Service
-      userDeployment: simple.Deployment({
+      userDeployment: Deployment({
         name: 'user-service',
         image: schema.spec.services.user.image,
         replicas: schema.spec.services.user.replicas,
@@ -155,14 +149,14 @@ export const microservicesApp = toResourceGraph(
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
       
-      userService: simple.Service({
+      userService: Service({
         name: 'user-service',
         selector: { app: 'user-service' },  // Should match userDeployment labels
         ports: [{ port: 3000, targetPort: 3000 }]
       }),
       
       // Product Service  
-      productDeployment: simple.Deployment({
+      productDeployment: Deployment({
         name: 'product-service',
         image: schema.spec.services.product.image,
         replicas: schema.spec.services.product.replicas,
@@ -178,14 +172,14 @@ export const microservicesApp = toResourceGraph(
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
       
-      productService: simple.Service({
+      productService: Service({
         name: 'product-service',
         selector: { app: 'product-service' },
         ports: [{ port: 3000, targetPort: 3000 }]
       }),
       
       // Order Service - depends on User and Product services
-      orderDeployment: simple.Deployment({
+      orderDeployment: Deployment({
         name: 'order-service',
         image: schema.spec.services.order.image,
         replicas: schema.spec.services.order.replicas,
@@ -201,14 +195,14 @@ export const microservicesApp = toResourceGraph(
         readinessProbe: { httpGet: { path: '/ready', port: 3000 } }
       }),
       
-      orderService: simple.Service({
+      orderService: Service({
         name: 'order-service',
         selector: { app: 'order-service' },
         ports: [{ port: 3000, targetPort: 3000 }]
       }),
       
       // API Gateway - routes to all services
-      gatewayDeployment: simple.Deployment({
+      gatewayDeployment: Deployment({
         name: 'api-gateway',
         image: 'nginx:alpine',
         replicas: schema.spec.gateway.replicas,
@@ -220,7 +214,7 @@ export const microservicesApp = toResourceGraph(
         }]
       }),
       
-      gatewayService: simple.Service({
+      gatewayService: Service({
         name: 'api-gateway',
         selector: { app: 'api-gateway' },
         ports: [{ port: 80, targetPort: 80 }],
@@ -281,7 +275,7 @@ http {
       }),
       
       // Ingress for external access
-      ingress: simple.Ingress({
+      ingress: Ingress({
         name: 'microservices-ingress',
         rules: [{
           host: schema.spec.gateway.domain,

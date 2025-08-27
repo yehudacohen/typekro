@@ -222,6 +222,65 @@ export type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
   readonly spec: MagicProxy<TSpec>;
   readonly metadata: MagicProxy<V1ObjectMeta>;
 };
+
+/**
+ * $reference Creation Patterns for Known Properties
+ * 
+ * The Enhanced type system automatically creates KubernetesRef objects when accessing
+ * properties on spec, status, and metadata fields. This works for both known properties
+ * (from Kubernetes API types) and unknown/dynamic properties.
+ */
+
+// 1. KNOWN PROPERTIES - Type-safe access with full IntelliSense
+const deploy = simpleDeployment({ name: 'web-app', image: 'nginx:latest' });
+
+// ✅ These properties exist in V1DeploymentStatus - full type safety
+const readyReplicas: KubernetesRef<number | undefined> = deploy.status.readyReplicas;
+const replicas: KubernetesRef<number | undefined> = deploy.status.replicas;
+const availableReplicas: KubernetesRef<number | undefined> = deploy.status.availableReplicas;
+
+// ✅ These properties exist in V1DeploymentSpec - full type safety  
+const deployReplicas: KubernetesRef<number | undefined> = deploy.spec.replicas;
+const selector: KubernetesRef<V1LabelSelector | undefined> = deploy.spec.selector;
+
+// ✅ These properties exist in V1ObjectMeta - full type safety
+const name: KubernetesRef<string | undefined> = deploy.metadata.name;
+const namespace: KubernetesRef<string | undefined> = deploy.metadata.namespace;
+const labels: KubernetesRef<{[key: string]: string} | undefined> = deploy.metadata.labels;
+
+// 2. NESTED KNOWN PROPERTIES - Full path traversal with type safety
+const appLabel: KubernetesRef<any> = deploy.metadata.labels.app; // Creates "metadata.labels.app"
+const matchLabels: KubernetesRef<any> = deploy.spec.selector.matchLabels; // Creates "spec.selector.matchLabels"
+
+// 3. DYNAMIC/UNKNOWN PROPERTIES - Flexible access for custom fields
+const customField: KubernetesRef<any> = deploy.status.customStatus; // Creates "status.customStatus"
+const dynamicValue: KubernetesRef<any> = deploy.spec.customConfig.setting; // Creates "spec.customConfig.setting"
+
+// 4. HOW REFERENCES ARE CREATED INTERNALLY
+// When you access deploy.status.readyReplicas, the magic proxy:
+// 1. Detects the access to "readyReplicas" on the status proxy
+// 2. Creates a KubernetesRef object with:
+//    - resourceId: The unique ID of the deployment resource
+//    - fieldPath: "status.readyReplicas"
+//    - _type: number | undefined (inferred from V1DeploymentStatus.readyReplicas)
+
+// 5. USAGE IN CROSS-RESOURCE REFERENCES
+const webapp = simpleDeployment({
+  name: 'webapp',
+  image: 'nginx',
+  env: {
+    // The KubernetesRef is automatically created when accessing deploy.status.readyReplicas
+    DATABASE_READY_COUNT: deploy.status.readyReplicas, // Type: KubernetesRef<number | undefined>
+    DATABASE_NAME: deploy.metadata.name,               // Type: KubernetesRef<string | undefined>
+  }
+});
+
+// 6. TYPE SAFETY WITH ENHANCED TYPES
+// The Enhanced<TSpec, TStatus> type provides:
+// - Known properties return KubernetesRef<ActualType> with correct TypeScript types
+// - Unknown properties return KubernetesRef<any> for flexibility
+// - Full IntelliSense and autocomplete for all Kubernetes API fields
+// - Compile-time type checking prevents common mistakes
 ```
 
 ## Clean User Experience

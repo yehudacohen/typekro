@@ -1,649 +1,161 @@
 # Getting Started
 
-Get up and running with TypeKro in under 5 minutes, then dive deeper into comprehensive infrastructure patterns. This guide shows you the fastest path to deploying type-safe Kubernetes infrastructure.
+Deploy type-safe Kubernetes infrastructure in 5 minutes. This streamlined guide gets you from zero to running application with minimal setup.
 
 ## Prerequisites
 
-Before you begin, make sure you have:
-
 - **Node.js 18+** or **Bun** installed
-- **TypeScript 5.0+** in your project
-- **kubectl** configured to access a Kubernetes cluster (for direct deployment)
-- Basic familiarity with **Kubernetes** and **TypeScript**
+- **kubectl** configured to access a Kubernetes cluster
 
-::: tip KRO Mode Requirements
-If you plan to use **KRO mode** for advanced orchestration with runtime dependencies, you can install the Kubernetes Resource Orchestrator (KRO) controller using TypeKro's bootstrap composition:
-
-```typescript
-import { typeKroRuntimeBootstrap } from 'typekro';
-
-// Bootstrap TypeKro runtime with Flux and KRO
-const bootstrap = typeKroRuntimeBootstrap({
-  namespace: 'flux-system',
-  fluxVersion: 'v2.4.0',
-  kroVersion: '0.3.0'
-});
-
-const factory = bootstrap.factory('direct', {
-  namespace: 'flux-system',
-  waitForReady: true,
-  timeout: 300000
-});
-
-await factory.deploy({ namespace: 'flux-system' });
-```
-
-Alternatively, you can still use kubectl directly:
-```bash
-kubectl apply -f https://github.com/awslabs/kro/releases/latest/download/kro.yaml
-```
-
-**Direct mode** works without KRO and is perfect for getting started. Learn more about [KRO installation](https://kro.run/docs/getting-started/Installation/).
+::: tip Don't Have a Cluster?
+Use [kind](https://kind.sigs.k8s.io/), [k3s](https://k3s.io/), or any cloud provider's managed Kubernetes service.
 :::
 
 ## Installation
 
-Install TypeKro using your preferred package manager:
-
-::: code-group
-
-```bash [bun]
+```bash
 bun add typekro
-bun add -d @types/node
+# or npm install typekro
 ```
 
-```bash [npm]
-npm install typekro
-npm install -D @types/node
-```
+## 5-Minute Quick Start
 
-```bash [yarn]
-yarn add typekro
-yarn add -D @types/node
-```
+### Step 1: Create Your App
 
-```bash [pnpm]
-pnpm add typekro
-pnpm add -D @types/node
-```
-
-:::
-
-## Quick Start: Your First App in 5 Minutes
-
-### 1. Create Your First App
-
-Create `simple-app.ts` using the **Imperative Composition Pattern** (recommended):
+Create `hello-world.ts`:
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, simple, Cel } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service, Ingress } from 'typekro/simple';
 
 const AppSpec = type({
   name: 'string',
-  image: 'string',
-  replicas: 'number'
-});
-
-const AppStatus = type({
-  ready: 'boolean',
-  url: 'string'
+  image: 'string'
 });
 
 export const app = kubernetesComposition(
   {
-    name: 'simple-app',
+    name: 'hello-world',
     apiVersion: 'example.com/v1alpha1',
-    kind: 'SimpleApp',
+    kind: 'HelloWorld',
     spec: AppSpec,
-    status: AppStatus,
+    status: type({ ready: 'boolean' })
   },
   (spec) => {
-    // Resources auto-register when created - no explicit builders needed!
-    const deployment = simple.Deployment({
+    const deployment = Deployment({
       name: spec.name,
       image: spec.image,
-      replicas: spec.replicas,
       ports: [{ containerPort: 80 }]
     });
     
-    const service = simple.Service({
-      name: Cel.template('%s-service', spec.name),
+    const service = Service({
+      name: `${spec.name}-service`,
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
     });
 
-    // Return status with CEL expressions and resource references
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-      url: Cel.template('http://%s', service.status.clusterIP)
+      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0')
     };
   }
 );
 ```
 
-::: tip Why Imperative Composition?
-The **imperative composition pattern** is TypeKro's primary approach because it:
-- **Feels natural**: Write code the way you think about resources
-- **Auto-registers resources**: No need for explicit resource builders
-- **Simplifies status**: Single function instead of separate builders
-- **Improves readability**: Linear flow from resources to status
+### Step 2: Deploy It
 
-[Learn more about imperative composition →](./imperative-composition.md)
-
-**Declarative Alternative:** If you prefer explicit resource/status builders, `toResourceGraph` provides a declarative alternative. [See resource graphs documentation →](./resource-graphs.md)
-:::
-
-### 2. Deploy It
-
-**Option A: Direct Deployment**
+Create `deploy.ts`:
 
 ```typescript
-// deploy.ts
-import { app } from './simple-app.js';
+import { app } from './hello-world.js';
 
 const factory = app.factory('direct', { namespace: 'default' });
+
 await factory.deploy({
   name: 'hello-world',
-  image: 'nginx:latest',
-  replicas: 2
+  image: 'nginx:latest'
 });
 
-console.log('Deployed! 🚀');
+console.log('🚀 Deployed! Check with: kubectl get pods');
 ```
+
+Run it:
 
 ```bash
 bun run deploy.ts
 ```
 
-**Option B: Generate YAML**
-
-```typescript
-// generate.ts
-import { writeFileSync } from 'fs';
-import { app } from './simple-app.js';
-
-const yaml = app.toYaml({
-  name: 'hello-world',
-  image: 'nginx:latest',
-  replicas: 2
-});
-
-writeFileSync('app.yaml', yaml);
-console.log('YAML generated! 📄');
-```
-
-```bash
-bun run generate.ts
-kubectl apply -f app.yaml
-```
-
-### 3. Verify It Works
+### Step 3: Verify
 
 ```bash
 kubectl get pods
-kubectl get services
+# Should show: hello-world-xxx Running
 ```
 
-## Comprehensive Example: Full-Stack Web Application
+**🎉 Success!** You've deployed your first type-safe Kubernetes app.
 
-Now let's create a more realistic application with a database using the **imperative composition pattern**. Create `webapp.ts`:
+## What You Just Built
 
+Your simple app demonstrates TypeKro's core concepts:
+
+- **📋 Schema Definition**: Type-safe specification using `arktype`
+- **🏗️ Resource Composition**: Automatic resource creation and registration  
+- **🔗 Status Expressions**: Dynamic status using CEL expressions
+- **🚀 Direct Deployment**: Immediate cluster deployment with TypeScript
+
+## Advanced Features Preview
+
+TypeKro offers much more power. Here's a taste of what's possible:
+
+**Cross-Resource References**:
 ```typescript
-import { type } from 'arktype';
-import { 
-  kubernetesComposition, 
-  simple,
-  Cel
-} from 'typekro';
-
-// Define your application's interface
-const WebAppSpec = type({
-  name: 'string',
-  image: 'string',
-  replicas: 'number',
-  environment: '"development" | "staging" | "production"'
+const database = Deployment({ name: 'db', image: 'postgres:15' });
+const app = Deployment({
+  env: { DATABASE_HOST: database.status.clusterIP } // Magic!
 });
-
-const WebAppStatus = type({
-  url: 'string',
-  phase: 'string',
-  readyReplicas: 'number',
-  databaseReady: 'boolean'
-});
-
-// Create your resource graph with imperative composition
-export const webAppGraph = kubernetesComposition(
-  {
-    name: 'webapp-stack',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebApp',
-    spec: WebAppSpec,
-    status: WebAppStatus,
-  },
-  (spec) => {
-    // Configuration - auto-registers when created
-    const config = simple({
-      name: Cel.template('%s-config', spec.name),
-      data: {
-        LOG_LEVEL: spec.environment === 'production' ? 'info' : 'debug',
-        DATABASE_URL: 'postgresql://postgres:5432/webapp'
-      }
-    });
-
-    // Database - auto-registers when created
-    const database = simple.Deployment({
-      name: Cel.template('%s-db', spec.name),
-      image: 'postgres:15',
-      env: {
-        POSTGRES_DB: 'webapp',
-        POSTGRES_USER: 'postgres',
-        POSTGRES_PASSWORD: 'password'
-      },
-      ports: [{ containerPort: 5432 }]
-    });
-
-    // Database service - auto-registers when created
-    const dbService = simple.Service({
-      name: Cel.template('%s-db-service', spec.name),
-      selector: { app: Cel.template('%s-db', spec.name) },
-      ports: [{ port: 5432, targetPort: 5432 }]
-    });
-
-    // Web application - auto-registers when created
-    const app = simple.Deployment({
-      name: spec.name,
-      image: spec.image,
-      replicas: spec.replicas,
-      env: {
-        NODE_ENV: spec.environment,
-        // Reference the database service using CEL template
-        DATABASE_HOST: Cel.template('%s.%s.svc.cluster.local', 
-          dbService.metadata.name, 
-          dbService.metadata.namespace
-        )
-      },
-      ports: [{ containerPort: 3000 }]
-    });
-
-    // Web service - auto-registers when created
-    const webService = simple.Service({
-      name: Cel.template('%s-service', spec.name),
-      selector: { app: spec.name },
-      ports: [{ port: 80, targetPort: 3000 }],
-      type: 'LoadBalancer'
-    });
-
-    // Return status with CEL expressions and resource references
-    return {
-      url: Cel.expr<string>(
-        webService.status.loadBalancer.ingress,
-        '.size() > 0 ? "http://" + ',
-        webService.status.loadBalancer.ingress[0].ip,
-        ' : "pending"'
-      ),
-      phase: Cel.expr<string>(app.status.readyReplicas, ' > 0 ? "ready" : "pending"'),
-      readyReplicas: app.status.readyReplicas,
-      databaseReady: Cel.expr<boolean>(database.status.readyReplicas, ' > 0')
-    };
-  }
-);
 ```
 
-::: tip Imperative vs Declarative
-Compare this imperative approach with the declarative `toResourceGraph` pattern:
-
-**Imperative (Primary):**
-- Single function with natural flow
-- Resources auto-register when created
-- Direct access to `spec` properties
-- Linear progression from resources to status
-
-**Declarative (Alternative):**
-- Separate resource and status builder functions
-- Explicit resource object management
-- Schema proxy access (`schema.spec.name`)
-- More verbose but explicit structure
-
-Both approaches generate identical output, but imperative composition is more intuitive for most developers.
-:::
-
-## Common Patterns
-
-### Environment-Specific Configuration
-
+**External References Between Compositions**:
 ```typescript
-const config = schema.spec.environment === 'production' 
-  ? { replicas: 5, resources: { cpu: '500m', memory: '1Gi' } }
-  : { replicas: 1, resources: { cpu: '100m', memory: '256Mi' } };
-
-const deployment = simple.Deployment({
-  name: schema.spec.name,
-  image: schema.spec.image,
-  replicas: config.replicas,
-  resources: config.resources
-});
+const webApp = otherComposition.database; // Cross-composition magic!
 ```
 
-### Cross-Resource References
-
+**Conditional Logic**:
 ```typescript
-const database = simple.Deployment({
-  name: 'db',
-  image: 'postgres:15'
-});
-
-const dbService = simple.Service({
-  name: 'db-service',
-  selector: { app: 'db' },
-  ports: [{ port: 5432 }]
-});
-
-const app = simple.Deployment({
-  name: 'app',
-  image: 'myapp:latest',
-  env: {
-    DATABASE_HOST: dbService.status.clusterIP  // Runtime reference
-  }
-});
-```
-
-### Conditional Resources
-
-```typescript
-const composition = kubernetesComposition(definition, (spec) => {
-  const app = simple.Deployment({ name: spec.name, image: spec.image });
-  
-  // Only create ingress in production
-  const ingress = spec.environment === 'production'
-    ? simple.Ingress({
-        name: Cel.template('%s-ingress', spec.name),
-        host: Cel.template('%s.example.com', spec.name),
-        serviceName: Cel.template('%s-service', spec.name)
-      })
-    : null;
-
-  return {
-    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
-    hasIngress: spec.environment === 'production'
-  };
-});
-```
-
-### Composition Nesting
-
-Build complex systems by combining smaller compositions:
-
-```typescript
-// Reusable database composition
-const database = kubernetesComposition(dbDefinition, (spec) => {
-  const postgres = simple.Deployment({ name: spec.name, image: spec.image });
-  const service = simple.Service({ 
-    name: Cel.template('%s-service', spec.name), 
-    selector: { app: spec.name } 
-  });
-  
-  return {
-    ready: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0'),
-    host: service.status.clusterIP
-  };
-});
-
-// Full-stack composition that uses the database
-const fullStack = kubernetesComposition(fullStackDefinition, (spec) => {
-  // Use the database composition - resources automatically merge
-  const db = database.withSpec({
-    name: Cel.template('%s-db', spec.name),
-    image: 'postgres:15'
-  });
-
-  const app = simple.Deployment({
-    name: spec.name,
-    image: spec.image,
-    env: {
-      DATABASE_HOST: db.status.host  // Cross-composition reference
-    }
-  });
-
-  return {
-    ready: Cel.expr<boolean>(db.status.ready, ' && ', app.status.readyReplicas, ' > 0'),
-    databaseReady: db.status.ready,
-    appReady: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
-  };
-});
-```
-
-## Bootstrap TypeKro Runtime (Optional)
-
-If you want to use KRO mode or work with HelmRelease resources, you can bootstrap the complete TypeKro runtime environment using the built-in bootstrap composition:
-
-```typescript
-// bootstrap.ts
-import { typeKroRuntimeBootstrap } from 'typekro';
-
-async function setupTypeKroRuntime() {
-  // Create the bootstrap composition
-  const bootstrap = typeKroRuntimeBootstrap({
-    namespace: 'flux-system',      // Namespace for Flux controllers
-    fluxVersion: 'v2.4.0',         // Flux CD version
-    kroVersion: '0.3.0'            // KRO version
-  });
-
-  // Deploy using direct mode
-  const factory = bootstrap.factory('direct', {
-    namespace: 'flux-system',
-    waitForReady: true,            // Wait for all components to be ready
-    timeout: 300000               // 5 minute timeout
-  });
-
-  console.log('Bootstrapping TypeKro runtime...');
-  const result = await factory.deploy({
-    namespace: 'flux-system'
-  });
-
-  console.log('Bootstrap complete!', result.status);
-}
-
-setupTypeKroRuntime().catch(console.error);
-```
-
-This bootstrap process:
-1. **Creates namespaces**: `flux-system` and `kro` 
-2. **Installs Flux CD**: Controllers for GitOps and Helm management
-3. **Installs KRO**: Via HelmRelease for advanced orchestration
-4. **Waits for readiness**: Ensures all components are operational
-
-## Deployment Options
-
-TypeKro offers multiple deployment strategies. Choose the one that fits your workflow:
-
-### Option 1: Direct Deployment
-
-Deploy directly to your Kubernetes cluster for rapid development:
-
-```typescript
-// deploy.ts
-import { webAppGraph } from './webapp.js';
-
-async function deployApp() {
-  // Create a direct deployment factory
-  const factory = webAppGraph.factory('direct', {
-    namespace: 'development'
-  });
-
-  // Deploy your application
-  const instance = await factory.deploy({
-    name: 'my-webapp',
-    image: 'nginx:latest',
-    replicas: 2,
-    environment: 'development'
-  });
-
-  console.log('Deployed successfully!');
-  console.log('Status:', await factory.getStatus());
-}
-
-deployApp().catch(console.error);
-```
-
-Run the deployment:
-
-```bash
-bun run deploy.ts
-```
-
-### Option 2: Generate GitOps YAML
-
-Generate YAML files for your GitOps workflow:
-
-```typescript
-// generate-yaml.ts
-import { writeFileSync } from 'fs';
-import { webAppGraph } from './webapp.js';
-
-// Generate ResourceGraphDefinition YAML
-const rgdYaml = webAppGraph.toYaml();
-writeFileSync('webapp-rgd.yaml', rgdYaml);
-
-// Generate instance YAML
-const instanceYaml = webAppGraph.toYaml({
-  name: 'my-webapp',
-  image: 'nginx:latest',
-  replicas: 3,
-  environment: 'production'
-});
-writeFileSync('webapp-instance.yaml', instanceYaml);
-
-console.log('YAML files generated!');
-```
-
-The generated YAML can be committed to Git and deployed via ArgoCD, Flux, or kubectl:
-
-```bash
-kubectl apply -f webapp-rgd.yaml
-kubectl apply -f webapp-instance.yaml
-```
-
-### Option 3: Kro Integration
-
-Use the Kro controller for advanced reconciliation:
-
-```typescript
-// kro-deploy.ts
-import { webAppGraph } from './webapp.js';
-
-async function deployWithKro() {
-  const factory = webAppGraph.factory('kro', {
-    namespace: 'production'
-  });
-
-  await factory.deploy({
-    name: 'production-webapp',
-    image: 'myapp:v1.2.3',
-    replicas: 5,
-    environment: 'production'
-  });
-
-  console.log('Deployed with Kro controller!');
-}
-
-deployWithKro().catch(console.error);
-```
-
-## Verify Your Deployment
-
-Check that your resources are running:
-
-```bash
-# Check pods
-kubectl get pods -n development
-
-# Check services
-kubectl get services -n development
-
-# Check your custom resource (if using Kro)
-kubectl get webapp -n development
-```
-
-## IDE Integration
-
-TypeKro provides excellent IDE support. Make sure your editor is configured for TypeScript:
-
-### VS Code
-
-Install the TypeScript extension and create a `.vscode/settings.json`:
-
-```json
-{
-  "typescript.preferences.includePackageJsonAutoImports": "on",
-  "typescript.suggest.autoImports": true,
-  "typescript.preferences.importModuleSpecifier": "relative"
-}
-```
-
-### Type Checking
-
-Add a type-check script to your `package.json`:
-
-```json
-{
-  "scripts": {
-    "type-check": "tsc --noEmit",
-    "build": "tsc",
-    "deploy": "bun run deploy.ts"
-  }
-}
+const ingress = spec.environment === 'production' 
+  ? Ingress({ host: `${spec.name}.example.com` })
+  : null;
 ```
 
 ## What's Next?
 
-Now that you have TypeKro installed and working, explore these topics:
+Ready to dive deeper? Follow the **Learning Path** for a structured progression:
 
-### Core Concepts
-- **[Imperative Composition](./imperative-composition.md)** - Master the recommended imperative composition pattern
-- **[Factories](./factories.md)** - Learn about built-in resource factories and how to create custom ones
-- **[Schemas & Types](./schemas-and-types.md)** - Master TypeKro's type system and schema definitions
-- **[Runtime Behavior](./runtime-behavior.md)** - Understand status hydration, cross-references, and external references
-- **[CEL Expressions](./cel-expressions.md)** - Add dynamic runtime logic to your infrastructure
+### 🎯 **Recommended Next Steps**
 
-### Deployment Methods
-- **[Direct Deployment](./deployment/direct.md)** - Deploy directly to your cluster for rapid development
-- **[GitOps](./deployment/gitops.md)** - Integrate with GitOps workflows
-- **[KRO Integration](./deployment/kro.md)** - Use KRO controller for advanced orchestration
-- **[Alchemy Integration](./deployment/alchemy.md)** - Enterprise-grade deployment strategies
+1. **[📱 Build Your First App](./first-app.md)** - Complete tutorial with realistic patterns
+2. **[🏭 Master Factory Functions](./factories.md)** - Learn TypeKro's building blocks
+3. **[✨ Understand Magic Proxy](./magic-proxy.md)** - TypeKro's reference system  
+4. **[🔗 External References](./external-references.md)** - Connect multiple compositions
+5. **[🏗️ Advanced Architecture](./architecture.md)** - Deep technical understanding
 
-### Real-World Examples
-- **[Basic Patterns](../examples/basic-patterns.md)** - Fundamental deployment patterns
-- **[Microservices](../examples/microservices.md)** - Complex multi-service architectures
-- **[CI/CD](../examples/cicd.md)** - Continuous integration and deployment
-- **[Multi-Environment](../examples/multi-environment.md)** - Environment-specific configurations
+### 🚀 **Choose Your Path**
 
-## Troubleshooting
+**New to TypeKro?** → Start with [📱 First App](./first-app.md)  
+**Experienced with Kubernetes?** → Jump to [✨ Magic Proxy](./magic-proxy.md)  
+**Building complex systems?** → Explore [🔗 External References](./external-references.md)
 
-### Common Issues
+### 📚 **More Resources**
 
-**TypeScript errors about missing types:**
+- **[Examples](../examples/)** - Real-world patterns and complete applications
+- **[API Reference](../api/)** - Complete function and type documentation  
+- **[Deployment Guides](./deployment/)** - GitOps, KRO, and advanced strategies
+
+## Quick Help
+
+**Issues?** Check that kubectl can connect to your cluster:
 ```bash
-# Make sure you have the latest TypeScript
-bun add -d typescript@latest
-```
-
-**kubectl connection errors:**
-```bash
-# Verify your cluster connection
 kubectl cluster-info
 ```
 
-**Module resolution errors:**
-```bash
-# Ensure your tsconfig.json has proper module resolution
-{
-  "compilerOptions": {
-    "moduleResolution": "node",
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
-  }
-}
-```
-
-Need more help? Check our [Troubleshooting Guide](./troubleshooting.md) or [open an issue](https://github.com/yehudacohen/typekro/issues) on GitHub.
+**Need more help?** [Open an issue](https://github.com/yehudacohen/typekro/issues) or check our [Troubleshooting Guide](./troubleshooting.md).

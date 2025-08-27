@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { secret } from '../../src/factories/index';
-import { Cel, toResourceGraph, simple } from '../../src/index';
+import { Cel, simple, toResourceGraph } from '../../src/index';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration

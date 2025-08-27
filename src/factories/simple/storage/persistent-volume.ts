@@ -5,12 +5,9 @@
  * Kubernetes PersistentVolume resources with sensible defaults.
  */
 
-import { persistentVolume } from '../../kubernetes/storage/persistent-volume.js';
-import type {
-  V1PvSpec,
-  V1PvStatus,
-} from '../../kubernetes/storage/persistent-volume.js';
 import type { Enhanced } from '../../../core/types.js';
+import type { V1PvSpec, V1PvStatus } from '../../kubernetes/storage/persistent-volume.js';
+import { persistentVolume } from '../../kubernetes/storage/persistent-volume.js';
 import type { PersistentVolumeConfig } from '../types.js';
 
 /**
@@ -19,9 +16,7 @@ import type { PersistentVolumeConfig } from '../types.js';
  * @param config - Configuration for the persistent volume
  * @returns Enhanced PersistentVolume resource
  */
-export function PersistentVolume(
-  config: PersistentVolumeConfig
-): Enhanced<V1PvSpec, V1PvStatus> {
+export function PersistentVolume(config: PersistentVolumeConfig): Enhanced<V1PvSpec, V1PvStatus> {
   const {
     name,
     size,
@@ -46,7 +41,9 @@ export function PersistentVolume(
   return persistentVolume({
     metadata: {
       name,
-      ...(storageClass && { annotations: { 'volume.beta.kubernetes.io/storage-class': storageClass } }),
+      ...(storageClass && {
+        annotations: { 'volume.beta.kubernetes.io/storage-class': storageClass },
+      }),
     },
     spec: {
       capacity: { storage: size },

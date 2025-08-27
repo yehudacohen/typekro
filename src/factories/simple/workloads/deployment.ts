@@ -6,13 +6,9 @@
  */
 
 import type { V1EnvVar } from '@kubernetes/client-node';
-
-import { deployment } from '../../kubernetes/workloads/deployment.js';
-import type {
-  V1DeploymentSpec,
-  V1DeploymentStatus,
-} from '../../kubernetes/types.js';
 import type { Enhanced } from '../../../core/types.js';
+import type { V1DeploymentSpec, V1DeploymentStatus } from '../../kubernetes/types.js';
+import { deployment } from '../../kubernetes/workloads/deployment.js';
 import type { DeploymentConfig } from '../types.js';
 
 /**

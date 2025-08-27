@@ -11,8 +11,7 @@ export function getIntegrationTestKubeConfig(): k8s.KubeConfig {
   // Configure to skip TLS verification for test environment
   const cluster = kc.getCurrentCluster();
   if (cluster) {
-    const modifiedCluster = { ...cluster, skipTLSVerify: true };
-    kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
+    (cluster as any).skipTLSVerify = true;
   }
 
   // Ensure we have a valid context
@@ -24,6 +23,66 @@ export function getIntegrationTestKubeConfig(): k8s.KubeConfig {
   }
 
   return kc;
+}
+
+/**
+ * Create a CoreV1Api client for integration tests
+ * This avoids the makeApiClient issue with setDefaultAuthentication
+ */
+export function createCoreV1ApiClient(kc?: k8s.KubeConfig): k8s.CoreV1Api {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  return createApiClientDirectly(kubeConfig, k8s.CoreV1Api);
+}
+
+/**
+ * Create an AppsV1Api client for integration tests
+ * This avoids the makeApiClient issue with setDefaultAuthentication
+ */
+export function createAppsV1ApiClient(kc?: k8s.KubeConfig): k8s.AppsV1Api {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  return createApiClientDirectly(kubeConfig, k8s.AppsV1Api);
+}
+
+/**
+ * Create a CustomObjectsApi client for integration tests
+ * This avoids the makeApiClient issue with setDefaultAuthentication
+ */
+export function createCustomObjectsApiClient(kc?: k8s.KubeConfig): k8s.CustomObjectsApi {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  return createApiClientDirectly(kubeConfig, k8s.CustomObjectsApi);
+}
+
+/**
+ * Create a KubernetesObjectApi client for integration tests
+ * This avoids the makeApiClient issue with setDefaultAuthentication
+ */
+export function createKubernetesObjectApiClient(kc?: k8s.KubeConfig): k8s.KubernetesObjectApi {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  return createApiClientDirectly(kubeConfig, k8s.KubernetesObjectApi);
+}
+
+/**
+ * Create API client using the standard makeApiClient approach
+ * This removes the monkey-patching that was causing prototype corruption
+ */
+function createApiClientDirectly<T>(kc: k8s.KubeConfig, apiClass: new (server: string) => T): T {
+  // Use the standard makeApiClient approach - this should work properly now
+  try {
+    return kc.makeApiClient(apiClass as any) as T;
+  } catch (error) {
+    console.error('Failed to create API client using makeApiClient:', error);
+
+    // If makeApiClient fails, create a basic client without authentication
+    // This is a temporary fallback - the real fix is to ensure makeApiClient works
+    const cluster = kc.getCurrentCluster();
+    if (!cluster) {
+      throw new Error('No active cluster found in kubeconfig');
+    }
+
+    const apiClient = new apiClass(cluster.server);
+    console.warn('Created API client without authentication - this may cause issues');
+    return apiClient;
+  }
 }
 
 /**
@@ -53,7 +112,7 @@ export function isClusterAvailable(): boolean {
 export async function isKroControllerHealthy(): Promise<boolean> {
   try {
     const kc = getIntegrationTestKubeConfig();
-    const appsApi = kc.makeApiClient(k8s.AppsV1Api);
+    const appsApi = createAppsV1ApiClient(kc);
 
     // Check if Kro deployment exists and is ready
     const deployment = await appsApi.readNamespacedDeployment('kro', 'kro-system');

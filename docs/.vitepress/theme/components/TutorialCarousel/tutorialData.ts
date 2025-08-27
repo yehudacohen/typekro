@@ -8,11 +8,8 @@ export const tutorialSteps: TutorialStep[] = [
     codeExample: {
       language: 'typescript',
       code: `import { type } from 'arktype';
-import { 
-  kubernetesComposition, 
-  simple.Deployment, 
-  Cel 
-} from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
 const webApp = kubernetesComposition(
   {
@@ -32,14 +29,14 @@ const webApp = kubernetesComposition(
   },
   (spec) => {
     // Resources auto-register when created!
-    const deployment = simple.Deployment({
+    const deployment = Deployment({
       name: spec.name,
       image: spec.image,
       replicas: spec.environment === 'prod' ? 3 : 1,
       labels: { app: spec.name, env: spec.environment }
     });
     
-    const service = simple.Service({
+    const service = Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
@@ -154,7 +151,8 @@ writeFileSync('k8s/webapp-instance.yaml', instanceYaml);`,
       language: 'typescript',
       code: `import alchemy from 'alchemy';
 import { Bucket, Function as Lambda } from 'alchemy/aws';
-import { kubernetesComposition, simple.Deployment, type, Cel } from 'typekro';
+import { kubernetesComposition, type, Cel } from 'typekro';
+import { Deployment } from 'typekro/simple';
 
 const app = await alchemy('cloud-native-app');
 
@@ -176,7 +174,7 @@ await app.run(async () => {
       status: type({ ready: 'boolean' })
     },
     (spec) => {
-      const app = simple.Deployment({
+      const app = Deployment({
         name: spec.name,
         image: 'myapp:latest',
         replicas: spec.replicas,
@@ -281,11 +279,8 @@ const invalidSpec = WebAppSpec({
     codeExample: {
       language: 'typescript',
       code: `import { type } from 'arktype';
-import { 
-  kubernetesComposition, 
-  simple.Deployment, 
-  Cel 
-} from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
 // Reusable database composition
 const database = kubernetesComposition(
@@ -297,13 +292,13 @@ const database = kubernetesComposition(
     status: type({ ready: 'boolean', host: 'string' })
   },
   (spec) => {
-    const postgres = simple.Deployment({
+    const postgres = Deployment({
       name: spec.name,
       image: spec.image,
       ports: [{ containerPort: 5432 }]
     });
 
-    const service = simple.Service({
+    const service = Service({
       name: Cel.template('%s-service', spec.name),
       selector: { app: spec.name },
       ports: [{ port: 5432, targetPort: 5432 }]
@@ -332,7 +327,7 @@ const fullStack = kubernetesComposition(
       image: spec.dbImage
     });
 
-    const app = simple.Deployment({
+    const app = Deployment({
       name: spec.appName,
       image: spec.appImage,
       env: {

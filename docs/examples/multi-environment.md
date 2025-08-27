@@ -41,10 +41,9 @@ graph LR
 
 ```typescript
 import { type } from 'arktype';
-import { 
-  toResourceGraph, 
-  simple
-} from 'typekro';
+import { kubernetesComposition, Cel 
+  simple } from 'typekro';
+import { Deployment, Service, Secret, Pvc } from 'typekro/simple';
 
 // Environment configuration schema
 const EnvironmentSpec = type({
@@ -94,7 +93,7 @@ const EnvironmentStatus = type({
 ### 2. Create Environment-Aware Resource Graph
 
 ```typescript
-export const multiEnvApp = toResourceGraph(
+export const multiEnvApp = kubernetesComposition({
   {
     name: 'multi-env-app',
     apiVersion: 'deploy.example.com/v1alpha1',
@@ -132,7 +131,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database secrets (different per environment)
-      dbSecret: simple.Secret({
+      dbSecret: Secret({
         name: Cel.expr(appName, '-db-secret'),
         data: {
           // Use different passwords per environment
@@ -146,7 +145,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database persistent volume
-      dbStorage: simple.Pvc({
+      dbStorage: Pvc({
         name: Cel.expr(appName, '-db-storage'),
         accessMode: 'ReadWriteOnce',
         size: schema.spec.database.storageSize,
@@ -157,7 +156,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database deployment
-      database: simple.Deployment({
+      database: Deployment({
         name: Cel.expr(appName, '-db'),
         image: schema.spec.database.image,
         replicas: 1, // Single DB instance for all environments
@@ -194,14 +193,14 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Database service
-      dbService: simple.Service({
+      dbService: Service({
         name: Cel.expr(appName, '-db'),
         selector: { app: Cel.expr(appName, '-db') },
         ports: [{ port: 5432, targetPort: 5432 }]
       }),
       
       // Application deployment
-      app: simple.Deployment({
+      app: Deployment({
         name: appName,
         image: Cel.template('%s:%s', schema.spec.app.image, schema.spec.app.version),
         replicas: schema.spec.app.replicas,
@@ -242,7 +241,7 @@ export const multiEnvApp = toResourceGraph(
       }),
       
       // Application service
-      appService: simple.Service({
+      appService: Service({
         name: appName,
         selector: { app: appName },
         ports: [{ port: 80, targetPort: 3000 }],

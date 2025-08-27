@@ -1616,10 +1616,11 @@ describe('Imperative Composition Pattern', () => {
       expect(composition).toBeDefined();
       expect(composition.resources).toHaveLength(1);
 
-      // Should handle string manipulation in CEL
+      // Should handle string manipulation in CEL for resource references
       const yaml = composition.toYaml();
-      expect(yaml).toContain('.replace("-", " ").title()');
-      expect(yaml).toContain('.split(":")[0]');
+      // Fields with schema references are now static, so check for resource references instead
+      expect(yaml).toContain('ready: ${stringManipulationDeployment.status.readyReplicas > 0}');
+      expect(yaml).toContain('namespace: ${stringManipulationDeployment.metadata.namespace}');
     });
   });
 

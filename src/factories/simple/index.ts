@@ -10,25 +10,24 @@
  * - import * as simple from 'typekro/simple'
  */
 
-// Export all individual functions for direct imports
-export { Deployment, StatefulSet, Job, CronJob, DaemonSet } from './workloads/index.js';
-export { Service, Ingress, NetworkPolicy } from './networking/index.js';
-export { ConfigMap, Secret } from './config/index.js';
-export { Pvc, PersistentVolume } from './storage/index.js';
 export { Hpa } from './autoscaling/index.js';
+export { ConfigMap, Secret } from './config/index.js';
 export { HelmChart } from './helm/index.js';
-export { YamlFile } from './yaml/index.js';
-
+export { Ingress, NetworkPolicy, Service } from './networking/index.js';
+export { PersistentVolume, Pvc } from './storage/index.js';
 // Export types
 export type * from './types.js';
+// Export all individual functions for direct imports
+export { CronJob, DaemonSet, Deployment, Job, StatefulSet } from './workloads/index.js';
+export { YamlFile } from './yaml/index.js';
 
-// Import all functions to create the simple namespace object
-import { Deployment, StatefulSet, Job, CronJob, DaemonSet } from './workloads/index.js';
-import { Service, Ingress, NetworkPolicy } from './networking/index.js';
-import { ConfigMap, Secret } from './config/index.js';
-import { Pvc, PersistentVolume } from './storage/index.js';
 import { Hpa } from './autoscaling/index.js';
+import { ConfigMap, Secret } from './config/index.js';
 import { HelmChart } from './helm/index.js';
+import { Ingress, NetworkPolicy, Service } from './networking/index.js';
+import { PersistentVolume, Pvc } from './storage/index.js';
+// Import all functions to create the simple namespace object
+import { CronJob, DaemonSet, Deployment, Job, StatefulSet } from './workloads/index.js';
 import { YamlFile } from './yaml/index.js';
 
 /**

@@ -12,9 +12,11 @@ import type {
   DeploymentResource,
   GenericResourceStatus as K8sGenericResourceStatus,
 } from '../types.js';
+import type { DebugLogger } from './debug-logger.js';
 
 export class ResourceReadinessChecker {
   private onResourceReady?: (resource: DeployedResource) => void;
+  private debugLogger?: DebugLogger;
 
   constructor(private k8sApi: k8s.KubernetesObjectApi) {}
 
@@ -23,6 +25,13 @@ export class ResourceReadinessChecker {
    */
   setOnResourceReady(callback: (resource: DeployedResource) => void): void {
     this.onResourceReady = callback;
+  }
+
+  /**
+   * Set debug logger for enhanced status logging
+   */
+  setDebugLogger(debugLogger: DebugLogger): void {
+    this.debugLogger = debugLogger;
   }
 
   /**
@@ -92,7 +101,24 @@ export class ResourceReadinessChecker {
           },
         });
 
-        if (this.isResourceReady(currentResource)) {
+        const isReady = this.isResourceReady(currentResource);
+
+        // Debug logging for status polling
+        if (this.debugLogger) {
+          this.debugLogger.logResourceStatus(
+            deployedResource,
+            (currentResource as { status?: unknown }).status || currentResource,
+            isReady,
+            {
+              attempt,
+              elapsedTime: Date.now() - startTime,
+              isTimeout: false,
+              progressCallback: emitEvent,
+            }
+          );
+        }
+
+        if (isReady) {
           const duration = Date.now() - startTime;
 
           // Mark resource as ready in the deployment engine's tracking
@@ -127,6 +153,16 @@ export class ResourceReadinessChecker {
 
         await new Promise((resolve) => setTimeout(resolve, delay));
       } catch (error) {
+        // Debug logging for API errors
+        if (this.debugLogger) {
+          this.debugLogger.logApiError(deployedResource, error as Error, {
+            attempt,
+            elapsedTime: Date.now() - startTime,
+            isTimeout: false,
+            progressCallback: emitEvent,
+          });
+        }
+
         // Log error but continue polling
         if (attempt % readinessConfig.progressInterval === 0) {
           emitEvent({
@@ -139,6 +175,35 @@ export class ResourceReadinessChecker {
 
         // Wait before retry
         await new Promise((resolve) => setTimeout(resolve, readinessConfig.errorRetryDelay));
+      }
+    }
+
+    // Debug logging for timeout with final status
+    if (this.debugLogger) {
+      try {
+        const { body: finalResource } = await this.k8sApi.read({
+          apiVersion: deployedResource.manifest.apiVersion,
+          kind: deployedResource.kind,
+          metadata: {
+            name: deployedResource.name,
+            namespace: deployedResource.namespace,
+          },
+        });
+
+        this.debugLogger.logTimeout(
+          deployedResource,
+          (finalResource as { status?: unknown }).status || finalResource,
+          Date.now() - startTime,
+          attempt
+        );
+      } catch (_error) {
+        // If we can't get final status, log timeout without it
+        this.debugLogger.logTimeout(
+          deployedResource,
+          { error: 'Could not retrieve final status' },
+          Date.now() - startTime,
+          attempt
+        );
       }
     }
 

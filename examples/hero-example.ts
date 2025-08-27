@@ -3,7 +3,10 @@
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition, simple, Cel } from '../src/index.js';
+// In production: import { kubernetesComposition, Cel } from 'typekro';
+// In production: import { Deployment, Service } from 'typekro/simple';
+import { kubernetesComposition, Cel } from '../src/index.js';
+import { Deployment, Service } from '../src/factories/simple/index.js';
 
 const webapp = kubernetesComposition(
   {
@@ -14,13 +17,13 @@ const webapp = kubernetesComposition(
     status: type({ ready: 'boolean' })
   },
   (spec) => {
-    const deployment = simple.Deployment({
+    const deployment = Deployment({
       name: 'webapp',
       image: 'nginx',
       replicas: spec.replicas
     });
     
-    const _service = simple.Service({
+    const _service = Service({
       name: 'webapp-service',
       selector: { app: 'webapp' },
       ports: [{ port: 80 }]

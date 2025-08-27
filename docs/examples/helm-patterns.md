@@ -6,7 +6,7 @@ Common Helm chart integration patterns with TypeKro.
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, helmRelease, Cel } from 'typekro';
+import { kubernetesComposition, Cel helmRelease, Cel } from 'typekro';
 
 const HelmAppSpec = type({
   name: 'string',
@@ -15,7 +15,7 @@ const HelmAppSpec = type({
   hostname: 'string'
 });
 
-export const helmApp = toResourceGraph(
+export const helmApp = kubernetesComposition({
   {
     name: 'helm-app',
     apiVersion: 'example.com/v1alpha1',
@@ -50,7 +50,7 @@ export const helmApp = toResourceGraph(
 ## Multi-Chart Application
 
 ```typescript
-export const helmStack = toResourceGraph(
+export const helmStack = kubernetesComposition({
   {
     name: 'helm-stack',
     apiVersion: 'example.com/v1alpha1',

@@ -1,9 +1,10 @@
 /**
- * Complete web application example using the new TypeKro API with separate ResourceBuilder and StatusBuilder
+ * Complete web application example using TypeKro's kubernetesComposition pattern
+ * Demonstrates advanced status builders and CEL expressions
  */
 
 import { type } from 'arktype';
-import { Cel, toResourceGraph } from '../src/index.js';
+import { Cel, kubernetesComposition } from '../src/index.js';
 import { Deployment, Service, Ingress, NetworkPolicy } from '../src/factories/simple/index.js';
 
 // Define the schema for our complete web application
@@ -24,8 +25,8 @@ const CompleteWebAppStatusSchema = type({
   webReady: 'boolean',
 });
 
-// Complete Web Application Resource Graph
-export const completeWebApp = toResourceGraph(
+// Complete Web Application Composition
+export const completeWebApp = kubernetesComposition(
   {
     name: 'complete-webapp',
     apiVersion: 'webapp.example.com/v1',
@@ -33,11 +34,11 @@ export const completeWebApp = toResourceGraph(
     spec: CompleteWebAppSpecSchema,
     status: CompleteWebAppStatusSchema,
   },
-  (schema) => ({
+  (spec) => {
     // Database deployment
-    database: Deployment({
-      name: Cel.template('%s-db', schema.spec.name),
-      image: schema.spec.databaseImage,
+    const database = Deployment({
+      name: Cel.template('%s-db', spec.name),
+      image: spec.databaseImage,
       replicas: 1,
       ports: [{ containerPort: 5432 }],
       env: {
@@ -45,43 +46,47 @@ export const completeWebApp = toResourceGraph(
         POSTGRES_USER: 'webapp',
         POSTGRES_PASSWORD: 'secret',
       },
-    }),
+      id: 'database',
+    });
 
     // Database service
-    dbService: Service({
-      name: Cel.template('%s-db-service', schema.spec.name),
-      selector: { app: Cel.template('%s-db', schema.spec.name) },
+    const _dbService = Service({
+      name: Cel.template('%s-db-service', spec.name),
+      selector: { app: Cel.template('%s-db', spec.name) },
       ports: [{ port: 5432, targetPort: 5432 }],
-    }),
+      id: 'dbService',
+    });
 
     // Web application deployment
-    webApp: Deployment({
-      name: schema.spec.name,
-      image: schema.spec.webImage,
-      replicas: schema.spec.replicas,
+    const webApp = Deployment({
+      name: spec.name,
+      image: spec.webImage,
+      replicas: spec.replicas,
       ports: [{ containerPort: 3000 }],
       env: {
-        NODE_ENV: schema.spec.environment,
+        NODE_ENV: spec.environment,
         DATABASE_URL: Cel.template(
           'postgresql://webapp:secret@%s-db-service:5432/webapp',
-          schema.spec.name
+          spec.name
         ),
       },
-    }),
+      id: 'webApp',
+    });
 
     // Web service
-    webService: Service({
-      name: Cel.template('%s-service', schema.spec.name),
-      selector: { app: schema.spec.name },
+    const _webService = Service({
+      name: Cel.template('%s-service', spec.name),
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
-    }),
+      id: 'webService',
+    });
 
     // Ingress for external access
-    ingress: Ingress({
-      name: Cel.template('%s-ingress', schema.spec.name),
+    const _ingress = Ingress({
+      name: Cel.template('%s-ingress', spec.name),
       rules: [
         {
-          host: schema.spec.hostname,
+          host: spec.hostname,
           http: {
             paths: [
               {
@@ -89,7 +94,7 @@ export const completeWebApp = toResourceGraph(
                 pathType: 'Prefix',
                 backend: {
                   service: {
-                    name: Cel.template('%s-service', schema.spec.name),
+                    name: Cel.template('%s-service', spec.name),
                     port: { number: 80 },
                   },
                 },
@@ -100,16 +105,17 @@ export const completeWebApp = toResourceGraph(
       ],
       tls: [
         {
-          secretName: Cel.template('%s-tls', schema.spec.name),
-          hosts: [schema.spec.hostname],
+          secretName: Cel.template('%s-tls', spec.name),
+          hosts: [spec.hostname],
         },
       ],
-    }),
+      id: 'ingress',
+    });
 
     // Network policy for security
-    webNetworkPolicy: NetworkPolicy({
-      name: Cel.template('%s-web-policy', schema.spec.name),
-      podSelector: { matchLabels: { app: schema.spec.name } },
+    const _webNetworkPolicy = NetworkPolicy({
+      name: Cel.template('%s-web-policy', spec.name),
+      podSelector: { matchLabels: { app: spec.name } },
       policyTypes: ['Ingress'],
       ingress: [
         {
@@ -117,45 +123,49 @@ export const completeWebApp = toResourceGraph(
           ports: [{ protocol: 'TCP', port: 3000 }],
         },
       ],
-    }),
+      id: 'webNetworkPolicy',
+    });
 
     // Database network policy
-    dbNetworkPolicy: NetworkPolicy({
-      name: Cel.template('%s-db-policy', schema.spec.name),
-      podSelector: { matchLabels: { app: Cel.template('%s-db', schema.spec.name) } },
+    const _dbNetworkPolicy = NetworkPolicy({
+      name: Cel.template('%s-db-policy', spec.name),
+      podSelector: { matchLabels: { app: Cel.template('%s-db', spec.name) } },
       policyTypes: ['Ingress'],
       ingress: [
         {
-          from: [{ podSelector: { matchLabels: { app: schema.spec.name } } }],
+          from: [{ podSelector: { matchLabels: { app: spec.name } } }],
           ports: [{ protocol: 'TCP', port: 5432 }],
         },
       ],
-    }),
-  }),
-  (schema, resources) => ({
-    url: Cel.template('https://%s', schema.spec.hostname),
-    ready: Cel.expr<boolean>(
-      resources.database.status.readyReplicas,
-      ' >= 1 && ',
-      resources.webApp.status.readyReplicas,
-      ' >= ',
-      schema.spec.replicas
-    ),
-    phase: Cel.expr<'pending' | 'running' | 'failed'>(
-      resources.database.status.readyReplicas,
-      ' > 0 && ',
-      resources.webApp.status.readyReplicas,
-      ' >= ',
-      resources.webApp.status.replicas,
-      ' ? "running" : "failed"'
-    ),
-    databaseReady: Cel.expr<boolean>(resources.database.status.readyReplicas, ' >= 1'),
-    webReady: Cel.expr<boolean>(
-      resources.webApp.status.readyReplicas,
-      ' >= ',
-      schema.spec.replicas
-    ),
-  })
+      id: 'dbNetworkPolicy',
+    });
+
+    // Return status (resources are auto-captured)
+    return {
+      url: Cel.template('https://%s', spec.hostname),
+      ready: Cel.expr<boolean>(
+        database.status.readyReplicas,
+        ' >= 1 && ',
+        webApp.status.readyReplicas,
+        ' >= ',
+        spec.replicas
+      ),
+      phase: Cel.expr<'pending' | 'running' | 'failed'>(
+        database.status.readyReplicas,
+        ' > 0 && ',
+        webApp.status.readyReplicas,
+        ' >= ',
+        webApp.status.replicas,
+        ' ? "running" : "failed"'
+      ),
+      databaseReady: Cel.expr<boolean>(database.status.readyReplicas, ' >= 1'),
+      webReady: Cel.expr<boolean>(
+        webApp.status.readyReplicas,
+        ' >= ',
+        spec.replicas
+      ),
+    };
+  }
 );
 
 // Example usage

@@ -9,13 +9,13 @@ One of TypeKro's most powerful features is the ability to create dynamic referen
 Reference another resource's fields directly:
 
 ```typescript
-const database = simple.Deployment({
+const database = Deployment({
   name: 'postgres',
   image: 'postgres:15',
   ports: [{ containerPort: 5432 }]
 });
 
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   image: 'myapp:latest',
   env: {
@@ -31,13 +31,13 @@ const app = simple.Deployment({
 Reference services for stable DNS names:
 
 ```typescript
-const dbService = simple.Service({
+const dbService = Service({
   name: 'postgres-service',
   selector: { app: 'postgres' },
   ports: [{ port: 5432, targetPort: 5432 }]
 });
 
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   env: {
     // Use the service's cluster DNS name
@@ -53,7 +53,7 @@ const app = simple.Deployment({
 Use TypeScript's conditional logic with references:
 
 ```typescript
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   env: {
     // Different database hosts based on environment
@@ -74,12 +74,12 @@ const app = simple.Deployment({
 Reference deeply nested fields:
 
 ```typescript
-const ingress = simple.Ingress({
+const ingress = Ingress({
   name: 'web-ingress',
   rules: [/* ... */]
 });
 
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   env: {
     // Reference nested ingress status
@@ -151,7 +151,7 @@ Combine references with CEL expressions for complex logic:
 ```typescript
 import { Cel } from 'typekro';
 
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   env: {
     // Conditional based on replica count
@@ -208,7 +208,7 @@ await factory.deploy(spec);
 References become CEL expressions in the ResourceGraphDefinition:
 
 ```typescript
-const yaml = graph.toYaml(spec);
+const yaml = graph.toYaml();
 // Generates: DATABASE_HOST: ${database.status.podIP}
 ```
 
@@ -256,7 +256,7 @@ DATABASE_URL: `postgresql://${database.status.podIP}:5432/app`
 ### 2. Provide Fallbacks
 
 ```typescript
-const app = simple.Deployment({
+const app = Deployment({
   env: {
     // Fallback to default if external service unavailable
     CACHE_URL: externalCache?.status?.endpoint || 'redis://localhost:6379'
@@ -286,7 +286,7 @@ const databaseConfig = {
   user: 'postgres'
 };
 
-const app = simple.Deployment({
+const app = Deployment({
   env: {
     DATABASE_URL: `postgresql://${databaseConfig.user}@${databaseConfig.host}:${databaseConfig.port}/${databaseConfig.name}`
   }
@@ -299,12 +299,12 @@ const app = simple.Deployment({
 
 ```typescript
 const services = {
-  api: simple.Service({ name: 'api-service' }),
-  cache: simple.Service({ name: 'cache-service' }),
-  database: simple.Service({ name: 'db-service' })
+  api: Service({ name: 'api-service' }),
+  cache: Service({ name: 'cache-service' }),
+  database: Service({ name: 'db-service' })
 };
 
-const frontend = simple.Deployment({
+const frontend = Deployment({
   name: 'frontend',
   env: {
     API_URL: Cel.template("http://%s", [reference]):${services.api.spec.ports[0].port}`,
@@ -317,12 +317,12 @@ const frontend = simple.Deployment({
 ### Load Balancer Integration
 
 ```typescript
-const webService = simple.Service({
+const webService = Service({
   name: 'web-service',
   type: 'LoadBalancer'
 });
 
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   env: {
     // Reference the external load balancer IP
@@ -346,7 +346,7 @@ const config = simple({
   }
 });
 
-const app = simple.Deployment({
+const app = Deployment({
   name: 'web-app',
   volumeMounts: [{
     name: 'config',
@@ -366,7 +366,7 @@ const app = simple.Deployment({
 **Reference not found:**
 ```typescript
 // Make sure the referenced resource exists in the same graph
-const graph = toResourceGraph(
+const graph = kubernetesComposition({
   {
     name: 'my-app',
     apiVersion: 'example.com/v1alpha1',
@@ -375,8 +375,8 @@ const graph = toResourceGraph(
     status: MyAppStatus,
   },
   (schema) => ({
-  database: simple.Deployment({ name: 'db' }),
-  app: simple.Deployment({
+  database: Deployment({ name: 'db' }),
+  app: Deployment({
     env: {
       DB_HOST: database.status.podIP  // ✅ database is defined above
     }
@@ -387,11 +387,11 @@ const graph = toResourceGraph(
 **Circular references:**
 ```typescript
 // ❌ Avoid circular references
-const serviceA = simple.Service({
+const serviceA = Service({
   selector: { app: serviceB.metadata.labels.app }  // References B
 });
 
-const serviceB = simple.Service({
+const serviceB = Service({
   selector: { app: serviceA.metadata.labels.app }  // References A
 });
 ```

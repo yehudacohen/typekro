@@ -7,7 +7,7 @@ import {
   extractResourceReferences,
   generateDeterministicResourceId,
   processResourceReferences,
-} from '../../utils/index.js';
+} from '../../utils/index';
 import type {
   ResourceDependency,
   SerializationContext,

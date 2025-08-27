@@ -10,7 +10,7 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { Cel, kubernetesComposition, toResourceGraph, simple } from '../../src/index';
+import { Cel, kubernetesComposition, simple, toResourceGraph } from '../../src/index';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration
@@ -92,8 +92,11 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
     readyReplicas: 'number',
   });
 
+  // Generate unique names for each test run to avoid RGD conflicts (RGDs are cluster-scoped)
+  const testRunId = Date.now().toString().slice(-6);
+
   const definition = {
-    name: 'webapp-factory-test',
+    name: `webapp-factory-test-${testRunId}`,
     apiVersion: 'v1alpha1',
     kind: 'WebappFactoryTest',
     spec: WebAppSpecSchema,
@@ -102,7 +105,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
   // Create a separate definition for traditional composition to avoid name conflicts
   const traditionalDefinition = {
-    name: 'webapp-factory-traditional',
+    name: `webapp-factory-traditional-${testRunId}`,
     apiVersion: 'v1alpha1',
     kind: 'WebappFactoryTraditional',
     spec: WebAppSpecSchema,
@@ -220,11 +223,11 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       // Both should generate valid Kro ResourceGraphDefinition YAML
       expect(imperativeYaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(imperativeYaml).toContain('kind: ResourceGraphDefinition');
-      expect(imperativeYaml).toContain('name: webapp-factory-test');
+      expect(imperativeYaml).toContain(`name: webapp-factory-test-${testRunId}`);
 
       expect(traditionalYaml).toContain('apiVersion: kro.run/v1alpha1');
       expect(traditionalYaml).toContain('kind: ResourceGraphDefinition');
-      expect(traditionalYaml).toContain('name: webapp-factory-traditional');
+      expect(traditionalYaml).toContain(`name: webapp-factory-traditional-${testRunId}`);
 
       // Both should have the same resource count
       expect(imperativeComposition.resources).toHaveLength(3);
@@ -464,8 +467,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           // Both factories should have identical properties (except name)
           expect(imperativeKroFactory.mode).toBe('kro');
           expect(traditionalKroFactory.mode).toBe('kro');
-          expect(imperativeKroFactory.name).toBe('webapp-factory-test');
-          expect(traditionalKroFactory.name).toBe('webapp-factory-traditional');
+          expect(imperativeKroFactory.name).toBe(`webapp-factory-test-${testRunId}`);
+          expect(traditionalKroFactory.name).toBe(`webapp-factory-traditional-${testRunId}`);
 
           // Both should be able to deploy
           const imperativeResult = await imperativeKroFactory.deploy({
@@ -628,8 +631,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         // Both factories should have identical properties (except name)
         expect(imperativeDirectFactory.mode).toBe('direct');
         expect(traditionalDirectFactory.mode).toBe('direct');
-        expect(imperativeDirectFactory.name).toBe('webapp-factory-test');
-        expect(traditionalDirectFactory.name).toBe('webapp-factory-traditional');
+        expect(imperativeDirectFactory.name).toBe(`webapp-factory-test-${testRunId}`);
+        expect(traditionalDirectFactory.name).toBe(`webapp-factory-traditional-${testRunId}`);
 
         // Both should be able to deploy
         const imperativeResult = await imperativeDirectFactory.deploy({
@@ -739,7 +742,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           // Test getStatus method
           const kroStatus = await kroFactory.getStatus();
           expect(kroStatus.mode).toBe('kro');
-          expect(kroStatus.name).toBe('webapp-factory-test');
+          expect(kroStatus.name).toBe(`webapp-factory-test-${testRunId}`);
 
           // Test getInstances method
           const kroInstances = await kroFactory.getInstances();
@@ -779,7 +782,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         // Test getStatus method
         const directStatus = await directFactory.getStatus();
         expect(directStatus.mode).toBe('direct');
-        expect(directStatus.name).toBe('webapp-factory-test');
+        expect(directStatus.name).toBe(`webapp-factory-test-${testRunId}`);
       });
     }, 180000);
   });
@@ -918,11 +921,20 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
         });
 
         try {
-          // Create factory with readiness checking enabled
+          // Create factory with readiness checking and event monitoring enabled
           const directFactory = await composition.factory('direct', {
             namespace: testNamespace,
             waitForReady: true, // This should work properly
             kubeConfig: kc,
+            eventMonitoring: {
+              enabled: true,
+              eventTypes: ['Normal', 'Warning', 'Error'],
+              includeChildResources: true,
+            },
+            debugLogging: {
+              enabled: true,
+              statusPolling: true,
+            },
           });
 
           // Deploy and wait for readiness

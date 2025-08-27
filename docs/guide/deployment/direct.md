@@ -13,9 +13,9 @@ Direct deployment provides:
 - **No additional dependencies** beyond kubectl access
 
 ```typescript
-import { toResourceGraph, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
 
-const webApp = toResourceGraph(/* ... */);
+const webApp = kubernetesComposition({/* ... */);
 
 // Deploy directly to cluster
 const factory = webApp.factory('direct', {
@@ -196,36 +196,36 @@ console.log('Resources created:', deployment.resources);
 const status = await factory.getStatus();
 console.log('Current status:', status);
 
-// Wait for specific conditions
-await factory.waitForCondition(
-  (status) => status.readyReplicas >= 2,
-  { timeout: 300000 }
-);
+// Poll for specific conditions
+const waitForCondition = async () => {
+  const status = await factory.getStatus();
+  return status.health === 'healthy';
+};
+while (!(await waitForCondition())) {
+  await new Promise(resolve => setTimeout(resolve, 2000));
+}
 
-// Listen for status updates
-factory.onStatusUpdate((newStatus) => {
-  console.log('Status changed:', newStatus);
-});
+// Check status
+const status = await factory.getStatus();
+console.log('Current status:', status);
 ```
 
 ### 3. Resource Management
 
 ```typescript
-// Update deployment
-await factory.update({
-  name: 'my-app',
+// Deploy updated version (creates new instance)
+await factory.deploy({
+  name: 'my-app-v2',
   image: 'app:v1.1.0',  // New image version
   replicas: 5           // Scale up
 });
 
-// Restart deployment
-await factory.restart();
+// Delete specific instance
+await factory.deleteInstance('my-app');
 
-// Scale specific resources
-await factory.scale('deployment', 3);
-
-// Delete deployment
-await factory.delete();
+// Get all instances
+const instances = await factory.getInstances();
+console.log('Active instances:', instances.length);
 ```
 
 ## Environment-Specific Deployments
@@ -291,11 +291,11 @@ await prodFactory.deploy({
 ### Database and Application Stack
 
 ```typescript
-const fullStack = toResourceGraph(
+const fullStack = kubernetesComposition({
   { name: 'fullstack', schema: { spec: FullStackSpec } },
   (schema) => ({
     // Database
-    database: simple.Deployment({
+    database: Deployment({
       name: Cel.expr(schema.spec.name, '-db'),
       image: 'postgres:15',
       env: {
@@ -306,14 +306,14 @@ const fullStack = toResourceGraph(
       ports: [{ containerPort: 5432 }]
     }),
     
-    databaseService: simple.Service({
+    databaseService: Service({
       name: Cel.expr(schema.spec.name, '-db-service'),
       selector: { app: Cel.expr(schema.spec.name, '-db') },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // Wait for database before starting app
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       env: {
@@ -322,7 +322,7 @@ const fullStack = toResourceGraph(
       ports: [{ containerPort: 3000 }]
     }),
     
-    appService: simple.Service({
+    appService: Service({
       name: Cel.expr(schema.spec.name, '-service'),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -360,14 +360,14 @@ await factory.deploy({
 ### Microservices Deployment
 
 ```typescript
-const microservices = toResourceGraph(
+const microservices = kubernetesComposition({
   { name: 'microservices', schema: { spec: MicroservicesSpec } },
   (schema) => {
     const services = {};
     
     // Create deployments for each service
     schema.spec.services.forEach(service => {
-      services[service.name] = simple.Deployment({
+      services[service.name] = Deployment({
         name: service.name,
         image: service.image,
         replicas: service.replicas,
@@ -375,7 +375,7 @@ const microservices = toResourceGraph(
         env: service.env
       });
       
-      services[Cel.expr(service.name, 'Service')] = simple.Service({
+      services[Cel.expr(service.name, 'Service')] = Service({
         name: Cel.expr(service.name, '-service'),
         selector: { app: service.name },
         ports: [{ port: service.port, targetPort: service.port }]
@@ -406,6 +406,110 @@ const microservices = toResourceGraph(
 );
 ```
 
+## YAML Integration
+
+Direct deployment seamlessly handles existing YAML manifests alongside TypeKro resources:
+
+### Bootstrap with Existing YAML
+
+```typescript
+import { kubernetesComposition, Cel, yamlFile } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
+
+const bootstrappedApp = kubernetesComposition(
+  {
+    name: 'bootstrapped-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'BootstrappedApp',
+    spec: type({
+      name: 'string',
+      image: 'string',
+      environment: 'string'
+    }),
+    status: type({
+      ready: 'boolean',
+      bootstrapped: 'boolean',
+      endpoint: 'string'
+    })
+  },
+  (spec) => {
+    // Bootstrap existing infrastructure
+    const fluxSystem = yamlFile({
+      name: 'flux-bootstrap',
+      path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+      deploymentStrategy: 'skipIfExists'
+    });
+
+    // Legacy configuration
+    const legacyConfig = yamlFile({
+      name: 'legacy-config',
+      path: `./manifests/${spec.environment}/config.yaml`
+    });
+
+    // TypeKro managed resources
+    const app = Deployment({
+      name: spec.name,
+      image: spec.image,
+      env: {
+        FLUX_ENABLED: 'true',
+        ENVIRONMENT: spec.environment
+      }
+    });
+
+    const service = Service({
+      name: `${spec.name}-service`,
+      selector: { app: spec.name },
+      ports: [{ port: 80 }]
+    });
+
+    return {
+      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+      bootstrapped: true, // YAML files don't have status
+      endpoint: service.status.clusterIP
+    };
+  }
+);
+
+// Deploy with YAML integration
+const factory = bootstrappedApp.factory('direct', { 
+  namespace: 'production' 
+});
+
+await factory.deploy({
+  name: 'production-app',
+  image: 'myapp:v1.0.0',
+  environment: 'production'
+});
+```
+
+### Migration from Pure YAML
+
+```typescript
+// Gradually migrate existing YAML to TypeKro
+const migrationApp = kubernetesComposition(definition, (spec) => {
+  // Keep existing YAML manifests during migration
+  const existingManifests = yamlDirectory({
+    name: 'existing-k8s',
+    path: './existing-manifests',
+    recursive: true,
+    exclude: ['*-migrated.yaml'] // Skip already converted files
+  });
+
+  // New TypeKro managed resources  
+  const modernApp = Deployment({
+    name: `${spec.name}-modern`,
+    image: spec.modernImage,
+    replicas: 3
+  });
+
+  return {
+    legacyDeployed: true,
+    modernReady: Cel.expr<boolean>(modernApp.status.readyReplicas, ' > 0'),
+    migrationProgress: 'partial'
+  };
+});
+```
+
 ## Deployment Patterns
 
 ### Rolling Deployment
@@ -415,18 +519,16 @@ async function rollingDeployment() {
   const factory = graph.factory('direct');
   
   // Deploy new version with zero downtime
-  await factory.update({
-    name: 'my-app',
+  await factory.deploy({
+    name: 'my-app-v2',
     image: 'app:v2.0.0',
-    replicas: 3,
-    strategy: 'RollingUpdate',
-    maxUnavailable: 1,
+    replicas: 3
     maxSurge: 1
   });
   
-  // Wait for rollout to complete
-  await factory.waitForRollout();
-  console.log('Rolling deployment completed');
+  // Wait for deployment to be ready
+  const status = await factory.getStatus();
+  console.log('Rolling deployment status:', status.health);
 }
 ```
 
@@ -443,18 +545,19 @@ async function blueGreenDeployment() {
     replicas: 3
   });
   
-  // Wait for green to be ready
-  await factory.waitForCondition(
-    (status) => status.readyReplicas >= 3
-  );
+  // Check green deployment status
+  const greenStatus = await factory.getStatus();
+  console.log('Green deployment status:', greenStatus);
   
-  // Switch traffic to green
-  await factory.updateService('my-app-service', {
-    selector: { app: 'my-app-green' }
+  // Deploy production version with correct selector
+  await factory.deploy({
+    name: 'my-app-prod',
+    image: 'app:v2.0.0',
+    replicas: 3
   });
   
-  // Clean up blue version
-  await factory.deleteDeployment('my-app-blue');
+  // Clean up old version
+  await factory.deleteInstance('my-app-blue');
 }
 ```
 
@@ -475,15 +578,18 @@ async function canaryDeployment() {
   const canaryHealthy = await monitorCanaryHealth();
   
   if (canaryHealthy) {
-    // Scale up canary and scale down main
-    await factory.scale('my-app-canary', 3);
-    await factory.scale('my-app', 0);
+    // Deploy production version
+    await factory.deploy({
+      name: 'my-app-prod',
+      image: 'app:v2.0.0',
+      replicas: 3
+    });
     
-    // Promote canary to main
-    await factory.promote('my-app-canary', 'my-app');
+    // Remove old instance
+    await factory.deleteInstance('my-app');
   } else {
-    // Rollback canary
-    await factory.delete('my-app-canary');
+    // Remove canary
+    await factory.deleteInstance('my-app-canary');
   }
 }
 ```
@@ -493,10 +599,10 @@ async function canaryDeployment() {
 ### Health Checks and Readiness
 
 ```typescript
-const healthyApp = toResourceGraph(
+const healthyApp = kubernetesComposition({
   { name: 'healthy-app', schema: { spec: AppSpec } },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       ports: [{ containerPort: 3000 }],
@@ -538,10 +644,10 @@ const factory = healthyApp.factory('direct', {
 ### Resource Limits and Scaling
 
 ```typescript
-const scalableApp = toResourceGraph(
+const scalableApp = kubernetesComposition({
   { name: 'scalable-app', schema: { spec: ScalableAppSpec } },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas,
@@ -560,7 +666,7 @@ const scalableApp = toResourceGraph(
     }),
     
     // Horizontal Pod Autoscaler
-    hpa: simple.Hpa({
+    hpa: Hpa({
       name: Cel.expr(schema.spec.name, '-hpa'),
       scaleTargetRef: {
         apiVersion: 'apps/v1',
@@ -583,17 +689,17 @@ const scalableApp = toResourceGraph(
 ### Persistent Storage
 
 ```typescript
-const statefulApp = toResourceGraph(
+const statefulApp = kubernetesComposition({
   { name: 'stateful-app', schema: { spec: StatefulAppSpec } },
   (schema) => ({
-    storage: simple.Pvc({
+    storage: Pvc({
       name: Cel.expr(schema.spec.name, '-storage'),
       size: schema.spec.storage.size,
       storageClass: schema.spec.storage.class,
       accessModes: ['ReadWriteOnce']
     }),
     
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       
@@ -808,8 +914,9 @@ async function deployWithRollback() {
   try {
     await factory.deploy(newVersion);
   } catch (error) {
-    console.error('Deployment failed, rolling back...');
-    await factory.rollback();
+    console.error('Deployment failed, checking rollback...');
+    const rollbackResult = await factory.rollback();
+    console.log('Rollback result:', rollbackResult);
     throw error;
   }
 }
@@ -821,7 +928,10 @@ async function deployWithRollback() {
 // ✅ Clean up temporary resources
 process.on('SIGINT', async () => {
   console.log('Cleaning up resources...');
-  await factory.delete();
+  const instances = await factory.getInstances();
+  for (const instance of instances) {
+    await factory.deleteInstance(instance.metadata.name);
+  }
   process.exit(0);
 });
 ```

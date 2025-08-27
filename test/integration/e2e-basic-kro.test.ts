@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
 
 // Test configuration

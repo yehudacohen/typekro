@@ -7,11 +7,13 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { getComponentLogger } from '../../logging/index.js';
+import { createResourcesProxy } from '../../references/schema-proxy.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
 import type { Enhanced, KubernetesResource } from '../../types/kubernetes.js';
 import type {
   KroCompatibleType,
   SchemaDefinition,
+  SchemaProxy,
   StatusBuilder,
 } from '../../types/serialization.js';
 import { createEnhancedMetadata, generateInstanceName, validateSpec } from '../shared-utilities.js';
@@ -123,11 +125,11 @@ export abstract class BaseDeploymentStrategy<
     if (this.statusBuilder) {
       try {
         // Create enhanced resources for the status builder using original resource keys
-        const enhancedResources: Record<string, Enhanced<any, any>> = {};
+        const enhancedResources: Record<string, Enhanced<unknown, unknown>> = {};
 
         if (deploymentResult && 'resources' in deploymentResult && this.resourceKeys) {
           // Create a mapping from resource ID to deployed resource
-          const deployedResourcesById: Record<string, any> = {};
+          const deployedResourcesById: Record<string, unknown> = {};
           for (const deployedResource of deploymentResult.resources) {
             if (deployedResource?.manifest) {
               deployedResourcesById[deployedResource.id] = deployedResource;
@@ -181,9 +183,14 @@ export abstract class BaseDeploymentStrategy<
                 const k8sApi = this.factoryOptions.kubeConfig?.makeApiClient(
                   k8s.KubernetesObjectApi
                 );
-                if (k8sApi) {
-                  const response = await k8sApi.read(resourceRef as any);
-                  actualResource = response.body as any;
+                if (k8sApi && resourceRef.metadata) {
+                  const response = await k8sApi.read({
+                    metadata: {
+                      name: resourceRef.metadata.name,
+                      namespace: resourceRef.metadata.namespace || this.namespace,
+                    },
+                  } as { metadata: { name: string; namespace: string } });
+                  actualResource = response.body as KubernetesResource<unknown, unknown>;
                 }
               } catch (_error) {
                 // Ignore CEL evaluation errors during status hydration
@@ -191,9 +198,9 @@ export abstract class BaseDeploymentStrategy<
 
               enhancedResources[originalKey] = {
                 metadata: actualResource.metadata || {},
-                spec: (actualResource as any).spec || {},
-                status: (actualResource as any).status || {},
-              } as Enhanced<any, any>;
+                spec: (actualResource as { spec?: unknown }).spec || {},
+                status: (actualResource as { status?: unknown }).status || {},
+              } as Enhanced<unknown, unknown>;
             }
           }
 
@@ -217,7 +224,12 @@ export abstract class BaseDeploymentStrategy<
         };
 
         // Call the status builder to get the computed status
-        const computedStatus = this.statusBuilder(schemaProxy as any, enhancedResources);
+        // Wrap enhanced resources with proxy to enable resource reference magic
+        const resourcesProxy = createResourcesProxy(enhancedResources);
+        const computedStatus = this.statusBuilder(
+          schemaProxy as SchemaProxy<TSpec, TStatus>,
+          resourcesProxy
+        );
         status = computedStatus as TStatus;
 
         this.logger.debug('Status built using status builder', {
@@ -246,7 +258,7 @@ export abstract class BaseDeploymentStrategy<
             // Create a mapping from original resource keys to deployed resources
             // The deployed resource IDs follow the pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey}
             // We need to extract the original key and map it back
-            const resourceKeyMapping = new Map<string, any>();
+            const resourceKeyMapping = new Map<string, unknown>();
 
             // Convert instance name to camelCase for pattern matching
             const camelCaseInstanceName = instanceName.replace(/-([a-z])/g, (_, letter) =>
@@ -279,7 +291,9 @@ export abstract class BaseDeploymentStrategy<
                     },
                   };
 
-                  const response = await (k8sApi as any)?.read(resourceRef);
+                  const response = await (
+                    k8sApi as { read?: (ref: unknown) => Promise<{ body: unknown }> }
+                  )?.read?.(resourceRef);
                   const actualResource = response?.body;
 
                   if (actualResource) {
@@ -289,8 +303,10 @@ export abstract class BaseDeploymentStrategy<
                       originalKey,
                       resourceKind: deployedResource.kind,
                       resourceName: deployedResource.name,
-                      hasStatus: !!actualResource.status,
-                      statusKeys: actualResource.status ? Object.keys(actualResource.status) : [],
+                      hasStatus: !!(actualResource as { status?: unknown }).status,
+                      statusKeys: (actualResource as { status?: unknown }).status
+                        ? Object.keys((actualResource as { status?: unknown }).status as object)
+                        : [],
                     });
                   } else {
                     // Fallback to manifest if cluster query fails

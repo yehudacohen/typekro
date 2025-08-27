@@ -38,9 +38,9 @@ interface KubernetesApiClientConfig {
  * This client provides basic apply, get, and delete operations for Kubernetes resources.
  */
 export class KubernetesApi {
-  private kc: k8s.KubeConfig;
   private k8sApi: k8s.KubernetesObjectApi;
   private logger = getComponentLogger('kubernetes-api');
+  private clientConfig: KubernetesClientConfig;
 
   constructor() {
     const config = this.loadConfigFromEnv();
@@ -60,8 +60,8 @@ export class KubernetesApi {
       context: 'default-context',
     };
 
+    this.clientConfig = clientConfig;
     const clientProvider = createKubernetesClientProvider(clientConfig);
-    this.kc = clientProvider.getKubeConfig();
     this.k8sApi = clientProvider.getKubernetesApi();
   }
 
@@ -184,12 +184,12 @@ export class KubernetesApi {
         // Ensure that name and namespace are explicitly non-optional in the header
         const { body } = await this.k8sApi.read({
           metadata: { name: manifest.metadata.name, namespace: manifestNamespace },
-        } as any);
+        } as { metadata: { name: string; namespace: string } });
         existing = body;
-      } catch (e: any) {
+      } catch (e: unknown) {
         // If it's a 404, the resource doesn't exist, which is expected for creation
-        if (e.statusCode !== 404) {
-          resourceLogger.error('Error checking resource existence', e);
+        if ((e as { statusCode?: number }).statusCode !== 404) {
+          resourceLogger.error('Error checking resource existence', e as Error);
           throw e;
         }
       }
@@ -204,9 +204,9 @@ export class KubernetesApi {
         await this.k8sApi.create(manifest);
         resourceLogger.debug('Resource created');
       }
-    } catch (error: any) {
-      resourceLogger.error('Error applying Kubernetes manifest', error);
-      throw new Error(`Failed to apply Kubernetes manifest: ${error.message}`);
+    } catch (error: unknown) {
+      resourceLogger.error('Error applying Kubernetes manifest', error as Error);
+      throw new Error(`Failed to apply Kubernetes manifest: ${(error as Error).message}`);
     }
   }
 
@@ -223,17 +223,17 @@ export class KubernetesApi {
     kind: string,
     name: string,
     namespace: string = 'default'
-  ): Promise<any> {
+  ): Promise<unknown> {
     const getLogger = this.logger.child({ kind, name, namespace });
 
     try {
       const { body } = await this.k8sApi.read({
         metadata: { name, namespace },
-      } as any);
+      } as { metadata: { name: string; namespace: string } });
       return body;
-    } catch (error: any) {
-      getLogger.error('Error getting resource', error);
-      throw new Error(`Failed to get Kubernetes resource: ${error.message}`);
+    } catch (error: unknown) {
+      getLogger.error('Error getting resource', error as Error);
+      throw new Error(`Failed to get Kubernetes resource: ${(error as Error).message}`);
     }
   }
 
@@ -259,16 +259,30 @@ export class KubernetesApi {
         apiVersion,
         kind,
         metadata: { name, namespace },
-      } as any);
+      } as { kind: string; metadata: { name: string; namespace: string } });
       deleteLogger.debug('Resource deleted');
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Don't throw if resource is already not found during deletion
-      if (error.statusCode === 404) {
+      if ((error as { statusCode?: number }).statusCode === 404) {
         deleteLogger.warn('Resource not found during deletion attempt, assuming already deleted');
         return;
       }
-      deleteLogger.error('Error deleting resource', error);
-      throw new Error(`Failed to delete Kubernetes resource: ${error.message}`);
+      deleteLogger.error('Error deleting resource', error as Error);
+      throw new Error(`Failed to delete Kubernetes resource: ${(error as Error).message}`);
     }
+  }
+
+  /**
+   * Get the TLS configuration for testing purposes.
+   * This method is primarily intended for unit tests to verify TLS settings.
+   *
+   * @returns Object containing TLS configuration details
+   */
+  getTLSConfiguration(): { skipTLSVerify: boolean; server: string; hasCACert: boolean } {
+    return {
+      skipTLSVerify: this.clientConfig.cluster?.skipTLSVerify ?? false,
+      server: this.clientConfig.cluster?.server ?? '',
+      hasCACert: !!(this.clientConfig.cluster?.caData || this.clientConfig.cluster?.caFile),
+    };
   }
 }

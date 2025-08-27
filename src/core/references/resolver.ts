@@ -6,7 +6,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { isCelExpression, isKubernetesRef } from '../../utils/index.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/index';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { ResolutionContext } from '../types/deployment.js';

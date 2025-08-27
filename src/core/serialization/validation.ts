@@ -2,7 +2,7 @@
  * Resource graph validation and dependency analysis
  */
 
-import { extractResourceReferences, generateDeterministicResourceId } from '../../utils/index.js';
+import { extractResourceReferences, generateDeterministicResourceId } from '../../utils/index';
 import { formatReferenceError } from '../errors.js';
 import type { ValidationResult } from '../types/serialization.js';
 import type { KubernetesResource } from '../types.js';

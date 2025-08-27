@@ -5,12 +5,13 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
+
 import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 import { getComponentLogger } from '../logging/index.js';
-import { createSchemaProxy } from '../references/index.js';
+import { createSchemaProxy, externalRef } from '../references/index.js';
 import type {
   DeploymentClosure,
   FactoryForMode,
@@ -222,7 +223,93 @@ function createTypedResourceGraph<
 
   // schemaDefinition is already created above with default apiVersion handling
 
-  return {
+  /**
+   * Find a resource by key name in the resources map
+   * This enables cross-composition magic proxy access like composition.database
+   */
+  function findResourceByKey(key: string | symbol): KubernetesResource | undefined {
+    if (typeof key !== 'string') return undefined;
+
+    // Strategy 1: Direct match by generated resource ID
+    if (resourcesWithKeys[key]) {
+      return resourcesWithKeys[key];
+    }
+
+    // Strategy 2: Smart pattern matching for common cases
+    const keyLower = key.toLowerCase();
+    const keyParts = key.split(/[-_]/).map((p) => p.toLowerCase()); // Split on hyphens and underscores
+
+    for (const [resourceId, resource] of Object.entries(resourcesWithKeys)) {
+      const kind = resource.kind.toLowerCase();
+      const name = resource.metadata.name?.toLowerCase() || '';
+      const resourceIdLower = resourceId.toLowerCase();
+
+      // Pattern 1: Key parts match resource name parts
+      // e.g., 'my-deployment' matches 'test-deployment' if 'deployment' appears in both
+      const nameParts = name.split(/[-_]/).map((p) => p.toLowerCase());
+      const hasCommonParts = keyParts.some((keyPart) =>
+        nameParts.some((namePart) => keyPart.includes(namePart) || namePart.includes(keyPart))
+      );
+
+      if (hasCommonParts) {
+        // Also check if the kinds match logically
+        if (
+          keyParts.includes(kind) ||
+          (keyParts.includes('deployment') && kind === 'deployment') ||
+          (keyParts.includes('service') && kind === 'service')
+        ) {
+          return resource;
+        }
+      }
+
+      // Pattern 2: Key contains kind and resource ID contains resource name parts
+      if (keyParts.includes(kind)) {
+        const nameInResourceId = nameParts.some((part) => resourceIdLower.includes(part));
+        if (nameInResourceId) {
+          return resource;
+        }
+      }
+
+      // Pattern 3: Common semantic patterns
+      const semanticPatterns: Record<string, string[]> = {
+        database: ['deployment', 'statefulset'],
+        db: ['deployment', 'statefulset'],
+        cache: ['deployment', 'statefulset'],
+        redis: ['deployment', 'statefulset'],
+        service: ['service'],
+        svc: ['service'],
+        ingress: ['ingress'],
+        configmap: ['configmap'],
+        secret: ['secret'],
+      };
+
+      for (const [pattern, kinds] of Object.entries(semanticPatterns)) {
+        if (keyParts.includes(pattern) && kinds.includes(kind)) {
+          return resource;
+        }
+      }
+    }
+
+    // Strategy 3: Case-insensitive match on generated resource ID
+    for (const [resourceKey, resource] of Object.entries(resourcesWithKeys)) {
+      if (resourceKey.toLowerCase() === keyLower) {
+        return resource;
+      }
+    }
+
+    // Strategy 4: Partial matching - find resources that contain key parts in their ID
+    for (const [resourceKey, resource] of Object.entries(resourcesWithKeys)) {
+      const resourceKeyLower = resourceKey.toLowerCase();
+      if (keyParts.some((part) => part.length > 2 && resourceKeyLower.includes(part))) {
+        return resource;
+      }
+    }
+
+    return undefined;
+  }
+
+  // Create the base TypedResourceGraph object
+  const baseResourceGraph = {
     name: definition.name,
     resources: Object.values(resourcesWithKeys),
     schema,
@@ -267,4 +354,53 @@ function createTypedResourceGraph<
       return serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
     },
   };
+
+  // Wrap with cross-composition magic proxy for resource access
+  return new Proxy(baseResourceGraph, {
+    get(target, prop, receiver) {
+      // Handle existing properties normally
+      if (prop in target) {
+        return Reflect.get(target, prop, receiver);
+      }
+
+      // For unknown properties, check if it's a resource key and create external ref
+      const matchingResource = findResourceByKey(prop);
+      if (matchingResource && matchingResource.metadata.name) {
+        return externalRef(
+          matchingResource.apiVersion,
+          matchingResource.kind,
+          matchingResource.metadata.name,
+          matchingResource.metadata.namespace
+        );
+      }
+
+      // Return undefined for non-existent properties (standard JavaScript behavior)
+      return undefined;
+    },
+
+    // Ensure proper enumeration of properties
+    ownKeys(target) {
+      return Reflect.ownKeys(target);
+    },
+
+    // Ensure proper property descriptor handling
+    getOwnPropertyDescriptor(target, prop) {
+      // For existing properties, return normal descriptor
+      if (prop in target) {
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+      }
+
+      // For resource properties, indicate they exist but are not enumerable
+      const matchingResource = findResourceByKey(prop);
+      if (matchingResource) {
+        return {
+          configurable: true,
+          enumerable: false, // Don't enumerate resource properties in for..in loops
+          value: undefined, // Value will be computed by get trap
+        };
+      }
+
+      return undefined;
+    },
+  }) as TypedResourceGraph<TSpec, TStatus>;
 }

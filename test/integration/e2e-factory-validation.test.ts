@@ -12,10 +12,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import { createCoreV1ApiClient, getIntegrationTestKubeConfig } from './shared-kubeconfig.js';
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-factory-validation';
@@ -38,16 +39,8 @@ describe('E2E Factory Pattern Validation Tests', () => {
 
   beforeAll(async () => {
     // Initialize Kubernetes client (even if cluster isn't available)
-    kc = new k8s.KubeConfig();
     try {
-      kc.loadFromDefault();
-
-      // Configure to skip TLS verification for test environment
-      const cluster = kc.getCurrentCluster();
-      if (cluster) {
-        const modifiedCluster = { ...cluster, skipTLSVerify: true };
-        kc.clusters = kc.clusters.map((c) => (c === cluster ? modifiedCluster : c));
-      }
+      kc = getIntegrationTestKubeConfig();
     } catch (_error) {
       console.log('⚠️  No kubectl config available, some tests will be limited');
     }
@@ -378,7 +371,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
       expect(instanceYaml).toContain('storage_size = 10Gi');
 
       // Create the test namespace before deployment
-      const k8sApi = kc.makeApiClient(k8s.CoreV1Api);
+      const k8sApi = createCoreV1ApiClient(kc);
       try {
         await k8sApi.createNamespace({
           metadata: { name: testNamespace },

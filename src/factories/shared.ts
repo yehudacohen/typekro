@@ -17,7 +17,7 @@ import type {
   ReadinessEvaluator,
 } from '../core/types.js';
 import { validateResourceId } from '../core/validation/cel-validator.js';
-import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index.js';
+import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index';
 import { isCelExpression } from '../utils/type-guards.js';
 
 // Check for the debug environment variable
@@ -455,9 +455,9 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
   const enhanced = createGenericProxyResource(resourceId, resource);
 
-  // Auto-register with composition context if active
+  // Auto-register with composition context if active (but not for external references)
   const context = getCurrentCompositionContext();
-  if (context) {
+  if (context && !(resource as any).__externalRef) {
     context.addResource(resourceId, enhanced);
   }
 

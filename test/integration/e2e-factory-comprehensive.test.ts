@@ -16,11 +16,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { File } from 'alchemy/fs';
 import { type } from 'arktype';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import {
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  createCustomObjectsApiClient,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 // Test configuration - use e2e-setup script
 const _CLUSTER_NAME = 'typekro-e2e-test';
@@ -114,34 +120,41 @@ const createTestResourceGraph = (testPrefix = '') => {
   );
 };
 
-const clusterAvailable = isClusterAvailable();
-const describeOrSkip = clusterAvailable ? describe : describe.skip;
-describeOrSkip('Comprehensive E2E Factory Pattern Tests', () => {
+// Check cluster availability at runtime, not module load time
+const checkClusterAvailable = () => isClusterAvailable();
+
+describe('Comprehensive E2E Factory Pattern Tests', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
   let _customApi: k8s.CustomObjectsApi;
   let alchemyScope: any;
+  let clusterInitialized = false;
 
   beforeAll(async () => {
-    if (!clusterAvailable) return;
-
     console.log('🚀 SETUP: Connecting to existing cluster...');
+
+    // Check cluster availability at runtime
+    if (!checkClusterAvailable()) {
+      console.log('⚠️ Cluster not available, skipping initialization');
+      return;
+    }
 
     // Use shared kubeconfig helper for consistent TLS configuration
     try {
       kc = getIntegrationTestKubeConfig();
 
-      k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-      appsApi = kc.makeApiClient(k8s.AppsV1Api);
-      _customApi = kc.makeApiClient(k8s.CustomObjectsApi);
+      k8sApi = createCoreV1ApiClient(kc);
+      appsApi = createAppsV1ApiClient(kc);
+      _customApi = createCustomObjectsApiClient(kc);
+
+      clusterInitialized = true;
+      console.log('✅ Kubernetes API clients initialized');
     } catch (error) {
       console.error('❌ Failed to initialize Kubernetes client:', error);
-      throw new Error(
-        `Kubernetes client initialization failed: ${error}. ` +
-          'Make sure the test cluster is running and accessible. ' +
-          'Run: bun run scripts/e2e-setup.ts to set up the test environment.'
-      );
+      console.log('⚠️ Tests will be skipped due to initialization failure');
+      clusterInitialized = false;
+      // Don't throw - let individual tests handle the skip
     }
 
     // Note: Individual test namespaces will be created per test for better isolation
@@ -170,11 +183,24 @@ describeOrSkip('Comprehensive E2E Factory Pattern Tests', () => {
     console.log('✅ E2E test environment ready!');
   });
 
+  // Helper function to skip tests if cluster not available
+  const _skipIfClusterNotAvailable = () => {
+    if (!clusterInitialized || !k8sApi) {
+      console.log('⚠️ Skipping test - cluster not initialized');
+      return;
+    }
+  };
+
   // Helper function to create and cleanup test namespace
   const withTestNamespace = async <T>(
     testName: string,
     testFn: (namespace: string) => Promise<T>
   ): Promise<T> => {
+    // Skip if cluster not initialized
+    if (!clusterInitialized || !k8sApi) {
+      throw new Error('Cluster not initialized - test should be skipped');
+    }
+
     const namespace = generateTestNamespace(testName);
 
     try {
@@ -203,7 +229,7 @@ describeOrSkip('Comprehensive E2E Factory Pattern Tests', () => {
       console.log('🧹 Cleaning up any stuck Kro instances...');
 
       // Try to delete any existing WebApp instances that might be stuck
-      const customApi = kc.makeApiClient(k8s.CustomObjectsApi);
+      const customApi = createCustomObjectsApiClient(kc);
 
       try {
         const instances = await customApi.listNamespacedCustomObject(
@@ -306,6 +332,15 @@ describeOrSkip('Comprehensive E2E Factory Pattern Tests', () => {
           waitForReady: true,
           timeout: 30000, // Increased timeout for ConfigMap readiness
           kubeConfig: kc,
+          eventMonitoring: {
+            enabled: true,
+            eventTypes: ['Normal', 'Warning', 'Error'],
+            includeChildResources: true,
+          },
+          debugLogging: {
+            enabled: true,
+            statusPolling: true,
+          },
           progressCallback: (event) => {
             console.log(`📊 Progress: ${event.type} - ${event.message}`);
             if (event.error) {

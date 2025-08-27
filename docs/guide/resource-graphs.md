@@ -13,7 +13,7 @@ A resource graph is a typed collection of Kubernetes resources that can referenc
 
 ```typescript
 import { type } from 'arktype';
-import { toResourceGraph, simple } from 'typekro';
+import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service, Ingress } from 'typekro/simple';
 
 const WebAppSpec = type({
   name: 'string',
@@ -26,7 +26,7 @@ const WebAppStatus = type({
   phase: 'string'
 });
 
-const webApp = toResourceGraph(
+const webApp = kubernetesComposition({
   // Graph definition
   {
     name: 'webapp',
@@ -38,12 +38,12 @@ const webApp = toResourceGraph(
   
   // Resource builder - defines what resources to create
   (schema) => ({
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas
     }),
-    service: simple.Service({
+    service: Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -81,7 +81,7 @@ The resource builder function creates the actual Kubernetes resources:
 ```typescript
 const resourceBuilder = (schema) => ({
   // Each key becomes a resource ID
-  database: simple.Deployment({
+  database: Deployment({
     name: Cel.template('%s-db', schema.spec.name),
     image: 'postgres:15',
     env: {
@@ -92,7 +92,7 @@ const resourceBuilder = (schema) => ({
     ports: [{ containerPort: 5432 }]
   }),
   
-  app: simple.Deployment({
+  app: Deployment({
     name: schema.spec.name,
     image: schema.spec.image,
     env: {
@@ -101,7 +101,7 @@ const resourceBuilder = (schema) => ({
     }
   }),
   
-  service: simple.Service({
+  service: Service({
     name: Cel.template('%s-service', schema.spec.name),
     selector: { app: schema.spec.name },
     ports: [{ port: 80, targetPort: 3000 }]
@@ -142,7 +142,7 @@ const statusBuilder = (schema, resources) => ({
 ### Basic Application Stack
 
 ```typescript
-const basicStack = toResourceGraph(
+const basicStack = kubernetesComposition({
   {
     name: 'basic-stack',
     apiVersion: 'example.com/v1',
@@ -151,13 +151,13 @@ const basicStack = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    app: simple.Deployment({
+    app: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       replicas: schema.spec.replicas
     }),
     
-    service: simple.Service({
+    service: Service({
       name: Cel.template('%s-service', schema.spec.name),
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }]
@@ -188,7 +188,7 @@ const StrictAppSpec = type({
 });
 
 // Validation happens automatically
-const validatedApp = toResourceGraph(
+const validatedApp = kubernetesComposition({
   {
     name: 'validated-app',
     apiVersion: 'example.com/v1',
@@ -238,7 +238,9 @@ const instance = await factory.deploy({
 const rgdYaml = graph.toYaml();
 
 // Generate instance YAML
-const instanceYaml = graph.toYaml({
+// Generate instance YAML using factory
+const factory = graph.factory('kro');
+const instanceYaml = factory.toYaml({
   name: 'my-app',
   image: 'nginx:latest',
   replicas: 3
@@ -262,18 +264,18 @@ await kroFactory.deploy(spec);
 ```typescript
 // ✅ Use consistent naming patterns
 const resources = {
-  database: simple.Deployment({ name: Cel.template('%s-db', schema.spec.name) }),
-  databaseService: simple.Service({ name: Cel.template('%s-db-service', schema.spec.name) }),
-  app: simple.Deployment({ name: schema.spec.name }),
-  appService: simple.Service({ name: Cel.template('%s-service', schema.spec.name) })
+  database: Deployment({ name: Cel.template('%s-db', schema.spec.name) }),
+  databaseService: Service({ name: Cel.template('%s-db-service', schema.spec.name) }),
+  app: Deployment({ name: schema.spec.name }),
+  appService: Service({ name: Cel.template('%s-service', schema.spec.name) })
 };
 
 // ❌ Avoid inconsistent naming
 const badResources = {
-  db: simple.Deployment({ name: 'database' }),
-  dbSvc: simple.Service({ name: 'db-service' }),
-  application: simple.Deployment({ name: 'app' }),
-  service: simple.Service({ name: 'svc' })
+  db: Deployment({ name: 'database' }),
+  dbSvc: Service({ name: 'db-service' }),
+  application: Deployment({ name: 'app' }),
+  service: Service({ name: 'svc' })
 };
 ```
 
@@ -294,16 +296,16 @@ const getConfig = (env: string) => ({
 // ✅ Group related resources logically
 const resources = {
   // Database tier
-  database: simple.Deployment({ /* ... */ }),
-  databaseService: simple.Service({ /* ... */ }),
+  database: Deployment({ /* ... */ }),
+  databaseService: Service({ /* ... */ }),
   
   // Application tier
-  app: simple.Deployment({ /* ... */ }),
-  appService: simple.Service({ /* ... */ }),
+  app: Deployment({ /* ... */ }),
+  appService: Service({ /* ... */ }),
   
   // Configuration
-  config: simple.ConfigMap({ /* ... */ }),
-  secrets: simple.Secret({ /* ... */ })
+  config: ConfigMap({ /* ... */ }),
+  secrets: Secret({ /* ... */ })
 };
 ```
 
@@ -349,8 +351,8 @@ const AppSpec = type({
 ```typescript
 // Ensure referenced resources exist in the same graph
 const resources = {
-  database: simple.Deployment({ name: 'db' }),
-  app: simple.Deployment({
+  database: Deployment({ name: 'db' }),
+  app: Deployment({
     env: {
       DB_HOST: database.status.podIP  // 'database' must be defined above
     }
@@ -361,10 +363,10 @@ const resources = {
 **Circular dependencies:**
 ```typescript
 // ❌ Avoid circular references
-const serviceA = simple.Service({
+const serviceA = Service({
   selector: { app: serviceB.metadata.labels.app }  // References B
 });
-const serviceB = simple.Service({
+const serviceB = Service({
   selector: { app: serviceA.metadata.labels.app }  // References A
 });
 ```
@@ -374,4 +376,4 @@ const serviceB = simple.Service({
 - **[Status Hydration](./status-hydration.md)** - Learn how status is computed and updated
 - **[Cross-Resource References](./cross-references.md)** - Deep dive into resource interconnection
 - **[CEL Expressions](./cel-expressions.md)** - Add runtime logic to your graphs
-- **[Direct Deployment](./direct-deployment.md)** - Deploy graphs directly to Kubernetes
+- **[Direct Deployment](./deployment/direct.md)** - Deploy graphs directly to Kubernetes

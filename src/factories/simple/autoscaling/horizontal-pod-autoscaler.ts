@@ -5,12 +5,9 @@
  * Kubernetes HorizontalPodAutoscaler resources with sensible defaults.
  */
 
-import { horizontalPodAutoscaler } from '../../kubernetes/autoscaling/horizontal-pod-autoscaler.js';
-import type {
-  V2HpaSpec,
-  V2HpaStatus,
-} from '../../kubernetes/types.js';
 import type { Enhanced } from '../../../core/types.js';
+import { horizontalPodAutoscaler } from '../../kubernetes/autoscaling/horizontal-pod-autoscaler.js';
+import type { V2HpaSpec, V2HpaStatus } from '../../kubernetes/types.js';
 import type { HpaConfig } from '../types.js';
 
 /**
@@ -19,11 +16,9 @@ import type { HpaConfig } from '../types.js';
  * @param config - Configuration for the horizontal pod autoscaler
  * @returns Enhanced HorizontalPodAutoscaler resource
  */
-export function Hpa(
-  config: HpaConfig
-): Enhanced<V2HpaSpec, V2HpaStatus> {
+export function Hpa(config: HpaConfig): Enhanced<V2HpaSpec, V2HpaStatus> {
   const metrics = [];
-  
+
   if (config.cpuUtilization) {
     metrics.push({
       type: 'Resource',

@@ -2,8 +2,8 @@
  * Simple YAML Factory Functions
  */
 
+import type { AppliedResource, DeploymentClosure } from '../../../core/types/deployment.js';
 import { yamlFile } from '../../kubernetes/yaml/yaml-file.js';
-import type { DeploymentClosure, AppliedResource } from '../../../core/types/deployment.js';
 
 /**
  * Create a YAML file resource with simplified parameters

@@ -20,16 +20,15 @@ export * from './kro/index.js';
 // =============================================================================
 export * from './kubernetes/index.js';
 export type { CompositionContext } from './shared.js';
-
+// =============================================================================
+// SHARED UTILITIES
+// =============================================================================
+export { createResource, getCurrentCompositionContext } from './shared.js';
 // =============================================================================
 // SIMPLE NAMESPACE
 // =============================================================================
 export { simple } from './simple/index.js';
 export type * from './simple/types.js';
-// =============================================================================
-// SHARED UTILITIES
-// =============================================================================
-export { createResource, getCurrentCompositionContext } from './shared.js';
 
 // =============================================================================
 // FUTURE ECOSYSTEMS (Placeholder structure created)

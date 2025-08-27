@@ -14,7 +14,7 @@ export {
   getInnerCelPath,
   pascalCase,
   processResourceReferences,
-} from './helpers.js';
+} from './helpers';
 
 // Export type guard functions
 export {
@@ -22,4 +22,4 @@ export {
   isCelExpression,
   isKubernetesRef,
   isResourceReference,
-} from './type-guards.js';
+} from './type-guards';

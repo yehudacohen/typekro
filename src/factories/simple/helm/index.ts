@@ -2,8 +2,8 @@
  * Simple Helm Factory Functions
  */
 
-import { helmRelease } from '../../helm/helm-release.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import { helmRelease } from '../../helm/helm-release.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 
 /**

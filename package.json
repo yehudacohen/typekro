@@ -82,7 +82,7 @@
   "author": "Skates Platform Team",
   "license": "Apache-2.0",
   "dependencies": {
-    "@kubernetes/client-node": "^0.20.0",
+    "@kubernetes/client-node": "0.20.0",
     "alchemy": "^0.62.3",
     "arktype": "^2.1.20",
     "cel-js": "^0.8.2",

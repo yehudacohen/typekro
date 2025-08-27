@@ -36,11 +36,10 @@ describe('TLS Security Configuration', () => {
 
       const api = new KubernetesApi();
 
-      // Access the private kc property to check cluster configuration
-      const kc = (api as any).kc;
-      const cluster = kc.getCurrentCluster();
+      // Check TLS configuration using the public method
+      const tlsConfig = api.getTLSConfiguration();
 
-      expect(cluster?.skipTLSVerify).toBe(false);
+      expect(tlsConfig.skipTLSVerify).toBe(false);
     });
 
     it('should disable TLS verification only when explicitly set', () => {
@@ -51,11 +50,10 @@ describe('TLS Security Configuration', () => {
 
       const api = new KubernetesApi();
 
-      // Access the private kc property to check cluster configuration
-      const kc = (api as any).kc;
-      const cluster = kc.getCurrentCluster();
+      // Check TLS configuration using the public method
+      const tlsConfig = api.getTLSConfiguration();
 
-      expect(cluster?.skipTLSVerify).toBe(true);
+      expect(tlsConfig.skipTLSVerify).toBe(true);
     });
 
     it('should not disable TLS verification for non-true values', () => {
@@ -66,11 +64,10 @@ describe('TLS Security Configuration', () => {
 
       const api = new KubernetesApi();
 
-      // Access the private kc property to check cluster configuration
-      const kc = (api as any).kc;
-      const cluster = kc.getCurrentCluster();
+      // Check TLS configuration using the public method
+      const tlsConfig = api.getTLSConfiguration();
 
-      expect(cluster?.skipTLSVerify).toBe(false);
+      expect(tlsConfig.skipTLSVerify).toBe(false);
     });
   });
 

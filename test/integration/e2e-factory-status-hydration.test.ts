@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { hydrateStatus } from '../../src/core/deployment/status-hydrator.js';
 import { separateStatusFields } from '../../src/core/validation/cel-validator.js';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import { isCelExpression } from '../../src/utils/type-guards.js';
 import { isClusterAvailable } from './shared-kubeconfig';
 

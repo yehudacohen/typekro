@@ -9,7 +9,8 @@ Deploy applications using Helm charts with TypeKro's type-safe configuration and
 Deploy a Helm chart with static configuration:
 
 ```typescript
-import { toResourceGraph, helmRelease } from 'typekro';
+import { kubernetesComposition, Cel helmRelease } from 'typekro';
+import { HelmChart } from 'typekro/simple';
 import { type } from 'arktype';
 
 const AppSchema = type({
@@ -18,14 +19,12 @@ const AppSchema = type({
   replicas: 'number'
 });
 
-const appGraph = toResourceGraph(
-  {
-    name: 'nginx-app',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'NginxApp',
-    spec: AppSchema
-  },
-  (schema) => {
+const appGraph = kubernetesComposition({
+  name: 'nginx-app',
+  apiVersion: 'example.com/v1alpha1',
+  kind: 'NginxApp',
+  spec: AppSchema
+}, (schema) => {
     // Create repository first
     const repository = helmRepository({
       name: 'bitnami',
@@ -34,7 +33,7 @@ const appGraph = toResourceGraph(
     });
     
     // Create app using simple factory
-    const app = simple.HelmChart(
+    const app = HelmChart(
       'nginx',
       repository.spec.url,  // Reference repository URL by field
       'nginx',
@@ -117,7 +116,7 @@ const WebAppSchema = type({
   }
 });
 
-const webappGraph = toResourceGraph(
+const webappGraph = kubernetesComposition({
   {
     name: 'webapp-helm',
     apiVersion: 'example.com/v1alpha1',
@@ -168,7 +167,7 @@ const webappGraph = toResourceGraph(
 Reference other Kubernetes resources in Helm values:
 
 ```typescript
-const fullStackGraph = toResourceGraph(
+const fullStackGraph = kubernetesComposition({
   {
     name: 'fullstack-app',
     apiVersion: 'example.com/v1alpha1', 
@@ -274,7 +273,7 @@ const config = configs[schema.spec.environment];
 Configure custom Helm repositories for private charts:
 
 ```typescript
-const privateChartGraph = toResourceGraph(
+const privateChartGraph = kubernetesComposition({
   {
     name: 'private-app',
     apiVersion: 'company.com/v1alpha1',
@@ -309,7 +308,7 @@ const privateChartGraph = toResourceGraph(
     });
     
     // Deploy using simple factory
-    const app = simple.HelmChart(
+    const app = HelmChart(
       schema.spec.name,
       privateRepo.spec.url,  // Reference repository URL by field
       'private-app',
@@ -339,7 +338,7 @@ For development with Helm charts:
 
 ```typescript
 // Quick development deployment
-const devGraph = toResourceGraph(
+const devGraph = kubernetesComposition({
   {
     name: 'dev-app',
     apiVersion: 'example.com/v1alpha1',
@@ -347,7 +346,7 @@ const devGraph = toResourceGraph(
     spec: type({ name: 'string', debug: 'boolean' })
   },
   (schema) => ({
-    app: simple.HelmChart(
+    app: HelmChart(
       schema.spec.name,
       'https://charts.bitnami.com/bitnami',
       'nginx',
@@ -442,7 +441,7 @@ await deployApp(process.env.VERSION, process.env.ENVIRONMENT);
 // Issue: HelmRepository not available in cluster
 // Solution: Ensure repository is created before HelmRelease
 
-const graph = toResourceGraph(
+const graph = kubernetesComposition({
   { /* spec */ },
   (schema) => ({
     // Create repository first
@@ -486,7 +485,7 @@ helmRelease({
 // Issue: Complex TypeKro references not serializing correctly
 // Solution: Use CEL expressions for complex logic
 
-const graph = toResourceGraph(
+const graph = kubernetesComposition({
   { /* spec */ },
   (schema) => ({
     app: helmRelease({
@@ -539,26 +538,27 @@ const factory = helmGraph.factory('kro');
 await factory.deploy(spec);
 
 // Monitor deployment progress
-factory.onStatusUpdate((status) => {
-  console.log(`Helm Release Phase: ${status.phase}`);
+const checkStatus = async () => {
+  const status = await factory.getStatus();
+  console.log(`Factory Status: ${status.health}`);
   
-  if (status.phase === 'Ready') {
+  if (status.health === 'healthy') {
     console.log('✅ Deployment successful');
-  } else if (status.phase === 'Failed') {
+  } else if (status.health === 'failed') {
     console.error('❌ Deployment failed');
-    // Check Helm release events
-    factory.getEvents().then(events => {
-      console.error('Recent events:', events);
-    });
+    console.error('Factory status:', status);
   }
-});
+};
+await checkStatus();
 
-// Check specific conditions
-factory.onFieldChange('phase', (phase) => {
-  if (phase === 'Installing') {
+// Check status periodically
+const checkPhase = async () => {
+  const status = await factory.getStatus();
+  if (status.health === 'healthy') {
     console.log('🔄 Installing Helm chart...');
   }
-});
+};
+setInterval(checkPhase, 5000);
 ```
 
 ## Best Practices
@@ -604,7 +604,7 @@ helm install my-nginx bitnami/nginx --set replicaCount=3
 ```
 
 ```typescript
-const graph = toResourceGraph(
+const graph = kubernetesComposition({
   { /* schema */ },
   (schema) => ({
     nginx: helmRelease({
@@ -644,7 +644,7 @@ const AppSchema = type({
   hostname: 'string'
 });
 
-const graph = toResourceGraph(
+const graph = kubernetesComposition({
   { spec: AppSchema, /* ... */ },
   (schema) => ({
     app: helmRelease({

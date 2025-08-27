@@ -188,11 +188,11 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 
     // Override addResource to include debug logging
     const originalAddResource = context.addResource;
-    context.addResource = function (id: string, resource: Enhanced<any, any>) {
+    context.addResource = function (id: string, resource: Enhanced<unknown, unknown>) {
       originalAddResource.call(this, id, resource);
 
       // Log resource registration for debugging
-      const resourceKind = (resource as any)?.kind || 'unknown';
+      const resourceKind = (resource as { kind?: string })?.kind || 'unknown';
       CompositionDebugger.logResourceRegistration(id, resourceKind, 'factory-function');
     };
 
@@ -224,16 +224,16 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 
           // Create a combined object that separateResourcesAndClosures can handle
           // Use the resource IDs as keys for resources, and closure IDs as keys for closures
-          const combined: Record<string, any> = {};
+          const combined: Record<string, Enhanced<unknown, unknown>> = {};
 
           // Add Enhanced resources
           for (const [id, resource] of Object.entries(context.resources)) {
             combined[id] = resource;
           }
 
-          // Add deployment closures
+          // Add deployment closures (cast them as Enhanced resources for compatibility)
           for (const [id, closure] of Object.entries(context.closures)) {
-            combined[id] = closure;
+            combined[id] = closure as Enhanced<unknown, unknown>;
           }
 
           return combined;
@@ -250,7 +250,10 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
         }
       },
       // Status builder - return the captured status
-      (_schema: SchemaProxy<TSpec, TStatus>, _resources: Record<string, Enhanced<any, any>>) => {
+      (
+        _schema: SchemaProxy<TSpec, TStatus>,
+        _resources: Record<string, Enhanced<unknown, unknown>>
+      ) => {
         try {
           CompositionDebugger.log('STATUS_BUILDING', 'Processing captured status object');
 

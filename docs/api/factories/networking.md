@@ -14,12 +14,12 @@ All networking factories return `Enhanced<TSpec, TStatus>` objects that integrat
 
 ## Core Networking Types
 
-### `simple.Service()`
+### `Service()`
 
 Creates a Kubernetes Service with simplified configuration.
 
 ```typescript
-function simple.Service(config: SimpleServiceConfig): Enhanced<V1ServiceSpec, V1ServiceStatus>
+function Service(config: SimpleServiceConfig): Enhanced<V1ServiceSpec, V1ServiceStatus>
 ```
 
 #### Parameters
@@ -43,14 +43,15 @@ Enhanced Service with automatic readiness evaluation based on service type.
 #### Example: ClusterIP Service
 
 ```typescript
-import { toResourceGraph, type, simple } from 'typekro';
+import { kubernetesComposition, Cel, type } from 'typekro';
+import { Deployment, Service, Ingress } from 'typekro/simple';
 
 const WebAppSpec = type({
   name: 'string',
   image: 'string'
 });
 
-const webService = toResourceGraph(
+const webService = kubernetesComposition({
   {
     name: 'web-service',
     apiVersion: 'example.com/v1',
@@ -59,13 +60,13 @@ const webService = toResourceGraph(
     status: type({ ready: 'boolean' })
   },
   (schema) => ({
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: schema.spec.image,
       ports: [80]
     }),
 
-    service: simple.Service({
+    service: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },  // Matches deployment labels
       ports: [{ port: 80, targetPort: 80 }],
@@ -81,7 +82,7 @@ const webService = toResourceGraph(
 #### Example: LoadBalancer Service
 
 ```typescript
-const publicService = simple.Service({
+const publicService = Service({
   name: 'api-public',
   selector: { app: 'api' },
   ports: [
@@ -98,12 +99,12 @@ const publicService = simple.Service({
 - **LoadBalancer**: Ready when external IP/hostname is assigned
 - **ExternalName**: Ready when externalName is configured
 
-### `simple.Ingress()`
+### `Ingress()`
 
 Creates a Kubernetes Ingress with simplified configuration for HTTP/HTTPS traffic routing.
 
 ```typescript
-function simple.Ingress(config: SimpleIngressConfig): Enhanced<V1IngressSpec, V1IngressStatus>
+function Ingress(config: SimpleIngressConfig): Enhanced<V1IngressSpec, V1IngressStatus>
 ```
 
 #### Parameters
@@ -129,14 +130,14 @@ Enhanced Ingress with automatic readiness evaluation.
 #### Example: Basic HTTP Ingress
 
 ```typescript
-import { toResourceGraph, type, simple } from 'typekro';
+import { kubernetesComposition, Cel, type, simple } from 'typekro';
 
 const WebAppSpec = type({
   name: 'string',
   host: 'string'
 });
 
-const webIngress = toResourceGraph(
+const webIngress = kubernetesComposition({
   {
     name: 'web-ingress',
     apiVersion: 'example.com/v1',
@@ -145,19 +146,19 @@ const webIngress = toResourceGraph(
     status: type({ url: 'string' })
   },
   (schema) => ({
-    deployment: simple.Deployment({
+    deployment: Deployment({
       name: schema.spec.name,
       image: 'nginx:1.21',
       ports: [80]
     }),
 
-    service: simple.Service({
+    service: Service({
       name: schema.spec.name,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 80 }]
     }),
 
-    ingress: simple.Ingress({
+    ingress: Ingress({
       name: schema.spec.name,
       host: schema.spec.host,                    // Schema reference
       serviceName: schema.spec.name,             // References service above
@@ -175,17 +176,18 @@ const webIngress = toResourceGraph(
 #### Example: HTTPS Ingress with TLS
 
 ```typescript
-import { ingress, secret } from 'typekro';
+import { kubernetesComposition } from 'typekro';
+import { Ingress, Secret } from 'typekro/simple';
 
-const httpsIngress = createResourceGraph('https-ingress', (schema) => {
-  const tlsSecret = secret({
-    metadata: { name: 'web-tls-cert' },
+const httpsIngress = kubernetesComposition(definition, (schema) => ({
+  tlsSecret: Secret({
+    name: 'web-tls-cert',
     type: 'kubernetes.io/tls',
     data: {
       'tls.crt': 'LS0tLS1CRUdJTi...', // Base64 encoded certificate
       'tls.key': 'LS0tLS1CRUdJTi...'  // Base64 encoded private key
     }
-  });
+  }),
 
   const secureIngress = ingress({
     metadata: {
