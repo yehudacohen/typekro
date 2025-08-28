@@ -42,6 +42,7 @@ jobs:
   # Build docs on master changes
   build-docs:
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -64,6 +65,7 @@ jobs:
   deploy-docs:
     needs: build-docs
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
     permissions:
       pages: write
       id-token: write
