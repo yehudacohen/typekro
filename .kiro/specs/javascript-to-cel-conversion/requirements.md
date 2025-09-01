@@ -6,6 +6,12 @@ This feature will enable TypeKro to automatically convert natural JavaScript exp
 
 This includes expressions in resource builders (when they contain KubernetesRef objects), status builders, and any other context where CEL expressions are used. The goal is to allow developers to write familiar JavaScript syntax while automatically generating the appropriate CEL expressions for Kubernetes resource orchestration, without needing to understand the underlying KubernetesRef system.
 
+Additionally, this feature must address critical infrastructure issues that are blocking the JavaScript-to-CEL conversion functionality:
+
+1. **TypeScript Compilation Consistency**: The IDE is catching type errors that the build process typecheck commands are not catching, leading to runtime failures that should be caught at compile time.
+
+2. **Nested Composition Function Resolution**: The `kubernetesComposition` function is being treated as a ProxyObject instead of a callable function when used in nested composition scenarios, causing runtime errors like "createDatabase is not a function".
+
 ## Requirements
 
 ### Requirement 1: Comprehensive KubernetesRef Detection and Expression Analysis
@@ -164,6 +170,54 @@ This includes expressions in resource builders (when they contain KubernetesRef 
 4. WHEN expressions reference resources THEN types SHALL be inferred from resource schemas
 5. WHEN CEL conversion changes types THEN TypeScript SHALL reflect the correct result types
 
+### Requirement 13: TypeScript Compilation Consistency
+
+**User Story:** As a developer, I want the TypeScript compilation process to catch the same errors that my IDE catches, so that I can rely on the build process to validate my code before runtime and prevent JavaScript-to-CEL conversion issues.
+
+#### Acceptance Criteria
+
+1. WHEN the IDE shows a TypeScript error THEN the `bun run typecheck` commands SHALL also catch and report the same error
+2. WHEN I run `bun run typecheck:tests` THEN it SHALL catch type errors in test files that the IDE identifies
+3. WHEN I run `bun run typecheck:lib` THEN it SHALL catch type errors in library files that the IDE identifies
+4. WHEN there are type errors THEN the build process SHALL fail before attempting JavaScript-to-CEL conversion
+5. WHEN TypeScript configuration changes THEN both IDE and build process SHALL use the same configuration for JavaScript-to-CEL validation
+
+### Requirement 14: Nested Composition Function Resolution
+
+**User Story:** As a developer, I want to use kubernetesComposition functions within other kubernetesComposition functions with JavaScript expressions, so that I can create reusable composition patterns with natural JavaScript syntax that gets converted to CEL.
+
+#### Acceptance Criteria
+
+1. WHEN I define a kubernetesComposition function THEN it SHALL be callable from within other composition functions without proxy interference
+2. WHEN I call a nested composition function THEN it SHALL execute as a normal function, not as a ProxyObject
+3. WHEN nested compositions use JavaScript expressions THEN they SHALL be converted to CEL correctly
+4. WHEN nested compositions reference each other with JavaScript expressions THEN the cross-references SHALL resolve and convert to CEL properly
+5. WHEN nested compositions are serialized THEN JavaScript expressions SHALL be converted to valid CEL in the resulting YAML
+
+### Requirement 15: Composition Function Type Safety with JavaScript Expressions
+
+**User Story:** As a developer, I want full type safety when using nested compositions with JavaScript expressions, so that I can catch errors at compile time and have proper IntelliSense support for JavaScript-to-CEL conversion.
+
+#### Acceptance Criteria
+
+1. WHEN I call a nested composition function with JavaScript expressions THEN TypeScript SHALL provide proper type checking for parameters
+2. WHEN I access properties on nested composition results in JavaScript expressions THEN TypeScript SHALL provide autocomplete and type validation
+3. WHEN there are type mismatches in nested compositions with JavaScript expressions THEN TypeScript SHALL report clear error messages
+4. WHEN I refactor composition interfaces THEN TypeScript SHALL catch all affected nested usages with JavaScript expressions
+5. WHEN composition functions with JavaScript expressions are used incorrectly THEN the error messages SHALL be actionable and specific
+
+### Requirement 16: Proxy System Integration with Nested Compositions
+
+**User Story:** As a developer, I want the magic proxy system to work correctly with nested compositions and JavaScript expressions, so that resource references and schema access work seamlessly across composition boundaries with automatic CEL conversion.
+
+#### Acceptance Criteria
+
+1. WHEN nested compositions use schema references in JavaScript expressions THEN the proxy system SHALL resolve them correctly and convert to CEL
+2. WHEN nested compositions reference resources from parent compositions in JavaScript expressions THEN the references SHALL work correctly and convert to CEL
+3. WHEN the proxy system encounters composition functions THEN it SHALL not interfere with their execution or JavaScript expression analysis
+4. WHEN composition functions with JavaScript expressions are serialized THEN proxy objects SHALL not interfere with the CEL conversion process
+5. WHEN debugging composition issues with JavaScript expressions THEN proxy behavior SHALL be transparent and not confusing
+
 ## Success Criteria
 
 - Developers can write natural JavaScript expressions throughout TypeKro without understanding KubernetesRef objects
@@ -172,6 +226,9 @@ This includes expressions in resource builders (when they contain KubernetesRef 
 - **MagicAssignable integration**: JavaScript expressions work naturally with MagicAssignable and MagicAssignableShape types through KubernetesRef detection
 - **Field hydration integration**: JavaScript expressions integrate properly with TypeKro's field hydration strategy by tracking KubernetesRef dependencies
 - **Performance optimization**: Static values (no KubernetesRef objects) are left unchanged for optimal performance
+- **TypeScript compilation consistency**: IDE and build process TypeScript error reporting is consistent for JavaScript expressions
+- **Nested composition support**: Nested composition functions work correctly with JavaScript expressions without proxy interference
+- **Composition type safety**: Complex composition patterns with JavaScript expressions can be built and tested reliably with full type safety
 - Error messages are clear and actionable, mapping back to original JavaScript expressions
 - Full TypeScript type safety is maintained throughout the magic proxy system
 - Integration with existing TypeKro features is seamless
@@ -299,6 +356,92 @@ const status = {
 };
 ```
 
+### Nested Composition with JavaScript Expressions
+```typescript
+// Before: Complex manual CEL expressions in nested compositions
+const createDatabase = kubernetesComposition(
+  {
+    name: 'database',
+    apiVersion: 'example.com/v1',
+    kind: 'Database',
+    spec: type({ name: 'string', storage: 'string' }),
+    status: type({ ready: 'boolean', host: 'string', connectionString: 'string' })
+  },
+  (spec) => {
+    const db = simple.Deployment({ name: `${spec.name}-db`, image: 'postgres:13' });
+    const service = simple.Service({ name: `${spec.name}-db`, ports: [{ port: 5432 }] });
+    return {
+      ready: Cel.expr<boolean>(db.status.readyReplicas, ' > 0'),
+      host: service.status.clusterIP,
+      connectionString: Cel.template('postgres://user:pass@%s:5432/%s', service.status.clusterIP, spec.name)
+    };
+  }
+);
+
+// After: Natural JavaScript expressions that get converted to CEL
+const createDatabase = kubernetesComposition(
+  {
+    name: 'database',
+    apiVersion: 'example.com/v1',
+    kind: 'Database',
+    spec: type({ name: 'string', storage: 'string' }),
+    status: type({ ready: 'boolean', host: 'string', connectionString: 'string' })
+  },
+  (spec) => {
+    const db = simple.Deployment({ name: `${spec.name}-db`, image: 'postgres:13' });
+    const service = simple.Service({ name: `${spec.name}-db`, ports: [{ port: 5432 }] });
+    return {
+      // JavaScript expressions automatically converted to CEL
+      ready: db.status.readyReplicas > 0,
+      host: service.status.clusterIP,
+      connectionString: `postgres://user:pass@${service.status.clusterIP}:5432/${spec.name}`
+    };
+  }
+);
+
+// Nested composition usage with JavaScript expressions
+const createApp = kubernetesComposition(
+  {
+    name: 'app-with-db',
+    apiVersion: 'example.com/v1',
+    kind: 'AppWithDB',
+    spec: type({ name: 'string', dbStorage: 'string' }),
+    status: type({ ready: 'boolean', url: 'string', database: { ready: 'boolean' } })
+  },
+  (spec) => {
+    // This should work - createDatabase should be callable, not a ProxyObject
+    const database = createDatabase({ name: spec.name, storage: spec.dbStorage });
+    
+    const app = simple.Deployment({
+      name: spec.name,
+      image: 'node:16',
+      env: {
+        // JavaScript expressions with nested composition references
+        DATABASE_URL: database.connectionString,
+        DATABASE_READY: database.ready ? 'true' : 'false',
+        DATABASE_HOST: database.host
+      }
+    });
+    
+    return {
+      // JavaScript expressions automatically converted to CEL
+      ready: app.status.readyReplicas > 0 && database.ready,
+      url: `http://${app.status.podIP}:3000`,
+      database: { ready: database.ready }
+    };
+  }
+);
+```
+
+### TypeScript Compilation Consistency
+```typescript
+// These type errors should be caught by both IDE and build process
+const problematicCall = someFunction(stringValue); // Should fail: Argument of type 'string' is not assignable to parameter of type 'never'
+
+// Build process should catch this before JavaScript-to-CEL conversion
+const invalidExpression = resources.nonexistent.status.ready; // Should fail: Property 'nonexistent' does not exist
+```
+
 ## Non-Functional Requirements
 
 - **Performance**: Expression analysis should add minimal overhead to build times
@@ -321,6 +464,12 @@ This feature integrates with:
 - **Kro factory pattern** - converts KubernetesRef objects to CEL expressions for runtime evaluation
 - **Conditional resource inclusion** (`includeWhen` expressions) - handles KubernetesRef objects in conditions
 - **Resource readiness checks** (`readyWhen` expressions) - handles KubernetesRef objects in readiness expressions
+- **TypeScript Configuration** - `tsconfig.json`, `tsconfig.test.json`, `tsconfig.examples.json` for consistent compilation
+- **Build Scripts** - `package.json` scripts for typecheck commands that must catch the same errors as IDE
+- **Composition System** - `kubernetesComposition` function and nested composition patterns with JavaScript expressions
+- **Serialization System** - Resource graph serialization and YAML generation with CEL conversion
+- **Test Framework** - Integration test execution and validation of JavaScript-to-CEL conversion
+- **CI/CD Pipeline** - Build and test validation processes that must catch type errors consistently
 - **Any other context** where KubernetesRef objects from magic proxy system are used
 
 ## Scope Limitations
@@ -328,7 +477,14 @@ This feature integrates with:
 This spec does **not** include:
 - Changes to the core magic proxy system (SchemaProxy, ResourcesProxy, KubernetesRef)
 - Modifications to CEL evaluation engine
-- Changes to the factory pattern system
+- Changes to the factory pattern system architecture
 - New TypeKro APIs (only enhances existing ones)
+- Performance optimizations (focus is on correctness)
 
-The focus is purely on detecting KubernetesRef objects in JavaScript expressions and converting them to appropriate CEL expressions for the target deployment strategy.
+This spec **does** include:
+- Fixing TypeScript compilation consistency issues that block JavaScript-to-CEL conversion
+- Resolving nested composition proxy issues that prevent JavaScript expressions from working
+- Ensuring the build process catches the same type errors as the IDE
+- Making nested composition functions callable instead of being treated as ProxyObjects
+
+The focus is on detecting KubernetesRef objects in JavaScript expressions, converting them to appropriate CEL expressions for the target deployment strategy, and fixing the infrastructure issues that prevent this conversion from working correctly.

@@ -62,15 +62,18 @@ includeWhen: schema.spec.ingress.enabled
 
 ### 2.3. Kro Optionality Integration with KubernetesRef Objects
 
-Full support for Kro's conditional CEL expressions using the `?` operator when KubernetesRef objects are used with optional chaining:
+Full support for Kro's conditional operator `?` when KubernetesRef objects are used with optional chaining:
 
 ```typescript
 // JavaScript optional chaining with KubernetesRef objects:
 service.status?.loadBalancer?.ingress?.[0]?.ip
 // Runtime: KubernetesRef chain with optional chaining operators
 
-// Converts to Kro conditional CEL:
-${resources.service.status.loadBalancer?.ingress?[0]?.ip}
+// Converts to Kro CEL with ? operator (prefix notation):
+${resources.service.status.?loadBalancer.?ingress[0].?ip}
+
+// Alternative with has() checks for better null safety:
+${has(resources.service.status.loadBalancer) && has(resources.service.status.loadBalancer.ingress) && size(resources.service.status.loadBalancer.ingress) > 0 ? resources.service.status.loadBalancer.ingress[0].ip : ""}
 ```
 
 ### 2.4. Magic Proxy System Integration
@@ -171,7 +174,34 @@ ready: resources.deployment.status.readyReplicas > 0
 
 // Optional chaining works correctly even with "non-optional" Enhanced types:
 ready: resources.deployment.status?.readyReplicas > 0
-// Generates: ${resources.deployment.status.readyReplicas? > 0} (using Kro's ? operator)
+// Generates: ${resources.deployment.status.?readyReplicas > 0} (using Kro's ? prefix operator)
+
+// Complex optional chaining:
+url: resources.service.status?.loadBalancer?.ingress?.[0]?.ip
+// Generates: ${resources.service.status.?loadBalancer.?ingress[0].?ip}
+
+// Mixed optional and required access:
+endpoint: resources.service.metadata.name + ':' + resources.service.status?.loadBalancer?.ingress?.[0]?.port
+// Generates: ${resources.service.metadata.name + ':' + resources.service.status.?loadBalancer.?ingress[0].?port}
+```
+
+### 2.9. Kro ? Operator Behavior
+
+The Kro `?` operator is a prefix operator that provides optional field access:
+
+- **Syntax**: `${object.?field}` (not `${object.field?}`)
+- **Behavior**: Returns `null` if the field doesn't exist, otherwise returns the field value
+- **Warning**: Removes Kro's ability to introspect the schema after the `?`
+- **Use Cases**: Schema-less objects (ConfigMaps, Secrets), optional external references
+
+```typescript
+// ConfigMap reference with optional field access:
+configValue: configMap.data?.DATABASE_URL
+// Generates: ${configMap.data.?DATABASE_URL}
+
+// External reference with optional schema:
+secretValue: externalSecret.data?.password
+// Generates: ${externalSecret.data.?password}
 ```
 
 ## 3. Architecture Components

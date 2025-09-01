@@ -10,7 +10,7 @@
 
 import { type } from 'arktype';
 import { Cel, kubernetesComposition, externalRef } from '../src/index.js';
-import { Deployment, Service, ConfigMap } from '../src/factories/simple/index.js';
+import { Deployment, Service, } from '../src/factories/simple/index.js';
 
 // =============================================================================
 // 1. Database Composition (managed by Database Team)

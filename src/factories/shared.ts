@@ -19,6 +19,9 @@ import type {
 import { validateResourceId } from '../core/validation/cel-validator.js';
 import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index';
 import { isCelExpression } from '../utils/type-guards.js';
+import { 
+  conditionalExpressionIntegrator,
+} from '../core/expressions/conditional-integration.js';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
@@ -495,7 +498,13 @@ export function createResource<TSpec extends object, TStatus extends object>(
     writable: false, // Cannot be overwritten
   });
 
-  return enhanced as Enhanced<TSpec, TStatus>;
+  // Add conditional expression support
+  const enhancedWithConditionals = conditionalExpressionIntegrator.addConditionalSupport(enhanced, {
+    autoProcess: false, // Don't auto-process until we know the factory type
+    validateExpressions: true
+  });
+
+  return enhancedWithConditionals as Enhanced<TSpec, TStatus>;
 }
 
 export function processPodSpec(podSpec?: V1PodSpec): V1PodSpec | undefined {

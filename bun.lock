@@ -5,9 +5,13 @@
       "name": "@yehudacohen/typekro",
       "dependencies": {
         "@kubernetes/client-node": "0.20.0",
+        "@types/esprima": "^4.0.6",
+        "@types/estraverse": "^5.1.7",
         "alchemy": "^0.62.3",
         "arktype": "^2.1.20",
         "cel-js": "^0.8.2",
+        "esprima": "^4.0.1",
+        "estraverse": "^5.3.0",
         "js-yaml": "^4.1.0",
         "pino": "^9.8.0",
         "pino-pretty": "^13.1.1",
@@ -744,6 +748,10 @@
     "@types/d3-zoom": ["@types/d3-zoom@3.0.8", "", { "dependencies": { "@types/d3-interpolate": "*", "@types/d3-selection": "*" } }, "sha512-iqMC4/YlFCSlO8+2Ii1GGGliCAY4XdeG748w5vQUbevlbDu0zSjH/+jojorQVBK/se0j6DUFNPBGSqD3YWYnDw=="],
 
     "@types/diff-match-patch": ["@types/diff-match-patch@1.0.36", "", {}, "sha512-xFdR6tkm0MWvBfO8xXCSsinYxHcqkQUlcHeSpMC2ukzOb6lwQAfDmW+Qt0AvlGd8HpsS28qKsB+oPeJn9I39jg=="],
+
+    "@types/esprima": ["@types/esprima@4.0.6", "", { "dependencies": { "@types/estree": "*" } }, "sha512-lIk+kSt9lGv5hxK6aZNjiUEGZqKmOTpmg0tKiJQI+Ow98fLillxsiZNik5+RcP7mXL929KiTH/D9jGtpDlMbVw=="],
+
+    "@types/estraverse": ["@types/estraverse@5.1.7", "", { "dependencies": { "@types/estree": "*" } }, "sha512-JRVtdKYZz7VkNp7hMC/WKoiZ8DS3byw20ZGoMZ1R8eBrBPIY7iBaDAS1zcrnXQCwK44G4vbXkimeU7R0VLG8UQ=="],
 
     "@types/estree": ["@types/estree@1.0.8", "", {}, "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w=="],
 

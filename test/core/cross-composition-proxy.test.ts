@@ -98,7 +98,7 @@ describe('Cross-composition magic proxy', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (schema) => ({
+        (_schema) => ({
           database: simple.Deployment({
             name: 'postgres-db',
             image: 'postgres:15',
@@ -131,7 +131,7 @@ describe('Cross-composition magic proxy', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (schema) => ({
+        (_schema) => ({
           database: simple.Deployment({
             name: 'postgres-db',
             image: 'postgres:15',
@@ -154,7 +154,7 @@ describe('Cross-composition magic proxy', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (schema) => ({
+        (_schema) => ({
           deployment: simple.Deployment({
             name: 'test-deployment',
             image: 'nginx',
@@ -263,7 +263,7 @@ describe('Cross-composition magic proxy', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (schema) => ({
+        (_schema) => ({
           'my-deployment': simple.Deployment({
             name: 'test-deployment',
             image: 'nginx',
@@ -279,7 +279,7 @@ describe('Cross-composition magic proxy', () => {
 
       // Should work with kebab-case and snake_case keys
       const deploymentRef = (composition as any)['my-deployment'];
-      const serviceRef = (composition as any)['my_service'];
+      const serviceRef = (composition as any).my_service;
 
       expect(deploymentRef).toBeDefined();
       expect((deploymentRef as any).__externalRef).toBe(true);
@@ -299,7 +299,7 @@ describe('Cross-composition magic proxy', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (schema) => ({
+        (_schema) => ({
           Database: simple.Deployment({
             name: 'postgres-db',
             image: 'postgres:15',
@@ -334,7 +334,7 @@ describe('Cross-composition magic proxy', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (schema) => ({
+        (_schema) => ({
           deployment: simple.Deployment({
             name: 'test-deployment',
             image: 'nginx',
@@ -370,7 +370,7 @@ describe('Cross-composition magic proxy', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (schema) => ({
+        (_schema) => ({
           deployment: simple.Deployment({
             name: 'namespaced-deployment',
             image: 'nginx',

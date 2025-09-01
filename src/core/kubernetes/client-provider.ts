@@ -519,7 +519,7 @@ export class KubernetesClientProvider {
 
     try {
       // Use the standard makeApiClient approach
-      client = this.kubeConfig!.makeApiClient(clientClass as any) as T;
+      client = this.kubeConfig?.makeApiClient(clientClass as any) as T;
       this.logger.debug('Created API client using makeApiClient', {
         clientType,
         constructorName: (client as any).constructor.name,
@@ -583,7 +583,7 @@ export class KubernetesClientProvider {
     // HTTP status codes that are typically retryable
     const retryableStatusCodes = [408, 429, 500, 502, 503, 504];
     const statusCodeMatch = message.match(/status code (\d+)/);
-    if (statusCodeMatch && statusCodeMatch[1]) {
+    if (statusCodeMatch?.[1]) {
       const statusCode = parseInt(statusCodeMatch[1], 10);
       return retryableStatusCodes.includes(statusCode);
     }

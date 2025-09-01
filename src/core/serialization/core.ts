@@ -36,6 +36,11 @@ import type {
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
+import { StatusBuilderAnalyzer } from '../expressions/status-builder-analyzer.js';
+import { containsKubernetesRefs } from '../../utils/type-guards.js';
+import { isCelExpression } from '../../utils/type-guards.js';
+import { CelToJavaScriptMigrationHelper } from '../expressions/migration-helpers.js';
+import { CelConversionEngine } from '../expressions/cel-conversion-engine.js';
 
 /**
  * Separate Enhanced<> resources from deployment closures in the builder result
@@ -62,6 +67,315 @@ function separateResourcesAndClosures<
   }
 
   return { resources, closures };
+}
+
+/**
+ * Detect and preserve existing CEL expressions for backward compatibility
+ * 
+ * This function recursively checks status mappings for existing CEL expressions
+ * and preserves them without conversion, ensuring backward compatibility.
+ */
+function detectAndPreserveCelExpressions(
+  statusMappings: any,
+  preservedExpressions: Record<string, any> = {},
+  path: string = ''
+): { hasExistingCel: boolean; preservedMappings: Record<string, any> } {
+  let hasExistingCel = false;
+  const preservedMappings = { ...preservedExpressions };
+
+  if (!statusMappings || typeof statusMappings !== 'object') {
+    return { hasExistingCel, preservedMappings };
+  }
+
+  for (const [key, value] of Object.entries(statusMappings)) {
+    const currentPath = path ? `${path}.${key}` : key;
+    
+    if (isCelExpression(value)) {
+      // Found existing CEL expression - preserve it
+      hasExistingCel = true;
+      preservedMappings[currentPath] = value;
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      // Recursively check nested objects
+      const nestedResult = detectAndPreserveCelExpressions(value, preservedMappings, currentPath);
+      hasExistingCel = hasExistingCel || nestedResult.hasExistingCel;
+      Object.assign(preservedMappings, nestedResult.preservedMappings);
+    }
+  }
+
+  return { hasExistingCel, preservedMappings };
+}
+
+/**
+ * Merge preserved CEL expressions with analyzed mappings
+ * 
+ * This ensures that existing CEL expressions take precedence over
+ * newly analyzed JavaScript expressions for backward compatibility.
+ */
+function mergePreservedCelExpressions(
+  analyzedMappings: Record<string, any>,
+  preservedMappings: Record<string, any>
+): Record<string, any> {
+  const mergedMappings = { ...analyzedMappings };
+  
+  // Preserved CEL expressions take precedence
+  for (const [path, celExpression] of Object.entries(preservedMappings)) {
+    // Handle nested paths by setting the value at the correct location
+    const pathParts = path.split('.');
+    let current: any = mergedMappings;
+    
+    for (let i = 0; i < pathParts.length - 1; i++) {
+      const part = pathParts[i];
+      if (!part) continue;
+      
+      if (!current[part] || typeof current[part] !== 'object') {
+        current[part] = {};
+      }
+      current = current[part];
+    }
+    
+    const finalKey = pathParts[pathParts.length - 1];
+    if (finalKey) {
+      current[finalKey] = celExpression;
+    }
+  }
+  
+  return mergedMappings;
+}
+
+/**
+ * Comprehensive analysis of status mappings to categorize different types of expressions
+ * 
+ * This function provides detailed analysis of status mappings to determine:
+ * - Which fields contain KubernetesRef objects (need conversion)
+ * - Which fields are existing CEL expressions (preserve as-is)
+ * - Which fields are static values (no conversion needed)
+ * - Which fields are complex expressions that might need analysis
+ */
+function analyzeStatusMappingTypes(
+  statusMappings: any,
+  path: string = ''
+): {
+  kubernetesRefFields: string[];
+  celExpressionFields: string[];
+  staticValueFields: string[];
+  complexExpressionFields: string[];
+  analysisDetails: Record<string, {
+    type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
+    value: any;
+    requiresConversion: boolean;
+    confidence: number;
+  }>;
+} {
+  const kubernetesRefFields: string[] = [];
+  const celExpressionFields: string[] = [];
+  const staticValueFields: string[] = [];
+  const complexExpressionFields: string[] = [];
+  const analysisDetails: Record<string, any> = {};
+
+  if (!statusMappings || typeof statusMappings !== 'object') {
+    return {
+      kubernetesRefFields,
+      celExpressionFields,
+      staticValueFields,
+      complexExpressionFields,
+      analysisDetails
+    };
+  }
+
+  for (const [key, value] of Object.entries(statusMappings)) {
+    const currentPath = path ? `${path}.${key}` : key;
+    
+    // Analyze the value type and requirements
+    const analysis = analyzeValueType(value);
+    analysisDetails[currentPath] = analysis;
+    
+    switch (analysis.type) {
+      case 'kubernetesRef':
+        kubernetesRefFields.push(currentPath);
+        break;
+      case 'celExpression':
+        celExpressionFields.push(currentPath);
+        break;
+      case 'staticValue':
+        staticValueFields.push(currentPath);
+        break;
+      case 'complexExpression':
+        complexExpressionFields.push(currentPath);
+        break;
+    }
+    
+    // Recursively analyze nested objects
+    if (value && typeof value === 'object' && !Array.isArray(value) && !isCelExpression(value) && !containsKubernetesRefs(value)) {
+      const nestedAnalysis = analyzeStatusMappingTypes(value, currentPath);
+      kubernetesRefFields.push(...nestedAnalysis.kubernetesRefFields);
+      celExpressionFields.push(...nestedAnalysis.celExpressionFields);
+      staticValueFields.push(...nestedAnalysis.staticValueFields);
+      complexExpressionFields.push(...nestedAnalysis.complexExpressionFields);
+      Object.assign(analysisDetails, nestedAnalysis.analysisDetails);
+    }
+  }
+
+  return {
+    kubernetesRefFields,
+    celExpressionFields,
+    staticValueFields,
+    complexExpressionFields,
+    analysisDetails
+  };
+}
+
+/**
+ * Analyze a single value to determine its type and conversion requirements
+ */
+function analyzeValueType(value: any): {
+  type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
+  value: any;
+  requiresConversion: boolean;
+  confidence: number;
+} {
+  // Check for existing CEL expressions first (highest priority)
+  if (isCelExpression(value)) {
+    return {
+      type: 'celExpression',
+      value,
+      requiresConversion: false,
+      confidence: 1.0
+    };
+  }
+  
+  // Check for KubernetesRef objects (need conversion)
+  if (containsKubernetesRefs(value)) {
+    return {
+      type: 'kubernetesRef',
+      value,
+      requiresConversion: true,
+      confidence: 1.0
+    };
+  }
+  
+  // Check for primitive static values
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return {
+      type: 'staticValue',
+      value,
+      requiresConversion: false,
+      confidence: 1.0
+    };
+  }
+  
+  // Check for arrays of static values
+  if (Array.isArray(value)) {
+    const hasKubernetesRefs = value.some(item => containsKubernetesRefs(item));
+    const hasCelExpressions = value.some(item => isCelExpression(item));
+    
+    if (hasKubernetesRefs) {
+      return {
+        type: 'kubernetesRef',
+        value,
+        requiresConversion: true,
+        confidence: 0.9
+      };
+    } else if (hasCelExpressions) {
+      return {
+        type: 'celExpression',
+        value,
+        requiresConversion: false,
+        confidence: 0.9
+      };
+    } else {
+      return {
+        type: 'staticValue',
+        value,
+        requiresConversion: false,
+        confidence: 0.8
+      };
+    }
+  }
+  
+  // Check for plain objects (might be complex expressions or static data)
+  if (value && typeof value === 'object') {
+    const hasKubernetesRefs = containsKubernetesRefs(value);
+    const hasCelExpressions = Object.values(value).some(v => isCelExpression(v));
+    
+    if (hasKubernetesRefs) {
+      return {
+        type: 'kubernetesRef',
+        value,
+        requiresConversion: true,
+        confidence: 0.8
+      };
+    } else if (hasCelExpressions) {
+      return {
+        type: 'celExpression',
+        value,
+        requiresConversion: false,
+        confidence: 0.8
+      };
+    } else {
+      // Could be static data or complex expression - analyze further
+      const isLikelyStatic = isLikelyStaticObject(value);
+      if (isLikelyStatic) {
+        return {
+          type: 'staticValue',
+          value,
+          requiresConversion: false,
+          confidence: 0.7
+        };
+      } else {
+        return {
+          type: 'complexExpression',
+          value,
+          requiresConversion: false, // Conservative - don't convert unless we're sure
+          confidence: 0.5
+        };
+      }
+    }
+  }
+  
+  // Unknown type - treat as complex expression
+  return {
+    type: 'complexExpression',
+    value,
+    requiresConversion: false,
+    confidence: 0.3
+  };
+}
+
+/**
+ * Determine if an object is likely to be static data rather than an expression
+ */
+function isLikelyStaticObject(obj: any): boolean {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return false;
+  }
+  
+  // Check if all values are primitive types
+  const values = Object.values(obj);
+  const allPrimitive = values.every(value => 
+    value === null ||
+    value === undefined ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+  
+  if (allPrimitive) {
+    return true;
+  }
+  
+  // Check for common static object patterns
+  const keys = Object.keys(obj);
+  const hasCommonStaticKeys = keys.some(key => 
+    ['name', 'id', 'type', 'kind', 'version', 'label', 'tag'].includes(key.toLowerCase())
+  );
+  
+  return hasCommonStaticKeys && values.length <= 10; // Reasonable size for static config
 }
 
 /**
@@ -188,11 +502,154 @@ function createTypedResourceGraph<
   // Separate Enhanced<> resources from deployment closures
   const { resources: resourcesWithKeys, closures } = separateResourcesAndClosures(builderResult);
 
-  // Pass Enhanced resources directly to StatusBuilder - they already have proper MagicProxy types
-  const statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
+  // NEW: Analyze status builder for JavaScript expressions with KubernetesRef detection
+  let statusMappings: MagicAssignableShape<TStatus>;
+  let analyzedStatusMappings: Record<string, any> = {};
+  let mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
+  
+  try {
+    // Execute the status builder to get the return object
+    statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
+    
+    // COMPREHENSIVE ANALYSIS: Analyze all types of expressions in status mappings
+    mappingAnalysis = analyzeStatusMappingTypes(statusMappings);
+    
+    serializationLogger.debug('Status mapping analysis complete', {
+      kubernetesRefFields: mappingAnalysis.kubernetesRefFields.length,
+      celExpressionFields: mappingAnalysis.celExpressionFields.length,
+      staticValueFields: mappingAnalysis.staticValueFields.length,
+      complexExpressionFields: mappingAnalysis.complexExpressionFields.length
+    });
+    
+    // BACKWARD COMPATIBILITY: Detect and preserve existing CEL expressions
+    const { hasExistingCel, preservedMappings } = detectAndPreserveCelExpressions(statusMappings);
+    
+    if (hasExistingCel) {
+      serializationLogger.debug('Found existing CEL expressions, preserving for backward compatibility', {
+        preservedCount: Object.keys(preservedMappings).length
+      });
+      
+      // MIGRATION HELPER: Provide migration suggestions for existing CEL expressions
+      try {
+        const migrationHelper = new CelToJavaScriptMigrationHelper();
+        const migrationAnalysis = migrationHelper.analyzeMigrationOpportunities(statusMappings);
+        
+        if (migrationAnalysis.migrationFeasibility.migratableExpressions > 0) {
+          serializationLogger.info('Migration opportunities detected for CEL expressions', {
+            totalExpressions: migrationAnalysis.migrationFeasibility.totalExpressions,
+            migratableExpressions: migrationAnalysis.migrationFeasibility.migratableExpressions,
+            overallConfidence: Math.round(migrationAnalysis.migrationFeasibility.overallConfidence * 100)
+          });
+          
+          // Log migration suggestions for high-confidence migrations
+          const highConfidenceSuggestions = migrationAnalysis.suggestions.filter(s => s.confidence >= 0.8 && s.isSafe);
+          if (highConfidenceSuggestions.length > 0) {
+            serializationLogger.info('High-confidence migration suggestions available', {
+              suggestions: highConfidenceSuggestions.map(s => ({
+                original: s.originalCel,
+                suggested: s.suggestedJavaScript,
+                confidence: Math.round(s.confidence * 100)
+              }))
+            });
+          }
+        }
+      } catch (migrationError) {
+        serializationLogger.warn('Failed to analyze migration opportunities', migrationError as Error);
+      }
+    }
+    
+    // The issue is that JavaScript expressions are evaluated before we can analyze them
+    // We need to re-execute the status builder with a special proxy that intercepts expressions
+    // and converts them to CEL expressions before evaluation
+    
+    // For now, let's use a simpler approach: detect KubernetesRef objects in the raw status mappings
+    // and convert them directly to CEL expressions
+    const celConversionEngine = new CelConversionEngine();
+    
+    // Convert the status mappings to CEL expressions for Kro factories
+    const convertedStatusMappings: Record<string, any> = {};
+    let hasConversions = false;
+    
+    for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+      // Check if this field contains KubernetesRef objects
+      if (containsKubernetesRefs(fieldValue)) {
+        // Convert to CEL expression
+        const conversionResult = celConversionEngine.convertValue(
+          fieldValue,
+          { factoryType: 'kro', factoryName: definition.name, analysisEnabled: true },
+          { factoryType: 'kro', preserveStatic: false }
+        );
+        
+        if (conversionResult.wasConverted) {
+          convertedStatusMappings[fieldName] = conversionResult.converted;
+          hasConversions = true;
+          serializationLogger.debug('Converted field to CEL expression', {
+            fieldName,
+            strategy: conversionResult.strategy,
+            referencesConverted: conversionResult.metrics.referencesConverted
+          });
+        } else {
+          convertedStatusMappings[fieldName] = fieldValue;
+        }
+      } else {
+        // Keep static values as-is
+        convertedStatusMappings[fieldName] = fieldValue;
+      }
+    }
+    
+    if (hasConversions) {
+      // Merge converted CEL expressions with preserved ones (preserved take precedence)
+      analyzedStatusMappings = mergePreservedCelExpressions(
+        convertedStatusMappings,
+        preservedMappings
+      );
+      serializationLogger.debug('Successfully converted JavaScript expressions to CEL', {
+        convertedFields: Object.keys(convertedStatusMappings).filter(key => 
+          convertedStatusMappings[key] !== statusMappings[key]
+        ).length,
+        preservedFields: Object.keys(preservedMappings).length,
+        staticFields: mappingAnalysis.staticValueFields.length
+      });
+    } else {
+      // No KubernetesRef objects found, but may have existing CEL expressions or static values
+      if (hasExistingCel) {
+        // Merge original mappings with preserved CEL expressions
+        analyzedStatusMappings = mergePreservedCelExpressions(
+          statusMappings as any,
+          preservedMappings
+        );
+        serializationLogger.debug('Preserved existing CEL expressions without conversion', {
+          preservedFields: Object.keys(preservedMappings).length,
+          staticFields: mappingAnalysis.staticValueFields.length,
+          complexFields: mappingAnalysis.complexExpressionFields.length
+        });
+      } else {
+        // No KubernetesRef objects or CEL expressions, use status mappings as-is
+        analyzedStatusMappings = statusMappings as any;
+        serializationLogger.debug('Status builder contains only static values and complex expressions', {
+          staticFields: mappingAnalysis.staticValueFields.length,
+          complexFields: mappingAnalysis.complexExpressionFields.length,
+          totalFields: Object.keys(mappingAnalysis.analysisDetails).length
+        });
+      }
+    }
+  } catch (error) {
+    serializationLogger.error('Failed to analyze status builder', error as Error);
+    // Fallback to executing status builder normally
+    statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
+    analyzedStatusMappings = statusMappings as any;
+    // Create empty analysis for fallback
+    mappingAnalysis = {
+      kubernetesRefFields: [],
+      celExpressionFields: [],
+      staticValueFields: [],
+      complexExpressionFields: [],
+      analysisDetails: {}
+    };
+  }
 
   // Validate resource IDs and CEL expressions
-  const validation = validateResourceGraphDefinition(resourcesWithKeys, statusMappings);
+  const validation = validateResourceGraphDefinition(resourcesWithKeys, analyzedStatusMappings);
   if (!validation.isValid) {
     const errorMessages = validation.errors.map((err) => `${err.field}: ${err.error}`).join('\n');
     throw new Error(`ResourceGraphDefinition validation failed:\n${errorMessages}`);
@@ -212,7 +669,7 @@ function createTypedResourceGraph<
   // Evaluate and optimize CEL expressions
   const evaluationContext = { resources: resourcesWithKeys, schema };
   const { mappings: optimizedStatusMappings, optimizations } = optimizeStatusMappings(
-    statusMappings,
+    analyzedStatusMappings,
     evaluationContext
   );
 
@@ -315,27 +772,76 @@ function createTypedResourceGraph<
     schema,
     // Store closures for access during factory creation
     closures,
+    // Store analysis results for factory-specific processing
+    _analysisResults: {
+      mappingAnalysis,
+      hasKubernetesRefs: mappingAnalysis.kubernetesRefFields.length > 0,
+      statusMappings,
+      analyzedStatusMappings
+    },
 
     factory<TMode extends 'kro' | 'direct'>(
       mode: TMode,
       factoryOptions?: FactoryOptions
     ): FactoryForMode<TMode, TSpec, TStatus> {
       if (mode === 'direct') {
+        // For direct factory, we need to re-analyze status mappings with direct factory context
+        let directStatusMappings = analyzedStatusMappings;
+        
+        if (this._analysisResults.hasKubernetesRefs) {
+          try {
+            serializationLogger.debug('Re-analyzing status mappings for direct factory pattern');
+            const directStatusAnalyzer = new StatusBuilderAnalyzer(undefined, {
+              factoryType: 'direct',
+              performOptionalityAnalysis: true,
+              includeSourceMapping: true
+            });
+            const directAnalysisResult = directStatusAnalyzer.analyzeReturnObjectWithMagicProxy(
+              this._analysisResults.statusMappings,
+              resourcesWithKeys,
+              schema
+            );
+            
+            if (directAnalysisResult.errors.length === 0) {
+              // Merge with preserved CEL expressions
+              const { preservedMappings: directPreservedMappings } = detectAndPreserveCelExpressions(this._analysisResults.statusMappings);
+              directStatusMappings = mergePreservedCelExpressions(
+                directAnalysisResult.statusMappings,
+                directPreservedMappings
+              );
+              serializationLogger.debug('Successfully re-analyzed status mappings for direct factory');
+            }
+          } catch (error) {
+            serializationLogger.warn('Failed to re-analyze status mappings for direct factory, using default analysis', error as Error);
+          }
+        }
+        
         const directFactory = createDirectResourceFactory<TSpec, TStatus>(
           definition.name,
           resourcesWithKeys,
           schemaDefinition,
           statusBuilder,
-          { ...factoryOptions, closures } // Pass closures to factory
+          { 
+            ...factoryOptions, 
+            closures,
+            // Pass the factory-specific status mappings
+            statusMappings: directStatusMappings
+          }
         );
         return directFactory as FactoryForMode<TMode, TSpec, TStatus>;
       } else if (mode === 'kro') {
+        // For Kro factory, use the already analyzed status mappings (which default to Kro pattern)
         const kroFactory = createKroResourceFactory<TSpec, TStatus>(
           definition.name,
           resourcesWithKeys,
           schemaDefinition,
-          statusMappings,
-          { ...factoryOptions, closures } // Pass closures to Kro factory for validation and execution
+          analyzedStatusMappings,
+          { 
+            ...factoryOptions, 
+            closures,
+            // Indicate this is for Kro factory pattern
+            factoryType: 'kro'
+          }
         );
         return kroFactory as FactoryForMode<TMode, TSpec, TStatus>;
       } else {
@@ -365,7 +871,7 @@ function createTypedResourceGraph<
 
       // For unknown properties, check if it's a resource key and create external ref
       const matchingResource = findResourceByKey(prop);
-      if (matchingResource && matchingResource.metadata.name) {
+      if (matchingResource?.metadata.name) {
         return externalRef(
           matchingResource.apiVersion,
           matchingResource.kind,
