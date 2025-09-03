@@ -10,6 +10,8 @@ import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
+import { analyzeStatusBuilderForToResourceGraph, type StatusBuilderFunction } from '../expressions/status-builder-analyzer.js';
+import { analyzeImperativeComposition } from '../expressions/imperative-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, externalRef } from '../references/index.js';
 import type {
@@ -103,6 +105,25 @@ function detectAndPreserveCelExpressions(
   }
 
   return { hasExistingCel, preservedMappings };
+}
+
+/**
+ * Check if a value contains any CelExpression objects
+ */
+function containsCelExpressions(value: unknown): boolean {
+  if (isCelExpression(value)) {
+    return true;
+  }
+  
+  if (Array.isArray(value)) {
+    return value.some(item => containsCelExpressions(item));
+  }
+  
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(val => containsCelExpressions(val));
+  }
+  
+  return false;
 }
 
 /**
@@ -506,13 +527,153 @@ function createTypedResourceGraph<
   let statusMappings: MagicAssignableShape<TStatus>;
   let analyzedStatusMappings: Record<string, any> = {};
   let mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
+  let imperativeAnalysisSucceeded = false;
   
   try {
     // Execute the status builder to get the return object
-    statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
+    (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
     
-    // COMPREHENSIVE ANALYSIS: Analyze all types of expressions in status mappings
-    mappingAnalysis = analyzeStatusMappingTypes(statusMappings);
+    try {
+      statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
+    } finally {
+      delete (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
+    }
+    
+    // Check if this is from an imperative composition with original expressions
+    const originalCompositionFn = (statusMappings as any).__originalCompositionFn;
+    
+    // Debug logging removed for cleaner output
+    
+    if (originalCompositionFn) {
+      serializationLogger.debug('Detected imperative composition, checking for existing KubernetesRef objects');
+      
+      // First, check if the status object already contains KubernetesRef objects or CelExpression objects
+      // If so, we can use those directly instead of parsing the JavaScript source code
+      let hasKubernetesRefs = containsKubernetesRefs(statusMappings);
+      let hasCelExpressions = containsCelExpressions(statusMappings);
+      
+      serializationLogger.debug('Imperative composition analysis', {
+        hasKubernetesRefs,
+        hasCelExpressions,
+        statusMappings: JSON.stringify(statusMappings, null, 2)
+      });
+      
+      if (hasKubernetesRefs || hasCelExpressions) {
+
+        serializationLogger.debug('Status object already contains KubernetesRef objects or CelExpression objects, using direct analysis');
+        
+        // Use the status builder analyzer to process the existing KubernetesRef objects
+        try {
+          const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
+            statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
+            resourcesWithKeys as Record<string, Enhanced<any, any>>,
+            schema,
+            'kro'
+          );
+          
+          if (statusBuilderAnalysis.requiresConversion) {
+            analyzedStatusMappings = statusBuilderAnalysis.statusMappings;
+            imperativeAnalysisSucceeded = true;
+            serializationLogger.debug('Using status builder analysis for imperative composition', {
+              fieldCount: Object.keys(analyzedStatusMappings).length
+            });
+          } else {
+            analyzedStatusMappings = statusMappings as any;
+            serializationLogger.debug('No conversion required, using original status mappings');
+          }
+        } catch (statusAnalysisError) {
+          serializationLogger.debug('Status builder analysis failed, falling back to imperative analysis', {
+            error: (statusAnalysisError as Error).message
+          });
+          // Fall back to imperative analysis
+          hasKubernetesRefs = false;
+          hasCelExpressions = false;
+        }
+      }
+      
+      if (!hasKubernetesRefs && !hasCelExpressions) {
+
+        serializationLogger.debug('No KubernetesRef objects or CelExpression objects found, analyzing original composition function');
+        
+        // For imperative compositions, we need to analyze the original composition function
+        // to detect JavaScript expressions that should be converted to CEL
+        
+        try {
+          const imperativeAnalysis = analyzeImperativeComposition(
+            originalCompositionFn,
+            resourcesWithKeys as Record<string, Enhanced<any, any>>,
+            { factoryType: 'kro' }
+          );
+        
+          serializationLogger.debug('Imperative analysis result', {
+            statusFieldCount: Object.keys(imperativeAnalysis.statusMappings).length,
+            hasJavaScriptExpressions: imperativeAnalysis.hasJavaScriptExpressions,
+            errorCount: imperativeAnalysis.errors.length
+          });
+          
+          serializationLogger.debug('Imperative composition analysis complete', {
+            statusFieldCount: Object.keys(imperativeAnalysis.statusMappings).length,
+            hasJavaScriptExpressions: imperativeAnalysis.hasJavaScriptExpressions
+          });
+          
+          if (imperativeAnalysis.hasJavaScriptExpressions) {
+            analyzedStatusMappings = imperativeAnalysis.statusMappings;
+            imperativeAnalysisSucceeded = true;
+            serializationLogger.debug('Using analyzed imperative composition mappings with CEL expressions', {
+              fieldCount: Object.keys(analyzedStatusMappings).length
+            });
+          } else {
+            analyzedStatusMappings = statusMappings as any;
+            serializationLogger.debug('No JavaScript expressions found, using original status mappings');
+          }
+        } catch (imperativeAnalysisError) {
+          serializationLogger.debug('Imperative composition analysis failed, using executed status mappings', {
+            error: (imperativeAnalysisError as Error).message
+          });
+          analyzedStatusMappings = statusMappings as any;
+        }
+      }
+    } else {
+      // Regular status builder - try to analyze it directly
+      try {
+        const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
+          statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
+          resourcesWithKeys as Record<string, Enhanced<any, any>>,
+          schema,
+          'kro'
+        );
+        
+        serializationLogger.debug('Status builder analysis complete', {
+          statusFieldCount: Object.keys(statusBuilderAnalysis.statusMappings).length,
+          dependencyCount: statusBuilderAnalysis.dependencies.length,
+          hasJavaScriptExpressions: statusBuilderAnalysis.dependencies.length > 0
+        });
+        
+        if (statusBuilderAnalysis.dependencies.length > 0) {
+          analyzedStatusMappings = statusBuilderAnalysis.statusMappings;
+          serializationLogger.debug('Using analyzed status mappings with CEL expressions', {
+            fieldCount: Object.keys(analyzedStatusMappings).length
+          });
+        } else {
+          analyzedStatusMappings = statusMappings as any;
+        }
+      } catch (analysisError) {
+        serializationLogger.debug('Status builder analysis failed, using executed status mappings', {
+          error: (analysisError as Error).message
+        });
+        analyzedStatusMappings = statusMappings as any;
+      }
+    }
+    
+    // COMPREHENSIVE ANALYSIS: Analyze the final status mappings
+    mappingAnalysis = analyzeStatusMappingTypes(analyzedStatusMappings);
+    
+    serializationLogger.debug('Final mapping analysis result', {
+      kubernetesRefFields: mappingAnalysis.kubernetesRefFields.length,
+      celExpressionFields: mappingAnalysis.celExpressionFields.length,
+      staticValueFields: mappingAnalysis.staticValueFields.length,
+      complexExpressionFields: mappingAnalysis.complexExpressionFields.length
+    });
     
     serializationLogger.debug('Status mapping analysis complete', {
       kubernetesRefFields: mappingAnalysis.kubernetesRefFields.length,
@@ -598,11 +759,14 @@ function createTypedResourceGraph<
     }
     
     if (hasConversions) {
-      // Merge converted CEL expressions with preserved ones (preserved take precedence)
-      analyzedStatusMappings = mergePreservedCelExpressions(
-        convertedStatusMappings,
-        preservedMappings
-      );
+      // Only overwrite if imperative analysis hasn't already provided CEL expressions
+      if (!imperativeAnalysisSucceeded) {
+        // Merge converted CEL expressions with preserved ones (preserved take precedence)
+        analyzedStatusMappings = mergePreservedCelExpressions(
+          convertedStatusMappings,
+          preservedMappings
+        );
+      }
       serializationLogger.debug('Successfully converted JavaScript expressions to CEL', {
         convertedFields: Object.keys(convertedStatusMappings).filter(key => 
           convertedStatusMappings[key] !== statusMappings[key]
@@ -613,11 +777,14 @@ function createTypedResourceGraph<
     } else {
       // No KubernetesRef objects found, but may have existing CEL expressions or static values
       if (hasExistingCel) {
-        // Merge original mappings with preserved CEL expressions
-        analyzedStatusMappings = mergePreservedCelExpressions(
-          statusMappings as any,
-          preservedMappings
-        );
+        // Only overwrite if imperative analysis hasn't already provided CEL expressions
+        if (!imperativeAnalysisSucceeded) {
+          // Merge original mappings with preserved CEL expressions
+          analyzedStatusMappings = mergePreservedCelExpressions(
+            statusMappings as any,
+            preservedMappings
+          );
+        }
         serializationLogger.debug('Preserved existing CEL expressions without conversion', {
           preservedFields: Object.keys(preservedMappings).length,
           staticFields: mappingAnalysis.staticValueFields.length,
@@ -625,7 +792,9 @@ function createTypedResourceGraph<
         });
       } else {
         // No KubernetesRef objects or CEL expressions, use status mappings as-is
-        analyzedStatusMappings = statusMappings as any;
+        if (!imperativeAnalysisSucceeded) {
+          analyzedStatusMappings = statusMappings as any;
+        }
         serializationLogger.debug('Status builder contains only static values and complex expressions', {
           staticFields: mappingAnalysis.staticValueFields.length,
           complexFields: mappingAnalysis.complexExpressionFields.length,
@@ -636,7 +805,13 @@ function createTypedResourceGraph<
   } catch (error) {
     serializationLogger.error('Failed to analyze status builder', error as Error);
     // Fallback to executing status builder normally
-    statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
+    (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
+    
+    try {
+      statusMappings = statusBuilder(schema, resourcesWithKeys as TResources);
+    } finally {
+      delete (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
+    }
     analyzedStatusMappings = statusMappings as any;
     // Create empty analysis for fallback
     mappingAnalysis = {
@@ -672,6 +847,8 @@ function createTypedResourceGraph<
     analyzedStatusMappings,
     evaluationContext
   );
+  
+
 
   // Log optimizations if any
   if (optimizations.length > 0) {

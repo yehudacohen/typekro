@@ -208,8 +208,24 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
         try {
           CompositionDebugger.log('RESOURCE_BUILDING', 'Executing composition function');
 
-          // Execute the composition function to trigger resource registration and capture status
-          capturedStatus = compositionFn(schema.spec as TSpec) as MagicAssignableShape<TStatus>;
+          // Execute the composition function in a special context that preserves KubernetesRef objects
+          // This allows JavaScript expressions to be converted to CEL during serialization
+          (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
+          
+          try {
+            capturedStatus = compositionFn(schema.spec as TSpec) as MagicAssignableShape<TStatus>;
+            
+            // Store the original composition function for later analysis
+            // This allows the serialization system to analyze the original JavaScript expressions
+            (capturedStatus as any).__originalCompositionFn = compositionFn;
+            (capturedStatus as any).__originalSchema = schema.spec;
+            
+            // Debug logging removed for cleaner output
+          } finally {
+            // Always clean up the global flag
+            delete (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
+          }
+
 
           const resourceBuildEnd = Date.now();
           CompositionDebugger.logPerformanceMetrics(

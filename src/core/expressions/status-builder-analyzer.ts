@@ -14,7 +14,7 @@
  * - Supports both direct and Kro factory patterns
  */
 
-import * as esprima from 'esprima';
+import * as acorn from 'acorn';
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode, ObjectExpression, ReturnStatement } from 'estree';
 
@@ -79,6 +79,9 @@ export interface StatusFieldAnalysisResult {
   
   /** Confidence level of the analysis */
   confidence: number;
+  
+  /** Static value for object expressions that can be evaluated at compile time */
+  staticValue?: any;
 }
 
 /**
@@ -308,7 +311,7 @@ export class StatusBuilderAnalyzer {
       const ast = this.parseStatusBuilderFunction(originalSource);
       
       // Analyze the return statement
-      const returnStatement = this.analyzeReturnStatement(ast);
+      const returnStatement = this.analyzeReturnStatement(ast, originalSource);
       
       if (!returnStatement || !returnStatement.returnsObject) {
         throw new ConversionError(
@@ -332,13 +335,31 @@ export class StatusBuilderAnalyzer {
           const fieldResult = this.analyzeStatusField(
             property,
             resources,
+            originalSource,
             schemaProxy
           );
           
           fieldAnalysis.set(property.name, fieldResult);
           
-          if (fieldResult.valid && fieldResult.celExpression) {
-            statusMappings[property.name] = fieldResult.celExpression;
+          if (fieldResult.valid) {
+            if (fieldResult.celExpression) {
+              // For dynamic expressions, return the CEL expression string wrapped in ${}
+              const celString = fieldResult.celExpression.expression;
+              statusMappings[property.name] = celString.includes('${') ? celString : `\${${celString}}` as any;
+            } else if ((fieldResult as any).staticValue !== undefined) {
+              // For static objects, store the evaluated static value
+              statusMappings[property.name] = (fieldResult as any).staticValue;
+            } else if (property.valueNode.type === 'Literal') {
+              // For static literals, store the literal value directly
+              statusMappings[property.name] = property.valueNode.value as any;
+            } else if (property.valueNode.type === 'UnaryExpression' && 
+                       property.valueNode.operator === '!' && 
+                       property.valueNode.argument?.type === 'Literal' &&
+                       typeof property.valueNode.argument.value === 'number') {
+              // For boolean literals represented as !0 or !1
+              const booleanValue = property.valueNode.argument.value === 0; // !0 = true, !1 = false
+              statusMappings[property.name] = booleanValue as any;
+            }
           }
           
           allDependencies.push(...fieldResult.dependencies);
@@ -1087,6 +1108,266 @@ export class StatusBuilderAnalyzer {
   }
 
   /**
+   * Analyze a mixed object expression (contains both static and dynamic values)
+   */
+  private analyzeMixedObjectExpression(
+    objectNode: any, 
+    resources: Record<string, Enhanced<any, any>>,
+    originalSource: string,
+    schemaProxy?: SchemaProxy<any, any>
+  ): { valid: boolean; processedObject: any; dependencies: any[]; requiresConversion: boolean } {
+    if (objectNode.type !== 'ObjectExpression') {
+      return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
+    }
+
+    const result: Record<string, any> = {};
+    const allDependencies: any[] = [];
+    let requiresConversion = false;
+    
+
+    
+    for (const prop of objectNode.properties) {
+      if (prop.type === 'Property' && prop.key.type === 'Identifier') {
+        const key = prop.key.name;
+
+        
+        // Handle different value types
+        if (prop.value.type === 'Literal') {
+          // Static literal value
+          result[key] = prop.value.value;
+        } else if (prop.value.type === 'ObjectExpression') {
+          // Nested object - recursively analyze
+          const nestedResult = this.analyzeMixedObjectExpression(prop.value, resources, originalSource, schemaProxy);
+          if (nestedResult.valid) {
+            result[key] = nestedResult.processedObject;
+            allDependencies.push(...nestedResult.dependencies);
+            if (nestedResult.requiresConversion) {
+              requiresConversion = true;
+            }
+          } else {
+            return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
+          }
+        } else {
+          // Dynamic expression - analyze with expression analyzer
+          let valueSource: string;
+          try {
+            valueSource = this.getNodeSource(prop.value, originalSource);
+          } catch (_error) {
+            return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
+          }
+          
+          // Create analysis context
+          const context: AnalysisContext = {
+            type: 'status',
+            availableReferences: resources,
+            ...(schemaProxy && { schemaProxy }),
+            factoryType: this.options.factoryType,
+            dependencies: []
+          };
+
+          try {
+            // Analyze the expression using the main analyzer
+            const analysisResult = this.expressionAnalyzer.analyzeExpression(
+              valueSource,
+              context
+            );
+            
+
+            
+            if (analysisResult.valid && analysisResult.celExpression) {
+              // Dynamic expression - wrap in CEL
+              const celString = analysisResult.celExpression.expression;
+              result[key] = celString.includes('${') ? celString : `\${${celString}}`;
+              allDependencies.push(...analysisResult.dependencies);
+              requiresConversion = true;
+            } else {
+              // Try to evaluate as static value
+              const staticValue = this.evaluateStaticValue(prop.value);
+              if (staticValue !== null) {
+                result[key] = staticValue;
+              } else {
+                return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
+              }
+            }
+          } catch (error) {
+            // If expression analysis fails, try static evaluation
+            const staticValue = this.evaluateStaticValue(prop.value);
+            if (staticValue !== null) {
+              result[key] = staticValue;
+            } else {
+              console.log(`Failed to analyze property '${key}' of type '${prop.value.type}':`, error);
+              return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
+            }
+          }
+        }
+      } else {
+        // Non-standard property structure
+        return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
+      }
+    }
+    
+    return { 
+      valid: true, 
+      processedObject: result, 
+      dependencies: allDependencies, 
+      requiresConversion 
+    };
+  }
+
+  /**
+   * Evaluate a static object expression to a JavaScript object
+   */
+  private evaluateStaticObjectExpression(objectNode: any): any {
+    if (objectNode.type !== 'ObjectExpression') {
+      return null;
+    }
+
+    const result: Record<string, any> = {};
+    
+    for (const prop of objectNode.properties) {
+      if (prop.type === 'Property' && prop.key.type === 'Identifier') {
+        const key = prop.key.name;
+        const value = this.evaluateStaticValue(prop.value);
+        
+        if (value === null && prop.value.type !== 'Literal') {
+          // If we can't evaluate a property statically, this isn't a static object
+          return null;
+        }
+        
+        result[key] = value;
+      } else {
+        // Non-static property structure
+        return null;
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Evaluate a static value from an AST node
+   */
+  private evaluateStaticValue(node: any): any {
+    switch (node.type) {
+      case 'Literal':
+        return node.value;
+      case 'UnaryExpression':
+        if (node.operator === '!' && node.argument?.type === 'Literal') {
+          return !node.argument.value;
+        }
+        if (node.operator === '-' && node.argument?.type === 'Literal' && typeof node.argument.value === 'number') {
+          return -node.argument.value;
+        }
+        return null;
+      case 'ObjectExpression':
+        return this.evaluateStaticObjectExpression(node);
+      case 'ArrayExpression': {
+        const arrayResult: any[] = [];
+        for (const element of node.elements) {
+          if (element === null) {
+            arrayResult.push(null);
+          } else {
+            const elementValue = this.evaluateStaticValue(element);
+            if (elementValue === null && element.type !== 'Literal') {
+              return null; // Non-static array
+            }
+            arrayResult.push(elementValue);
+          }
+        }
+        return arrayResult;
+      }
+      default:
+        return null; // Non-static value
+    }
+  }
+
+  /**
+   * Extract source code for an AST node using range information
+   */
+  private getNodeSource(node: any, originalSource: string): string {
+    if (!node || !node.type) {
+      return '';
+    }
+    
+    // Try to use range information to extract the actual source
+    let start: number | undefined;
+    let end: number | undefined;
+    
+    // Check for start/end properties (acorn format)
+    if (typeof node.start === 'number' && typeof node.end === 'number') {
+      start = node.start;
+      end = node.end;
+    }
+    // Check for range array (alternative format)
+    else if (Array.isArray(node.range) && node.range.length === 2) {
+      start = node.range[0];
+      end = node.range[1];
+    }
+    
+    // If we have valid range information, extract the source
+    if (typeof start === 'number' && typeof end === 'number' && 
+        start >= 0 && end <= originalSource.length && start <= end) {
+      const extracted = originalSource.slice(start, end).trim();
+      
+      if (extracted.length > 0) {
+        return extracted;
+      }
+    }
+    
+    // Fallback to manual reconstruction for specific node types
+    switch (node.type) {
+      case 'Literal':
+        return typeof node.value === 'string' ? `"${node.value}"` : String(node.value);
+      case 'Identifier':
+        return node.name;
+      case 'BinaryExpression': {
+        const left = this.getNodeSource(node.left, originalSource);
+        const right = this.getNodeSource(node.right, originalSource);
+        return `${left} ${node.operator} ${right}`;
+      }
+      case 'MemberExpression': {
+        const object = this.getNodeSource(node.object, originalSource);
+        if (node.computed) {
+          return `${object}[${this.getNodeSource(node.property, originalSource)}]`;
+        } else {
+          const propertyName = (node.property as any).name || this.getNodeSource(node.property, originalSource);
+          return `${object}.${propertyName}`;
+        }
+      }
+      case 'ConditionalExpression':
+        return `${this.getNodeSource(node.test, originalSource)} ? ${this.getNodeSource(node.consequent, originalSource)} : ${this.getNodeSource(node.alternate, originalSource)}`;
+      case 'LogicalExpression':
+        return `${this.getNodeSource(node.left, originalSource)} ${node.operator} ${this.getNodeSource(node.right, originalSource)}`;
+      case 'CallExpression': {
+        const callee = this.getNodeSource(node.callee, originalSource);
+        const args = node.arguments.map((arg: any) => this.getNodeSource(arg, originalSource)).join(', ');
+        return `${callee}(${args})`;
+      }
+      case 'ArrowFunctionExpression': {
+        const params = node.params.map((param: any) => param.name).join(', ');
+        const body = this.getNodeSource(node.body, originalSource);
+        return `(${params}) => ${body}`;
+      }
+      case 'TemplateLiteral': {
+        // Simplified template literal reconstruction
+        let result = '`';
+        for (let i = 0; i < node.quasis.length; i++) {
+          const quasi = node.quasis[i];
+          result += quasi?.value?.raw || quasi?.value?.cooked || '';
+          if (i < node.expressions.length) {
+            result += `\${${this.getNodeSource(node.expressions[i], originalSource)}}`;
+          }
+        }
+        result += '`';
+        return result;
+      }
+      default:
+        // Fallback - return a placeholder
+        return `<${node.type}>`;
+    }
+  }
+
+  /**
    * Generate fallback status CEL expression
    */
   private generateFallbackStatusCel(kubernetesRef: KubernetesRef<any>): CelExpression {
@@ -1107,14 +1388,15 @@ export class StatusBuilderAnalyzer {
    */
   private parseStatusBuilderFunction(source: string): ESTreeNode {
     try {
-      // Parse the function source
-      const ast = esprima.parseScript(source, {
-        loc: true,
-        range: true,
-        tolerant: true
+      // Parse the function source with modern JavaScript support using acorn
+      const ast = acorn.parse(source, {
+        ecmaVersion: 2022, // Support modern JavaScript features including optional chaining
+        sourceType: 'script',
+        locations: true,
+        ranges: true
       });
       
-      return ast;
+      return ast as ESTreeNode;
       
     } catch (error) {
       throw new ConversionError(
@@ -1128,45 +1410,85 @@ export class StatusBuilderAnalyzer {
   /**
    * Analyze the return statement of the status builder
    */
-  private analyzeReturnStatement(ast: ESTreeNode): ReturnStatementAnalysis | null {
+  private analyzeReturnStatement(ast: ESTreeNode, originalSource: string): ReturnStatementAnalysis | null {
     let foundReturnStatement: ReturnStatement | null = null;
+    let foundArrowFunction: any | null = null;
     
-    // Find the return statement
+    // Find the return statement or arrow function with implicit return
     estraverse.traverse(ast, {
       enter: (node) => {
         if (node.type === 'ReturnStatement') {
           foundReturnStatement = node as ReturnStatement;
           return estraverse.VisitorOption.Break;
         }
+        if (node.type === 'ArrowFunctionExpression' && node.body?.type === 'ObjectExpression') {
+          foundArrowFunction = node;
+          return estraverse.VisitorOption.Break;
+        }
         return undefined;
       }
     });
     
-    if (!foundReturnStatement) {
-      return null;
-    }
-    
-    // Type assertion to help TypeScript understand the type
-    const returnStatement = foundReturnStatement as ReturnStatement;
-    
-    // Check if it returns an object expression
-    const returnsObject = returnStatement.argument?.type === 'ObjectExpression';
-    
-    if (!returnsObject) {
+    // Handle explicit return statement
+    if (foundReturnStatement) {
+      const returnStatement = foundReturnStatement as ReturnStatement;
+      
+      // Check if it returns an object expression
+      const returnsObject = returnStatement.argument?.type === 'ObjectExpression';
+      
+      if (!returnsObject) {
+        return {
+          node: returnStatement,
+          returnsObject: false,
+          properties: [],
+          sourceLocation: {
+            line: returnStatement.loc?.start.line || 0,
+            column: returnStatement.loc?.start.column || 0,
+            length: 0
+          }
+        };
+      }
+      
+      // Analyze properties in the object expression
+      const objectExpression = returnStatement.argument as ObjectExpression;
+      const properties = this.analyzeObjectProperties(objectExpression, originalSource);
+      
       return {
         node: returnStatement,
-        returnsObject: false,
-        properties: [],
+        returnsObject: true,
+        properties,
         sourceLocation: {
           line: returnStatement.loc?.start.line || 0,
           column: returnStatement.loc?.start.column || 0,
-          length: 0
+          length: returnStatement.range ? returnStatement.range[1] - returnStatement.range[0] : 0
         }
       };
     }
     
-    // Analyze properties in the object expression
-    const objectExpression = returnStatement.argument as ObjectExpression;
+    // Handle arrow function with implicit return
+    if (foundArrowFunction && foundArrowFunction.body?.type === 'ObjectExpression') {
+      const objectExpression = foundArrowFunction.body as ObjectExpression;
+      const properties = this.analyzeObjectProperties(objectExpression, originalSource);
+      
+      return {
+        node: foundArrowFunction,
+        returnsObject: true,
+        properties,
+        sourceLocation: {
+          line: objectExpression.loc?.start.line || 0,
+          column: objectExpression.loc?.start.column || 0,
+          length: objectExpression.range ? objectExpression.range[1] - objectExpression.range[0] : 0
+        }
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * Analyze properties in an object expression
+   */
+  private analyzeObjectProperties(objectExpression: ObjectExpression, originalSource: string): PropertyAnalysis[] {
     const properties: PropertyAnalysis[] = [];
     
     for (const prop of objectExpression.properties) {
@@ -1174,7 +1496,7 @@ export class StatusBuilderAnalyzer {
         const propertyAnalysis: PropertyAnalysis = {
           name: prop.key.name,
           valueNode: prop.value,
-          valueSource: this.getNodeSource(prop.value),
+          valueSource: this.getNodeSource(prop.value, originalSource),
           containsKubernetesRefs: false, // Will be determined during field analysis
           sourceLocation: {
             line: prop.loc?.start.line || 0,
@@ -1187,16 +1509,7 @@ export class StatusBuilderAnalyzer {
       }
     }
     
-    return {
-      node: returnStatement,
-      returnsObject: true,
-      properties,
-      sourceLocation: {
-        line: returnStatement.loc?.start.line || 0,
-        column: returnStatement.loc?.start.column || 0,
-        length: returnStatement.range ? returnStatement.range[1] - returnStatement.range[0] : 0
-      }
-    };
+    return properties;
   }
 
   /**
@@ -1205,12 +1518,113 @@ export class StatusBuilderAnalyzer {
   private analyzeStatusField(
     property: PropertyAnalysis,
     resources: Record<string, Enhanced<any, any>>,
+    originalSource: string,
     schemaProxy?: SchemaProxy<any, any>
   ): StatusFieldAnalysisResult {
     const fieldName = property.name;
     const originalExpression = property.valueSource;
     
     try {
+      // Check if this is a static literal value
+      if (property.valueNode.type === 'Literal') {
+        // Static literal - return as-is without CEL conversion
+        return {
+          fieldName,
+          originalExpression,
+          celExpression: null,
+          dependencies: [],
+          requiresConversion: false,
+          valid: true,
+          errors: [],
+          sourceMap: [],
+          optionalityAnalysis: [],
+          inferredType: typeof property.valueNode.value,
+          confidence: 1.0
+        };
+      }
+
+      // Check if this is a boolean literal represented as UnaryExpression (!0 for true, !1 for false)
+      if (property.valueNode.type === 'UnaryExpression' && 
+          property.valueNode.operator === '!' && 
+          property.valueNode.argument?.type === 'Literal' &&
+          typeof property.valueNode.argument.value === 'number') {
+        const _booleanValue = property.valueNode.argument.value === 0; // !0 = true, !1 = false
+        return {
+          fieldName,
+          originalExpression,
+          celExpression: null,
+          dependencies: [],
+          requiresConversion: false,
+          valid: true,
+          errors: [],
+          sourceMap: [],
+          optionalityAnalysis: [],
+          inferredType: 'boolean',
+          confidence: 1.0
+        };
+      }
+
+      // Check if this is a static object expression
+      if (property.valueNode.type === 'ObjectExpression') {
+        // Try to evaluate the object as a static value
+        const staticValue = this.evaluateStaticObjectExpression(property.valueNode);
+        if (staticValue !== null) {
+          return {
+            fieldName,
+            originalExpression,
+            celExpression: null,
+            dependencies: [],
+            requiresConversion: false,
+            valid: true,
+            errors: [],
+            sourceMap: [],
+            optionalityAnalysis: [],
+            inferredType: 'object',
+            confidence: 1.0,
+            staticValue // Store the evaluated static value
+          };
+        } else {
+          // This is a mixed object (contains both static and dynamic values)
+          // Recursively analyze each property
+          const mixedObjectResult = this.analyzeMixedObjectExpression(property.valueNode, resources, originalSource, schemaProxy);
+          if (mixedObjectResult.valid) {
+            return {
+              fieldName,
+              originalExpression,
+              celExpression: null,
+              dependencies: mixedObjectResult.dependencies,
+              requiresConversion: mixedObjectResult.requiresConversion,
+              valid: true,
+              errors: [],
+              sourceMap: [],
+              optionalityAnalysis: [],
+              inferredType: 'object',
+              confidence: 1.0,
+              staticValue: mixedObjectResult.processedObject
+            };
+          } else {
+            // Mixed object analysis failed, return error
+            return {
+              fieldName,
+              originalExpression,
+              celExpression: null,
+              dependencies: [],
+              requiresConversion: false,
+              valid: false,
+              errors: [new ConversionError(
+                `Failed to analyze mixed object expression for field '${fieldName}'`,
+                originalExpression,
+                'unknown'
+              )],
+              sourceMap: [],
+              optionalityAnalysis: [],
+              inferredType: 'object',
+              confidence: 0.0
+            };
+          }
+        }
+      }
+
       // Create analysis context
       const context: AnalysisContext = {
         type: 'status',
@@ -1281,14 +1695,7 @@ export class StatusBuilderAnalyzer {
     }
   }
 
-  /**
-   * Get source code for an AST node
-   */
-  private getNodeSource(_node: ESTreeNode): string {
-    // This is a simplified implementation
-    // In a real implementation, this would extract the actual source text
-    return '<expression>';
-  }
+
 
   /**
    * Calculate confidence level for field analysis
