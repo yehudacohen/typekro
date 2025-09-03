@@ -39,7 +39,6 @@ import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debu
 import { ResourceReadinessChecker } from './readiness.js';
 import { StatusHydrator } from './status-hydrator.js';
 import { type EventMonitor, createEventMonitor } from './event-monitor.js';
-import type { EventFilter } from './event-filter.js';
 
 export class DirectDeploymentEngine {
   private dependencyResolver: DependencyResolver;
@@ -49,7 +48,6 @@ export class DirectDeploymentEngine {
   private statusHydrator: StatusHydrator;
   private debugLogger?: DebugLogger;
   private eventMonitor?: EventMonitor;
-  private eventFilter?: EventFilter;
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
   private readyResources: Set<string> = new Set(); // Track resources that are already ready
   private logger = getComponentLogger('deployment-engine');

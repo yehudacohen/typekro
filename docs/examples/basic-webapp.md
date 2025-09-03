@@ -1,12 +1,12 @@
 # Basic WebApp Pattern
 
-The most common TypeKro pattern - a web application with deployment and service.
+The most common TypeKro pattern - a web application with deployment and service using the **imperative composition pattern**.
 
 ## Complete Example
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
 // Define the application schema
@@ -23,7 +23,7 @@ const WebAppStatus = type({
   replicas: 'number'
 });
 
-// Create the resource graph with kubernetesComposition
+// Create the resource graph with imperative composition
 export const webapp = kubernetesComposition(
   {
     name: 'basic-webapp',
@@ -32,31 +32,33 @@ export const webapp = kubernetesComposition(
     spec: WebAppSpec,
     status: WebAppStatus,
   },
-  // Resource builder: create named resources
-  (schema) => ({
-    deployment: Deployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
+  // Imperative composition: resources auto-register when created
+  (spec) => {
+    // Create resources - they auto-register!
+    const deployment = Deployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
       ports: [{ containerPort: 3000 }],
       env: {
-        NODE_ENV: schema.spec.environment
+        NODE_ENV: spec.environment
       }
-    }),
+    });
     
-    service: Service({
-      name: Cel.template('%s-service', schema.spec.name),
-      selector: { app: schema.spec.name },
+    const service = Service({
+      name: `${spec.name}-service`,
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       type: 'ClusterIP'
-    })
-  }),
-  // Status builder: compute status from resources
-  (schema, resources) => ({
-    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
-    url: Cel.template('http://%s', resources.service.status.clusterIP),
-    replicas: resources.deployment.status.readyReplicas
-  })
+    });
+
+    // ✨ Return status using natural JavaScript expressions
+    return {
+      ready: deployment.status.readyReplicas >= spec.replicas,
+      url: `http://${service.status.clusterIP}`,
+      replicas: deployment.status.readyReplicas
+    };
+  }
 );
 ```
 
@@ -96,10 +98,10 @@ await kroFactory.deploy({
 
 ## Key Concepts Demonstrated
 
-- **Structured Composition**: Resource and status builders provide clear separation
+- **Imperative Composition**: Resources auto-register when created within the composition function
 - **Schema Definition**: Using ArkType for type-safe specifications  
-- **Resource Creation**: `simple.Deployment` and `simple.Service` factories
-- **CEL Templates**: Using `Cel.template()` for dynamic string construction
-- **CEL Expressions**: Using `Cel.expr()` for dynamic boolean logic
+- **Resource Creation**: `Deployment` and `Service` factories from `typekro/simple`
+- **JavaScript Expressions**: Natural JavaScript syntax automatically converted to CEL
 - **Resource References**: Type-safe access to resource status fields
 - **Environment Configuration**: Schema-driven configuration patterns
+- **Auto-Registration**: No need for explicit resource builders - resources register automatically

@@ -58,7 +58,8 @@ const secureApp = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.app.status.readyReplicas > 0
   })
 );
 ```
@@ -98,7 +99,7 @@ const microservice = kubernetesComposition({
     
     // Role with conditional permissions
     appRole: role({
-      metadata: { name: Cel.expr(schema.spec.name, '-role') },
+      metadata: { name: `${schema.spec.name}-role` },
       rules: [
         // Always allow reading pods
         {
@@ -125,7 +126,7 @@ const microservice = kubernetesComposition({
     
     // Role binding
     roleBinding: roleBinding({
-      metadata: { name: Cel.expr(schema.spec.name, '-binding') },
+      metadata: { name: `${schema.spec.name}-binding` },
       subjects: [{
         kind: 'ServiceAccount',
         name: schema.spec.name,
@@ -133,7 +134,7 @@ const microservice = kubernetesComposition({
       }],
       roleRef: {
         kind: 'Role',
-        name: Cel.expr(schema.spec.name, '-role'),
+        name: `${schema.spec.name}-role`,
         apiGroup: 'rbac.authorization.k8s.io'
       }
     }),
@@ -147,7 +148,8 @@ const microservice = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.app.status.readyReplicas > 0
   })
 );
 ```
@@ -231,7 +233,8 @@ const monitoringService = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.prometheus.status.readyReplicas, ' > 0')
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.prometheus.status.readyReplicas > 0
   })
 );
 ```
@@ -258,7 +261,7 @@ const multiTenantPlatform = kubernetesComposition({
     tenantAccounts: schema.spec.tenants.map(tenant =>
       serviceAccount({
         metadata: {
-          name: Cel.expr(tenant, '-service-account'),
+          name: `${tenant}-service-account`, // ✨ Natural JavaScript template literal
           labels: { tenant }
         }
       })
@@ -267,7 +270,7 @@ const multiTenantPlatform = kubernetesComposition({
     // Create roles for each tenant (namespace-scoped)
     tenantRoles: schema.spec.tenants.map(tenant =>
       role({
-        metadata: { name: Cel.expr(tenant, '-role') },
+        metadata: { name: `${tenant}-role` }, // ✨ Natural JavaScript template literal
         rules: [
           {
             apiGroups: [''],
@@ -283,7 +286,7 @@ const multiTenantPlatform = kubernetesComposition({
           {
             apiGroups: [''],
             resources: ['secrets'],
-            resourceNames: [Cel.expr(tenant, '-secrets')],
+            resourceNames: [`${tenant}-secrets`], // ✨ Natural JavaScript template literal
             verbs: ['get', 'list']
           }
         ]
@@ -293,15 +296,15 @@ const multiTenantPlatform = kubernetesComposition({
     // Bind roles to service accounts
     tenantBindings: schema.spec.tenants.map(tenant =>
       roleBinding({
-        metadata: { name: Cel.expr(tenant, '-binding') },
+        metadata: { name: `${tenant}-binding` }, // ✨ Natural JavaScript template literal
         subjects: [{
           kind: 'ServiceAccount',
-          name: Cel.expr(tenant, '-service-account'),
+          name: `${tenant}-service-account`, // ✨ Natural JavaScript template literal
           namespace: 'default'
         }],
         roleRef: {
           kind: 'Role',
-          name: Cel.expr(tenant, '-role'),
+          name: `${tenant}-role`, // ✨ Natural JavaScript template literal
           apiGroup: 'rbac.authorization.k8s.io'
         }
       })
@@ -310,10 +313,10 @@ const multiTenantPlatform = kubernetesComposition({
     // Tenant applications
     tenantApps: schema.spec.tenants.map(tenant =>
       Deployment({
-        name: Cel.expr(tenant, '-app'),
+        name: `${tenant}-app`, // ✨ Natural JavaScript template literal
         image: 'tenant-app:latest',
         ports: [8080],
-        serviceAccountName: Cel.expr(tenant, '-service-account'),
+        serviceAccountName: `${tenant}-service-account`, // ✨ Natural JavaScript template literal
         env: {
           TENANT_NAME: tenant
         }
@@ -321,11 +324,8 @@ const multiTenantPlatform = kubernetesComposition({
     )
   }),
   (schema, resources) => ({
-    ready: Cel.expr(
-      resources.tenantApps.map(app => 
-        Cel.expr(app.status.readyReplicas, ' > 0')
-      ).join(' && ')
-    )
+    // ✨ Natural JavaScript expression - automatically converted to CEL
+    ready: resources.tenantApps.every(app => app.status.readyReplicas > 0)
   })
 );
 ```
@@ -418,7 +418,8 @@ const customOperator = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.operatorDeployment.status.readyReplicas, ' > 0')
+    // ✨ Natural JavaScript expression - automatically converted to CEL
+    ready: resources.operatorDeployment.status.readyReplicas > 0
   })
 );
 ```
@@ -488,9 +489,9 @@ const securePlatform = kubernetesComposition({
       name: 'secure-application',
       image: 'secure-app:latest',
       ports: [8080],
-      serviceAccountName: Cel.conditional(
-        schema.spec.securityLevel === 'restricted',
-        'restricted-workload',
+      serviceAccountName: schema.spec.securityLevel === 'restricted' 
+        ? 'restricted-workload' 
+        : 'default', // ✨ Natural JavaScript conditional
         'baseline-workload'
       ),
       securityContext: {
@@ -508,7 +509,8 @@ const securePlatform = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.secureApp.status.readyReplicas, ' > 0')
+    // ✨ Natural JavaScript expression - automatically converted to CEL
+    ready: resources.secureApp.status.readyReplicas > 0
   })
 );
 ```

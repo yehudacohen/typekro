@@ -1,94 +1,125 @@
-# CEL Expressions
+# Explicit CEL Expressions
 
-Common Expression Language (CEL) expressions in TypeKro enable dynamic, runtime evaluation of complex logic. CEL expressions are particularly powerful for status fields, conditional configurations, and computed values.
+While TypeKro automatically converts JavaScript expressions to CEL, there are cases where you need explicit control over CEL generation. The `Cel` module provides an escape hatch for advanced CEL patterns that can't be expressed in JavaScript.
+
+## When to Use Explicit CEL
+
+**✅ Use JavaScript expressions** (recommended) for:
+- Simple comparisons and arithmetic
+- Template literals and string interpolation  
+- Optional chaining and logical operators
+- Conditional expressions and boolean logic
+
+**✅ Use explicit CEL expressions** for:
+- Complex list operations (filter, map, reduce)
+- Advanced CEL functions not available in JavaScript
+- Performance-critical expressions that need CEL optimization
+- Legacy code migration from manual CEL
 
 ## What is CEL?
 
-CEL (Common Expression Language) is a non-Turing complete expression language designed for safe evaluation of expressions. In TypeKro, CEL expressions:
+CEL (Common Expression Language) is a non-Turing complete expression language designed for safe evaluation of expressions. In TypeKro, explicit CEL expressions:
 
-- Evaluate at runtime against live cluster state
-- Provide type-safe expression building
-- Enable complex conditional logic
-- Work seamlessly with cross-resource references
+- Provide access to advanced CEL functions
+- Enable complex list and map operations
+- Offer performance optimizations for specific use cases
+- Serve as an escape hatch when JavaScript conversion isn't sufficient
 
-## Basic CEL Usage
+## JavaScript vs Explicit CEL
 
-### Simple Expressions
+### Prefer JavaScript Expressions
+
+```typescript
+// ✅ Recommended: Use JavaScript expressions
+const statusMappings = {
+  // Boolean expression
+  ready: resources.deployment.status.readyReplicas > 0,
+  
+  // Comparison
+  allReady: resources.deployment.status.readyReplicas === resources.deployment.spec.replicas,
+  
+  // Conditional expression
+  phase: resources.deployment.status.readyReplicas > 0 ? 'running' : 'pending'
+};
+```
+
+### Use Explicit CEL When Needed
 
 ```typescript
 import { Cel } from 'typekro';
 
 const statusMappings = {
-  // Boolean expression
-  ready: Cel.expr(deployment.status.readyReplicas, '> 0'),
-  
-  // Comparison
-  allReady: Cel.expr(
-    deployment.status.readyReplicas, 
-    '== ', 
-    deployment.spec.replicas
+  // ✅ Use explicit CEL for complex list operations
+  readyPods: Cel.filter(
+    resources.deployment.status.pods,
+    'item.status.phase == "Running"'
   ),
   
-  // String concatenation
-  phase: Cel.expr(
-    deployment.status.readyReplicas, 
-    '> 0 ? "running" : "pending"'
+  // ✅ Use explicit CEL for advanced functions
+  podNames: Cel.map(
+    resources.deployment.status.pods,
+    'item.metadata.name'
+  ),
+  
+  // ✅ Use explicit CEL for performance-critical expressions
+  complexScore: Cel.expr(
+    'size(resources.deployment.status.pods.filter(p, p.status.phase == "Running")) * 100 / size(resources.deployment.status.pods)'
   )
 };
 ```
 
 ### Template Expressions
 
-For string interpolation with multiple values:
+For string interpolation, prefer JavaScript template literals:
 
 ```typescript
 const statusMappings = {
-  // Simple template
-  url: Cel.template('https://%s', service.status.loadBalancer.ingress[0].hostname),
+  // ✅ Recommended: JavaScript template literals
+  url: `https://${resources.service.status.loadBalancer.ingress[0].hostname}`,
+  connectionString: `postgresql://${resources.database.status.podIP}:${resources.dbService.spec.ports[0].port}/myapp`,
+  healthUrl: `http://${resources.service.spec.clusterIP}:${resources.service.spec.ports[0].port}/health?ready=${resources.deployment.status.readyReplicas > 0}`,
   
-  // Multiple placeholders
-  connectionString: Cel.template(
-    'postgresql://%s:%d/%s',
-    database.status.podIP,
-    dbService.spec.ports[0].port,
-    'myapp'
-  ),
-  
-  // Complex template
-  healthUrl: Cel.template(
-    'http://%s:%d/health?ready=%s',
-    service.spec.clusterIP,
-    service.spec.ports[0].port,
-    deployment.status.readyReplicas > 0 ? 'true' : 'false'
+  // ✅ Use explicit CEL templates for complex formatting
+  formattedSummary: Cel.template(
+    'Deployment %{name} has %{ready}/%{total} pods ready (%{percent}%)',
+    {
+      name: resources.deployment.metadata.name,
+      ready: resources.deployment.status.readyReplicas,
+      total: resources.deployment.spec.replicas,
+      percent: Cel.expr('(readyReplicas * 100) / replicas')
+    }
   )
 };
 ```
 
-## CEL Expression Types
+## Advanced CEL Patterns
 
-### Conditional Expressions
+### When JavaScript Isn't Enough
+
+Use explicit CEL for patterns that can't be expressed in JavaScript:
 
 ```typescript
-// Simple conditional
-const phase = Cel.expr(
-  deployment.status.readyReplicas,
-  '> 0 ? "running" : "pending"'
+// ✅ JavaScript: Simple conditionals
+const phase = resources.deployment.status.readyReplicas > 0 ? 'running' : 'pending';
+
+const healthStatus = resources.deployment.status.readyReplicas > 0 && 
+                    resources.service.status.loadBalancer.ingress.length > 0 
+                    ? 'healthy' : 'unhealthy';
+
+const scalingStatus = resources.deployment.status.readyReplicas === 0 
+  ? 'stopped' 
+  : resources.deployment.status.readyReplicas < resources.deployment.spec.replicas 
+    ? 'scaling' 
+    : 'ready';
+
+// ✅ Explicit CEL: Complex list operations
+const healthyPods = Cel.filter(
+  resources.deployment.status.pods,
+  'item.status.phase == "Running" && item.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
 );
 
-// Complex conditional with multiple conditions
-const healthStatus = Cel.expr(
-  `${deployment.status.readyReplicas} > 0 && ${service.status.loadBalancer.ingress.length} > 0`,
-  '? "healthy" : "unhealthy"'
-);
-
-// Nested conditionals
-const scalingStatus = Cel.expr(
-  deployment.status.readyReplicas,
-  '== 0 ? "stopped" : ',
-  deployment.status.readyReplicas,
-  '< ',
-  deployment.spec.replicas,
-  '? "scaling" : "ready"'
+const podSummary = Cel.expr(
+  'size(pods.filter(p, p.status.phase == "Running")) + " of " + size(pods) + " pods ready"'
 );
 ```
 

@@ -1,14 +1,28 @@
 # CEL Expressions API
 
-The Common Expression Language (CEL) module provides a type-safe way to create dynamic expressions for status computation, resource references, and conditional logic in TypeKro resource graphs.
+Use explicit CEL expressions for advanced patterns that can't be expressed with JavaScript.
 
-## Overview
+## When to Use
 
-CEL expressions in TypeKro allow you to:
-- Reference values from other resources dynamically
-- Perform complex computations in status builders
-- Create conditional logic for resource configuration
-- Build string templates with interpolated values
+**Recommended**: JavaScript expressions for most cases:
+```typescript
+ready: resources.deployment.status.readyReplicas > 0,
+url: `https://${resources.service.status.clusterIP}`,
+phase: resources.deployment.status.readyReplicas > 0 ? 'running' : 'pending'
+```
+
+**Use explicit CEL for**:
+- Complex list operations (filter, map, reduce)
+- Advanced CEL functions not available in JavaScript
+
+## JavaScript vs Explicit CEL Comparison
+
+| Pattern | JavaScript (Recommended) | Explicit CEL (Escape Hatch) |
+|---------|---------------------------|------------------------------|
+| **Boolean logic** | `deployment.status.readyReplicas > 0` | `Cel.expr(deployment.status.readyReplicas, ' > 0')` |
+| **String templates** | `` `https://${service.status.clusterIP}` `` | `Cel.template('https://%s', service.status.clusterIP)` |
+| **Conditionals** | `env === 'prod' ? 'warn' : 'info'` | `Cel.conditional(env === 'prod', 'warn', 'info')` |
+| **Complex lists** | ❌ Not supported | `Cel.expr('size(pods.filter(p, p.ready))')` |
 
 ## Core Functions
 

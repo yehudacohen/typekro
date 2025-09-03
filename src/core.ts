@@ -150,6 +150,7 @@ export { createResource, getCurrentCompositionContext } from './factories/shared
 // =============================================================================
 export {
   arktypeToKroSchema,
+  containsKubernetesRefs,
   extractResourceReferences,
   generateCelReference,
   generateDeterministicResourceId,

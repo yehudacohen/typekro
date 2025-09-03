@@ -805,3 +805,241 @@ export class ContextRegistrationError extends TypeKroError {
     );
   }
 }
+/**
+ * Error thrown when JavaScript to CEL expression conversion fails
+ * Provides detailed context about the conversion failure with source mapping
+ */
+export class ConversionError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly originalExpression: string,
+    public readonly expressionType: 'javascript' | 'template-literal' | 'function-call' | 'member-access' | 'binary-operation' | 'conditional' | 'optional-chaining' | 'nullish-coalescing' | 'magic-assignable' | 'magic-assignable-shape' | 'unknown',
+    public readonly sourceLocation?: {
+      line: number;
+      column: number;
+      length: number;
+    },
+    public readonly context?: {
+      analysisContext: 'status' | 'resource' | 'condition' | 'readiness';
+      availableReferences?: string[];
+      schemaFields?: string[];
+    },
+    public readonly suggestions?: string[],
+    public readonly cause?: Error
+  ) {
+    super(message, 'CONVERSION_ERROR', {
+      originalExpression,
+      expressionType,
+      sourceLocation,
+      context,
+      suggestions,
+      cause: cause?.message,
+      stack: cause?.stack,
+    });
+    this.name = 'ConversionError';
+  }
+
+  /**
+   * Alias for originalExpression to maintain compatibility with tests
+   */
+  get expression(): string {
+    return this.originalExpression;
+  }
+
+  /**
+   * Create a conversion error for unsupported JavaScript syntax
+   */
+  static forUnsupportedSyntax(
+    originalExpression: string,
+    syntaxType: string,
+    sourceLocation?: { line: number; column: number; length: number },
+    suggestions?: string[]
+  ): ConversionError {
+    const message = `Unsupported JavaScript syntax in expression: ${syntaxType}\n  Expression: ${originalExpression}`;
+    
+    const defaultSuggestions = [
+      'Use supported JavaScript patterns (binary operators, member access, conditionals)',
+      'Consider using CEL expressions directly with Cel.expr() or Cel.template()',
+      'Check the documentation for supported expression patterns',
+    ];
+
+    return new ConversionError(
+      message,
+      originalExpression,
+      'javascript',
+      sourceLocation,
+      undefined,
+      suggestions || defaultSuggestions
+    );
+  }
+
+  /**
+   * Create a conversion error for KubernetesRef resolution failures
+   */
+  static forKubernetesRefResolution(
+    originalExpression: string,
+    kubernetesRefPath: string,
+    availableReferences: string[],
+    sourceLocation?: { line: number; column: number; length: number }
+  ): ConversionError {
+    const message = `Failed to resolve KubernetesRef in expression: ${kubernetesRefPath}\n  Expression: ${originalExpression}\n  Available references: ${availableReferences.join(', ')}`;
+    
+    const suggestions = [
+      `Check that the referenced resource '${kubernetesRefPath.split('.')[0]}' exists in your resource graph`,
+      'Verify the field path is correct for the referenced resource type',
+      'Ensure the resource is available in the current context (status builder, resource builder, etc.)',
+      'Use optional chaining (?.) if the field might not be available',
+    ];
+
+    return new ConversionError(
+      message,
+      originalExpression,
+      'member-access',
+      sourceLocation,
+      { analysisContext: 'status', availableReferences },
+      suggestions
+    );
+  }
+
+  /**
+   * Create a conversion error for template literal conversion failures
+   */
+  static forTemplateLiteral(
+    originalExpression: string,
+    templateParts: string[],
+    failedExpressionIndex: number,
+    sourceLocation?: { line: number; column: number; length: number },
+    cause?: Error
+  ): ConversionError {
+    const failedPart = templateParts[failedExpressionIndex] || 'unknown';
+    const message = `Failed to convert template literal expression\n  Template: ${originalExpression}\n  Failed part: ${failedPart}`;
+    
+    const suggestions = [
+      'Ensure all template expressions contain valid JavaScript syntax',
+      'Use simple expressions in template literals (avoid complex nested expressions)',
+      'Consider breaking complex templates into multiple CEL expressions',
+      'Use Cel.template() directly for complex string formatting',
+    ];
+
+    return new ConversionError(
+      message,
+      originalExpression,
+      'template-literal',
+      sourceLocation,
+      undefined,
+      suggestions,
+      cause
+    );
+  }
+
+  /**
+   * Create a conversion error for function call conversion failures
+   */
+  static forFunctionCall(
+    originalExpression: string,
+    functionName: string,
+    supportedMethods: string[],
+    sourceLocation?: { line: number; column: number; length: number }
+  ): ConversionError {
+    const message = `Unsupported function call in expression: ${functionName}\n  Expression: ${originalExpression}\n  Supported methods: ${supportedMethods.join(', ')}`;
+    
+    const suggestions = [
+      `Use one of the supported methods: ${supportedMethods.join(', ')}`,
+      'Consider using CEL expressions for complex operations',
+      'Check if the operation can be simplified to basic JavaScript patterns',
+      'Use Cel.expr() for custom CEL expressions if needed',
+    ];
+
+    return new ConversionError(
+      message,
+      originalExpression,
+      'function-call',
+      sourceLocation,
+      undefined,
+      suggestions
+    );
+  }
+
+  /**
+   * Create a conversion error for parsing failures
+   */
+  static forParsingFailure(
+    originalExpression: string,
+    parsingError: string,
+    sourceLocation?: { line: number; column: number; length: number },
+    cause?: Error
+  ): ConversionError {
+    const message = `Failed to parse JavaScript expression\n  Expression: ${originalExpression}\n  Parse error: ${parsingError}`;
+    
+    const suggestions = [
+      'Check for syntax errors in the JavaScript expression',
+      'Ensure proper bracket and parenthesis matching',
+      'Verify that all string literals are properly quoted',
+      'Use simpler expressions if the syntax is too complex',
+    ];
+
+    return new ConversionError(
+      message,
+      originalExpression,
+      'javascript',
+      sourceLocation,
+      undefined,
+      suggestions,
+      cause
+    );
+  }
+
+  /**
+   * Create a conversion error for context-specific failures
+   */
+  static forContextMismatch(
+    originalExpression: string,
+    currentContext: 'status' | 'resource' | 'condition' | 'readiness',
+    requiredContext: 'status' | 'resource' | 'condition' | 'readiness',
+    sourceLocation?: { line: number; column: number; length: number }
+  ): ConversionError {
+    const message = `Expression not valid in current context\n  Expression: ${originalExpression}\n  Current context: ${currentContext}\n  Required context: ${requiredContext}`;
+    
+    const suggestions = [
+      `Move this expression to a ${requiredContext} context`,
+      'Check that you are using the correct type of references for this context',
+      'Verify that the expression is in the right part of your resource graph definition',
+    ];
+
+    return new ConversionError(
+      message,
+      originalExpression,
+      'javascript',
+      sourceLocation,
+      { analysisContext: currentContext },
+      suggestions
+    );
+  }
+
+  /**
+   * Get a formatted error message with source location and suggestions
+   */
+  getFormattedMessage(): string {
+    let formatted = this.message;
+
+    if (this.sourceLocation) {
+      formatted += `\n  Location: Line ${this.sourceLocation.line}, Column ${this.sourceLocation.column}`;
+    }
+
+    if (this.context) {
+      formatted += `\n  Context: ${this.context.analysisContext}`;
+      if (this.context.availableReferences?.length) {
+        formatted += `\n  Available references: ${this.context.availableReferences.join(', ')}`;
+      }
+    }
+
+    if (this.suggestions?.length) {
+      formatted += `\n\nSuggestions:`;
+      this.suggestions.forEach((suggestion, index) => {
+        formatted += `\n  ${index + 1}. ${suggestion}`;
+      });
+    }
+
+    return formatted;
+  }
+}

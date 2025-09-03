@@ -75,19 +75,18 @@ const databaseComposition = kubernetesComposition(
         },
         // Use schema references for replica configuration
         readReplicas: {
-          replicaCount: Cel.expr<number>(spec.replicas, ' - 1'), // Primary + replicas
+          // ✨ JavaScript expression - automatically converted to CEL
+          replicaCount: spec.replicas - 1, // Primary + replicas
         },
       },
       id: 'postgres',
     });
 
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
-      ready: Cel.expr<boolean>(postgres.status.phase, ' == "Ready"'),
-      phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed'>(
-        postgres.status.phase, 
-        ' == "Ready" ? "Ready" : "Installing"'
-      ),
-      endpoint: Cel.template('%s-postgresql.databases.svc.cluster.local', spec.name),
+      ready: postgres.status.phase === 'Ready',
+      phase: postgres.status.phase === 'Ready' ? 'Ready' : 'Installing',
+      endpoint: `${spec.name}-postgresql.databases.svc.cluster.local`,
     };
   }
 );
@@ -131,11 +130,12 @@ const webAppComposition = kubernetesComposition(
     const _appConfig = ConfigMap({
       name: 'app-config',
       data: {
-        'database.host': Cel.template('%s-postgresql.default.svc.cluster.local', spec.name),
+        // ✨ JavaScript template literals - automatically converted to CEL
+        'database.host': `${spec.name}-postgresql.default.svc.cluster.local`,
         'database.port': '5432',
         'database.name': spec.name,
         'redis.enabled': spec.redis.enabled.toString(),
-        'redis.host': Cel.template('%s-redis-master.default.svc.cluster.local', spec.name),
+        'redis.host': `${spec.name}-redis-master.default.svc.cluster.local`,
         'app.domain': spec.domain,
       },
       id: 'appConfig',
@@ -219,23 +219,14 @@ const webAppComposition = kubernetesComposition(
       id: 'nginx',
     });
 
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
-      ready: Cel.expr<boolean>(
-        database.status.phase,
-        ' == "Ready" && ',
-        redis.status.phase,
-        ' == "Ready" && ',
-        nginx.status.phase,
-        ' == "Ready"'
-      ),
-      databaseReady: Cel.expr<boolean>(database.status.phase, ' == "Ready"'),
-      redisReady: Cel.expr<boolean>(
-        spec.redis.enabled,
-        ' ? ',
-        redis.status.phase,
-        ' == "Ready" : true'
-      ),
-      url: Cel.template('https://%s', spec.domain),
+      ready: database.status.phase === 'Ready' && 
+             redis.status.phase === 'Ready' && 
+             nginx.status.phase === 'Ready',
+      databaseReady: database.status.phase === 'Ready',
+      redisReady: spec.redis.enabled ? redis.status.phase === 'Ready' : true,
+      url: `https://${spec.domain}`,
     };
   }
 );
@@ -322,14 +313,11 @@ const monitoringComposition = kubernetesComposition(
     });
 
     return {
-      prometheusReady: Cel.expr<boolean>(monitoring.status.phase, ' == "Ready"'),
-      grafanaReady: Cel.expr<boolean>(monitoring.status.phase, ' == "Ready"'),
-      alertmanagerReady: Cel.expr<boolean>(
-        spec.alertingEnabled,
-        ' ? ',
-        monitoring.status.phase,
-        ' == "Ready" : true'
-      ),
+      prometheusReady: monitoring.status.phase === 'Ready', // ✨ Natural JavaScript expression
+      grafanaReady: monitoring.status.phase === 'Ready', // ✨ Natural JavaScript expression
+      alertmanagerReady: spec.alertingEnabled 
+        ? monitoring.status.phase === 'Ready' 
+        : true, // ✨ Natural JavaScript conditional expression
     };
   }
 );

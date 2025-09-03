@@ -6,8 +6,8 @@ A complete stack with PostgreSQL database and web application.
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel simple, Cel } from 'typekro';
-import { Deployment, Service } from 'typekro/simple'; import { Deployment, Service } from 'typekro/simple';
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service, ConfigMap } from 'typekro/simple';
 
 const FullStackSpec = type({
   name: 'string',
@@ -24,7 +24,7 @@ const FullStackStatus = type({
   url: 'string'
 });
 
-export const fullStack = kubernetesComposition({
+export const fullStack = kubernetesComposition(
   {
     name: 'fullstack-app',
     apiVersion: 'example.com/v1alpha1',
@@ -34,8 +34,8 @@ export const fullStack = kubernetesComposition({
   },
   (schema) => ({
     // Database configuration
-    dbConfig: simple({
-      name: Cel.template('%s-db-config', schema.spec.name),
+    dbConfig: ConfigMap({
+      name: `${schema.spec.name}-db-config`,
       data: {
         POSTGRES_DB: schema.spec.name,
         POSTGRES_USER: 'app'
@@ -44,7 +44,7 @@ export const fullStack = kubernetesComposition({
 
     // Database deployment
     database: Deployment({
-      name: Cel.template('%s-db', schema.spec.name),
+      name: `${schema.spec.name}-db`,
       image: 'postgres:15',
       env: {
         POSTGRES_DB: schema.spec.name,
@@ -59,8 +59,8 @@ export const fullStack = kubernetesComposition({
 
     // Database service
     dbService: Service({
-      name: Cel.template('%s-db-service', schema.spec.name),
-      selector: { app: Cel.template('%s-db', schema.spec.name) },
+      name: `${schema.spec.name}-db-service`,
+      selector: { app: `${schema.spec.name}-db` },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
 
@@ -70,7 +70,7 @@ export const fullStack = kubernetesComposition({
       image: schema.spec.appImage,
       replicas: schema.spec.replicas,
       env: {
-        DATABASE_HOST: Cel.template('%s-db-service', schema.spec.name),
+        DATABASE_HOST: `${schema.spec.name}-db-service`,
         DATABASE_PORT: '5432',
         DATABASE_NAME: schema.spec.name,
         NODE_ENV: schema.spec.environment
@@ -80,25 +80,21 @@ export const fullStack = kubernetesComposition({
 
     // Application service
     appService: Service({
-      name: Cel.template('%s-service', schema.spec.name),
+      name: `${schema.spec.name}-service`,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       type: 'LoadBalancer'
     })
   }),
+  // Status builder using JavaScript expressions
   (schema, resources) => ({
-    phase: Cel.expr<'pending' | 'ready' | 'failed'>(`
-      resources.database.status.readyReplicas > 0 && 
-      resources.app.status.readyReplicas > 0 ? "ready" : "pending"
-    `),
-    databaseReady: Cel.expr<boolean>(resources.database.status.readyReplicas, ' > 0'),
-    appReady: Cel.expr<boolean>(resources.app.status.readyReplicas, ' >= ', schema.spec.replicas),
-    url: Cel.expr<string>(
-      resources.appService.status.loadBalancer.ingress,
-      '.size() > 0 ? "http://" + ',
-      resources.appService.status.loadBalancer.ingress[0].ip,
-      ': "pending"'
-    )
+    phase: resources.database.status.readyReplicas > 0 && 
+           resources.app.status.readyReplicas > 0 ? 'ready' : 'pending',
+    databaseReady: resources.database.status.readyReplicas > 0,
+    appReady: resources.app.status.readyReplicas >= schema.spec.replicas,
+    url: resources.appService.status.loadBalancer.ingress?.length > 0 
+      ? `http://${resources.appService.status.loadBalancer.ingress[0].ip}` 
+      : 'pending'
   })
 );
 ```

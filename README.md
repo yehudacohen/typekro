@@ -68,10 +68,10 @@ const deploymentService = kubernetesComposition(
       ports: [{ port: 80, targetPort: 80 }]
     });
 
-    // Return status with CEL expressions and resource references
+    // Return status with JavaScript expressions - automatically converted to CEL
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-      url: Cel.template('http://%s.%s.svc', spec.name, spec.environment)
+      ready: deployment.status.readyReplicas > 0,  // ← Natural JavaScript
+      url: `http://${spec.name}.${spec.environment}.svc`  // ← Template literals
     };
   }
 );
@@ -86,6 +86,7 @@ await deploymentService.factory('direct').deploy({
 **Key Features Demonstrated:**
 - **Full IDE autocomplete** - IntelliSense for all properties
 - **Compile-time type checking** - Catch errors before deployment
+- **JavaScript-to-CEL conversion** - Write natural JavaScript, get CEL automatically
 - **Runtime validation** - ArkType validates deployment specs
 - **Zero YAML required** - Pure TypeScript infrastructure
 - **Instant deployment** - No kubectl, no YAML files

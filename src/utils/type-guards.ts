@@ -17,13 +17,19 @@ import type { CelExpression, KubernetesRef, ResourceReference } from '../core/ty
  * Note: At runtime, these are the objects created by the proxy.
  */
 export function isKubernetesRef(obj: unknown): obj is KubernetesRef<unknown> {
-  // A KubernetesRef is an object that has our specific brand property.
+  // A KubernetesRef is an object that has our specific brand property set to true
+  // and has the required resourceId and fieldPath properties.
   // We check for the function type as well, since our ref factory is a proxy around a function.
   // Note: We access the property directly since it's defined as non-enumerable
   return (
     (typeof obj === 'object' || typeof obj === 'function') &&
     obj !== null &&
-    KUBERNETES_REF_BRAND in obj
+    KUBERNETES_REF_BRAND in obj &&
+    (obj as any)[KUBERNETES_REF_BRAND] === true &&
+    'resourceId' in obj &&
+    'fieldPath' in obj &&
+    typeof (obj as any).resourceId === 'string' &&
+    typeof (obj as any).fieldPath === 'string'
   );
 }
 
@@ -55,6 +61,27 @@ export function isMixedTemplate(
   return Boolean(
     value && typeof value === 'object' && value !== null && MIXED_TEMPLATE_BRAND in value
   );
+}
+
+/**
+ * Check if a value contains any KubernetesRef objects (from magic proxy system).
+ * This is used by the JavaScript to CEL analyzer to determine if an expression
+ * needs conversion.
+ */
+export function containsKubernetesRefs(value: unknown): boolean {
+  if (isKubernetesRef(value)) {
+    return true;
+  }
+  
+  if (Array.isArray(value)) {
+    return value.some(item => containsKubernetesRefs(item));
+  }
+  
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(val => containsKubernetesRefs(val));
+  }
+  
+  return false;
 }
 
 /**

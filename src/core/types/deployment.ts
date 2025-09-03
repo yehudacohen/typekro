@@ -346,6 +346,12 @@ export interface FactoryOptions {
     /** Enable verbose mode with additional diagnostic information (default: false) */
     verboseMode?: boolean;
   };
+
+  // Factory pattern integration for expression handling
+  /** Factory type for expression analysis and conversion */
+  factoryType?: 'direct' | 'kro';
+  /** Pre-analyzed status mappings for factory-specific handling */
+  statusMappings?: Record<string, any>;
 }
 
 // Type mapping for factory selection

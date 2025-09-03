@@ -8,7 +8,7 @@ export const tutorialSteps: TutorialStep[] = [
     codeExample: {
       language: 'typescript',
       code: `import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
 const webApp = kubernetesComposition(
@@ -37,19 +37,15 @@ const webApp = kubernetesComposition(
     });
     
     const service = Service({
-      name: Cel.template('%s-service', spec.name),
+      name: \`\${spec.name}-service\`,
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
     });
 
-    // Return status with CEL expressions
+    // ✨ Natural JavaScript - automatically converted to CEL
     return {
-      ready: Cel.expr<boolean>(
-        deployment.status.readyReplicas, ' > 0'
-      ),
-      url: Cel.template('http://%s', 
-        service.status.clusterIP
-      ),
+      ready: deployment.status.readyReplicas > 0,
+      url: \`http://\${service.status.clusterIP}\`,
       replicas: deployment.status.readyReplicas
     };
   }
@@ -65,12 +61,12 @@ await factory.deploy({
       highlights: [
         'Imperative composition',
         'Auto-registration',
-        'CEL expressions',
+        'JavaScript expressions',
         'Direct deployment',
       ],
     },
     explanation:
-      'This is what modern Kubernetes configuration should feel like. Write infrastructure code naturally with imperative composition - resources auto-register when created, and you return status directly.',
+      'This is what modern Kubernetes configuration should feel like. Write infrastructure code naturally with imperative composition - resources auto-register when created, and you return status using familiar JavaScript expressions that are automatically converted to CEL.',
     nextSteps: [
       {
         text: 'Try TypeKro Now',
@@ -151,7 +147,7 @@ writeFileSync('k8s/webapp-instance.yaml', instanceYaml);`,
       language: 'typescript',
       code: `import alchemy from 'alchemy';
 import { Bucket, Function as Lambda } from 'alchemy/aws';
-import { kubernetesComposition, type, Cel } from 'typekro';
+import { kubernetesComposition, type } from 'typekro';
 import { Deployment } from 'typekro/simple';
 
 const app = await alchemy('cloud-native-app');
@@ -185,7 +181,8 @@ await app.run(async () => {
       });
 
       return {
-        ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
+        // ✨ JavaScript expressions automatically converted to CEL
+        ready: app.status.readyReplicas > 0
       };
     }
   );
@@ -279,7 +276,7 @@ const invalidSpec = WebAppSpec({
     codeExample: {
       language: 'typescript',
       code: `import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
 // Reusable database composition
@@ -299,13 +296,14 @@ const database = kubernetesComposition(
     });
 
     const service = Service({
-      name: Cel.template('%s-service', spec.name),
+      name: \`\${spec.name}-service\`,
       selector: { app: spec.name },
       ports: [{ port: 5432, targetPort: 5432 }]
     });
 
     return {
-      ready: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0'),
+      // ✨ JavaScript expressions automatically converted to CEL
+      ready: postgres.status.readyReplicas > 0,
       host: service.status.clusterIP
     };
   }
@@ -323,7 +321,7 @@ const fullStack = kubernetesComposition(
   (spec) => {
     // Nest the database composition - resources automatically merge
     const db = database({
-      name: Cel.template('%s-db', spec.appName),
+      name: \`\${spec.appName}-db\`,
       image: spec.dbImage
     });
 
@@ -336,13 +334,9 @@ const fullStack = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(
-        db.status.ready, ' && ', 
-        app.status.readyReplicas, ' > 0'
-      ),
-      appReady: Cel.expr<boolean>(
-        app.status.readyReplicas, ' > 0'
-      ),
+      // ✨ JavaScript expressions automatically converted to CEL
+      ready: db.status.ready && app.status.readyReplicas > 0,
+      appReady: app.status.readyReplicas > 0,
       dbReady: db.status.ready
     };
   }

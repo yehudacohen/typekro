@@ -82,7 +82,8 @@ const webApp = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.app.status.readyReplicas, ' > 0')
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.app.status.readyReplicas > 0
   })
 );
 ```
@@ -163,7 +164,8 @@ const dataProcessing = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    completed: Cel.expr(resources.job.status.succeeded, ' >= 1')
+    // ✨ JavaScript expressions automatically converted to CEL
+    completed: resources.job.status.succeeded >= 1
   })
 );
 ```
@@ -243,7 +245,8 @@ const database = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.statefulSet.status.readyReplicas, ' >= ', schema.spec.replicas)
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.statefulSet.status.readyReplicas >= schema.spec.replicas
   })
 );
 ```
@@ -321,7 +324,8 @@ const backupSystem = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    lastBackup: Cel.expr('string(', resources.cronJob.status.lastScheduleTime, ')')
+    // ✨ JavaScript expressions automatically converted to CEL
+    lastBackup: resources.cronJob.status.lastScheduleTime?.toString() || 'never'
   })
 );
 ```
@@ -406,7 +410,8 @@ const loggingAgent = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.agent.status.numberReady, ' > 0')
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.agent.status.numberReady > 0
   })
 );
 ```
@@ -537,28 +542,14 @@ const scalableApp = createResourceGraph('scalable-app', (schema) => {
   return {
     deployment: app,
     status: {
-      // Computed health status
-      health: Cel.conditional(
-        Cel.expr(app.status.readyReplicas, ' >= ', app.spec.replicas),
-        'healthy',
-        'degraded'
-      ),
+      // ✨ Computed health status using JavaScript expressions
+      health: app.status.readyReplicas >= app.spec.replicas ? 'healthy' : 'degraded',
       
       // Availability percentage
-      availability: Cel.expr(
-        '(', app.status.readyReplicas, ' * 100) / ', app.spec.replicas
-      ),
+      availability: (app.status.readyReplicas * 100) / app.spec.replicas,
       
-      // Status summary
-      summary: Cel.template(
-        'Deployment %{name}: %{ready}/%{desired} replicas ready (%{percent}%)',
-        {
-          name: app.metadata.name,
-          ready: app.status.readyReplicas,
-          desired: app.spec.replicas,
-          percent: Cel.expr('(', app.status.readyReplicas, ' * 100) / ', app.spec.replicas)
-        }
-      )
+      // Status summary using template literals
+      summary: `Deployment ${app.metadata.name}: ${app.status.readyReplicas}/${app.spec.replicas} replicas ready (${(app.status.readyReplicas * 100) / app.spec.replicas}%)`
     }
   };
 });

@@ -74,7 +74,8 @@ const webService = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0')
+    // ✨ Natural JavaScript expression - automatically converted to CEL
+    ready: resources.deployment.status.readyReplicas > 0
   })
 );
 ```
@@ -168,7 +169,8 @@ const webIngress = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    url: Cel.template('http://%s', schema.spec.host)
+    // ✨ Natural JavaScript template literal - automatically converted to CEL
+    url: `http://${schema.spec.host}`
   })
 );
 ```

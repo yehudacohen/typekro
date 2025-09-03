@@ -102,7 +102,7 @@ export function helmRelease(
         .toLowerCase() || 'helm-repo';
   }
 
-  return createResource({
+  return createResource<HelmReleaseSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
     kind: 'HelmRelease',
@@ -124,11 +124,6 @@ export function helmRelease(
         },
       },
       ...(config.values && { values: config.values }),
-    },
-    status: {
-      phase: 'Pending' as const,
-      revision: undefined,
-      lastDeployed: undefined,
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator);
 }

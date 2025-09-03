@@ -17,7 +17,7 @@ First, define what your application needs using TypeKro's schema system:
 ```typescript
 // first-app.ts
 import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
 // Define your app's input parameters
@@ -71,10 +71,10 @@ export const firstApp = kubernetesComposition(
       ports: [{ port: 80, targetPort: 80 }]
     });
 
-    // Return dynamic status based on actual cluster state
+    // ✨ Return dynamic status using natural JavaScript expressions
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-      url: Cel.template('http://%s:80', service.status.clusterIP),
+      ready: deployment.status.readyReplicas > 0,
+      url: `http://${service.status.clusterIP}:80`,
       readyReplicas: deployment.status.readyReplicas
     };
   }

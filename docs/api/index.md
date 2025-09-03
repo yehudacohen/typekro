@@ -32,10 +32,16 @@ import { Deployment, Secret } from 'typekro/simple';
 Common Expression Language integration for dynamic field evaluation. See the [CEL Expressions Guide](../guide/cel-expressions.md) for detailed documentation.
 
 ```typescript
-import { Cel } from 'typekro';
+// ✨ Natural JavaScript expressions (automatically converted to CEL)
+const ready = deployment.status.readyReplicas > 0;
+const url = `https://${service.status.loadBalancer.ingress[0].hostname}/api`;
 
-const ready = Cel.expr(deployment.status.readyReplicas, '> 0');
-const url = Cel.template('https://%s/api', service.status.loadBalancer.ingress[0].hostname);
+// ✨ Natural JavaScript expressions are automatically converted to CEL
+const ready = deployment.status.readyReplicas > 0;
+
+// For advanced cases, explicit CEL is still available as an escape hatch
+import { Cel } from 'typekro';
+const complexExpr = Cel.expr('size(deployments.filter(d, d.status.phase == "Running"))');
 ```
 
 ## Factory Functions by Category
@@ -110,10 +116,10 @@ const app = Deployment({
   env: { DB_HOST: database.status.podIP }
 });
 
-// CEL expressions
+// ✨ JavaScript expressions (automatically converted to CEL)
 const status = {
-  ready: Cel.expr(deployment.status.readyReplicas, '> 0'),
-  url: Cel.template('https://%s', ingress.status.loadBalancer.ingress[0].hostname)
+  ready: deployment.status.readyReplicas > 0,
+  url: `https://${ingress.status.loadBalancer.ingress[0].hostname}`
 };
 
 // Factory deployment

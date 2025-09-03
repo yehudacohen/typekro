@@ -35,7 +35,7 @@ export default {
     const highlightedCode = ref('');
 
     const codeExample = `import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
 const webapp = kubernetesComposition(
@@ -60,7 +60,8 @@ const webapp = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0')
+      // ✨ Natural JavaScript - automatically converted to CEL
+      ready: deployment.status.readyReplicas > 0
     };  
   }
 );

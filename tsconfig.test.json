@@ -5,7 +5,15 @@
     "noEmit": true,
     "rootDir": ".",
     "skipLibCheck": true,
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "noImplicitReturns": true,
+    "noImplicitThis": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
   },
   "include": ["test/**/*", "src/**/*"],
   "exclude": ["node_modules/**/*", "dist", "examples", "**/node_modules/**/*"]

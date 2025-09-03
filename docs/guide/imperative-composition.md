@@ -18,7 +18,7 @@ The `kubernetesComposition` function allows you to write intuitive, imperative c
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service, Pvc } from 'typekro/simple';
 
 const WebAppSpec = type({
@@ -53,10 +53,10 @@ const webApp = kubernetesComposition(
       selector: { app: spec.name },
     });
 
-    // Return status with CEL expressions and resource references
+    // ✨ Return status with natural JavaScript expressions
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-      url: Cel.template('http://%s', service.status.loadBalancer.ingress[0].ip),
+      ready: deployment.status.readyReplicas > 0,
+      url: `http://${service.status.loadBalancer.ingress[0].ip}`,
     };
   }
 );
@@ -80,8 +80,9 @@ const webapp = kubernetesComposition(
     const service = Service({ name: spec.name });
     
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-      url: Cel.template('http://%s', service.status.loadBalancer.ingress[0].ip),
+      // ✨ Natural JavaScript expressions
+      ready: deployment.status.readyReplicas > 0,
+      url: `http://${service.status.loadBalancer.ingress[0].ip}`,
     };
   }
 );
@@ -97,8 +98,9 @@ const webapp = toResourceGraph(
     service: Service({ name: schema.spec.name }),
   }),
   (schema, resources) => ({
-    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
-    url: Cel.template('http://%s', resources.service.status.loadBalancer.ingress[0].ip),
+    // ✨ Natural JavaScript expressions work here too
+    ready: resources.deployment.status.readyReplicas > 0,
+    url: `http://${resources.service.status.loadBalancer.ingress[0].ip}`,
   })
 );
 ```
@@ -123,30 +125,27 @@ const complexApp = kubernetesComposition(definition, (spec) => {
   const frontend = Deployment({ name: 'frontend', image: spec.frontendImage });
 
   return {
-    phase: Cel.expr<string>(
-      database.status.readyReplicas, ' > 0 && ',
-      api.status.readyReplicas, ' > 0 && ',
-      frontend.status.readyReplicas, ' > 0 ? "Ready" : "Pending"'
-    ),
+    // ✨ Complex JavaScript expressions work seamlessly
+    phase: database.status.readyReplicas > 0 && 
+           api.status.readyReplicas > 0 && 
+           frontend.status.readyReplicas > 0 ? "Ready" : "Pending",
     services: {
       database: {
-        ready: Cel.expr<boolean>(database.status.readyReplicas, ' > 0'),
+        ready: database.status.readyReplicas > 0,
         replicas: database.status.readyReplicas,
       },
       api: {
-        ready: Cel.expr<boolean>(api.status.readyReplicas, ' == ', spec.apiReplicas),
+        ready: api.status.readyReplicas === spec.apiReplicas,
         replicas: api.status.readyReplicas,
       },
       frontend: {
-        ready: Cel.expr<boolean>(frontend.status.readyReplicas, ' == ', spec.frontendReplicas),
+        ready: frontend.status.readyReplicas === spec.frontendReplicas,
         replicas: frontend.status.readyReplicas,
       },
     },
-    totalReplicas: Cel.expr<number>(
-      database.status.readyReplicas, ' + ',
-      api.status.readyReplicas, ' + ',
-      frontend.status.readyReplicas
-    ),
+    totalReplicas: database.status.readyReplicas + 
+                   api.status.readyReplicas + 
+                   frontend.status.readyReplicas,
   };
 });
 ```
@@ -157,12 +156,12 @@ const complexApp = kubernetesComposition(definition, (spec) => {
 // Individual compositions
 const database = kubernetesComposition(dbDefinition, (spec) => {
   const postgres = Deployment({ name: 'postgres', image: spec.image });
-  return { ready: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0') };
+  return { ready: postgres.status.readyReplicas > 0 };
 });
 
 const api = kubernetesComposition(apiDefinition, (spec) => {
   const deployment = Deployment({ name: 'api', image: spec.image });
-  return { ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0') };
+  return { ready: deployment.status.readyReplicas > 0 };
 });
 
 // Composed composition
@@ -172,7 +171,8 @@ const fullStack = kubernetesComposition(fullStackDefinition, (spec) => {
   const apiService = api;
   
   return {
-    ready: Cel.expr<boolean>(db.status.ready, ' && ', apiService.status.ready),
+    // ✨ JavaScript expressions work across compositions
+    ready: db.status.ready && apiService.status.ready,
     components: {
       database: db.status.ready,
       api: apiService.status.ready,
@@ -186,7 +186,7 @@ const fullStack = kubernetesComposition(fullStackDefinition, (spec) => {
 ```typescript
 const configApp = kubernetesComposition(definition, (spec) => {
   // Create configuration first
-  const config = simple({
+  const config = ConfigMap({
     name: `${spec.name}-config`,
     data: {
       'database.url': spec.databaseUrl,
@@ -206,7 +206,8 @@ const configApp = kubernetesComposition(definition, (spec) => {
   });
 
   return {
-    ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+    // ✨ JavaScript expressions with fallbacks
+    ready: deployment.status.readyReplicas > 0,
     configVersion: config.metadata.resourceVersion || 'unknown',
   };
 });
@@ -214,10 +215,17 @@ const configApp = kubernetesComposition(definition, (spec) => {
 
 ## Status Building Guidelines
 
-### Use CEL Expressions for Dynamic Logic
+### Use JavaScript Expressions for Dynamic Logic
 
 ```typescript
-// ✅ Good - Use CEL for dynamic expressions
+// ✅ Recommended - Natural JavaScript expressions (automatically converted to CEL)
+return {
+  ready: deployment.status.readyReplicas > 0,
+  phase: deployment.status.readyReplicas > 0 ? "Ready" : "Pending",
+  url: `https://${spec.hostname}/api`,
+};
+
+// ✅ Also works - Explicit CEL expressions for complex cases
 return {
   ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
   phase: Cel.expr<string>(
@@ -225,16 +233,9 @@ return {
   ),
   url: Cel.template('https://%s/api', spec.hostname),
 };
-
-// ❌ Avoid - JavaScript expressions don't serialize to CEL
-return {
-  ready: deployment.status.readyReplicas > 0, // Won't work in Kro
-  phase: deployment.status.readyReplicas > 0 ? "Ready" : "Pending", // Won't work
-  url: `https://${spec.hostname}/api`, // Won't work
-};
 ```
 
-### Mix Literal Values and CEL Expressions
+### Mix Literal Values and JavaScript Expressions
 
 ```typescript
 return {
@@ -242,9 +243,9 @@ return {
   version: '1.0.0',
   environment: spec.environment,
   
-  // CEL expressions for dynamic values
-  ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-  endpoint: Cel.template('https://%s', service.status.loadBalancer.ingress[0].ip),
+  // ✨ JavaScript expressions for dynamic values (automatically converted to CEL)
+  ready: deployment.status.readyReplicas > 0,
+  endpoint: `https://${service.status.loadBalancer.ingress[0].ip}`,
   
   // Resource references work directly
   replicas: deployment.status.readyReplicas,
@@ -391,25 +392,25 @@ const composition = kubernetesComposition(definition, (spec) => {
   const db = Deployment({ /* ... */ });
   
   return {
-    // High-level status
-    ready: Cel.expr<boolean>(web.status.readyReplicas, ' > 0 && ', db.status.readyReplicas, ' > 0'),
-    phase: Cel.expr<string>(/* ... */),
+    // ✨ High-level status with JavaScript expressions
+    ready: web.status.readyReplicas > 0 && db.status.readyReplicas > 0,
+    phase: web.status.readyReplicas > 0 && db.status.readyReplicas > 0 ? 'Ready' : 'Pending',
     
     // Detailed component status
     components: {
       web: {
-        ready: Cel.expr<boolean>(web.status.readyReplicas, ' > 0'),
+        ready: web.status.readyReplicas > 0,
         replicas: web.status.readyReplicas,
       },
       database: {
-        ready: Cel.expr<boolean>(db.status.readyReplicas, ' > 0'),
+        ready: db.status.readyReplicas > 0,
         replicas: db.status.readyReplicas,
       },
     },
     
     // Computed metrics
     metrics: {
-      totalReplicas: Cel.expr<number>(web.status.readyReplicas, ' + ', db.status.readyReplicas),
+      totalReplicas: web.status.readyReplicas + db.status.readyReplicas,
     },
   };
 });
@@ -428,7 +429,8 @@ const composition = kubernetesComposition(definition, (spec) => {
     name: 'api',
     image: spec.apiImage,
     env: {
-      DATABASE_URL: Cel.template('postgres://user:pass@%s:5432/app', databaseService.metadata.name),
+      // ✨ JavaScript template literals work seamlessly
+      DATABASE_URL: `postgres://user:pass@${databaseService.metadata.name}:5432/app`,
     },
   });
   

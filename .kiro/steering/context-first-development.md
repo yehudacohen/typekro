@@ -6,6 +6,11 @@ Before making any changes to existing code, always understand the broader contex
 
 ## Rules for Context-First Development
 
+### File Management
+- **ALWAYS use `rm` command in shell for file deletion** - Never use file tools to delete files. Use `executeBash` with `rm` command so the user can approve deletions.
+- Clean up temporary debug files after use
+- Ask for approval before deleting files that might contain important information
+
 ### ❌ NEVER Assume Something is Wrong Without Investigation
 ```typescript
 // BAD - Immediately "fixing" what looks wrong

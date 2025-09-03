@@ -554,20 +554,21 @@ providers:
     };
   },
   
-  // StatusBuilder function - monitoring stack status using CEL expressions
+  // StatusBuilder function - monitoring stack status using JavaScript expressions
   (schema, resources) => ({
-    prometheusReady: Cel.expr<boolean>(resources.prometheus.status.readyReplicas, ' >= 1'),
-    grafanaReady: Cel.expr<boolean>(resources.grafana.status.readyReplicas, ' >= 1'),
-    alertManagerReady: Cel.expr<boolean>(resources.alertManager.status.readyReplicas, ' >= 1'),
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
+    prometheusReady: resources.prometheus.status.readyReplicas >= 1,
+    grafanaReady: resources.grafana.status.readyReplicas >= 1,
+    alertManagerReady: resources.alertManager.status.readyReplicas >= 1,
     targetsDiscovered: schema.spec.targets.length,
-    alertsActive: Cel.expr<number>`0`, // Would be populated from Prometheus API in real implementation
-    healthStatus: Cel.expr<'healthy' | 'degraded' | 'unhealthy'>(
-      resources.prometheus.status.readyReplicas, ' >= 1 && ',
-      resources.grafana.status.readyReplicas, ' >= 1 && ',
-      resources.alertManager.status.readyReplicas, ' >= 1',
-      ' ? "healthy" : (',
-      resources.prometheus.status.readyReplicas, ' >= 1 ? "degraded" : "unhealthy")'
-    )
+    alertsActive: 0, // Would be populated from Prometheus API in real implementation
+    healthStatus: (resources.prometheus.status.readyReplicas >= 1 && 
+                   resources.grafana.status.readyReplicas >= 1 && 
+                   resources.alertManager.status.readyReplicas >= 1)
+      ? 'healthy' 
+      : resources.prometheus.status.readyReplicas >= 1 
+        ? 'degraded' 
+        : 'unhealthy'
   })
 );
 ```
