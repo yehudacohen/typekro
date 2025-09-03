@@ -41,8 +41,9 @@ export const helmApp = kubernetesComposition({
   }),
   (schema, resources) => ({
     phase: resources.release.status.phase,
-    ready: Cel.expr<boolean>(resources.release.status.phase, ' == "Ready"'),
-    url: Cel.template('https://%s', schema.spec.hostname)
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
+    ready: resources.release.status.phase === 'Ready',
+    url: `https://${schema.spec.hostname}`
   })
 );
 ```
@@ -63,7 +64,7 @@ export const helmStack = kubernetesComposition({
   (schema) => ({
     // Database chart
     database: helmRelease({
-      name: Cel.template('%s-db', schema.spec.name),
+      name: `${schema.spec.name}-db`, // ✨ Natural JavaScript template literal
       chart: {
         repository: 'https://charts.bitnami.com/bitnami',
         name: 'postgresql'
@@ -85,7 +86,7 @@ export const helmStack = kubernetesComposition({
       },
       values: {
         database: {
-          host: Cel.template('%s-db-postgresql', schema.spec.name),
+          host: `${schema.spec.name}-db-postgresql`, // ✨ Natural JavaScript template literal
           port: 5432
         },
         environment: schema.spec.environment
@@ -93,10 +94,9 @@ export const helmStack = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr<boolean>(`
-      resources.database.status.phase == "Ready" && 
-      resources.app.status.phase == "Ready"
-    `)
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
+    ready: resources.database.status.phase === 'Ready' && 
+           resources.app.status.phase === 'Ready'
   })
 );
 ```

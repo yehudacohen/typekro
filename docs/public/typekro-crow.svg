@@ -1,4 +1,4 @@
-<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<svg width="64" height="64" viewBox="0 0 64 80" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <!-- Gradients for navy blue/green crow -->
     <linearGradient id="bodyGradient" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -55,32 +55,32 @@
   <ellipse cx="26" cy="30" rx="2.5" ry="3" fill="url(#wingGradient)" transform="rotate(-12 26 30)"/>
   <ellipse cx="38" cy="30" rx="2.5" ry="3" fill="url(#wingGradient)" transform="rotate(12 38 30)"/>
   
-  <!-- Tail feathers -->
-  <ellipse cx="32" cy="47" rx="4" ry="6" fill="url(#wingGradient)"/>
-  <ellipse cx="30" cy="49" rx="2.5" ry="4" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(-8 30 49)"/>
-  <ellipse cx="34" cy="49" rx="2.5" ry="4" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(8 34 49)"/>
+  <!-- Tail feathers - tapering into body -->
+  <ellipse cx="32" cy="55" rx="4" ry="18" fill="url(#wingGradient)"/>
+  <ellipse cx="29" cy="53" rx="2.5" ry="12" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(-12 29 53)"/>
+  <ellipse cx="35" cy="53" rx="2.5" ry="12" fill="url(#bodyGradient)" opacity="0.8" transform="rotate(12 35 53)"/>
   
   <!-- Crow feet -->
-  <g transform="translate(29, 46)">
+  <g transform="translate(29, 51)">
     <line x1="0" y1="0" x2="-1.5" y2="2.5" stroke="#0891B2" stroke-width="1.2" stroke-linecap="round"/>
     <line x1="0" y1="0" x2="0" y2="3" stroke="#0891B2" stroke-width="1.2" stroke-linecap="round"/>
     <line x1="0" y1="0" x2="1.5" y2="2.5" stroke="#0891B2" stroke-width="1.2" stroke-linecap="round"/>
   </g>
   
-  <g transform="translate(35, 46)">
+  <g transform="translate(35, 51)">
     <line x1="0" y1="0" x2="-1.5" y2="2.5" stroke="#0891B2" stroke-width="1.2" stroke-linecap="round"/>
     <line x1="0" y1="0" x2="0" y2="3" stroke="#0891B2" stroke-width="1.2" stroke-linecap="round"/>
     <line x1="0" y1="0" x2="1.5" y2="2.5" stroke="#0891B2" stroke-width="1.2" stroke-linecap="round"/>
   </g>
   
-  <!-- Motion lines showing flight -->
+  <!-- Motion lines showing flight - vertical wing beats -->
   <g opacity="0.3" stroke="url(#wingGradient)" stroke-width="1.5" stroke-linecap="round" fill="none">
-    <path d="M14,45 Q18,47 22,49" />
-    <path d="M12,48 Q16,50 20,52" />
-    <path d="M42,49 Q46,47 50,45" />
-    <path d="M44,52 Q48,50 52,48" />
-    <path d="M26,50 Q30,52 34,54" />
-    <path d="M34,54 Q38,52 42,50" />
+    <path d="M15,30 Q17,34 15,38" />
+    <path d="M12,31 Q14,35 12,39" />
+    <path d="M49,30 Q47,34 49,38" />
+    <path d="M52,31 Q50,35 52,39" />
+    <path d="M24,32 Q26,36 24,40" />
+    <path d="M40,32 Q38,36 40,40" />
   </g>
   
   <!-- Wing feather details -->

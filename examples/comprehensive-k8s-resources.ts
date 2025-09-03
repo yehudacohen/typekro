@@ -906,10 +906,11 @@ const comprehensiveApp = kubernetesComposition(
     const _crd = appConfigCRD;
 
     // Return status (all resources auto-captured)
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
       totalResources: 31,
-      ready: Cel.expr<boolean>(`true`),
-      phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed'>(`"Ready"`),
+      ready: true,
+      phase: 'Ready' as const,
     };
   }
 );

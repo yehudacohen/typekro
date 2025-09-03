@@ -11,16 +11,14 @@ The `kubernetesComposition` API provides a structured way to create TypeKro reso
 ```typescript
 function kubernetesComposition<TSpec, TStatus>(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
-  resourceBuilder: (schema: EnhancedProxy<TSpec, TStatus>) => Record<string, any>,
-  statusBuilder: (schema: EnhancedProxy<TSpec, TStatus>, resources: any) => TStatus
+  compositionFunction: (spec: TSpec) => TStatus
 ): ResourceGraph<TSpec, TStatus>
 ```
 
 ### Parameters
 
 - **`definition`**: Resource graph definition containing metadata and schema
-- **`resourceBuilder`**: Function that creates and returns named resources
-- **`statusBuilder`**: Function that builds status from schema and resources
+- **`compositionFunction`**: Function that receives the spec and creates resources (auto-registered) and returns status
 
 ### Returns
 
@@ -30,7 +28,7 @@ A `ResourceGraph` instance that can be deployed or converted to YAML.
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
 const webApp = kubernetesComposition(
@@ -41,26 +39,28 @@ const webApp = kubernetesComposition(
     spec: type({ name: 'string', image: 'string', replicas: 'number' }),
     status: type({ ready: 'boolean', url: 'string' })
   },
-  // Resource builder: create named resources
-  (schema) => ({
-    deployment: Deployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
+  // Single composition function: creates resources (auto-registered) and returns status
+  (spec) => {
+    // Resources are automatically registered when created
+    const deployment = Deployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
       ports: [{ containerPort: 80 }]
-    }),
+    });
     
-    service: Service({
-      name: Cel.template('%s-service', schema.spec.name),
-      selector: { app: schema.spec.name },
+    const service = Service({
+      name: `${spec.name}-service`,
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }]
-    })
-  }),
-  // Status builder: compute status from resources
-  (schema, resources) => ({
-    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
-    url: Cel.template('http://%s', resources.service.status.clusterIP)
-  })
+    });
+
+    // ✨ Return status using natural JavaScript expressions - automatically converted to CEL
+    return {
+      ready: deployment.status.readyReplicas > 0,
+      url: `http://${service.status.clusterIP}`
+    };
+  }
 );
 ```
 

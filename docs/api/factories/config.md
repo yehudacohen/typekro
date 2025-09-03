@@ -60,7 +60,7 @@ const configuredApp = kubernetesComposition({
   (schema) => ({
     // Configuration from schema
     config: simple({
-      name: Cel.template('%s-config', schema.spec.name),
+      name: `${schema.spec.name}-config`,
       data: {
         // Direct schema references
         ENVIRONMENT: schema.spec.environment,

@@ -3,9 +3,9 @@
  */
 
 import { type } from 'arktype';
-// In production: import { kubernetesComposition, Cel } from 'typekro';
+// In production: import { kubernetesComposition } from 'typekro';
 // In production: import { Deployment, Service } from 'typekro/simple';
-import { kubernetesComposition, Cel } from '../src/index.js';
+import { kubernetesComposition } from '../src/index.js';
 import { Deployment, Service } from '../src/factories/simple/index.js';
 
 const webapp = kubernetesComposition(
@@ -29,8 +29,9 @@ const webapp = kubernetesComposition(
       ports: [{ port: 80 }]
     });
 
+    // ✨ Natural JavaScript expression - automatically converted to CEL
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0')
+      ready: deployment.status.readyReplicas > 0
     };
   }
 );

@@ -7,7 +7,7 @@
 
 import { type } from 'arktype';
 import { Deployment, Service, ConfigMap, Ingress } from '../src/factories/simple/index.js';
-import { Cel, kubernetesComposition } from '../src/index.js';
+import { kubernetesComposition } from '../src/index.js';
 
 // =============================================================================
 // Example 1: Simple Web Application
@@ -51,8 +51,9 @@ const simpleWebApp = kubernetesComposition(
     });
 
     // Return status - resources are auto-captured
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' == ', spec.replicas),
+      ready: deployment.status.readyReplicas === spec.replicas,
       replicas: deployment.status.readyReplicas,
       url: `https://${spec.hostname}`,
     };
@@ -113,7 +114,8 @@ const fullStackApp = kubernetesComposition(
       image: spec.appImage,
       replicas: spec.replicas,
       env: {
-        DATABASE_URL: Cel.template('postgres://app:secret@postgres-service:5432/%s', spec.dbName),
+        // ✨ JavaScript template literal - automatically converted to CEL
+        DATABASE_URL: `postgres://app:secret@postgres-service:5432/${spec.dbName}`,
       },
       id: 'app', // Required for schema references
     });
@@ -150,21 +152,15 @@ const fullStackApp = kubernetesComposition(
     });
 
     // Return status
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
-      phase: Cel.expr<string>(
-        postgres.status.readyReplicas,
-        ' > 0 && ',
-        app.status.readyReplicas,
-        ' > 0 ? "Ready" : "Pending"'
-      ),
-      databaseReady: Cel.expr<boolean>(postgres.status.readyReplicas, ' > 0'),
-      applicationReady: Cel.expr<boolean>(app.status.readyReplicas, ' == ', spec.replicas),
+      phase: postgres.status.readyReplicas > 0 && app.status.readyReplicas > 0 
+        ? 'Ready' 
+        : 'Pending',
+      databaseReady: postgres.status.readyReplicas > 0,
+      applicationReady: app.status.readyReplicas === spec.replicas,
       url: `https://${spec.hostname}`,
-      totalReplicas: Cel.expr<number>(
-        postgres.status.readyReplicas,
-        ' + ',
-        app.status.readyReplicas
-      ),
+      totalReplicas: postgres.status.readyReplicas + app.status.readyReplicas,
     };
   }
 );
@@ -203,7 +199,8 @@ const configDrivenApp = kubernetesComposition(
   },
   (spec) => {
     const appConfig = ConfigMap({
-      name: Cel.template('%s-config', spec.name),
+      // ✨ JavaScript template literal - automatically converted to CEL
+      name: `${spec.name}-config`,
       data: {
         'database.host': spec.config.database.host,
         'database.port': spec.config.database.port.toString(),
@@ -222,7 +219,8 @@ const configDrivenApp = kubernetesComposition(
       volumes: [
         {
           name: 'config',
-          configMap: { name: Cel.template('%s-config', spec.name) },
+          // ✨ JavaScript template literal - automatically converted to CEL
+          configMap: { name: `${spec.name}-config` },
         },
       ],
       volumeMounts: [
@@ -235,7 +233,8 @@ const configDrivenApp = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
+      // ✨ Natural JavaScript expression - automatically converted to CEL
+      ready: deployment.status.readyReplicas > 0,
       configHash: appConfig.metadata.resourceVersion || 'unknown',
     };
   }

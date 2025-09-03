@@ -296,31 +296,33 @@ http {
     };
   },
   
-  // StatusBuilder function - aggregate health from all services using CEL expressions
+  // StatusBuilder function - aggregate health from all services using natural JavaScript
   (schema, resources) => ({
-    gatewayUrl: Cel.template('https://%s', schema.spec.gateway.domain),
+    // JavaScript expressions automatically converted to CEL
+    gatewayUrl: `https://${schema.spec.gateway.domain}`,
     services: {
       user: {
-        url: Cel.expr<string>`'http://user-service:3000'`,
-        ready: Cel.expr<boolean>(resources.userDeployment.status.readyReplicas, ' == ', resources.userDeployment.spec.replicas)
+        url: 'http://user-service:3000',
+        ready: resources.userDeployment.status.readyReplicas === resources.userDeployment.spec.replicas
       },
       product: {
-        url: Cel.expr<string>`'http://product-service:3000'`, 
-        ready: Cel.expr<boolean>(resources.productDeployment.status.readyReplicas, ' == ', resources.productDeployment.spec.replicas)
+        url: 'http://product-service:3000', 
+        ready: resources.productDeployment.status.readyReplicas === resources.productDeployment.spec.replicas
       },
       order: {
-        url: Cel.expr<string>`'http://order-service:3000'`,
-        ready: Cel.expr<boolean>(resources.orderDeployment.status.readyReplicas, ' == ', resources.orderDeployment.spec.replicas)
+        url: 'http://order-service:3000',
+        ready: resources.orderDeployment.status.readyReplicas === resources.orderDeployment.spec.replicas
       }
     },
-    health: Cel.expr<'healthy' | 'degraded' | 'unhealthy'>(
-      resources.userDeployment.status.readyReplicas, ' == ', resources.userDeployment.spec.replicas,
-      ' && ', resources.productDeployment.status.readyReplicas, ' == ', resources.productDeployment.spec.replicas,
-      ' && ', resources.orderDeployment.status.readyReplicas, ' == ', resources.orderDeployment.spec.replicas,
-      ' ? "healthy" : (',
-      resources.userDeployment.status.readyReplicas, ' > 0 || ', resources.productDeployment.status.readyReplicas, ' > 0',
-      ' ? "degraded" : "unhealthy")'
-    )
+    health: (() => {
+      const userReady = resources.userDeployment.status.readyReplicas === resources.userDeployment.spec.replicas;
+      const productReady = resources.productDeployment.status.readyReplicas === resources.productDeployment.spec.replicas;
+      const orderReady = resources.orderDeployment.status.readyReplicas === resources.orderDeployment.spec.replicas;
+      
+      if (userReady && productReady && orderReady) return 'healthy';
+      if (resources.userDeployment.status.readyReplicas > 0 || resources.productDeployment.status.readyReplicas > 0) return 'degraded';
+      return 'unhealthy';
+    })() as 'healthy' | 'degraded' | 'unhealthy'
   })
 );
 ```

@@ -141,23 +141,16 @@ interface CelExpression<T = unknown> {
 #### Example
 
 ```typescript
-import { Cel, deployment } from 'typekro';
+import { deployment } from 'typekro';
 
 const myDeploy = deployment({ /* spec */ });
 
+// ✨ Natural JavaScript expressions - automatically converted to CEL
 // Boolean expression
-const isHealthy: CelExpression<boolean> = Cel.expr(
-  myDeploy.status.readyReplicas, ' >= ', myDeploy.spec.replicas
-);
+const isHealthy = myDeploy.status.readyReplicas >= myDeploy.spec.replicas;
 
 // String template
-const statusMessage: CelExpression<string> = Cel.template(
-  'Deployment %{name} has %{ready} ready replicas',
-  {
-    name: myDeploy.metadata.name,
-    ready: myDeploy.status.readyReplicas
-  }
-);
+const statusMessage = `Deployment ${myDeploy.metadata.name} has ${myDeploy.status.readyReplicas} ready replicas`;
 ```
 
 ### `RefOrValue<T>`
@@ -188,8 +181,8 @@ const config = configMap({
     // Reference to another resource
     databaseUrl: myDatabase.status.connectionString, // KubernetesRef<string>
     
-    // CEL expression
-    maxConnections: Cel.expr('string(', myDatabase.spec.maxConnections, ')') // CelExpression<string>
+    // ✨ JavaScript expression - automatically converted to CEL
+    maxConnections: `${myDatabase.spec.maxConnections}` // Automatically converted to CEL
   }
 });
 ```
