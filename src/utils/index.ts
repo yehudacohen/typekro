@@ -18,6 +18,7 @@ export {
 
 // Export type guard functions
 export {
+  containsKubernetesRefs,
   extractResourceReferences,
   isCelExpression,
   isKubernetesRef,

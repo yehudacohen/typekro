@@ -16,7 +16,7 @@ export interface HelmReleaseSpec {
 }
 
 export interface HelmReleaseStatus {
-  phase: 'Pending' | 'Installing' | 'Upgrading' | 'Ready' | 'Failed';
+  phase?: 'Pending' | 'Installing' | 'Upgrading' | 'Ready' | 'Failed';
   revision?: number;
   lastDeployed?: string;
 }

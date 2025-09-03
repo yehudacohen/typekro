@@ -31,9 +31,28 @@ Comprehensive observability with Prometheus, Grafana, and custom metrics.
 
 **Learn:** Infrastructure monitoring, custom metrics, alerting, operational patterns
 
+### 6. [JavaScript Expressions](./javascript-expressions.md) ⚡ **(New Feature)**
+Comprehensive example of TypeKro's automatic JavaScript-to-CEL conversion system.
+
+**Learn:** Natural JavaScript syntax, automatic CEL conversion, performance optimization, migration patterns
+
 ## 🚀 **TypeKro's Unique Capabilities**
 
 These examples showcase features that make TypeKro special compared to other infrastructure tools.
+
+### **JavaScript to CEL Conversion**
+TypeKro automatically converts JavaScript expressions to CEL when they contain resource references:
+
+```typescript
+// Write natural JavaScript - TypeKro converts to CEL automatically
+(schema, resources) => ({
+  ready: resources.deployment.status.readyReplicas > 0,
+  url: `https://${resources.service.status.clusterIP}`,
+  phase: resources.deployment.status.readyReplicas === schema.spec.replicas ? 'ready' : 'scaling'
+})
+```
+
+*Demonstrated in: [JavaScript Expressions](./javascript-expressions.md)*
 
 ### **Magic Proxy System & Schema References**
 See how TypeKro's magic proxy automatically converts schema references to CEL expressions at runtime:
@@ -63,7 +82,7 @@ const dbRef = externalRef('database', 'my-database');
 const app = kubernetesComposition(definition, (schema) => {
   const deployment = Deployment({
     env: {
-      DATABASE_URL: Cel.template('postgres://%s:5432/app', dbRef.service.spec.clusterIP)
+      DATABASE_URL: `postgres://${dbRef.service.spec.clusterIP}:5432/app` // ✨ Natural JavaScript template literal
     }
   });
   return { deployment };
@@ -78,8 +97,8 @@ TypeKro automatically derives meaningful status from your resources:
 ```typescript
 // Status automatically computed from deployment health
 return { 
-  ready: deployment.status.readyReplicas > 0,  // ← Becomes CEL expression
-  url: Cel.template('https://%s', ingress.status.loadBalancer.ingress[0].hostname)
+  ready: deployment.status.readyReplicas > 0,  // ✨ Natural JavaScript - automatically converted to CEL
+  url: `https://${ingress.status.loadBalancer.ingress[0].hostname}` // ✨ Natural JavaScript template literal
 };
 ```
 

@@ -65,6 +65,7 @@ export {
   isCelExpression,
   // Utility functions
   isKubernetesRef,
+  containsKubernetesRefs,
   isSchemaReference,
   type KroCompatibleType,
   type KubernetesRef,

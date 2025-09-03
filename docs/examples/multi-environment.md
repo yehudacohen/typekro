@@ -41,8 +41,7 @@ graph LR
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel 
-  simple } from 'typekro';
+import { kubernetesComposition, simple } from 'typekro';
 import { Deployment, Service, Secret, Pvc } from 'typekro/simple';
 
 // Environment configuration schema
@@ -103,14 +102,15 @@ export const multiEnvApp = kubernetesComposition({
   },
   // ResourceBuilder function
   (schema) => {
+    // ✨ Natural JavaScript expressions - automatically converted to CEL when needed
     // Environment-specific namespace prefix
     const envPrefix = schema.spec.environment;
-    const appName = Cel.expr(envPrefix, '-', schema.spec.app.name);
+    const appName = `${envPrefix}-${schema.spec.app.name}`;
     
     return {
       // Application configuration
       appConfig: simple({
-        name: Cel.expr(appName, '-config'),
+        name: `${appName}-config`,
         data: {
           ENVIRONMENT: schema.spec.environment,
           LOG_LEVEL: schema.spec.settings.logLevel,
@@ -119,9 +119,9 @@ export const multiEnvApp = kubernetesComposition({
           APP_VERSION: schema.spec.app.version,
           
           // Database connection
-          DB_HOST: Cel.expr(appName, '-db'),
+          DB_HOST: `${appName}-db`,
           DB_PORT: '5432',
-          DB_NAME: Cel.expr('app_', schema.spec.environment),
+          DB_NAME: `app_${schema.spec.environment}`,
           
           // Environment-specific URLs
           ...(schema.spec.settings.domain && {
@@ -132,7 +132,7 @@ export const multiEnvApp = kubernetesComposition({
       
       // Database secrets (different per environment)
       dbSecret: Secret({
-        name: Cel.expr(appName, '-db-secret'),
+        name: `${appName}-db-secret`,
         data: {
           // Use different passwords per environment
           DB_PASSWORD: schema.spec.environment === 'production' 
@@ -146,7 +146,7 @@ export const multiEnvApp = kubernetesComposition({
       
       // Database persistent volume
       dbStorage: Pvc({
-        name: Cel.expr(appName, '-db-storage'),
+        name: `${appName}-db-storage`,
         accessMode: 'ReadWriteOnce',
         size: schema.spec.database.storageSize,
         // Production uses faster storage class
@@ -157,14 +157,14 @@ export const multiEnvApp = kubernetesComposition({
       
       // Database deployment
       database: Deployment({
-        name: Cel.expr(appName, '-db'),
+        name: `${appName}-db`,
         image: schema.spec.database.image,
         replicas: 1, // Single DB instance for all environments
         ports: [{ containerPort: 5432 }],
         env: [
-          { name: 'POSTGRES_DB', value: Cel.expr('app_', schema.spec.environment) },
-          { name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_USER' } } },
-          { name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_PASSWORD' } } }
+          { name: 'POSTGRES_DB', value: `app_${schema.spec.environment}` },
+          { name: 'POSTGRES_USER', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_USER' } } },
+          { name: 'POSTGRES_PASSWORD', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_PASSWORD' } } }
         ],
         volumeMounts: [{
           name: 'db-storage',
@@ -172,7 +172,7 @@ export const multiEnvApp = kubernetesComposition({
         }],
         volumes: [{
           name: 'db-storage',
-          persistentVolumeClaim: { claimName: Cel.expr(appName, '-db-storage') }
+          persistentVolumeClaim: { claimName: `${appName}-db-storage` }
         }],
         resources: {
           requests: {
@@ -194,21 +194,21 @@ export const multiEnvApp = kubernetesComposition({
       
       // Database service
       dbService: Service({
-        name: Cel.expr(appName, '-db'),
-        selector: { app: Cel.expr(appName, '-db') },
+        name: `${appName}-db`,
+        selector: { app: `${appName}-db` },
         ports: [{ port: 5432, targetPort: 5432 }]
       }),
       
       // Application deployment
       app: Deployment({
         name: appName,
-        image: Cel.template('%s:%s', schema.spec.app.image, schema.spec.app.version),
+        image: `${schema.spec.app.image}:${schema.spec.app.version}`,
         replicas: schema.spec.app.replicas,
         ports: [{ containerPort: 3000 }],
-        envFrom: [{ configMapRef: { name: Cel.expr(appName, '-config') } }],
+        envFrom: [{ configMapRef: { name: `${appName}-config` } }],
         env: [
-          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_PASSWORD' } } },
-          { name: 'DB_USER', valueFrom: { secretKeyRef: { name: Cel.expr(appName, '-db-secret'), key: 'DB_USER' } } }
+          { name: 'DB_PASSWORD', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_PASSWORD' } } },
+          { name: 'DB_USER', valueFrom: { secretKeyRef: { name: `${appName}-db-secret`, key: 'DB_USER' } } }
         ],
         resources: {
           requests: {
@@ -218,10 +218,10 @@ export const multiEnvApp = kubernetesComposition({
           limits: {
             // Production gets 2x limits
             cpu: schema.spec.environment === 'production' 
-              ? Cel.template('%dm', parseInt(schema.spec.app.resources.cpu) * 2)
+              ? `${parseInt(schema.spec.app.resources.cpu) * 2}m`
               : schema.spec.app.resources.cpu,
             memory: schema.spec.environment === 'production'
-              ? Cel.template('%dMi', parseInt(schema.spec.app.resources.memory.replace('Mi', '')) * 2)
+              ? `${parseInt(schema.spec.app.resources.memory.replace('Mi', '')) * 2}Mi`
               : schema.spec.app.resources.memory
           }
         },
@@ -253,9 +253,10 @@ export const multiEnvApp = kubernetesComposition({
   
   // Status aggregation across resources
   (schema, resources) => ({
+    // ✨ Natural JavaScript - automatically converted to CEL
     appUrl: schema.spec.settings.domain 
-      ? Cel.template('https://%s', schema.spec.settings.domain)
-      : Cel.template('http://%s-%s', schema.spec.environment, schema.spec.app.name),
+      ? `https://${schema.spec.settings.domain}`
+      : `http://${schema.spec.environment}-${schema.spec.app.name}`,
     databaseReady: resources.database.status.readyReplicas === 1,
     environment: schema.spec.environment,
     version: schema.spec.app.version,

@@ -3,7 +3,7 @@
  */
 
 import { type } from 'arktype';
-import { Cel, kubernetesComposition } from '../src/index.js';
+import { kubernetesComposition } from '../src/index.js';
 import { Deployment, Service, Ingress, Job } from '../src/factories/simple/index.js';
 
 // Define the schema for our WebApp stack
@@ -61,7 +61,8 @@ const webApp = kubernetesComposition(
       ports: [{ containerPort: 3000 }],
       env: {
         NODE_ENV: spec.environment,
-        DATABASE_URL: Cel.template('postgresql://webapp:secret@%s-db-service:5432/webapp', spec.name),
+        // ✨ JavaScript template literal - automatically converted to CEL
+        DATABASE_URL: `postgresql://webapp:secret@${spec.name}-db-service:5432/webapp`,
       },
       id: 'webDeployment', // Required for schema references
     });
@@ -107,16 +108,10 @@ const webApp = kubernetesComposition(
     });
 
     // Return status (resources are auto-captured)
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
       url: `https://${spec.hostname}`,
-      ready: Cel.expr<boolean>(
-        webDeployment.status.readyReplicas,
-        ' >= ',
-        spec.replicas,
-        ' && ',
-        database.status.readyReplicas,
-        ' > 0'
-      ),
+      ready: webDeployment.status.readyReplicas >= spec.replicas && database.status.readyReplicas > 0,
     };
   }
 );

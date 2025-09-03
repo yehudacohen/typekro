@@ -66,7 +66,7 @@ type ResourceBuilder<TSpec, TStatus, TResources> = (
 
 ### `statusBuilder`
 
-Function that computes dynamic status values based on resource state.
+Function that computes dynamic status values based on resource state using JavaScript expressions.
 
 ```typescript
 type StatusBuilder<TSpec, TStatus, TResources> = (
@@ -80,6 +80,30 @@ type StatusBuilder<TSpec, TStatus, TResources> = (
 - **`schema`**: Same schema proxy as resource builder
 - **`resources`**: The resources created by the resource builder
 - **Returns**: Object matching the status schema shape
+
+#### JavaScript Expression Support
+
+The status builder automatically converts JavaScript expressions to CEL when they contain resource or schema references:
+
+```typescript
+// ✅ JavaScript expressions (recommended)
+(schema, resources) => ({
+  ready: resources.deployment.status.readyReplicas > 0,
+  url: `https://${resources.service.status.clusterIP}`,
+  phase: resources.deployment.status.readyReplicas === schema.spec.replicas ? 'ready' : 'scaling',
+  health: {
+    database: resources.database?.status.ready ?? false,
+    endpoint: resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'pending'
+  }
+})
+
+// ✅ Mixed with explicit CEL for advanced cases
+(schema, resources) => ({
+  ready: resources.deployment.status.readyReplicas > 0,
+  // Use explicit CEL for complex list operations
+  healthyPods: Cel.filter(resources.deployment.status.pods, 'item.status.phase == "Running"')
+})
+```
 
 ### `options` (Optional)
 
@@ -156,10 +180,11 @@ const webapp = toResourceGraph(
       servicePort: 80
     })
   }),
-  // Status builder - computes dynamic status
+  // Status builder - computes dynamic status using natural JavaScript
   (schema, resources) => ({
-    ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
-    url: Cel.template('https://%s', schema.spec.host),
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
+    ready: resources.deployment.status.readyReplicas >= schema.spec.replicas,
+    url: `https://${schema.spec.host}`,
     replicas: resources.deployment.status.readyReplicas
   })
 );
@@ -183,7 +208,7 @@ const microservices = toResourceGraph(
   (schema) => ({
     // Database
     database: Deployment({
-      name: Cel.template('%s-db', schema.spec.name),
+      name: `${schema.spec.name}-db`, // ✨ Natural JavaScript template literal
       image: 'postgres:13',
       env: {
         POSTGRES_DB: schema.spec.name,
@@ -193,14 +218,14 @@ const microservices = toResourceGraph(
     }),
     
     dbService: Service({
-      name: Cel.template('%s-db', schema.spec.name),
-      selector: { app: Cel.template('%s-db', schema.spec.name) },
+      name: `${schema.spec.name}-db`,
+      selector: { app: `${schema.spec.name}-db` },
       ports: [{ port: 5432, targetPort: 5432 }]
     }),
     
     // API server that references database
     api: Deployment({
-      name: Cel.template('%s-api', schema.spec.name),
+      name: `${schema.spec.name}-api`,
       image: 'myapp/api:latest',
       env: {
         // Reference to database service (runtime resolution)

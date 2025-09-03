@@ -26,7 +26,7 @@ Create `hello-world.ts`:
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
 import { Deployment, Service, Ingress } from 'typekro/simple';
 
 const AppSpec = type({
@@ -56,7 +56,8 @@ export const app = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0')
+      // ✨ Natural JavaScript - automatically converted to CEL
+      ready: deployment.status.readyReplicas > 0
     };
   }
 );
@@ -111,7 +112,10 @@ TypeKro offers much more power. Here's a taste of what's possible:
 ```typescript
 const database = Deployment({ name: 'db', image: 'postgres:15' });
 const app = Deployment({
-  env: { DATABASE_HOST: database.status.clusterIP } // Magic!
+  env: { 
+    // ✨ JavaScript template literals work seamlessly
+    DATABASE_URL: `postgres://user:pass@${database.status.clusterIP}:5432/mydb`
+  }
 });
 ```
 
@@ -122,9 +126,16 @@ const webApp = otherComposition.database; // Cross-composition magic!
 
 **Conditional Logic**:
 ```typescript
+// ✨ JavaScript conditionals work naturally
 const ingress = spec.environment === 'production' 
   ? Ingress({ host: `${spec.name}.example.com` })
   : null;
+
+// Status with JavaScript expressions
+return {
+  ready: deployment.status.readyReplicas > 0,
+  url: ingress ? `https://${spec.name}.example.com` : 'http://localhost'
+};
 ```
 
 ## What's Next?

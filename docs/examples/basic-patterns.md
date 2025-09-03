@@ -16,7 +16,8 @@ Let's start with the basics: a simple web application with type-safe configurati
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
 // Define the application interface
 const WebAppSpec = type({
@@ -32,8 +33,8 @@ const WebAppStatus = type({
   readyReplicas: 'number'
 });
 
-// Create the resource graph
-export const simpleWebApp = kubernetesComposition({
+// Create the resource graph using imperative composition
+export const simpleWebApp = kubernetesComposition(
   {
     name: 'simple-webapp',
     apiVersion: 'example.com/v1alpha1',
@@ -41,49 +42,44 @@ export const simpleWebApp = kubernetesComposition({
     spec: WebAppSpec,
     status: WebAppStatus,
   },
-  // ResourceBuilder function - defines the Kubernetes resources
-  (schema) => ({
+  // Imperative composition - resources auto-register when created
+  (spec) => {
     // Web application deployment
-    deployment: Deployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
+    const deployment = Deployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
       ports: [{ containerPort: 80 }],
       
       // Environment-specific resource limits
-      resources: schema.spec.environment === 'production' 
+      resources: spec.environment === 'production' 
         ? { cpu: '500m', memory: '1Gi' }
         : { cpu: '100m', memory: '256Mi' }
-    }),
+    });
 
     // Service to expose the application
-    service: Service({
-      name: Cel.expr(schema.spec.name, '-service'),
-      selector: { app: schema.spec.name },
+    const service = Service({
+      name: `${spec.name}-service`,
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }],
       
       // LoadBalancer in production, ClusterIP elsewhere
-      type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
-    })
-  }),
-  // StatusBuilder function - defines how status fields map to resource status
-  (schema, resources) => ({
-    url: schema.spec.environment === 'production'
-      ? Cel.expr(
-          resources.service.status.loadBalancer.ingress,
-          '.size() > 0 ? "http://" + ',
-          resources.service.status.loadBalancer.ingress[0].ip,
-          ': "pending"'
-        )
-      : Cel.template('http://%s', resources.service.spec.clusterIP),
-    phase: Cel.expr(
-      resources.deployment.status.readyReplicas,
-      '== ',
-      resources.deployment.spec.replicas,
-      '? "running" : "pending"'
-    ),
-    readyReplicas: resources.deployment.status.readyReplicas
-  })
+      type: spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
+    });
+
+    // ✨ Return status using natural JavaScript expressions - automatically converted to CEL
+    return {
+      url: spec.environment === 'production'
+        ? service.status.loadBalancer.ingress?.length > 0
+          ? `http://${service.status.loadBalancer.ingress[0].ip}`
+          : 'pending'
+        : `http://${service.spec.clusterIP}`,
+      phase: deployment.status.readyReplicas === deployment.spec.replicas
+        ? 'running' 
+        : 'pending',
+      readyReplicas: deployment.status.readyReplicas
+    };
+  }
 );
 ```
 
@@ -206,25 +202,20 @@ type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
 
 #### 3. Status Builder
 
-The status builder uses CEL expressions to reflect the actual state of your deployment:
+The status builder uses natural JavaScript expressions that are automatically converted to CEL:
 
 ```typescript
 // StatusBuilder function - maps resource status to your custom status
 (schema, resources) => ({
+  // ✨ Natural JavaScript - automatically converted to CEL
   url: schema.spec.environment === 'production'
-    ? Cel.expr(
-        resources.service.status.loadBalancer.ingress,
-        '.size() > 0 ? "http://" + ',
-        resources.service.status.loadBalancer.ingress[0].ip,
-        ': "pending"'
-      )
-    : Cel.template('http://%s', resources.service.spec.clusterIP),
-  phase: Cel.expr(
-    resources.deployment.status.readyReplicas,
-    '== ',
-    resources.deployment.spec.replicas,
-    '? "running" : "pending"'
-  ),
+    ? resources.service.status.loadBalancer.ingress?.length > 0
+      ? `http://${resources.service.status.loadBalancer.ingress[0].ip}`
+      : 'pending'
+    : `http://${resources.service.spec.clusterIP}`,
+  phase: resources.deployment.status.readyReplicas === resources.deployment.spec.replicas
+    ? 'running' 
+    : 'pending',
   readyReplicas: resources.deployment.status.readyReplicas
 })
 ```
@@ -246,7 +237,8 @@ Now let's build a more complex example with a PostgreSQL database, demonstrating
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, Cel } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service, StatefulSet, ConfigMap, Secret } from 'typekro/simple';
 
 // Define the database schema
 const DatabaseSpec = type({
@@ -266,8 +258,8 @@ const DatabaseStatus = type({
   externalEndpoint: 'string'
 });
 
-// Create the database resource graph
-const database = kubernetesComposition({
+// Create the database resource graph using imperative composition
+const database = kubernetesComposition(
   {
     name: 'postgres-database',
     apiVersion: 'data.example.com/v1',
@@ -275,14 +267,14 @@ const database = kubernetesComposition({
     spec: DatabaseSpec,
     status: DatabaseStatus
   },
-  (schema) => ({
+  (spec) => {
     // Configuration for the database
-    config: simple({
-      name: Cel.template('%s-config', schema.spec.name),
+    const config = ConfigMap({
+      name: `${spec.name}-config`,
       data: {
         // Database configuration
-        POSTGRES_DB: schema.spec.databaseName,
-        POSTGRES_USER: schema.spec.username,
+        POSTGRES_DB: spec.databaseName,
+        POSTGRES_USER: spec.username,
         PGPORT: '5432',
         PGDATA: '/var/lib/postgresql/data/pgdata',
         
@@ -293,80 +285,72 @@ const database = kubernetesComposition({
         effective_cache_size: '1GB',
         work_mem: '4MB'
       }
-    }),
+    });
     
     // Secret for sensitive data
-    credentials: Secret({
-      name: Cel.template('%s-credentials', schema.spec.name),
+    const credentials = Secret({
+      name: `${spec.name}-credentials`,
       data: {
-        POSTGRES_PASSWORD: schema.spec.password,
+        POSTGRES_PASSWORD: spec.password,
         // Additional database users
         REPLICATION_USER: 'replicator',
         REPLICATION_PASSWORD: 'repl-secret-password'
       }
-    }),
+    });
     
     // StatefulSet for PostgreSQL with persistent storage
-    statefulSet: StatefulSet({
-      name: schema.spec.name,
+    const statefulSet = StatefulSet({
+      name: spec.name,
       image: 'postgres:15',
-      replicas: schema.spec.replicas,
-      serviceName: Cel.template('%s-headless', schema.spec.name),
+      replicas: spec.replicas,
+      serviceName: `${spec.name}-headless`,
       ports: [5432],
       env: {
-        // Reference configuration and secrets
-        POSTGRES_DB: schema.spec.databaseName,
-        POSTGRES_USER: schema.spec.username,
-        POSTGRES_PASSWORD: schema.spec.password,
+        // ✨ Reference configuration and secrets using JavaScript expressions
+        POSTGRES_DB: spec.databaseName,
+        POSTGRES_USER: spec.username,
+        POSTGRES_PASSWORD: spec.password,
         PGDATA: '/var/lib/postgresql/data/pgdata'
       }
       // Note: volumeClaimTemplates would be added in full StatefulSet specification
-    }),
+    });
     
     // Headless service for StatefulSet pod discovery
-    headlessService: Service({
-      name: Cel.template('%s-headless', schema.spec.name),
-      selector: { app: schema.spec.name },
+    const headlessService = Service({
+      name: `${spec.name}-headless`,
+      selector: { app: spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
       clusterIP: 'None'  // Makes it headless
-    }),
+    });
     
     // Regular service for database access
-    service: Service({
-      name: schema.spec.name,
-      selector: { app: schema.spec.name },
+    const service = Service({
+      name: spec.name,
+      selector: { app: spec.name },
       ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
       type: 'ClusterIP'
-    }),
+    });
     
     // Conditional external service
-    ...(schema.spec.externalAccess && {
-      externalService: Service({
-        name: Cel.template('%s-external', schema.spec.name),
-        selector: { app: schema.spec.name },
-        ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
-        type: 'LoadBalancer'
-      })
-    })
-  }),
-  (schema, resources) => ({
-    ready: Cel.expr(
-      resources.statefulSet.status.readyReplicas, '>=', schema.spec.replicas
-    ),
-    replicas: resources.statefulSet.status.readyReplicas,
-    primaryEndpoint: Cel.template(
-      '%s:5432',
-      resources.service.spec.clusterIP
-    ),
-    externalEndpoint: schema.spec.externalAccess
-      ? Cel.expr(
-          resources.externalService?.status.loadBalancer.ingress,
-          '.size() > 0 ? ',
-          resources.externalService?.status.loadBalancer.ingress[0].ip,
-          ' + ":5432" : "pending"'
-        )
-      : 'disabled'
-  })
+    const externalService = spec.externalAccess ? Service({
+      name: `${spec.name}-external`,
+      selector: { app: spec.name },
+      ports: [{ port: 5432, targetPort: 5432, name: 'postgres' }],
+      type: 'LoadBalancer'
+    }) : null;
+
+    // ✨ Return status using natural JavaScript expressions - automatically converted to CEL
+    return {
+      ready: statefulSet.status.readyReplicas >= spec.replicas,
+      replicas: statefulSet.status.readyReplicas,
+      primaryEndpoint: `${service.spec.clusterIP}:5432`,
+      externalEndpoint: spec.externalAccess
+        ? externalService?.status.loadBalancer.ingress?.length > 0
+          ? `${externalService.status.loadBalancer.ingress[0].ip}:5432`
+          : 'pending'
+        : 'disabled'
+    };
+  }
 );
 ```
 
@@ -383,7 +367,7 @@ const ApiAppSpec = type({
   databaseName: 'string'
 });
 
-const apiApp = kubernetesComposition({
+const apiApp = kubernetesComposition(
   {
     name: 'api-with-database',
     apiVersion: 'apps.example.com/v1',
@@ -391,42 +375,40 @@ const apiApp = kubernetesComposition({
     spec: ApiAppSpec,
     status: type({ ready: 'boolean', url: 'string' })
   },
-  (schema) => ({
+  (spec) => {
     // API deployment that connects to database
-    api: Deployment({
-      name: schema.spec.name,
-      image: schema.spec.image,
-      replicas: schema.spec.replicas,
+    const api = Deployment({
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas,
       ports: [8080],
       env: {
-        // Database connection configuration
-        DATABASE_URL: Cel.template(
-          'postgres://app:password@%s:5432/%s',
-          schema.spec.databaseName,  // References database service
-          schema.spec.databaseName
-        ),
-        DATABASE_HOST: schema.spec.databaseName,
+        // ✨ Database connection configuration using JavaScript template literals
+        DATABASE_URL: `postgres://app:password@${spec.databaseName}:5432/${spec.databaseName}`,
+        DATABASE_HOST: spec.databaseName,
         DATABASE_PORT: '5432',
-        DATABASE_NAME: schema.spec.databaseName,
+        DATABASE_NAME: spec.databaseName,
         DATABASE_USER: 'app',
         
         // Application configuration
         PORT: '8080',
         NODE_ENV: 'production'
       }
-    }),
+    });
     
     // Service for the API
-    apiService: Service({
-      name: schema.spec.name,
-      selector: { app: schema.spec.name },
+    const apiService = Service({
+      name: spec.name,
+      selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 8080 }]
-    })
-  }),
-  (schema, resources) => ({
-    ready: Cel.expr(resources.api.status.readyReplicas, '> 0'),
-    url: Cel.template('http://%s', resources.apiService.spec.clusterIP)
-  })
+    });
+
+    // ✨ Return status using natural JavaScript expressions - automatically converted to CEL
+    return {
+      ready: api.status.readyReplicas > 0,
+      url: `http://${apiService.spec.clusterIP}`
+    };
+  }
 );
 
 // Deploy the complete system
@@ -463,7 +445,7 @@ statefulSet: StatefulSet({
   name: schema.spec.name,
   image: 'postgres:15',
   replicas: schema.spec.replicas,
-  serviceName: Cel.template('%s-headless', schema.spec.name),
+  serviceName: `${schema.spec.name}-headless`,  // ✨ JavaScript template literal
   ports: [5432]
 })
 ```
@@ -479,7 +461,7 @@ StatefulSets provide:
 ```typescript
 // Headless service for StatefulSet internal communication
 headlessService: Service({
-  name: Cel.template('%s-headless', schema.spec.name),
+  name: `${schema.spec.name}-headless`,  // ✨ JavaScript template literal
   selector: { app: schema.spec.name },
   clusterIP: 'None'  // Makes it headless
 }),
@@ -497,7 +479,7 @@ service: Service({
 ```typescript
 // ConfigMap for non-sensitive configuration
 config: simple({
-  name: Cel.template('%s-config', schema.spec.name),
+  name: `${schema.spec.name}-config`,  // ✨ JavaScript template literal
   data: {
     POSTGRES_DB: schema.spec.databaseName,
     POSTGRES_USER: schema.spec.username,
@@ -507,7 +489,7 @@ config: simple({
 
 // Secret for sensitive data
 credentials: Secret({
-  name: Cel.template('%s-credentials', schema.spec.name),
+  name: `${schema.spec.name}-credentials`,  // ✨ JavaScript template literal
   data: {
     POSTGRES_PASSWORD: schema.spec.password
   }
@@ -520,11 +502,8 @@ credentials: Secret({
 // API deployment references database
 api: Deployment({
   env: {
-    DATABASE_URL: Cel.template(
-      'postgres://app:password@%s:5432/%s',
-      schema.spec.databaseName,  // References database service
-      schema.spec.databaseName
-    )
+    // ✨ JavaScript template literal - automatically converted to CEL
+    DATABASE_URL: `postgres://app:password@${schema.spec.databaseName}:5432/${schema.spec.databaseName}`
   }
 })
 ```
@@ -605,8 +584,9 @@ export const hybridApp = kubernetesComposition(
       type: spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
     });
 
+    // ✨ Return status using natural JavaScript expressions - automatically converted to CEL
     return {
-      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+      ready: app.status.readyReplicas > 0,
       bootstrapped: spec.useFlux ? true : true, // YAML files don't have status
       endpoint: service.status.clusterIP,
       environment: spec.environment
@@ -710,17 +690,18 @@ const deployment = Deployment({
 ### Add ConfigMap
 
 ```typescript
-import { } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service, ConfigMap } from 'typekro/simple';
 
 const resources = {
-  config: simple({
-    name: Cel.expr(schema.spec.name, '-config'),
+  config: ConfigMap({
+    name: `${spec.name}-config`,
     data: {
       'nginx.conf': `
         server {
           listen 80;
           location / {
-            return 200 'Hello from ${schema.spec.name}!';
+            return 200 'Hello from ${spec.name}!';
           }
         }
       `
@@ -728,15 +709,15 @@ const resources = {
   }),
   
   deployment: Deployment({
-    name: schema.spec.name,
-    image: schema.spec.image,
+    name: spec.name,
+    image: spec.image,
     volumeMounts: [{
       name: 'config',
       mountPath: '/etc/nginx/conf.d'
     }],
     volumes: [{
       name: 'config',
-      configMap: { name: 'config.metadata.name' }
+      configMap: { name: config.metadata.name }
     }]
   })
 };
@@ -745,29 +726,28 @@ const resources = {
 ### Add Ingress
 
 ```typescript
-import { } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service, Ingress } from 'typekro/simple';
 
 // Only in production
-...(schema.spec.environment === 'production' && {
-  ingress: Ingress({
-    name: Cel.expr(schema.spec.name, '-ingress'),
-    rules: [{
-      host: Cel.template('%s.example.com', schema.spec.name),
-      http: {
-        paths: [{
-          path: '/',
-          pathType: 'Prefix',
-          backend: {
-            service: {
-              name: 'service.metadata.name',
-              port: { number: 80 }
-            }
+const ingress = spec.environment === 'production' ? Ingress({
+  name: `${spec.name}-ingress`,
+  rules: [{
+    host: `${spec.name}.example.com`,
+    http: {
+      paths: [{
+        path: '/',
+        pathType: 'Prefix',
+        backend: {
+          service: {
+            name: service.metadata.name,
+            port: { number: 80 }
           }
-        }]
-      }
-    }]
-  })
-})
+        }
+      }]
+    }
+  }]
+}) : null;
 ```
 
 ### Conditional Resources
@@ -775,25 +755,19 @@ import { } from 'typekro'; import { Deployment, Service } from 'typekro/simple';
 Create resources only when certain conditions are met:
 
 ```typescript
-const resources = {
-  app: Deployment({ /* ... */ }),
-  
-  // Only create external service if external access is enabled
-  ...(schema.spec.externalAccess && {
-    externalService: Service({
-      name: Cel.template('%s-external', schema.spec.name),
-      type: 'LoadBalancer'
-    })
-  }),
-  
-  // Only create ingress in production
-  ...(schema.spec.environment === 'production' && {
-    ingress: Ingress({
-      name: Cel.expr(schema.spec.name, '-ingress'),
-      host: Cel.template('%s.example.com', schema.spec.name)
-    })
-  })
-};
+const app = Deployment({ /* ... */ });
+
+// Only create external service if external access is enabled
+const externalService = spec.externalAccess ? Service({
+  name: `${spec.name}-external`,
+  type: 'LoadBalancer'
+}) : null;
+
+// Only create ingress in production
+const ingress = spec.environment === 'production' ? Ingress({
+  name: `${spec.name}-ingress`,
+  host: `${spec.name}.example.com`
+}) : null;
 ```
 
 ## Testing Your Deployments

@@ -208,7 +208,8 @@ const composition = kubernetesComposition(definition, (spec) => {
   });
 
   return {
-    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: app.status.readyReplicas > 0,
     // YAML files don't have status - use static values
     configDeployed: true
   };
@@ -248,13 +249,11 @@ const webapp = kubernetesComposition({
   },
   (schema) => ({
     // Configuration first
-    config: simple({
-      name: Cel.template('%s-config', schema.spec.name),
+    config: ConfigMap({
+      name: `${schema.spec.name}-config`,
       data: {
         environment: schema.spec.environment,
-        logLevel: Cel.conditional(
-          schema.spec.environment === 'production',
-          'warn',
+        logLevel: schema.spec.environment === 'production' ? 'warn' : 'info', // ✨ Natural JavaScript conditional
           'debug'
         )
       }
@@ -280,8 +279,9 @@ const webapp = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(resources.deployment.status.readyReplicas, ' >= ', schema.spec.replicas),
-    url: Cel.template('http://%s', resources.service.spec.clusterIP)
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.deployment.status.readyReplicas >= schema.spec.replicas,
+    url: `http://${resources.service.spec.clusterIP}`
   })
 );
 ```
@@ -390,12 +390,8 @@ const microservices = kubernetesComposition({
       image: 'myapp/api:latest',
       labels: { app: 'api', component: 'backend' },  // Labels for service selector
       env: {
-        // Reference to database service (runtime resolution)
-        DATABASE_URL: Cel.template(
-          'postgres://app@%s:5432/%s',
-          resources.dbService.metadata.name,  // Reference service by field
-          schema.spec.name
-        )
+        // ✨ Reference to database service using JavaScript template literals
+        DATABASE_URL: `postgres://app@${resources.dbService.metadata.name}:5432/${schema.spec.name}`
       }
     }),
     
@@ -407,10 +403,9 @@ const microservices = kubernetesComposition({
     })
   }),
   (schema, resources) => ({
-    ready: Cel.expr(
-      resources.database.status.readyReplicas, ' > 0 && ',
-      resources.api.status.readyReplicas, ' > 0'
-    )
+    // ✨ JavaScript expressions automatically converted to CEL
+    ready: resources.database.status.readyReplicas > 0 && 
+           resources.api.status.readyReplicas > 0
   })
 );
 ```

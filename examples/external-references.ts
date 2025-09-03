@@ -10,7 +10,7 @@
 
 import { type } from 'arktype';
 import { Cel, kubernetesComposition, externalRef } from '../src/index.js';
-import { Deployment, Service, ConfigMap } from '../src/factories/simple/index.js';
+import { Deployment, Service, } from '../src/factories/simple/index.js';
 
 // =============================================================================
 // 1. Database Composition (managed by Database Team)
@@ -37,7 +37,7 @@ const databaseComposition = kubernetesComposition(
   (spec) => {
     const database = Deployment({
       name: 'postgres-db',
-      image: Cel.template('%s:%s', spec.engine, spec.version),
+      image: `${spec.engine}:${spec.version}`, // ✨ Natural JavaScript template literal
       env: {
         POSTGRES_DB: 'appdb',
         POSTGRES_USER: 'appuser',
@@ -56,7 +56,7 @@ const databaseComposition = kubernetesComposition(
 
     return {
       connectionString: 'postgresql://appuser:secure-password@database-service:5432/appdb',
-      ready: Cel.expr<boolean>(database.status.readyReplicas, ' > 0'),
+      ready: database.status.readyReplicas > 0, // ✨ Natural JavaScript expression
     };
   }
 );
@@ -87,7 +87,7 @@ const _cacheComposition = kubernetesComposition(
   (spec) => {
     const cache = Deployment({
       name: 'cache-server',
-      image: Cel.template('%s:alpine', spec.engine),
+      image: `${spec.engine}:alpine`, // ✨ Natural JavaScript template literal
       replicas: spec.replicas,
       resources: {
         limits: { memory: spec.memory },
@@ -105,8 +105,8 @@ const _cacheComposition = kubernetesComposition(
     });
 
     return {
-      endpoint: Cel.template('%s:6379', service.spec.clusterIP),
-      ready: Cel.expr<boolean>(cache.status.readyReplicas, ' > 0'),
+      endpoint: `${service.spec.clusterIP}:6379`, // ✨ Natural JavaScript template literal
+      ready: cache.status.readyReplicas > 0, // ✨ Natural JavaScript expression
     };
   }
 );
@@ -173,13 +173,13 @@ const webAppComposition = kubernetesComposition(
       replicas: spec.replicas,
       env: {
         // EXPLICIT external reference (resource created outside TypeKro)
-        DATABASE_URL: Cel.template('postgres://user:pass@%s:5432/db', legacyDatabase.spec.clusterIP),
+        DATABASE_URL: `postgres://user:pass@${legacyDatabase.spec.clusterIP}:5432/db`, // ✨ Natural JavaScript template literal
 
         // IMPLICIT magic proxy references (resources within THIS composition)  
         // TypeKro's magic proxy automatically converts these to CEL expressions
         CACHE_HOST: cacheService.spec.clusterIP,      // ← Becomes CEL expression automatically!
         CACHE_PORT: '6379',
-        CACHE_READY: Cel.string(cache.status.readyReplicas),      // ← Magic proxy creates KubernetesRef!
+        CACHE_READY: `${cache.status.readyReplicas}`,      // ✨ Natural JavaScript template literal
 
         NODE_ENV: 'production',
       },
@@ -195,10 +195,10 @@ const webAppComposition = kubernetesComposition(
     });
 
     return {
-      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
-      cacheConnected: Cel.expr<boolean>(cache.status.readyReplicas, ' > 0'),
-      databaseConnected: Cel.expr<boolean>`true`, // External database assumed connected
-      url: Cel.template('http://%s', _appService.spec.clusterIP),
+      ready: app.status.readyReplicas > 0, // ✨ Natural JavaScript expression
+      cacheConnected: cache.status.readyReplicas > 0, // ✨ Natural JavaScript expression
+      databaseConnected: true, // External database assumed connected
+      url: `http://${_appService.spec.clusterIP}`, // ✨ Natural JavaScript template literal
     };
   }
 );
@@ -280,7 +280,7 @@ const frontendComposition = kubernetesComposition(
       }),
 
       // Status builder can also use cross-composition references
-      ready: Cel.expr<boolean>`true`,
+      ready: true, // ✨ Natural JavaScript boolean
       databaseConnected: dbRef.status.ready,               // Cross-composition status check
       cacheConnected: cacheRef.status.readyReplicas,       // Cross-composition replica check
     };

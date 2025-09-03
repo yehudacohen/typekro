@@ -4,7 +4,7 @@
  */
 
 import { type } from 'arktype';
-import { Cel, kubernetesComposition } from '../src/index.js';
+import { kubernetesComposition } from '../src/index.js';
 import { Deployment, Service, Ingress, NetworkPolicy } from '../src/factories/simple/index.js';
 
 // Define the schema for our complete web application
@@ -37,7 +37,8 @@ export const completeWebApp = kubernetesComposition(
   (spec) => {
     // Database deployment
     const database = Deployment({
-      name: Cel.template('%s-db', spec.name),
+      // ✨ JavaScript template literal - automatically converted to CEL
+      name: `${spec.name}-db`,
       image: spec.databaseImage,
       replicas: 1,
       ports: [{ containerPort: 5432 }],
@@ -51,8 +52,9 @@ export const completeWebApp = kubernetesComposition(
 
     // Database service
     const _dbService = Service({
-      name: Cel.template('%s-db-service', spec.name),
-      selector: { app: Cel.template('%s-db', spec.name) },
+      // ✨ JavaScript template literals - automatically converted to CEL
+      name: `${spec.name}-db-service`,
+      selector: { app: `${spec.name}-db` },
       ports: [{ port: 5432, targetPort: 5432 }],
       id: 'dbService',
     });
@@ -65,17 +67,16 @@ export const completeWebApp = kubernetesComposition(
       ports: [{ containerPort: 3000 }],
       env: {
         NODE_ENV: spec.environment,
-        DATABASE_URL: Cel.template(
-          'postgresql://webapp:secret@%s-db-service:5432/webapp',
-          spec.name
-        ),
+        // ✨ JavaScript template literal - automatically converted to CEL
+        DATABASE_URL: `postgresql://webapp:secret@${spec.name}-db-service:5432/webapp`,
       },
       id: 'webApp',
     });
 
     // Web service
     const _webService = Service({
-      name: Cel.template('%s-service', spec.name),
+      // ✨ JavaScript template literal - automatically converted to CEL
+      name: `${spec.name}-service`,
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
       id: 'webService',
@@ -83,7 +84,8 @@ export const completeWebApp = kubernetesComposition(
 
     // Ingress for external access
     const _ingress = Ingress({
-      name: Cel.template('%s-ingress', spec.name),
+      // ✨ JavaScript template literals - automatically converted to CEL
+      name: `${spec.name}-ingress`,
       rules: [
         {
           host: spec.hostname,
@@ -94,7 +96,7 @@ export const completeWebApp = kubernetesComposition(
                 pathType: 'Prefix',
                 backend: {
                   service: {
-                    name: Cel.template('%s-service', spec.name),
+                    name: `${spec.name}-service`,
                     port: { number: 80 },
                   },
                 },
@@ -105,7 +107,7 @@ export const completeWebApp = kubernetesComposition(
       ],
       tls: [
         {
-          secretName: Cel.template('%s-tls', spec.name),
+          secretName: `${spec.name}-tls`,
           hosts: [spec.hostname],
         },
       ],
@@ -114,7 +116,8 @@ export const completeWebApp = kubernetesComposition(
 
     // Network policy for security
     const _webNetworkPolicy = NetworkPolicy({
-      name: Cel.template('%s-web-policy', spec.name),
+      // ✨ JavaScript template literal - automatically converted to CEL
+      name: `${spec.name}-web-policy`,
       podSelector: { matchLabels: { app: spec.name } },
       policyTypes: ['Ingress'],
       ingress: [
@@ -128,8 +131,9 @@ export const completeWebApp = kubernetesComposition(
 
     // Database network policy
     const _dbNetworkPolicy = NetworkPolicy({
-      name: Cel.template('%s-db-policy', spec.name),
-      podSelector: { matchLabels: { app: Cel.template('%s-db', spec.name) } },
+      // ✨ JavaScript template literals - automatically converted to CEL
+      name: `${spec.name}-db-policy`,
+      podSelector: { matchLabels: { app: `${spec.name}-db` } },
       policyTypes: ['Ingress'],
       ingress: [
         {
@@ -141,29 +145,15 @@ export const completeWebApp = kubernetesComposition(
     });
 
     // Return status (resources are auto-captured)
+    // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
-      url: Cel.template('https://%s', spec.hostname),
-      ready: Cel.expr<boolean>(
-        database.status.readyReplicas,
-        ' >= 1 && ',
-        webApp.status.readyReplicas,
-        ' >= ',
-        spec.replicas
-      ),
-      phase: Cel.expr<'pending' | 'running' | 'failed'>(
-        database.status.readyReplicas,
-        ' > 0 && ',
-        webApp.status.readyReplicas,
-        ' >= ',
-        webApp.status.replicas,
-        ' ? "running" : "failed"'
-      ),
-      databaseReady: Cel.expr<boolean>(database.status.readyReplicas, ' >= 1'),
-      webReady: Cel.expr<boolean>(
-        webApp.status.readyReplicas,
-        ' >= ',
-        spec.replicas
-      ),
+      url: `https://${spec.hostname}`,
+      ready: database.status.readyReplicas >= 1 && webApp.status.readyReplicas >= spec.replicas,
+      phase: database.status.readyReplicas > 0 && webApp.status.readyReplicas >= webApp.status.replicas
+        ? 'running' 
+        : 'failed',
+      databaseReady: database.status.readyReplicas >= 1,
+      webReady: webApp.status.readyReplicas >= spec.replicas,
     };
   }
 );
@@ -181,7 +171,7 @@ async function main() {
   console.log('   - Services for internal communication');
   console.log('   - Ingress for external access');
   console.log('   - Network policies for security');
-  console.log('   - Cross-resource references with CEL expressions');
+  console.log('   - Cross-resource references with JavaScript expressions');
   console.log('\n🔧 Resource Graph Details:');
   console.log(`   - Name: complete-webapp`);
   console.log(`   - API Version: webapp.example.com/v1`);

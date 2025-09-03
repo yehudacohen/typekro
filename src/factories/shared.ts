@@ -19,6 +19,9 @@ import type {
 import { validateResourceId } from '../core/validation/cel-validator.js';
 import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index';
 import { isCelExpression } from '../utils/type-guards.js';
+import { 
+  conditionalExpressionIntegrator,
+} from '../core/expressions/conditional-integration.js';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
@@ -150,7 +153,15 @@ function createRefFactory(resourceId: string, basePath: string): any {
 
   return new Proxy(proxyTarget, {
     get(target, prop) {
+      // Check for our defined properties first
+      if (prop === KUBERNETES_REF_BRAND || prop === 'resourceId' || prop === 'fieldPath') {
+        return target[prop as keyof typeof target];
+      }
+      
+      // Check for other properties that exist on the target
       if (prop in target) return target[prop as keyof typeof target];
+      
+      // For unknown properties, create nested references
       return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
     },
   }) as any; // Force TypeScript to see this as compatible with any type
@@ -191,6 +202,16 @@ function createPropertyProxy<T extends object>(
       }
 
       // 3. For any other access, default to the "eager value" or "implicit ref for unknown" logic.
+      // IMPORTANT: For JavaScript-to-CEL conversion to work, we need to check if we're in
+      // a status builder context where ALL property access should return KubernetesRef objects
+      const isStatusBuilderContext = (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
+      
+      if (isStatusBuilderContext && (basePath === 'status' || basePath === 'spec')) {
+        // In status builder context, ALWAYS return KubernetesRef objects for spec/status fields
+        // This allows expressions like `resources.deployment.status.readyReplicas > 0` to work
+        return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
+      }
+      
       if (prop in obj) {
         // If it's a known property, return its value.
         return obj[prop as keyof T];
@@ -495,7 +516,13 @@ export function createResource<TSpec extends object, TStatus extends object>(
     writable: false, // Cannot be overwritten
   });
 
-  return enhanced as Enhanced<TSpec, TStatus>;
+  // Add conditional expression support
+  const enhancedWithConditionals = conditionalExpressionIntegrator.addConditionalSupport(enhanced, {
+    autoProcess: false, // Don't auto-process until we know the factory type
+    validateExpressions: true
+  });
+
+  return enhancedWithConditionals as Enhanced<TSpec, TStatus>;
 }
 
 export function processPodSpec(podSpec?: V1PodSpec): V1PodSpec | undefined {
