@@ -352,6 +352,9 @@ export class StatusBuilderAnalyzer {
             } else if (property.valueNode.type === 'Literal') {
               // For static literals, store the literal value directly
               statusMappings[property.name] = property.valueNode.value as any;
+            } else if (property.valueNode.type === 'Identifier' && property.valueNode.name === 'undefined') {
+              // For undefined identifier, store undefined directly
+              statusMappings[property.name] = undefined;
             } else if (property.valueNode.type === 'UnaryExpression' && 
                        property.valueNode.operator === '!' && 
                        property.valueNode.argument?.type === 'Literal' &&
@@ -1539,6 +1542,24 @@ export class StatusBuilderAnalyzer {
           sourceMap: [],
           optionalityAnalysis: [],
           inferredType: typeof property.valueNode.value,
+          confidence: 1.0
+        };
+      }
+
+      // Check if this is the 'undefined' identifier (special case)
+      if (property.valueNode.type === 'Identifier' && property.valueNode.name === 'undefined') {
+        // undefined identifier - return as-is without CEL conversion
+        return {
+          fieldName,
+          originalExpression,
+          celExpression: null,
+          dependencies: [],
+          requiresConversion: false,
+          valid: true,
+          errors: [],
+          sourceMap: [],
+          optionalityAnalysis: [],
+          inferredType: 'undefined',
           confidence: 1.0
         };
       }
