@@ -352,8 +352,8 @@ export class StatusBuilderAnalyzer {
               // For static literals, keep as plain JavaScript values for performance
               statusMappings[property.name] = property.valueNode.value;
             } else if (property.valueNode.type === 'Identifier' && property.valueNode.name === 'undefined') {
-              // For undefined identifier, use null (since undefined doesn't serialize well)
-              statusMappings[property.name] = null;
+              // For undefined identifier, preserve as undefined (will be filtered out during serialization)
+              statusMappings[property.name] = undefined;
             } else if (property.valueNode.type === 'UnaryExpression' && 
                        property.valueNode.operator === '!' && 
                        property.valueNode.argument?.type === 'Literal' &&
