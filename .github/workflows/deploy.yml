@@ -3,7 +3,7 @@ name: Deploy TypeKro Documentation & Package
 on:
   push:
     branches: [ master ]
-    paths: [ 'docs/**', '.github/workflows/**' ]
+    paths: [ 'docs/**', '.github/workflows/**', 'package.json' ]
     tags: [ 'v*' ]
   workflow_dispatch:
 
@@ -77,35 +77,57 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-  # Publish to npm only on version tags
-  publish-npm:
+  # Check for version changes and publish
+  check-version:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/master'
+    outputs:
+      version-changed: ${{ steps.check.outputs.changed }}
+      new-version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          
+      - name: Get package.json version
+        id: package-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+      - name: Check if version tag exists
+        id: check
+        run: |
+          VERSION="${{ steps.package-version.outputs.version }}"
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "Tag v$VERSION already exists"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "New version detected: $VERSION"
+          fi
+
+  # Publish to npm when version changes
+  publish-npm:
+    needs: check-version
+    runs-on: ubuntu-latest
+    if: needs.check-version.outputs.version-changed == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
         
       - name: Install dependencies
         run: bun install
         
       - name: Build library
         run: bun run build
-        
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-        
-      - name: Update package.json version
-        run: |
-          bun --bun run -e "
-          import fs from 'fs';
-          const pkg = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
-          pkg.version = '${{ steps.version.outputs.VERSION }}';
-          fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
-          "
           
       - name: Setup Node.js for npm
         uses: actions/setup-node@v4
@@ -118,11 +140,19 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           
+      - name: Create git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ needs.check-version.outputs.new-version }}"
+          git push origin "v${{ needs.check-version.outputs.new-version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
       - name: Create GitHub Release
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "TypeKro v${{ steps.version.outputs.VERSION }}" \
-            --generate-notes \
-            --verify-tag
+          gh release create "v${{ needs.check-version.outputs.new-version }}" \
+            --title "TypeKro v${{ needs.check-version.outputs.new-version }}" \
+            --generate-notes
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
