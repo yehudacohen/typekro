@@ -91,8 +91,8 @@ export interface StatusBuilderAnalysisResult {
   /** Analysis results for each status field */
   fieldAnalysis: Map<string, StatusFieldAnalysisResult>;
   
-  /** Overall status mappings (field name -> CEL expression) */
-  statusMappings: Record<string, CelExpression>;
+  /** Overall status mappings (field name -> CEL expression or static value) */
+  statusMappings: Record<string, CelExpression | any>;
   
   /** All KubernetesRef dependencies found */
   allDependencies: KubernetesRef<any>[];
@@ -323,7 +323,7 @@ export class StatusBuilderAnalyzer {
 
       // Analyze each property in the returned object
       const fieldAnalysis = new Map<string, StatusFieldAnalysisResult>();
-      const statusMappings: Record<string, CelExpression> = {};
+      const statusMappings: Record<string, CelExpression | any> = {};
       const allDependencies: KubernetesRef<any>[] = [];
       const allSourceMap: SourceMapEntry[] = [];
       const allErrors: ConversionError[] = [];
@@ -343,25 +343,24 @@ export class StatusBuilderAnalyzer {
           
           if (fieldResult.valid) {
             if (fieldResult.celExpression) {
-              // For dynamic expressions, return the CEL expression string wrapped in ${}
-              const celString = fieldResult.celExpression.expression;
-              statusMappings[property.name] = celString.includes('${') ? celString : `\${${celString}}` as any;
+              // For dynamic expressions, use the CEL expression directly
+              statusMappings[property.name] = fieldResult.celExpression;
             } else if ((fieldResult as any).staticValue !== undefined) {
-              // For static objects, store the evaluated static value
+              // For static objects, keep as plain JavaScript objects for performance
               statusMappings[property.name] = (fieldResult as any).staticValue;
             } else if (property.valueNode.type === 'Literal') {
-              // For static literals, store the literal value directly
-              statusMappings[property.name] = property.valueNode.value as any;
+              // For static literals, keep as plain JavaScript values for performance
+              statusMappings[property.name] = property.valueNode.value;
             } else if (property.valueNode.type === 'Identifier' && property.valueNode.name === 'undefined') {
-              // For undefined identifier, store undefined directly
-              statusMappings[property.name] = undefined;
+              // For undefined identifier, use null (since undefined doesn't serialize well)
+              statusMappings[property.name] = null;
             } else if (property.valueNode.type === 'UnaryExpression' && 
                        property.valueNode.operator === '!' && 
                        property.valueNode.argument?.type === 'Literal' &&
                        typeof property.valueNode.argument.value === 'number') {
               // For boolean literals represented as !0 or !1
               const booleanValue = property.valueNode.argument.value === 0; // !0 = true, !1 = false
-              statusMappings[property.name] = booleanValue as any;
+              statusMappings[property.name] = booleanValue;
             }
           }
           
@@ -453,7 +452,7 @@ export class StatusBuilderAnalyzer {
     dependencies: KubernetesRef<any>[];
     errors: ConversionError[];
   } {
-    const statusMappings: Record<string, CelExpression> = {};
+    const statusMappings: Record<string, CelExpression | any> = {};
     const dependencies: KubernetesRef<any>[] = [];
     const errors: ConversionError[] = [];
 
@@ -1285,6 +1284,16 @@ export class StatusBuilderAnalyzer {
   }
 
   /**
+   * Create a CelExpression for a static value
+   */
+  private createStaticCelExpression(value: string): CelExpression {
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: value
+    } as CelExpression;
+  }
+
+  /**
    * Extract source code for an AST node using range information
    */
   private getNodeSource(node: any, originalSource: string): string {
@@ -1784,7 +1793,7 @@ export function analyzeStatusBuilderForToResourceGraph<TSpec extends Record<stri
   schemaProxy?: SchemaProxy<TSpec, any>,
   factoryType: 'direct' | 'kro' = 'kro'
 ): {
-  statusMappings: Record<string, CelExpression>;
+  statusMappings: Record<string, CelExpression | any>;
   dependencies: KubernetesRef<any>[];
   hydrationOrder: string[];
   errors: ConversionError[];

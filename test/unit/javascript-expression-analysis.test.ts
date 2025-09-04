@@ -43,17 +43,14 @@ describe('JavaScript Expression Analysis', () => {
       expect(analysis.statusMappings).toBeDefined();
 
       // Should detect KubernetesRef in expressions
-      expect(analysis.statusMappings.ready?.toString()).toContain('${');
-      expect(analysis.statusMappings.ready?.toString()).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.ready?.expression).toContain('deployment.status.readyReplicas');
       
-      expect(analysis.statusMappings.url?.toString()).toContain('${');
-      expect(analysis.statusMappings.url?.toString()).toContain('service.status.clusterIP');
+      expect(analysis.statusMappings.url?.expression).toContain('service.status.clusterIP');
       
-      expect(analysis.statusMappings.replicas?.toString()).toContain('${');
-      expect(analysis.statusMappings.replicas?.toString()).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.replicas?.expression).toContain('deployment.status.readyReplicas');
       
       // Static value should remain unchanged
-      expect(analysis.statusMappings.phase?.toString()).toBe('Running');
+      expect(analysis.statusMappings.phase).toBe('Running');
     });
 
     it('should handle complex expressions with multiple KubernetesRef objects', () => {
@@ -88,19 +85,16 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // All expressions with KubernetesRef should be converted to CEL
-      expect(analysis.statusMappings.ready?.toString()).toContain('${');
-      expect(analysis.statusMappings.ready?.toString()).toContain('deployment.status.readyReplicas');
-      expect(analysis.statusMappings.ready?.toString()).toContain('service.status.clusterIP');
+      expect(analysis.statusMappings.ready?.expression).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.ready?.expression).toContain('service.status.clusterIP');
       
-      expect(analysis.statusMappings.phase?.toString()).toContain('${');
-      expect(analysis.statusMappings.phase?.toString()).toContain('deployment.status.readyReplicas');
-      expect(analysis.statusMappings.phase?.toString()).toContain('deployment.spec.replicas');
+      expect(analysis.statusMappings.phase?.expression).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.phase?.expression).toContain('deployment.spec.replicas');
       
-      expect(analysis.statusMappings.endpoint?.toString()).toContain('${');
-      expect(analysis.statusMappings.endpoint?.toString()).toContain('service.status.clusterIP');
+      expect(analysis.statusMappings.endpoint?.expression).toContain('service.status.clusterIP');
       
       // Static value should remain unchanged
-      expect(analysis.statusMappings.environment?.toString()).toBe('production');
+      expect(analysis.statusMappings.environment).toBe('production');
     });
 
     it('should handle optional chaining with KubernetesRef objects', () => {
@@ -123,14 +117,11 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // All expressions should be converted to CEL with proper optional chaining
-      expect(analysis.statusMappings.ip?.toString()).toContain('${');
-      expect(analysis.statusMappings.ip?.toString()).toContain('service.status');
+      expect(analysis.statusMappings.ip?.expression).toContain('service.status');
       
-      expect(analysis.statusMappings.ready?.toString()).toContain('${');
-      expect(analysis.statusMappings.ready?.toString()).toContain('service.status');
+      expect(analysis.statusMappings.ready?.expression).toContain('service.status');
       
-      expect(analysis.statusMappings.url?.toString()).toContain('${');
-      expect(analysis.statusMappings.url?.toString()).toContain('service.status');
+      expect(analysis.statusMappings.url?.expression).toContain('service.status');
     });
   });
 
@@ -151,10 +142,10 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, {});
 
       // All values should remain unchanged (no CEL conversion)
-      expect((analysis.statusMappings.environment as any)?.expression || analysis.statusMappings.environment?.toString()).toBe('production');
-      expect((analysis.statusMappings.version as any)?.expression || analysis.statusMappings.version?.toString()).toBe('1.0.0');
-      expect((analysis.statusMappings.enabled as any)?.expression || analysis.statusMappings.enabled?.toString()).toBe('true');
-      expect((analysis.statusMappings.count as any)?.expression || analysis.statusMappings.count?.toString()).toBe('42');
+      expect(analysis.statusMappings.environment).toBe('production');
+      expect(analysis.statusMappings.version).toBe('1.0.0');
+      expect(analysis.statusMappings.enabled).toBe(true);
+      expect(analysis.statusMappings.count).toBe(42);
       
       // Handle config object - it might be a direct object or a CelExpression
       const configMapping = analysis.statusMappings.config;
@@ -203,8 +194,8 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // Static values should remain unchanged
-      expect((analysis.statusMappings.environment as any)?.expression || analysis.statusMappings.environment?.toString()).toBe('production');
-      expect((analysis.statusMappings.version as any)?.expression || analysis.statusMappings.version?.toString()).toBe('1.0.0');
+      expect(analysis.statusMappings.environment).toBe('production');
+      expect(analysis.statusMappings.version).toBe('1.0.0');
       
       // Handle metadata object - it might be a direct object or a CelExpression
       const metadataMapping = analysis.statusMappings.metadata;
@@ -230,14 +221,11 @@ describe('JavaScript Expression Analysis', () => {
       }
 
       // KubernetesRef expressions should be converted to CEL
-      expect(analysis.statusMappings.ready?.toString()).toContain('${');
-      expect(analysis.statusMappings.ready?.toString()).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.ready?.expression).toContain('deployment.status.readyReplicas');
       
-      expect(analysis.statusMappings.replicas?.toString()).toContain('${');
-      expect(analysis.statusMappings.replicas?.toString()).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.replicas?.expression).toContain('deployment.status.readyReplicas');
       
-      expect(analysis.statusMappings.status?.toString()).toContain('${');
-      expect(analysis.statusMappings.status?.toString()).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.status?.expression).toContain('deployment.status.readyReplicas');
     });
   });
 
@@ -268,10 +256,10 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // Should handle undefined/null values appropriately
-      expect(analysis.statusMappings.ready?.toString()).toContain('${');
+      expect(analysis.statusMappings.ready?.expression).toBeDefined();
       expect(analysis.statusMappings.url).toBeUndefined();
       expect(analysis.statusMappings.phase).toBeNull();
-      expect(analysis.statusMappings.replicas?.toString()).toContain('${');
+      expect(analysis.statusMappings.replicas?.expression).toBeDefined();
     });
 
     it('should handle deeply nested KubernetesRef expressions', () => {
@@ -330,8 +318,7 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // Should convert to CEL
-      expect(analysis.statusMappings.ready?.toString()).toContain('${');
-      expect(analysis.statusMappings.ready?.toString()).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.ready?.expression).toContain('deployment.status.readyReplicas');
     });
 
     it('should ensure analysis works with all factory types', () => {
@@ -350,14 +337,11 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // All expressions should be converted to CEL
-      expect(analysis.statusMappings.deploymentReady?.toString()).toContain('${');
-      expect(analysis.statusMappings.deploymentReady?.toString()).toContain('deployment.status.readyReplicas');
+      expect(analysis.statusMappings.deploymentReady?.expression).toContain('deployment.status.readyReplicas');
       
-      expect(analysis.statusMappings.serviceReady?.toString()).toContain('${');
-      expect(analysis.statusMappings.serviceReady?.toString()).toContain('service.status.clusterIP');
+      expect(analysis.statusMappings.serviceReady?.expression).toContain('service.status.clusterIP');
       
-      expect(analysis.statusMappings.storageReady?.toString()).toContain('${');
-      expect(analysis.statusMappings.storageReady?.toString()).toContain('pvc.status.phase');
+      expect(analysis.statusMappings.storageReady?.expression).toContain('pvc.status.phase');
     });
   });
 });
