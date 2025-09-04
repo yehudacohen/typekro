@@ -101,9 +101,10 @@ jobs:
       - name: Update package.json version
         run: |
           bun --bun run -e "
-          const pkg = require('./package.json');
+          import fs from 'fs';
+          const pkg = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
           pkg.version = '${{ steps.version.outputs.VERSION }}';
-          require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
+          fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
           "
           
       - name: Setup Node.js for npm
