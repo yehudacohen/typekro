@@ -309,6 +309,58 @@ function concat(
 }
 
 /**
+ * Template literal tag function for creating CEL expressions from template literals
+ * This allows natural template literal syntax while preserving KubernetesRef objects
+ * 
+ * @example
+ * ```typescript
+ * const url = cel`https://${schema.spec.hostname}/api`;
+ * // Creates a CelExpression that will be serialized as: "https://" + schema.spec.hostname + "/api"
+ * ```
+ */
+function cel<T = string>(
+  strings: TemplateStringsArray,
+  ...values: RefOrValue<unknown>[]
+): CelExpression<T> & T {
+  const parts: string[] = [];
+  
+  for (let i = 0; i < strings.length; i++) {
+    // Add the string literal part
+    if (strings[i]) {
+      parts.push(`"${strings[i]!.replace(/"/g, '\\"')}"`);
+    }
+    
+    // Add the interpolated value if it exists
+    if (i < values.length) {
+      const value = values[i];
+      
+      if (isKubernetesRef(value)) {
+        // Convert KubernetesRef to CEL path
+        if (value.resourceId === '__schema__') {
+          parts.push(`schema.${value.fieldPath}`);
+        } else {
+          parts.push(`${value.resourceId}.${value.fieldPath}`);
+        }
+      } else if (isCelExpression(value)) {
+        parts.push(value.expression);
+      } else if (typeof value === 'string') {
+        parts.push(`"${value.replace(/"/g, '\\"')}"`);
+      } else {
+        parts.push(String(value));
+      }
+    }
+  }
+  
+  const expression = parts.join(' + ');
+
+  return {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression,
+    _type: 'string' as any,
+  } as CelExpression<T> & T;
+}
+
+/**
  * CEL utility functions
  */
 export const Cel = {
@@ -318,6 +370,7 @@ export const Cel = {
   math,
   template,
   concat,
+  cel,
 
   // Common CEL functions as utilities
   min: (...values: RefOrValue<CelValue>[]) => math<number>('min', ...values),
@@ -352,3 +405,6 @@ export const Cel = {
     double: (value: RefOrValue<CelValue>) => math<number>(context, 'double', value),
   }),
 };
+
+// Export cel as a standalone function for template literal usage
+export { cel };

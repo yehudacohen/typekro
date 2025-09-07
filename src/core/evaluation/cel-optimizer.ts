@@ -111,7 +111,7 @@ export function optimizeCelExpression(
   context: EvaluationContext
 ): EvaluationResult {
   const optimizations: string[] = [];
-  let wasOptimized = false;
+  const wasOptimized = false;
 
   if (typeof expression === 'string') {
     return {
@@ -133,20 +133,13 @@ export function optimizeCelExpression(
 
   // Pattern 1: Simple string concatenation with known values
   // Example: "http://" + resourceName where resourceName is known
-  const concatPattern = /"([^"]*)" \+ ([a-zA-Z][a-zA-Z0-9]*\.metadata\.name)/g;
-  optimizedExpression = optimizedExpression.replace(concatPattern, (match, prefix, resourceRef) => {
-    // Extract resource ID from the reference
-    const resourceId = resourceRef.split('.')[0];
-    const resource = Object.values(context.resources).find((r) => r.id === resourceId);
-
-    if (resource?.metadata?.name) {
-      optimizations.push(`Resolved ${resourceRef} to "${resource.metadata.name}"`);
-      wasOptimized = true;
-      return `"${prefix}${resource.metadata.name}"`;
-    }
-
-    return match;
-  });
+  // NOTE: We should NOT optimize resource references in CEL expressions because they need to be
+  // resolved at runtime by Kro, not at compile time. Resource references like deployment.metadata.name
+  // should remain as CEL expressions for Kro to evaluate against live Kubernetes resources.
+  
+  // Skip this optimization for now - resource references should be resolved by Kro at runtime
+  // const concatPattern = /"([^"]*)" \+ ([a-zA-Z][a-zA-Z0-9]*\.metadata\.name)/g;
+  // ... optimization code removed ...
 
   // Pattern 2: Conditional expressions with known boolean values
   // Example: condition ? "value1" : "value2" where condition can be evaluated

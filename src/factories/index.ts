@@ -7,6 +7,11 @@
  */
 
 // =============================================================================
+// CILIUM ECOSYSTEM
+// =============================================================================
+export * from './cilium/index.js';
+
+// =============================================================================
 // HELM ECOSYSTEM
 // =============================================================================
 export * from './helm/index.js';
@@ -37,3 +42,6 @@ export type * from './simple/types.js';
 // - src/factories/crossplane/   (Future: Crossplane resource factories)
 // - src/factories/argocd/       (Future: ArgoCD resource factories)
 // - src/factories/kustomize/    (Future: Kustomize resource factories)
+//
+// Implemented ecosystems:
+// - src/factories/cilium/       (Cilium CNI and networking ecosystem)

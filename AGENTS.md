@@ -60,7 +60,7 @@
 - **ASK** if unsure which changes belong to your task vs user's other work
 - **EXAMPLE**: User asks to commit docs changes → only stage docs files, not package.json or src/ changes
 
-### 3. CONTEXT-FIRST DEVELOPMENT (From steering/context-first-development.md)
+### 3. CONTEXT-FIRST DEVELOPMENT (From steering/development-standards.md)
 - **NEVER** assume something is wrong without investigation
 - **ALWAYS** understand why existing code was written that way
 - **ALWAYS** read broader context: specs, tests, git history, comments
@@ -69,7 +69,7 @@
 - Ask: "What would break if I changed this?" before modifying
 - Ask: "Is this the right place to make the change?"
 
-### 4. FIX ROOT PROBLEMS, NOT SYMPTOMS (From steering/fix-root-problems.md)
+### 4. FIX ROOT PROBLEMS, NOT SYMPTOMS (From steering/development-standards.md)
 - **NEVER** change test expectations to match broken code
 - **NEVER** disable functionality to make tests pass (e.g., `waitForReady: false`)
 - **ALWAYS** fix implementation to meet test requirements  
@@ -78,7 +78,7 @@
 - **ALWAYS** identify root cause in implementation, not tests
 - Only change tests when requirements legitimately changed
 
-### 5. FOLLOW CODEBASE STRUCTURE (From steering/codebase-structure.md)
+### 5. FOLLOW CODEBASE STRUCTURE (From steering/architecture-guide.md)
 - **FOLLOW** established directory structure in `src/core/`, `src/factories/`, etc.
 - **USE** consistent import patterns: external libraries first, internal modules second, types last
 - **AVOID** circular dependencies - check with `bunx madge --circular --extensions ts src/`
@@ -86,7 +86,7 @@
 - **PLACE** new factories in appropriate category directories
 - **EXPORT** properly through index files
 
-### 6. USE CORRECT TOOLING (From steering/build-and-test-tooling.md)
+### 6. USE CORRECT TOOLING (From steering/tooling-requirements.md)
 - **ALWAYS** use `bun` instead of `npm`, `yarn`, or `pnpm`
 - **USE** `bun install`, `bun add`, `bun run test`, etc.
 - **NEVER** create package-lock.json or yarn.lock files
@@ -95,19 +95,19 @@
 
 ### 7. UNDERSTAND KEY ARCHITECTURAL PRINCIPLES
 
-#### Magic Proxy System (From steering/magic-proxy-system.md)
+#### Magic Proxy System (From steering/architecture-guide.md)
 - **NEVER** modify composition function signatures without understanding proxy implications
 - **UNDERSTAND** that schema references are automatically `KubernetesRef` objects at runtime
 - **TRUST** the existing `RefOrValue<T>` system - it handles all cases correctly
 - **VALIDATION** belongs in serialization, not in composition functions
 
-#### Status Builder Patterns (From steering/status-builder-patterns.md)
+#### Status Builder Patterns (From steering/testing-guidelines.md)
 - **ONLY** use supported patterns: direct resource references, CEL expressions, CEL templates
 - **NEVER** use JavaScript fallback patterns like `||` operators in status builders
 - **USE** `Cel.expr()` for complex logic, `Cel.template()` for string construction
 - **REFERENCE** complete-webapp.ts as the canonical example
 
-#### TypeScript Type Safety (From steering/typescript-type-safety-testing.md)
+#### TypeScript Type Safety (From steering/testing-guidelines.md)
 - **NEVER** use `as any` or type assertions in tests or production code
 - **ALWAYS** test real type safety - code should compile without casting
 - **VALIDATE** that the type system provides proper IDE experience

@@ -39,12 +39,6 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
         return target[prop as keyof typeof target];
       }
 
-      // Only preserve essential function properties, not 'name' or other properties
-      // that might conflict with field names
-      if (prop === 'call' || prop === 'apply' || prop === 'bind') {
-        return target[prop as keyof typeof target];
-      }
-
       // For any other property, create a new nested reference
       return createSchemaRefFactory(`${fieldPath}.${String(prop)}`);
     },
@@ -171,10 +165,23 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
         return target[prop as keyof typeof target];
       }
 
+      // Handle toString specially to return a detectable string for template literals
+      if (prop === 'toString') {
+        return () => `__KUBERNETES_REF_${resourceId}_${fieldPath}__`;
+      }
+
+      // Handle valueOf specially to return a detectable string for template literals
+      if (prop === 'valueOf') {
+        return () => `__KUBERNETES_REF_${resourceId}_${fieldPath}__`;
+      }
+
+      // Handle Symbol.toPrimitive for template literal coercion
+      if (prop === Symbol.toPrimitive) {
+        return () => `__KUBERNETES_REF_${resourceId}_${fieldPath}__`;
+      }
+
       // Preserve essential function properties
       if (
-        prop === 'toString' ||
-        prop === 'valueOf' ||
         prop === 'call' ||
         prop === 'apply' ||
         prop === 'bind'
