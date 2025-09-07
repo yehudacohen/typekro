@@ -66,17 +66,52 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
 }
 
 /**
+ * Determines if a CEL expression contains only schema references (no resource references)
+ */
+function containsOnlySchemaReferences(expression: string): boolean {
+  // Check if the expression contains any resource references
+  // This includes both direct resource references (deployment.status.field) 
+  // and resources namespace references (resources.deployment.status.field)
+  const hasResourceReferences = /\b(resources\.\w+|\w+\.status\.|\.metadata\.)/.test(expression);
+  
+  // Check if the expression contains schema references
+  const hasSchemaReferences = /\bschema\./.test(expression);
+  
+  // If it has resource references, it needs Kro resolution (mixed or resource-only)
+  if (hasResourceReferences) {
+    return false;
+  }
+  
+  // If it has schema references but no resource references, it can be hydrated by TypeKro
+  if (hasSchemaReferences) {
+    return true;
+  }
+  
+  // If it has neither schema nor resource references, it's a static expression
+  // that can be hydrated by TypeKro
+  return true;
+}
+
+/**
  * Determines if a status field value requires Kro resolution (contains Kubernetes references or CEL expressions)
  */
 function requiresKroResolution(value: any): boolean {
   if (isKubernetesRef(value)) {
+    // Schema references should be hydrated by TypeKro, not sent to Kro
+    // because Kro controller doesn't have access to the 'schema' variable
+    if (value.resourceId === '__schema__') {
+      return false;
+    }
     return true;
   }
 
   if (isCelExpression(value)) {
-    // All CelExpression objects require Kro resolution, regardless of whether they contain
-    // schema references or resource references. CelExpression objects are explicit expressions
-    // that should be evaluated at runtime by Kro.
+    // Check if the CEL expression contains only schema references
+    // If so, it should be hydrated by TypeKro, not sent to Kro
+    if (containsOnlySchemaReferences(value.expression)) {
+      return false;
+    }
+    // CEL expressions with resource references should be sent to Kro
     return true;
   }
 
