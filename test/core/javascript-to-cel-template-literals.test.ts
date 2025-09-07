@@ -42,13 +42,13 @@ describe('JavaScript to CEL Template Literals', () => {
 
       // Verify the composition generates correct YAML
       const yaml = testComposition.toYaml();
-      
-      // Should include the URL field as a CEL expression
-      expect(yaml).toContain('url: ${"https://" + schema.spec.hostname + "/api"}');
-      
-      // Should not treat it as a static field
-      expect(yaml).not.toContain('status: {}');
-      
+
+      // Schema-only expressions should be excluded from RGD and hydrated by TypeKro
+      expect(yaml).not.toContain('url:');
+
+      // Status should be empty since schema-only fields are hydrated directly
+      expect(yaml).toContain('status: {}');
+
       // Verify that cel template literal creates correct CelExpression
       // (This is tested separately since we can't run assertions inside the composition)
       const testUrl = cel`https://${'test'}/api`;
@@ -92,11 +92,11 @@ describe('JavaScript to CEL Template Literals', () => {
       );
 
       const yaml = testComposition.toYaml();
-      
+
       // Should include the message field as a CEL expression
       // Note: deployment.metadata.name becomes schema.spec.name because it references the spec
       expect(yaml).toContain('message: ${"Deployment " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}');
-      
+
       // Verify CEL template behavior separately
       const testMessage = cel`Deployment ${'test'} has ${42} replicas`;
       const CEL_BRAND = Symbol.for('TypeKro.CelExpression');
@@ -138,10 +138,10 @@ describe('JavaScript to CEL Template Literals', () => {
       );
 
       const yaml = testComposition.toYaml();
-      
+
       // Should include the status field as a CEL expression
       expect(yaml).toContain('status: ${"App " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}');
-      
+
       // Verify CEL expression behavior separately
       const testStatus = cel`App ${'test'} has ${42} replicas`;
       const CEL_BRAND = Symbol.for('TypeKro.CelExpression');
@@ -185,9 +185,10 @@ describe('JavaScript to CEL Template Literals', () => {
       );
 
       const yaml = testComposition.toYaml();
-      
-      // Both template literals should be converted to CEL expressions
-      expect(yaml).toContain('url: ${"https://" + schema.spec.hostname + "/api"}');
+
+      // Schema-only expressions should be excluded from YAML (hydrated by TypeKro)
+      expect(yaml).not.toContain('url:');
+      // Mixed expressions should be included in YAML (sent to Kro)
       expect(yaml).toContain('message: ${"Deployment " + deployment.metadata.name + " has " + deployment.status.readyReplicas + " replicas"}');
     });
 
@@ -217,12 +218,12 @@ describe('JavaScript to CEL Template Literals', () => {
       );
 
       const yaml = testComposition.toYaml();
-      
-      // Should be converted to CEL expression
-      expect(yaml).toContain('url: ${"https://" + schema.spec.name + ".example.com"}');
-      
-      // Should not be treated as static
-      expect(yaml).not.toContain('status: {}');
+
+      // Schema-only expressions should be excluded from YAML (hydrated by TypeKro)
+      expect(yaml).not.toContain('url:');
+
+      // Status should be empty since all fields are schema-only and excluded
+      expect(yaml).toContain('status: {}');
     });
   });
 
@@ -254,11 +255,11 @@ describe('JavaScript to CEL Template Literals', () => {
 
       // Should not throw errors
       expect(() => testComposition.toYaml()).not.toThrow();
-      
+
       // Test magic proxy behavior separately using a simple schema proxy
       const { createSchemaProxy } = await import('../../src/core/references/schema-proxy.js');
       const schemaProxy = createSchemaProxy<typeof TestSpec.infer, typeof TestStatus.infer>();
-      
+
       const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.KubernetesRef');
       expect((schemaProxy.spec.name as any)[KUBERNETES_REF_BRAND]).toBe(true);
       expect((schemaProxy.spec.hostname as any)[KUBERNETES_REF_BRAND]).toBe(true);
@@ -300,7 +301,7 @@ describe('JavaScript to CEL Template Literals', () => {
 
       // Should not throw errors
       expect(() => testComposition.toYaml()).not.toThrow();
-      
+
       // Test resource proxy behavior separately
       // Note: Resource proxies are created during composition execution,
       // so we test the behavior through the composition system
@@ -339,10 +340,10 @@ describe('JavaScript to CEL Template Literals', () => {
           return {
             // Schema-only CEL expression - should be sent to Kro
             schemaOnlyUrl: cel`https://${spec.hostname}/api`,
-            
+
             // Resource-only CEL expression - should be sent to Kro
             resourceOnlyMessage: cel`Deployment has ${deployment.status.readyReplicas} replicas`,
-            
+
             // Mixed CEL expression - should be sent to Kro
             mixedMessage: cel`App ${spec.hostname} has ${deployment.status.readyReplicas} replicas`,
           };
@@ -350,12 +351,13 @@ describe('JavaScript to CEL Template Literals', () => {
       );
 
       const yaml = testComposition.toYaml();
-      
-      // All three fields should be in the YAML as CEL expressions
-      expect(yaml).toContain('schemaOnlyUrl: ${"https://" + schema.spec.hostname + "/api"}');
+
+      // Schema-only expressions should be excluded from YAML (hydrated by TypeKro)
+      expect(yaml).not.toContain('schemaOnlyUrl:');
+      // Resource-only and mixed expressions should be included in YAML (sent to Kro)
       expect(yaml).toContain('resourceOnlyMessage: ${"Deployment has " + deployment.status.readyReplicas + " replicas"}');
       expect(yaml).toContain('mixedMessage: ${"App " + schema.spec.hostname + " has " + deployment.status.readyReplicas + " replicas"}');
-      
+
       // None should be treated as static fields
       expect(yaml).not.toContain('Static fields');
     });

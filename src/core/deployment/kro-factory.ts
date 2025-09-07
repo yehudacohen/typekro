@@ -71,6 +71,7 @@ export class KroResourceFactoryImpl<
   private readonly logger = getComponentLogger('kro-factory');
   private readonly factoryOptions: FactoryOptions;
   private clientProvider?: KubernetesClientProvider;
+  private customObjectsApi?: k8s.CustomObjectsApi;
 
   constructor(
     name: string,
@@ -194,6 +195,17 @@ export class KroResourceFactoryImpl<
   private getKubeConfig(): k8s.KubeConfig {
     const clientProvider = this.getClientProvider();
     return clientProvider.getKubeConfig();
+  }
+
+  /**
+   * Get CustomObjectsApi client
+   */
+  private getCustomObjectsApi(): k8s.CustomObjectsApi {
+    if (!this.customObjectsApi) {
+      const clientProvider = this.getClientProvider();
+      this.customObjectsApi = clientProvider.getCustomObjectsApi();
+    }
+    return this.customObjectsApi;
   }
 
   /**
@@ -749,10 +761,34 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
+   * Pluralize a Kubernetes Kind name following Kubernetes CRD naming conventions
+   * This matches the pluralization rules used by Kubernetes for CRD names
+   */
+  private pluralizeKind(kind: string): string {
+    const lowerKind = kind.toLowerCase();
+    
+    // Handle common English pluralization rules that Kubernetes follows
+    if (lowerKind.endsWith('s') || lowerKind.endsWith('sh') || lowerKind.endsWith('ch') || 
+        lowerKind.endsWith('x') || lowerKind.endsWith('z')) {
+      return `${lowerKind}es`;
+    } else if (lowerKind.endsWith('o')) {
+      return `${lowerKind}es`;
+    } else if (lowerKind.endsWith('y') && lowerKind.length > 1 && !'aeiou'.includes(lowerKind[lowerKind.length - 2] || '')) {
+      return `${lowerKind.slice(0, -1)}ies`;
+    } else if (lowerKind.endsWith('f')) {
+      return `${lowerKind.slice(0, -1)}ves`;
+    } else if (lowerKind.endsWith('fe')) {
+      return `${lowerKind.slice(0, -2)}ves`;
+    } else {
+      return `${lowerKind}s`;
+    }
+  }
+
+  /**
    * Wait for the CRD to be created by Kro using DirectDeploymentEngine
    */
   private async waitForCRDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
-    const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
+    const crdName = `${this.pluralizeKind(this.schemaDefinition.kind)}.kro.run`;
 
     // Debug: Check if the method exists
     if (typeof deploymentEngine.waitForCRDReady !== 'function') {
@@ -959,18 +995,55 @@ ${Object.entries(spec as Record<string, any>)
         const isActive = state === 'ACTIVE';
         const isSynced = syncedCondition?.status === 'True';
 
+        // Check what status fields are expected by looking at the ResourceGraphDefinition
+        let expectedCustomStatusFields = false;
+        try {
+          const rgdResponse = await this.getCustomObjectsApi().getClusterCustomObject(
+            'kro.run',
+            'v1alpha1',
+            'resourcegraphdefinitions',
+            this.name
+          );
+          const rgd = rgdResponse.body as any;
+          const rgdStatusSchema = rgd.spec?.schema?.status || {};
+          const rgdStatusKeys = Object.keys(rgdStatusSchema);
+          expectedCustomStatusFields = rgdStatusKeys.length > 0;
+          
+          readinessLogger.debug('ResourceGraphDefinition status schema check', {
+            rgdName: this.name,
+            rgdStatusKeys,
+            expectedCustomStatusFields,
+          });
+        } catch (error) {
+          readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
+            rgdName: this.name,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
+          expectedCustomStatusFields = false;
+        }
+
         readinessLogger.debug('Kro instance status check', {
           instanceName,
           state,
           isActive,
           isSynced,
           hasCustomStatusFields,
+          expectedCustomStatusFields,
           statusKeys,
         });
 
-        // Resource is ready when it's active, synced, and has custom status fields populated
-        if (isActive && isSynced && hasCustomStatusFields) {
-          readinessLogger.info('Kro instance is ready', { instanceName });
+        // Resource is ready when it's active, synced, and either:
+        // 1. Has the expected custom status fields populated, OR
+        // 2. No custom status fields are expected (empty status schema in RGD)
+        const isReady = isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
+        
+        if (isReady) {
+          readinessLogger.info('Kro instance is ready', { 
+            instanceName,
+            hasCustomStatusFields,
+            expectedCustomStatusFields,
+          });
           return;
         }
 

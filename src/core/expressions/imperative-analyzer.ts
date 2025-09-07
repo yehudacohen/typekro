@@ -412,8 +412,12 @@ function convertTemplateLiteralToCel(templateLiteral: string, resources: Record<
 function convertExpressionToCel(expression: string): string {
   // Convert schema references: spec.hostname -> schema.spec.hostname
   if (expression.startsWith('spec.')) {
-    return `schema.${expression}`;
+    expression = `schema.${expression}`;
   }
+  
+  // Convert JavaScript operators to CEL operators
+  expression = expression.replace(/===/g, '=='); // Convert strict equality to CEL equality
+  expression = expression.replace(/!==/g, '!='); // Convert strict inequality to CEL inequality
   
   // Resource references are already in correct format
   return expression;
