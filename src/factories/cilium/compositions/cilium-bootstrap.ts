@@ -6,12 +6,9 @@
  */
 
 import { type } from 'arktype';
-// TODO: Import Cilium Helm wrappers once implemented in task 2.1 and 2.2
-// import { kubernetesComposition } from '../../../core/composition/imperative.js';
-// import { Cel } from '../../../core/references/cel.js';
-// import type { CiliumBootstrapConfig, CiliumBootstrapStatus } from '../types.js';
-// TODO: Import Cilium Helm wrappers once implemented in task 2.1 and 2.2
-// import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues } from '../resources/helm.js';
+import { kubernetesComposition } from '../../../index.js';
+import type { CiliumBootstrapConfig, CiliumBootstrapStatus } from '../types.js';
+import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues } from '../resources/helm.js';
 
 // =============================================================================
 // ARKTYPE SCHEMAS
@@ -20,7 +17,7 @@ import { type } from 'arktype';
 /**
  * ArkType schema for Cilium bootstrap configuration
  */
-const _CiliumBootstrapSpecSchema = type({
+export const CiliumBootstrapSpecSchema = type({
   name: 'string',
   'namespace?': 'string',
   'version?': 'string',
@@ -178,7 +175,7 @@ const _CiliumBootstrapSpecSchema = type({
 /**
  * ArkType schema for Cilium bootstrap status
  */
-const _CiliumBootstrapStatusSchema = type({
+export const CiliumBootstrapStatusSchema = type({
   phase: '"Installing" | "Ready" | "Failed" | "Upgrading"',
   ready: 'boolean',
   version: 'string',
@@ -269,8 +266,12 @@ const _CiliumBootstrapStatusSchema = type({
  * });
  * ```
  */
-// TODO: Implement ciliumBootstrap composition once Helm wrappers are completed in tasks 2.1-2.3
-/*
+/**
+ * Cilium Bootstrap Composition
+ *
+ * Creates a complete Cilium deployment using Helm with comprehensive configuration
+ * options and status outputs for integration with other systems.
+ */
 export const ciliumBootstrap = kubernetesComposition(
   {
     name: 'cilium-bootstrap',
@@ -280,15 +281,15 @@ export const ciliumBootstrap = kubernetesComposition(
     status: CiliumBootstrapStatusSchema,
   },
   (spec) => {
+    // Map configuration to Helm values
+    const helmValues = mapCiliumConfigToHelmValues(spec as CiliumBootstrapConfig);
+
     // Create HelmRepository for Cilium charts
     const helmRepository = ciliumHelmRepository({
       name: `${spec.name}-repo`,
       namespace: spec.namespace || 'flux-system',
       id: 'helmRepository',
     });
-
-    // Map configuration to Helm values
-    const helmValues = mapCiliumConfigToHelmValues(spec as CiliumBootstrapConfig);
 
     // Create HelmRelease for Cilium deployment
     const helmRelease = ciliumHelmRelease({
@@ -301,54 +302,40 @@ export const ciliumBootstrap = kubernetesComposition(
       id: 'helmRelease',
     });
 
-    // Return comprehensive status with CEL expressions for integration
+    // Return comprehensive status with natural JavaScript expressions
+    // These will be automatically converted to CEL expressions
     return {
-      // Overall status derived from HelmRelease with sophisticated CEL expressions
-      phase: Cel.conditional(
-        Cel.expr(helmRelease.status.phase, ' == "Ready"'),
-        'Ready',
-        Cel.conditional(
-          Cel.expr(helmRelease.status.phase, ' == "Installing"'),
-          'Installing',
-          Cel.conditional(
-            Cel.expr(helmRelease.status.phase, ' == "Upgrading"'),
-            'Upgrading',
-            Cel.conditional(
-              Cel.expr(helmRelease.status.phase, ' == "Failed"'),
-              'Failed',
-              'Installing'
-            )
-          )
-        )
-      ),
+      // Overall status derived from HelmRelease
+      phase: helmRelease.status.phase === 'Ready' ? 'Ready' : 
+             helmRelease.status.phase === 'Installing' ? 'Installing' :
+             helmRelease.status.phase === 'Upgrading' ? 'Upgrading' :
+             helmRelease.status.phase === 'Failed' ? 'Failed' : 'Installing',
       
-      ready: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
+      ready: helmRelease.status.phase === 'Ready',
       version: spec.version || '1.18.1',
 
-      // Component readiness with CEL expressions for actual Cilium components
-      agentReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-      operatorReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
+      // Component readiness based on HelmRelease status
+      agentReady: helmRelease.status.phase === 'Ready',
+      operatorReady: helmRelease.status.phase === 'Ready',
       hubbleReady: spec.observability?.hubble?.enabled === true ? 
-        Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"') : true,
+        helmRelease.status.phase === 'Ready' : true,
 
       // Feature status based on configuration
       encryptionEnabled: spec.security?.encryption?.enabled === true,
       bgpEnabled: spec.bgp?.enabled === true,
       gatewayAPIEnabled: spec.gatewayAPI?.enabled === true,
-      clusterMeshReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
+      clusterMeshReady: helmRelease.status.phase === 'Ready',
 
-      // Integration endpoints for other systems with dynamic namespace support
+      // Integration endpoints for other systems
       endpoints: {
-        health: Cel.template('http://cilium-agent.%s.svc.cluster.local:9879/healthz', 
-          spec.namespace || 'kube-system'),
-        metrics: Cel.template('http://cilium-agent.%s.svc.cluster.local:9962/metrics',
-          spec.namespace || 'kube-system'),
+        health: `http://cilium-agent.${spec.namespace || 'kube-system'}.svc.cluster.local:9879/healthz`,
+        metrics: `http://cilium-agent.${spec.namespace || 'kube-system'}.svc.cluster.local:9962/metrics`,
         hubbleMetrics: spec.observability?.hubble?.enabled === true ? 
-          Cel.template('http://hubble-metrics.%s.svc.cluster.local:9965/metrics',
-            spec.namespace || 'kube-system') : undefined,
+          `http://hubble-metrics.${spec.namespace || 'kube-system'}.svc.cluster.local:9965/metrics` : 
+          'disabled',
         hubbleUI: spec.observability?.hubble?.ui?.enabled === true ?
-          Cel.template('http://hubble-ui.%s.svc.cluster.local:12000',
-            spec.namespace || 'kube-system') : undefined,
+          `http://hubble-ui.${spec.namespace || 'kube-system'}.svc.cluster.local:12000` :
+          'disabled',
       },
 
       // CNI integration points with configurable paths
@@ -363,7 +350,7 @@ export const ciliumBootstrap = kubernetesComposition(
         ipamMode: spec.networking?.ipam?.mode || 'kubernetes',
         kubeProxyReplacement: spec.networking?.kubeProxyReplacement || 'disabled',
         routingMode: spec.networking?.routingMode || 'tunnel',
-        tunnelProtocol: spec.networking?.tunnelProtocol,
+        tunnelProtocol: spec.networking?.tunnelProtocol || 'vxlan',
       },
 
       // Security status with dynamic encryption status
@@ -374,18 +361,14 @@ export const ciliumBootstrap = kubernetesComposition(
         authenticationEnabled: spec.security?.authentication?.enabled === true,
       },
 
-      // Resource counts (these would be populated by actual cluster state in real deployment)
-      // In a real implementation, these would use CEL expressions to query actual Cilium status
+      // Resource counts (static values that would be hydrated by readiness evaluators)
       resources: {
-        totalNodes: 0, // Would be: Cel.expr<number>('cilium_nodes_total')
-        readyNodes: 0, // Would be: Cel.expr<number>('cilium_nodes_ready')
-        totalEndpoints: 0, // Would be: Cel.expr<number>('cilium_endpoints_total')
-        totalIdentities: 0, // Would be: Cel.expr<number>('cilium_identities_total')
+        totalNodes: 0,
+        readyNodes: 0,
+        totalEndpoints: 0,
+        totalIdentities: 0,
       },
     };
   }
 );
-*/
 
-// Placeholder export until implementation is complete
-export const __ciliumBootstrapPlaceholder = true;
