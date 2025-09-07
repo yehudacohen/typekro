@@ -303,59 +303,183 @@ function getNodeSource(node: any, fullSource: string): string {
 }
 
 /**
- * Check if a source string contains resource references
+ * Check if a source string contains resource references or schema references
  */
 function containsResourceReferences(source: string): boolean {
   // Look for patterns like:
-  // - kroHelmRelease.status.phase
-  // - fluxHelmRelease.status.phase
-  // - variableName.status.something
-  // - variableName.metadata.something
+  // - kroHelmRelease.status.phase (resource references)
+  // - fluxHelmRelease.status.phase (resource references)
+  // - variableName.status.something (resource references)
+  // - variableName.metadata.something (resource references)
+  // - spec.hostname (schema references)
+  // - spec.name (schema references)
 
-  const resourceReferencePatterns = [
+  const referencePatterns = [
     /\w+\.status\./,
     /\w+\.metadata\./,
     /\w+\.spec\./,
-    /\w+\.data\./
+    /\w+\.data\./,
+    /\bspec\./  // Schema references
   ];
 
-  return resourceReferencePatterns.some(pattern => pattern.test(source));
+  return referencePatterns.some(pattern => pattern.test(source));
 }
 
 /**
- * Convert resource references in source code to proper CEL format
+ * Convert resource references and schema references in source code to proper CEL format
  * 
- * The key insight is that we need to map JavaScript variable names to actual resource IDs.
- * For example, if the source code has `deployment1.status.readyReplicas` but the resource
- * was created with `id: 'apiDeployment'`, we need to convert it to `apiDeployment.status.readyReplicas`.
+ * This function handles template literals and converts them to proper CEL string concatenation.
+ * For example: `https://${spec.hostname}/api` becomes: "https://" + schema.spec.hostname + "/api"
+ * For example: `Deployment ${deployment.metadata.name} has ${deployment.status.readyReplicas} replicas`
+ * becomes: "Deployment " + deployment.metadata.name + " has " + deployment.status.readyReplicas + " replicas"
  */
 function convertResourceReferencesToCel(source: string, resources: Record<string, Enhanced<any, any>>): string {
-  const convertedSource = source;
-
-  // The issue is that the resources parameter contains resources keyed by their IDs,
-  // but the source code contains variable names. We need to create a mapping.
-  
-  // For now, let's try a different approach: instead of trying to map variable names to resource IDs,
-  // let's assume that the source code already contains the correct resource IDs.
-  // This works for cases where the CEL expressions are created properly during execution.
-  
-  // Get all resource IDs
-  const resourceIds = Object.keys(resources);
-
-  // Sort by length (longest first) to avoid partial matches
-  resourceIds.sort((a, b) => b.length - a.length);
-
-  for (const resourceId of resourceIds) {
-    // The CEL expressions should already be in the correct format
-    // Just validate that the resource references are properly formatted
-    const _resourcePattern = new RegExp(`\\b${resourceId}\\.(status|metadata|spec|data)\\b`, 'g');
-    // The pattern should exist if the source is already in correct format
+  // Check if this is a template literal
+  if (source.startsWith('`') && source.endsWith('`')) {
+    return convertTemplateLiteralToCel(source, resources);
   }
 
-  // For the specific case where we have variable names that don't match resource IDs,
-  // we need a more sophisticated approach. But for now, return the source as-is
-  // since the real fix should be in how the KubernetesRef objects are created.
-  return convertedSource;
+  // Check if this is a string literal that contains KubernetesRef placeholders
+  if (source.includes('__KUBERNETES_REF_')) {
+    return convertStringWithKubernetesRefs(source);
+  }
+
+  // For non-template literals, return as-is (other expressions should already be valid CEL)
+  return source;
+}
+
+/**
+ * Convert a JavaScript template literal to CEL string concatenation
+ */
+function convertTemplateLiteralToCel(templateLiteral: string, resources: Record<string, Enhanced<any, any>>): string {
+  // Remove the backticks
+  let content = templateLiteral.slice(1, -1);
+  
+  // First, convert any special KubernetesRef strings in the content
+  content = convertTemplateLiteralContent(content);
+  
+  // Parse template literal parts
+  const parts: string[] = [];
+  let currentPart = '';
+  let i = 0;
+  
+  while (i < content.length) {
+    if (content[i] === '$' && content[i + 1] === '{') {
+      // Found interpolation start
+      if (currentPart) {
+        // Add the literal string part (quoted for CEL)
+        parts.push(`"${currentPart.replace(/"/g, '\\"')}"`);
+        currentPart = '';
+      }
+      
+      // Find the matching closing brace
+      let braceCount = 1;
+      let j = i + 2;
+      let expression = '';
+      
+      while (j < content.length && braceCount > 0) {
+        if (content[j] === '{') braceCount++;
+        if (content[j] === '}') braceCount--;
+        if (braceCount > 0) expression += content[j];
+        j++;
+      }
+      
+      // Convert the expression part
+      if (expression.trim()) {
+        const convertedExpression = convertExpressionToCel(expression.trim());
+        parts.push(convertedExpression);
+      }
+      
+      i = j;
+    } else {
+      currentPart += content[i];
+      i++;
+    }
+  }
+  
+  // Add any remaining literal part
+  if (currentPart) {
+    parts.push(`"${currentPart.replace(/"/g, '\\"')}"`);
+  }
+  
+  // Join parts with + for CEL string concatenation
+  return parts.join(' + ');
+}
+
+/**
+ * Convert individual expressions within template literals to CEL format
+ */
+function convertExpressionToCel(expression: string): string {
+  // Convert schema references: spec.hostname -> schema.spec.hostname
+  if (expression.startsWith('spec.')) {
+    return `schema.${expression}`;
+  }
+  
+  // Resource references are already in correct format
+  return expression;
+}
+
+/**
+ * Convert template literal content that may contain special KubernetesRef strings
+ */
+function convertTemplateLiteralContent(content: string): string {
+  // Replace special KubernetesRef strings with proper CEL expressions
+  return content.replace(/__KUBERNETES_REF_([^_]+)_([^_]+)__/g, (match, resourceId, fieldPath) => {
+    if (resourceId === '__schema__') {
+      return `schema.${fieldPath}`;
+    } else {
+      return `${resourceId}.${fieldPath}`;
+    }
+  });
+}
+
+/**
+ * Convert a string literal that contains KubernetesRef placeholders to CEL string concatenation
+ */
+function convertStringWithKubernetesRefs(source: string): string {
+  // Remove quotes if present
+  let content = source;
+  if ((content.startsWith('"') && content.endsWith('"')) || (content.startsWith("'") && content.endsWith("'"))) {
+    content = content.slice(1, -1);
+  }
+  
+  // Split the string by KubernetesRef placeholders
+  const parts: string[] = [];
+  const refPattern = /__KUBERNETES_REF_([^_]+)_([^_]+)__/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null = refPattern.exec(content);
+  
+  while (match !== null) {
+    // Add the literal part before the reference
+    if (match.index > lastIndex) {
+      const literalPart = content.slice(lastIndex, match.index);
+      if (literalPart) {
+        parts.push(`"${literalPart.replace(/"/g, '\\"')}"`);
+      }
+    }
+    
+    // Add the reference part
+    const [, resourceId, fieldPath] = match;
+    if (resourceId === '__schema__') {
+      parts.push(`schema.${fieldPath}`);
+    } else {
+      parts.push(`${resourceId}.${fieldPath}`);
+    }
+    
+    lastIndex = match.index + match[0].length;
+    match = refPattern.exec(content);
+  }
+  
+  // Add any remaining literal part
+  if (lastIndex < content.length) {
+    const literalPart = content.slice(lastIndex);
+    if (literalPart) {
+      parts.push(`"${literalPart.replace(/"/g, '\\"')}"`);
+    }
+  }
+  
+  // Join parts with + for CEL string concatenation
+  return parts.join(' + ');
 }
 
 /**

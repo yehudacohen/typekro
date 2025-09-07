@@ -27,7 +27,7 @@ import type {
   ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
-import { ResourceDeploymentError } from '../types/deployment.js';
+import { ResourceDeploymentError, UnsupportedMediaTypeError } from '../types/deployment.js';
 import type { Scope } from '../types/serialization.js';
 import type {
   DeployableK8sResource,
@@ -1175,7 +1175,7 @@ export class DirectDeploymentEngine {
           if (existing) {
             // Resource exists, use patch for safer updates
             resourceLogger.debug('Resource exists, patching');
-            const patchResult = await this.k8sApi.patch(resolvedResource);
+            const patchResult = await this.patchResourceWithCorrectContentType(resolvedResource);
             appliedResource = patchResult.body;
           } else {
             // Resource does not exist, create it
@@ -1196,6 +1196,17 @@ export class DirectDeploymentEngine {
         } catch (error) {
           lastError = error as Error;
           resourceLogger.error('Failed to apply resource to cluster', lastError, { attempt });
+
+          // Check for HTTP 415 Unsupported Media Type errors
+          if (this.isUnsupportedMediaTypeError(error)) {
+            const acceptedTypes = this.extractAcceptedMediaTypes(error);
+            throw new UnsupportedMediaTypeError(
+              resolvedResource.metadata?.name || 'unknown',
+              resolvedResource.kind || 'Unknown',
+              acceptedTypes,
+              lastError
+            );
+          }
 
           // If this was the last attempt, throw the error
           if (attempt >= retryPolicy.maxRetries) {
@@ -1593,6 +1604,20 @@ export class DirectDeploymentEngine {
   }
 
   /**
+   * Patch a resource with the correct Content-Type header for merge patch operations
+   * This fixes HTTP 415 "Unsupported Media Type" errors that occur when using the generic patch method
+   */
+  private async patchResourceWithCorrectContentType(resource: k8s.KubernetesObject): Promise<{ body: k8s.KubernetesObject }> {
+    // The k8sApi.patch method already includes the correct Content-Type header for merge patch operations
+    // This was fixed in the deployment engine to use 'application/merge-patch+json'
+    return await this.k8sApi.patch(resource, undefined, undefined, undefined, undefined, {
+      headers: {
+        'Content-Type': 'application/merge-patch+json'
+      }
+    });
+  }
+
+  /**
    * Check if an error is a "not found" error
    */
   private isNotFoundError(error: unknown): boolean {
@@ -1785,5 +1810,39 @@ export class DirectDeploymentEngine {
 
     // Timeout reached
     throw new Error(`Timeout waiting for CRD ${crdName} to be established after ${timeout}ms`);
+  }
+
+  /**
+   * Check if an error is an HTTP 415 Unsupported Media Type error
+   */
+  private isUnsupportedMediaTypeError(error: any): boolean {
+    return (
+      error &&
+      typeof error === 'object' &&
+      (error.statusCode === 415 || 
+       (error.response && error.response.statusCode === 415) ||
+       (error.body && error.body.code === 415))
+    );
+  }
+
+  /**
+   * Extract accepted media types from HTTP 415 error message
+   */
+  private extractAcceptedMediaTypes(error: any): string[] {
+    const defaultTypes = ['application/json-patch+json', 'application/merge-patch+json', 'application/apply-patch+yaml'];
+    
+    try {
+      // Try to extract from error message
+      const message = error.message || error.body?.message || '';
+      const match = message.match(/accepted media types include: ([^"]+)/);
+      
+      if (match && match[1]) {
+        return match[1].split(', ').map((type: string) => type.trim());
+      }
+    } catch (_e) {
+      // Fallback to default types
+    }
+    
+    return defaultTypes;
   }
 }

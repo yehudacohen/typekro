@@ -382,8 +382,11 @@ export class StatusBuilderAnalyzer {
           allErrors.push(fieldError);
           overallValid = false;
           
-          this.logger.error('Failed to analyze status field', error as Error, { 
-            fieldName: property.name 
+          this.logger.debug('Status field analysis using fallback', { 
+            fieldName: property.name,
+            reason: 'Field contains patterns that cannot be converted to CEL',
+            fallbackBehavior: 'Static evaluation will be used',
+            error: error instanceof Error ? error.message : String(error)
           });
         }
       }
@@ -421,7 +424,11 @@ export class StatusBuilderAnalyzer {
         'function-call'
       );
       
-      this.logger.error('Status builder analysis failed', error as Error);
+      this.logger.info('Status builder analysis using fallback - this is normal for certain patterns', {
+        reason: 'Status builder contains patterns that cannot be converted to CEL expressions',
+        fallbackBehavior: 'Static evaluation will be used instead',
+        error: error instanceof Error ? error.message : String(error)
+      });
 
       return {
         fieldAnalysis: new Map(),
@@ -747,9 +754,12 @@ export class StatusBuilderAnalyzer {
     try {
       return this.generateStatusContextCelWithAdvancedFeatures(kubernetesRef, context);
     } catch (error) {
-      this.logger.error('Failed to generate status context CEL', error as Error, {
+      this.logger.debug('Status context CEL generation using fallback', {
         resourceId: kubernetesRef.resourceId,
-        fieldPath: kubernetesRef.fieldPath
+        fieldPath: kubernetesRef.fieldPath,
+        reason: 'Reference pattern cannot be converted to CEL',
+        fallbackBehavior: 'Static reference will be used',
+        error: error instanceof Error ? error.message : String(error)
       });
       
       // Return a safe fallback

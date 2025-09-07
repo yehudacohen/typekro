@@ -491,6 +491,14 @@ export class ResourceReadinessTimeoutError extends Error {
   }
 }
 
+export class UnsupportedMediaTypeError extends Error {
+  constructor(resourceName: string, resourceKind: string, acceptedTypes: string[], cause: Error) {
+    super(`Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`);
+    this.name = 'UnsupportedMediaTypeError';
+    this.cause = cause;
+  }
+}
+
 // =============================================================================
 // REFERENCE RESOLUTION CONTEXT
 // =============================================================================

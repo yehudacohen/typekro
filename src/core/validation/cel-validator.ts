@@ -74,16 +74,10 @@ function requiresKroResolution(value: any): boolean {
   }
 
   if (isCelExpression(value)) {
-    // Check if the CEL expression contains resource references
-    const expression = value.expression;
-    const resourceRefPattern = /([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./;
-    
-    // Exclude schema references - they can be resolved at compile time
-    if (expression.includes('schema.')) {
-      return false;
-    }
-    
-    return resourceRefPattern.test(expression);
+    // All CelExpression objects require Kro resolution, regardless of whether they contain
+    // schema references or resource references. CelExpression objects are explicit expressions
+    // that should be evaluated at runtime by Kro.
+    return true;
   }
 
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
