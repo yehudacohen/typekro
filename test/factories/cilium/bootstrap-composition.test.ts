@@ -8,65 +8,53 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { type } from 'arktype';
-import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
-import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues } from '../../../src/factories/cilium/resources/helm.js';
-import { Cel } from '../../../src/core/references/cel.js';
+import { kubernetesComposition } from '../../../src/index.js';
+import { ciliumBootstrap, CiliumBootstrapSpecSchema, CiliumBootstrapStatusSchema } from '../../../src/factories/cilium/compositions/cilium-bootstrap.js';
+import { mapCiliumConfigToHelmValues, validateCiliumHelmValues } from '../../../src/factories/cilium/resources/helm.js';
 import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 
-// Test schemas for bootstrap composition
-const CiliumStackSpec = type({
-  name: 'string',
-  clusterName: 'string',
-  clusterId: 'number',
-  version: 'string',
-  enableEncryption: 'boolean',
-  enableHubble: 'boolean',
-});
-
-const CiliumStackStatus = type({
-  phase: 'string',
-  ready: 'boolean',
-  agentReady: 'boolean',
-  operatorReady: 'boolean',
-  hubbleReady: 'boolean',
-  version: 'string',
-  encryptionEnabled: 'boolean',
-  endpoints: {
-    health: 'string',
-    metrics: 'string',
-  },
-  cni: {
-    configPath: 'string',
-    socketPath: 'string',
-  },
-});
+// Use the actual bootstrap schemas
 
 describe('Cilium Bootstrap Composition', () => {
   describe('Configuration Schema Validation', () => {
     it('should validate basic configuration schema', () => {
       const validConfig = {
         name: 'cilium',
-        clusterName: 'test-cluster',
-        clusterId: 1,
+        cluster: {
+          name: 'test-cluster',
+          id: 1,
+        },
         version: '1.18.1',
-        enableEncryption: true,
-        enableHubble: true,
+        security: {
+          encryption: {
+            enabled: true,
+            type: 'wireguard' as const,
+          },
+        },
+        observability: {
+          hubble: {
+            enabled: true,
+          },
+        },
       };
 
       // Test that the schema accepts valid configuration
-      expect(() => CiliumStackSpec(validConfig)).not.toThrow();
+      const result = CiliumBootstrapSpecSchema(validConfig);
+      expect(result instanceof Error).toBe(false);
     });
 
     it('should validate status schema', () => {
       const validStatus = {
-        phase: 'Ready',
+        phase: 'Ready' as const,
         ready: true,
         agentReady: true,
         operatorReady: true,
         hubbleReady: true,
         version: '1.18.1',
         encryptionEnabled: true,
+        bgpEnabled: false,
+        gatewayAPIEnabled: false,
+        clusterMeshReady: true,
         endpoints: {
           health: 'http://cilium-agent:9879/healthz',
           metrics: 'http://cilium-agent:9962/metrics',
@@ -74,162 +62,44 @@ describe('Cilium Bootstrap Composition', () => {
         cni: {
           configPath: '/etc/cni/net.d/05-cilium.conflist',
           socketPath: '/var/run/cilium/cilium.sock',
+          binPath: '/opt/cni/bin',
+        },
+        networking: {
+          ipamMode: 'kubernetes',
+          kubeProxyReplacement: 'strict',
+          routingMode: 'native',
+        },
+        security: {
+          policyEnforcement: 'default',
+          encryptionStatus: 'wireguard',
+          authenticationEnabled: false,
+        },
+        resources: {
+          totalNodes: 3,
+          readyNodes: 3,
+          totalEndpoints: 10,
+          totalIdentities: 5,
         },
       };
 
       // Test that the schema accepts valid status
-      expect(() => CiliumStackStatus(validStatus)).not.toThrow();
+      const result = CiliumBootstrapStatusSchema(validStatus);
+      expect(result instanceof Error).toBe(false);
     });
   });
 
   describe('Bootstrap Composition Creation', () => {
     it('should create a valid bootstrap composition', () => {
-      const ciliumStack = kubernetesComposition(
-        {
-          name: 'cilium-stack',
-          apiVersion: 'platform.example.com/v1alpha1',
-          kind: 'CiliumStack',
-          spec: CiliumStackSpec,
-          status: CiliumStackStatus,
-        },
-        (spec) => {
-          // Create Cilium Helm repository
-          const _helmRepo = ciliumHelmRepository({
-            name: 'cilium',
-            namespace: 'flux-system',
-            id: 'ciliumRepo',
-          });
-
-          // Create Cilium Helm release
-          const helmRelease = ciliumHelmRelease({
-            name: 'cilium',
-            namespace: 'kube-system',
-            version: spec.version,
-            repositoryName: 'cilium',
-            repositoryNamespace: 'flux-system',
-            values: mapCiliumConfigToHelmValues({
-              name: spec.name,
-              cluster: {
-                name: spec.clusterName,
-                id: spec.clusterId,
-              },
-              security: {
-                encryption: {
-                  enabled: spec.enableEncryption,
-                  type: 'wireguard',
-                },
-              },
-              observability: {
-                hubble: {
-                  enabled: spec.enableHubble,
-                  relay: { enabled: spec.enableHubble },
-                  ui: { enabled: spec.enableHubble },
-                },
-              },
-            }),
-            id: 'ciliumRelease',
-          });
-
-          // Return status with CEL expressions
-          return {
-            phase: Cel.expr<string>(helmRelease.status.phase, ' == "Ready" ? "Ready" : "Installing"'),
-            ready: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            agentReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            operatorReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            hubbleReady: spec.enableHubble,
-            version: spec.version,
-            encryptionEnabled: spec.enableEncryption,
-            endpoints: {
-              health: 'http://cilium-agent:9879/healthz',
-              metrics: 'http://cilium-agent:9962/metrics',
-            },
-            cni: {
-              configPath: '/etc/cni/net.d/05-cilium.conflist',
-              socketPath: '/var/run/cilium/cilium.sock',
-            },
-          };
-        }
-      );
-
-      expect(ciliumStack).toBeDefined();
-      expect(ciliumStack.name).toBe('cilium-stack');
+      expect(ciliumBootstrap).toBeDefined();
+      expect(ciliumBootstrap.name).toBe('cilium-bootstrap');
     });
 
-    it('should create resources with proper configuration', async () => {
-      const _testSpec = {
-        name: 'test-cilium',
-        clusterName: 'test-cluster',
-        clusterId: 42,
-        version: '1.18.1',
-        enableEncryption: true,
-        enableHubble: false,
-      };
-
-      const ciliumStack = kubernetesComposition(
-        {
-          name: 'cilium-stack',
-          apiVersion: 'platform.example.com/v1alpha1',
-          kind: 'CiliumStack',
-          spec: CiliumStackSpec,
-          status: CiliumStackStatus,
-        },
-        (spec) => {
-          const _helmRepo = ciliumHelmRepository({
-            name: 'cilium',
-            namespace: 'flux-system',
-            id: 'ciliumRepo',
-          });
-
-          const helmRelease = ciliumHelmRelease({
-            name: 'cilium',
-            namespace: 'kube-system',
-            version: spec.version,
-            repositoryName: 'cilium',
-            repositoryNamespace: 'flux-system',
-            values: mapCiliumConfigToHelmValues({
-              name: spec.name,
-              cluster: {
-                name: spec.clusterName,
-                id: spec.clusterId,
-              },
-              security: {
-                encryption: {
-                  enabled: spec.enableEncryption,
-                  type: 'wireguard',
-                },
-              },
-              observability: {
-                hubble: {
-                  enabled: spec.enableHubble,
-                },
-              },
-            }),
-            id: 'ciliumRelease',
-          });
-
-          return {
-            phase: helmRelease.status.phase,
-            ready: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            agentReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            operatorReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            hubbleReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            version: spec.version,
-            encryptionEnabled: spec.enableEncryption,
-            endpoints: {
-              health: 'http://cilium-agent:9879/healthz',
-              metrics: 'http://cilium-agent:9962/metrics',
-            },
-            cni: {
-              configPath: '/etc/cni/net.d/05-cilium.conflist',
-              socketPath: '/var/run/cilium/cilium.sock',
-            },
-          };
-        }
-      );
-
-      // Test that the composition can create a factory
-      const factory = await ciliumStack.factory('direct', { namespace: 'test' });
-      expect(factory).toBeDefined();
+    it('should create resources with proper configuration', () => {
+      // Test that the composition can generate YAML
+      const yaml = ciliumBootstrap.toYaml();
+      expect(yaml).toBeDefined();
+      expect(yaml).toContain('kind: ResourceGraphDefinition');
+      expect(yaml).toContain('name: cilium-bootstrap');
     });
   });
 
@@ -349,61 +219,19 @@ describe('Cilium Bootstrap Composition', () => {
 
   describe('Status Expression Generation', () => {
     it('should generate proper status expressions', async () => {
-      // This test validates that the composition generates the expected
+      // This test validates that the ciliumBootstrap composition generates the expected
       // status structure that can be converted to CEL expressions
-      const ciliumStack = kubernetesComposition(
-        {
-          name: 'cilium-stack',
-          apiVersion: 'platform.example.com/v1alpha1',
-          kind: 'CiliumStack',
-          spec: CiliumStackSpec,
-          status: CiliumStackStatus,
-        },
-        (spec) => {
-          const helmRelease = ciliumHelmRelease({
-            name: 'cilium',
-            namespace: 'kube-system',
-            version: spec.version,
-            repositoryName: 'cilium',
-            repositoryNamespace: 'flux-system',
-            id: 'ciliumRelease',
-          });
-
-          // Return status that will be converted to CEL expressions
-          return {
-            phase: helmRelease.status.phase,
-            ready: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            agentReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            operatorReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            hubbleReady: Cel.expr<boolean>(helmRelease.status.phase, ' == "Ready"'),
-            version: spec.version,
-            encryptionEnabled: spec.enableEncryption,
-            endpoints: {
-              health: 'http://cilium-agent:9879/healthz',
-              metrics: 'http://cilium-agent:9962/metrics',
-            },
-            cni: {
-              configPath: '/etc/cni/net.d/05-cilium.conflist',
-              socketPath: '/var/run/cilium/cilium.sock',
-            },
-          };
-        }
-      );
-
-      expect(ciliumStack).toBeDefined();
+      expect(ciliumBootstrap).toBeDefined();
       
-      // The composition should be able to generate status
-      const _testSpec = {
-        name: 'test-cilium',
-        clusterName: 'test-cluster',
-        clusterId: 1,
-        version: '1.18.1',
-        enableEncryption: true,
-        enableHubble: true,
-      };
-
-      const factory = await ciliumStack.factory('direct', { namespace: 'test' });
+      // The composition should be able to create factories
+      const factory = await ciliumBootstrap.factory('direct', { namespace: 'test' });
       expect(factory).toBeDefined();
+
+      // Test that we can generate YAML output
+      const yaml = await factory.toYaml();
+      expect(yaml).toBeDefined();
+      expect(typeof yaml).toBe('string');
+      expect(yaml.length).toBeGreaterThan(0);
     });
   });
 
