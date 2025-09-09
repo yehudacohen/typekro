@@ -87,6 +87,13 @@ export class ReferenceResolver {
    * Resolve all references in a resource
    */
   async resolveReferences(resource: any, context: ResolutionContext): Promise<any> {
+    this.logger.debug('ReferenceResolver.resolveReferences called', {
+      hasResourceKeyMapping: !!context.resourceKeyMapping,
+      resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
+      resourceKeyMappingKeys: context.resourceKeyMapping ? Array.from(context.resourceKeyMapping.keys()) : [],
+      contextKeys: Object.keys(context),
+    });
+    
     // Quick check - if there are no references, return the resource as-is
     if (!this.hasReferences(resource)) {
       this.logger.trace('No references found in resource, returning as-is', {
@@ -339,28 +346,55 @@ export class ReferenceResolver {
     expr: CelExpression<T>,
     context: ResolutionContext
   ): Promise<T> {
+    this.logger.debug('Starting CEL expression evaluation', {
+      expression: expr.expression,
+      hasResourceKeyMapping: !!context.resourceKeyMapping,
+      resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
+      resourceKeyMappingKeys: context.resourceKeyMapping ? Array.from(context.resourceKeyMapping.keys()) : [],
+      deployedResourcesCount: context.deployedResources.length,
+      deployedResourceIds: context.deployedResources.map(r => r.id),
+    });
+    
     // Check cache first
     const cacheKey = `cel:${expr.expression}`;
     if (this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey) as T;
     }
 
+    // Build the resources map for CEL evaluation
+    const resourcesMap = new Map<string, unknown>();
+    
     try {
-      // Build the resources map for CEL evaluation
-      const resourcesMap = new Map<string, unknown>();
 
       // If we have a resource key mapping, use it to map original keys to resources
       if (context.resourceKeyMapping && context.resourceKeyMapping.size > 0) {
         // Use the resource key mapping to provide resources with their original keys
         for (const [originalKey, resource] of context.resourceKeyMapping) {
           resourcesMap.set(originalKey, resource);
+          this.logger.debug('Added resource to CEL context from key mapping', {
+            originalKey,
+            resourceId: (resource as any).id,
+            resourceKind: (resource as any).kind,
+            resourceName: (resource as any).name,
+          });
         }
       } else {
         // Fallback to using deployed resource IDs
         for (const deployedResource of context.deployedResources) {
           resourcesMap.set(deployedResource.id, deployedResource.manifest);
+          this.logger.debug('Added resource to CEL context from deployed resources', {
+            deployedResourceId: deployedResource.id,
+            resourceKind: deployedResource.manifest?.kind,
+            resourceName: deployedResource.manifest?.metadata?.name,
+          });
         }
       }
+
+      this.logger.debug('CEL context prepared', {
+        expression: expr.expression,
+        resourcesMapSize: resourcesMap.size,
+        resourcesMapKeys: Array.from(resourcesMap.keys()),
+      });
 
       // Create CEL evaluation context
       const celContext: CelEvaluationContext = {
@@ -372,9 +406,21 @@ export class ReferenceResolver {
 
       // Use the proper CEL evaluator
       const result = await this.celEvaluator.evaluate(expr, celContext);
+      this.logger.debug('CEL expression evaluated successfully', {
+        expression: expr.expression,
+        result,
+        resultType: typeof result,
+      });
       this.cache.set(cacheKey, result);
       return result as T;
     } catch (error) {
+      this.logger.error('CEL expression evaluation failed', error as Error, {
+        expression: expr.expression,
+        hasResourceKeyMapping: !!context.resourceKeyMapping,
+        resourceKeyMappingKeys: context.resourceKeyMapping ? Array.from(context.resourceKeyMapping.keys()) : [],
+        resourcesMapSize: resourcesMap.size,
+        resourcesMapKeys: Array.from(resourcesMap.keys()),
+      });
       throw new CelExpressionError(expr, error as Error);
     }
   }

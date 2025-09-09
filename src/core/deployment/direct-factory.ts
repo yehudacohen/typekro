@@ -620,10 +620,25 @@ metadata:
 
     const instanceName = this.generateInstanceName(spec);
     const resourceArray = Object.values(resolvedResources).map((resource, index) => {
+      this.logger.debug('Processing resource for ID generation', {
+        index,
+        resourceId: resource.id,
+        resourceKind: resource.kind,
+        hasId: !!resource.id,
+        resourceKeys: Object.keys(resource),
+      });
       const baseId = `${instanceName}-resource-${index}-${resource.id || resource.kind?.toLowerCase() || 'unknown'}`;
+      const finalId = toCamelCase(baseId);
+      this.logger.debug('Generated resource ID', {
+        index,
+        originalId: resource.id,
+        resourceKind: resource.kind,
+        baseId,
+        finalId,
+      });
       const resourceWithId = {
         ...resource,
-        id: toCamelCase(baseId),
+        id: finalId,
       };
 
       // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
@@ -664,9 +679,42 @@ metadata:
 
   /**
    * Resolve resources for a specific spec
-   * This uses the existing processResourceReferences system to handle schema references
+   * This uses composition re-execution when available, or falls back to reference resolution
    */
+  private reExecutedStatus: TStatus | null = null; // Store the re-executed status
+
   private resolveResourcesForSpec(spec: TSpec): Record<string, KubernetesResource> {
+    // Reset the re-executed status
+    this.reExecutedStatus = null;
+
+    // Check if we have composition re-execution parameters
+    if (this.factoryOptions.compositionFn && this.factoryOptions.compositionDefinition) {
+      this.logger.debug('Re-executing composition with actual spec values', {
+        hasCompositionFn: !!this.factoryOptions.compositionFn,
+        hasCompositionDefinition: !!this.factoryOptions.compositionDefinition,
+      });
+
+      try {
+        // Re-execute the composition with actual spec values
+        const reExecutionResult = this.reExecuteCompositionWithActualValues(spec);
+        if (reExecutionResult) {
+          this.logger.debug('Successfully re-executed composition with actual values', {
+            resourceCount: Object.keys(reExecutionResult.resources).length,
+            statusFields: reExecutionResult.status ? Object.keys(reExecutionResult.status) : [],
+          });
+          
+          // Store the re-executed status for later use
+          this.reExecutedStatus = reExecutionResult.status;
+          
+          return reExecutionResult.resources;
+        }
+      } catch (error) {
+        this.logger.warn('Failed to re-execute composition, falling back to reference resolution', error as Error);
+      }
+    }
+
+    // Fall back to the original reference resolution approach
+    this.logger.debug('Using reference resolution approach (no composition re-execution available)');
     const resolvedResources: Record<string, KubernetesResource> = {};
     for (const [key, resource] of Object.entries(this.resources)) {
       try {
@@ -682,6 +730,94 @@ metadata:
     }
 
     return resolvedResources;
+  }
+
+  /**
+   * Re-execute the composition function with actual spec values
+   * This provides actual values instead of proxy functions to the composition
+   */
+  private reExecuteCompositionWithActualValues(spec: TSpec): { resources: Record<string, KubernetesResource>; status: TStatus } | null {
+    if (!this.factoryOptions.compositionFn || !this.factoryOptions.compositionDefinition) {
+      return null;
+    }
+
+    try {
+      this.logger.debug('Re-executing composition with actual spec values');
+
+      // Import the composition context utilities
+      const { createCompositionContext, runWithCompositionContext } = require('../../factories/shared.js');
+
+      // Create a new composition context for re-execution
+      const reExecutionContext = createCompositionContext('re-execution');
+
+      // Execute the composition function within the new context and capture both resources and status
+      const { resources, status } = runWithCompositionContext(reExecutionContext, () => {
+        // Execute the composition function with actual spec values
+        const computedStatus = this.factoryOptions.compositionFn!(spec);
+        return {
+          resources: reExecutionContext.resources,
+          status: computedStatus
+        };
+      });
+
+      this.logger.debug('Composition re-execution completed', {
+        capturedResourceCount: Object.keys(resources).length,
+        resourceIds: Object.keys(resources),
+        statusFields: status ? Object.keys(status) : [],
+      });
+
+      // Convert Enhanced resources back to KubernetesResource format
+      const kubernetesResources: Record<string, KubernetesResource> = {};
+      for (const [id, enhanced] of Object.entries(resources)) {
+        // Extract the underlying Kubernetes resource from the Enhanced proxy
+        const kubernetesResource = this.extractKubernetesResourceFromEnhanced(enhanced as Enhanced<any, any>);
+        kubernetesResources[id] = kubernetesResource;
+      }
+
+      // The status returned from re-execution should preserve CEL expressions
+      // Only spec-based values should be resolved, resource-based CEL expressions should remain
+      return {
+        resources: kubernetesResources,
+        status: status as TStatus
+      };
+    } catch (error) {
+      this.logger.error('Failed to re-execute composition', error as Error);
+      return null;
+    }
+  }
+
+  /**
+   * Get the re-executed status if available
+   * This is used by the deployment strategy to use computed status instead of calling status builder with proxy functions
+   */
+  public getReExecutedStatus(): TStatus | null {
+    return this.reExecutedStatus;
+  }
+
+  /**
+   * Extract the underlying Kubernetes resource from an Enhanced proxy
+   */
+  private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<any, any>): KubernetesResource {
+    // The Enhanced proxy should have the original resource data
+    // We need to extract the core Kubernetes resource properties
+    const resource: KubernetesResource = {
+      apiVersion: enhanced.apiVersion,
+      kind: enhanced.kind,
+      metadata: enhanced.metadata,
+      spec: enhanced.spec,
+    };
+
+    // Add status if it exists
+    if (enhanced.status) {
+      resource.status = enhanced.status;
+    }
+
+    // Preserve the id field if it exists (needed for resource mapping in CEL resolution)
+    if ((enhanced as any).id) {
+      (resource as any).id = (enhanced as any).id;
+    }
+
+    return resource;
   }
 
   /**
@@ -766,6 +902,17 @@ metadata:
       for (const [key, value] of Object.entries(resource)) {
         resolved[key] = this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`);
       }
+      
+      // Debug: Check if id field is being preserved
+      if (path === 'root' && (resource as any).id) {
+        this.logger.debug('Resource ID preservation check', {
+          path,
+          originalId: (resource as any).id,
+          resolvedId: resolved.id,
+          originalKeys: Object.keys(resource),
+          resolvedKeys: Object.keys(resolved),
+        });
+      }
 
       // FIX: Explicitly check for and preserve the non-enumerable readinessEvaluator property.
       const evaluator = (resource as { readinessEvaluator?: (resource: unknown) => boolean })
@@ -778,6 +925,12 @@ metadata:
           configurable: false,
           writable: false,
         });
+      }
+
+      // FIX: Preserve the id field if it exists (needed for resource mapping in CEL resolution)
+      if ((resource as any).id) {
+        this.logger.trace('Preserving resource id field', { path, id: (resource as any).id });
+        (resolved as any).id = (resource as any).id;
       }
 
       return resolved;

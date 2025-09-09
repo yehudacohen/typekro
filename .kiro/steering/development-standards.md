@@ -118,9 +118,17 @@ When encountering complex problems:
 
 ### File Operations
 - **ALWAYS use `rm` command in shell for file deletion** - Never use file tools to delete files. Use `executeBash` with `rm` command so the user can approve deletions.
+- **NEVER use `sed` for bulk text replacements** - `sed` commands often introduce syntax errors and break code structure. Always use `strReplace` tool for precise, controlled replacements.
+- **Go slowly and methodically** - Make one change at a time and verify it works before proceeding to the next change.
 - Clean up temporary debug files after use
 - Ask for approval before deleting files that might contain important information
 - Follow the build and development practices outlined in [Tooling Requirements](tooling-requirements.md)
+
+### Text Replacement Guidelines
+- **Use `strReplace` tool exclusively** - This ensures exact matching and prevents syntax errors
+- **Make small, targeted changes** - Replace one pattern at a time rather than attempting bulk operations
+- **Verify each change** - Run typecheck or tests after each replacement to ensure nothing broke
+- **Never use shell text processing tools** - Avoid `sed`, `awk`, `grep -r` with replacements, etc. for code modifications
 
 ## Red Flags Requiring Investigation
 

@@ -16,6 +16,7 @@ import {
 import { CompositionDebugger, CompositionExecutionError } from '../errors.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type { TypedResourceGraph } from '../types/deployment.js';
+
 import type {
   KroCompatibleType,
   MagicAssignableShape,
@@ -82,7 +83,8 @@ function executeNestedComposition<
       compositionFn,
       options,
       nestedContext,
-      uniqueNestedName
+      uniqueNestedName,
+      undefined // No actual spec available in nested compositions
     );
   });
 
@@ -172,6 +174,39 @@ function generateUniqueClosureId(
 let globalCompositionCounter = 0;
 
 /**
+ * Creates a hybrid spec object that provides actual values for JavaScript logic
+ * while still generating CEL expressions when needed for serialization
+ */
+function createHybridSpec<TSpec extends KroCompatibleType>(
+  actualSpec: TSpec,
+  schemaProxy: TSpec
+): TSpec {
+  // For primitive values, return the actual value directly
+  if (typeof actualSpec !== 'object' || actualSpec === null) {
+    return actualSpec;
+  }
+
+  // Create a proxy that intelligently returns actual values or proxy values
+  // based on the context of access
+  return new Proxy(actualSpec, {
+    get(target, prop) {
+      const actualValue = target[prop as keyof TSpec];
+      const proxyValue = schemaProxy[prop as keyof TSpec];
+
+      // For nested objects, create hybrid recursively
+      if (typeof actualValue === 'object' && actualValue !== null && typeof proxyValue === 'object') {
+        return createHybridSpec(actualValue as any, proxyValue);
+      }
+
+      // Return actual values for JavaScript operations
+      // The serialization system will analyze the original composition function
+      // and generate CEL expressions from the schema proxy separately
+      return actualValue;
+    },
+  }) as TSpec;
+}
+
+/**
  * Core composition execution logic shared between nested and top-level compositions
  */
 function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
@@ -179,7 +214,8 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
   compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   options: SerializationOptions | undefined,
   context: CompositionContext,
-  compositionName: string
+  compositionName: string,
+  actualSpec?: TSpec
 ): TypedResourceGraph<TSpec, TStatus> {
   const startTime = Date.now();
 
@@ -213,7 +249,12 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
           
           try {
-            capturedStatus = compositionFn(schema.spec as TSpec) as MagicAssignableShape<TStatus>;
+            // Create a hybrid spec that provides actual values for JavaScript logic
+            // while still generating CEL expressions for serialization
+            const specToUse = actualSpec 
+              ? createHybridSpec(actualSpec, schema.spec as TSpec)
+              : (schema.spec as TSpec);
+            capturedStatus = compositionFn(specToUse) as MagicAssignableShape<TStatus>;
             
             // Store the original composition function for later analysis
             // This allows the serialization system to analyze the original JavaScript expressions
@@ -317,6 +358,44 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
       statusFieldCount: statusFields.length,
     });
 
+    // Store the composition function for potential re-execution with actual values
+    // Use Object.defineProperty to avoid readonly property issues
+    try {
+      Object.defineProperty(result, '_compositionFn', {
+        value: compositionFn,
+        writable: false,
+        enumerable: false,
+        configurable: true
+      });
+      Object.defineProperty(result, '_definition', {
+        value: definition,
+        writable: false,
+        enumerable: false,
+        configurable: true
+      });
+      Object.defineProperty(result, '_options', {
+        value: options || {},
+        writable: false,
+        enumerable: false,
+        configurable: true
+      });
+      Object.defineProperty(result, '_context', {
+        value: context,
+        writable: false,
+        enumerable: false,
+        configurable: true
+      });
+      Object.defineProperty(result, '_compositionName', {
+        value: compositionName,
+        writable: false,
+        enumerable: false,
+        configurable: true
+      });
+    } catch (error) {
+      // If we can't add properties to the result object, log a warning but continue
+      console.warn('Could not store composition function for re-execution:', error);
+    }
+
     return result;
   } catch (error) {
     const endTime = Date.now();
@@ -380,7 +459,8 @@ export function kubernetesComposition<
       compositionFn,
       options,
       context,
-      uniqueCompositionName
+      uniqueCompositionName,
+      undefined // No actual spec available during initial composition creation
     );
   });
 }

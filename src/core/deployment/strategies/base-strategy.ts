@@ -276,9 +276,24 @@ export abstract class BaseDeploymentStrategy<
               const resourceIdPattern = new RegExp(`^${camelCaseInstanceName}Resource\\d+(.+)$`);
               const match = deployedResource.id.match(resourceIdPattern);
 
+              this.logger.debug('Processing deployed resource for CEL mapping', {
+                instanceName,
+                camelCaseInstanceName,
+                deployedResourceId: deployedResource.id,
+                resourceIdPattern: resourceIdPattern.source,
+                match: match,
+                matchedGroup: match?.[1],
+              });
+
               if (match?.[1]) {
                 // Convert from PascalCase to camelCase (e.g., "Webapp" -> "webapp")
                 const originalKey = match[1].charAt(0).toLowerCase() + match[1].slice(1);
+                
+                this.logger.debug('Extracted original key from resource ID', {
+                  instanceName,
+                  deployedResourceId: deployedResource.id,
+                  extractedKey: originalKey,
+                });
 
                 try {
                   // Query the actual resource from the cluster to get its current status

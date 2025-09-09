@@ -467,6 +467,10 @@ export function createResource<TSpec extends object, TStatus extends object>(
     if (!validation.isValid) {
       throw new Error(`Invalid resource ID: ${validation.error}`);
     }
+
+    // Remove the id field from the resource to prevent it from being sent to Kubernetes
+    const { id: _id, ...cleanResource } = resource as any;
+    resource = cleanResource;
   } else {
     // Use deterministic ID generation by default
     const name = resource.metadata?.name || resource.kind.toLowerCase();

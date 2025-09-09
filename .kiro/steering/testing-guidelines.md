@@ -154,6 +154,30 @@ describe('Type Safety', () => {
 
 Remember: **If our tests need `as any`, our users will too - and that defeats the purpose of TypeKro.**
 
+### CRITICAL: Factory Function Type Safety Requirements
+
+**NEVER use `Enhanced<any>` or `any` types in factory functions. This is completely unacceptable and defeats the entire purpose of TypeScript.**
+
+#### ❌ NEVER Do This:
+```typescript
+export function myFactory(config: MyConfig): Enhanced<any> {
+  // This is completely unacceptable - no type safety!
+}
+```
+
+#### ✅ ALWAYS Do This:
+```typescript
+export function myFactory(config: MyConfig): Enhanced<MySpec, MyStatus> {
+  // Proper type safety with specific spec and status types
+}
+```
+
+**Requirements:**
+- Every factory function MUST return `Enhanced<TSpec, TStatus>` with proper types
+- Every CRD factory MUST define proper spec and status interfaces
+- All type definitions MUST be based on actual Kubernetes/CRD schemas
+- Code reviews MUST reject any factory using `any` types
+
 This principle aligns with the broader [Development Standards](development-standards.md) philosophy of fixing root problems rather than masking symptoms.
 
 ## Status Builder Testing
@@ -317,20 +341,48 @@ Ensure your cluster has:
 
 ### Running Integration Tests
 
-#### Single Test File
-```bash
-bun run test:integration -- test/integration/cilium/integration.test.ts
-```
+#### For Development and Debugging Single Tests
 
-#### All Integration Tests
+**IMPORTANT**: For running individual test files during development, use this workflow:
+
+1. **Set up the cluster once** (only needs to be done once):
+   ```bash
+   bun run scripts/e2e-setup.ts
+   ```
+
+2. **Run individual test files** (can be repeated many times):
+   ```bash
+   bun test test/integration/cilium/integration.test.ts
+   ```
+
+3. **Enable debug logging** (if needed):
+   ```bash
+   TYPEKRO_LOG_LEVEL=debug bun test test/integration/cilium/integration.test.ts
+   ```
+
+4. **Clean up when done** (optional):
+   ```bash
+   bun run scripts/e2e-cleanup.sh
+   ```
+
+#### For CI/CD and Full Test Runs
+
+**All Integration Tests** (sets up cluster, runs all tests, cleans up):
 ```bash
 bun run test:integration
 ```
 
-#### Leave the cluster alive after test run for debugging with kubectl
+**Debug Mode** (runs all tests, leaves cluster alive for debugging):
 ```bash
 bun run test:integration:debug
 ```
+
+#### Key Differences
+
+- `bun test <file>` - Runs a single test file against existing cluster
+- `bun run test:integration` - Runs ALL tests, destroys cluster after
+- `bun run test:integration:debug` - Runs ALL tests, leaves cluster for debugging
+- `TYPEKRO_LOG_LEVEL=debug` - Enables debug logging for any test command
 
 ### Test Timeouts
 

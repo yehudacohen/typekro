@@ -24,7 +24,7 @@ import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
-import type { KubernetesRef } from '../types/common.js';
+import type { KubernetesRef, CelExpression } from '../types/common.js';
 import type {
   AppliedResource,
   DeploymentClosure,
@@ -819,6 +819,149 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
+   * Evaluate static CEL expressions with actual spec values
+   */
+  private async evaluateStaticFields(
+    staticFields: Record<string, any>,
+    spec: TSpec
+  ): Promise<Record<string, any>> {
+    const evaluatedFields: Record<string, any> = {};
+
+    for (const [fieldName, fieldValue] of Object.entries(staticFields)) {
+      if (this.isCelExpression(fieldValue)) {
+        try {
+          // Evaluate CEL expressions that contain only schema references
+          const evaluatedValue = this.evaluateStaticCelExpression(fieldValue, spec);
+          evaluatedFields[fieldName] = evaluatedValue;
+        } catch (error) {
+          this.logger.warn('Failed to evaluate static CEL expression', {
+            field: fieldName,
+            expression: fieldValue.expression,
+            error: (error as Error).message,
+          });
+          // Fallback to the original value
+          evaluatedFields[fieldName] = fieldValue;
+        }
+      } else if (typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
+        // Recursively evaluate nested objects
+        evaluatedFields[fieldName] = await this.evaluateStaticFields(fieldValue, spec);
+      } else {
+        // Keep non-CEL values as-is
+        evaluatedFields[fieldName] = fieldValue;
+      }
+    }
+
+    return evaluatedFields;
+  }
+
+  /**
+   * Evaluate a static CEL expression that contains only schema references
+   */
+  private evaluateStaticCelExpression(celExpression: CelExpression, spec: TSpec): any {
+    const expression = celExpression.expression;
+    
+    // Handle expressions that reference schema.spec fields FIRST (before checking just spec.)
+    if (expression.includes('schema.spec.')) {
+      // Replace schema.spec.fieldName with actual spec values
+      let evaluatedExpression = expression;
+      
+      // Find all schema.spec.fieldName patterns and replace them with actual values
+      const schemaRefPattern = /schema\.spec\.(\w+)/g;
+      evaluatedExpression = evaluatedExpression.replace(schemaRefPattern, (match: string, fieldName: string) => {
+        const fieldValue = (spec as any)[fieldName];
+        
+        if (fieldValue !== undefined) {
+          // Return the properly formatted value for JavaScript evaluation
+          if (typeof fieldValue === 'string') {
+            return `"${fieldValue}"`; // Wrap strings in quotes
+          } else if (typeof fieldValue === 'boolean') {
+            return String(fieldValue); // true/false as-is
+          } else if (typeof fieldValue === 'number') {
+            return String(fieldValue); // Numbers as-is
+          } else {
+            return JSON.stringify(fieldValue); // Other types as JSON
+          }
+        }
+        
+        // If field value is undefined, keep the original reference
+        return match;
+      });
+      
+      // Now evaluate the expression with actual values
+      try {
+        // Use Function constructor for safer evaluation than eval
+        const result = new Function(`return ${evaluatedExpression}`)();
+        return result;
+      } catch (error) {
+        this.logger.warn('Failed to evaluate schema expression with Function constructor', {
+          expression: evaluatedExpression,
+          originalExpression: expression,
+          error: (error as Error).message,
+        });
+        throw error;
+      }
+    }
+    
+    // Handle expressions that reference spec fields (not schema.spec, just spec)
+    if (expression.includes('spec.')) {
+      // Replace spec.fieldName with actual spec values
+      let evaluatedExpression = expression;
+      
+      // Find all spec.fieldName patterns (not schema.spec) and replace them with actual values
+      const specRefPattern = /\bspec\.(\w+)/g;
+      evaluatedExpression = evaluatedExpression.replace(specRefPattern, (match: string, fieldName: string) => {
+        const fieldValue = (spec as any)[fieldName];
+        
+        if (fieldValue !== undefined) {
+          // Return the properly formatted value for JavaScript evaluation
+          if (typeof fieldValue === 'string') {
+            return `"${fieldValue}"`; // Wrap strings in quotes
+          } else if (typeof fieldValue === 'boolean') {
+            return String(fieldValue); // true/false as-is
+          } else if (typeof fieldValue === 'number') {
+            return String(fieldValue); // Numbers as-is
+          } else {
+            return JSON.stringify(fieldValue); // Other types as JSON
+          }
+        }
+        
+        // If field value is undefined, keep the original reference
+        return match;
+      });
+      
+      // Now evaluate the expression with actual values
+      try {
+        // Use Function constructor for safer evaluation than eval
+        // This creates a new function that returns the result of the expression
+        const result = new Function(`return ${evaluatedExpression}`)();
+        return result;
+      } catch (error) {
+        this.logger.warn('Failed to evaluate expression with Function constructor', {
+          expression: evaluatedExpression,
+          originalExpression: expression,
+          error: (error as Error).message,
+        });
+        throw error;
+      }
+    }
+    
+    // If we can't evaluate the expression, throw an error
+    throw new Error(`Unsupported static CEL expression pattern: ${expression}`);
+  }
+
+  /**
+   * Check if a value is a CEL expression
+   */
+  private isCelExpression(value: any): value is CelExpression {
+    return (
+      value &&
+      typeof value === 'object' &&
+      value[Symbol.for('TypeKro.CelExpression')] === true &&
+      typeof value.expression === 'string'
+    );
+  }
+
+  /**
    * Generate instance name from spec
    */
   private generateInstanceName(spec: TSpec): string {
@@ -871,8 +1014,11 @@ ${Object.entries(spec as Record<string, any>)
     // Separate static and dynamic status fields
     const { staticFields, dynamicFields } = await this.separateStatusFields();
 
-    // Start with static fields as the base status
-    const status: TStatus = { ...staticFields } as TStatus;
+    // Evaluate static CEL expressions with actual spec values
+    const evaluatedStaticFields = await this.evaluateStaticFields(staticFields, spec);
+
+    // Start with evaluated static fields as the base status
+    const status: TStatus = { ...evaluatedStaticFields } as TStatus;
 
     // Create the initial Enhanced proxy
     // The Enhanced proxy should represent the actual instance, which uses the full API version

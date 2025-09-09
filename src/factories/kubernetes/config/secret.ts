@@ -4,7 +4,7 @@ import { createResource } from '../../shared.js';
 
 export type V1SecretData = NonNullable<V1Secret['data']>;
 
-export function secret(resource: V1Secret): Enhanced<V1SecretData, unknown> {
+export function secret(resource: V1Secret & { id?: string }): Enhanced<V1SecretData, unknown> {
   return createResource({
     ...resource,
     apiVersion: 'v1',

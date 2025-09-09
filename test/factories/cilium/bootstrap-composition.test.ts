@@ -8,9 +8,8 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { kubernetesComposition } from '../../../src/index.js';
 import { ciliumBootstrap, CiliumBootstrapSpecSchema, CiliumBootstrapStatusSchema } from '../../../src/factories/cilium/compositions/cilium-bootstrap.js';
-import { mapCiliumConfigToHelmValues, validateCiliumHelmValues } from '../../../src/factories/cilium/resources/helm.js';
+import { mapCiliumConfigToHelmValues, } from '../../../src/factories/cilium/resources/helm.js';
 import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 
 // Use the actual bootstrap schemas
@@ -228,7 +227,14 @@ describe('Cilium Bootstrap Composition', () => {
       expect(factory).toBeDefined();
 
       // Test that we can generate YAML output
-      const yaml = await factory.toYaml();
+      const testSpec = {
+        name: 'test-cilium',
+        cluster: {
+          name: 'test-cluster',
+          id: 1
+        }
+      };
+      const yaml = await factory.toYaml(testSpec);
       expect(yaml).toBeDefined();
       expect(typeof yaml).toBe('string');
       expect(yaml.length).toBeGreaterThan(0);

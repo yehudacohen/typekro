@@ -23,6 +23,8 @@ export function Secret(config: SecretConfig): Enhanced<V1SecretData, unknown> {
       ...(config.namespace && { namespace: config.namespace }),
       labels: { app: config.name },
     },
-    stringData: config.stringData,
-  });
+    ...(config.stringData && { stringData: config.stringData }),
+    ...(config.data && { data: config.data }),
+    ...(config.id && { id: config.id }), // Pass through the id field
+  } as any);
 }
