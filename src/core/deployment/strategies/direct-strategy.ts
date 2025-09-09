@@ -19,6 +19,7 @@ import type {
   SchemaDefinition,
   StatusBuilder,
 } from '../../types/serialization.js';
+import type { Enhanced } from '../../types/index.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';
@@ -38,7 +39,10 @@ export class DirectDeploymentStrategy<
     resourceKeys: Record<string, KubernetesResource> | undefined,
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
-    public resourceResolver: { createResourceGraphForInstance(spec: TSpec): ResourceGraph } // Resource resolution logic
+    public resourceResolver: { 
+      createResourceGraphForInstance(spec: TSpec): ResourceGraph;
+      getReExecutedStatus?(): TStatus | null;
+    } // Resource resolution logic
   ) {
     super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
   }
@@ -101,6 +105,83 @@ export class DirectDeploymentStrategy<
     } catch (error) {
       handleDeploymentError(error, 'Direct deployment failed');
     }
+  }
+
+  /**
+   * Override Enhanced proxy creation to use re-executed status when available
+   */
+  protected async createEnhancedProxy(
+    spec: TSpec,
+    instanceName: string,
+    deploymentResult: DeploymentResult
+  ): Promise<Enhanced<TSpec, TStatus>> {
+    // Check if we have re-executed status from composition re-execution
+    const reExecutedStatus = this.resourceResolver.getReExecutedStatus?.();
+    
+    if (reExecutedStatus) {
+      this.logger.debug('Using hybrid status approach (re-executed + base strategy)', {
+        instanceName,
+        reExecutedStatusFields: Object.keys(reExecutedStatus),
+      });
+
+      // Get the base proxy which includes CEL expression resolution
+      const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
+      
+      // Import the CEL expression utility
+      const { isCelExpression } = require('../../../utils/type-guards.js');
+      
+      // Merge re-executed status with base status
+      // Priority: resolved spec-based values from re-execution > evaluated CEL expressions from base
+      const hybridStatus = { ...baseProxy.status };
+      
+      for (const [key, value] of Object.entries(reExecutedStatus)) {
+        const baseValue = (baseProxy.status as any)[key];
+        const reExecutedValue = value;
+        
+        // If the re-executed value is not a CEL expression, it's a resolved spec-based value - use it
+        if (!isCelExpression(reExecutedValue)) {
+          (hybridStatus as any)[key] = reExecutedValue;
+          this.logger.debug('Using re-executed value for spec-based field', {
+            field: key,
+            value: reExecutedValue,
+            type: typeof reExecutedValue,
+          });
+        } else {
+          // Re-executed value is a CEL expression - let the base strategy handle it
+          // The base strategy will have already evaluated it if possible
+          (hybridStatus as any)[key] = baseValue;
+          this.logger.debug('Using base strategy value for CEL expression field', {
+            field: key,
+            baseValue,
+            baseValueType: typeof baseValue,
+            isCelExpression: isCelExpression(baseValue),
+          });
+        }
+      }
+
+      return {
+        ...baseProxy,
+        status: hybridStatus,
+      } as Enhanced<TSpec, TStatus>;
+    }
+
+    // Fallback to base implementation if no re-executed status
+    return super.createEnhancedProxy(spec, instanceName, deploymentResult);
+  }
+
+  /**
+   * Create Enhanced metadata (helper method)
+   */
+  private createEnhancedMetadata(instanceName: string) {
+    return {
+      name: instanceName,
+      namespace: this.namespace,
+      labels: {
+        'typekro.io/factory': this.factoryName,
+        'typekro.io/mode': 'direct',
+      },
+      annotations: {},
+    };
   }
 
   /**

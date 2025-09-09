@@ -236,35 +236,64 @@ export interface CiliumBootstrapStatus {
 }
 
 // =============================================================================
-// CRD FACTORY CONFIGURATION INTERFACES
+// SIMPLE FACTORY CONFIGURATION INTERFACES
 // =============================================================================
 
 /**
- * Configuration interface for CiliumNetworkPolicy
+ * Simple configuration interface for CiliumNetworkPolicy
  */
 export interface CiliumNetworkPolicyConfig {
   name: string;
   namespace?: string;
-  spec: {
-    endpointSelector?: LabelSelector;
-    ingress?: IngressRule[];
-    egress?: EgressRule[];
-    labels?: LabelSelector[];
-  };
+  spec: CiliumNetworkPolicySpec;
   id?: string;
 }
 
 /**
- * Configuration interface for CiliumClusterwideNetworkPolicy
+ * Simple configuration interface for CiliumClusterwideNetworkPolicy
  */
 export interface CiliumClusterwideNetworkPolicyConfig {
   name: string;
-  spec: {
-    endpointSelector?: LabelSelector;
-    nodeSelector?: LabelSelector;
-    ingress?: IngressRule[];
-    egress?: EgressRule[];
+  spec: CiliumClusterwideNetworkPolicySpec;
+  id?: string;
+}
+
+// =============================================================================
+// CILIUM CRD TYPES (following Kubernetes client pattern)
+// =============================================================================
+
+/**
+ * CiliumNetworkPolicy CRD type (following @kubernetes/client-node pattern)
+ */
+export interface CiliumNetworkPolicy {
+  apiVersion: 'cilium.io/v2';
+  kind: 'CiliumNetworkPolicy';
+  metadata: {
+    name: string;
+    namespace?: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+    [key: string]: any;
   };
+  spec: CiliumNetworkPolicySpec;
+  status?: CiliumNetworkPolicyStatus;
+  id?: string;
+}
+
+/**
+ * CiliumClusterwideNetworkPolicy CRD type (following @kubernetes/client-node pattern)
+ */
+export interface CiliumClusterwideNetworkPolicy {
+  apiVersion: 'cilium.io/v2';
+  kind: 'CiliumClusterwideNetworkPolicy';
+  metadata: {
+    name: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+    [key: string]: any;
+  };
+  spec: CiliumClusterwideNetworkPolicySpec;
+  status?: CiliumClusterwideNetworkPolicyStatus;
   id?: string;
 }
 
@@ -783,6 +812,64 @@ export interface PortMatcher {
 }
 
 // =============================================================================
+// CRD SPEC AND STATUS TYPES
+// =============================================================================
+
+/**
+ * CiliumNetworkPolicy spec interface
+ */
+export interface CiliumNetworkPolicySpec {
+  endpointSelector?: LabelSelector;
+  ingress?: IngressRule[];
+  egress?: EgressRule[];
+  labels?: LabelSelector[];
+  description?: string;
+}
+
+/**
+ * CiliumNetworkPolicy status interface
+ */
+export interface CiliumNetworkPolicyStatus {
+  conditions?: Condition[];
+  state?: string;
+  message?: string;
+  nodes?: {
+    [nodeName: string]: {
+      ok?: boolean;
+      error?: string;
+      lastUpdated?: string;
+    };
+  };
+}
+
+/**
+ * CiliumClusterwideNetworkPolicy spec interface
+ */
+export interface CiliumClusterwideNetworkPolicySpec {
+  endpointSelector?: LabelSelector;
+  nodeSelector?: LabelSelector;
+  ingress?: IngressRule[];
+  egress?: EgressRule[];
+  description?: string;
+}
+
+/**
+ * CiliumClusterwideNetworkPolicy status interface
+ */
+export interface CiliumClusterwideNetworkPolicyStatus {
+  conditions?: Condition[];
+  state?: string;
+  message?: string;
+  nodes?: {
+    [nodeName: string]: {
+      ok?: boolean;
+      error?: string;
+      lastUpdated?: string;
+    };
+  };
+}
+
+// =============================================================================
 // STATUS AND READINESS TYPES
 // =============================================================================
 
@@ -831,7 +918,8 @@ export interface ReadinessResult {
   ready: boolean;
   message: string;
   details?: Record<string, any>;
-  lastTransition?: string;
+  lastTransition?: string | undefined;
+  reason?: string;
 }
 
 // =============================================================================

@@ -13,11 +13,30 @@ import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues } 
 import { Cel } from '../../../src/core/references/cel.js';
 // import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from '../shared-kubeconfig.js';
+import { isCiliumInstalled } from './setup-cilium.js';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
 const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
 const clusterAvailable = isClusterAvailable();
-const describeOrSkip = clusterAvailable ? describe : describe.skip;
+
+// Check if both cluster and Cilium are available
+let ciliumAvailable = false;
+if (clusterAvailable) {
+  try {
+    ciliumAvailable = await isCiliumInstalled();
+  } catch (error) {
+    console.warn('Could not check Cilium availability:', error);
+    ciliumAvailable = false;
+  }
+}
+
+if (!clusterAvailable) {
+  console.log('⏭️  Skipping Cilium Bootstrap Composition Integration: No cluster available');
+} else if (!ciliumAvailable) {
+  console.log('⏭️  Skipping Cilium Bootstrap Composition Integration: Cilium not installed in cluster');
+}
+
+const describeOrSkip = (clusterAvailable && ciliumAvailable) ? describe : describe.skip;
 
 // Test schemas for bootstrap composition
 const CiliumStackSpec = type({
@@ -77,7 +96,7 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
           spec: CiliumStackSpec,
           status: CiliumStackStatus,
         },
-        (spec) => {
+        (_spec) => {
           // Create Cilium Helm repository
           const _helmRepo = ciliumHelmRepository({
             name: 'cilium',
@@ -153,7 +172,7 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
           spec: CiliumStackSpec,
           status: CiliumStackStatus,
         },
-        (spec) => {
+        (_spec) => {
           const _helmRepo = ciliumHelmRepository({
             name: 'cilium-direct',
             namespace: testNamespace,
@@ -238,7 +257,7 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
           spec: CiliumStackSpec,
           status: CiliumStackStatus,
         },
-        (spec) => {
+        (_spec) => {
           const _helmRepo = ciliumHelmRepository({
             name: 'cilium-kro',
             namespace: testNamespace,

@@ -31,10 +31,14 @@ export { simple } from './simple/index.js';
 export type * from './simple/types.js';
 
 // =============================================================================
+// CILIUM ECOSYSTEM
+// =============================================================================
+export * from './cilium/index.js';
+
+// =============================================================================
 // FUTURE ECOSYSTEMS (Placeholder structure created)
 // =============================================================================
 // Directory structure created for future ecosystems:
-// - src/factories/cilium/       (Next release: Cilium CNI and networking ecosystem)
 // - src/factories/crossplane/   (Future: Crossplane resource factories)
 // - src/factories/argocd/       (Future: ArgoCD resource factories)
 // - src/factories/kustomize/    (Future: Kustomize resource factories)

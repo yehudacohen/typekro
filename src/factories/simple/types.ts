@@ -130,7 +130,9 @@ export interface ConfigMapConfig {
 export interface SecretConfig {
   name: string;
   namespace?: string;
-  stringData: Record<string, string>;
+  stringData?: Record<string, string>;
+  data?: Record<string, string>;
+  id?: string; // Optional explicit resource ID
 }
 
 /**

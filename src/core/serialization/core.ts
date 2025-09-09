@@ -433,7 +433,6 @@ function _createResourceGraph(
 // =============================================================================
 // NEW FACTORY PATTERN API
 // =============================================================================
-
 /**
  * Create a new typed resource graph with factory pattern support
  * This is the new API with definition-first parameter and separate builder functions
@@ -875,7 +874,14 @@ function createTypedResourceGraph<
 
     for (const [resourceId, resource] of Object.entries(resourcesWithKeys)) {
       const kind = resource.kind.toLowerCase();
-      const name = resource.metadata.name?.toLowerCase() || '';
+      // Handle case where metadata.name might be a KubernetesRef object
+      let name = '';
+      if (resource.metadata.name && typeof resource.metadata.name === 'string') {
+        name = resource.metadata.name.toLowerCase();
+      } else if (resource.metadata.name && typeof resource.metadata.name === 'object') {
+        // Skip resources with unresolved references for now
+        continue;
+      }
       const resourceIdLower = resourceId.toLowerCase();
 
       // Pattern 1: Key parts match resource name parts
@@ -1002,7 +1008,11 @@ function createTypedResourceGraph<
             ...factoryOptions, 
             closures,
             // Pass the factory-specific status mappings
-            statusMappings: directStatusMappings
+            statusMappings: directStatusMappings,
+            // Pass composition function for re-execution with actual values
+            compositionFn: (this as any)._compositionFn,
+            compositionDefinition: (this as any)._definition,
+            compositionOptions: (this as any)._options,
           }
         );
         return directFactory as FactoryForMode<TMode, TSpec, TStatus>;

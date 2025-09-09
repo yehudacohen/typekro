@@ -16,10 +16,29 @@ import { kubernetesComposition } from '../../../src/index.js';
 import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues, validateCiliumHelmValues } from '../../../src/factories/cilium/resources/helm.js';
 import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from '../shared-kubeconfig.js';
+import { isCiliumInstalled } from './setup-cilium.js';
 
 const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
 const clusterAvailable = isClusterAvailable();
-const describeOrSkip = clusterAvailable ? describe : describe.skip;
+
+// Check if both cluster and Cilium are available
+let ciliumAvailable = false;
+if (clusterAvailable) {
+  try {
+    ciliumAvailable = await isCiliumInstalled();
+  } catch (error) {
+    console.warn('Could not check Cilium availability:', error);
+    ciliumAvailable = false;
+  }
+}
+
+if (!clusterAvailable) {
+  console.log('⏭️  Skipping Cilium Integration Tests: No cluster available');
+} else if (!ciliumAvailable) {
+  console.log('⏭️  Skipping Cilium Integration Tests: Cilium not installed in cluster');
+}
+
+const describeOrSkip = (clusterAvailable && ciliumAvailable) ? describe : describe.skip;
 
 describeOrSkip('Cilium Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;

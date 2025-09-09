@@ -71,6 +71,17 @@ async function setupE2EEnvironment() {
     // Namespace might already exist
   }
 
+  // Install Cilium for networking tests
+  console.log('🌐 Setting up Cilium for networking tests...');
+  try {
+    const { ensureCiliumInstalled } = await import('../test/integration/cilium/setup-cilium.js');
+    await ensureCiliumInstalled();
+    console.log('✅ Cilium setup complete!');
+  } catch (error) {
+    console.warn('⚠️  Cilium setup failed, networking tests may not work:', error);
+    // Don't fail the entire setup if Cilium fails
+  }
+
   console.log('✅ E2E environment ready!');
 }
 

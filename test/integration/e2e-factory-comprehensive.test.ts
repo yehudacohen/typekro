@@ -569,31 +569,45 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
 
   describe('KroResourceFactory without Alchemy', () => {
     it('should deploy ResourceGraphDefinition and create instances', async () => {
-      // Increase timeout for this test as it involves Kro RGD deployment
-      const _testTimeout = 180000; // 3 minutes
+      // This test involves Kro RGD deployment which can take time
       await withTestNamespace('kro-without-alchemy', async (testNamespace) => {
         console.log('🧪 Testing KroResourceFactory without alchemy...');
+        console.log('📝 Test namespace:', testNamespace);
 
+        console.log('📝 Creating test resource graph...');
         const graph = createTestResourceGraph('kro');
+        console.log('✅ Test resource graph created');
+
+        console.log('📝 Creating Kro factory...');
         const factory = await graph.factory('kro', {
           namespace: testNamespace,
           waitForReady: true,
           timeout: 60000,
           kubeConfig: kc,
         });
+        console.log('✅ Kro factory created successfully');
 
+        console.log('📝 Verifying factory properties...');
         // Verify factory properties
         expect(factory.mode).toBe('kro');
+        console.log('✅ Factory mode verified');
         expect(factory.namespace).toBe(testNamespace);
+        console.log('✅ Factory namespace verified');
         expect(factory.isAlchemyManaged).toBe(false);
+        console.log('✅ Factory alchemy status verified');
         expect(factory.rgdName).toBe('kro-e2e-comprehensive-webapp');
+        console.log('✅ Factory RGD name verified');
         expect(factory.schema).toBeDefined();
+        console.log('✅ Factory schema verified');
 
+        console.log('📝 Testing RGD YAML generation...');
         // Test RGD YAML generation
         const rgdYaml = factory.toYaml();
+        console.log('✅ RGD YAML generated');
         expect(rgdYaml).toContain('kind: ResourceGraphDefinition');
         expect(rgdYaml).toContain('name: kro-e2e-comprehensive-webapp');
         expect(rgdYaml).toContain('apiVersion: kro.run/v1alpha1');
+        console.log('✅ RGD YAML validation passed');
 
         // Test instance YAML generation
         const uniqueSuffix = Date.now().toString().slice(-6); // Last 6 digits of timestamp

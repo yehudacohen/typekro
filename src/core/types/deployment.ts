@@ -310,6 +310,11 @@ export interface FactoryOptions {
   // Deployment closures - for direct mode factories
   closures?: Record<string, DeploymentClosure>;
 
+  // Composition re-execution - for providing actual values to composition functions
+  compositionFn?: (spec: any) => any;
+  compositionDefinition?: any;
+  compositionOptions?: any;
+
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
    * This disables TLS certificate verification and makes connections vulnerable
