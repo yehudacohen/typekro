@@ -103,6 +103,7 @@ export class EventMonitor {
   private monitoredResources = new Map<string, ResourceIdentifier>();
   private resourceRelationships = new Map<string, ResourceRelationship>();
   private childDiscoveryInProgress = new Set<string>();
+  private childDiscoveryTimeouts = new Set<NodeJS.Timeout>();
   private options: Required<EventMonitoringOptions>;
   private logger = getComponentLogger('event-monitor');
   private isMonitoring = false;
@@ -188,6 +189,12 @@ export class EventMonitor {
       watchConnections: this.watchConnections.size,
     });
 
+    // Clear all pending child discovery timeouts
+    for (const timeoutId of this.childDiscoveryTimeouts) {
+      clearTimeout(timeoutId);
+    }
+    this.childDiscoveryTimeouts.clear();
+
     // Close all watch connections
     for (const [key, connection] of this.watchConnections) {
       try {
@@ -209,7 +216,7 @@ export class EventMonitor {
     this.logger.info('Event monitoring stopped', {
       eventsProcessed: this.eventsProcessed,
     });
-    
+
     // Reset counter for next monitoring session
     this.eventsProcessed = 0;
   }
@@ -241,7 +248,7 @@ export class EventMonitor {
     // Trigger child resource discovery if enabled and resource has UID
     if (this.options.includeChildResources && resourceIdentifier.uid) {
       // Use setTimeout to avoid blocking the main flow
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         this.discoverChildResources(resource).catch((error) => {
           this.logger.warn('Child resource discovery failed', {
             error: error as Error,
@@ -250,7 +257,12 @@ export class EventMonitor {
             name: resource.name,
           });
         });
+        // Clean up timeout reference after execution
+        this.childDiscoveryTimeouts.delete(timeoutId);
       }, 1000); // Wait 1 second to allow resource to be fully created
+
+      // Track timeout for cleanup
+      this.childDiscoveryTimeouts.add(timeoutId);
     }
   }
 
@@ -827,7 +839,7 @@ export class EventMonitor {
   private async createNamespaceWideWatchConnection(): Promise<void> {
     const namespace = this.options.namespace || 'default';
     const connectionKey = `namespace-wide-${namespace}`;
-    
+
     if (this.watchConnections.has(connectionKey)) {
       return; // Already exists
     }
