@@ -86,6 +86,80 @@ export class DirectDeploymentEngine {
   }
 
   /**
+   * Enhance a resource for evaluation by applying kind-specific logic
+   * This allows generic evaluators to work correctly without needing special cases
+   */
+  private enhanceResourceForEvaluation(resource: any, kind: string): any {
+    // For HelmRepository resources, handle OCI special case
+    if (kind === 'HelmRepository') {
+      const isOciRepository = resource.spec?.type === 'oci';
+      const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
+
+      // If it's an OCI repo without Ready condition, synthesize one
+      // OCI repositories don't get status conditions from Flux, but they are functional
+      // once they've been processed (have generation and resourceVersion)
+      if (
+        isOciRepository &&
+        hasBeenProcessed &&
+        !resource.status?.conditions?.some((c: any) => c.type === 'Ready')
+      ) {
+        return {
+          ...resource,
+          status: {
+            ...resource.status,
+            conditions: [
+              ...(resource.status?.conditions || []),
+              {
+                type: 'Ready',
+                status: 'True',
+                message: 'OCI repository is functional',
+                reason: 'OciRepositoryProcessed',
+              },
+            ],
+          },
+        };
+      }
+    }
+
+    return resource;
+  }
+
+  /**
+   * Enhance a resource for evaluation by applying kind-specific logic
+   * This allows generic evaluators to work correctly without needing special cases
+   */
+  private enhanceResourceForEvaluation(resource: any, kind: string): any {
+    // For HelmRepository resources, handle OCI special case
+    if (kind === 'HelmRepository') {
+      const isOciRepository = resource.spec?.type === 'oci';
+      const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
+      
+      // If it's an OCI repo without Ready condition, synthesize one
+      // OCI repositories don't get status conditions from Flux, but they are functional
+      // once they've been processed (have generation and resourceVersion)
+      if (isOciRepository && hasBeenProcessed && !resource.status?.conditions?.some((c: any) => c.type === 'Ready')) {
+        return {
+          ...resource,
+          status: {
+            ...resource.status,
+            conditions: [
+              ...(resource.status?.conditions || []),
+              {
+                type: 'Ready',
+                status: 'True',
+                message: 'OCI repository is functional',
+                reason: 'OciRepositoryProcessed'
+              }
+            ]
+          }
+        };
+      }
+    }
+    
+    return resource;
+  }
+
+  /**
    * Check if a deployed resource is ready using the factory-provided readiness evaluator
    */
   public async isDeployedResourceReady(deployedResource: DeployedResource): Promise<boolean> {
@@ -109,8 +183,14 @@ export class DirectDeploymentEngine {
         // Get the live resource from the cluster
         const liveResource = await this.k8sApi.read(resourceRef);
 
+        // Apply kind-specific enhancements before calling custom evaluator
+        const enhancedResource = this.enhanceResourceForEvaluation(
+          liveResource.body,
+          deployedResource.kind
+        );
+
         // Use the factory-provided readiness evaluator
-        const result = readinessEvaluator(liveResource.body);
+        const result = readinessEvaluator(enhancedResource);
 
         let readinessResult: { ready: boolean; reason?: string; details?: Record<string, unknown> };
 
@@ -224,7 +304,10 @@ export class DirectDeploymentEngine {
           await this.eventMonitor.startMonitoring([]);
           deploymentLogger.debug('Event monitoring started for deployment');
         } catch (error) {
-          deploymentLogger.warn('Failed to initialize event monitoring, continuing without it', error as Error);
+          deploymentLogger.warn(
+            'Failed to initialize event monitoring, continuing without it',
+            error as Error
+          );
         }
       }
 
@@ -303,7 +386,8 @@ export class DirectDeploymentEngine {
                 id: resourceId,
                 kind: resourceWithEvaluator.kind,
                 name: resourceWithEvaluator.metadata?.name || 'unknown',
-                namespace: resourceWithEvaluator.metadata?.namespace || options.namespace || 'default',
+                namespace:
+                  resourceWithEvaluator.metadata?.namespace || options.namespace || 'default',
                 manifest: resourceWithEvaluator,
                 status: 'deployed',
                 deployedAt: new Date(),
@@ -312,7 +396,10 @@ export class DirectDeploymentEngine {
                 await this.eventMonitor.addResources([preDeployedResource]);
                 resourceLogger.debug('Added resource to event monitoring before deployment');
               } catch (error) {
-                resourceLogger.warn('Failed to add resource to event monitoring, continuing deployment', error as Error);
+                resourceLogger.warn(
+                  'Failed to add resource to event monitoring, continuing deployment',
+                  error as Error
+                );
               }
             }
 
@@ -439,7 +526,7 @@ export class DirectDeploymentEngine {
           (deploymentPlan.totalResources /
             deploymentPlan.levels.length /
             deploymentPlan.maxParallelism) *
-          100
+            100
         ),
         status,
       });
@@ -1174,13 +1261,78 @@ export class DirectDeploymentEngine {
 
           if (existing) {
             // Resource exists, use patch for safer updates
-            resourceLogger.debug('Resource exists, patching');
-            const patchResult = await this.patchResourceWithCorrectContentType(resolvedResource);
+            // Log the full resource being patched, including non-standard fields like 'data' for Secrets
+            const patchPayload: any = {
+              apiVersion: resolvedResource.apiVersion,
+              kind: resolvedResource.kind,
+              metadata: resolvedResource.metadata,
+            };
+
+            // Include spec if present (most resources)
+            if (resolvedResource.spec !== undefined) {
+              patchPayload.spec = resolvedResource.spec;
+            }
+
+            // Include data if present (Secrets)
+            if ((resolvedResource as any).data !== undefined) {
+              patchPayload.data = (resolvedResource as any).data;
+            }
+
+            // Include stringData if present (Secrets)
+            if ((resolvedResource as any).stringData !== undefined) {
+              patchPayload.stringData = (resolvedResource as any).stringData;
+            }
+
+            // Include rules if present (RBAC resources)
+            if ((resolvedResource as any).rules !== undefined) {
+              // Ensure arrays are preserved (not converted to objects with numeric keys)
+              const rules = (resolvedResource as any).rules;
+              patchPayload.rules = Array.isArray(rules) ? [...rules] : rules;
+            }
+
+            // Include subjects if present (ClusterRoleBinding, RoleBinding)
+            if ((resolvedResource as any).subjects !== undefined) {
+              // Ensure arrays are preserved (not converted to objects with numeric keys)
+              const subjects = (resolvedResource as any).subjects;
+              patchPayload.subjects = Array.isArray(subjects) ? [...subjects] : subjects;
+            }
+
+            // Include roleRef if present (ClusterRoleBinding, RoleBinding)
+            if ((resolvedResource as any).roleRef !== undefined) {
+              patchPayload.roleRef = (resolvedResource as any).roleRef;
+            }
+
+            // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
+            const cleanPayload =
+              typeof patchPayload.toJSON === 'function' ? patchPayload.toJSON() : patchPayload;
+
+            resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
+            const patchResult = await this.patchResourceWithCorrectContentType(cleanPayload);
             appliedResource = patchResult.body;
           } else {
             // Resource does not exist, create it
             resourceLogger.debug('Resource does not exist, creating');
-            const createResult = await this.k8sApi.create(resolvedResource);
+
+            // DEBUG: Log the resource being created for Secrets
+            if (resolvedResource.kind === 'Secret') {
+              resourceLogger.debug('Creating Secret resource', {
+                name: resolvedResource.metadata?.name,
+                hasData: 'data' in resolvedResource,
+                hasSpec: 'spec' in resolvedResource,
+                dataKeys: (resolvedResource as any).data
+                  ? Object.keys((resolvedResource as any).data)
+                  : [],
+                specValue: (resolvedResource as any).spec,
+              });
+            }
+
+            // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
+            const cleanResource =
+              typeof (resolvedResource as any).toJSON === 'function'
+                ? (resolvedResource as any).toJSON()
+                : resolvedResource;
+
+            const createResult = await this.k8sApi.create(cleanResource);
             appliedResource = createResult.body;
           }
 
@@ -1299,7 +1451,13 @@ export class DirectDeploymentEngine {
           },
         });
 
-        const result = readinessEvaluator(liveResource);
+        // Apply kind-specific enhancements before calling custom evaluator
+        const enhancedResource = this.enhanceResourceForEvaluation(
+          liveResource,
+          deployedResource.kind
+        );
+
+        const result = readinessEvaluator(enhancedResource);
 
         if (typeof result === 'boolean') {
           if (result) {
@@ -1607,13 +1765,26 @@ export class DirectDeploymentEngine {
    * Patch a resource with the correct Content-Type header for merge patch operations
    * This fixes HTTP 415 "Unsupported Media Type" errors that occur when using the generic patch method
    */
-  private async patchResourceWithCorrectContentType(resource: k8s.KubernetesObject): Promise<{ body: k8s.KubernetesObject }> {
+  private async patchResourceWithCorrectContentType(
+    resource: k8s.KubernetesObject
+  ): Promise<{ body: k8s.KubernetesObject }> {
+    // DEBUG: Log the resource being sent to K8s API for Secrets
+    if (resource.kind === 'Secret') {
+      this.logger.debug('Patching Secret resource', {
+        name: resource.metadata?.name,
+        hasData: 'data' in resource,
+        hasSpec: 'spec' in resource,
+        dataKeys: (resource as any).data ? Object.keys((resource as any).data) : [],
+        specValue: (resource as any).spec,
+      });
+    }
+
     // The k8sApi.patch method already includes the correct Content-Type header for merge patch operations
     // This was fixed in the deployment engine to use 'application/merge-patch+json'
     return await this.k8sApi.patch(resource, undefined, undefined, undefined, undefined, {
       headers: {
-        'Content-Type': 'application/merge-patch+json'
-      }
+        'Content-Type': 'application/merge-patch+json',
+      },
     });
   }
 
@@ -1819,9 +1990,9 @@ export class DirectDeploymentEngine {
     return (
       error &&
       typeof error === 'object' &&
-      (error.statusCode === 415 || 
-       (error.response && error.response.statusCode === 415) ||
-       (error.body && error.body.code === 415))
+      (error.statusCode === 415 ||
+        (error.response && error.response.statusCode === 415) ||
+        (error.body && error.body.code === 415))
     );
   }
 
@@ -1829,20 +2000,24 @@ export class DirectDeploymentEngine {
    * Extract accepted media types from HTTP 415 error message
    */
   private extractAcceptedMediaTypes(error: any): string[] {
-    const defaultTypes = ['application/json-patch+json', 'application/merge-patch+json', 'application/apply-patch+yaml'];
-    
+    const defaultTypes = [
+      'application/json-patch+json',
+      'application/merge-patch+json',
+      'application/apply-patch+yaml',
+    ];
+
     try {
       // Try to extract from error message
       const message = error.message || error.body?.message || '';
       const match = message.match(/accepted media types include: ([^"]+)/);
-      
+
       if (match && match[1]) {
         return match[1].split(', ').map((type: string) => type.trim());
       }
     } catch (_e) {
       // Fallback to default types
     }
-    
+
     return defaultTypes;
   }
 }

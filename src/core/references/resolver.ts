@@ -84,16 +84,155 @@ export class ReferenceResolver {
   }
 
   /**
+   * Filter out fields that cannot be cloned by structuredClone
+   * This includes:
+   * - Internal fields prefixed with __ (often contain functions)
+   * - Function values (structuredClone cannot clone functions)
+   * BUT preserve KubernetesRef and CEL expression objects intact
+   */
+  private filterInternalFields(obj: any): any {
+    if (obj === null || obj === undefined || typeof obj !== 'object') {
+      return obj;
+    }
+
+    // Preserve KubernetesRef and CEL expressions as-is
+    if (isKubernetesRef(obj) || isCelExpression(obj)) {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map((item) => this.filterInternalFields(item));
+    }
+
+    // Create new object without non-cloneable fields
+    const filtered: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      // Skip fields starting with __ as they are internal
+      if (key.startsWith('__')) {
+        continue;
+      }
+
+      // Skip function values as they cannot be cloned
+      if (typeof value === 'function') {
+        continue;
+      }
+
+      // Recursively filter nested objects and arrays
+      if (value !== null && typeof value === 'object') {
+        filtered[key] = this.filterInternalFields(value);
+      } else {
+        filtered[key] = value;
+      }
+    }
+    return filtered;
+  }
+
+  /**
+   * Check if an object contains CEL expressions at any level
+   * CEL expressions have Symbol brands that cannot be cloned by structuredClone
+   */
+  private containsCelExpressions(obj: any, visited = new Set<any>()): boolean {
+    if (obj === null || obj === undefined) {
+      return false;
+    }
+
+    // Prevent infinite loops from circular references
+    if (visited.has(obj)) {
+      return false;
+    }
+
+    // Check if this object is a CEL expression
+    if (isCelExpression(obj)) {
+      return true;
+    }
+
+    // Recursively check arrays
+    if (Array.isArray(obj)) {
+      visited.add(obj);
+      const result = obj.some((item) => this.containsCelExpressions(item, visited));
+      visited.delete(obj);
+      return result;
+    }
+
+    // Recursively check object properties
+    if (typeof obj === 'object') {
+      visited.add(obj);
+      const result = Object.values(obj).some((value) =>
+        this.containsCelExpressions(value, visited)
+      );
+      visited.delete(obj);
+      return result;
+    }
+
+    return false;
+  }
+
+  /**
+   * Selectively clone an object, preserving CEL expressions as-is
+   * CEL expressions are immutable and don't need deep cloning
+   * This avoids structuredClone failures on Symbol-branded objects
+   */
+  private selectiveClone(obj: any, visited = new Set<any>()): any {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    // Prevent infinite loops from circular references
+    if (visited.has(obj)) {
+      return obj;
+    }
+
+    // CEL expressions don't need cloning - preserve as-is
+    // They're immutable objects with just { expression: string, [Symbol]: true }
+    if (isCelExpression(obj)) {
+      return obj;
+    }
+
+    // Clone arrays recursively
+    if (Array.isArray(obj)) {
+      visited.add(obj);
+      const cloned = obj.map((item) => this.selectiveClone(item, visited));
+      visited.delete(obj);
+      return cloned;
+    }
+
+    // Clone plain objects recursively
+    if (typeof obj === 'object') {
+      visited.add(obj);
+      const cloned: any = {};
+
+      // Clone string-keyed properties
+      for (const [key, value] of Object.entries(obj)) {
+        cloned[key] = this.selectiveClone(value, visited);
+      }
+
+      // Preserve Symbol-keyed properties (like KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND)
+      const symbols = Object.getOwnPropertySymbols(obj);
+      for (const sym of symbols) {
+        cloned[sym] = obj[sym];
+      }
+
+      visited.delete(obj);
+      return cloned;
+    }
+
+    // Return primitives as-is
+    return obj;
+  }
+
+  /**
    * Resolve all references in a resource
    */
   async resolveReferences(resource: any, context: ResolutionContext): Promise<any> {
     this.logger.debug('ReferenceResolver.resolveReferences called', {
       hasResourceKeyMapping: !!context.resourceKeyMapping,
       resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
-      resourceKeyMappingKeys: context.resourceKeyMapping ? Array.from(context.resourceKeyMapping.keys()) : [],
+      resourceKeyMappingKeys: context.resourceKeyMapping
+        ? Array.from(context.resourceKeyMapping.keys())
+        : [],
       contextKeys: Object.keys(context),
     });
-    
+
     // Quick check - if there are no references, return the resource as-is
     if (!this.hasReferences(resource)) {
       this.logger.trace('No references found in resource, returning as-is', {
@@ -103,13 +242,29 @@ export class ReferenceResolver {
     }
 
     this.logger.trace('Cloning resource and resolving references', { resourceId: resource.id });
-    // Deep clone the resource to avoid modifying the original
-    // JSON.stringify/parse properly handles Enhanced proxies by triggering all getters
-    const resolved = JSON.parse(JSON.stringify(resource));
-    // Restore Symbol brands that were lost during JSON serialization
-    this.restoreBrands(resolved);
 
-    // FIX: Preserve the non-enumerable readinessEvaluator which is lost during JSON serialization.
+    // Deep clone the resource to avoid modifying the original
+    // Since we know hasReferences() returned true, use selectiveClone to preserve
+    // Symbol-branded objects (KubernetesRef, CEL expressions)
+    // This avoids structuredClone failures on objects with Symbols
+    let resolved: any;
+
+    if (typeof (resource as any).toJSON === 'function') {
+      this.logger.trace('Resource has toJSON method, calling it first', {
+        resourceId: resource.id,
+      });
+      const plainObject = (resource as any).toJSON();
+      // toJSON might still contain Symbol-branded objects, so use selectiveClone
+      resolved = this.selectiveClone(plainObject);
+    } else {
+      this.logger.trace('Using selective clone to preserve Symbol brands', {
+        resourceId: resource.id,
+      });
+      // Use selective cloning to preserve KubernetesRef and CEL expression Symbols
+      resolved = this.selectiveClone(resource);
+    }
+
+    // Preserve the non-enumerable readinessEvaluator if present
     if (resource.readinessEvaluator && typeof resource.readinessEvaluator === 'function') {
       this.logger.trace('Preserving readiness evaluator on cloned resource', {
         resourceId: resource.id,
@@ -350,11 +505,13 @@ export class ReferenceResolver {
       expression: expr.expression,
       hasResourceKeyMapping: !!context.resourceKeyMapping,
       resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
-      resourceKeyMappingKeys: context.resourceKeyMapping ? Array.from(context.resourceKeyMapping.keys()) : [],
+      resourceKeyMappingKeys: context.resourceKeyMapping
+        ? Array.from(context.resourceKeyMapping.keys())
+        : [],
       deployedResourcesCount: context.deployedResources.length,
-      deployedResourceIds: context.deployedResources.map(r => r.id),
+      deployedResourceIds: context.deployedResources.map((r) => r.id),
     });
-    
+
     // Check cache first
     const cacheKey = `cel:${expr.expression}`;
     if (this.cache.has(cacheKey)) {
@@ -363,9 +520,8 @@ export class ReferenceResolver {
 
     // Build the resources map for CEL evaluation
     const resourcesMap = new Map<string, unknown>();
-    
-    try {
 
+    try {
       // If we have a resource key mapping, use it to map original keys to resources
       if (context.resourceKeyMapping && context.resourceKeyMapping.size > 0) {
         // Use the resource key mapping to provide resources with their original keys
@@ -417,7 +573,9 @@ export class ReferenceResolver {
       this.logger.error('CEL expression evaluation failed', error as Error, {
         expression: expr.expression,
         hasResourceKeyMapping: !!context.resourceKeyMapping,
-        resourceKeyMappingKeys: context.resourceKeyMapping ? Array.from(context.resourceKeyMapping.keys()) : [],
+        resourceKeyMappingKeys: context.resourceKeyMapping
+          ? Array.from(context.resourceKeyMapping.keys())
+          : [],
         resourcesMapSize: resourcesMap.size,
         resourcesMapKeys: Array.from(resourcesMap.keys()),
       });
