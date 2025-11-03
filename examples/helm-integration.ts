@@ -7,7 +7,7 @@
  */
 
 import { type } from 'arktype';
-import { Cel, kubernetesComposition } from '../src/index.js';
+import { kubernetesComposition } from '../src/index.js';
 import { helmRelease } from '../src/factories/helm/helm-release.js';
 import { ConfigMap, Secret } from '../src/factories/simple/index.js';
 
@@ -85,7 +85,11 @@ const databaseComposition = kubernetesComposition(
     // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
       ready: postgres.status.phase === 'Ready',
-      phase: postgres.status.phase === 'Ready' ? 'Ready' : 'Installing',
+      phase: (postgres.status.phase === 'Ready' ? 'Ready' : 'Installing') as
+        | 'Pending'
+        | 'Installing'
+        | 'Ready'
+        | 'Failed',
       endpoint: `${spec.name}-postgresql.databases.svc.cluster.local`,
     };
   }
@@ -221,9 +225,10 @@ const webAppComposition = kubernetesComposition(
 
     // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
-      ready: database.status.phase === 'Ready' && 
-             redis.status.phase === 'Ready' && 
-             nginx.status.phase === 'Ready',
+      ready:
+        database.status.phase === 'Ready' &&
+        redis.status.phase === 'Ready' &&
+        nginx.status.phase === 'Ready',
       databaseReady: database.status.phase === 'Ready',
       redisReady: spec.redis.enabled ? redis.status.phase === 'Ready' : true,
       url: `https://${spec.domain}`,
@@ -315,9 +320,7 @@ const monitoringComposition = kubernetesComposition(
     return {
       prometheusReady: monitoring.status.phase === 'Ready', // ✨ Natural JavaScript expression
       grafanaReady: monitoring.status.phase === 'Ready', // ✨ Natural JavaScript expression
-      alertmanagerReady: spec.alertingEnabled 
-        ? monitoring.status.phase === 'Ready' 
-        : true, // ✨ Natural JavaScript conditional expression
+      alertmanagerReady: spec.alertingEnabled ? monitoring.status.phase === 'Ready' : true, // ✨ Natural JavaScript conditional expression
     };
   }
 );

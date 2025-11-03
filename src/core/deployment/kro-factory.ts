@@ -513,13 +513,16 @@ export class KroResourceFactoryImpl<
         })
       );
     } catch (error) {
-      const k8sError = error as { message?: string; body?: string; statusCode?: number };
+      const k8sError = error as { message?: string; body?: string | object; statusCode?: number };
       // If the CRD doesn't exist yet or there are no instances, return empty array
+      const bodyString =
+        typeof k8sError.body === 'string' ? k8sError.body : JSON.stringify(k8sError.body || '');
+
       if (
         k8sError.message?.includes('not found') ||
         k8sError.message?.includes('404') ||
-        k8sError.body?.includes('not found') ||
-        k8sError.body?.includes('404') ||
+        bodyString.includes('not found') ||
+        bodyString.includes('404') ||
         k8sError.statusCode === 404 ||
         String(error).includes('404') ||
         String(error).includes('not found')
@@ -722,7 +725,7 @@ ${Object.entries(spec as Record<string, any>)
     // Debug: Log the RGD being deployed
     this.logger.debug('Deploying RGD', {
       rgdName: this.rgdName,
-      rgdManifest: JSON.stringify(rgdWithMetadata, null, 2)
+      rgdManifest: JSON.stringify(rgdWithMetadata, null, 2),
     });
 
     try {
@@ -743,17 +746,17 @@ ${Object.entries(spec as Record<string, any>)
         const rgdStatus = await k8sApi.read({
           apiVersion: 'kro.run/v1alpha1',
           kind: 'ResourceGraphDefinition',
-          metadata: { name: this.rgdName, namespace: this.namespace }
+          metadata: { name: this.rgdName, namespace: this.namespace },
         });
         this.logger.error('RGD deployment failed, current status:', undefined, {
           rgdName: this.rgdName,
           status: (rgdStatus.body as any).status,
-          conditions: (rgdStatus.body as any).status?.conditions
+          conditions: (rgdStatus.body as any).status?.conditions,
         });
       } catch (statusError) {
         this.logger.error('Could not fetch RGD status for debugging', statusError as Error);
       }
-      
+
       throw new Error(
         `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -766,14 +769,23 @@ ${Object.entries(spec as Record<string, any>)
    */
   private pluralizeKind(kind: string): string {
     const lowerKind = kind.toLowerCase();
-    
+
     // Handle common English pluralization rules that Kubernetes follows
-    if (lowerKind.endsWith('s') || lowerKind.endsWith('sh') || lowerKind.endsWith('ch') || 
-        lowerKind.endsWith('x') || lowerKind.endsWith('z')) {
+    if (
+      lowerKind.endsWith('s') ||
+      lowerKind.endsWith('sh') ||
+      lowerKind.endsWith('ch') ||
+      lowerKind.endsWith('x') ||
+      lowerKind.endsWith('z')
+    ) {
       return `${lowerKind}es`;
     } else if (lowerKind.endsWith('o')) {
       return `${lowerKind}es`;
-    } else if (lowerKind.endsWith('y') && lowerKind.length > 1 && !'aeiou'.includes(lowerKind[lowerKind.length - 2] || '')) {
+    } else if (
+      lowerKind.endsWith('y') &&
+      lowerKind.length > 1 &&
+      !'aeiou'.includes(lowerKind[lowerKind.length - 2] || '')
+    ) {
       return `${lowerKind.slice(0, -1)}ies`;
     } else if (lowerKind.endsWith('f')) {
       return `${lowerKind.slice(0, -1)}ves`;
@@ -842,7 +854,11 @@ ${Object.entries(spec as Record<string, any>)
           // Fallback to the original value
           evaluatedFields[fieldName] = fieldValue;
         }
-      } else if (typeof fieldValue === 'object' && fieldValue !== null && !Array.isArray(fieldValue)) {
+      } else if (
+        typeof fieldValue === 'object' &&
+        fieldValue !== null &&
+        !Array.isArray(fieldValue)
+      ) {
         // Recursively evaluate nested objects
         evaluatedFields[fieldName] = await this.evaluateStaticFields(fieldValue, spec);
       } else {
@@ -859,34 +875,37 @@ ${Object.entries(spec as Record<string, any>)
    */
   private evaluateStaticCelExpression(celExpression: CelExpression, spec: TSpec): any {
     const expression = celExpression.expression;
-    
+
     // Handle expressions that reference schema.spec fields FIRST (before checking just spec.)
     if (expression.includes('schema.spec.')) {
       // Replace schema.spec.fieldName with actual spec values
       let evaluatedExpression = expression;
-      
+
       // Find all schema.spec.fieldName patterns and replace them with actual values
       const schemaRefPattern = /schema\.spec\.(\w+)/g;
-      evaluatedExpression = evaluatedExpression.replace(schemaRefPattern, (match: string, fieldName: string) => {
-        const fieldValue = (spec as any)[fieldName];
-        
-        if (fieldValue !== undefined) {
-          // Return the properly formatted value for JavaScript evaluation
-          if (typeof fieldValue === 'string') {
-            return `"${fieldValue}"`; // Wrap strings in quotes
-          } else if (typeof fieldValue === 'boolean') {
-            return String(fieldValue); // true/false as-is
-          } else if (typeof fieldValue === 'number') {
-            return String(fieldValue); // Numbers as-is
-          } else {
-            return JSON.stringify(fieldValue); // Other types as JSON
+      evaluatedExpression = evaluatedExpression.replace(
+        schemaRefPattern,
+        (match: string, fieldName: string) => {
+          const fieldValue = (spec as any)[fieldName];
+
+          if (fieldValue !== undefined) {
+            // Return the properly formatted value for JavaScript evaluation
+            if (typeof fieldValue === 'string') {
+              return `"${fieldValue}"`; // Wrap strings in quotes
+            } else if (typeof fieldValue === 'boolean') {
+              return String(fieldValue); // true/false as-is
+            } else if (typeof fieldValue === 'number') {
+              return String(fieldValue); // Numbers as-is
+            } else {
+              return JSON.stringify(fieldValue); // Other types as JSON
+            }
           }
+
+          // If field value is undefined, keep the original reference
+          return match;
         }
-        
-        // If field value is undefined, keep the original reference
-        return match;
-      });
-      
+      );
+
       // Now evaluate the expression with actual values
       try {
         // Use Function constructor for safer evaluation than eval
@@ -901,34 +920,37 @@ ${Object.entries(spec as Record<string, any>)
         throw error;
       }
     }
-    
+
     // Handle expressions that reference spec fields (not schema.spec, just spec)
     if (expression.includes('spec.')) {
       // Replace spec.fieldName with actual spec values
       let evaluatedExpression = expression;
-      
+
       // Find all spec.fieldName patterns (not schema.spec) and replace them with actual values
       const specRefPattern = /\bspec\.(\w+)/g;
-      evaluatedExpression = evaluatedExpression.replace(specRefPattern, (match: string, fieldName: string) => {
-        const fieldValue = (spec as any)[fieldName];
-        
-        if (fieldValue !== undefined) {
-          // Return the properly formatted value for JavaScript evaluation
-          if (typeof fieldValue === 'string') {
-            return `"${fieldValue}"`; // Wrap strings in quotes
-          } else if (typeof fieldValue === 'boolean') {
-            return String(fieldValue); // true/false as-is
-          } else if (typeof fieldValue === 'number') {
-            return String(fieldValue); // Numbers as-is
-          } else {
-            return JSON.stringify(fieldValue); // Other types as JSON
+      evaluatedExpression = evaluatedExpression.replace(
+        specRefPattern,
+        (match: string, fieldName: string) => {
+          const fieldValue = (spec as any)[fieldName];
+
+          if (fieldValue !== undefined) {
+            // Return the properly formatted value for JavaScript evaluation
+            if (typeof fieldValue === 'string') {
+              return `"${fieldValue}"`; // Wrap strings in quotes
+            } else if (typeof fieldValue === 'boolean') {
+              return String(fieldValue); // true/false as-is
+            } else if (typeof fieldValue === 'number') {
+              return String(fieldValue); // Numbers as-is
+            } else {
+              return JSON.stringify(fieldValue); // Other types as JSON
+            }
           }
+
+          // If field value is undefined, keep the original reference
+          return match;
         }
-        
-        // If field value is undefined, keep the original reference
-        return match;
-      });
-      
+      );
+
       // Now evaluate the expression with actual values
       try {
         // Use Function constructor for safer evaluation than eval
@@ -944,7 +966,7 @@ ${Object.entries(spec as Record<string, any>)
         throw error;
       }
     }
-    
+
     // If we can't evaluate the expression, throw an error
     throw new Error(`Unsupported static CEL expression pattern: ${expression}`);
   }
@@ -1154,7 +1176,7 @@ ${Object.entries(spec as Record<string, any>)
           const rgdStatusSchema = rgd.spec?.schema?.status || {};
           const rgdStatusKeys = Object.keys(rgdStatusSchema);
           expectedCustomStatusFields = rgdStatusKeys.length > 0;
-          
+
           readinessLogger.debug('ResourceGraphDefinition status schema check', {
             rgdName: this.name,
             rgdStatusKeys,
@@ -1182,10 +1204,11 @@ ${Object.entries(spec as Record<string, any>)
         // Resource is ready when it's active, synced, and either:
         // 1. Has the expected custom status fields populated, OR
         // 2. No custom status fields are expected (empty status schema in RGD)
-        const isReady = isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
-        
+        const isReady =
+          isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
+
         if (isReady) {
-          readinessLogger.info('Kro instance is ready', { 
+          readinessLogger.info('Kro instance is ready', {
             instanceName,
             hasCustomStatusFields,
             expectedCustomStatusFields,

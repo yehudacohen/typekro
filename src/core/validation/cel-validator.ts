@@ -70,23 +70,23 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  */
 function containsOnlySchemaReferences(expression: string): boolean {
   // Check if the expression contains any resource references
-  // This includes both direct resource references (deployment.status.field) 
+  // This includes both direct resource references (deployment.status.field)
   // and resources namespace references (resources.deployment.status.field)
   const hasResourceReferences = /\b(resources\.\w+|\w+\.status\.|\.metadata\.)/.test(expression);
-  
+
   // Check if the expression contains schema references
   const hasSchemaReferences = /\bschema\./.test(expression);
-  
+
   // If it has resource references, it needs Kro resolution (mixed or resource-only)
   if (hasResourceReferences) {
     return false;
   }
-  
+
   // If it has schema references but no resource references, it can be hydrated by TypeKro
   if (hasSchemaReferences) {
     return true;
   }
-  
+
   // If it has neither schema nor resource references, it's a static expression
   // that can be hydrated by TypeKro
   return true;
@@ -202,11 +202,14 @@ export function validateStatusCelExpressions(
 ): CelValidationResult {
   const errors: CelValidationError[] = [];
   const warnings: CelValidationError[] = [];
-  const resourceIds = new Set(
-    Object.values(resources)
+  // Build set of valid resource identifiers - includes both resource IDs and keys
+  // This supports both `resourceId.status.field` and `variableName.status.field` patterns
+  const resourceIds = new Set([
+    ...Object.keys(resources), // Variable names (from userKeyMap in imperative pattern)
+    ...Object.values(resources)
       .map((r) => r.id)
-      .filter(Boolean)
-  );
+      .filter(Boolean), // Resource IDs
+  ]);
 
   // Separate static and dynamic fields
   const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
@@ -223,12 +226,17 @@ export function validateStatusCelExpressions(
       while (directMatch !== null) {
         const referencedId = directMatch[1];
         if (referencedId !== 'schema' && !resourceIds.has(referencedId)) {
-          errors.push({
-            field: fieldName,
-            expression,
-            error: `Referenced resource '${referencedId}' does not exist`,
-            suggestion: `Available resources: ${Array.from(resourceIds).join(', ')}`,
-          });
+          // Allow cross-composition references (callable composition status access)
+          // These are valid even if the callable composition is not a registered resource
+          const isCrossCompositionRef = expression.includes('.status.');
+          if (!isCrossCompositionRef) {
+            errors.push({
+              field: fieldName,
+              expression,
+              error: `Referenced resource '${referencedId}' does not exist`,
+              suggestion: `Available resources: ${Array.from(resourceIds).join(', ')}`,
+            });
+          }
         }
         directMatch = directResourceRefPattern.exec(expression);
       }

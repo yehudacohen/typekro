@@ -125,41 +125,6 @@ export class DirectDeploymentEngine {
   }
 
   /**
-   * Enhance a resource for evaluation by applying kind-specific logic
-   * This allows generic evaluators to work correctly without needing special cases
-   */
-  private enhanceResourceForEvaluation(resource: any, kind: string): any {
-    // For HelmRepository resources, handle OCI special case
-    if (kind === 'HelmRepository') {
-      const isOciRepository = resource.spec?.type === 'oci';
-      const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
-      
-      // If it's an OCI repo without Ready condition, synthesize one
-      // OCI repositories don't get status conditions from Flux, but they are functional
-      // once they've been processed (have generation and resourceVersion)
-      if (isOciRepository && hasBeenProcessed && !resource.status?.conditions?.some((c: any) => c.type === 'Ready')) {
-        return {
-          ...resource,
-          status: {
-            ...resource.status,
-            conditions: [
-              ...(resource.status?.conditions || []),
-              {
-                type: 'Ready',
-                status: 'True',
-                message: 'OCI repository is functional',
-                reason: 'OciRepositoryProcessed'
-              }
-            ]
-          }
-        };
-      }
-    }
-    
-    return resource;
-  }
-
-  /**
    * Check if a deployed resource is ready using the factory-provided readiness evaluator
    */
   public async isDeployedResourceReady(deployedResource: DeployedResource): Promise<boolean> {

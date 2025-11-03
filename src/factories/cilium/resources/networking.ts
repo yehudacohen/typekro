@@ -12,7 +12,7 @@
 import { createResource } from '../../shared.js';
 import type { Enhanced, ReadinessEvaluator, ResourceStatus } from '../../../core/types/index.js';
 
-import type { 
+import type {
   CiliumNetworkPolicy,
   CiliumClusterwideNetworkPolicy,
   CiliumNetworkPolicyConfig,
@@ -21,7 +21,7 @@ import type {
   CiliumNetworkPolicyStatus,
   CiliumClusterwideNetworkPolicySpec,
   CiliumClusterwideNetworkPolicyStatus,
-  CiliumResourceStatus 
+  CiliumResourceStatus,
 } from '../types.js';
 
 // =============================================================================
@@ -30,15 +30,17 @@ import type {
 
 /**
  * Embedded readiness evaluator for CiliumNetworkPolicy
- * 
+ *
  * Evaluates policy readiness based on:
  * - Policy acceptance by Cilium agent
  * - Endpoint selection and rule application
  * - Error conditions and validation status
  */
-export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (resource: any): ResourceStatus => {
+export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (
+  resource: any
+): ResourceStatus => {
   const status = resource.status as CiliumResourceStatus | undefined;
-  
+
   // Check if status exists - for CiliumNetworkPolicy, no status often means it's been accepted
   // but not yet processed by the Cilium agent. We'll consider this ready after a brief period.
   if (!status) {
@@ -48,40 +50,40 @@ export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (resour
       const createdTime = new Date(resource.metadata.creationTimestamp);
       const now = new Date();
       const ageInSeconds = (now.getTime() - createdTime.getTime()) / 1000;
-      
+
       // If the policy has existed for more than 5 seconds without errors, consider it ready
       if (ageInSeconds > 5) {
         return {
           ready: true,
           message: 'CiliumNetworkPolicy applied successfully (no status reported)',
-          details: { 
+          details: {
             phase: 'applied',
-            ageInSeconds: Math.round(ageInSeconds)
-          }
+            ageInSeconds: Math.round(ageInSeconds),
+          },
         };
       }
     }
-    
+
     return {
       ready: false,
       message: 'CiliumNetworkPolicy status not available',
-      details: { phase: 'pending' }
+      details: { phase: 'pending' },
     };
   }
-  
+
   // Check for error conditions
   if (status.conditions) {
     // Check for Ready condition first (standard Kubernetes pattern)
-    const readyCondition = status.conditions.find(c => c.type === 'Ready');
-    
+    const readyCondition = status.conditions.find((c) => c.type === 'Ready');
+
     if (readyCondition) {
       if (readyCondition.status === 'True') {
         return {
           ready: true,
           message: 'CiliumNetworkPolicy is ready and applied',
           details: {
-            lastTransition: (readyCondition as any).lastTransitionTime
-          }
+            lastTransition: (readyCondition as any).lastTransitionTime,
+          },
         };
       } else {
         // Handle specific error reasons, prefer message over reason
@@ -93,63 +95,61 @@ export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (resour
         } else if (readyCondition.reason) {
           message = `CiliumNetworkPolicy not ready: ${readyCondition.reason}`;
         }
-        
+
         return {
           ready: false,
           message,
           details: {
-            condition: readyCondition
-          }
+            condition: readyCondition,
+          },
         };
       }
     }
-    
+
     // Check for validation errors (Cilium-specific)
-    const invalidCondition = status.conditions.find(c => 
-      c.type === 'Valid' && c.status === 'False'
+    const invalidCondition = status.conditions.find(
+      (c) => c.type === 'Valid' && c.status === 'False'
     );
-    
+
     if (invalidCondition) {
       return {
         ready: false,
         message: `CiliumNetworkPolicy validation failed: ${invalidCondition.message || invalidCondition.reason || 'Unknown error'}`,
-        details: { 
+        details: {
           condition: invalidCondition,
-          state: status.state 
-        }
+          state: status.state,
+        },
       };
     }
-    
+
     // Check for valid condition (Cilium uses 'Valid' instead of 'Ready')
-    const validCondition = status.conditions.find(c => 
-      c.type === 'Valid' && c.status === 'True'
-    );
-    
+    const validCondition = status.conditions.find((c) => c.type === 'Valid' && c.status === 'True');
+
     if (validCondition) {
       return {
         ready: true,
         message: 'CiliumNetworkPolicy is valid and applied',
-        details: { 
+        details: {
           condition: validCondition,
           state: status.state,
-          lastTransition: (validCondition as any).lastTransitionTime
-        }
+          lastTransition: (validCondition as any).lastTransitionTime,
+        },
       };
     }
-    
+
     if (readyCondition) {
       return {
         ready: true,
         message: 'CiliumNetworkPolicy is ready and applied',
-        details: { 
+        details: {
           condition: readyCondition,
           state: status.state,
-          lastTransition: (readyCondition as any).lastTransitionTime
-        }
+          lastTransition: (readyCondition as any).lastTransitionTime,
+        },
       };
     }
   }
-  
+
   // Check state field as fallback
   if (status.state) {
     switch (status.state.toLowerCase()) {
@@ -158,48 +158,48 @@ export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (resour
         return {
           ready: true,
           message: 'CiliumNetworkPolicy is ready',
-          details: { state: status.state }
+          details: { state: status.state },
         };
       case 'error':
       case 'failed':
         return {
           ready: false,
           message: `CiliumNetworkPolicy failed: ${status.message || 'Unknown error'}`,
-          details: { state: status.state }
+          details: { state: status.state },
         };
       case 'pending':
       case 'applying':
         return {
           ready: false,
           message: 'CiliumNetworkPolicy is being applied',
-          details: { state: status.state }
+          details: { state: status.state },
         };
       default:
         return {
           ready: false,
           message: `CiliumNetworkPolicy in unknown state: ${status.state}`,
-          details: { state: status.state }
+          details: { state: status.state },
         };
     }
   }
-  
+
   // Default to not ready if we can't determine status
   return {
     ready: false,
     message: 'CiliumNetworkPolicy status unclear',
-    details: { status }
+    details: { status },
   };
 };
 
 /**
  * Factory function for CiliumNetworkPolicy
- * 
+ *
  * Creates a Cilium network policy resource with comprehensive configuration
  * options for ingress and egress rules, endpoint selection, and L7 policies.
- * 
+ *
  * @param resource - CiliumNetworkPolicy resource definition
  * @returns Enhanced CiliumNetworkPolicy resource with embedded readiness evaluator
- * 
+ *
  * @example
  * Basic network policy:
  * ```typescript
@@ -225,7 +225,7 @@ export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (resour
  *   }
  * });
  * ```
- * 
+ *
  * @example
  * L7 HTTP policy:
  * ```typescript
@@ -258,42 +258,66 @@ export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (resour
  * });
  * ```
  */
-export function ciliumNetworkPolicy(resource: CiliumNetworkPolicy): Enhanced<CiliumNetworkPolicySpec, CiliumNetworkPolicyStatus> {
+export function ciliumNetworkPolicy(
+  resource: CiliumNetworkPolicy
+): Enhanced<CiliumNetworkPolicySpec, CiliumNetworkPolicyStatus> {
   // Validate required fields - allow CEL expressions, KubernetesRef objects, and JavaScript expression results
   const name = resource.metadata?.name;
   if (name === undefined || name === null) {
     throw new Error('CiliumNetworkPolicy name is required');
   }
-  
+
   if (!resource.spec) {
     throw new Error('CiliumNetworkPolicy spec is required');
   }
-  
+
   // Validate endpoint selector if provided (empty object {} is valid for selecting all endpoints)
   if (resource.spec.endpointSelector && Object.keys(resource.spec.endpointSelector).length > 0) {
-    if (!resource.spec.endpointSelector.matchLabels && !resource.spec.endpointSelector.matchExpressions) {
-      throw new Error('CiliumNetworkPolicy endpointSelector must have matchLabels or matchExpressions');
+    if (
+      !resource.spec.endpointSelector.matchLabels &&
+      !resource.spec.endpointSelector.matchExpressions
+    ) {
+      throw new Error(
+        'CiliumNetworkPolicy endpointSelector must have matchLabels or matchExpressions'
+      );
     }
   }
-  
+
   // Validate ingress rules if provided
   if (resource.spec.ingress) {
     resource.spec.ingress.forEach((rule, index) => {
-      if (!rule.fromEndpoints && !rule.fromCIDR && !rule.fromCIDRSet && !rule.fromEntities && !rule.fromGroups) {
-        throw new Error(`CiliumNetworkPolicy ingress rule ${index} must specify at least one source`);
+      if (
+        !rule.fromEndpoints &&
+        !rule.fromCIDR &&
+        !rule.fromCIDRSet &&
+        !rule.fromEntities &&
+        !rule.fromGroups
+      ) {
+        throw new Error(
+          `CiliumNetworkPolicy ingress rule ${index} must specify at least one source`
+        );
       }
     });
   }
-  
+
   // Validate egress rules if provided
   if (resource.spec.egress) {
     resource.spec.egress.forEach((rule, index) => {
-      if (!rule.toEndpoints && !rule.toCIDR && !rule.toCIDRSet && !rule.toEntities && !rule.toGroups && !rule.toFQDNs) {
-        throw new Error(`CiliumNetworkPolicy egress rule ${index} must specify at least one destination`);
+      if (
+        !rule.toEndpoints &&
+        !rule.toCIDR &&
+        !rule.toCIDRSet &&
+        !rule.toEntities &&
+        !rule.toGroups &&
+        !rule.toFQDNs
+      ) {
+        throw new Error(
+          `CiliumNetworkPolicy egress rule ${index} must specify at least one destination`
+        );
       }
     });
   }
-  
+
   return createResource({
     ...resource,
     apiVersion: 'cilium.io/v2',
@@ -311,15 +335,17 @@ export function ciliumNetworkPolicy(resource: CiliumNetworkPolicy): Enhanced<Cil
 
 /**
  * Embedded readiness evaluator for CiliumClusterwideNetworkPolicy
- * 
+ *
  * Evaluates cluster-wide policy readiness based on:
  * - Policy acceptance across all nodes
  * - Node selector validation
  * - Cluster-wide rule application status
  */
-export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (resource: any): ResourceStatus => {
+export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (
+  resource: any
+): ResourceStatus => {
   const status = resource.status as CiliumResourceStatus | undefined;
-  
+
   // Check if status exists - for CiliumClusterwideNetworkPolicy, no status often means it's been accepted
   // but not yet processed by the Cilium agent. We'll consider this ready after a brief period.
   if (!status) {
@@ -329,80 +355,76 @@ export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluato
       const createdTime = new Date(resource.metadata.creationTimestamp);
       const now = new Date();
       const ageInSeconds = (now.getTime() - createdTime.getTime()) / 1000;
-      
+
       // If the policy has existed for more than 5 seconds without errors, consider it ready
       if (ageInSeconds > 5) {
         return {
           ready: true,
           message: 'CiliumClusterwideNetworkPolicy applied successfully (no status reported)',
-          details: { 
+          details: {
             phase: 'applied',
-            ageInSeconds: Math.round(ageInSeconds)
-          }
+            ageInSeconds: Math.round(ageInSeconds),
+          },
         };
       }
     }
-    
+
     return {
       ready: false,
       message: 'CiliumClusterwideNetworkPolicy status not available',
-      details: { phase: 'pending' }
+      details: { phase: 'pending' },
     };
   }
-  
+
   // Check for error conditions
   if (status.conditions) {
     // Check for validation errors first
-    const invalidCondition = status.conditions.find(c => 
-      c.type === 'Valid' && c.status === 'False'
+    const invalidCondition = status.conditions.find(
+      (c) => c.type === 'Valid' && c.status === 'False'
     );
-    
+
     if (invalidCondition) {
       return {
         ready: false,
         message: `CiliumClusterwideNetworkPolicy validation failed: ${invalidCondition.message || invalidCondition.reason || 'Unknown error'}`,
-        details: { 
+        details: {
           condition: invalidCondition,
-          state: status.state 
-        }
+          state: status.state,
+        },
       };
     }
-    
+
     // Check for valid condition (Cilium uses 'Valid' instead of 'Ready')
-    const validCondition = status.conditions.find(c => 
-      c.type === 'Valid' && c.status === 'True'
-    );
-    
+    const validCondition = status.conditions.find((c) => c.type === 'Valid' && c.status === 'True');
+
     if (validCondition) {
       return {
         ready: true,
         message: 'CiliumClusterwideNetworkPolicy is valid and applied cluster-wide',
-        details: { 
+        details: {
           condition: validCondition,
           state: status.state,
-          lastTransition: (validCondition as any).lastTransitionTime
-        }
+          lastTransition: (validCondition as any).lastTransitionTime,
+        },
       };
     }
-    
+
     // Also check for Ready condition as fallback
-    const readyCondition = status.conditions.find(c => 
-      c.type === 'Ready' && c.status === 'True'
-    );
-    
+    const readyCondition = status.conditions.find((c) => c.type === 'Ready' && c.status === 'True');
+
     if (readyCondition) {
       return {
         ready: true,
         message: 'CiliumClusterwideNetworkPolicy is ready and applied cluster-wide',
-        details: { 
+        details: {
           condition: readyCondition,
           state: status.state,
-          lastTransition: (readyCondition as any).lastTransitionTime
-        }
+          lastTransition: (readyCondition as any).lastTransitionTime,
+        },
       };
     }
   }
-  
+
   // Check state field as fallback
   if (status.state) {
     switch (status.state.toLowerCase()) {
@@ -411,48 +433,48 @@ export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluato
         return {
           ready: true,
           message: 'CiliumClusterwideNetworkPolicy is ready',
-          details: { state: status.state }
+          details: { state: status.state },
         };
       case 'error':
       case 'failed':
         return {
           ready: false,
           message: `CiliumClusterwideNetworkPolicy failed: ${status.message || 'Unknown error'}`,
-          details: { state: status.state }
+          details: { state: status.state },
         };
       case 'pending':
       case 'applying':
         return {
           ready: false,
           message: 'CiliumClusterwideNetworkPolicy is being applied cluster-wide',
-          details: { state: status.state }
+          details: { state: status.state },
         };
       default:
         return {
           ready: false,
           message: `CiliumClusterwideNetworkPolicy in unknown state: ${status.state}`,
-          details: { state: status.state }
+          details: { state: status.state },
         };
     }
   }
-  
+
   // Default to not ready if we can't determine status
   return {
     ready: false,
     message: 'CiliumClusterwideNetworkPolicy status unclear',
-    details: { status }
+    details: { status },
   };
 };
 
 /**
  * Factory function for CiliumClusterwideNetworkPolicy
- * 
+ *
  * Creates a cluster-wide Cilium network policy resource that applies across
  * all nodes in the cluster. Supports node selection and cluster-wide rules.
- * 
+ *
  * @param resource - CiliumClusterwideNetworkPolicy resource definition
  * @returns Enhanced CiliumClusterwideNetworkPolicy resource with embedded readiness evaluator
- * 
+ *
  * @example
  * Cluster-wide deny-all policy:
  * ```typescript
@@ -469,7 +491,7 @@ export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluato
  *   }
  * });
  * ```
- * 
+ *
  * @example
  * Node-specific cluster policy:
  * ```typescript
@@ -493,55 +515,84 @@ export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluato
  * });
  * ```
  */
-export function ciliumClusterwideNetworkPolicy(resource: CiliumClusterwideNetworkPolicy): Enhanced<CiliumClusterwideNetworkPolicySpec, CiliumClusterwideNetworkPolicyStatus> {
+export function ciliumClusterwideNetworkPolicy(
+  resource: CiliumClusterwideNetworkPolicy
+): Enhanced<CiliumClusterwideNetworkPolicySpec, CiliumClusterwideNetworkPolicyStatus> {
   // Validate required fields - allow CEL expressions, KubernetesRef objects, and JavaScript expression results
   const name = resource.metadata?.name;
   if (name === undefined || name === null) {
     throw new Error('CiliumClusterwideNetworkPolicy name is required');
   }
-  
+
   if (!resource.spec) {
     throw new Error('CiliumClusterwideNetworkPolicy spec is required');
   }
-  
+
   // Validate endpoint selector if provided (empty object {} is valid for selecting all endpoints)
   if (resource.spec.endpointSelector && Object.keys(resource.spec.endpointSelector).length > 0) {
-    if (!resource.spec.endpointSelector.matchLabels && !resource.spec.endpointSelector.matchExpressions) {
-      throw new Error('CiliumClusterwideNetworkPolicy endpointSelector must have matchLabels or matchExpressions');
+    if (
+      !resource.spec.endpointSelector.matchLabels &&
+      !resource.spec.endpointSelector.matchExpressions
+    ) {
+      throw new Error(
+        'CiliumClusterwideNetworkPolicy endpointSelector must have matchLabels or matchExpressions'
+      );
     }
   }
-  
+
   // Validate node selector if provided
   if (resource.spec.nodeSelector) {
     if (!resource.spec.nodeSelector.matchLabels && !resource.spec.nodeSelector.matchExpressions) {
-      throw new Error('CiliumClusterwideNetworkPolicy nodeSelector must have matchLabels or matchExpressions');
+      throw new Error(
+        'CiliumClusterwideNetworkPolicy nodeSelector must have matchLabels or matchExpressions'
+      );
     }
   }
-  
+
   // Validate ingress rules if provided
   if (resource.spec.ingress) {
     resource.spec.ingress.forEach((rule, index) => {
-      if (!rule.fromEndpoints && !rule.fromCIDR && !rule.fromCIDRSet && !rule.fromEntities && !rule.fromGroups) {
-        throw new Error(`CiliumClusterwideNetworkPolicy ingress rule ${index} must specify at least one source`);
+      if (
+        !rule.fromEndpoints &&
+        !rule.fromCIDR &&
+        !rule.fromCIDRSet &&
+        !rule.fromEntities &&
+        !rule.fromGroups
+      ) {
+        throw new Error(
+          `CiliumClusterwideNetworkPolicy ingress rule ${index} must specify at least one source`
+        );
       }
     });
   }
-  
+
   // Validate egress rules if provided
   if (resource.spec.egress) {
     resource.spec.egress.forEach((rule, index) => {
-      if (!rule.toEndpoints && !rule.toCIDR && !rule.toCIDRSet && !rule.toEntities && !rule.toGroups && !rule.toFQDNs) {
-        throw new Error(`CiliumClusterwideNetworkPolicy egress rule ${index} must specify at least one destination`);
+      if (
+        !rule.toEndpoints &&
+        !rule.toCIDR &&
+        !rule.toCIDRSet &&
+        !rule.toEntities &&
+        !rule.toGroups &&
+        !rule.toFQDNs
+      ) {
+        throw new Error(
+          `CiliumClusterwideNetworkPolicy egress rule ${index} must specify at least one destination`
+        );
       }
     });
   }
-  
-  return createResource({
-    ...resource,
-    apiVersion: 'cilium.io/v2',
-    kind: 'CiliumClusterwideNetworkPolicy',
-    metadata: resource.metadata ?? { name: 'unnamed-cilium-clusterwide-network-policy' },
-  }).withReadinessEvaluator(ciliumClusterwideNetworkPolicyReadinessEvaluator);
+
+  return createResource(
+    {
+      ...resource,
+      apiVersion: 'cilium.io/v2',
+      kind: 'CiliumClusterwideNetworkPolicy',
+      metadata: resource.metadata ?? { name: 'unnamed-cilium-clusterwide-network-policy' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator(ciliumClusterwideNetworkPolicyReadinessEvaluator);
 }
 
 // =============================================================================
@@ -550,12 +601,12 @@ export function ciliumClusterwideNetworkPolicy(resource: CiliumClusterwideNetwor
 
 /**
  * Simple factory function for CiliumNetworkPolicy
- * 
+ *
  * Creates a CiliumNetworkPolicy with simplified configuration and sensible defaults.
- * 
+ *
  * @param config - Simplified CiliumNetworkPolicy configuration
  * @returns Enhanced CiliumNetworkPolicy resource with embedded readiness evaluator
- * 
+ *
  * @example
  * ```typescript
  * const policy = NetworkPolicy({
@@ -578,7 +629,9 @@ export function ciliumClusterwideNetworkPolicy(resource: CiliumClusterwideNetwor
  * });
  * ```
  */
-export function NetworkPolicy(config: CiliumNetworkPolicyConfig): Enhanced<CiliumNetworkPolicySpec, CiliumNetworkPolicyStatus> {
+export function NetworkPolicy(
+  config: CiliumNetworkPolicyConfig
+): Enhanced<CiliumNetworkPolicySpec, CiliumNetworkPolicyStatus> {
   return ciliumNetworkPolicy({
     apiVersion: 'cilium.io/v2',
     kind: 'CiliumNetworkPolicy',
@@ -593,12 +646,12 @@ export function NetworkPolicy(config: CiliumNetworkPolicyConfig): Enhanced<Ciliu
 
 /**
  * Simple factory function for CiliumClusterwideNetworkPolicy
- * 
+ *
  * Creates a CiliumClusterwideNetworkPolicy with simplified configuration and sensible defaults.
- * 
+ *
  * @param config - Simplified CiliumClusterwideNetworkPolicy configuration
  * @returns Enhanced CiliumClusterwideNetworkPolicy resource with embedded readiness evaluator
- * 
+ *
  * @example
  * ```typescript
  * const denyAll = ClusterwideNetworkPolicy({
@@ -612,7 +665,9 @@ export function NetworkPolicy(config: CiliumNetworkPolicyConfig): Enhanced<Ciliu
  * });
  * ```
  */
-export function ClusterwideNetworkPolicy(config: CiliumClusterwideNetworkPolicyConfig): Enhanced<CiliumClusterwideNetworkPolicySpec, CiliumClusterwideNetworkPolicyStatus> {
+export function ClusterwideNetworkPolicy(
+  config: CiliumClusterwideNetworkPolicyConfig
+): Enhanced<CiliumClusterwideNetworkPolicySpec, CiliumClusterwideNetworkPolicyStatus> {
   return ciliumClusterwideNetworkPolicy({
     apiVersion: 'cilium.io/v2',
     kind: 'CiliumClusterwideNetworkPolicy',

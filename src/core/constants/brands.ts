@@ -21,6 +21,16 @@ export const CEL_EXPRESSION_BRAND = Symbol.for('TypeKro.CelExpression');
 export const MIXED_TEMPLATE_BRAND = Symbol.for('TypeKro.MixedTemplate');
 
 /**
+ * Brand symbol for NestedCompositionResource objects
+ */
+export const NESTED_COMPOSITION_BRAND = Symbol.for('TypeKro.NestedComposition');
+
+/**
+ * Brand symbol for CallableComposition objects
+ */
+export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableComposition');
+
+/**
  * Type-safe brand checking utilities
  */
 export const BrandChecks = {
@@ -48,5 +58,21 @@ export const BrandChecks = {
    */
   isMixedTemplate(obj: unknown): obj is { [MIXED_TEMPLATE_BRAND]: true } {
     return Boolean(obj && typeof obj === 'object' && obj !== null && MIXED_TEMPLATE_BRAND in obj);
+  },
+
+  /**
+   * Check if an object has the NestedComposition brand
+   */
+  isNestedComposition(obj: unknown): obj is { [NESTED_COMPOSITION_BRAND]: true } {
+    return Boolean(
+      obj && typeof obj === 'object' && obj !== null && NESTED_COMPOSITION_BRAND in obj
+    );
+  },
+
+  /**
+   * Check if an object is a CallableComposition
+   */
+  isCallableComposition(obj: unknown): obj is { [CALLABLE_COMPOSITION_BRAND]: true } {
+    return Boolean(obj && typeof obj === 'function' && CALLABLE_COMPOSITION_BRAND in obj);
   },
 };

@@ -52,7 +52,7 @@ import {
   storageClass,
   validatingWebhookConfiguration,
 } from '../src/index.js';
-import { kubernetesComposition, Cel } from '../src/index.js';
+import { kubernetesComposition, } from '../src/index.js';
 // =============================================================================
 // 1. INFRASTRUCTURE FOUNDATION
 // =============================================================================

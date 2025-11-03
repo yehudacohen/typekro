@@ -13,7 +13,12 @@ import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { generateKroSchemaFromArktype } from '../../serialization/schema.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
-import type { KubernetesResource } from '../../types/kubernetes.js';
+import type {
+  DeployableK8sResource,
+  Enhanced,
+  KubernetesResource,
+  WithKroStatusFields,
+} from '../../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { handleDeploymentError } from '../shared-utilities.js';
@@ -190,7 +195,7 @@ export class KroDeploymentStrategy<
         name: instanceName,
         namespace: this.namespace,
       },
-    };
+    } as DeployableK8sResource<Enhanced<TSpec, WithKroStatusFields<object>>>;
 
     // Deploy using DirectDeploymentEngine with KRO mode
     // Don't wait for ready here - we'll handle Kro-specific readiness logic ourselves
@@ -325,7 +330,7 @@ export class KroDeploymentStrategy<
           const rgdStatusSchema = rgd.spec?.schema?.status || {};
           const rgdStatusKeys = Object.keys(rgdStatusSchema);
           expectedCustomStatusFields = rgdStatusKeys.length > 0;
-          
+
           logger.debug('ResourceGraphDefinition status schema check', {
             rgdName,
             rgdStatusKeys,
@@ -353,10 +358,11 @@ export class KroDeploymentStrategy<
         // Resource is ready when it's active, synced, and either:
         // 1. Has the expected custom status fields populated, OR
         // 2. No custom status fields are expected (empty status schema in RGD)
-        const isReady = isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
-        
+        const isReady =
+          isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
+
         if (isReady) {
-          logger.info('Kro resource is ready', { 
+          logger.info('Kro resource is ready', {
             instanceName,
             hasCustomStatusFields,
             expectedCustomStatusFields,

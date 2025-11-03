@@ -50,7 +50,7 @@ describeOrSkip('Debug toResourceGraph vs kubernetesComposition', () => {
           id: 'repo',
         }),
       }),
-      (schema, resources) => ({
+      (_schema, _resources) => ({
         ready: true,
       })
     );

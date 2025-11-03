@@ -2,6 +2,7 @@ import { helmRelease } from '../../../factories/helm/helm-release.js';
 import { helmRepository } from '../../../factories/helm/helm-repository.js';
 import { namespace } from '../../../factories/kubernetes/core/namespace.js';
 import { yamlFile } from '../../../factories/kubernetes/yaml/yaml-file.js';
+import { clusterRoleBinding } from '../../../factories/kubernetes/rbac/index.js';
 import { kubernetesComposition } from '../index.js';
 import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } from './types.js';
 
@@ -36,6 +37,7 @@ import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } f
 export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   const fluxVersion = config.fluxVersion || 'latest';
   const kroVersion = config.kroVersion || '0.3.0';
+  const targetNamespace = config.namespace || 'flux-system';
 
   return kubernetesComposition(
     {
@@ -45,17 +47,17 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       spec: TypeKroRuntimeSpec,
       status: TypeKroRuntimeStatus,
     },
-    (spec) => {
+    (_spec) => {
       // System namespace for Flux
-      namespace({
+      const _systemNamespace = namespace({
         metadata: {
-          name: spec.namespace,
+          name: targetNamespace,
         },
         id: 'systemNamespace',
       });
 
       // Kro system namespace
-      namespace({
+      const _kroNamespace = namespace({
         metadata: {
           name: 'kro',
         },
@@ -70,6 +72,54 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
             ? 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml'
             : `https://github.com/fluxcd/flux2/releases/download/${fluxVersion}/install.yaml`,
         deploymentStrategy: 'skipIfExists',
+      });
+
+      // Fix incomplete RBAC from standard Flux install - add missing service accounts to cluster-reconciler
+      clusterRoleBinding({
+        metadata: {
+          name: 'cluster-reconciler',
+          labels: {
+            'app.kubernetes.io/instance': 'flux-system',
+            'app.kubernetes.io/part-of': 'flux',
+          },
+        },
+        roleRef: {
+          apiGroup: 'rbac.authorization.k8s.io',
+          kind: 'ClusterRole',
+          name: 'cluster-admin',
+        },
+        subjects: [
+          {
+            kind: 'ServiceAccount',
+            name: 'kustomize-controller',
+            namespace: targetNamespace,
+          },
+          {
+            kind: 'ServiceAccount',
+            name: 'helm-controller',
+            namespace: targetNamespace,
+          },
+          {
+            kind: 'ServiceAccount',
+            name: 'source-controller',
+            namespace: targetNamespace,
+          },
+          {
+            kind: 'ServiceAccount',
+            name: 'notification-controller',
+            namespace: targetNamespace,
+          },
+          {
+            kind: 'ServiceAccount',
+            name: 'image-reflector-controller',
+            namespace: targetNamespace,
+          },
+          {
+            kind: 'ServiceAccount',
+            name: 'image-automation-controller',
+            namespace: targetNamespace,
+          },
+        ],
       });
 
       // Helm Repository for Kro OCI charts
@@ -97,7 +147,12 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
 
       // ✨ JavaScript expressions - automatically converted to CEL
       return {
-        phase: kroHelmRelease.status.phase === 'Ready' ? 'Ready' : 'Installing',
+        phase: (kroHelmRelease.status.phase === 'Ready' ? 'Ready' : 'Installing') as
+          | 'Pending'
+          | 'Installing'
+          | 'Ready'
+          | 'Failed'
+          | 'Upgrading',
         components: {
           fluxSystem: true,
           // Kro system readiness based on HelmRelease status

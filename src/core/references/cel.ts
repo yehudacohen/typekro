@@ -327,7 +327,7 @@ function cel<T = string>(
   for (let i = 0; i < strings.length; i++) {
     // Add the string literal part
     if (strings[i]) {
-      parts.push(`"${strings[i]!.replace(/"/g, '\\"')}"`);
+      parts.push(`"${strings[i]?.replace(/"/g, '\\"')}"`);
     }
     
     // Add the interpolated value if it exists

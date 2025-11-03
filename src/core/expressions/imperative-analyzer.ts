@@ -1,6 +1,6 @@
 /**
  * Imperative Composition Analyzer
- * 
+ *
  * This module analyzes imperative composition functions to detect JavaScript expressions
  * that contain KubernetesRef objects and converts them to CEL expressions.
  */
@@ -10,8 +10,6 @@ import * as estraverse from 'estraverse';
 import { Cel } from '../references/cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { Enhanced } from '../types/index.js';
-
-
 
 const logger = getComponentLogger('imperative-analyzer');
 
@@ -37,7 +35,7 @@ export function analyzeImperativeComposition(
   logger.debug('Analyzing imperative composition function', {
     resourceCount: Object.keys(resources).length,
     factoryType: options.factoryType,
-    resourceIds: Object.keys(resources)
+    resourceIds: Object.keys(resources),
   });
 
   try {
@@ -46,14 +44,14 @@ export function analyzeImperativeComposition(
 
     logger.debug('Parsing composition function source', {
       sourceLength: functionSource.length,
-      functionSource: functionSource.substring(0, 500) + (functionSource.length > 500 ? '...' : '')
+      functionSource: functionSource.substring(0, 500) + (functionSource.length > 500 ? '...' : ''),
     });
 
     const ast = Parser.parse(functionSource, {
       ecmaVersion: 2022,
       sourceType: 'script',
       locations: true,
-      ranges: true
+      ranges: true,
     });
 
     // Find the return statement in the composition function
@@ -64,7 +62,7 @@ export function analyzeImperativeComposition(
       return {
         statusMappings: {},
         hasJavaScriptExpressions: false,
-        errors: ['No return statement found in composition function']
+        errors: ['No return statement found in composition function'],
       };
     }
 
@@ -74,7 +72,7 @@ export function analyzeImperativeComposition(
       return {
         statusMappings: {},
         hasJavaScriptExpressions: false,
-        errors: ['Return statement must return an object literal']
+        errors: ['Return statement must return an object literal'],
       };
     }
 
@@ -82,8 +80,6 @@ export function analyzeImperativeComposition(
     const statusMappings: Record<string, any> = {};
     const errors: string[] = [];
     let hasJavaScriptExpressions = false;
-
-
 
     // Process properties recursively to handle nested objects
     function processProperties(properties: any[], parentPath: string = ''): void {
@@ -96,7 +92,7 @@ export function analyzeImperativeComposition(
             // Check if this is a nested object
             if (property.value.type === 'ObjectExpression') {
               logger.debug('Found nested object property', { fieldName, fullFieldName });
-              
+
               // Create nested object in statusMappings
               if (parentPath) {
                 // Navigate to the parent object and create the nested structure
@@ -110,7 +106,7 @@ export function analyzeImperativeComposition(
               } else {
                 if (!statusMappings[fieldName]) statusMappings[fieldName] = {};
               }
-              
+
               // Recursively process nested properties
               processProperties(property.value.properties, fullFieldName);
               continue;
@@ -122,12 +118,17 @@ export function analyzeImperativeComposition(
             logger.debug('Analyzing property', {
               fieldName,
               fullFieldName,
-              propertySource: propertySource.substring(0, 100) + (propertySource.length > 100 ? '...' : '')
+              propertySource:
+                propertySource.substring(0, 100) + (propertySource.length > 100 ? '...' : ''),
             });
 
             // Check if this expression contains resource references
             if (containsResourceReferences(propertySource)) {
-              logger.debug('Found resource references in property', { fieldName, fullFieldName, propertySource });
+              logger.debug('Found resource references in property', {
+                fieldName,
+                fullFieldName,
+                propertySource,
+              });
 
               // Convert resource references to proper format for CEL
               const convertedSource = convertResourceReferencesToCel(propertySource, resources);
@@ -136,12 +137,12 @@ export function analyzeImperativeComposition(
                 fieldName,
                 fullFieldName,
                 originalSource: propertySource.substring(0, 100),
-                convertedSource: convertedSource.substring(0, 100)
+                convertedSource: convertedSource.substring(0, 100),
               });
 
               // For imperative compositions, create CEL expressions directly from the converted source
               const celExpression = Cel.expr(convertedSource);
-              
+
               // Set the CEL expression at the correct nested path
               if (parentPath) {
                 const pathParts = parentPath.split('.');
@@ -154,18 +155,18 @@ export function analyzeImperativeComposition(
               } else {
                 statusMappings[fieldName] = celExpression;
               }
-              
+
               hasJavaScriptExpressions = true;
 
               logger.debug('Created direct CEL expression for property', {
                 fieldName,
                 fullFieldName,
-                expression: convertedSource
+                expression: convertedSource,
               });
             } else {
               // No resource references, keep as static value
               const staticValue = evaluateStaticExpression(property.value);
-              
+
               // Set the static value at the correct nested path
               if (parentPath) {
                 const pathParts = parentPath.split('.');
@@ -178,13 +179,20 @@ export function analyzeImperativeComposition(
               } else {
                 statusMappings[fieldName] = staticValue;
               }
-              
-              logger.debug('Property has no resource references, keeping as static', { fieldName, fullFieldName });
+
+              logger.debug('Property has no resource references, keeping as static', {
+                fieldName,
+                fullFieldName,
+              });
             }
           } catch (error) {
             const errorMessage = `Failed to analyze property '${fullFieldName}': ${error instanceof Error ? error.message : String(error)}`;
             errors.push(errorMessage);
-            logger.debug('Property analysis failed', { fieldName, fullFieldName, error: errorMessage });
+            logger.debug('Property analysis failed', {
+              fieldName,
+              fullFieldName,
+              error: errorMessage,
+            });
 
             // Fallback to static evaluation
             try {
@@ -224,13 +232,13 @@ export function analyzeImperativeComposition(
     logger.debug('Imperative composition analysis complete', {
       statusFieldCount: Object.keys(statusMappings).length,
       hasJavaScriptExpressions,
-      errorCount: errors.length
+      errorCount: errors.length,
     });
 
     return {
       statusMappings,
       hasJavaScriptExpressions,
-      errors
+      errors,
     };
   } catch (error) {
     const errorMessage = `Failed to analyze imperative composition: ${error instanceof Error ? error.message : String(error)}`;
@@ -239,7 +247,7 @@ export function analyzeImperativeComposition(
     return {
       statusMappings: {},
       hasJavaScriptExpressions: false,
-      errors: [errorMessage]
+      errors: [errorMessage],
     };
   }
 }
@@ -258,7 +266,7 @@ function findReturnStatement(ast: any): any {
       }
       // Continue normal traversal
       return undefined;
-    }
+    },
   });
 
   return returnStatement;
@@ -286,15 +294,19 @@ function getNodeSource(node: any, fullSource: string): string {
       return `${getNodeSource(node.left, fullSource)} ${node.operator} ${getNodeSource(node.right, fullSource)}`;
     case 'MemberExpression': {
       const object = getNodeSource(node.object, fullSource);
-      const property = node.computed ? `[${getNodeSource(node.property, fullSource)}]` : `.${node.property.name}`;
+      const property = node.computed
+        ? `[${getNodeSource(node.property, fullSource)}]`
+        : `.${node.property.name}`;
       return object + property;
     }
     case 'ObjectExpression': {
-      const properties = node.properties.map((prop: any) => {
-        const key = prop.key.name || prop.key.value;
-        const value = getNodeSource(prop.value, fullSource);
-        return `${key}: ${value}`;
-      }).join(', ');
+      const properties = node.properties
+        .map((prop: any) => {
+          const key = prop.key.name || prop.key.value;
+          const value = getNodeSource(prop.value, fullSource);
+          return `${key}: ${value}`;
+        })
+        .join(', ');
       return `{ ${properties} }`;
     }
     default:
@@ -319,21 +331,24 @@ function containsResourceReferences(source: string): boolean {
     /\w+\.metadata\./,
     /\w+\.spec\./,
     /\w+\.data\./,
-    /\bspec\./  // Schema references
+    /\bspec\./, // Schema references
   ];
 
-  return referencePatterns.some(pattern => pattern.test(source));
+  return referencePatterns.some((pattern) => pattern.test(source));
 }
 
 /**
  * Convert resource references and schema references in source code to proper CEL format
- * 
+ *
  * This function handles template literals and converts them to proper CEL string concatenation.
  * For example: `https://${spec.hostname}/api` becomes: "https://" + schema.spec.hostname + "/api"
  * For example: `Deployment ${deployment.metadata.name} has ${deployment.status.readyReplicas} replicas`
  * becomes: "Deployment " + deployment.metadata.name + " has " + deployment.status.readyReplicas + " replicas"
  */
-function convertResourceReferencesToCel(source: string, resources: Record<string, Enhanced<any, any>>): string {
+function convertResourceReferencesToCel(
+  source: string,
+  resources: Record<string, Enhanced<any, any>>
+): string {
   // Check if this is a template literal
   if (source.startsWith('`') && source.endsWith('`')) {
     return convertTemplateLiteralToCel(source, resources);
@@ -351,18 +366,21 @@ function convertResourceReferencesToCel(source: string, resources: Record<string
 /**
  * Convert a JavaScript template literal to CEL string concatenation
  */
-function convertTemplateLiteralToCel(templateLiteral: string, resources: Record<string, Enhanced<any, any>>): string {
+function convertTemplateLiteralToCel(
+  templateLiteral: string,
+  resources: Record<string, Enhanced<any, any>>
+): string {
   // Remove the backticks
   let content = templateLiteral.slice(1, -1);
-  
+
   // First, convert any special KubernetesRef strings in the content
   content = convertTemplateLiteralContent(content);
-  
+
   // Parse template literal parts
   const parts: string[] = [];
   let currentPart = '';
   let i = 0;
-  
+
   while (i < content.length) {
     if (content[i] === '$' && content[i + 1] === '{') {
       // Found interpolation start
@@ -371,37 +389,37 @@ function convertTemplateLiteralToCel(templateLiteral: string, resources: Record<
         parts.push(`"${currentPart.replace(/"/g, '\\"')}"`);
         currentPart = '';
       }
-      
+
       // Find the matching closing brace
       let braceCount = 1;
       let j = i + 2;
       let expression = '';
-      
+
       while (j < content.length && braceCount > 0) {
         if (content[j] === '{') braceCount++;
         if (content[j] === '}') braceCount--;
         if (braceCount > 0) expression += content[j];
         j++;
       }
-      
+
       // Convert the expression part
       if (expression.trim()) {
         const convertedExpression = convertExpressionToCel(expression.trim());
         parts.push(convertedExpression);
       }
-      
+
       i = j;
     } else {
       currentPart += content[i];
       i++;
     }
   }
-  
+
   // Add any remaining literal part
   if (currentPart) {
     parts.push(`"${currentPart.replace(/"/g, '\\"')}"`);
   }
-  
+
   // Join parts with + for CEL string concatenation
   return parts.join(' + ');
 }
@@ -414,11 +432,17 @@ function convertExpressionToCel(expression: string): string {
   if (expression.startsWith('spec.')) {
     expression = `schema.${expression}`;
   }
-  
+
   // Convert JavaScript operators to CEL operators
   expression = expression.replace(/===/g, '=='); // Convert strict equality to CEL equality
   expression = expression.replace(/!==/g, '!='); // Convert strict inequality to CEL inequality
-  
+
+  // Wrap expressions containing || or && operators in parentheses to preserve precedence
+  // when they're part of string concatenation in template literals
+  if (expression.includes('||') || expression.includes('&&')) {
+    expression = `(${expression})`;
+  }
+
   // Resource references are already in correct format
   return expression;
 }
@@ -443,16 +467,19 @@ function convertTemplateLiteralContent(content: string): string {
 function convertStringWithKubernetesRefs(source: string): string {
   // Remove quotes if present
   let content = source;
-  if ((content.startsWith('"') && content.endsWith('"')) || (content.startsWith("'") && content.endsWith("'"))) {
+  if (
+    (content.startsWith('"') && content.endsWith('"')) ||
+    (content.startsWith("'") && content.endsWith("'"))
+  ) {
     content = content.slice(1, -1);
   }
-  
+
   // Split the string by KubernetesRef placeholders
   const parts: string[] = [];
   const refPattern = /__KUBERNETES_REF_([^_]+)_([^_]+)__/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null = refPattern.exec(content);
-  
+
   while (match !== null) {
     // Add the literal part before the reference
     if (match.index > lastIndex) {
@@ -461,7 +488,7 @@ function convertStringWithKubernetesRefs(source: string): string {
         parts.push(`"${literalPart.replace(/"/g, '\\"')}"`);
       }
     }
-    
+
     // Add the reference part
     const [, resourceId, fieldPath] = match;
     if (resourceId === '__schema__') {
@@ -469,11 +496,11 @@ function convertStringWithKubernetesRefs(source: string): string {
     } else {
       parts.push(`${resourceId}.${fieldPath}`);
     }
-    
+
     lastIndex = match.index + match[0].length;
     match = refPattern.exec(content);
   }
-  
+
   // Add any remaining literal part
   if (lastIndex < content.length) {
     const literalPart = content.slice(lastIndex);
@@ -481,7 +508,7 @@ function convertStringWithKubernetesRefs(source: string): string {
       parts.push(`"${literalPart.replace(/"/g, '\\"')}"`);
     }
   }
-  
+
   // Join parts with + for CEL string concatenation
   return parts.join(' + ');
 }
@@ -517,4 +544,3 @@ function evaluateStaticExpression(node: any): any {
       return null;
   }
 }
-

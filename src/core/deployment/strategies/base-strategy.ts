@@ -288,7 +288,7 @@ export abstract class BaseDeploymentStrategy<
               if (match?.[1]) {
                 // Convert from PascalCase to camelCase (e.g., "Webapp" -> "webapp")
                 const originalKey = match[1].charAt(0).toLowerCase() + match[1].slice(1);
-                
+
                 this.logger.debug('Extracted original key from resource ID', {
                   instanceName,
                   deployedResourceId: deployedResource.id,
@@ -302,7 +302,7 @@ export abstract class BaseDeploymentStrategy<
                     kind: deployedResource.manifest.kind,
                     metadata: {
                       name: deployedResource.name,
-                      namespace: this.namespace,
+                      namespace: deployedResource.namespace,
                     },
                   };
 
@@ -361,6 +361,7 @@ export abstract class BaseDeploymentStrategy<
               namespace: this.namespace,
               timeout: this.factoryOptions.timeout || 30000,
               resourceKeyMapping,
+              schema: { spec, status: {} },
             };
 
             // Resolve all CEL expressions in the status

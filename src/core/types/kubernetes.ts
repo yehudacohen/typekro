@@ -109,8 +109,17 @@ type NonOptional<T> = {
  *
  * Note: Both spec and status are required for better type safety and reference creation
  * The NonOptional wrapper removes undefined from all fields for cleaner type experience
+ *
+ * IMPORTANT: We use Omit to remove spec/status/metadata from KubernetesResource before
+ * adding the MagicProxy versions. This prevents intersection type conflicts where the same
+ * property is defined in both parts of the intersection (e.g., status?: TStatus vs
+ * readonly status: MagicProxy<TStatus>), which causes TypeScript to create complex
+ * intersection types like (string & KubernetesRef<string>) when accessing nested properties.
  */
-export type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
+export type Enhanced<TSpec, TStatus> = Omit<
+  KubernetesResource<TSpec, TStatus>,
+  'spec' | 'status' | 'metadata'
+> & {
   readonly status: MagicProxy<NonOptional<TStatus>>; // Required for better type safety, no undefined
   readonly spec: MagicProxy<NonOptional<TSpec>>; // No undefined fields
   readonly metadata: MagicProxy<V1ObjectMeta>; // Keep metadata fields optional as they should be

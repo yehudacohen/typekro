@@ -246,7 +246,7 @@ describe('JavaScript to CEL Template Literals', () => {
           spec: TestSpec,
           status: TestStatus,
         },
-        (spec) => {
+        (_spec) => {
           return {
             debug: 'test',
           };

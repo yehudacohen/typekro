@@ -149,9 +149,10 @@ export const completeWebApp = kubernetesComposition(
     return {
       url: `https://${spec.hostname}`,
       ready: database.status.readyReplicas >= 1 && webApp.status.readyReplicas >= spec.replicas,
-      phase: database.status.readyReplicas > 0 && webApp.status.readyReplicas >= webApp.status.replicas
-        ? 'running' 
-        : 'failed',
+      phase: (database.status.readyReplicas > 0 &&
+      webApp.status.readyReplicas >= webApp.status.replicas
+        ? 'running'
+        : 'failed') as 'pending' | 'running' | 'failed',
       databaseReady: database.status.readyReplicas >= 1,
       webReady: webApp.status.readyReplicas >= spec.replicas,
     };
