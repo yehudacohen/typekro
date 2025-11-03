@@ -440,6 +440,17 @@ export class ReferenceResolver {
       return this.cache.get(cacheKey) as T;
     }
 
+    // Check if this is a reference to the schema
+    if (ref.resourceId === 'schema' || ref.resourceId === '__schema__') {
+      if (context.schema) {
+        const value = this.extractFieldValue<T>(context.schema as any, ref.fieldPath);
+        this.cache.set(cacheKey, value);
+        return value as T;
+      }
+      // If schema not in context, this is an error
+      throw new Error(`Schema reference found but schema not provided in context`);
+    }
+
     // First check if resource is in our deployment context
     const deployedResource = this.findDeployedResource(ref.resourceId, context);
     if (deployedResource) {
@@ -544,6 +555,26 @@ export class ReferenceResolver {
             resourceName: deployedResource.manifest?.metadata?.name,
           });
         }
+      }
+
+      // Add schema to resourcesMap if provided in context
+      if (context.schema) {
+        resourcesMap.set('schema', context.schema);
+        // Also add as __schema__ for backward compatibility
+        resourcesMap.set('__schema__', context.schema);
+        this.logger.debug('Added schema to CEL context', {
+          schemaSpec: Object.keys((context.schema as any).spec || {}),
+        });
+      }
+
+      // Add schema to resourcesMap if provided in context
+      if (context.schema) {
+        resourcesMap.set('schema', context.schema);
+        // Also add as __schema__ for backward compatibility
+        resourcesMap.set('__schema__', context.schema);
+        this.logger.debug('Added schema to CEL context', {
+          schemaSpec: Object.keys((context.schema as any).spec || {}),
+        });
       }
 
       this.logger.debug('CEL context prepared', {

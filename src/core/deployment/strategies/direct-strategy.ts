@@ -170,21 +170,6 @@ export class DirectDeploymentStrategy<
   }
 
   /**
-   * Create Enhanced metadata (helper method)
-   */
-  private createEnhancedMetadata(instanceName: string) {
-    return {
-      name: instanceName,
-      namespace: this.namespace,
-      labels: {
-        'typekro.io/factory': this.factoryName,
-        'typekro.io/mode': 'direct',
-      },
-      annotations: {},
-    };
-  }
-
-  /**
    * Create deployment context for closure execution
    */
   public createDeploymentContext(

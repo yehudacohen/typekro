@@ -7,7 +7,8 @@ import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { KubernetesRef } from './common.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
-import type { KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
+import type { KroCompatibleType, SchemaProxy, Scope, InferType } from './serialization.js';
+import { NESTED_COMPOSITION_BRAND, CALLABLE_COMPOSITION_BRAND } from '../constants/brands.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status
@@ -292,6 +293,48 @@ export interface TypedResourceGraph<
   schema?: SchemaProxy<TSpec, TStatus>; // Only for typed graphs from builder functions
 }
 
+/**
+ * Status proxy for nested compositions - returns KubernetesRef objects
+ * that reference the nested composition's computed status fields.
+ *
+ * Supports nested property access at the type level to match runtime Proxy behavior.
+ * Uses MagicProxy to enable property access on KubernetesRef-wrapped objects.
+ *
+ * Example: status.components.kroSystem is valid when components is an object.
+ * Example: status.ingressClass?.name properly resolves to string type, not any.
+ */
+export type StatusProxy<TStatus> = TStatus;
+
+/**
+ * Resource returned when a composition is called as a function with a spec.
+ * Contains the spec, a status proxy, and metadata about the nested composition instance.
+ */
+export interface NestedCompositionResource<TSpec, TStatus> {
+  readonly [NESTED_COMPOSITION_BRAND]: true;
+  readonly spec: TSpec;
+  readonly status: StatusProxy<TStatus>;
+  readonly __compositionId: string;
+  readonly __resources: KubernetesResource[];
+}
+
+/**
+ * A composition that can be both:
+ * 1. Called as a function with a spec to create nested composition instances
+ * 2. Used as a TypedResourceGraph for deployment
+ * 3. Has a .status property for cross-composition status references
+ */
+export type CallableComposition<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+> = {
+  readonly [CALLABLE_COMPOSITION_BRAND]: true;
+  (spec: TSpec): NestedCompositionResource<TSpec, TStatus>;
+
+  // Status proxy for cross-composition references
+  // Enables: composition.status.field in status builders
+  readonly status: InferType<TStatus>;
+} & TypedResourceGraph<TSpec, TStatus>;
+
 // Factory options determine deployment strategy
 export interface FactoryOptions {
   namespace?: string;
@@ -498,7 +541,9 @@ export class ResourceReadinessTimeoutError extends Error {
 
 export class UnsupportedMediaTypeError extends Error {
   constructor(resourceName: string, resourceKind: string, acceptedTypes: string[], cause: Error) {
-    super(`Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`);
+    super(
+      `Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`
+    );
     this.name = 'UnsupportedMediaTypeError';
     this.cause = cause;
   }
@@ -520,4 +565,5 @@ export interface ResolutionContext {
   cache?: Map<string, unknown>;
   deploymentId?: string;
   resourceKeyMapping?: Map<string, unknown>;
+  schema?: { spec?: unknown; status?: unknown };
 }

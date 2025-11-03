@@ -46,7 +46,7 @@ describe('Resource Metadata Handling', () => {
               id: 'service',
             }),
           }),
-          (_schema, resources) => ({
+          (_schema, _resources) => ({
             url: 'http://webapp-service',
             phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
           })
@@ -89,7 +89,7 @@ describe('Resource Metadata Handling', () => {
             id: 'service',
           }),
         }),
-        (_schema, resources) => ({
+        (_schema, _resources) => ({
           url: 'http://webapp-service',
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -158,7 +158,7 @@ describe('Resource Metadata Handling', () => {
           }),
 
         }),
-        (_schema, resources) => ({
+        (_schema, _resources) => ({
           url: 'http://webapp-service',
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -351,7 +351,7 @@ describe('Resource Metadata Handling', () => {
             id: 'service',
           }),
         }),
-        (_schema, resources) => ({
+        (_schema, _resources) => ({
           url: 'http://webapp-service',
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -390,7 +390,7 @@ describe('Resource Metadata Handling', () => {
             id: 'service',
           }),
         }),
-        (_schema, resources) => ({
+        (_schema, _resources) => ({
           url: 'http://webapp-service',
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })

@@ -1,10 +1,22 @@
-import { type } from 'arktype';
+import { type, type Type } from 'arktype';
 
-export const TypeKroRuntimeSpec = type({
+export interface TypeKroRuntimeSpecType {
+  namespace: string;
+}
+
+export interface TypeKroRuntimeStatusType {
+  phase: 'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading';
+  components: {
+    fluxSystem: boolean;
+    kroSystem: boolean;
+  };
+}
+
+export const TypeKroRuntimeSpec: Type<TypeKroRuntimeSpecType> = type({
   namespace: 'string',
 });
 
-export const TypeKroRuntimeStatus = type({
+export const TypeKroRuntimeStatus: Type<TypeKroRuntimeStatusType> = type({
   phase: '"Pending" | "Installing" | "Ready" | "Failed" | "Upgrading"',
   components: {
     fluxSystem: 'boolean',

@@ -48,7 +48,6 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     expect(kroHelmRelease).toBeDefined();
     expect(kroHelmRelease.metadata?.name).toBe('kro');
     expect(kroHelmRelease.metadata?.namespace).toBe('kro');
-
   });
 
   it('should use correct Flux URLs for different versions', () => {
@@ -89,5 +88,29 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
 
     expect(bootstrap.toYaml).toBeDefined();
     expect(typeof bootstrap.toYaml).toBe('function');
+  });
+
+  it('should include complete Flux RBAC configuration', () => {
+    const bootstrap = typeKroRuntimeBootstrap({
+      namespace: 'flux-system',
+    });
+
+    const factory = bootstrap.factory('kro', { namespace: 'flux-system' });
+    const yaml = factory.toYaml();
+
+    // Should contain the cluster-reconciler ClusterRoleBinding
+    expect(yaml).toContain('kind: ClusterRoleBinding');
+    expect(yaml).toContain('name: cluster-reconciler');
+
+    // Should include all required Flux service accounts
+    expect(yaml).toContain('name: kustomize-controller');
+    expect(yaml).toContain('name: helm-controller');
+    expect(yaml).toContain('name: source-controller');
+    expect(yaml).toContain('name: notification-controller');
+    expect(yaml).toContain('name: image-reflector-controller');
+    expect(yaml).toContain('name: image-automation-controller');
+
+    // All should be in the flux-system namespace
+    expect(yaml).toMatch(/namespace: flux-system/g);
   });
 });

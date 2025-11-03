@@ -1,6 +1,6 @@
 /**
  * CEL Conversion Engine for Factory Integration
- * 
+ *
  * This module provides automatic conversion of JavaScript expressions containing
  * KubernetesRef objects to appropriate CEL expressions for different deployment
  * strategies.
@@ -10,10 +10,10 @@ import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesRef, CelExpression } from '../types/index.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
-import { 
+import {
   MagicProxyDetector,
   type MagicProxyDetectionResult,
-  type MagicProxyRefInfo 
+  type MagicProxyRefInfo,
 } from './magic-proxy-detector.js';
 import type { FactoryExpressionContext } from './types.js';
 import { getCurrentCompositionContext } from '../../factories/shared.js';
@@ -65,7 +65,7 @@ export interface CelConversionResult<T = any> {
 
 /**
  * CEL Conversion Engine
- * 
+ *
  * Automatically converts JavaScript expressions containing KubernetesRef objects
  * to appropriate CEL expressions based on the factory type and usage context.
  */
@@ -78,7 +78,7 @@ export class CelConversionEngine {
 
   /**
    * Convert a value containing KubernetesRef objects to appropriate format
-   * 
+   *
    * @param value - Value to convert
    * @param context - Factory context
    * @param config - Conversion configuration
@@ -90,11 +90,11 @@ export class CelConversionEngine {
     config: CelConversionConfig = {}
   ): CelConversionResult<T> {
     const startTime = performance.now();
-    
+
     logger.debug('Starting CEL conversion', {
       factoryType: context.factoryType,
       factoryName: context.factoryName,
-      valueType: typeof value
+      valueType: typeof value,
     });
 
     const result: CelConversionResult<T> = {
@@ -105,13 +105,13 @@ export class CelConversionEngine {
       metrics: {
         conversionTimeMs: 0,
         referencesConverted: 0,
-        expressionsGenerated: 0
+        expressionsGenerated: 0,
       },
       warnings: [],
       debugInfo: {
         detectedReferences: [],
-        conversionSteps: []
-      }
+        conversionSteps: [],
+      },
     };
 
     // Detect KubernetesRef objects in the value
@@ -119,12 +119,14 @@ export class CelConversionEngine {
       maxDepth: config.maxDepth || 10,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
-      trackMetrics: true
+      trackMetrics: true,
     });
 
     if (config.includeDebugInfo) {
       result.debugInfo!.detectedReferences = detection.references;
-      result.debugInfo?.conversionSteps.push(`Detected ${detection.references.length} KubernetesRef objects`);
+      result.debugInfo?.conversionSteps.push(
+        `Detected ${detection.references.length} KubernetesRef objects`
+      );
     }
 
     // If no KubernetesRef objects found, return as-is
@@ -136,7 +138,7 @@ export class CelConversionEngine {
 
     // Convert based on factory type and value structure
     const converted = this.performConversion(value, detection, context, config, result);
-    
+
     result.converted = converted;
     result.wasConverted = true;
     result.metrics.referencesConverted = detection.references.length;
@@ -146,7 +148,7 @@ export class CelConversionEngine {
       wasConverted: result.wasConverted,
       strategy: result.strategy,
       referencesConverted: result.metrics.referencesConverted,
-      conversionTimeMs: result.metrics.conversionTimeMs
+      conversionTimeMs: result.metrics.conversionTimeMs,
     });
 
     return result;
@@ -154,7 +156,7 @@ export class CelConversionEngine {
 
   /**
    * Convert a simple KubernetesRef to CEL expression
-   * 
+   *
    * @param ref - KubernetesRef to convert
    * @param context - Factory context
    * @returns CEL expression
@@ -164,17 +166,17 @@ export class CelConversionEngine {
     context: FactoryExpressionContext
   ): CelExpression<T> {
     const celExpression = this.generateCelFromRef(ref, context);
-    
+
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: celExpression,
-      type: 'unknown' // Type will be inferred during serialization
+      type: 'unknown', // Type will be inferred during serialization
     } as CelExpression<T>;
   }
 
   /**
    * Check if a value needs CEL conversion
-   * 
+   *
    * @param value - Value to check
    * @param maxDepth - Maximum depth to check
    * @returns Whether conversion is needed
@@ -193,7 +195,7 @@ export class CelConversionEngine {
     // Handle direct KubernetesRef objects
     if (isKubernetesRef(value)) {
       result.strategy = 'direct';
-      
+
       // Check if this is an external reference
       if (this.isExternalReference(value)) {
         if (config.includeDebugInfo) {
@@ -203,11 +205,11 @@ export class CelConversionEngine {
         // They will be handled by the serialization layer
         return value;
       }
-      
+
       if (config.includeDebugInfo) {
         result.debugInfo?.conversionSteps.push('Converting direct KubernetesRef to CEL expression');
       }
-      
+
       if (context.factoryType === 'kro') {
         // For Kro factories, convert to CEL expression
         const celExpr = this.convertKubernetesRefToCel(value, context);
@@ -223,7 +225,9 @@ export class CelConversionEngine {
     if (this.isTemplateLiteralWithRefs(value, detection)) {
       result.strategy = 'template-literal';
       if (config.includeDebugInfo) {
-        result.debugInfo?.conversionSteps.push('Converting template literal with KubernetesRef objects');
+        result.debugInfo?.conversionSteps.push(
+          'Converting template literal with KubernetesRef objects'
+        );
       }
       return this.convertTemplateLiteral(value, detection, context, result) as T;
     }
@@ -232,7 +236,9 @@ export class CelConversionEngine {
     if (value && typeof value === 'object') {
       result.strategy = 'cel-expression';
       if (config.includeDebugInfo) {
-        result.debugInfo?.conversionSteps.push('Converting object/array with nested KubernetesRef objects');
+        result.debugInfo?.conversionSteps.push(
+          'Converting object/array with nested KubernetesRef objects'
+        );
       }
       return this.convertObjectWithRefs(value, detection, context, config, result) as T;
     }
@@ -247,12 +253,12 @@ export class CelConversionEngine {
    */
   private isExternalReference(ref: KubernetesRef<any>): boolean {
     const resourceId = ref.resourceId;
-    
+
     // Schema references are never external
     if (resourceId === '__schema__') {
       return false;
     }
-    
+
     // Check if the resource exists in the current composition context
     const context = getCurrentCompositionContext();
     if (!context) {
@@ -260,7 +266,7 @@ export class CelConversionEngine {
       // In this case, proceed with normal CEL conversion
       return false;
     }
-    
+
     // If the resource is not registered in the current context, it's external
     return !(resourceId in context.resources);
   }
@@ -313,13 +319,13 @@ export class CelConversionEngine {
             // External references should not be converted
             return item;
           }
-          
+
           result.metrics.expressionsGenerated++;
-          return context.factoryType === 'kro' 
+          return context.factoryType === 'kro'
             ? this.convertKubernetesRefToCel(item, context)
             : item;
         }
-        
+
         // Recursively convert nested items
         if (this.magicProxyDetector.containsKubernetesRefs(item)) {
           const nestedResult = this.convertValue(item, context, config);
@@ -328,14 +334,14 @@ export class CelConversionEngine {
           }
           return nestedResult.converted;
         }
-        
+
         return item;
       }) as T;
     }
 
     if (value && typeof value === 'object' && value.constructor === Object) {
       const converted: Record<string, any> = {};
-      
+
       for (const [key, val] of Object.entries(value)) {
         if (isKubernetesRef(val)) {
           // Check if this is an external reference
@@ -344,9 +350,8 @@ export class CelConversionEngine {
             converted[key] = val;
           } else {
             result.metrics.expressionsGenerated++;
-            converted[key] = context.factoryType === 'kro' 
-              ? this.convertKubernetesRefToCel(val, context)
-              : val;
+            converted[key] =
+              context.factoryType === 'kro' ? this.convertKubernetesRefToCel(val, context) : val;
           }
         } else if (this.magicProxyDetector.containsKubernetesRefs(val)) {
           const nestedResult = this.convertValue(val, context, config);
@@ -358,7 +363,7 @@ export class CelConversionEngine {
           converted[key] = val;
         }
       }
-      
+
       return converted as T;
     }
 
@@ -373,7 +378,7 @@ export const celConversionEngine = new CelConversionEngine();
 
 /**
  * Utility function to convert a value with KubernetesRef objects
- * 
+ *
  * @param value - Value to convert
  * @param context - Factory context
  * @param config - Conversion configuration
@@ -389,7 +394,7 @@ export function convertToCel<T>(
 
 /**
  * Utility function to convert a KubernetesRef to CEL expression
- * 
+ *
  * @param ref - KubernetesRef to convert
  * @param context - Factory context
  * @returns CEL expression
@@ -403,7 +408,7 @@ export function kubernetesRefToCel<T>(
 
 /**
  * Utility function to check if a value needs CEL conversion
- * 
+ *
  * @param value - Value to check
  * @param maxDepth - Maximum depth to check
  * @returns Whether conversion is needed

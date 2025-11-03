@@ -102,7 +102,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       }
 
       for (const file of helmFiles) {
-        const url = `https://raw.githubusercontent.com/kro-run/kro/main/helm/${file}`;
+        const url = `https://raw.githubusercontent.com/kro-run/kro/v0.3.0/helm/${file}`;
         const filePath = join(helmDir, file);
         console.log(`📥 Downloading ${file}...`);
         try {

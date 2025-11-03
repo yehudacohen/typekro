@@ -9,7 +9,7 @@
  */
 
 import { type } from 'arktype';
-import { Cel, kubernetesComposition, externalRef } from '../src/index.js';
+import { kubernetesComposition, externalRef } from '../src/index.js';
 import { Deployment, Service, } from '../src/factories/simple/index.js';
 
 // =============================================================================

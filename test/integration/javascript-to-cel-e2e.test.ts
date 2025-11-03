@@ -1,6 +1,6 @@
 /**
  * End-to-end integration tests for JavaScript to CEL conversion with magic proxy scenarios
- * 
+ *
  * These tests validate the complete integration of JavaScript to CEL conversion
  * with the magic proxy system, including YAML generation, runtime evaluation,
  * and factory pattern integration.
@@ -22,12 +22,12 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
         database: {
           enabled: 'boolean',
           name: 'string',
-          storage: 'string'
+          storage: 'string',
         },
         ingress: {
           enabled: 'boolean',
-          hostname: 'string'
-        }
+          hostname: 'string',
+        },
       });
 
       const WebAppStatus = type({
@@ -38,12 +38,12 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
         components: {
           database: 'boolean',
           ingress: 'boolean',
-          service: 'boolean'
+          service: 'boolean',
         },
         endpoints: {
           internal: 'string',
-          external: 'string'
-        }
+          external: 'string',
+        },
       });
 
       // Create resource graph with complex JavaScript expressions
@@ -53,7 +53,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'WebApp',
           spec: WebAppSpec,
-          status: WebAppStatus
+          status: WebAppStatus,
         },
         (schema) => {
           const resources: Record<string, any> = {};
@@ -71,8 +71,8 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               DATABASE_ENABLED: schema.spec.database.enabled ? 'true' : 'false',
               DATABASE_URL: schema.spec.database.enabled
                 ? `postgres://user:pass@${schema.spec.name}-db:5432/${schema.spec.database.name}`
-                : 'sqlite://memory'
-            }
+                : 'sqlite://memory',
+            },
           });
 
           // Service for the application
@@ -80,7 +80,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'service'
+            id: 'service',
           });
 
           // Conditional database
@@ -92,21 +92,21 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               env: {
                 POSTGRES_DB: schema.spec.database.name,
                 POSTGRES_USER: 'user',
-                POSTGRES_PASSWORD: 'password'
-              }
+                POSTGRES_PASSWORD: 'password',
+              },
             });
 
             resources.databaseService = simple.Service({
               name: `${schema.spec.name}-db`,
               ports: [{ port: 5432, targetPort: 5432 }],
               selector: { app: `${schema.spec.name}-db` },
-              id: 'databaseService'
+              id: 'databaseService',
             });
 
             resources.databaseStorage = simple.Pvc({
               name: `${schema.spec.name}-db-storage`,
               size: schema.spec.database.storage,
-              accessModes: ['ReadWriteOnce']
+              accessModes: ['ReadWriteOnce'],
             });
           }
 
@@ -116,9 +116,9 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           // Complex JavaScript expressions for status
           ready: schema.spec.database.enabled
             ? resources.deployment.status.readyReplicas > 0 &&
-            resources.service.status.ready &&
-            resources.database?.status.readyReplicas > 0 &&
-            resources.databaseService?.status.ready
+              resources.service.status.ready &&
+              resources.database?.status.readyReplicas > 0 &&
+              resources.databaseService?.status.ready
             : resources.deployment.status.readyReplicas > 0 && resources.service.status.ready,
 
           url: schema.spec.ingress.enabled
@@ -127,18 +127,19 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
 
           replicas: resources.deployment.status.readyReplicas || 0,
 
-          phase: resources.deployment.status.readyReplicas === schema.spec.replicas
-            ? 'Ready'
-            : resources.deployment.status.readyReplicas > 0
-              ? 'Partial'
-              : 'NotReady',
+          phase:
+            resources.deployment.status.readyReplicas === schema.spec.replicas
+              ? 'Ready'
+              : resources.deployment.status.readyReplicas > 0
+                ? 'Partial'
+                : 'NotReady',
 
           components: {
             database: schema.spec.database.enabled
-              ? (resources.database?.status?.readyReplicas > 0)
+              ? resources.database?.status?.readyReplicas > 0
               : true,
             ingress: schema.spec.ingress.enabled,
-            service: resources.service.status.ready ?? false
+            service: resources.service.status.ready ?? false,
           },
 
           endpoints: {
@@ -147,8 +148,8 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               ? `https://${schema.spec.ingress.hostname}`
               : resources.service.status?.loadBalancer?.ingress?.[0]?.ip
                 ? `http://${resources.service.status.loadBalancer.ingress[0].ip}`
-                : 'pending'
-          }
+                : 'pending',
+          },
         })
       );
 
@@ -170,12 +171,12 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
     it('should generate valid YAML with converted CEL expressions', async () => {
       const SimpleSpec = type({
         name: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       const SimpleStatus = type({
         ready: 'boolean',
-        url: 'string'
+        url: 'string',
       });
 
       const graph = toResourceGraph(
@@ -184,26 +185,26 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'YamlGenerationTest',
           spec: SimpleSpec,
-          status: SimpleStatus
+          status: SimpleStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: schema.spec.replicas,
-            id: 'deployment'
+            id: 'deployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             id: 'service',
-            selector: { app: schema.spec.name }
-          })
+            selector: { app: schema.spec.name },
+          }),
         }),
         (_schema, resources) => ({
           // JavaScript expressions that should convert to CEL
           ready: resources.deployment.status.readyReplicas > 0 && resources.service.status.ready,
-          url: `http://${resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`
+          url: `http://${resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
         })
       );
 
@@ -244,16 +245,16 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             features: {
               database: 'boolean',
               redis: 'boolean',
-              monitoring: 'boolean'
-            }
+              monitoring: 'boolean',
+            },
           }),
           status: type({
             ready: 'boolean',
             url: 'string',
             components: 'Record<string, boolean>',
             environment: 'string',
-            health: 'Record<string, boolean>'
-          })
+            health: 'Record<string, boolean>',
+          }),
         },
         (spec: AppSpec) => {
           // Create core application
@@ -266,15 +267,15 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               NODE_ENV: spec.environment,
               APP_NAME: spec.name,
               DATABASE_ENABLED: spec.features.database ? 'true' : 'false',
-              REDIS_ENABLED: spec.features.redis ? 'true' : 'false'
-            }
+              REDIS_ENABLED: spec.features.redis ? 'true' : 'false',
+            },
           });
 
           const appService = simple.Service({
             name: spec.name,
             ports: [{ port: 80, targetPort: 3000 }],
             selector: { app: spec.name },
-            id: 'appService'
+            id: 'appService',
           });
 
           // Conditional database
@@ -287,21 +288,21 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               env: {
                 POSTGRES_DB: spec.name,
                 POSTGRES_USER: 'user',
-                POSTGRES_PASSWORD: 'password'
-              }
+                POSTGRES_PASSWORD: 'password',
+              },
             });
 
             databaseService = simple.Service({
               name: `${spec.name}-db`,
               ports: [{ port: 5432, targetPort: 5432 }],
               selector: { app: `${spec.name}-db` },
-              id: 'databaseService'
+              id: 'databaseService',
             });
 
             // Update app environment with database connection
             app.spec?.template?.spec?.containers?.[0]?.env?.push({
               name: 'DATABASE_URL',
-              value: `postgres://user:password@${database.status.podIP}:5432/${spec.name}`
+              value: `postgres://user:password@${database.status.podIP}:5432/${spec.name}`,
             });
           }
 
@@ -312,36 +313,39 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               name: `${spec.name}-redis`,
               image: 'redis:6',
               replicas: 1,
-              id: 'redis'
+              id: 'redis',
             });
 
             redisService = simple.Service({
               name: `${spec.name}-redis`,
               ports: [{ port: 6379, targetPort: 6379 }],
               selector: { app: `${spec.name}-redis` },
-              id: 'redisService'
+              id: 'redisService',
             });
 
             // Update app environment with Redis connection
             app.spec?.template?.spec?.containers?.[0]?.env?.push({
               name: 'REDIS_URL',
-              value: `redis://${redis.status.podIP}:6379`
+              value: `redis://${redis.status.podIP}:6379`,
             });
           }
 
           // Return status with JavaScript expressions
           return {
-            ready: app.status.readyReplicas > 0 &&
+            ready:
+              app.status.readyReplicas > 0 &&
               appService.status.ready &&
-              (!spec.features.database || ((database?.status?.readyReplicas || 0) > 0 && databaseService?.status?.ready)) &&
-              (!spec.features.redis || ((redis?.status?.readyReplicas || 0) > 0 && redisService?.status?.ready)),
+              (!spec.features.database ||
+                ((database?.status?.readyReplicas || 0) > 0 && databaseService?.status?.ready)) &&
+              (!spec.features.redis ||
+                ((redis?.status?.readyReplicas || 0) > 0 && redisService?.status?.ready)),
 
             url: `http://${appService.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
 
             components: {
               app: app.status.readyReplicas > 0,
-              database: spec.features.database ? ((database?.status?.readyReplicas || 0) > 0) : false,
-              redis: spec.features.redis ? ((redis?.status?.readyReplicas || 0) > 0) : false
+              database: spec.features.database ? (database?.status?.readyReplicas || 0) > 0 : false,
+              redis: spec.features.redis ? (redis?.status?.readyReplicas || 0) > 0 : false,
             },
 
             environment: spec.environment,
@@ -349,17 +353,17 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             health: {
               overall: app.status.readyReplicas > 0 && appService.status.ready,
               database: spec.features.database
-                ? database?.status.conditions?.find((c: any) => c.type === 'Available')?.status === 'True'
+                ? database?.status.conditions?.find((c: any) => c.type === 'Available')?.status ===
+                  'True'
                 : false,
-              redis: spec.features.redis
-                ? (redis?.status?.readyReplicas || 0) > 0
-                : false
-            }
+              redis: spec.features.redis ? (redis?.status?.readyReplicas || 0) > 0 : false,
+            },
           };
-        });
+        }
+      );
 
       expect(createFullStackApp).toBeDefined();
-      expect(typeof createFullStackApp).toBe('object');
+      expect(typeof createFullStackApp).toBe('function');
 
       // Test that we can create factories from the composition
       const kroFactory = await createFullStackApp.factory('kro', { namespace: 'test' });
@@ -383,8 +387,8 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             host: 'string',
             port: 'number',
             connectionString: 'string',
-            storageReady: 'boolean'
-          })
+            storageReady: 'boolean',
+          }),
         },
         (spec: { name: string; storage: string }) => {
           const db = simple.Deployment({
@@ -394,21 +398,21 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             env: {
               POSTGRES_DB: spec.name,
               POSTGRES_USER: 'user',
-              POSTGRES_PASSWORD: 'password'
-            }
+              POSTGRES_PASSWORD: 'password',
+            },
           });
 
           const dbService = simple.Service({
             name: `${spec.name}-db`,
             ports: [{ port: 5432, targetPort: 5432 }],
             selector: { app: `${spec.name}-db` },
-            id: 'dbService'
+            id: 'dbService',
           });
 
           const storage = simple.Pvc({
             name: `${spec.name}-db-storage`,
             size: spec.storage,
-            accessModes: ['ReadWriteOnce']
+            accessModes: ['ReadWriteOnce'],
           });
 
           return {
@@ -416,9 +420,10 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             host: dbService.status.clusterIP || 'localhost',
             port: 5432,
             connectionString: `postgres://user:password@${dbService.status.clusterIP}:5432/${spec.name}`,
-            storageReady: storage.status.phase === 'Bound'
+            storageReady: storage.status.phase === 'Bound',
           };
-        });
+        }
+      );
 
       // Application composition that uses database
       const createApp = kubernetesComposition(
@@ -433,15 +438,15 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             database: {
               ready: 'boolean',
               host: 'string',
-              storageReady: 'boolean'
+              storageReady: 'boolean',
             },
             health: {
               app: 'boolean',
               database: 'boolean',
               service: 'boolean',
-              overall: 'boolean'
-            }
-          })
+              overall: 'boolean',
+            },
+          }),
         },
         (spec: { name: string; dbStorage: string }) => {
           // Create database using nested composition - this should be a direct resource creation
@@ -453,21 +458,21 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             env: {
               POSTGRES_DB: spec.name,
               POSTGRES_USER: 'user',
-              POSTGRES_PASSWORD: 'password'
-            }
+              POSTGRES_PASSWORD: 'password',
+            },
           });
 
           const dbService = simple.Service({
             name: `${spec.name}-db`,
             ports: [{ port: 5432, targetPort: 5432 }],
             selector: { app: `${spec.name}-db` },
-            id: 'dbService'
+            id: 'dbService',
           });
 
           const storage = simple.Pvc({
             name: `${spec.name}-db-storage`,
             size: spec.dbStorage,
-            accessModes: ['ReadWriteOnce']
+            accessModes: ['ReadWriteOnce'],
           });
 
           // Create a database status object that mimics what the nested composition would return
@@ -476,7 +481,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             host: dbService.status.clusterIP || 'localhost',
             port: 5432,
             connectionString: `postgres://user:password@${dbService.status.clusterIP}:5432/${spec.name}`,
-            storageReady: storage.status.phase === 'Bound'
+            storageReady: storage.status.phase === 'Bound',
           };
 
           // Create application that depends on database
@@ -488,15 +493,15 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               // JavaScript expressions referencing nested composition
               DATABASE_URL: database.connectionString,
               DATABASE_READY: database.ready ? 'true' : 'false',
-              DATABASE_HOST: database.host
-            }
+              DATABASE_HOST: database.host,
+            },
           });
 
           const appService = simple.Service({
             name: spec.name,
             ports: [{ port: 80, targetPort: 3000 }],
             selector: { app: spec.name },
-            id: 'appService'
+            id: 'appService',
           });
 
           return {
@@ -505,16 +510,17 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             database: {
               ready: database.ready,
               host: database.host,
-              storageReady: database.storageReady
+              storageReady: database.storageReady,
             },
             health: {
               app: app.status.readyReplicas > 0,
               database: database.ready,
               service: appService.status.ready,
-              overall: app.status.readyReplicas > 0 && appService.status.ready && database.ready
-            }
+              overall: app.status.readyReplicas > 0 && appService.status.ready && database.ready,
+            },
           };
-        });
+        }
+      );
 
       expect(createApp).toBeDefined();
 
@@ -529,14 +535,14 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
     it('should demonstrate differences between direct and Kro factories', async () => {
       const ComparisonSpec = type({
         name: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       const ComparisonStatus = type({
         ready: 'boolean',
         replicas: 'number',
         url: 'string',
-        phase: 'string'
+        phase: 'string',
       });
 
       const graph = toResourceGraph(
@@ -545,7 +551,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'FactoryComparison',
           spec: ComparisonSpec,
-          status: ComparisonStatus
+          status: ComparisonStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
@@ -555,19 +561,20 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             id: 'deployment',
             env: {
               REPLICAS: `${schema.spec.replicas}`,
-              IS_MULTI_REPLICA: schema.spec.replicas > 1 ? 'true' : 'false'
-            }
+              IS_MULTI_REPLICA: schema.spec.replicas > 1 ? 'true' : 'false',
+            },
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'service'
-          })
+            id: 'service',
+          }),
         }),
         (schema, resources) => ({
           // Complex JavaScript expressions
-          ready: resources.deployment.status.readyReplicas === schema.spec.replicas &&
+          ready:
+            resources.deployment.status.readyReplicas === schema.spec.replicas &&
             resources.service.status.ready,
 
           replicas: resources.deployment.status.readyReplicas || 0,
@@ -576,11 +583,12 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             ? `http://${resources.service.status.loadBalancer.ingress[0].ip}`
             : `http://${resources.service.status?.clusterIP || 'localhost'}`,
 
-          phase: resources.deployment.status.readyReplicas === 0
-            ? 'NotReady'
-            : resources.deployment.status.readyReplicas < schema.spec.replicas
-              ? 'Scaling'
-              : 'Ready'
+          phase:
+            resources.deployment.status.readyReplicas === 0
+              ? 'NotReady'
+              : resources.deployment.status.readyReplicas < schema.spec.replicas
+                ? 'Scaling'
+                : 'Ready',
         })
       );
 
@@ -603,12 +611,12 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
     it('should handle resource dependencies correctly in both factory types', async () => {
       const DependencySpec = type({
         name: 'string',
-        dbEnabled: 'boolean'
+        dbEnabled: 'boolean',
       });
 
       const DependencyStatus = type({
         ready: 'boolean',
-        databaseUrl: 'string'
+        databaseUrl: 'string',
       });
 
       const graph = toResourceGraph(
@@ -617,35 +625,35 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'DependencyTest',
           spec: DependencySpec,
-          status: DependencyStatus
+          status: DependencyStatus,
         },
         (schema) => {
           const resources: Record<string, any> = {
             app: simple.Deployment({
               name: schema.spec.name,
               image: 'node:16',
-              id: 'app'
+              id: 'app',
             }),
             appService: simple.Service({
               name: schema.spec.name,
               ports: [{ port: 80, targetPort: 3000 }],
               selector: { app: schema.spec.name },
-              id: 'appService'
-            })
+              id: 'appService',
+            }),
           };
 
           if (schema.spec.dbEnabled) {
             resources.database = simple.Deployment({
               name: `${schema.spec.name}-db`,
               image: 'postgres:13',
-              id: 'database'
+              id: 'database',
             });
 
             resources.databaseService = simple.Service({
               name: `${schema.spec.name}-db`,
               ports: [{ port: 5432, targetPort: 5432 }],
               selector: { app: `${schema.spec.name}-db` },
-              id: 'databaseService'
+              id: 'databaseService',
             });
           }
 
@@ -654,14 +662,14 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
         (schema, resources) => ({
           ready: schema.spec.dbEnabled
             ? resources.app.status.readyReplicas > 0 &&
-            resources.appService.status.ready &&
-            resources.database?.status.readyReplicas > 0 &&
-            resources.databaseService?.status.ready
+              resources.appService.status.ready &&
+              resources.database?.status.readyReplicas > 0 &&
+              resources.databaseService?.status.ready
             : resources.app.status.readyReplicas > 0 && resources.appService.status.ready,
 
           databaseUrl: schema.spec.dbEnabled
             ? `postgres://user:pass@${resources.databaseService?.status.clusterIP}:5432/db`
-            : 'none'
+            : 'none',
         })
       );
 
@@ -681,11 +689,11 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
   describe('Error Handling E2E', () => {
     it('should provide meaningful errors for invalid JavaScript expressions', async () => {
       const ErrorSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const ErrorStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // This should handle invalid expressions gracefully
@@ -695,18 +703,18 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'ErrorTest',
           spec: ErrorSpec,
-          status: ErrorStatus
+          status: ErrorStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
         (_schema, resources) => ({
           // This expression should work
-          ready: resources.deployment.status.readyReplicas > 0
+          ready: resources.deployment.status.readyReplicas > 0,
         })
       );
 
@@ -726,11 +734,11 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
 
     it('should handle missing resource references gracefully', async () => {
       const MissingRefSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const MissingRefStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       const graph = toResourceGraph(
@@ -739,20 +747,21 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'MissingRefTest',
           spec: MissingRefSpec,
-          status: MissingRefStatus
+          status: MissingRefStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
           // Note: no service defined
         }),
         (_schema, resources) => ({
           // This references a missing resource - should be handled gracefully
-          ready: resources.deployment.status.readyReplicas > 0 &&
-            ((resources as any).service?.status?.ready ?? false)
+          ready:
+            resources.deployment.status.readyReplicas > 0 &&
+            ((resources as any).service?.status?.ready ?? false),
         })
       );
 
@@ -768,13 +777,13 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
     it('should handle large-scale applications efficiently', async () => {
       const LargeAppSpec = type({
         name: 'string',
-        microservices: 'number'
+        microservices: 'number',
       });
 
       const LargeAppStatus = type({
         ready: 'boolean',
         services: 'string[]',
-        summary: 'string'
+        summary: 'string',
       });
 
       const startTime = performance.now();
@@ -785,11 +794,14 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'LargeApp',
           spec: LargeAppSpec,
-          status: LargeAppStatus
+          status: LargeAppStatus,
         },
         (schema) => {
           // Type-safe resource collection - preserves specific resource types
-          const resources = {} as Record<string, ReturnType<typeof simple.Deployment> | ReturnType<typeof simple.Service>>;
+          const resources = {} as Record<
+            string,
+            ReturnType<typeof simple.Deployment> | ReturnType<typeof simple.Service>
+          >;
 
           // Create multiple microservices
           for (let i = 0; i < schema.spec.microservices; i++) {
@@ -797,14 +809,14 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               name: `${schema.spec.name}-service-${i}`,
               image: 'node:16',
               replicas: 1,
-              id: `service${i}`
+              id: `service${i}`,
             });
 
             resources[`service${i}Service`] = simple.Service({
               name: `${schema.spec.name}-service-${i}`,
               ports: [{ port: 80, targetPort: 3000 }],
               selector: { app: `${schema.spec.name}-service-${i}` },
-              id: `service${i}Service`
+              id: `service${i}Service`,
             });
           }
 
@@ -819,8 +831,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             const deployment = resources[`service${i}`];
             const service = resources[`service${i}Service`];
 
-            const serviceReady = deployment?.status?.readyReplicas > 0 &&
-              service?.status?.ready;
+            const serviceReady = deployment?.status?.readyReplicas > 0 && service?.status?.ready;
 
             services.push(`service-${i}`);
 
@@ -830,7 +841,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           return {
             ready: allReady,
             services,
-            summary: `${services.length} services, ${allReady ? services.length : 0} ready`
+            summary: `${services.length} services, ${allReady ? services.length : 0} ready`,
           };
         }
       );

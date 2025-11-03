@@ -148,12 +148,24 @@ export class CelEvaluator {
     const resourceRefs = this.extractResourceReferences(expression.expression);
 
     for (const ref of resourceRefs) {
-      const resource = context.resources.get(ref.resourceId);
+      let resource = context.resources.get(ref.resourceId);
+
+      // If not found, try case-insensitive lookup
+      if (!resource) {
+        const lowerResourceId = ref.resourceId.toLowerCase();
+        for (const [key, value] of context.resources.entries()) {
+          if (key.toLowerCase() === lowerResourceId) {
+            resource = value;
+            break;
+          }
+        }
+      }
+
       if (!resource) {
         throw new Error(`Resource '${ref.resourceId}' not found in context`);
       }
 
-      // Add the entire resource to context using its ID
+      // Add the entire resource to context using its ID (use the original case from CEL expression)
       if (!celContext[ref.resourceId]) {
         celContext[ref.resourceId] = resource;
       }

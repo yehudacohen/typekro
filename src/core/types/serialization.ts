@@ -18,6 +18,20 @@ import type {
 export type { Scope } from 'alchemy';
 
 // =============================================================================
+// ARKTYPE TYPE EXTRACTION
+// =============================================================================
+
+/**
+ * Extracts the inferred TypeScript type from an ArkType Type<T>.
+ * This is critical for proper type inference in kubernetesComposition.
+ *
+ * @example
+ * const MySchema = type({ name: 'string', age: 'number' });
+ * type Extracted = InferType<typeof MySchema>; // { name: string; age: number }
+ */
+export type InferType<T> = T extends Type<infer U> ? U : T;
+
+// =============================================================================
 // KRO SERIALIZATION & DEPENDENCY TYPES
 // =============================================================================
 
@@ -181,7 +195,7 @@ export type KroCompatibleValue<Depth extends number = 10> = Depth extends 0
  */
 export type KroCompatibleType<Depth extends number = 10> = Depth extends 0
   ? never
-  : Record<string, KroCompatibleValue<Depth>>;
+  : Record<string, KroCompatibleValue<Depth>> | object;
 
 // =============================================================================
 // SCHEMA PROXY & BUILDER FUNCTION TYPES
@@ -324,11 +338,17 @@ export interface ValidationResult {
 }
 
 // Magic assignable type for status field mappings with recursive support
-export type MagicAssignableShape<T> = {
-  [K in keyof T]: T[K] extends object
-    ? MagicAssignableShape<T[K]> // Recursively handle nested objects
-    : MagicAssignable<T[K]>; // Apply MagicAssignable to primitive types
-};
+// This allows status builders to return either:
+// 1. Plain objects with static values (e.g., { ready: true, phase: 'Ready' })
+// 2. Objects with MagicAssignable values (e.g., { ready: someRef.status.ready })
+// 3. Mix of both
+export type MagicAssignableShape<T> = T extends object
+  ? {
+      [K in keyof T]: T[K] extends object
+        ? MagicAssignableShape<T[K]> // Recursively handle nested objects
+        : T[K] | MagicAssignable<T[K]>; // Accept both plain values and MagicAssignable
+    } & { [key: string]: any } // Index signature for runtime access
+  : T;
 
 export type ResourceBuilder<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType> = (
   schema: SchemaProxy<TSpec, TStatus>
@@ -347,7 +367,7 @@ export type StatusBuilder<
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here
-) => MagicAssignableShape<TStatus>;
+) => TStatus | MagicAssignableShape<TStatus>;
 
 export interface SchemaDefinition<
   TSpec extends KroCompatibleType,
@@ -359,10 +379,7 @@ export interface SchemaDefinition<
   status: Type<TStatus>;
 }
 
-export interface ResourceGraphDefinition<
-  TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType,
-> {
+export interface ResourceGraphDefinition<TSpec extends KroCompatibleType, TStatus> {
   name: string;
   apiVersion?: string; // Optional, defaults to 'kro.run/v1alpha1'
   kind: string;

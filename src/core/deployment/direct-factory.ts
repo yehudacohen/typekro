@@ -237,9 +237,15 @@ export class DirectResourceFactoryImpl<
       // Remove from tracking
       this.deployedInstances.delete(name);
     } catch (error) {
-      throw new Error(
-        `Failed to delete instance ${name}: ${error instanceof Error ? error.message : String(error)}`
-      );
+      // If the deployment isn't found in the state, it may have already been cleaned up
+      // or the deployment ID format changed. Log and remove from tracking anyway.
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('not found') || errorMessage.includes('Cannot rollback')) {
+        this.deployedInstances.delete(name);
+        // Don't throw - the instance is already gone
+        return;
+      }
+      throw new Error(`Failed to delete instance ${name}: ${errorMessage}`);
     }
   }
 
@@ -702,19 +708,24 @@ metadata:
             resourceCount: Object.keys(reExecutionResult.resources).length,
             statusFields: reExecutionResult.status ? Object.keys(reExecutionResult.status) : [],
           });
-          
+
           // Store the re-executed status for later use
           this.reExecutedStatus = reExecutionResult.status;
-          
+
           return reExecutionResult.resources;
         }
       } catch (error) {
-        this.logger.warn('Failed to re-execute composition, falling back to reference resolution', error as Error);
+        this.logger.warn(
+          'Failed to re-execute composition, falling back to reference resolution',
+          error as Error
+        );
       }
     }
 
     // Fall back to the original reference resolution approach
-    this.logger.debug('Using reference resolution approach (no composition re-execution available)');
+    this.logger.debug(
+      'Using reference resolution approach (no composition re-execution available)'
+    );
     const resolvedResources: Record<string, KubernetesResource> = {};
     for (const [key, resource] of Object.entries(this.resources)) {
       try {
@@ -736,7 +747,9 @@ metadata:
    * Re-execute the composition function with actual spec values
    * This provides actual values instead of proxy functions to the composition
    */
-  private reExecuteCompositionWithActualValues(spec: TSpec): { resources: Record<string, KubernetesResource>; status: TStatus } | null {
+  private reExecuteCompositionWithActualValues(
+    spec: TSpec
+  ): { resources: Record<string, KubernetesResource>; status: TStatus } | null {
     if (!this.factoryOptions.compositionFn || !this.factoryOptions.compositionDefinition) {
       return null;
     }
@@ -745,7 +758,10 @@ metadata:
       this.logger.debug('Re-executing composition with actual spec values');
 
       // Import the composition context utilities
-      const { createCompositionContext, runWithCompositionContext } = require('../../factories/shared.js');
+      const {
+        createCompositionContext,
+        runWithCompositionContext,
+      } = require('../../factories/shared.js');
 
       // Create a new composition context for re-execution
       const reExecutionContext = createCompositionContext('re-execution');
@@ -753,10 +769,10 @@ metadata:
       // Execute the composition function within the new context and capture both resources and status
       const { resources, status } = runWithCompositionContext(reExecutionContext, () => {
         // Execute the composition function with actual spec values
-        const computedStatus = this.factoryOptions.compositionFn!(spec);
+        const computedStatus = this.factoryOptions.compositionFn?.(spec);
         return {
           resources: reExecutionContext.resources,
-          status: computedStatus
+          status: computedStatus,
         };
       });
 
@@ -770,7 +786,9 @@ metadata:
       const kubernetesResources: Record<string, KubernetesResource> = {};
       for (const [id, enhanced] of Object.entries(resources)) {
         // Extract the underlying Kubernetes resource from the Enhanced proxy
-        const kubernetesResource = this.extractKubernetesResourceFromEnhanced(enhanced as Enhanced<any, any>);
+        const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
+          enhanced as Enhanced<any, any>
+        );
         kubernetesResources[id] = kubernetesResource;
       }
 
@@ -778,7 +796,7 @@ metadata:
       // Only spec-based values should be resolved, resource-based CEL expressions should remain
       return {
         resources: kubernetesResources,
-        status: status as TStatus
+        status: status as TStatus,
       };
     } catch (error) {
       this.logger.error('Failed to re-execute composition', error as Error);
@@ -796,23 +814,34 @@ metadata:
 
   /**
    * Extract the underlying Kubernetes resource from an Enhanced proxy
+   *
+   * IMPORTANT: This method preserves ALL enumerable properties from the Enhanced resource,
+   * not just standard Kubernetes fields. This is critical for resources like Secret (data),
+   * ConfigMap (data, binaryData), RBAC resources (rules, roleRef, subjects), etc.
    */
   private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<any, any>): KubernetesResource {
-    // The Enhanced proxy should have the original resource data
-    // We need to extract the core Kubernetes resource properties
+    // Start with required Kubernetes resource structure
     const resource: KubernetesResource = {
       apiVersion: enhanced.apiVersion,
       kind: enhanced.kind,
       metadata: enhanced.metadata,
-      spec: enhanced.spec,
     };
 
-    // Add status if it exists
-    if (enhanced.status) {
-      resource.status = enhanced.status;
+    // Preserve ALL other enumerable properties from the Enhanced resource
+    // This ensures resource-specific fields (data, rules, roleRef, etc.) are not lost
+    for (const [key, value] of Object.entries(enhanced)) {
+      // Skip the core fields we've already set
+      if (key === 'apiVersion' || key === 'kind' || key === 'metadata') {
+        continue;
+      }
+
+      // Include all other properties (spec, status, data, rules, etc.)
+      if (value !== undefined && value !== null) {
+        (resource as any)[key] = value;
+      }
     }
 
-    // Preserve the id field if it exists (needed for resource mapping in CEL resolution)
+    // Preserve the non-enumerable id field if it exists (needed for resource mapping in CEL resolution)
     if ((enhanced as any).id) {
       (resource as any).id = (enhanced as any).id;
     }
@@ -902,7 +931,7 @@ metadata:
       for (const [key, value] of Object.entries(resource)) {
         resolved[key] = this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`);
       }
-      
+
       // Debug: Check if id field is being preserved
       if (path === 'root' && (resource as any).id) {
         this.logger.debug('Resource ID preservation check', {

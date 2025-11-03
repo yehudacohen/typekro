@@ -234,7 +234,7 @@ export const apisixBootstrap = kubernetesComposition(
     });
 
     // Create IngressClass for APISix ingress controller
-    const apisixIngressClass = createResource({
+    const _apisixIngressClass = createResource({
       apiVersion: 'networking.k8s.io/v1',
       kind: 'IngressClass',
       metadata: {

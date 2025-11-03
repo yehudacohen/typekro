@@ -5,12 +5,15 @@ import { createResource } from '../../shared.js';
 export function clusterRoleBinding(
   resource: V1ClusterRoleBinding
 ): V1ClusterRoleBinding & Enhanced<V1ClusterRoleBinding, object> {
-  return createResource<V1ClusterRoleBinding, object>({
-    ...resource,
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'ClusterRoleBinding',
-    metadata: resource.metadata ?? { name: 'unnamed-clusterrolebinding' },
-  }).withReadinessEvaluator((_liveResource: V1ClusterRoleBinding) => {
+  return createResource<V1ClusterRoleBinding, object>(
+    {
+      ...resource,
+      apiVersion: 'rbac.authorization.k8s.io/v1',
+      kind: 'ClusterRoleBinding',
+      metadata: resource.metadata ?? { name: 'unnamed-clusterrolebinding' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((_liveResource: V1ClusterRoleBinding) => {
     // ClusterRoleBindings are ready when they exist - they're configuration objects
     // that don't have complex status conditions
     return {

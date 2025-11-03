@@ -1,6 +1,6 @@
 /**
  * Cross-composition magic proxy tests
- * 
+ *
  * This test suite validates that TypedResourceGraph objects can be accessed
  * from other compositions using the magic proxy system to automatically
  * create external references.
@@ -24,8 +24,6 @@ interface DatabaseStatus {
   connectionString: string;
   ready: boolean;
 }
-
-
 
 describe('Cross-composition magic proxy', () => {
   describe('Resource access via property names', () => {
@@ -66,7 +64,11 @@ describe('Cross-composition magic proxy', () => {
           // Return status
           phase: Cel.expr<'pending' | 'ready' | 'failed'>`'ready'`,
           host: Cel.template('postgres-service.default.svc.cluster.local'),
-          connectionString: Cel.template('postgresql://postgres-service:%s/%s', schema.port, schema.name),
+          connectionString: Cel.template(
+            'postgresql://postgres-service:%s/%s',
+            schema.port,
+            schema.name
+          ),
           ready: Cel.expr<boolean>`true`,
         })
       );
@@ -84,7 +86,7 @@ describe('Cross-composition magic proxy', () => {
       // Should provide type-safe access to spec and status
       const dbSpec = databaseRef.spec;
       const dbStatus = databaseRef.status;
-      
+
       expect(dbSpec).toBeDefined();
       expect(dbStatus).toBeDefined();
     });
@@ -220,7 +222,10 @@ describe('Cross-composition magic proxy', () => {
         },
         (schema) => {
           // Use cross-composition magic proxy to reference database
-          const dbRef = (databaseComposition as any).database as Enhanced<DatabaseSpec, DatabaseStatus>;
+          const dbRef = (databaseComposition as any).database as Enhanced<
+            DatabaseSpec,
+            DatabaseStatus
+          >;
           const dbServiceRef = (databaseComposition as any).service as Enhanced<any, any>;
 
           return {
@@ -244,11 +249,11 @@ describe('Cross-composition magic proxy', () => {
       // Validate that compositions were created successfully
       expect(databaseComposition.name).toBe('database-composition');
       expect(webappComposition.name).toBe('webapp-composition');
-      
+
       // Validate resources exist
       expect(databaseComposition.resources).toHaveLength(2); // database + service
       expect(webappComposition.resources).toHaveLength(1); // webapp only
-      
+
       // The cross-composition references should be marked as external
       const dbRef = (databaseComposition as any).database;
       expect((dbRef as any).__externalRef).toBe(true);
@@ -268,7 +273,7 @@ describe('Cross-composition magic proxy', () => {
             name: 'test-deployment',
             image: 'nginx',
           }),
-          'my_service': simple.Service({
+          my_service: simple.Service({
             name: 'test-service',
             selector: { app: 'test' },
             ports: [{ port: 80, targetPort: 80 }],
@@ -381,7 +386,7 @@ describe('Cross-composition magic proxy', () => {
       );
 
       const deploymentRef = (composition as any).deployment;
-      
+
       expect(deploymentRef.metadata.namespace).toBe('production');
       expect((deploymentRef as any).__externalRef).toBe(true);
     });
