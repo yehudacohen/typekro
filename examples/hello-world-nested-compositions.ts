@@ -562,4 +562,9 @@ async function main() {
 
 if (import.meta.main) {
   await main();
+  
+  console.log('🔍 Testing if process exits naturally after all deployments...');
+  console.log('🔍 EventMonitor should be disabled due to initialization failure');
+  
+  // Wait to see if process exits naturally
 }

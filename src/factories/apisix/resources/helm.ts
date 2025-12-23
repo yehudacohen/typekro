@@ -82,6 +82,13 @@ export function apisixHelmRepository(config: APISixHelmRepositoryConfig): Enhanc
  * @returns Enhanced HelmRelease resource
  */
 export function apisixHelmRelease(config: APISixHelmReleaseConfig): Enhanced<any, any> {
+  // Determine if values should be passed through raw or mapped
+  // If values has 'config' key (ingress controller chart structure), pass through raw
+  // Otherwise, map using APISix values mapper
+  const rawValues = config.values as Record<string, any> | undefined;
+  const isRawValues = rawValues && ('config' in rawValues || 'serviceAccount' in rawValues || 'rbac' in rawValues);
+  const helmValues = isRawValues ? rawValues : mapAPISixConfigToHelmValues(config.values || {});
+
   return createResource<any, any>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
@@ -117,7 +124,7 @@ export function apisixHelmRelease(config: APISixHelmReleaseConfig): Enhanced<any
         }
       },
 
-      values: mapAPISixConfigToHelmValues(config.values || {}),
+      values: helmValues,
     },
   }).withReadinessEvaluator(apisixHelmReleaseReadinessEvaluator);
 }

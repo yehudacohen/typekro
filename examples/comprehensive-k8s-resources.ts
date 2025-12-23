@@ -609,7 +609,7 @@ const appNetworkPolicy = networkPolicy({
     policyTypes: ['Ingress', 'Egress'],
     ingress: [
       {
-        from: [{ namespaceSelector: { matchLabels: { name: 'ingress-nginx' } } }],
+        _from: [{ namespaceSelector: { matchLabels: { name: 'ingress-nginx' } } }],
         ports: [{ protocol: 'TCP', port: 8080 }],
       },
     ],

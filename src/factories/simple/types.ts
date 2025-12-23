@@ -144,6 +144,8 @@ export interface PvcConfig {
   size: string;
   storageClass?: string;
   accessModes?: ('ReadWriteOnce' | 'ReadOnlyMany' | 'ReadWriteMany')[];
+  /** Optional resource ID for cross-resource references. Required when name uses schema references. */
+  id?: string;
 }
 
 /**

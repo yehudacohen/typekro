@@ -10,8 +10,13 @@
 
 import type { Enhanced } from '../../../core/types.js';
 import { secret } from '../../kubernetes/config/secret.js';
-import type { V1SecretData } from '../../kubernetes/types.js';
 import type { SecretConfig } from '../types.js';
+
+// Secrets don't have a spec field in Kubernetes - data is at the root level
+// We use an empty spec type to match the base factory
+type SecretSpec = {}
+
+type SecretStatus = {}
 
 /**
  * Creates a simple Secret with sensible defaults
@@ -23,7 +28,7 @@ import type { SecretConfig } from '../types.js';
  * @param config - Configuration for the secret
  * @returns Enhanced Secret resource
  */
-export function Secret(config: SecretConfig): Enhanced<V1SecretData, unknown> {
+export function Secret(config: SecretConfig): Enhanced<SecretSpec, SecretStatus> {
   // Convert stringData to base64-encoded data
   let secretData: Record<string, string> = {};
 

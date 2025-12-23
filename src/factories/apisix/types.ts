@@ -91,6 +91,7 @@ export interface APISixBootstrapConfig {
         ingressClass?: string;
         ingressVersion?: string;
         watchEndpointSlices?: boolean;
+        watchedNamespace?: string;
       };
     };
   };
@@ -209,6 +210,7 @@ export const APISixBootstrapConfigSchema: Type<APISixBootstrapConfig> = type({
       'kubernetes?': {
         'ingressClass?': 'string',
         'namespace?': 'string',
+        'watchedNamespace?': 'string',
       },
     },
   },
@@ -378,6 +380,7 @@ export interface APISixHelmValues {
         ingressClass?: string;
         ingressVersion?: string;
         watchEndpointSlices?: boolean;
+        watchedNamespace?: string;
       };
     };
   };
@@ -454,6 +457,16 @@ export interface APISixHelmValues {
     type?: 'NodePort' | 'LoadBalancer' | 'ClusterIP';
     annotations?: Record<string, string>;
     labels?: Record<string, string>;
+    http?: {
+      enabled?: boolean;
+      servicePort?: number;
+      containerPort?: number;
+    };
+    tls?: {
+      enabled?: boolean;
+      servicePort?: number;
+      containerPort?: number;
+    };
   };
 
   // Custom values override

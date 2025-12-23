@@ -1,65 +1,62 @@
 /**
  * Tests for CRD establishment logic in DirectDeploymentEngine
+ *
+ * NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+ * without a .body wrapper. The mocks must return the resource directly.
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { DependencyGraph, type DeployableK8sResource, DirectDeploymentEngine, type Enhanced, type ResourceGraph,  } from '../../src/core.js';
 
-// Mock the Kubernetes client
+// Mock the Kubernetes client (new API returns objects directly, no .body wrapper)
 const mockK8sApi = {
   read: mock((resource?: any) => {
-    // Mock CRD status check - return established CRD
+    // Mock CRD status check - return established CRD (object directly)
     if (resource?.kind === 'CustomResourceDefinition') {
       return Promise.resolve({
-        body: {
-          status: {
-            conditions: [{ type: 'Established', status: 'True' }],
-          },
+        status: {
+          conditions: [{ type: 'Established', status: 'True' }],
         },
       });
     }
     return Promise.reject({ statusCode: 404 });
   }),
   list: mock((apiVersion?: string, kind?: string) => {
-    // Mock CRD listing for CRD name discovery
+    // Mock CRD listing for CRD name discovery (object directly)
     if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
       return Promise.resolve({
-        body: {
-          items: [
-            {
-              metadata: { name: 'myresources.example.com' },
-              spec: {
-                group: 'example.com',
-                names: { kind: 'MyResource', plural: 'myresources' },
-              },
+        items: [
+          {
+            metadata: { name: 'myresources.example.com' },
+            spec: {
+              group: 'example.com',
+              names: { kind: 'MyResource', plural: 'myresources' },
             },
-            {
-              metadata: { name: 'slowresources.example.com' },
-              spec: {
-                group: 'example.com',
-                names: { kind: 'SlowResource', plural: 'slowresources' },
-              },
+          },
+          {
+            metadata: { name: 'slowresources.example.com' },
+            spec: {
+              group: 'example.com',
+              names: { kind: 'SlowResource', plural: 'slowresources' },
             },
-          ],
-        },
+          },
+        ],
       });
     }
-    return Promise.resolve({ body: { items: [] } });
+    return Promise.resolve({ items: [] });
   }),
   create: mock((resource?: any) =>
+    // Returns object directly (no .body wrapper)
     Promise.resolve({
-      body: {
-        ...resource,
-        metadata: { ...resource.metadata, uid: 'test-uid' },
-      },
+      ...resource,
+      metadata: { ...resource.metadata, uid: 'test-uid' },
     })
   ),
   patch: mock((resource?: any) =>
+    // Returns object directly (no .body wrapper)
     Promise.resolve({
-      body: {
-        ...resource,
-        metadata: { ...resource.metadata, uid: 'test-uid' },
-      },
+      ...resource,
+      metadata: { ...resource.metadata, uid: 'test-uid' },
     })
   ),
 };
@@ -245,15 +242,14 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
 
   it('should handle CRD establishment timeout gracefully for custom resources', async () => {
     // Mock CRD status to never be established
+    // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
     mockK8sApi.read.mockImplementation((resource?: any) => {
       if (resource?.kind === 'CustomResourceDefinition') {
         return Promise.resolve({
-          body: {
-            status: {
-              conditions: [
-                { type: 'Established', status: 'False' }, // Never established
-              ],
-            },
+          status: {
+            conditions: [
+              { type: 'Established', status: 'False' }, // Never established
+            ],
           },
         });
       }
@@ -261,23 +257,22 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     });
 
     // Also mock list to return the SlowResource CRD
+    // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
     mockK8sApi.list.mockImplementation((apiVersion?: string, kind?: string) => {
       if (apiVersion === 'apiextensions.k8s.io/v1' && kind === 'CustomResourceDefinition') {
         return Promise.resolve({
-          body: {
-            items: [
-              {
-                metadata: { name: 'slowresources.example.com' },
-                spec: {
-                  group: 'example.com',
-                  names: { kind: 'SlowResource', plural: 'slowresources' },
-                },
+          items: [
+            {
+              metadata: { name: 'slowresources.example.com' },
+              spec: {
+                group: 'example.com',
+                names: { kind: 'SlowResource', plural: 'slowresources' },
               },
-            ],
-          },
+            },
+          ],
         });
       }
-      return Promise.resolve({ body: { items: [] } });
+      return Promise.resolve({ items: [] });
     });
 
     // Only create a custom resource (no CRD in the graph)

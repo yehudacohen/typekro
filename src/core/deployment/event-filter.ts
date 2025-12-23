@@ -542,18 +542,17 @@ export class EventFilter {
     k8sApi: k8s.CoreV1Api
   ): Promise<ResourceIdentifier[]> {
     try {
-      const pods = await k8sApi.listNamespacedPod(
-        replicaSet.namespace || 'default',
-        undefined, // pretty
-        undefined, // allowWatchBookmarks
-        undefined, // continue
-        undefined, // fieldSelector
-        `app=${replicaSet.name}` // labelSelector - simplified
-      );
+      // In the new API, methods take request objects and return objects directly
+      const pods = await k8sApi.listNamespacedPod({
+        namespace: replicaSet.namespace || 'default',
+        labelSelector: `app=${replicaSet.name}`,
+      });
 
-      return pods.body.items
-        .filter((pod) => pod.metadata?.name && pod.metadata?.namespace && pod.metadata?.uid)
-        .map((pod) => ({
+      return pods.items
+        .filter(
+          (pod: k8s.V1Pod) => pod.metadata?.name && pod.metadata?.namespace && pod.metadata?.uid
+        )
+        .map((pod: k8s.V1Pod) => ({
           kind: 'Pod',
           name: pod.metadata?.name!,
           namespace: pod.metadata?.namespace!,

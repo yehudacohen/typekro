@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
-import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import { simple } from '../../src/index.js';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 
 describe('Cross-Composition Status References', () => {
@@ -33,15 +33,9 @@ describe('Cross-Composition Status References', () => {
         status: NestedStatus,
       },
       (spec) => {
-        const deploy = deployment({
+        const deploy = simple.Deployment({
           name: spec.name,
-          labels: { app: spec.name },
-          containers: [
-            {
-              name: 'main',
-              image: 'nginx:latest',
-            },
-          ],
+          image: 'nginx:latest',
           replicas: spec.replicas,
           id: 'mainDeployment',
         });

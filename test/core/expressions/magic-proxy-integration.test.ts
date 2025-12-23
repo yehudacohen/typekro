@@ -138,7 +138,8 @@ describe('Magic Proxy Integration Tests', () => {
         apiVersion: 'example.com/v1',
         kind: 'Stack',
         spec: type({
-          name: 'string'
+          name: 'string',
+          replicas: 'number',
         }),
         status: type({
           ready: 'boolean',
@@ -151,18 +152,18 @@ describe('Magic Proxy Integration Tests', () => {
       };
 
       const graph = toResourceGraph(
-        stackDefinition as any,
+        stackDefinition,
         (schema) => ({
           deployment: simple.Deployment({
-            name: schema.spec.name as string,
+            name: schema.spec.name,
             image: 'nginx:latest',
-            replicas: schema.spec.replicas as number,
+            replicas: schema.spec.replicas,
             id: 'deployment'
           }),
           service: simple.Service({
-            name: schema.spec.name as string,
+            name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
-            selector: { app: schema.spec.name as string },
+            selector: { app: schema.spec.name },
             id: 'service'
           })
         }),
@@ -241,12 +242,10 @@ describe('Magic Proxy Integration Tests', () => {
       });
 
       expect(result).toBeDefined();
-      expect(typeof result).toBe('object');
+      // kubernetesComposition returns a CallableComposition which is a function with additional properties
+      expect(typeof result).toBe('function');
 
-      // Execute the composition
-      // kubernetesComposition returns a TypedResourceGraph, not a callable function
-      // For testing, we can access the internal status builder
-      expect(result).toBeDefined();
+      // The callable composition has toYaml method attached
       expect(result.toYaml).toBeDefined();
     });
 

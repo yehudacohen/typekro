@@ -9,7 +9,7 @@ describe('createResource scope validation', () => {
           apiVersion: 'rbac.authorization.k8s.io/v1',
           kind: 'ClusterRole',
           metadata: { name: 'test-cluster-role', namespace: 'default' },
-          rules: [],
+          spec: { rules: [] },
         },
         { scope: 'cluster' }
       );
@@ -23,7 +23,7 @@ describe('createResource scope validation', () => {
           apiVersion: 'rbac.authorization.k8s.io/v1',
           kind: 'ClusterRole',
           metadata: { name: 'test-cluster-role' },
-          rules: [],
+          spec: { rules: [] },
         },
         { scope: 'cluster' }
       );
@@ -37,7 +37,7 @@ describe('createResource scope validation', () => {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: { name: 'test-config', namespace: 'default' },
-          data: {},
+          spec: { data: {} },
         },
         { scope: 'namespaced' }
       );
@@ -51,7 +51,7 @@ describe('createResource scope validation', () => {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: { name: 'test-config' },
-          data: {},
+          spec: { data: {} },
         },
         { scope: 'namespaced' }
       );
@@ -64,7 +64,7 @@ describe('createResource scope validation', () => {
         apiVersion: 'v1',
         kind: 'ConfigMap',
         metadata: { name: 'test-config', namespace: 'default' },
-        data: {},
+        spec: { data: {} },
       });
     }).not.toThrow();
   });
@@ -75,7 +75,7 @@ describe('createResource scope validation', () => {
         apiVersion: 'rbac.authorization.k8s.io/v1',
         kind: 'ClusterRole',
         metadata: { name: 'test-cluster-role' },
-        rules: [],
+        spec: { rules: [] },
       });
     }).not.toThrow();
   });

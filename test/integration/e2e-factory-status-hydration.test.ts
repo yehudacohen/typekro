@@ -238,8 +238,8 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
             '"running"',
             '"pending"'
           ) as 'pending' | 'running' | 'failed',
-          replicas: Cel.expr(resources.deployment.status.replicas),
-          readyReplicas: Cel.expr(resources.deployment.status.readyReplicas),
+          replicas: Cel.expr<number>(resources.deployment.status.replicas),
+          readyReplicas: Cel.expr<number>(resources.deployment.status.readyReplicas),
 
           // Mixed nested object
           metadata: {

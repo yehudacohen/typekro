@@ -81,13 +81,20 @@ describe('ResourceRollbackManager', () => {
 
     it('should create rollback manager with KubeConfig', () => {
       const mockKubeConfig = new k8s.KubeConfig();
-      // Mock the makeApiClient method
-      mockKubeConfig.makeApiClient = mock(() => createMockK8sApi());
+      // Mock getCurrentCluster for the Bun compatibility layer
+      mockKubeConfig.getCurrentCluster = mock(() => ({
+        name: 'test-cluster',
+        server: 'https://localhost:6443',
+        skipTLSVerify: false,
+      }));
 
+      // The function uses createBunCompatibleKubernetesObjectApi which:
+      // - In Node.js: calls k8s.KubernetesObjectApi.makeApiClient(kubeConfig)
+      // - In Bun: creates a custom API client with Bun-compatible HTTP
+      // We just verify the manager is created successfully
       const manager = createRollbackManagerWithKubeConfig(mockKubeConfig);
 
       expect(manager).toBeInstanceOf(ResourceRollbackManager);
-      expect(mockKubeConfig.makeApiClient).toHaveBeenCalledWith(k8s.KubernetesObjectApi);
     });
   });
 

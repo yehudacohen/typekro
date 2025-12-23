@@ -5,7 +5,8 @@
  * with common template method pattern implementation.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
+import { createBunCompatibleKubernetesObjectApi } from '../../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { createResourcesProxy } from '../../references/schema-proxy.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
@@ -180,17 +181,21 @@ export abstract class BaseDeploymentStrategy<
                   } as k8s.V1ObjectMeta,
                 };
 
-                const k8sApi = this.factoryOptions.kubeConfig?.makeApiClient(
-                  k8s.KubernetesObjectApi
-                );
-                if (k8sApi && resourceRef.metadata) {
-                  const response = await k8sApi.read({
+                // Use Bun-compatible API client for proper TLS handling
+                const k8sApi = this.factoryOptions.kubeConfig
+                  ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
+                  : undefined;
+                if (k8sApi && resourceRef.metadata && resourceRef.apiVersion && resourceRef.kind) {
+                  // In the new API, methods return objects directly (no .body wrapper)
+                  // The read method requires apiVersion, kind, and metadata
+                  actualResource = (await k8sApi.read({
+                    apiVersion: resourceRef.apiVersion,
+                    kind: resourceRef.kind,
                     metadata: {
-                      name: resourceRef.metadata.name,
-                      namespace: resourceRef.metadata.namespace || this.namespace,
+                      name: resourceRef.metadata.name || '',
+                      namespace: resourceRef.metadata.namespace || this.namespace || 'default',
                     },
-                  } as { metadata: { name: string; namespace: string } });
-                  actualResource = response.body as KubernetesResource<unknown, unknown>;
+                  })) as KubernetesResource<unknown, unknown>;
                 }
               } catch (_error) {
                 // Ignore CEL evaluation errors during status hydration
@@ -266,11 +271,16 @@ export abstract class BaseDeploymentStrategy<
             );
 
             // Query the actual resources from the cluster to get their current status
-            const k8sApi = this.factoryOptions.kubeConfig?.makeApiClient(
-              require('@kubernetes/client-node').KubernetesObjectApi
-            );
+            // Use Bun-compatible API client for proper TLS handling
+            const k8sApi = this.factoryOptions.kubeConfig
+              ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
+              : undefined;
 
             for (const deployedResource of deployedResources) {
+              // First, check if the manifest has __resourceId (the original resource ID)
+              // This is the most reliable way to get the original key
+              const manifestResourceId = (deployedResource.manifest as any).__resourceId;
+              
               // Extract the original resource key from the deployed resource ID
               // Pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey} -> originalKey
               const resourceIdPattern = new RegExp(`^${camelCaseInstanceName}Resource\\d+(.+)$`);
@@ -280,21 +290,38 @@ export abstract class BaseDeploymentStrategy<
                 instanceName,
                 camelCaseInstanceName,
                 deployedResourceId: deployedResource.id,
+                manifestResourceId,
                 resourceIdPattern: resourceIdPattern.source,
                 match: match,
                 matchedGroup: match?.[1],
               });
 
-              if (match?.[1]) {
+              // Use __resourceId if available, otherwise fall back to pattern extraction
+              let originalKey: string | undefined;
+              if (manifestResourceId) {
+                originalKey = manifestResourceId;
+                this.logger.debug('Using __resourceId for original key', {
+                  originalKey,
+                  deployedResourceId: deployedResource.id,
+                });
+              } else if (match?.[1]) {
                 // Convert from PascalCase to camelCase (e.g., "Webapp" -> "webapp")
-                const originalKey = match[1].charAt(0).toLowerCase() + match[1].slice(1);
-
+                originalKey = match[1].charAt(0).toLowerCase() + match[1].slice(1);
                 this.logger.debug('Extracted original key from resource ID', {
                   instanceName,
                   deployedResourceId: deployedResource.id,
                   extractedKey: originalKey,
                 });
+              } else {
+                this.logger.debug('Failed to match resource ID pattern', {
+                  deployedResourceId: deployedResource.id,
+                  pattern: `^${camelCaseInstanceName}Resource\\d+(.+)$`,
+                  camelCaseInstanceName,
+                });
+              }
 
+              // If we have an original key, query the cluster and add to mapping
+              if (originalKey) {
                 try {
                   // Query the actual resource from the cluster to get its current status
                   const resourceRef = {
@@ -306,10 +333,10 @@ export abstract class BaseDeploymentStrategy<
                     },
                   };
 
-                  const response = await (
-                    k8sApi as { read?: (ref: unknown) => Promise<{ body: unknown }> }
+                  // In the new API, methods return objects directly (no .body wrapper)
+                  const actualResource = await (
+                    k8sApi as { read?: (ref: unknown) => Promise<unknown> }
                   )?.read?.(resourceRef);
-                  const actualResource = response?.body;
 
                   if (actualResource) {
                     resourceKeyMapping.set(originalKey, actualResource);
@@ -340,12 +367,6 @@ export abstract class BaseDeploymentStrategy<
                     error: error instanceof Error ? error.message : String(error),
                   });
                 }
-              } else {
-                this.logger.debug('Failed to match resource ID pattern', {
-                  deployedResourceId: deployedResource.id,
-                  pattern: `^${camelCaseInstanceName}Resource\\d+(.+)$`,
-                  camelCaseInstanceName,
-                });
               }
             }
 

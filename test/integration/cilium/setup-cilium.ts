@@ -5,9 +5,10 @@
  * before running the networking integration tests.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { ciliumBootstrap } from '../../../src/factories/cilium/compositions/cilium-bootstrap.js';
 import { getIntegrationTestKubeConfig } from '../shared-kubeconfig.js';
+import { createBunCompatibleApiextensionsV1Api } from '../../../src/core/kubernetes/bun-api-client.js';
 
 const _CILIUM_NAMESPACE = 'kube-system';
 const FLUX_NAMESPACE = 'flux-system';
@@ -66,11 +67,11 @@ export async function setupCilium(): Promise<void> {
 export async function isCiliumInstalled(): Promise<boolean> {
   try {
     const kubeConfig = getIntegrationTestKubeConfig();
-    const k8sApi = kubeConfig.makeApiClient(k8s.ApiextensionsV1Api);
+    const k8sApi = createBunCompatibleApiextensionsV1Api(kubeConfig);
 
     // Check if Cilium CRDs exist
     const crds = await k8sApi.listCustomResourceDefinition();
-    const ciliumCRDs = crds.body.items.filter(crd =>
+    const ciliumCRDs = crds.items.filter((crd: k8s.V1CustomResourceDefinition) =>
       crd.metadata?.name?.includes('cilium.io')
     );
 

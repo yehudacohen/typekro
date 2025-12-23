@@ -7,11 +7,11 @@ export interface GitRepositorySpec {
     branch?: string;
     tag?: string;
     commit?: string;
-  };
+  } | undefined;
   interval: string;
   secretRef?: {
     name: string;
-  };
+  } | undefined;
 }
 
 export interface GitRepositoryStatus {

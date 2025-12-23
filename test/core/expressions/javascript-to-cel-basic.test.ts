@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { toResourceGraph, simple } from '../../../src/index.js';
+import { toResourceGraph, simple, Cel } from '../../../src/index.js';
 import { type } from 'arktype';
 
 describe('JavaScript to CEL - Basic Functionality', () => {
@@ -364,10 +364,13 @@ describe('JavaScript to CEL - Basic Functionality', () => {
           const resources: Record<string, any> = {};
           
           // Create 5 resources for testing
+          // Note: When using schema references in names, we must provide explicit IDs
+          // because the name is a KubernetesRef at runtime and can't be used for ID generation
           for (let i = 0; i < 5; i++) {
-            resources[`deployment-${i}`] = simple.Deployment({
-              name: `${schema.spec.name}-${i}`,
-              image: 'nginx:latest'
+            resources[`deployment${i}`] = simple.Deployment({
+              name: Cel.expr(schema.spec.name, ` + "-${i}"`),
+              image: 'nginx:latest',
+              id: `deployment${i}` // Explicit ID required when name is dynamic
             });
           }
           

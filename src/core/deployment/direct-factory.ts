@@ -442,9 +442,10 @@ export class DirectResourceFactoryImpl<
                 namespace: deployedResource.namespace,
               },
             };
+            // In the new API, methods return objects directly (no .body wrapper)
             const liveResource = await k8sApi.read(resourceRef);
 
-            const isReady = readinessChecker.isResourceReady(liveResource.body);
+            const isReady = readinessChecker.isResourceReady(liveResource);
 
             if (isReady) {
               healthyCount++;
@@ -647,6 +648,36 @@ metadata:
         id: finalId,
       };
 
+      // Preserve the __resourceId property if it exists (it's non-enumerable)
+      // This is the original resource ID (e.g., 'webappConfig') that's used for cross-resource references
+      // Note: For Enhanced proxy resources, __resourceId is on the target object and accessible via Reflect.get
+      const originalResourceId = (resource as any).__resourceId;
+      
+      // Also check if the resource has an 'id' property that was set by the factory
+      // The proxy returns resourceId when accessing 'id' property
+      const resourceIdFromProxy = (resource as any).id;
+      const effectiveOriginalId = originalResourceId || resourceIdFromProxy;
+      
+      this.logger.debug('Checking __resourceId preservation', {
+        originalResourceId,
+        resourceIdFromProxy,
+        effectiveOriginalId,
+        hasOriginalResourceId: !!originalResourceId,
+        hasResourceIdFromProxy: !!resourceIdFromProxy,
+      });
+      
+      if (effectiveOriginalId) {
+        Object.defineProperty(resourceWithId, '__resourceId', {
+          value: effectiveOriginalId,
+          enumerable: false,
+          configurable: true,
+        });
+        this.logger.debug('Preserved __resourceId on resource', {
+          originalResourceId: effectiveOriginalId,
+          newId: finalId,
+        });
+      }
+
       // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
       const originalResource = resource as { readinessEvaluator?: (resource: unknown) => boolean };
       if (
@@ -813,18 +844,80 @@ metadata:
   }
 
   /**
+   * Deep resolve any KubernetesRef objects in a value to their string representation
+   * This is needed because when composition functions build objects with schema proxy values,
+   * those values are KubernetesRef objects that need to be converted to actual values or
+   * placeholder strings for serialization.
+   * 
+   * For schema references (resourceId === '__schema__'), we return a placeholder that will
+   * be resolved later when actual spec values are available.
+   * 
+   * For resource references, we return a CEL expression placeholder.
+   */
+  private deepResolveKubernetesRefs(value: unknown, path = 'root'): unknown {
+    // Handle KubernetesRef objects
+    if (isKubernetesRef(value)) {
+      this.logger.trace('Found KubernetesRef in value', {
+        path,
+        resourceId: value.resourceId,
+        fieldPath: value.fieldPath,
+      });
+      
+      // For schema references, return a marker that can be resolved later
+      if (value.resourceId === '__schema__') {
+        return `__KUBERNETES_REF___schema___${value.fieldPath}__`;
+      }
+      
+      // For resource references, return a CEL expression placeholder
+      return `__KUBERNETES_REF_${value.resourceId}_${value.fieldPath}__`;
+    }
+
+    // Handle CelExpression objects
+    if (isCelExpression(value)) {
+      this.logger.trace('Found CelExpression in value', {
+        path,
+        expression: value.expression,
+      });
+      return value.expression;
+    }
+
+    // Handle arrays
+    if (Array.isArray(value)) {
+      return value.map((item, index) => 
+        this.deepResolveKubernetesRefs(item, `${path}[${index}]`)
+      );
+    }
+
+    // Handle objects
+    if (value !== null && typeof value === 'object') {
+      const resolved: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+        resolved[key] = this.deepResolveKubernetesRefs(val, `${path}.${key}`);
+      }
+      return resolved;
+    }
+
+    // Return primitives as-is
+    return value;
+  }
+
+  /**
    * Extract the underlying Kubernetes resource from an Enhanced proxy
    *
    * IMPORTANT: This method preserves ALL enumerable properties from the Enhanced resource,
    * not just standard Kubernetes fields. This is critical for resources like Secret (data),
    * ConfigMap (data, binaryData), RBAC resources (rules, roleRef, subjects), etc.
+   * 
+   * It also resolves any KubernetesRef objects in the resource properties to their
+   * string representations, which is critical for HelmRelease values that may contain
+   * schema proxy references.
    */
   private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<any, any>): KubernetesResource {
     // Start with required Kubernetes resource structure
     const resource: KubernetesResource = {
       apiVersion: enhanced.apiVersion,
       kind: enhanced.kind,
-      metadata: enhanced.metadata,
+      metadata: this.deepResolveKubernetesRefs(enhanced.metadata) as KubernetesResource['metadata'],
     };
 
     // Preserve ALL other enumerable properties from the Enhanced resource
@@ -836,8 +929,9 @@ metadata:
       }
 
       // Include all other properties (spec, status, data, rules, etc.)
+      // Deep resolve any KubernetesRef objects in the value
       if (value !== undefined && value !== null) {
-        (resource as any)[key] = value;
+        (resource as any)[key] = this.deepResolveKubernetesRefs(value);
       }
     }
 
@@ -963,6 +1057,65 @@ metadata:
       }
 
       return resolved;
+    }
+
+    // Case 4: Handle strings that contain __KUBERNETES_REF_ markers from template literals
+    // These are generated when schema references are used in template literals like `${schema.spec.name}-suffix`
+    if (typeof resource === 'string' && resource.includes('__KUBERNETES_REF_')) {
+      this.logger.trace('Found string with KubernetesRef markers', { path, value: resource });
+      
+      // Replace all __KUBERNETES_REF_ markers with actual values from spec
+      // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+      // For schema: __KUBERNETES_REF___schema___{fieldPath}__
+      // The fieldPath for schema refs is like "spec.baseName" or "spec.nested.field"
+      const resolvedString = resource.replace(
+        /__KUBERNETES_REF___schema___(.+?)__/g,
+        (_match, fieldPath) => {
+          // fieldPath is like "spec.baseName" - we need to traverse starting from the schema root
+          const pathParts = fieldPath.split('.');
+          
+          // The first part should be 'spec' or 'status'
+          if (pathParts[0] === 'spec') {
+            // Traverse the spec object using the remaining path parts
+            let currentValue: any = spec;
+            for (const part of pathParts.slice(1)) {
+              if (currentValue && typeof currentValue === 'object' && part in currentValue) {
+                currentValue = currentValue[part];
+              } else {
+                this.logger.warn('Schema path not found in spec', {
+                  path,
+                  fieldPath,
+                  part,
+                  availableKeys: currentValue ? Object.keys(currentValue) : [],
+                });
+                return _match; // Keep original marker if path not found
+              }
+            }
+            
+            this.logger.trace('Resolved schema marker to value', {
+              fieldPath,
+              resolvedValue: currentValue,
+            });
+            return String(currentValue);
+          } else {
+            // Status references or other paths - keep as-is for now
+            this.logger.trace('Keeping non-spec schema reference marker', {
+              fieldPath,
+            });
+            return _match;
+          }
+        }
+      );
+      
+      // Also handle non-schema resource references (keep them as-is for now)
+      // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__ where resourceId is not __schema__
+      
+      this.logger.trace('Resolved string with markers', {
+        path,
+        original: resource,
+        resolved: resolvedString,
+      });
+      return resolvedString;
     }
 
     this.logger.trace('Returning primitive value as-is', { path, value: resource });

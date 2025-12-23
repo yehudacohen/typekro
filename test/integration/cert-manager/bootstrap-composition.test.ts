@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Bootstrap Composition Tests', () => {
   let kubeConfig: any;
-  const testNamespace = 'typekro-test';
+  const testNamespace = 'typekro-test-cm-bootstrap';
 
   beforeAll(async () => {
     console.log('Setting up cert-manager bootstrap composition tests...');
@@ -12,6 +13,9 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       console.log('✅ Cluster connection established');
+      
+      // Create test namespace
+      await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -20,6 +24,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager bootstrap composition tests...');
+    await deleteNamespaceIfExists(testNamespace, kubeConfig);
   });
 
   it('should create cert-manager bootstrap composition with comprehensive configuration', async () => {

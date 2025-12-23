@@ -44,7 +44,7 @@ export const integrationTestBootstrap = kubernetesComposition(
     // 1. TypeKro Runtime (Flux + Kro) - Required for all tests
     const kroRuntime = typeKroRuntimeBootstrap({
       namespace: config.namespace,
-      fluxVersion: 'v2.4.0',
+      fluxVersion: 'v2.7.5',
       kroVersion: '0.3.0',
     });
 

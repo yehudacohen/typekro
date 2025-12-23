@@ -452,7 +452,10 @@ function convertExpressionToCel(expression: string): string {
  */
 function convertTemplateLiteralContent(content: string): string {
   // Replace special KubernetesRef strings with proper CEL expressions
-  return content.replace(/__KUBERNETES_REF_([^_]+)_([^_]+)__/g, (match, resourceId, fieldPath) => {
+  // Pattern handles both regular resource IDs and __schema__ (which has underscores)
+  // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+  // For schema: __KUBERNETES_REF___schema___{fieldPath}__
+  return content.replace(/__KUBERNETES_REF_(__schema__|[^_]+)_(.+?)__/g, (match, resourceId, fieldPath) => {
     if (resourceId === '__schema__') {
       return `schema.${fieldPath}`;
     } else {
@@ -475,8 +478,11 @@ function convertStringWithKubernetesRefs(source: string): string {
   }
 
   // Split the string by KubernetesRef placeholders
+  // Pattern handles both regular resource IDs and __schema__ (which has underscores)
+  // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+  // For schema: __KUBERNETES_REF___schema___{fieldPath}__
   const parts: string[] = [];
-  const refPattern = /__KUBERNETES_REF_([^_]+)_([^_]+)__/g;
+  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_(.+?)__/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null = refPattern.exec(content);
 

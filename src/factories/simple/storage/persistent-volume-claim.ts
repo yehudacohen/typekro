@@ -18,6 +18,7 @@ import type { PvcConfig } from '../types.js';
  */
 export function Pvc(config: PvcConfig): Enhanced<V1PvcSpec, V1PvcStatus> {
   return persistentVolumeClaim({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),

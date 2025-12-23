@@ -10,13 +10,13 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition, pebble, certManager, simple } from '../../../src/index.js';
 import { CiliumIngressClass, CiliumIngress } from '../../../src/factories/cilium/resources/gateway.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from '../shared-kubeconfig.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCustomObjectsApiClient, createCoreV1ApiClient, ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
 
-const NAMESPACE = 'typekro-test';
+const NAMESPACE = 'typekro-test-e2e-pebble';
 const clusterAvailable = isClusterAvailable();
 
 if (!clusterAvailable) {
@@ -64,10 +64,13 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
 
     // Use shared kubeconfig helper for consistent TLS configuration
     kubeConfig = getIntegrationTestKubeConfig();
-    _k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
-    customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
-    coreV1Api = kubeConfig.makeApiClient(k8s.CoreV1Api);
+    _k8sApi = createKubernetesObjectApiClient(kubeConfig);
+    customObjectsApi = createCustomObjectsApiClient(kubeConfig);
+    coreV1Api = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE;
+    
+    // Create test namespace
+    await ensureNamespaceExists(testNamespace, kubeConfig);
 
     // Install cert-manager through TypeKro (following dependency management philosophy)
     console.log('📦 Installing cert-manager through TypeKro bootstrap...');
@@ -146,40 +149,40 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         try {
           let response: any;
           if (resourceType.namespaced) {
-            response = await customObjectsApi.listNamespacedCustomObject(
-              resourceType.group,
-              resourceType.version,
-              testNamespace,
-              resourceType.plural
-            );
+            response = await customObjectsApi.listNamespacedCustomObject({
+              group: resourceType.group,
+              version: resourceType.version,
+              namespace: testNamespace,
+              plural: resourceType.plural,
+            });
           } else {
-            response = await customObjectsApi.listClusterCustomObject(
-              resourceType.group,
-              resourceType.version,
-              resourceType.plural
-            );
+            response = await customObjectsApi.listClusterCustomObject({
+              group: resourceType.group,
+              version: resourceType.version,
+              plural: resourceType.plural,
+            });
           }
 
-          const items = response.body.items || [];
+          const items = response.items || [];
           for (const item of items) {
             const itemName = item.metadata?.name;
             if (itemName && (itemName.startsWith('e2e-test-') || itemName.includes('pebble') || itemName.includes('cilium-test'))) {
               try {
                 if (resourceType.namespaced) {
-                  await customObjectsApi.deleteNamespacedCustomObject(
-                    resourceType.group,
-                    resourceType.version,
-                    testNamespace,
-                    resourceType.plural,
-                    itemName
-                  );
+                  await customObjectsApi.deleteNamespacedCustomObject({
+                    group: resourceType.group,
+                    version: resourceType.version,
+                    namespace: testNamespace,
+                    plural: resourceType.plural,
+                    name: itemName,
+                  });
                 } else {
-                  await customObjectsApi.deleteClusterCustomObject(
-                    resourceType.group,
-                    resourceType.version,
-                    resourceType.plural,
-                    itemName
-                  );
+                  await customObjectsApi.deleteClusterCustomObject({
+                    group: resourceType.group,
+                    version: resourceType.version,
+                    plural: resourceType.plural,
+                    name: itemName,
+                  });
                 }
                 console.log(`🗑️ Deleted ${resourceType.plural}: ${itemName}`);
               } catch (deleteError: any) {
@@ -200,11 +203,11 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
 
       // Clean up secrets and services
       try {
-        const secrets = await coreV1Api.listNamespacedSecret(testNamespace);
-        for (const secret of secrets.body.items) {
+        const secrets = await coreV1Api.listNamespacedSecret({ namespace: testNamespace });
+        for (const secret of secrets.items) {
           if (secret.metadata?.name?.startsWith('e2e-test-')) {
             try {
-              await coreV1Api.deleteNamespacedSecret(secret.metadata.name, testNamespace);
+              await coreV1Api.deleteNamespacedSecret({ name: secret.metadata.name, namespace: testNamespace });
               console.log(`🗑️ Deleted Secret: ${secret.metadata.name}`);
             } catch (deleteError: any) {
               // Only warn about non-404 errors
@@ -215,11 +218,11 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           }
         }
 
-        const services = await coreV1Api.listNamespacedService(testNamespace);
-        for (const service of services.body.items) {
+        const services = await coreV1Api.listNamespacedService({ namespace: testNamespace });
+        for (const service of services.items) {
           if (service.metadata?.name?.startsWith('e2e-test-')) {
             try {
-              await coreV1Api.deleteNamespacedService(service.metadata.name, testNamespace);
+              await coreV1Api.deleteNamespacedService({ name: service.metadata.name, namespace: testNamespace });
               console.log(`🗑️ Deleted Service: ${service.metadata.name}`);
             } catch (deleteError: any) {
               // Only warn about non-404 errors
@@ -242,6 +245,9 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       // Note: We don't clean up cert-manager here as it may be used by other tests
       // In a real CI environment, the entire cluster would be destroyed after all tests
       console.log('✅ End-to-end test resource cleanup completed');
+      
+      // Clean up test namespace
+      await deleteNamespaceIfExists(testNamespace, kubeConfig);
     } catch (error) {
       console.warn('⚠️ End-to-end test cleanup failed (non-critical):', error);
     }
@@ -335,7 +341,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         // Step 3: Create Cilium IngressClass for HTTP-01 challenges
         const _ciliumIngressClass = CiliumIngressClass({
           name: 'cilium-test',
-          isDefault: false,
+          default: false,
           id: 'ciliumIngressClass'
         });
 
@@ -419,7 +425,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
             pebbleRelease.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
           certManagerReady: true, // Assume cert-manager is available
           ingressClassReady: true, // IngressClass is ready immediately
-          ingressReady: challengeIngress.status.loadBalancer?.ingress?.length > 0 || false,
+          ingressReady: (challengeIngress.status as any)?.loadBalancer?.ingress?.length > 0 || false,
           issuerReady: acmeIssuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
           certificateReady: acmeCertificate.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
           challengeServiceReady: (challengeService.status.loadBalancer?.ingress?.length || 0) > 0 || (challengeDeployment.status.readyReplicas || 0) > 0 || false,
@@ -474,25 +480,25 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     // Step 1: Verify Pebble ACME server deployment
     console.log('🔍 Verifying Pebble ACME server deployment...');
 
-    const pebbleRepos = await customObjectsApi.listClusterCustomObject(
-      'source.toolkit.fluxcd.io',
-      'v1',
-      'helmrepositories'
-    );
-    const pebbleRepo = (pebbleRepos.body as any).items.find((repo: any) =>
+    const pebbleRepos = await customObjectsApi.listClusterCustomObject({
+      group: 'source.toolkit.fluxcd.io',
+      version: 'v1',
+      plural: 'helmrepositories',
+    });
+    const pebbleRepo = (pebbleRepos as any).items.find((repo: any) =>
       repo.metadata.name.includes('pebble') && repo.metadata.name.includes('repo')
     );
     expect(pebbleRepo).toBeDefined();
     expect(pebbleRepo.spec.url).toBe('https://jupyterhub.github.io/helm-chart/');
     console.log('✅ Pebble HelmRepository created');
 
-    const pebbleReleases = await customObjectsApi.listNamespacedCustomObject(
-      'helm.toolkit.fluxcd.io',
-      'v2',
-      testNamespace,
-      'helmreleases'
-    );
-    const pebbleRelease = (pebbleReleases.body as any).items.find((release: any) =>
+    const pebbleReleases = await customObjectsApi.listNamespacedCustomObject({
+      group: 'helm.toolkit.fluxcd.io',
+      version: 'v2',
+      namespace: testNamespace,
+      plural: 'helmreleases',
+    });
+    const pebbleRelease = (pebbleReleases as any).items.find((release: any) =>
       release.metadata.name.includes('pebble')
     );
     expect(pebbleRelease).toBeDefined();
@@ -502,12 +508,12 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     // Step 2: Verify ClusterIssuer pointing to Pebble
     console.log('🔍 Verifying ClusterIssuer configuration...');
 
-    const clusterIssuers = await customObjectsApi.listClusterCustomObject(
-      'cert-manager.io',
-      'v1',
-      'clusterissuers'
-    );
-    const createdIssuer = (clusterIssuers.body as any).items.find((issuer: any) =>
+    const clusterIssuers = await customObjectsApi.listClusterCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      plural: 'clusterissuers',
+    });
+    const createdIssuer = (clusterIssuers as any).items.find((issuer: any) =>
       issuer.metadata.name === issuerName
     );
     expect(createdIssuer).toBeDefined();
@@ -520,13 +526,13 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     // Step 3: Verify Certificate creation
     console.log('🔍 Verifying Certificate configuration...');
 
-    const certificates = await customObjectsApi.listNamespacedCustomObject(
-      'cert-manager.io',
-      'v1',
-      testNamespace,
-      'certificates'
-    );
-    const createdCert = (certificates.body as any).items.find((cert: any) =>
+    const certificates = await customObjectsApi.listNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace: testNamespace,
+      plural: 'certificates',
+    });
+    const createdCert = (certificates as any).items.find((cert: any) =>
       cert.metadata.name === certName
     );
     expect(createdCert).toBeDefined();
@@ -541,13 +547,13 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     console.log('🔍 Checking for ACME Order creation...');
 
     try {
-      const orders = await customObjectsApi.listNamespacedCustomObject(
-        'acme.cert-manager.io',
-        'v1',
-        testNamespace,
-        'orders'
-      );
-      const orderItems = (orders.body as any).items || [];
+      const orders = await customObjectsApi.listNamespacedCustomObject({
+        group: 'acme.cert-manager.io',
+        version: 'v1',
+        namespace: testNamespace,
+        plural: 'orders',
+      });
+      const orderItems = (orders as any).items || [];
       console.log(`📋 Found ${orderItems.length} Order resources`);
 
       if (orderItems.length > 0) {
@@ -588,13 +594,13 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     console.log('🔍 Checking for ACME Challenge creation...');
 
     try {
-      const challenges = await customObjectsApi.listNamespacedCustomObject(
-        'acme.cert-manager.io',
-        'v1',
-        testNamespace,
-        'challenges'
-      );
-      const challengeItems = (challenges.body as any).items || [];
+      const challenges = await customObjectsApi.listNamespacedCustomObject({
+        group: 'acme.cert-manager.io',
+        version: 'v1',
+        namespace: testNamespace,
+        plural: 'challenges',
+      });
+      const challengeItems = (challenges as any).items || [];
       console.log(`📋 Found ${challengeItems.length} Challenge resources`);
 
       if (challengeItems.length > 0) {
@@ -638,21 +644,21 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     console.log('🔍 Checking for certificate secret creation...');
 
     try {
-      const secret = await coreV1Api.readNamespacedSecret(secretName, testNamespace);
-      expect(secret.body.type).toBe('kubernetes.io/tls');
-      expect(secret.body.data).toHaveProperty('tls.crt');
-      expect(secret.body.data).toHaveProperty('tls.key');
+      const secret = await coreV1Api.readNamespacedSecret({ name: secretName, namespace: testNamespace });
+      expect(secret.type).toBe('kubernetes.io/tls');
+      expect(secret.data).toHaveProperty('tls.crt');
+      expect(secret.data).toHaveProperty('tls.key');
       console.log('✅ Certificate secret created with TLS certificate');
     } catch (_error) {
       // Check certificate status to understand why secret isn't ready
       try {
-        const certificates = await customObjectsApi.listNamespacedCustomObject(
-          'cert-manager.io',
-          'v1',
-          testNamespace,
-          'certificates'
-        );
-        const cert = (certificates.body as any).items.find((c: any) => c.metadata.name === certName);
+        const certificates = await customObjectsApi.listNamespacedCustomObject({
+          group: 'cert-manager.io',
+          version: 'v1',
+          namespace: testNamespace,
+          plural: 'certificates',
+        });
+        const cert = (certificates as any).items.find((c: any) => c.metadata.name === certName);
         if (cert) {
           const conditions = cert.status?.conditions || [];
           const readyCondition = conditions.find((c: any) => c.type === 'Ready');

@@ -107,6 +107,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               name: `${schema.spec.name}-db-storage`,
               size: schema.spec.database.storage,
               accessModes: ['ReadWriteOnce'],
+              id: 'databaseStorage',
             });
           }
 
@@ -413,6 +414,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             name: `${spec.name}-db-storage`,
             size: spec.storage,
             accessModes: ['ReadWriteOnce'],
+            id: 'storage',
           });
 
           return {
@@ -473,6 +475,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             name: `${spec.name}-db-storage`,
             size: spec.dbStorage,
             accessModes: ['ReadWriteOnce'],
+            id: 'storage',
           });
 
           // Create a database status object that mimics what the nested composition would return

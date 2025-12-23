@@ -8,9 +8,10 @@
  * resources.database.status.podIP return KubernetesRef objects at runtime.
  */
 
-import * as esprima from 'esprima';
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode } from 'estree';
+
+import { parseExpression, parseScript, ParserError } from './parser.js';
 
 import { containsKubernetesRefs, extractResourceReferences, isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
@@ -248,50 +249,15 @@ export class JavaScriptToCelAnalyzer {
     if (cached) return cached;
 
     try {
-      // Handle modern JavaScript syntax that esprima 4.0.1 doesn't support
-      const preprocessedExpression = this.preprocessModernSyntax(expression);
-
       // Parse JavaScript expression to AST with location tracking
-      // Try parsing as expression first, then fall back to wrapping in parentheses
-      let ast: any;
-      let exprNode: any;
+      // Using unified acorn parser with native ES2022 support (optional chaining, nullish coalescing)
+      const exprNode = parseExpression(expression);
 
-      try {
-        // Try parsing as a standalone expression first
-        ast = esprima.parseScript(preprocessedExpression, {
-          ecmaVersion: 2020,
-          sourceType: 'script',
-          loc: true,
-          range: true
-        } as any);
-        exprNode = (ast.body[0] as any);
-
-        // If it's not an expression statement, we need to wrap it
-        if (exprNode.type !== 'ExpressionStatement') {
-          throw new Error('Not an expression statement');
-        }
-        exprNode = exprNode.expression;
-      } catch (firstError) {
-        // Fall back to wrapping in parentheses
-        try {
-          ast = esprima.parseScript(`(${preprocessedExpression})`, {
-            ecmaVersion: 2020,
-            sourceType: 'script',
-            loc: true,
-            range: true
-          } as any);
-          exprNode = (ast.body[0] as any).expression;
-        } catch (_secondError) {
-          // Use the original error message from the first attempt
-          throw firstError;
-        }
-      }
-
-      // Create source location from AST
-      const sourceLocation = SourceMapUtils.createSourceLocation(
-        exprNode.loc,
-        expression
-      );
+      // Create source location from AST (handle case where loc might be undefined)
+      const astLoc = (exprNode as any).loc;
+      const sourceLocation = astLoc 
+        ? SourceMapUtils.createSourceLocation(astLoc, expression)
+        : { line: 1, column: 1, length: expression.length };
 
       // Initialize dependencies array if not provided
       if (!context.dependencies) {
@@ -457,11 +423,23 @@ export class JavaScriptToCelAnalyzer {
         return specialCaseResult;
       }
 
-      // Create detailed error with source location
-      const sourceLocation = { line: 1, column: 1, length: expression.length };
+      // Create detailed error with source location from ParserError if available
+      let sourceLocation = { line: 1, column: 1, length: expression.length };
+      let errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Extract enhanced error information from ParserError
+      if (error instanceof ParserError) {
+        sourceLocation = { 
+          line: error.line, 
+          column: error.column, 
+          length: expression.length 
+        };
+        errorMessage = error.message;
+      }
+      
       const conversionError = ConversionError.forParsingFailure(
         expression,
-        error instanceof Error ? error.message : String(error),
+        errorMessage,
         sourceLocation,
         error instanceof Error ? error : undefined
       );
@@ -710,8 +688,8 @@ export class JavaScriptToCelAnalyzer {
    */
   analyzeFunction(fn: Function, _context: AnalysisContext): CelConversionResult {
     try {
-      // Parse function to AST
-      const ast = esprima.parseScript(fn.toString());
+      // Parse function to AST using unified acorn parser
+      const ast = parseScript(fn.toString());
 
       // Find return statement
       const returnStatement = this.findReturnStatement(ast);
@@ -733,12 +711,15 @@ export class JavaScriptToCelAnalyzer {
         requiresConversion: true
       };
     } catch (error) {
+      const errorMessage = error instanceof ParserError 
+        ? error.message 
+        : (error instanceof Error ? error.message : String(error));
       return {
         valid: false,
         celExpression: null,
         dependencies: [],
         sourceMap: [],
-        errors: [new ConversionError(error instanceof Error ? error.message : String(error), fn.toString(), 'function-call')],
+        errors: [new ConversionError(errorMessage, fn.toString(), 'function-call')],
         warnings: [],
         requiresConversion: false
       };
@@ -1215,25 +1196,22 @@ export class JavaScriptToCelAnalyzer {
   }
 
   /**
-   * Handle optional chaining expressions that can't be parsed by esprima
+   * Handle optional chaining expressions
+   * Note: With acorn's native ES2022 support, optional chaining is parsed directly.
+   * This method is kept for backward compatibility and special case handling.
    */
   private handleOptionalChainingExpression(expression: string, context: AnalysisContext): CelConversionResult {
     try {
-      // First, validate that the expression is syntactically valid JavaScript
-      // even if esprima doesn't support optional chaining
-      // We'll do a basic syntax check by removing the optional chaining and parsing
-      const withoutOptionalChaining = expression
-        .replace(/\?\.\[/g, '[')  // Replace ?.[  with [
-        .replace(/\?\.\(/g, '(')  // Replace ?.( with (
-        .replace(/\?\./g, '.');   // Replace ?. with .
-
+      // Validate that the expression is syntactically valid JavaScript
+      // Acorn natively supports optional chaining (ES2020+)
       try {
-        // Try to parse the expression without optional chaining to validate basic syntax
-        esprima.parseScript(`(${withoutOptionalChaining})`);
+        parseExpression(expression);
       } catch (syntaxError) {
-        // If it fails to parse even without optional chaining, it has syntax errors
+        const errorMessage = syntaxError instanceof ParserError 
+          ? syntaxError.message 
+          : (syntaxError instanceof Error ? syntaxError.message : String(syntaxError));
         throw new ConversionError(
-          `Invalid JavaScript syntax in optional chaining expression: ${syntaxError instanceof Error ? syntaxError.message : String(syntaxError)}`,
+          `Invalid JavaScript syntax in optional chaining expression: ${errorMessage}`,
           expression,
           'optional-chaining'
         );
@@ -1375,7 +1353,9 @@ export class JavaScriptToCelAnalyzer {
   }
 
   /**
-   * Handle nullish coalescing expressions that can't be parsed by esprima
+   * Handle nullish coalescing expressions
+   * Note: With acorn's native ES2022 support, nullish coalescing is parsed directly.
+   * This method converts ?? to CEL-compatible conditional syntax.
    */
   private handleNullishCoalescingExpression(expression: string, context: AnalysisContext): CelConversionResult {
     try {
@@ -2423,29 +2403,6 @@ export class JavaScriptToCelAnalyzer {
       _type: undefined
     } as CelExpression;
   }
-
-  /**
-   * Preprocess modern JavaScript syntax for older esprima parser
-   */
-  private preprocessModernSyntax(expression: string): string {
-    const processed = expression;
-
-    // Handle optional chaining (?.) - convert to special handling
-    if (processed.includes('?.')) {
-      // Mark for special handling but don't throw error
-      // Keep as-is for now, let the parser handle it
-    }
-
-    // Handle nullish coalescing (??) - convert to special handling
-    if (processed.includes('??')) {
-      // Mark for special handling but don't throw error
-      // Keep as-is for now, let the parser handle it
-    }
-
-    return processed;
-  }
-
-
 
 
 

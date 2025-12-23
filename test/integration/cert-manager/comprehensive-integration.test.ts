@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { kubernetesComposition, } from '../../../src/index.js';
 import { type } from 'arktype';
+import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server', () => {
   let kubeConfig: k8s.KubeConfig;
   let customObjectsApi: k8s.CustomObjectsApi;
-  const testNamespace = 'typekro-test';
+  const testNamespace = 'typekro-test-comprehensive';
 
   beforeAll(async () => {
     console.log(
@@ -17,8 +19,11 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     // Get cluster connection
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+      customObjectsApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       console.log('✅ Cluster connection established');
+      
+      // Create test namespace
+      await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -49,22 +54,22 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
             resourceType.plural === 'helmrepositories'
           ) {
             // Cluster-scoped resources
-            response = await customObjectsApi.listClusterCustomObject(
-              resourceType.group,
-              resourceType.version,
-              resourceType.plural
-            );
+            response = await customObjectsApi.listClusterCustomObject({
+              group: resourceType.group,
+              version: resourceType.version,
+              plural: resourceType.plural
+            });
           } else {
             // Namespace-scoped resources
-            response = await customObjectsApi.listNamespacedCustomObject(
-              resourceType.group,
-              resourceType.version,
-              testNamespace,
-              resourceType.plural
-            );
+            response = await customObjectsApi.listNamespacedCustomObject({
+              group: resourceType.group,
+              version: resourceType.version,
+              namespace: testNamespace,
+              plural: resourceType.plural
+            });
           }
 
-          const items = response.body.items || [];
+          const items = (response as any).items || [];
           for (const item of items) {
             if (
               item.metadata.name.startsWith('test-') ||
@@ -75,20 +80,20 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
                   resourceType.plural === 'clusterissuers' ||
                   resourceType.plural === 'helmrepositories'
                 ) {
-                  await customObjectsApi.deleteClusterCustomObject(
-                    resourceType.group,
-                    resourceType.version,
-                    resourceType.plural,
-                    item.metadata.name
-                  );
+                  await customObjectsApi.deleteClusterCustomObject({
+                    group: resourceType.group,
+                    version: resourceType.version,
+                    plural: resourceType.plural,
+                    name: item.metadata.name
+                  });
                 } else {
-                  await customObjectsApi.deleteNamespacedCustomObject(
-                    resourceType.group,
-                    resourceType.version,
-                    testNamespace,
-                    resourceType.plural,
-                    item.metadata.name
-                  );
+                  await customObjectsApi.deleteNamespacedCustomObject({
+                    group: resourceType.group,
+                    version: resourceType.version,
+                    namespace: testNamespace,
+                    plural: resourceType.plural,
+                    name: item.metadata.name
+                  });
                 }
                 console.log(`🗑️ Deleted ${resourceType.plural}: ${item.metadata.name}`);
               } catch (deleteError) {
@@ -115,6 +120,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
 
   afterAll(async () => {
     console.log('Cleaning up comprehensive cert-manager integration tests...');
+    await deleteNamespaceIfExists(testNamespace, kubeConfig);
   });
 
   it('should deploy complete ACME certificate issuance stack with Pebble test server', async () => {
@@ -250,12 +256,12 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     // Note: Pebble deployment removed for test simplification
 
     // Verify ClusterIssuer was created
-    const clusterIssuers = await customObjectsApi.listClusterCustomObject(
-      'cert-manager.io',
-      'v1',
-      'clusterissuers'
-    );
-    const createdIssuer = (clusterIssuers.body as any).items.find((issuer: any) =>
+    const clusterIssuers = await customObjectsApi.listClusterCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      plural: 'clusterissuers'
+    });
+    const createdIssuer = (clusterIssuers as any).items.find((issuer: any) =>
       issuer.metadata.name.includes('issuer')
     );
     expect(createdIssuer).toBeDefined();
@@ -266,13 +272,13 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     // skipTLSVerify not set when using Let's Encrypt staging (only needed for Pebble)
 
     // Verify Certificate was created
-    const certificates = await customObjectsApi.listNamespacedCustomObject(
-      'cert-manager.io',
-      'v1',
-      testNamespace,
-      'certificates'
-    );
-    const createdCert = (certificates.body as any).items.find((cert: any) =>
+    const certificates = await customObjectsApi.listNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace: testNamespace,
+      plural: 'certificates'
+    });
+    const createdCert = (certificates as any).items.find((cert: any) =>
       cert.metadata.name.includes('cert')
     );
     expect(createdCert).toBeDefined();
@@ -531,24 +537,24 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     const issuerName = `${uniqueBaseName}-issuer`;
     const certName = `${uniqueBaseName}-cert`;
 
-    const issuerResource = await customObjectsApi.getClusterCustomObject(
-      'cert-manager.io',
-      'v1',
-      'clusterissuers',
-      issuerName
-    );
-    expect(issuerResource.body).toBeDefined();
+    const issuerResource = await customObjectsApi.getClusterCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      plural: 'clusterissuers',
+      name: issuerName
+    });
+    expect(issuerResource).toBeDefined();
 
-    const certificateResource = await customObjectsApi.getNamespacedCustomObject(
-      'cert-manager.io',
-      'v1',
-      testNamespace,
-      'certificates',
-      certName
-    );
-    expect(certificateResource.body).toBeDefined();
+    const certificateResource = await customObjectsApi.getNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace: testNamespace,
+      plural: 'certificates',
+      name: certName
+    });
+    expect(certificateResource).toBeDefined();
 
-    const certBody = certificateResource.body as any;
+    const certBody = certificateResource as any;
     expect(certBody.spec.issuerRef.name).toBe(issuerName); // Verify cross-reference worked
     expect(certBody.spec.issuerRef.kind).toBe('ClusterIssuer');
 

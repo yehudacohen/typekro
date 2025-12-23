@@ -1,5 +1,8 @@
 /**
  * Tests for StatusHydrator - Updated for new interface
+ *
+ * NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+ * without a .body wrapper. The mocks must return the resource directly.
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
@@ -8,11 +11,11 @@ import { StatusHydrator } from '../../src/core/deployment/status-hydrator.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
 
-// Mock Kubernetes API
+// Mock Kubernetes API (new API returns objects directly, no .body wrapper)
 const createMockK8sApi = (mockResource?: any) =>
   ({
-    read: async () => ({
-      body: mockResource || {
+    read: async () =>
+      mockResource || {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
         metadata: { name: 'test-deployment', namespace: 'default' },
@@ -26,7 +29,6 @@ const createMockK8sApi = (mockResource?: any) =>
           ],
         },
       },
-    }),
   }) as any as k8s.KubernetesObjectApi;
 
 describe('StatusHydrator', () => {
@@ -194,14 +196,13 @@ describe('StatusHydrator', () => {
     it('should cache status results when enabled', async () => {
       let callCount = 0;
       const cachingApi = {
+        // New API returns objects directly (no .body wrapper)
         read: async () => {
           callCount++;
           return {
-            body: {
-              apiVersion: 'apps/v1',
-              kind: 'Deployment',
-              status: { replicas: 3 },
-            },
+            apiVersion: 'apps/v1',
+            kind: 'Deployment',
+            status: { replicas: 3 },
           };
         },
       } as any as k8s.KubernetesObjectApi;

@@ -87,6 +87,15 @@ export interface EnhancedDeploymentPlan {
 // DEPLOYMENT OPTIONS AND CONFIGURATION
 // =============================================================================
 
+/**
+ * Strategy for handling resource conflicts (409 AlreadyExists errors)
+ * - 'warn': Log warning and treat existing resource as success (default)
+ * - 'fail': Throw ResourceConflictError on conflict
+ * - 'patch': Attempt to patch the existing resource with new values
+ * - 'replace': Delete and recreate the resource
+ */
+export type ConflictStrategy = 'warn' | 'fail' | 'patch' | 'replace';
+
 export interface DeploymentOptions {
   mode: 'direct' | 'kro' | 'alchemy' | 'auto';
   namespace?: string;
@@ -99,6 +108,16 @@ export interface DeploymentOptions {
 
   /** Hydrate Enhanced proxy status fields with live cluster data (default: true) */
   hydrateStatus?: boolean;
+
+  /**
+   * Strategy for handling resource conflicts (409 AlreadyExists errors)
+   * - 'warn': Log warning and treat existing resource as success (default)
+   * - 'fail': Throw ResourceConflictError on conflict
+   * - 'patch': Attempt to patch the existing resource with new values
+   * - 'replace': Delete and recreate the resource
+   * @default 'warn'
+   */
+  conflictStrategy?: ConflictStrategy;
 
   /** Event monitoring configuration */
   eventMonitoring?: {
@@ -529,6 +548,24 @@ export class ResourceDeploymentError extends Error {
     super(`Failed to deploy ${resourceKind}/${resourceName}: ${cause.message}`);
     this.name = 'ResourceDeploymentError';
     this.cause = cause;
+  }
+}
+
+/**
+ * Error thrown when a resource already exists and conflictStrategy is 'fail'
+ */
+export class ResourceConflictError extends Error {
+  public readonly resourceName: string;
+  public readonly resourceKind: string;
+  public readonly namespace: string | undefined;
+
+  constructor(resourceName: string, resourceKind: string, namespace?: string | undefined) {
+    const nsInfo = namespace ? ` in namespace '${namespace}'` : '';
+    super(`Resource ${resourceKind}/${resourceName} already exists${nsInfo}`);
+    this.name = 'ResourceConflictError';
+    this.resourceName = resourceName;
+    this.resourceKind = resourceKind;
+    this.namespace = namespace;
   }
 }
 

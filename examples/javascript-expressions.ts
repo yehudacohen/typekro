@@ -303,10 +303,10 @@ export const advancedExample = toResourceGraph(
     ready: resources.deployment.status.readyReplicas > 0,
 
     // ✅ Use explicit CEL for complex list operations (escape hatch)
-    podNames: Cel.expr('resources.deployment.status.pods.map(item, item.metadata.name)'),
+    podNames: Cel.expr<string[]>('resources.deployment.status.pods.map(item, item.metadata.name)'),
 
     // ✅ Complex list operations still require explicit CEL (escape hatch)
-    healthyPods: Cel.expr(
+    healthyPods: Cel.expr<number>(
       'size(resources.deployment.status.pods.filter(p, p.status.phase == "Running"))'
     ),
 

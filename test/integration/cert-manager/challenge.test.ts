@@ -6,13 +6,13 @@
  * It ensures cert-manager is properly bootstrapped before testing Challenge resources.
  */
 
-import { describe, it, expect, beforeAll, afterEach } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import { describe, it, expect, beforeAll, afterEach, afterAll } from 'bun:test';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { toResourceGraph, certManager } from '../../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from '../shared-kubeconfig.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCustomObjectsApiClient, ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
 
-const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
+const NAMESPACE = 'typekro-test-challenge'; // Use unique namespace for this test file
 const clusterAvailable = isClusterAvailable();
 
 // Check if cluster is available
@@ -53,9 +53,12 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
 
     // Use shared kubeconfig helper for consistent TLS configuration
     kubeConfig = getIntegrationTestKubeConfig();
-    _k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
-    customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+    _k8sApi = createKubernetesObjectApiClient(kubeConfig);
+    customObjectsApi = createCustomObjectsApiClient(kubeConfig);
     testNamespace = NAMESPACE; // Use the standard test namespace
+    
+    // Create test namespace
+    await ensureNamespaceExists(testNamespace, kubeConfig);
 
     // Ensure cert-manager is deployed using bootstrap composition
     try {
@@ -118,22 +121,22 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       console.log('🧹 Cleaning up test resources...');
 
       // Delete all Challenges in test namespace that start with 'challenge-test-'
-      await customObjectsApi.listNamespacedCustomObject(
-        'acme.cert-manager.io',
-        'v1',
-        testNamespace,
-        'challenges'
-      ).then(async (response: any) => {
-        const items = response.body.items || [];
+      await customObjectsApi.listNamespacedCustomObject({
+        group: 'acme.cert-manager.io',
+        version: 'v1',
+        namespace: testNamespace,
+        plural: 'challenges'
+      }).then(async (response: any) => {
+        const items = response.items || [];
         for (const item of items) {
           if (item.metadata.name.startsWith('challenge-test-')) {
-            await customObjectsApi.deleteNamespacedCustomObject(
-              'acme.cert-manager.io',
-              'v1',
-              testNamespace,
-              'challenges',
-              item.metadata.name
-            );
+            await customObjectsApi.deleteNamespacedCustomObject({
+              group: 'acme.cert-manager.io',
+              version: 'v1',
+              namespace: testNamespace,
+              plural: 'challenges',
+              name: item.metadata.name
+            });
           }
         }
       }).catch(() => {
@@ -141,20 +144,20 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       });
 
       // Delete all ClusterIssuers that start with 'challenge-test-'
-      await customObjectsApi.listClusterCustomObject(
-        'cert-manager.io',
-        'v1',
-        'clusterissuers'
-      ).then(async (response: any) => {
-        const items = response.body.items || [];
+      await customObjectsApi.listClusterCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        plural: 'clusterissuers'
+      }).then(async (response: any) => {
+        const items = response.items || [];
         for (const item of items) {
           if (item.metadata.name.startsWith('challenge-test-')) {
-            await customObjectsApi.deleteClusterCustomObject(
-              'cert-manager.io',
-              'v1',
-              'clusterissuers',
-              item.metadata.name
-            );
+            await customObjectsApi.deleteClusterCustomObject({
+              group: 'cert-manager.io',
+              version: 'v1',
+              plural: 'clusterissuers',
+              name: item.metadata.name
+            });
           }
         }
       }).catch(() => {
@@ -168,6 +171,12 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
     } catch (error) {
       console.warn('⚠️ Test cleanup failed (non-critical):', error);
     }
+  });
+
+  afterAll(async () => {
+    if (!clusterAvailable) return;
+    console.log('Cleaning up cert-manager Challenge integration tests...');
+    await deleteNamespaceIfExists(testNamespace, kubeConfig);
   });
 
   describe('Challenge Factory Integration', () => {
@@ -329,31 +338,31 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       expect(deploymentResult.metadata.name).toContain('instance-');
 
       // Verify the ACME ClusterIssuer was created
-      const acmeIssuerResource = await customObjectsApi.getClusterCustomObject(
-        'cert-manager.io',
-        'v1',
-        'clusterissuers',
-        issuerName
-      );
+      const acmeIssuerResource = await customObjectsApi.getClusterCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        plural: 'clusterissuers',
+        name: issuerName
+      });
 
-      expect(acmeIssuerResource.body).toBeDefined();
-      const issuerBody = acmeIssuerResource.body as any;
+      expect(acmeIssuerResource).toBeDefined();
+      const issuerBody = acmeIssuerResource as any;
       expect(issuerBody.kind).toBe('ClusterIssuer');
       expect(issuerBody.spec.acme?.server).toBe('https://acme-staging-v02.api.letsencrypt.org/directory');
       expect(issuerBody.spec.acme?.email).toBe('test@example.com');
       expect(issuerBody.spec.acme?.solvers?.[0]?.http01?.ingress?.class).toBe('nginx');
 
       // Verify the Certificate was created
-      const certificateResource = await customObjectsApi.getNamespacedCustomObject(
-        'cert-manager.io',
-        'v1',
-        testNamespace,
-        'certificates',
-        certName
-      );
+      const certificateResource = await customObjectsApi.getNamespacedCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        namespace: testNamespace,
+        plural: 'certificates',
+        name: certName
+      });
 
-      expect(certificateResource.body).toBeDefined();
-      const certBody = certificateResource.body as any;
+      expect(certificateResource).toBeDefined();
+      const certBody = certificateResource as any;
       expect(certBody.kind).toBe('Certificate');
       expect(certBody.spec.dnsNames).toEqual(['acme-test.example.com']);
       expect(certBody.spec.issuerRef.name).toBe(issuerName);

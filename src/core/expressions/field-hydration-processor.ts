@@ -14,9 +14,10 @@
  * - Provides dependency analysis for status field population
  */
 
-import * as esprima from 'esprima';
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode, ObjectExpression, ReturnStatement, Property, } from 'estree';
+
+import { parseScript } from './parser.js';
 
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type { Enhanced } from '../types/kubernetes.js';
@@ -489,7 +490,10 @@ export class FieldHydrationExpressionProcessor {
   }
 
   /**
-   * Strip TypeScript syntax that esprima cannot parse
+   * Strip TypeScript syntax that acorn cannot parse
+   * 
+   * Note: With acorn's ES2022 support, optional chaining (?.) and nullish coalescing (??)
+   * are parsed natively without preprocessing.
    */
   private stripTypeScriptSyntax(functionSource: string): string {
     // Remove non-null assertion operators (!)
@@ -499,13 +503,8 @@ export class FieldHydrationExpressionProcessor {
     cleaned = cleaned.replace(/:\s*typeof\s+\w+/g, '');
     cleaned = cleaned.replace(/:\s*any/g, '');
     
-    // Handle optional chaining with array access like ?.[0] -> [0]
-    // Remove the dot before the bracket to avoid syntax like "ingress.[0]"
-    cleaned = cleaned.replace(/\?\.\[/g, '[');
-    
-    // Handle optional chaining - convert to regular property access for parsing
-    // This is a simplified approach that works for basic cases
-    cleaned = cleaned.replace(/\?\./g, '.');
+    // Note: Optional chaining (?.) and nullish coalescing (??) are now handled
+    // natively by acorn with ES2022 support - no preprocessing needed
     
     return cleaned;
   }
@@ -522,17 +521,17 @@ export class FieldHydrationExpressionProcessor {
       // Get the function source code
       let functionSource = statusBuilder.toString();
       
-      // Strip TypeScript syntax that esprima can't handle
+      // Strip TypeScript syntax that acorn can't handle
       functionSource = this.stripTypeScriptSyntax(functionSource);
       
       this.logger.debug('Parsing status builder function', {
         functionLength: functionSource.length
       });
 
-      // Parse the function to AST
-      const ast = esprima.parseScript(functionSource, {
-        loc: true,
-        range: true,
+      // Parse the function to AST using unified acorn parser
+      const ast = parseScript(functionSource, {
+        locations: true,
+        ranges: true,
       });
 
       // Find the return statement or arrow function body in the function

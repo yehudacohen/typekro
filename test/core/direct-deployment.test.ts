@@ -10,17 +10,28 @@ import { configMap, daemonSet, deployment, job, persistentVolumeClaim, pod, secr
 
 // Helper function to create properly typed test resources
 function createMockResource(
-  overrides: Partial<DeployableK8sResource<Enhanced<any, any>>> = {}
-): DeployableK8sResource<Enhanced<any, any>> {
-  return {
+  overrides: {
+    id?: string;
+    kind?: string;
+    apiVersion?: string;
+    metadata?: { name?: string; namespace?: string; [key: string]: unknown };
+    spec?: Record<string, unknown>;
+    status?: Record<string, unknown>;
+  } = {}
+): DeployableK8sResource<Enhanced<object, object>> {
+  const base = {
     id: 'testResource',
     kind: 'Deployment',
     apiVersion: 'apps/v1',
     metadata: { name: 'test-resource' },
     spec: {},
     status: {},
+  };
+  return {
+    ...base,
     ...overrides,
-  } as DeployableK8sResource<Enhanced<any, any>>;
+    metadata: { ...base.metadata, ...overrides.metadata },
+  } as unknown as DeployableK8sResource<Enhanced<object, object>>;
 }
 
 // Create a mock ReferenceResolver class for dependency injection
@@ -39,44 +50,47 @@ class MockReferenceResolver {
 }
 
 // Mock setTimeout to resolve immediately for faster tests
+// BUT: Don't mock long timeouts (like abort timeouts) to avoid breaking AbortController logic
 const originalSetTimeout = globalThis.setTimeout;
-const mockSetTimeout = mock((callback: () => void, _delay: number) => {
-  // Resolve immediately instead of waiting
+const POLLING_DELAY_THRESHOLD = 2000; // Timeouts shorter than 2s are likely polling delays
+const mockSetTimeout = mock((callback: () => void, delay: number) => {
+  // For long timeouts (like abort timeouts, typically 5000ms+), use the original delay
+  // This prevents the AbortController from firing immediately and breaking tests
+  if (delay >= POLLING_DELAY_THRESHOLD) {
+    return originalSetTimeout(callback, delay);
+  }
+  // For short timeouts (like polling delays, typically < 2000ms), resolve immediately for faster tests
   return originalSetTimeout(callback, 0);
 });
 globalThis.setTimeout = mockSetTimeout as any;
 
 // Mock the Kubernetes client
+// NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+// without a .body wrapper. The mocks must return the resource directly.
 const mockK8sApi = {
-  read: mock(() => Promise.resolve({ body: {} })),
+  read: mock(() => Promise.resolve({})),
   create: mock(() =>
     Promise.resolve({
-      body: {
-        metadata: { name: 'test', namespace: 'default' },
-        kind: 'Deployment',
-        apiVersion: 'apps/v1',
-      },
+      metadata: { name: 'test', namespace: 'default' },
+      kind: 'Deployment',
+      apiVersion: 'apps/v1',
     })
   ),
   patch: mock(() =>
     Promise.resolve({
-      body: {
-        metadata: { name: 'test', namespace: 'default' },
-        kind: 'Deployment',
-        apiVersion: 'apps/v1',
-      },
+      metadata: { name: 'test', namespace: 'default' },
+      kind: 'Deployment',
+      apiVersion: 'apps/v1',
     })
   ),
   replace: mock(() =>
     Promise.resolve({
-      body: {
-        metadata: { name: 'test', namespace: 'default' },
-        kind: 'Deployment',
-        apiVersion: 'apps/v1',
-      },
+      metadata: { name: 'test', namespace: 'default' },
+      kind: 'Deployment',
+      apiVersion: 'apps/v1',
     })
   ),
-  delete: mock(() => Promise.resolve({ body: {} })),
+  delete: mock(() => Promise.resolve({})),
 };
 
 const mockKubeConfig = {
@@ -111,29 +125,25 @@ describe('DirectDeploymentEngine', () => {
     mockSetTimeout.mockClear();
 
     // Restore default mock implementations
-    mockK8sApi.read.mockResolvedValue({ body: {} });
+    // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+    // without a .body wrapper. The mocks must return the resource directly.
+    mockK8sApi.read.mockResolvedValue({});
     mockK8sApi.create.mockResolvedValue({
-      body: {
-        metadata: { name: 'test', namespace: 'default' },
-        kind: 'Deployment',
-        apiVersion: 'apps/v1',
-      },
+      metadata: { name: 'test', namespace: 'default' },
+      kind: 'Deployment',
+      apiVersion: 'apps/v1',
     });
     mockK8sApi.patch.mockResolvedValue({
-      body: {
-        metadata: { name: 'test', namespace: 'default' },
-        kind: 'Deployment',
-        apiVersion: 'apps/v1',
-      },
+      metadata: { name: 'test', namespace: 'default' },
+      kind: 'Deployment',
+      apiVersion: 'apps/v1',
     });
     mockK8sApi.replace.mockResolvedValue({
-      body: {
-        metadata: { name: 'test', namespace: 'default' },
-        kind: 'Deployment',
-        apiVersion: 'apps/v1',
-      },
+      metadata: { name: 'test', namespace: 'default' },
+      kind: 'Deployment',
+      apiVersion: 'apps/v1',
     });
-    mockK8sApi.delete.mockResolvedValue({ body: {} });
+    mockK8sApi.delete.mockResolvedValue({});
   });
 
   afterAll(() => {
@@ -147,12 +157,11 @@ describe('DirectDeploymentEngine', () => {
 
       // Mock successful deployments - resources don't exist, so create them
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 }); // Resource doesn't exist
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'test', namespace: 'default' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'test', namespace: 'default' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       const result = await engine.deploy(graph, defaultOptions);
@@ -179,12 +188,11 @@ describe('DirectDeploymentEngine', () => {
       const graph = createTestResourceGraph();
 
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'test', namespace: 'test-namespace' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'test', namespace: 'test-namespace' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       await engine.deploy(graph, defaultOptions);
@@ -215,24 +223,21 @@ describe('DirectDeploymentEngine', () => {
       const graph = createTestResourceGraph();
 
       // Mock existing resource - return success for read to indicate resource exists
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.read.mockResolvedValue({
-        body: {
-          metadata: {
-            name: 'database',
-            namespace: 'default',
-            resourceVersion: '12345',
-          },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
+        metadata: {
+          name: 'database',
+          namespace: 'default',
+          resourceVersion: '12345',
         },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       mockK8sApi.patch.mockResolvedValue({
-        body: {
-          metadata: { name: 'database', namespace: 'default' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'database', namespace: 'default' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       await engine.deploy(graph, defaultOptions);
@@ -264,12 +269,11 @@ describe('DirectDeploymentEngine', () => {
 
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
       mockK8sApi.create.mockRejectedValueOnce(new Error('Deployment failed'));
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'test', namespace: 'default' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'test', namespace: 'default' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       const result = await engine.deploy(graph, failureOptions);
@@ -293,17 +297,16 @@ describe('DirectDeploymentEngine', () => {
       };
 
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create
         .mockResolvedValueOnce({
-          body: {
-            metadata: { name: 'database', namespace: 'default' },
-            kind: 'Deployment',
-            apiVersion: 'apps/v1',
-          },
+          metadata: { name: 'database', namespace: 'default' },
+          kind: 'Deployment',
+          apiVersion: 'apps/v1',
         })
         .mockRejectedValueOnce(new Error('Second deployment failed'));
 
-      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.delete.mockResolvedValue({});
 
       const result = await engine.deploy(graph, rollbackOptions);
 
@@ -320,12 +323,11 @@ describe('DirectDeploymentEngine', () => {
       };
 
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'test', namespace: 'default' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'test', namespace: 'default' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       await engine.deploy(graph, optionsWithCallback);
@@ -344,27 +346,28 @@ describe('DirectDeploymentEngine', () => {
       };
 
       // Mock the deployment creation and readiness checks
+      // NOTE: In the new API, methods return objects directly (no .body wrapper)
       let readCallCount = 0;
       mockK8sApi.read.mockImplementation((...args: any[]) => {
-        const [namespace, name] = args;
+        const [resource] = args;
+        const name = resource?.metadata?.name;
+        const namespace = resource?.metadata?.namespace;
         readCallCount++;
         if (readCallCount <= 2) {
           // First two calls are for checking if resources exist during deployment
           return Promise.reject({ statusCode: 404 });
         } else {
-          // Subsequent calls are for readiness checks - return ready status
+          // Subsequent calls are for readiness checks - return ready status (object directly)
           // Factory-created deployments expect both readyReplicas and availableReplicas
           return Promise.resolve({
-            body: {
-              apiVersion: 'apps/v1',
-              kind: 'Deployment',
-              metadata: { name, namespace },
-              spec: { replicas: 1 },
-              status: {
-                readyReplicas: 1,
-                availableReplicas: 1,
-                replicas: 1,
-              },
+            apiVersion: 'apps/v1',
+            kind: 'Deployment',
+            metadata: { name, namespace },
+            spec: { replicas: 1 },
+            status: {
+              readyReplicas: 1,
+              availableReplicas: 1,
+              replicas: 1,
             },
           });
         }
@@ -372,11 +375,10 @@ describe('DirectDeploymentEngine', () => {
 
       mockK8sApi.create.mockImplementation((...args: any[]) => {
         const resource = args[0];
+        // Returns object directly (no .body wrapper)
         return Promise.resolve({
-          body: {
-            ...resource,
-            metadata: { ...resource.metadata, uid: 'test-uid' },
-          },
+          ...resource,
+          metadata: { ...resource.metadata, uid: 'test-uid' },
         });
       });
 
@@ -496,13 +498,12 @@ describe('DirectDeploymentEngine', () => {
       };
 
       // Mock the k8s API to return the service without status
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.read.mockResolvedValue({
-        body: {
-          apiVersion: 'v1',
-          kind: 'Service',
-          metadata: { name: 'test-service', namespace: 'default' },
-          // No spec or status
-        },
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'test-service', namespace: 'default' },
+        // No spec or status
       });
 
       const isReady = await engine.isDeployedResourceReady(deployedResource);
@@ -763,12 +764,11 @@ describe('DirectDeploymentEngine', () => {
         } else if (callCount === 2) {
           return Promise.reject(new Error('Another failure'));
         } else {
+          // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
           return Promise.resolve({
-            body: {
-              metadata: { name: 'test', namespace: 'default' },
-              kind: 'Deployment',
-              apiVersion: 'apps/v1',
-            },
+            metadata: { name: 'test', namespace: 'default' },
+            kind: 'Deployment',
+            apiVersion: 'apps/v1',
           });
         }
       });
@@ -827,12 +827,11 @@ describe('DirectDeploymentEngine', () => {
 
       // Setup mocks for deployment phase - resource doesn't exist, so create it
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 }); // Resource doesn't exist during deployment
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'simple', namespace: 'test-namespace' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'simple', namespace: 'test-namespace' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       // First deploy the resources
@@ -840,7 +839,7 @@ describe('DirectDeploymentEngine', () => {
       expect(deployResult.status).toBe('success');
 
       // Setup rollback mocks - delete succeeds
-      mockK8sApi.delete.mockResolvedValue({ body: {} });
+      mockK8sApi.delete.mockResolvedValue({});
 
       // Now rollback the deployment
       const rollbackResult = await engine.rollback(deployResult.deploymentId);
@@ -870,12 +869,11 @@ describe('DirectDeploymentEngine', () => {
 
       // Setup successful deployment - resource doesn't exist, so create it
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 }); // Resource doesn't exist
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'simple', namespace: 'test-namespace' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'simple', namespace: 'test-namespace' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       // Deploy first
@@ -930,12 +928,11 @@ describe('DirectDeploymentEngine', () => {
 
       // Setup successful deployment - resource doesn't exist, so create it
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 }); // Resource doesn't exist
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'simple', namespace: 'test-namespace' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'simple', namespace: 'test-namespace' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       const deployResult = await engine.deploy(graph, defaultOptions);

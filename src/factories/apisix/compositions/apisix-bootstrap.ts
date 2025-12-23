@@ -60,23 +60,36 @@ export const apisixBootstrap = kubernetesComposition(
     status: APISixBootstrapStatusSchema,
   },
   (spec) => {
-    // Apply default configuration values
+    // Extract actual values from spec - these may be KubernetesRef proxies during initial composition
+    // but will be actual values during re-execution
+    const specName = spec.name;
+    const specNamespace = spec.namespace;
+    const specVersion = spec.version;
+
+    // Use string coercion to get actual values from potential KubernetesRef proxies
+    const actualName = String(specName || 'apisix');
+    const actualNamespace = String(specNamespace || 'apisix-system');
+    const actualVersion = String(specVersion || '2.8.0');
+
+    // Apply default configuration values using actual string values
     const fullConfig: APISixBootstrapConfig = {
-      // Basic defaults
-      namespace: spec.namespace || 'apisix-system',
-      version: spec.version || '2.8.0',
+      // Basic defaults - use actual string values
+      name: actualName,
+      namespace: actualNamespace,
+      version: actualVersion,
       installCRDs: spec.installCRDs !== undefined ? spec.installCRDs : true,
       replicaCount: spec.replicaCount || 1,
 
       // Global defaults
       global: {
+        ...spec.global,
         imagePullSecrets: spec.global?.imagePullSecrets || [],
         imageRegistry: spec.global?.imageRegistry || '',
-        ...spec.global,
       },
 
-      // Gateway defaults
+      // Gateway defaults - enable both HTTP and HTTPS with LoadBalancer
       gateway: {
+        ...spec.gateway,
         type: spec.gateway?.type || 'LoadBalancer',
         http: {
           enabled: spec.gateway?.http?.enabled !== undefined ? spec.gateway.http.enabled : true,
@@ -88,42 +101,36 @@ export const apisixBootstrap = kubernetesComposition(
           servicePort: spec.gateway?.https?.servicePort || 443,
           containerPort: spec.gateway?.https?.containerPort || 9443,
         },
-        ...spec.gateway,
       },
 
       // Ingress Controller defaults
       ingressController: {
+        ...spec.ingressController,
         enabled:
           spec.ingressController?.enabled !== undefined ? spec.ingressController.enabled : true,
         extraArgs: spec.ingressController?.extraArgs || [],
         config: {
+          ...spec.ingressController?.config,
           kubernetes: {
             ingressClass: spec.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
-            namespace:
-              spec.ingressController?.config?.kubernetes?.namespace ||
-              spec.namespace ||
-              'apisix-system',
+            // Watch all namespaces by default (empty string means all namespaces)
+            watchedNamespace: spec.ingressController?.config?.kubernetes?.watchedNamespace || '',
           },
-          ...spec.ingressController?.config,
         },
-        ...spec.ingressController,
       },
 
       // Service Account defaults
       serviceAccount: {
+        ...spec.serviceAccount,
         create: spec.serviceAccount?.create !== undefined ? spec.serviceAccount.create : true,
         name: spec.serviceAccount?.name || '',
-        ...spec.serviceAccount,
       },
 
       // RBAC defaults
       rbac: {
-        create: spec.rbac?.create !== undefined ? spec.rbac.create : true,
         ...spec.rbac,
+        create: spec.rbac?.create !== undefined ? spec.rbac.create : true,
       },
-
-      // Pass through other configuration
-      ...spec,
     };
 
     // Ensure consistent admin key between gateway and ingress controller
@@ -132,35 +139,49 @@ export const apisixBootstrap = kubernetesComposition(
     // Map configuration to Helm values
     const helmValues = mapAPISixConfigToHelmValues(fullConfig);
 
-    // APISix Helm chart uses 'service.type' instead of 'gateway.type'
-    if (fullConfig.gateway?.type) {
-      if (!helmValues.service) {
-        helmValues.service = {};
-      }
-      helmValues.service.type = fullConfig.gateway.type;
+    // Configure service type and ports for the gateway
+    if (!helmValues.service) {
+      helmValues.service = {};
     }
+    helmValues.service.type = fullConfig.gateway?.type || 'LoadBalancer';
+    
+    // Enable HTTP port
+    if (!helmValues.service.http) {
+      helmValues.service.http = {};
+    }
+    helmValues.service.http.enabled = fullConfig.gateway?.http?.enabled !== false;
+    
+    // Enable TLS/HTTPS port
+    if (!helmValues.service.tls) {
+      helmValues.service.tls = {};
+    }
+    helmValues.service.tls.enabled = fullConfig.gateway?.https?.enabled !== false;
+    helmValues.service.tls.servicePort = fullConfig.gateway?.https?.servicePort || 443;
+    helmValues.service.tls.containerPort = fullConfig.gateway?.https?.containerPort || 9443;
 
-    // Configure admin API access using the correct Helm chart structure
-    // According to https://github.com/apache/apisix-helm-chart/blob/apisix-2.8.0/charts/apisix/README.md
-    // The correct structure is: apisix.admin.allow.ipList
+    // Configure admin API access - allow from all IPs for cluster-internal access
     if (!helmValues.apisix) {
       helmValues.apisix = {};
     }
-    // Use the index signature to add properties not in the interface
     (helmValues.apisix as Record<string, any>).admin = {
       allow: {
-        ipList: ['0.0.0.0/0'], // Allow from anywhere for testing
+        ipList: ['0.0.0.0/0'], // Allow from anywhere within the cluster
       },
+    };
+    
+    // Enable SSL in APISix
+    (helmValues.apisix as Record<string, any>).ssl = {
+      enabled: true,
     };
 
     // Create namespace for APISix (required before HelmRelease)
     const _apisixNamespace = namespace({
       metadata: {
-        name: spec.namespace || 'apisix-system',
+        name: actualNamespace,
         labels: {
           'app.kubernetes.io/name': 'apisix',
-          'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/version': spec.version || '2.8.0',
+          'app.kubernetes.io/instance': actualName,
+          'app.kubernetes.io/version': actualVersion,
           'app.kubernetes.io/managed-by': 'typekro',
         },
       },
@@ -178,23 +199,23 @@ export const apisixBootstrap = kubernetesComposition(
 
     // Create HelmRelease for APISix Gateway
     const helmRelease = apisixHelmRelease({
-      name: spec.name,
+      name: actualName,
       namespace: 'flux-system',
-      targetNamespace: spec.namespace || 'apisix-system',
+      targetNamespace: actualNamespace,
       chart: 'apisix',
-      version: spec.version || '2.8.0',
+      version: actualVersion,
       interval: '5m',
       timeout: '10m',
       values: helmValues,
-
       id: 'apisixHelmRelease',
     });
 
     // Create HelmRelease for APISix Ingress Controller (separate chart)
+    // Use actual string values for service names to avoid KubernetesRef serialization issues
     const ingressControllerHelmRelease = apisixHelmRelease({
-      name: `${spec.name}-ingress-controller`,
+      name: `${actualName}-ingress-controller`,
       namespace: 'flux-system',
-      targetNamespace: spec.namespace || 'apisix-system',
+      targetNamespace: actualNamespace,
       chart: 'apisix-ingress-controller',
       version: '0.13.0', // Use a stable version of the ingress controller
       repositoryName: 'apisix-repo', // Use the same repository as the main APISix chart
@@ -203,21 +224,20 @@ export const apisixBootstrap = kubernetesComposition(
       values: {
         config: {
           apisix: {
-            serviceName: `${spec.namespace || 'apisix-system'}-${spec.name}-admin`,
-            serviceNamespace: spec.namespace || 'apisix-system',
+            // Use actual string values for service configuration
+            serviceName: `${actualNamespace}-${actualName}-admin`,
+            serviceNamespace: actualNamespace,
             servicePort: 9180,
             adminKey: adminKey, // Use admin key for authentication
-            adminAPIVersion: 'v3', // Try v3 API version for APISix 3.9.1
+            adminAPIVersion: 'v3', // Use v3 API version for APISix 3.9.1
           },
           kubernetes: {
-            ingressClass:
-              fullConfig.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
-            namespace:
-              fullConfig.ingressController?.config?.kubernetes?.namespace ||
-              spec.namespace ||
-              'apisix-system',
+            ingressClass: fullConfig.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
+            // Watch all namespaces (empty string means all namespaces)
+            watchedNamespace: fullConfig.ingressController?.config?.kubernetes?.watchedNamespace || '',
           },
-          ingressPublishService: `${spec.namespace || 'apisix-system'}/${spec.namespace || 'apisix-system'}-${spec.name}-gateway`,
+          // Configure ingress status update with the gateway service
+          ingressPublishService: `${actualNamespace}/${actualNamespace}-${actualName}-gateway`,
         },
         serviceAccount: {
           create: true,
@@ -229,7 +249,6 @@ export const apisixBootstrap = kubernetesComposition(
           create: false, // Don't create IngressClass - we create it manually
         },
       },
-
       id: 'apisixIngressControllerHelmRelease',
     });
 
@@ -241,8 +260,8 @@ export const apisixBootstrap = kubernetesComposition(
         name: fullConfig.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
         labels: {
           'app.kubernetes.io/name': 'apisix',
-          'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/version': spec.version || '2.8.0',
+          'app.kubernetes.io/instance': actualName,
+          'app.kubernetes.io/version': actualVersion,
           'app.kubernetes.io/managed-by': 'typekro',
         },
       },
@@ -277,8 +296,8 @@ export const apisixBootstrap = kubernetesComposition(
       dashboardReady: false, // Dashboard not deployed in this composition
       etcdReady: false, // etcd not deployed in this composition (using external etcd assumed)
       gatewayService: {
-        name: `${spec.name}-gateway`,
-        namespace: spec.namespace || 'apisix-system',
+        name: `${actualName}-gateway`,
+        namespace: actualNamespace,
         type: fullConfig.gateway?.type || 'LoadBalancer',
         clusterIP: '', // Will be populated by actual service
         externalIP: '', // Will be populated by actual service

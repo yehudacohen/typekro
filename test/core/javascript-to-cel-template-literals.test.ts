@@ -339,13 +339,13 @@ describe('JavaScript to CEL Template Literals', () => {
 
           return {
             // Schema-only CEL expression - should be sent to Kro
-            schemaOnlyUrl: cel`https://${spec.hostname}/api`,
+            schemaOnlyUrl: cel<string>`https://${spec.hostname}/api`,
 
             // Resource-only CEL expression - should be sent to Kro
-            resourceOnlyMessage: cel`Deployment has ${deployment.status.readyReplicas} replicas`,
+            resourceOnlyMessage: cel<string>`Deployment has ${deployment.status.readyReplicas} replicas`,
 
             // Mixed CEL expression - should be sent to Kro
-            mixedMessage: cel`App ${spec.hostname} has ${deployment.status.readyReplicas} replicas`,
+            mixedMessage: cel<string>`App ${spec.hostname} has ${deployment.status.readyReplicas} replicas`,
           };
         }
       );

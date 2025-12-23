@@ -8,7 +8,7 @@ describe('Encapsulation and Public Interfaces', () => {
       const kubeConfig = new k8s.KubeConfig();
       // Set up a minimal valid cluster configuration for testing
       kubeConfig.loadFromClusterAndUser(
-        { name: 'test-cluster', server: 'https://test-cluster.example.com' },
+        { name: 'test-cluster', server: 'https://test-cluster.example.com', skipTLSVerify: false },
         { name: 'test-user' }
       );
 
@@ -30,7 +30,7 @@ describe('Encapsulation and Public Interfaces', () => {
       const kubeConfig = new k8s.KubeConfig();
       // Set up a minimal valid cluster configuration for testing
       kubeConfig.loadFromClusterAndUser(
-        { name: 'test-cluster', server: 'https://test-cluster.example.com' },
+        { name: 'test-cluster', server: 'https://test-cluster.example.com', skipTLSVerify: false },
         { name: 'test-user' }
       );
 

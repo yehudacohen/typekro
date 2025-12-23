@@ -21,23 +21,21 @@ describe('Debug Logging Integration', () => {
     capturedEvents = [];
     _capturedLogs = [];
 
-    // Mock Kubernetes API
+    // Mock Kubernetes API - new API returns objects directly (no .body wrapper)
     mockKubernetesObjectApi = {
       read: mock(() =>
         Promise.resolve({
-          body: {
-            apiVersion: 'apps/v1',
-            kind: 'Deployment',
-            metadata: { name: 'webapp', namespace: 'test-namespace' },
-            status: {
-              replicas: 3,
-              readyReplicas: 2,
-              availableReplicas: 2,
-              conditions: [
-                { type: 'Available', status: 'True', reason: 'MinimumReplicasAvailable' },
-                { type: 'Progressing', status: 'True', reason: 'NewReplicaSetAvailable' },
-              ],
-            },
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'webapp', namespace: 'test-namespace' },
+          status: {
+            replicas: 3,
+            readyReplicas: 2,
+            availableReplicas: 2,
+            conditions: [
+              { type: 'Available', status: 'True', reason: 'MinimumReplicasAvailable' },
+              { type: 'Progressing', status: 'True', reason: 'NewReplicaSetAvailable' },
+            ],
           },
         })
       ),
@@ -81,28 +79,27 @@ describe('Debug Logging Integration', () => {
       };
 
       // Mock the resource as not ready initially, then ready
+      // New API returns objects directly (no .body wrapper)
       let callCount = 0;
       mockKubernetesObjectApi.read.mockImplementation(() => {
         callCount++;
         const isReady = callCount >= 3; // Becomes ready on 3rd call
 
         return Promise.resolve({
-          body: {
-            apiVersion: 'apps/v1',
-            kind: 'Deployment',
-            metadata: { name: 'webapp', namespace: 'test-namespace' },
-            status: {
-              replicas: 3,
-              readyReplicas: isReady ? 3 : 2,
-              availableReplicas: isReady ? 3 : 2,
-              conditions: [
-                {
-                  type: 'Available',
-                  status: isReady ? 'True' : 'False',
-                  reason: isReady ? 'MinimumReplicasAvailable' : 'MinimumReplicasUnavailable',
-                },
-              ],
-            },
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'webapp', namespace: 'test-namespace' },
+          status: {
+            replicas: 3,
+            readyReplicas: isReady ? 3 : 2,
+            availableReplicas: isReady ? 3 : 2,
+            conditions: [
+              {
+                type: 'Available',
+                status: isReady ? 'True' : 'False',
+                reason: isReady ? 'MinimumReplicasAvailable' : 'MinimumReplicasUnavailable',
+              },
+            ],
           },
         });
       });
@@ -175,20 +172,19 @@ describe('Debug Logging Integration', () => {
       };
 
       // Mock the resource as never becoming ready
+      // New API returns objects directly (no .body wrapper)
       mockKubernetesObjectApi.read.mockResolvedValue({
-        body: {
-          apiVersion: 'apps/v1',
-          kind: 'Deployment',
-          metadata: { name: 'failing-app', namespace: 'test-namespace' },
-          status: {
-            replicas: 3,
-            readyReplicas: 0,
-            availableReplicas: 0,
-            conditions: [
-              { type: 'Available', status: 'False', reason: 'MinimumReplicasUnavailable' },
-              { type: 'Progressing', status: 'False', reason: 'ProgressDeadlineExceeded' },
-            ],
-          },
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'failing-app', namespace: 'test-namespace' },
+        status: {
+          replicas: 3,
+          readyReplicas: 0,
+          availableReplicas: 0,
+          conditions: [
+            { type: 'Available', status: 'False', reason: 'MinimumReplicasUnavailable' },
+            { type: 'Progressing', status: 'False', reason: 'ProgressDeadlineExceeded' },
+          ],
         },
       });
 
@@ -252,6 +248,7 @@ describe('Debug Logging Integration', () => {
       };
 
       // Mock API errors
+      // New API returns objects directly (no .body wrapper)
       let callCount = 0;
       mockKubernetesObjectApi.read.mockImplementation(() => {
         callCount++;
@@ -261,18 +258,16 @@ describe('Debug Logging Integration', () => {
         } else {
           // Third call succeeds
           return Promise.resolve({
-            body: {
-              apiVersion: 'apps/v1',
-              kind: 'Deployment',
-              metadata: { name: 'error-app', namespace: 'test-namespace' },
-              status: {
-                replicas: 3,
-                readyReplicas: 3,
-                availableReplicas: 3,
-                conditions: [
-                  { type: 'Available', status: 'True', reason: 'MinimumReplicasAvailable' },
-                ],
-              },
+            apiVersion: 'apps/v1',
+            kind: 'Deployment',
+            metadata: { name: 'error-app', namespace: 'test-namespace' },
+            status: {
+              replicas: 3,
+              readyReplicas: 3,
+              availableReplicas: 3,
+              conditions: [
+                { type: 'Available', status: 'True', reason: 'MinimumReplicasAvailable' },
+              ],
             },
           });
         }

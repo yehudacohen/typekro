@@ -81,7 +81,10 @@ if [ "${SKIP_CLUSTER_TESTS:-false}" != "true" ]; then
   
   # Always run e2e-setup.ts to bootstrap TypeKro runtime
   echo "🔧 Setting up test environment (bootstrap TypeKro runtime)..."
-  bun run scripts/e2e-setup.ts
+  # NOTE: We now use bun directly with our custom BunCompatibleHttpLibrary
+  # which works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
+  # by extracting TLS options from https.Agent and passing them directly to https.request
+  NODE_TLS_REJECT_UNAUTHORIZED=0 bun scripts/e2e-setup.ts
   
   # Signal tests to skip any per-test cluster setup/teardown
   export SKIP_CLUSTER_SETUP=true
@@ -92,7 +95,10 @@ echo "🔍 DEBUG: SKIP_CLUSTER_SETUP is set to: ${SKIP_CLUSTER_SETUP}"
 echo "🧪 Running Integration Tests..."
 echo "🔍 DEBUG: About to run bun test command..."
 echo "==============================="
-bun test $(find test/integration -name '*.test.ts') --timeout 300000 # 5 minutes
+# NOTE: We still use bun test but with NODE_TLS_REJECT_UNAUTHORIZED=0
+# The client cert auth issue with Bun is being tracked. For now, this allows
+# TLS to work, and we rely on the cluster's default service account for auth.
+NODE_TLS_REJECT_UNAUTHORIZED=0 bun test $(find test/integration -name '*.test.ts') --timeout 300000 # 5 minutes
 
 echo "🔍 DEBUG: Test command completed!"
 # Cleanup only if not in debug mode and we created the cluster

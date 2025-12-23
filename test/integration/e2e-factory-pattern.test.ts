@@ -1,8 +1,14 @@
 import { beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, secret, simple, toResourceGraph } from '../../src/index';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import {
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 // Test configuration
 const _CLUSTER_NAME = 'typekro-e2e-test';
@@ -36,8 +42,8 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
     // Use shared kubeconfig helper for consistent TLS configuration
     kc = getIntegrationTestKubeConfig();
 
-    k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-    appsApi = kc.makeApiClient(k8s.AppsV1Api);
+    k8sApi = createCoreV1ApiClient(kc);
+    appsApi = createAppsV1ApiClient(kc);
 
     // Note: Individual test namespaces will be created per test for better isolation
 
@@ -53,7 +59,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
 
     try {
       // Create namespace
-      await k8sApi.createNamespace({ metadata: { name: namespace } });
+      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
       console.log(`📦 Created test namespace: ${namespace}`);
 
       // Run test
@@ -61,13 +67,8 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
 
       return result;
     } finally {
-      // Cleanup namespace
-      try {
-        await k8sApi.deleteNamespace(namespace);
-        console.log(`🗑️ Cleaned up test namespace: ${namespace}`);
-      } catch (error) {
-        console.warn(`⚠️ Failed to cleanup namespace ${namespace}:`, error);
-      }
+      // Cleanup namespace and wait for full deletion
+      await deleteNamespaceAndWait(namespace, kc);
     }
   };
 
@@ -212,30 +213,30 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
         try {
           switch (resource.kind) {
             case 'ConfigMap': {
-              const configMap = await k8sApi.readNamespacedConfigMap(resource.name, testNamespace);
-              expect(configMap.body.data?.LOG_LEVEL).toBe('info');
+              const configMap = await k8sApi.readNamespacedConfigMap({ name: resource.name, namespace: testNamespace });
+              expect(configMap.data?.LOG_LEVEL).toBe('info');
               console.log(`✅ ${resource.kind}: ${resource.name}`);
               resourcesFound++;
               break;
             }
             case 'Secret':
-              await k8sApi.readNamespacedSecret(resource.name, testNamespace);
+              await k8sApi.readNamespacedSecret({ name: resource.name, namespace: testNamespace });
               console.log(`✅ ${resource.kind}: ${resource.name}`);
               resourcesFound++;
               break;
             case 'Deployment': {
-              const deployment = await appsApi.readNamespacedDeployment(
-                resource.name,
-                testNamespace
-              );
-              expect(deployment.body.spec?.replicas).toBe(2);
+              const deployment = await appsApi.readNamespacedDeployment({
+                name: resource.name,
+                namespace: testNamespace
+              });
+              expect(deployment.spec?.replicas).toBe(2);
               console.log(`✅ ${resource.kind}: ${resource.name}`);
               resourcesFound++;
               break;
             }
             case 'Service': {
-              const service = await k8sApi.readNamespacedService(resource.name, testNamespace);
-              expect(service.body.spec?.ports?.[0]?.port).toBe(80);
+              const service = await k8sApi.readNamespacedService({ name: resource.name, namespace: testNamespace });
+              expect(service.spec?.ports?.[0]?.port).toBe(80);
               console.log(`✅ ${resource.kind}: ${resource.name}`);
               resourcesFound++;
               break;
