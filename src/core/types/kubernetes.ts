@@ -38,7 +38,7 @@ import type {
   V1Secret,
   V1Service,
   V1StatefulSet,
-  V1Subject,
+  RbacV1Subject,
   V1ValidatingWebhookConfiguration,
   V1VolumeAttachment,
   V2HorizontalPodAutoscaler,
@@ -53,10 +53,13 @@ export interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
   status?: TStatus;
   // Resource ID for dependency tracking and deployment
   id?: string;
+  // Secret/ConfigMap data fields
+  data?: { [key: string]: string };
+  stringData?: { [key: string]: string };
   // RBAC resource fields (from @kubernetes/client-node)
   rules?: V1PolicyRule[];
   roleRef?: V1RoleRef;
-  subjects?: V1Subject[];
+  subjects?: RbacV1Subject[];
   // Storage resource fields
   provisioner?: string;
   parameters?: { [key: string]: string };
@@ -70,6 +73,8 @@ export interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
   description?: string;
   // External reference marker for serialization
   __externalRef?: boolean;
+  // Custom toJSON method for serialization
+  toJSON?: () => KubernetesResource<TSpec, TStatus>;
 }
 
 export type KubernetesResourceHeader<T extends KubernetesResource> = Pick<
@@ -129,7 +134,7 @@ export type Enhanced<TSpec, TStatus> = Omit<
   readonly stringData?: MagicProxy<{ [key: string]: string }>; // Secret (write-only)
   readonly rules?: MagicProxy<V1PolicyRule[]>; // Role, ClusterRole
   readonly roleRef?: MagicProxy<V1RoleRef>; // RoleBinding, ClusterRoleBinding
-  readonly subjects?: MagicProxy<V1Subject[]>; // RoleBinding, ClusterRoleBinding
+  readonly subjects?: MagicProxy<RbacV1Subject[]>; // RoleBinding, ClusterRoleBinding
   readonly provisioner?: MagicProxy<string>; // StorageClass
   readonly parameters?: MagicProxy<{ [key: string]: string }>; // StorageClass
   readonly subsets?: MagicProxy<V1EndpointSubset[]>; // Endpoints
@@ -192,6 +197,142 @@ export type WithKroStatusFields<TStatus> = TStatus & KroStatusFields;
 // =============================================================================
 // KUBERNETES RESOURCE STATUS TYPES FOR DEPLOYMENT ENGINE
 // =============================================================================
+
+/**
+ * Standard Kubernetes condition structure used across many resource types
+ */
+export interface KubernetesCondition {
+  type: string;
+  status: 'True' | 'False' | 'Unknown' | string;
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+  lastUpdateTime?: string;
+  observedGeneration?: number;
+}
+
+/**
+ * Generic resource with conditions - used for resources that have status.conditions
+ * Uses V1ObjectMeta for compatibility with Kubernetes client types
+ */
+export interface ResourceWithConditions {
+  apiVersion?: string;
+  kind?: string;
+  metadata?: V1ObjectMeta;
+  spec?: unknown;
+  status?: {
+    conditions?: KubernetesCondition[];
+    phase?: string;
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * CRD (CustomResourceDefinition) structure for API discovery
+ */
+export interface CustomResourceDefinitionItem {
+  apiVersion?: string;
+  kind?: string;
+  metadata?: {
+    name?: string;
+    [key: string]: unknown;
+  };
+  spec?: {
+    group?: string;
+    names?: {
+      kind?: string;
+      plural?: string;
+      singular?: string;
+      [key: string]: unknown;
+    };
+    versions?: Array<{
+      name?: string;
+      served?: boolean;
+      storage?: boolean;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  status?: {
+    conditions?: KubernetesCondition[];
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * CRD list response structure
+ */
+export interface CustomResourceDefinitionList {
+  apiVersion?: string;
+  kind?: string;
+  items?: CustomResourceDefinitionItem[];
+  metadata?: {
+    continue?: string;
+    resourceVersion?: string;
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * Pod structure for listing pods
+ */
+export interface PodItem {
+  apiVersion?: string;
+  kind?: string;
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    uid?: string;
+    [key: string]: unknown;
+  };
+  spec?: Record<string, unknown>;
+  status?: {
+    phase?: string;
+    conditions?: KubernetesCondition[];
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * Pod list response structure
+ */
+export interface PodList {
+  apiVersion?: string;
+  kind?: string;
+  items?: PodItem[];
+  metadata?: {
+    continue?: string;
+    resourceVersion?: string;
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * Generic Kubernetes API error structure
+ */
+export interface KubernetesApiError {
+  statusCode?: number;
+  body?: {
+    message?: string;
+    reason?: string;
+    code?: number;
+    details?: {
+      name?: string;
+      kind?: string;
+      causes?: Array<{
+        reason?: string;
+        message?: string;
+        field?: string;
+      }>;
+    };
+  };
+  message?: string;
+  response?: {
+    statusCode?: number;
+    body?: unknown;
+    headers?: Record<string, string>;
+  };
+}
 
 export interface DeploymentStatus {
   replicas?: number;

@@ -179,13 +179,11 @@ export class KubernetesApi {
 
       let existing: k8s.KubernetesObject | undefined;
       try {
-        // Correctly access the body property from the response
         // The read method of KubernetesObjectApi expects KubernetesObjectHeader
-        // Ensure that name and namespace are explicitly non-optional in the header
-        const { body } = await this.k8sApi.read({
+        // In the new API, methods return objects directly (no .body wrapper)
+        existing = await this.k8sApi.read({
           metadata: { name: manifest.metadata.name, namespace: manifestNamespace },
         } as { metadata: { name: string; namespace: string } });
-        existing = body;
       } catch (e: unknown) {
         // If it's a 404, the resource doesn't exist, which is expected for creation
         if ((e as { statusCode?: number }).statusCode !== 404) {
@@ -227,10 +225,11 @@ export class KubernetesApi {
     const getLogger = this.logger.child({ kind, name, namespace });
 
     try {
-      const { body } = await this.k8sApi.read({
+      // In the new API, methods return objects directly (no .body wrapper)
+      const result = await this.k8sApi.read({
         metadata: { name, namespace },
       } as { metadata: { name: string; namespace: string } });
-      return body;
+      return result;
     } catch (error: unknown) {
       getLogger.error('Error getting resource', error as Error);
       throw new Error(`Failed to get Kubernetes resource: ${(error as Error).message}`);

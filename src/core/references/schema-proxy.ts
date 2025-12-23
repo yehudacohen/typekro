@@ -27,11 +27,23 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
         return target[prop as keyof typeof target];
       }
 
-      // Only preserve essential function properties, not 'name' or other properties
-      // that might conflict with field names
+      // Handle toString specially to return a detectable string for template literals
+      if (prop === 'toString') {
+        return () => `__KUBERNETES_REF___schema___${fieldPath}__`;
+      }
+
+      // Handle valueOf specially to return a detectable string for template literals
+      if (prop === 'valueOf') {
+        return () => `__KUBERNETES_REF___schema___${fieldPath}__`;
+      }
+
+      // Handle Symbol.toPrimitive for template literal coercion
+      if (prop === Symbol.toPrimitive) {
+        return () => `__KUBERNETES_REF___schema___${fieldPath}__`;
+      }
+
+      // Preserve essential function properties
       if (
-        prop === 'toString' ||
-        prop === 'valueOf' ||
         prop === 'call' ||
         prop === 'apply' ||
         prop === 'bind'

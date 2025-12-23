@@ -186,6 +186,21 @@ function createPropertyProxy<T extends object>(
   }
 
   return new Proxy(target, {
+    /**
+     * Trap for Object.keys, JSON.stringify, etc.
+     * This is crucial for making the proxy serializable. It ensures that
+     * when something tries to get the keys of the proxy, it gets the keys
+     * of the underlying target object.
+     */
+    ownKeys(obj) {
+      return Reflect.ownKeys(obj);
+    },
+    /**
+     * Required for Object.keys() to work correctly with ownKeys trap
+     */
+    getOwnPropertyDescriptor(obj, prop) {
+      return Reflect.getOwnPropertyDescriptor(obj, prop);
+    },
     get: (obj, prop) => {
       // Handle toJSON specially to ensure proper serialization
       if (prop === 'toJSON') {
@@ -305,13 +320,14 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
             return result;
           };
 
-          // Clone and filter
+          // Clone and filter out internal fields that should not be sent to Kubernetes
           const result: Record<string, any> = {};
           for (const key of Object.keys(target)) {
             if (
               key !== '__resourceId' &&
               key !== 'withReadinessEvaluator' &&
-              key !== 'readinessEvaluator'
+              key !== 'readinessEvaluator' &&
+              key !== 'id' // Filter out id field - it's for TypeKro internal use only
             ) {
               result[key] = deepClone((target as any)[key]);
             }

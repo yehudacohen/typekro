@@ -145,7 +145,8 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                     // Check if resource exists first
                     let existing: any;
                     try {
-                      const readResult = await deploymentContext.kubernetesApi.read({
+                      // In the new API, methods return objects directly (no .body wrapper)
+                      existing = await deploymentContext.kubernetesApi.read({
                         apiVersion: manifest.apiVersion,
                         kind: manifest.kind,
                         metadata: {
@@ -153,7 +154,6 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                           namespace: manifest.metadata?.namespace || 'default',
                         },
                       });
-                      existing = readResult.body;
                     } catch (error: any) {
                       // If it's a 404, the resource doesn't exist
                       if (error.statusCode !== 404) {

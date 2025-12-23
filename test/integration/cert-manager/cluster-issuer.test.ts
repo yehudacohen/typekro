@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { toResourceGraph, kubernetesComposition } from '../../../src/index.js';
 import { type } from 'arktype';
+import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
   let customObjectsApi: k8s.CustomObjectsApi;
-  const testNamespace = 'typekro-test';
+  const testNamespace = 'typekro-test-issuer';
 
   beforeAll(async () => {
     console.log('Setting up cert-manager ClusterIssuer real integration tests...');
@@ -15,8 +17,11 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     // Get cluster connection
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+      customObjectsApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       console.log('✅ Cluster connection established');
+      
+      // Create test namespace
+      await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -29,21 +34,21 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       console.log('🧹 Cleaning up ClusterIssuer test resources...');
 
       // Delete all ClusterIssuers that start with 'test-' or 'integration-'
-      await customObjectsApi.listClusterCustomObject(
-        'cert-manager.io',
-        'v1',
-        'clusterissuers'
-      ).then(async (response: any) => {
-        const items = response.body.items || [];
+      await customObjectsApi.listClusterCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        plural: 'clusterissuers'
+      }).then(async (response: any) => {
+        const items = response.items || [];
         for (const item of items) {
           if (item.metadata.name.startsWith('test-') || item.metadata.name.startsWith('integration-')) {
             try {
-              await customObjectsApi.deleteClusterCustomObject(
-                'cert-manager.io',
-                'v1',
-                'clusterissuers',
-                item.metadata.name
-              );
+              await customObjectsApi.deleteClusterCustomObject({
+                group: 'cert-manager.io',
+                version: 'v1',
+                plural: 'clusterissuers',
+                name: item.metadata.name
+              });
               console.log(`🗑️ Deleted ClusterIssuer: ${item.metadata.name}`);
             } catch (deleteError) {
               console.warn(`⚠️ Failed to delete ClusterIssuer ${item.metadata.name}:`, deleteError);
@@ -65,6 +70,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager ClusterIssuer real integration tests...');
+    await deleteNamespaceIfExists(testNamespace, kubeConfig);
   });
 
   it('should deploy ClusterIssuer resource to Kubernetes using direct factory', async () => {
@@ -132,15 +138,15 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     expect(deploymentResult.spec.name).toBe(uniqueName);
 
     // Verify the ClusterIssuer was actually created in Kubernetes
-    const clusterIssuerResource = await customObjectsApi.getClusterCustomObject(
-      'cert-manager.io',
-      'v1',
-      'clusterissuers',
-      uniqueName
-    );
+    const clusterIssuerResource = await customObjectsApi.getClusterCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      plural: 'clusterissuers',
+      name: uniqueName
+    });
 
-    expect(clusterIssuerResource.body).toBeDefined();
-    const issuerBody = clusterIssuerResource.body as any;
+    expect(clusterIssuerResource).toBeDefined();
+    const issuerBody = clusterIssuerResource as any;
     expect(issuerBody.kind).toBe('ClusterIssuer');
     expect(issuerBody.metadata.name).toBe(uniqueName);
     expect(issuerBody.spec.selfSigned).toEqual({});
@@ -239,30 +245,30 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     expect(deploymentResult.metadata.name).toContain('instance-');
 
     // Verify the ClusterIssuer was actually created in Kubernetes
-    const clusterIssuerResource = await customObjectsApi.getClusterCustomObject(
-      'cert-manager.io',
-      'v1',
-      'clusterissuers',
-      issuerName
-    );
+    const clusterIssuerResource = await customObjectsApi.getClusterCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      plural: 'clusterissuers',
+      name: issuerName
+    });
 
-    expect(clusterIssuerResource.body).toBeDefined();
-    const issuerBody = clusterIssuerResource.body as any;
+    expect(clusterIssuerResource).toBeDefined();
+    const issuerBody = clusterIssuerResource as any;
     expect(issuerBody.kind).toBe('ClusterIssuer');
     expect(issuerBody.metadata.name).toBe(issuerName);
     expect(issuerBody.spec.selfSigned).toEqual({});
 
     // Verify the Certificate was actually created in Kubernetes
-    const certificateResource = await customObjectsApi.getNamespacedCustomObject(
-      'cert-manager.io',
-      'v1',
-      testNamespace,
-      'certificates',
-      certName
-    );
+    const certificateResource = await customObjectsApi.getNamespacedCustomObject({
+      group: 'cert-manager.io',
+      version: 'v1',
+      namespace: testNamespace,
+      plural: 'certificates',
+      name: certName
+    });
 
-    expect(certificateResource.body).toBeDefined();
-    const certBody = certificateResource.body as any;
+    expect(certificateResource).toBeDefined();
+    const certBody = certificateResource as any;
     expect(certBody.kind).toBe('Certificate');
     expect(certBody.metadata.name).toBe(certName);
     expect(certBody.spec.secretName).toBe(secretName);
@@ -276,13 +282,13 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
 
     // Clean up the certificate (ClusterIssuer will be cleaned up by afterEach)
     try {
-      await customObjectsApi.deleteNamespacedCustomObject(
-        'cert-manager.io',
-        'v1',
-        testNamespace,
-        'certificates',
-        certName
-      );
+      await customObjectsApi.deleteNamespacedCustomObject({
+        group: 'cert-manager.io',
+        version: 'v1',
+        namespace: testNamespace,
+        plural: 'certificates',
+        name: certName
+      });
       console.log(`🗑️ Cleaned up Certificate: ${certName}`);
     } catch (error) {
       console.warn(`⚠️ Failed to clean up Certificate ${certName}:`, error);

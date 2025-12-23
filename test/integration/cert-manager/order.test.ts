@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { toResourceGraph, kubernetesComposition } from '../../../src/index.js';
 import { type } from 'arktype';
+import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Order Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
   let customObjectsApi: k8s.CustomObjectsApi;
-  const testNamespace = 'typekro-test';
+  const testNamespace = 'typekro-test-order';
 
   beforeAll(async () => {
     console.log('Setting up cert-manager Order real integration tests...');
@@ -15,8 +17,11 @@ describe('Cert-Manager Order Real Integration Tests', () => {
     // Get cluster connection
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
-      customObjectsApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+      customObjectsApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       console.log('✅ Cluster connection established');
+      
+      // Create test namespace
+      await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
@@ -29,23 +34,23 @@ describe('Cert-Manager Order Real Integration Tests', () => {
       console.log('🧹 Cleaning up Order test resources...');
       
       // Delete all Orders in test namespace that start with 'test-'
-      await customObjectsApi.listNamespacedCustomObject(
-        'acme.cert-manager.io',
-        'v1',
-        testNamespace,
-        'orders'
-      ).then(async (response: any) => {
-        const items = response.body.items || [];
+      await customObjectsApi.listNamespacedCustomObject({
+        group: 'acme.cert-manager.io',
+        version: 'v1',
+        namespace: testNamespace,
+        plural: 'orders'
+      }).then(async (response: any) => {
+        const items = response.items || [];
         for (const item of items) {
           if (item.metadata.name.startsWith('test-')) {
             try {
-              await customObjectsApi.deleteNamespacedCustomObject(
-                'acme.cert-manager.io',
-                'v1',
-                testNamespace,
-                'orders',
-                item.metadata.name
-              );
+              await customObjectsApi.deleteNamespacedCustomObject({
+                group: 'acme.cert-manager.io',
+                version: 'v1',
+                namespace: testNamespace,
+                plural: 'orders',
+                name: item.metadata.name
+              });
               console.log(`🗑️ Deleted Order: ${item.metadata.name}`);
             } catch (deleteError) {
               console.warn(`⚠️ Failed to delete Order ${item.metadata.name}:`, deleteError);
@@ -67,6 +72,7 @@ describe('Cert-Manager Order Real Integration Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager Order real integration tests...');
+    await deleteNamespaceIfExists(testNamespace, kubeConfig);
   });
 
   it('should deploy Order resource to Kubernetes using direct factory', async () => {
@@ -159,16 +165,16 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     expect(deploymentResult.spec.name).toBe(orderName);
 
     // Verify the Order was actually created in Kubernetes
-    const orderResource = await customObjectsApi.getNamespacedCustomObject(
-      'acme.cert-manager.io',
-      'v1',
-      testNamespace,
-      'orders',
-      orderName
-    );
+    const orderResource = await customObjectsApi.getNamespacedCustomObject({
+      group: 'acme.cert-manager.io',
+      version: 'v1',
+      namespace: testNamespace,
+      plural: 'orders',
+      name: orderName
+    });
 
-    expect(orderResource.body).toBeDefined();
-    const orderBody = orderResource.body as any;
+    expect(orderResource).toBeDefined();
+    const orderBody = orderResource as any;
     expect(orderBody.kind).toBe('Order');
     expect(orderBody.metadata.name).toBe(orderName);
     expect(orderBody.spec.request).toBe(sampleCSR);
@@ -280,13 +286,13 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     expect(deploymentResult.metadata.name).toBe(orderName);
 
     // Find the Order that was actually created
-    const allOrders = await customObjectsApi.listNamespacedCustomObject(
-      'acme.cert-manager.io',
-      'v1',
-      testNamespace,
-      'orders'
-    );
-    const createdOrder = (allOrders.body as any).items.find((order: any) => 
+    const allOrders = await customObjectsApi.listNamespacedCustomObject({
+      group: 'acme.cert-manager.io',
+      version: 'v1',
+      namespace: testNamespace,
+      plural: 'orders'
+    });
+    const createdOrder = (allOrders as any).items.find((order: any) => 
       order.metadata.name.includes('comprehensive-order')
     );
     expect(createdOrder).toBeDefined();

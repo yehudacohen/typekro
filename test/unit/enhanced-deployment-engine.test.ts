@@ -1,5 +1,8 @@
 /**
  * Test suite for enhanced DirectDeploymentEngine with custom readiness evaluators
+ *
+ * NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+ * without a .body wrapper. The mocks must return the resource directly.
  */
 
 import { describe, expect, it, mock } from 'bun:test';
@@ -14,14 +17,15 @@ describe('Enhanced DirectDeploymentEngine', () => {
   const mockKubeConfig = new k8s.KubeConfig();
 
   // Create a more realistic mock that simulates the deployment flow
+  // NOTE: In the new API, methods return objects directly (no .body wrapper)
   const createMockK8sApi = () => {
     const mockApi = {
-      create: mock(() => Promise.resolve({ body: {} })),
-      read: mock(() => Promise.resolve({ body: {} })),
-      delete: mock(() => Promise.resolve({ body: {} })),
-      patch: mock(() => Promise.resolve({ body: {} })),
-      replace: mock(() => Promise.resolve({ body: {} })),
-      list: mock(() => Promise.resolve({ body: { items: [] } })),
+      create: mock(() => Promise.resolve({})),
+      read: mock(() => Promise.resolve({})),
+      delete: mock(() => Promise.resolve({})),
+      patch: mock(() => Promise.resolve({})),
+      replace: mock(() => Promise.resolve({})),
+      list: mock(() => Promise.resolve({ items: [] })),
     } as any;
 
     // Reset all mocks before each test
@@ -56,29 +60,25 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     const enhanced = deployment(deploymentResource);
 
-    // Mock the deployment flow:
-    // 1. First read call (during deployment) - resource doesn't exist (404)
+    // Mock the deployment flow (new API returns objects directly, no .body wrapper):
+    // 1. First read call (existence check) - resource doesn't exist (404)
     const notFoundError = new Error('Not found') as any;
     notFoundError.statusCode = 404;
     mockK8sApi.read.mockRejectedValueOnce(notFoundError);
 
-    // 2. Create call - resource is created successfully
+    // 2. Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
-      body: {
-        ...deploymentResource,
-        metadata: { ...deploymentResource.metadata, uid: 'test-uid' },
-      },
+      ...deploymentResource,
+      metadata: { ...deploymentResource.metadata, uid: 'test-uid' },
     });
 
-    // 3. Read call for readiness checking - resource is ready
+    // 3. Read call for readiness checking - resource is ready (returns object directly)
     mockK8sApi.read.mockResolvedValueOnce({
-      body: {
-        ...deploymentResource,
-        status: {
-          readyReplicas: 2,
-          availableReplicas: 2,
-          updatedReplicas: 2,
-        },
+      ...deploymentResource,
+      status: {
+        readyReplicas: 2,
+        availableReplicas: 2,
+        updatedReplicas: 2,
       },
     });
 
@@ -119,13 +119,16 @@ describe('Enhanced DirectDeploymentEngine', () => {
       data: { key: 'value' },
     };
 
-    // Mock the deployment flow:
-    // 1. Create call - resource is created successfully
+    // Mock the deployment flow (new API returns objects directly, no .body wrapper):
+    // 1. First read call (existence check) - resource doesn't exist (404)
+    const notFoundError = new Error('Not found') as any;
+    notFoundError.statusCode = 404;
+    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
+
+    // 2. Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
-      body: {
-        ...plainResource,
-        metadata: { ...plainResource.metadata, uid: 'test-uid' },
-      },
+      ...plainResource,
+      metadata: { ...plainResource.metadata, uid: 'test-uid' },
     });
 
     const events: any[] = [];
@@ -159,7 +162,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     const enhanced = service(serviceResource);
 
-    // Mock the deployment flow:
+    // Mock the deployment flow (new API returns objects directly, no .body wrapper):
     // 1. First read call (existence check) - resource doesn't exist (404)
     // 2. Create call - resource is created successfully
     // 3. Read calls for readiness checking - fail initially, then succeed
@@ -167,21 +170,19 @@ describe('Enhanced DirectDeploymentEngine', () => {
       .mockRejectedValueOnce({ statusCode: 404 }) // Resource doesn't exist initially
       .mockRejectedValueOnce(new Error('API error')) // First readiness check fails
       .mockResolvedValueOnce({
-        body: {
-          ...serviceResource,
-          status: {
-            loadBalancer: {
-              ingress: [{ ip: '192.168.1.100' }],
-            },
+        // Second readiness check succeeds (returns object directly)
+        ...serviceResource,
+        status: {
+          loadBalancer: {
+            ingress: [{ ip: '192.168.1.100' }],
           },
         },
       });
 
+    // Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
-      body: {
-        ...serviceResource,
-        metadata: { ...serviceResource.metadata, uid: 'test-uid' },
-      },
+      ...serviceResource,
+      metadata: { ...serviceResource.metadata, uid: 'test-uid' },
     });
 
     const events: any[] = [];
@@ -228,23 +229,25 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     const enhanced = deployment(deploymentResource);
 
-    // Mock the k8s API to return a live resource that's never ready
+    // Mock the deployment flow (new API returns objects directly, no .body wrapper):
+    // 1. First read call (existence check) - resource doesn't exist (404)
+    const notFoundError = new Error('Not found') as any;
+    notFoundError.statusCode = 404;
+    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
+
+    // 2. Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
-      body: {
-        ...deploymentResource,
-        metadata: { ...deploymentResource.metadata, uid: 'test-uid' },
-      },
+      ...deploymentResource,
+      metadata: { ...deploymentResource.metadata, uid: 'test-uid' },
     });
 
-    // Mock the read call to always return not ready
+    // 3. All subsequent read calls return not ready (returns object directly)
     mockK8sApi.read.mockResolvedValue({
-      body: {
-        ...deploymentResource,
-        status: {
-          readyReplicas: 1,
-          availableReplicas: 1,
-          updatedReplicas: 3,
-        },
+      ...deploymentResource,
+      status: {
+        readyReplicas: 1,
+        availableReplicas: 1,
+        updatedReplicas: 3,
       },
     });
 
@@ -252,16 +255,17 @@ describe('Enhanced DirectDeploymentEngine', () => {
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
-      timeout: 1000, // Short timeout for testing
+      timeout: 3000, // Short timeout for testing (but long enough for at least one status event)
       progressCallback: (event: any) => events.push(event),
     };
 
     // Deploy the resource - should timeout with detailed message
-    const deployableResource = enhanced;
-    deployableResource.id = 'test-deployment-timeout';
-    await expect(engine.deployResource(deployableResource as any, options)).rejects.toThrow();
+    // Use type assertion to set id since it's read-only on Enhanced type
+    (enhanced as { id: string }).id = 'test-deployment-timeout';
+    await expect(engine.deployResource(enhanced as any, options)).rejects.toThrow();
 
     // Should have emitted status updates with detailed messages
+    // The deployment readiness evaluator message format is: "Waiting for replicas: X/Y ready, X/Y available"
     const statusEvents = events.filter((e) => e.type === 'resource-status');
     expect(statusEvents.length).toBeGreaterThan(0);
     expect(statusEvents.some((e) => e.message.includes('1/3 ready'))).toBe(true);
@@ -289,38 +293,35 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     const enhanced = deployment(deploymentResource);
 
-    // Mock the k8s API
+    // Mock the k8s API (new API returns objects directly, no .body wrapper):
     // 1. First read call (existence check) - resource doesn't exist (404)
     // 2. Create call - resource is created successfully
     // 3. Mock progression: not ready -> ready
     mockK8sApi.read
       .mockRejectedValueOnce({ statusCode: 404 }) // Resource doesn't exist initially
       .mockResolvedValueOnce({
-        body: {
-          ...deploymentResource,
-          status: {
-            readyReplicas: 1,
-            availableReplicas: 1,
-            updatedReplicas: 2,
-          },
+        // First readiness check - not ready (returns object directly)
+        ...deploymentResource,
+        status: {
+          readyReplicas: 1,
+          availableReplicas: 1,
+          updatedReplicas: 2,
         },
       })
       .mockResolvedValueOnce({
-        body: {
-          ...deploymentResource,
-          status: {
-            readyReplicas: 2,
-            availableReplicas: 2,
-            updatedReplicas: 2,
-          },
+        // Second readiness check - ready (returns object directly)
+        ...deploymentResource,
+        status: {
+          readyReplicas: 2,
+          availableReplicas: 2,
+          updatedReplicas: 2,
         },
       });
 
+    // Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
-      body: {
-        ...deploymentResource,
-        metadata: { ...deploymentResource.metadata, uid: 'test-uid' },
-      },
+      ...deploymentResource,
+      metadata: { ...deploymentResource.metadata, uid: 'test-uid' },
     });
 
     const events: any[] = [];
@@ -331,9 +332,9 @@ describe('Enhanced DirectDeploymentEngine', () => {
     };
 
     // Deploy the resource
-    const deployableResource = enhanced;
-    deployableResource.id = 'test-deployment-structured';
-    const result = await engine.deployResource(deployableResource as any, options);
+    // Use type assertion to set id since it's read-only on Enhanced type
+    (enhanced as { id: string }).id = 'test-deployment-structured';
+    const result = await engine.deployResource(enhanced as any, options);
 
     expect(result.status).toBe('ready');
 
@@ -346,6 +347,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
     expect(readyEvents.length).toBeGreaterThan(0);
 
     // Status events should have detailed information
+    // The deployment readiness evaluator message format is: "Waiting for replicas: X/Y ready, X/Y available"
     const notReadyEvent = statusEvents[0];
     expect(notReadyEvent.message).toContain('1/2 ready');
     expect(notReadyEvent.message).toContain('1/2 available');

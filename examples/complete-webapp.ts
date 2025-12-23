@@ -122,7 +122,7 @@ export const completeWebApp = kubernetesComposition(
       policyTypes: ['Ingress'],
       ingress: [
         {
-          from: [{ namespaceSelector: {} }],
+          _from: [{ namespaceSelector: {} }],
           ports: [{ protocol: 'TCP', port: 3000 }],
         },
       ],
@@ -137,7 +137,7 @@ export const completeWebApp = kubernetesComposition(
       policyTypes: ['Ingress'],
       ingress: [
         {
-          from: [{ podSelector: { matchLabels: { app: spec.name } } }],
+          _from: [{ podSelector: { matchLabels: { app: spec.name } } }],
           ports: [{ protocol: 'TCP', port: 5432 }],
         },
       ],

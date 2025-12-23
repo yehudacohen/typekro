@@ -9,17 +9,28 @@ import { deployment } from '../../src/factories/kubernetes/workloads/deployment.
 
 // Helper function to create properly typed test resources with mock readiness evaluators
 function createMockResource(
-  overrides: Partial<DeployableK8sResource<Enhanced<any, any>>> = {}
-): DeployableK8sResource<Enhanced<any, any>> {
-  const resource = {
+  overrides: {
+    id?: string;
+    kind?: string;
+    apiVersion?: string;
+    metadata?: { name?: string; namespace?: string; [key: string]: unknown };
+    spec?: Record<string, unknown>;
+    status?: Record<string, unknown>;
+  } = {}
+): DeployableK8sResource<Enhanced<object, object>> {
+  const base = {
     id: 'testResource',
     kind: 'Deployment',
     apiVersion: 'apps/v1',
     metadata: { name: 'test-resource' },
     spec: {},
     status: {},
+  };
+  const resource = {
+    ...base,
     ...overrides,
-  } as DeployableK8sResource<Enhanced<any, any>>;
+    metadata: { ...base.metadata, ...overrides.metadata },
+  } as unknown as DeployableK8sResource<Enhanced<object, object>>;
 
   // Add a mock readiness evaluator for testing
   Object.defineProperty(resource, 'readinessEvaluator', {
@@ -33,36 +44,36 @@ function createMockResource(
 }
 
 // Mock the Kubernetes client
+// NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+// without a .body wrapper. The mocks must return the resource directly.
 const mockK8sApi = {
   read: mock((_resource?: any) => {
     // Default to resource not found (404) unless specifically mocked otherwise
     return Promise.reject({ statusCode: 404 });
   }),
   create: mock((resource?: any) =>
+    // Returns object directly (no .body wrapper)
     Promise.resolve({
-      body: {
-        metadata: {
-          name: resource?.metadata?.name || 'test',
-          namespace: resource?.metadata?.namespace || 'default',
-        },
-        kind: resource?.kind || 'Deployment',
-        apiVersion: resource?.apiVersion || 'apps/v1',
+      metadata: {
+        name: resource?.metadata?.name || 'test',
+        namespace: resource?.metadata?.namespace || 'default',
       },
+      kind: resource?.kind || 'Deployment',
+      apiVersion: resource?.apiVersion || 'apps/v1',
     })
   ),
   patch: mock((resource?: any) =>
+    // Returns object directly (no .body wrapper)
     Promise.resolve({
-      body: {
-        metadata: {
-          name: resource?.metadata?.name || 'test',
-          namespace: resource?.metadata?.namespace || 'default',
-        },
-        kind: resource?.kind || 'ConfigMap',
-        apiVersion: resource?.apiVersion || 'v1',
+      metadata: {
+        name: resource?.metadata?.name || 'test',
+        namespace: resource?.metadata?.namespace || 'default',
       },
+      kind: resource?.kind || 'ConfigMap',
+      apiVersion: resource?.apiVersion || 'v1',
     })
   ),
-  delete: mock(() => Promise.resolve({ body: {} })),
+  delete: mock(() => Promise.resolve({})),
 };
 
 const mockKubeConfig = {
@@ -118,6 +129,7 @@ describe('DirectDeploymentEngine Simple', () => {
 
       // Mock resource doesn't exist initially, then exists after creation
       let readCallCount = 0;
+      // New API returns objects directly (no .body wrapper)
       (mockK8sApi.read as any).mockImplementation(() => {
         readCallCount++;
         if (readCallCount === 1) {
@@ -126,22 +138,18 @@ describe('DirectDeploymentEngine Simple', () => {
         } else {
           // Subsequent calls during readiness check - resource exists
           return Promise.resolve({
-            body: {
-              metadata: { name: 'test-deployment', namespace: 'test-namespace' },
-              kind: 'Deployment',
-              apiVersion: 'apps/v1',
-              status: { readyReplicas: 1, availableReplicas: 1 },
-            },
+            metadata: { name: 'test-deployment', namespace: 'test-namespace' },
+            kind: 'Deployment',
+            apiVersion: 'apps/v1',
+            status: { readyReplicas: 1, availableReplicas: 1 },
           });
         }
       });
 
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'test-deployment', namespace: 'test-namespace' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'test-deployment', namespace: 'test-namespace' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       const result = await engine.deployResource(resource, defaultOptions);
@@ -177,25 +185,22 @@ describe('DirectDeploymentEngine Simple', () => {
       });
 
       // Mock existing resource - first call finds it, subsequent calls return updated version
+      // New API returns objects directly (no .body wrapper)
       (mockK8sApi.read as any).mockResolvedValue({
-        body: {
-          metadata: {
-            name: 'existing-config',
-            namespace: 'test-namespace',
-            resourceVersion: '12345',
-          },
-          kind: 'ConfigMap',
-          apiVersion: 'v1',
+        metadata: {
+          name: 'existing-config',
+          namespace: 'test-namespace',
+          resourceVersion: '12345',
         },
+        kind: 'ConfigMap',
+        apiVersion: 'v1',
       });
 
       // Since the resource exists, the engine should use patch, not create
       mockK8sApi.patch.mockResolvedValue({
-        body: {
-          metadata: { name: 'existing-config', namespace: 'test-namespace' },
-          kind: 'ConfigMap',
-          apiVersion: 'v1',
-        },
+        metadata: { name: 'existing-config', namespace: 'test-namespace' },
+        kind: 'ConfigMap',
+        apiVersion: 'v1',
       });
 
       const result = await engine.deployResource(resource, defaultOptions);
@@ -214,6 +219,7 @@ describe('DirectDeploymentEngine Simple', () => {
       });
 
       // Mock resource doesn't exist initially, then exists after creation
+      // New API returns objects directly (no .body wrapper)
       let readCallCount = 0;
       (mockK8sApi.read as any).mockImplementation(() => {
         readCallCount++;
@@ -221,22 +227,18 @@ describe('DirectDeploymentEngine Simple', () => {
           return Promise.reject({ statusCode: 404 });
         } else {
           return Promise.resolve({
-            body: {
-              metadata: { name: 'test-pod', namespace: 'test-namespace' },
-              kind: 'Pod',
-              apiVersion: 'v1',
-              status: { phase: 'Running' },
-            },
+            metadata: { name: 'test-pod', namespace: 'test-namespace' },
+            kind: 'Pod',
+            apiVersion: 'v1',
+            status: { phase: 'Running' },
           });
         }
       });
 
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'test-pod', namespace: 'test-namespace' },
-          kind: 'Pod',
-          apiVersion: 'v1',
-        },
+        metadata: { name: 'test-pod', namespace: 'test-namespace' },
+        kind: 'Pod',
+        apiVersion: 'v1',
       });
 
       await engine.deployResource(resource, defaultOptions);
@@ -256,6 +258,7 @@ describe('DirectDeploymentEngine Simple', () => {
       const graph = createSimpleGraph();
 
       // Mock resource doesn't exist initially, then exists after creation
+      // New API returns objects directly (no .body wrapper)
       let readCallCount = 0;
       (mockK8sApi.read as any).mockImplementation(() => {
         readCallCount++;
@@ -263,22 +266,18 @@ describe('DirectDeploymentEngine Simple', () => {
           return Promise.reject({ statusCode: 404 });
         } else {
           return Promise.resolve({
-            body: {
-              metadata: { name: 'simple', namespace: 'test-namespace' },
-              kind: 'Deployment',
-              apiVersion: 'apps/v1',
-              status: { readyReplicas: 1, availableReplicas: 1 },
-            },
+            metadata: { name: 'simple', namespace: 'test-namespace' },
+            kind: 'Deployment',
+            apiVersion: 'apps/v1',
+            status: { readyReplicas: 1, availableReplicas: 1 },
           });
         }
       });
 
       mockK8sApi.create.mockResolvedValue({
-        body: {
-          metadata: { name: 'simple', namespace: 'test-namespace' },
-          kind: 'Deployment',
-          apiVersion: 'apps/v1',
-        },
+        metadata: { name: 'simple', namespace: 'test-namespace' },
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
       });
 
       const result = await engine.deploy(graph, defaultOptions);
@@ -377,27 +376,24 @@ describe('DirectDeploymentEngine Simple', () => {
       };
 
       // Mock the k8s API to return different statuses
+      // New API returns objects directly (no .body wrapper)
       (mockK8sApi.read as any).mockImplementation((resource: any) => {
         const name = resource.metadata?.name;
         if (name === 'ready-deployment') {
           return Promise.resolve({
-            body: {
-              apiVersion: 'apps/v1',
-              kind: 'Deployment',
-              metadata: { name: 'ready-deployment', namespace: 'default' },
-              spec: { replicas: 3 },
-              status: { readyReplicas: 3, availableReplicas: 3, replicas: 3 },
-            },
+            apiVersion: 'apps/v1',
+            kind: 'Deployment',
+            metadata: { name: 'ready-deployment', namespace: 'default' },
+            spec: { replicas: 3 },
+            status: { readyReplicas: 3, availableReplicas: 3, replicas: 3 },
           });
         } else if (name === 'not-ready-deployment') {
           return Promise.resolve({
-            body: {
-              apiVersion: 'apps/v1',
-              kind: 'Deployment',
-              metadata: { name: 'not-ready-deployment', namespace: 'default' },
-              spec: { replicas: 3 },
-              status: { readyReplicas: 1, availableReplicas: 1, replicas: 3 },
-            },
+            apiVersion: 'apps/v1',
+            kind: 'Deployment',
+            metadata: { name: 'not-ready-deployment', namespace: 'default' },
+            spec: { replicas: 3 },
+            status: { readyReplicas: 1, availableReplicas: 1, replicas: 3 },
           });
         } else {
           return Promise.reject({ statusCode: 404 });
@@ -432,14 +428,13 @@ describe('DirectDeploymentEngine Simple', () => {
       };
 
       // Mock the k8s API to return the service with status
+      // New API returns objects directly (no .body wrapper)
       (mockK8sApi.read as any).mockResolvedValue({
-        body: {
-          apiVersion: 'v1',
-          kind: 'Service',
-          metadata: { name: 'test-service', namespace: 'default' },
-          spec: { ports: [{ port: 80 }], type: 'ClusterIP' },
-          status: {},
-        },
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'test-service', namespace: 'default' },
+        spec: { ports: [{ port: 80 }], type: 'ClusterIP' },
+        status: {},
       });
 
       const isReady = await engine.isDeployedResourceReady(deployedResource);
@@ -464,13 +459,12 @@ describe('DirectDeploymentEngine Simple', () => {
       };
 
       // Mock the k8s API to return the configmap without status
+      // New API returns objects directly (no .body wrapper)
       (mockK8sApi.read as any).mockResolvedValue({
-        body: {
-          apiVersion: 'v1',
-          kind: 'ConfigMap',
-          metadata: { name: 'test-configmap', namespace: 'default' },
-          // No status field
-        },
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'test-configmap', namespace: 'default' },
+        // No status field
       });
 
       const isReady = await engine.isDeployedResourceReady(deployedResource);

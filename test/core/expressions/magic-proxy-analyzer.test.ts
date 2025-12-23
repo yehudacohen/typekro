@@ -267,3 +267,195 @@ describe('Magic Proxy Analyzer', () => {
   });
 
 });
+
+
+/**
+ * Property-Based Tests for Modern Syntax Native Support
+ *
+ * **Feature: unify-acorn-parser, Property 2: Modern Syntax Native Support**
+ * **Validates: Requirements 1.3, 1.4, 6.2**
+ *
+ * Property 2: Modern Syntax Native Support
+ * *For any* JavaScript expression containing optional chaining (?.) or nullish coalescing (??),
+ * the parser SHALL parse it successfully without any preprocessing transformation.
+ */
+import fc from 'fast-check';
+
+describe('Property-Based Tests: Modern Syntax Native Support', () => {
+  /**
+   * Arbitrary for generating valid JavaScript identifiers
+   */
+  const identifierArb = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/).filter((s) => {
+    // Filter out JavaScript reserved words
+    const reserved = [
+      'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete',
+      'do', 'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof',
+      'new', 'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var',
+      'void', 'while', 'with', 'class', 'const', 'enum', 'export', 'extends',
+      'import', 'super', 'implements', 'interface', 'let', 'package', 'private',
+      'protected', 'public', 'static', 'yield', 'null', 'true', 'false',
+    ];
+    return s.length > 0 && s.length <= 20 && !reserved.includes(s);
+  });
+
+  /**
+   * Arbitrary for generating optional chaining expressions (ES2020+)
+   * These should be parsed natively without preprocessing
+   */
+  const optionalChainingExpressionArb = fc
+    .array(identifierArb, { minLength: 2, maxLength: 5 })
+    .map((parts) => parts.join('?.'));
+
+  /**
+   * Arbitrary for generating nullish coalescing expressions (ES2020+)
+   * These should be parsed natively without preprocessing
+   */
+  const nullishCoalescingExpressionArb = fc
+    .tuple(identifierArb, identifierArb)
+    .map(([left, right]) => `${left} ?? ${right}`);
+
+  /**
+   * Arbitrary for generating combined optional chaining + nullish coalescing
+   */
+  const combinedModernSyntaxArb = fc
+    .tuple(
+      fc.array(identifierArb, { minLength: 2, maxLength: 4 }),
+      identifierArb
+    )
+    .map(([chainParts, fallback]) => `${chainParts.join('?.')} ?? ${fallback}`);
+
+  /**
+   * Arbitrary for generating complex modern syntax expressions
+   */
+  const complexModernSyntaxArb = fc.oneof(
+    optionalChainingExpressionArb,
+    nullishCoalescingExpressionArb,
+    combinedModernSyntaxArb
+  );
+
+  const createContext = (): MagicProxyAnalysisContext => ({
+    type: 'status',
+    availableReferences: {},
+    factoryType: 'kro',
+    dependencies: [],
+    deepAnalysis: true,
+    maxDepth: 5
+  });
+
+  it('Property 2.1: Optional chaining expressions should parse without preprocessing', () => {
+    /**
+     * **Feature: unify-acorn-parser, Property 2: Modern Syntax Native Support**
+     * **Validates: Requirements 1.3, 6.2**
+     */
+    fc.assert(
+      fc.property(optionalChainingExpressionArb, (expression) => {
+        const analyzer = new MagicProxyAnalyzer();
+        const context = createContext();
+        
+        // The analyzer should be able to analyze the expression without errors
+        // This validates that optional chaining is parsed natively
+        const result = analyzer.analyzeExpressionWithRefs(expression, context);
+        
+        // The analysis should complete without throwing
+        // Even if no KubernetesRefs are found, the parsing should succeed
+        return result !== undefined && result.errors.length === 0;
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it('Property 2.2: Nullish coalescing expressions should parse without preprocessing', () => {
+    /**
+     * **Feature: unify-acorn-parser, Property 2: Modern Syntax Native Support**
+     * **Validates: Requirements 1.4, 6.2**
+     */
+    fc.assert(
+      fc.property(nullishCoalescingExpressionArb, (expression) => {
+        const analyzer = new MagicProxyAnalyzer();
+        const context = createContext();
+        
+        // The analyzer should be able to analyze the expression without errors
+        // This validates that nullish coalescing is parsed natively
+        const result = analyzer.analyzeExpressionWithRefs(expression, context);
+        
+        // The analysis should complete without throwing
+        return result !== undefined && result.errors.length === 0;
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it('Property 2.3: Combined modern syntax should parse without preprocessing', () => {
+    /**
+     * **Feature: unify-acorn-parser, Property 2: Modern Syntax Native Support**
+     * **Validates: Requirements 1.3, 1.4, 6.2**
+     */
+    fc.assert(
+      fc.property(combinedModernSyntaxArb, (expression) => {
+        const analyzer = new MagicProxyAnalyzer();
+        const context = createContext();
+        
+        // The analyzer should handle combined optional chaining and nullish coalescing
+        const result = analyzer.analyzeExpressionWithRefs(expression, context);
+        
+        // The analysis should complete without throwing
+        return result !== undefined && result.errors.length === 0;
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it('Property 2.4: Modern syntax expressions should not require any transformation', () => {
+    /**
+     * **Feature: unify-acorn-parser, Property 2: Modern Syntax Native Support**
+     * **Validates: Requirements 1.3, 1.4, 6.2**
+     * 
+     * This property validates that the parser handles modern syntax natively,
+     * meaning no preprocessing step is needed to transform ?. or ?? operators.
+     */
+    fc.assert(
+      fc.property(complexModernSyntaxArb, (expression) => {
+        const analyzer = new MagicProxyAnalyzer();
+        const context = createContext();
+        
+        // Analyze the expression - this should work without any preprocessing
+        const result = analyzer.analyzeExpressionWithRefs(expression, context);
+        
+        // The result should be valid (no parse errors)
+        // The expression may or may not require conversion depending on content
+        // but the parsing itself should succeed
+        return result.valid === true;
+      }),
+      { numRuns: 100 }
+    );
+  });
+
+  it('Property 2.5: ES2022 features should be supported by default', () => {
+    /**
+     * **Feature: unify-acorn-parser, Property 2: Modern Syntax Native Support**
+     * **Validates: Requirements 6.1, 6.2**
+     * 
+     * This property validates that ES2022 features are supported by default
+     * without requiring any special configuration.
+     */
+    const es2022Expressions = [
+      'obj?.prop',
+      'obj?.method?.()',
+      'arr?.[0]',
+      'value ?? fallback',
+      'obj?.prop ?? "default"',
+      'a?.b?.c ?? d?.e ?? "fallback"',
+    ];
+
+    for (const expression of es2022Expressions) {
+      const analyzer = new MagicProxyAnalyzer();
+      const context = createContext();
+      
+      const result = analyzer.analyzeExpressionWithRefs(expression, context);
+      
+      // All ES2022 expressions should parse successfully
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    }
+  });
+});

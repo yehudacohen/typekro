@@ -1,5 +1,8 @@
 /**
  * Unit tests for EventMonitor
+ *
+ * NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+ * without a .body wrapper. The mocks must return the resource directly.
  */
 
 import { describe, expect, it, beforeEach, afterEach, mock } from 'bun:test';
@@ -28,13 +31,11 @@ describe('EventMonitor', () => {
   beforeEach(() => {
     capturedEvents = [];
     
-    // Reset mocks for each test
+    // Reset mocks for each test (new API returns objects directly, no .body wrapper)
     mockCoreV1Api = {
       listNamespacedEvent: mock(() => Promise.resolve({
-        body: {
-          metadata: { resourceVersion: '12345' },
-          items: [],
-        },
+        metadata: { resourceVersion: '12345' },
+        items: [],
       })),
     };
 
@@ -44,7 +45,7 @@ describe('EventMonitor', () => {
 
     mockAppsV1Api = {
       listNamespacedReplicaSet: mock(() => Promise.resolve({
-        body: { items: [] },
+        items: [],
       })),
     };
 
@@ -69,18 +70,18 @@ describe('EventMonitor', () => {
       applyToHTTPSOptions: mock(() => Promise.resolve()),
     };
 
-    // Add mock methods for child resource discovery
+    // Add mock methods for child resource discovery (new API returns objects directly)
     mockCoreV1Api.listNamespacedPod = mock(() => Promise.resolve({
-      body: { items: [] },
+      items: [],
     }));
     mockCoreV1Api.listNamespacedService = mock(() => Promise.resolve({
-      body: { items: [] },
+      items: [],
     }));
     mockCoreV1Api.listNamespacedConfigMap = mock(() => Promise.resolve({
-      body: { items: [] },
+      items: [],
     }));
     mockCoreV1Api.listNamespacedSecret = mock(() => Promise.resolve({
-      body: { items: [] },
+      items: [],
     }));
     
     eventMonitor = createEventMonitor(
@@ -506,14 +507,12 @@ describe('EventMonitor', () => {
       await eventMonitor.startMonitoring([deployedResource]);
 
       // Verify that resource version was requested
+      // New API uses object parameters instead of positional parameters
       expect(mockCoreV1Api.listNamespacedEvent).toHaveBeenCalledWith(
-        'test-namespace',
-        undefined, // pretty
-        undefined, // allowWatchBookmarks
-        undefined, // continue
-        undefined, // fieldSelector
-        undefined, // labelSelector
-        1 // limit
+        expect.objectContaining({
+          namespace: 'test-namespace',
+          limit: 1,
+        })
       );
 
       // Verify that watch was called with resource version
@@ -548,8 +547,9 @@ describe('EventMonitor', () => {
         },
       };
 
+      // New API returns objects directly (no .body wrapper)
       mockAppsV1Api.listNamespacedReplicaSet.mockResolvedValueOnce({
-        body: { items: [mockReplicaSet] },
+        items: [mockReplicaSet],
       });
 
       const deployedResource: DeployedResource = {
@@ -586,7 +586,8 @@ describe('EventMonitor', () => {
       await new Promise(resolve => setTimeout(resolve, 1100));
 
       // Should have discovered the ReplicaSet
-      expect(mockAppsV1Api.listNamespacedReplicaSet).toHaveBeenCalledWith('test-namespace');
+      // New API uses object parameters instead of positional parameters
+      expect(mockAppsV1Api.listNamespacedReplicaSet).toHaveBeenCalledWith({ namespace: 'test-namespace' });
 
       // Should have emitted child resource discovered event
       const childDiscoveredEvents = capturedEvents.filter(e => e.type === 'child-resource-discovered');
@@ -627,8 +628,9 @@ describe('EventMonitor', () => {
         },
       };
 
+      // New API returns objects directly (no .body wrapper)
       mockCoreV1Api.listNamespacedPod.mockResolvedValueOnce({
-        body: { items: [mockPod] },
+        items: [mockPod],
       });
 
       const deployedResource: DeployedResource = {
@@ -665,7 +667,8 @@ describe('EventMonitor', () => {
       await new Promise(resolve => setTimeout(resolve, 1100));
 
       // Should have discovered the Pod
-      expect(mockCoreV1Api.listNamespacedPod).toHaveBeenCalledWith('test-namespace');
+      // New API uses object parameters instead of positional parameters
+      expect(mockCoreV1Api.listNamespacedPod).toHaveBeenCalledWith({ namespace: 'test-namespace' });
 
       // Should have emitted child resource discovered event
       const childDiscoveredEvents = capturedEvents.filter(e => e.type === 'child-resource-discovered');

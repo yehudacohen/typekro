@@ -1,8 +1,8 @@
-import { beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import { beforeAll, afterAll, describe, expect, it } from 'bun:test';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCustomObjectsApiClient, ensureNamespaceExists, deleteNamespaceIfExists } from './shared-kubeconfig';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
 const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
@@ -22,26 +22,21 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     // Use shared kubeconfig helper for consistent TLS configuration
     kubeConfig = getIntegrationTestKubeConfig();
 
-    k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
-    _customApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+    k8sApi = createKubernetesObjectApiClient(kubeConfig);
+    _customApi = createCustomObjectsApiClient(kubeConfig);
+
+    // Ensure test namespace exists
+    await ensureNamespaceExists(NAMESPACE, kubeConfig);
 
     console.log('✅ Factory e2e test environment ready!');
   }); // 5 minute timeout for setup
 
-  // COMMENTED OUT: Preserve cluster for debugging after test completion
-  // afterAll(async () => {
-  //   console.log('🧹 Cleaning up factory test environment...');
-  //   try {
-  //     execSync(`kind delete cluster --name ${CLUSTER_NAME}`, {
-  //       stdio: 'pipe',
-  //       timeout: 30000,
-  //     });
-  //     console.log('✅ Factory test cluster deleted successfully');
-  //   } catch (error) {
-  //     console.log('⚠️  Failed to delete factory test cluster:', error);
-  //   }
-  //   console.log('✅ Factory test cleanup completed');
-  // });
+  afterAll(async () => {
+    if (!clusterAvailable) return;
+    console.log('🧹 Cleaning up factory test environment...');
+    await deleteNamespaceIfExists(NAMESPACE, kubeConfig);
+    console.log('✅ Factory test cleanup completed');
+  });
 
   it('should deploy a complete factory with mixed static/dynamic status fields and hydrate from cluster', async () => {
     console.log('🎯 Starting complete factory e2e test with status hydration...');
@@ -136,8 +131,8 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
           '"running"',
           '"pending"'
         ) as 'pending' | 'running' | 'failed',
-        replicas: Cel.expr('has(webapp.status.replicas) ? webapp.status.replicas : 0'),
-        readyReplicas: Cel.expr(
+        replicas: Cel.expr<number>('has(webapp.status.replicas) ? webapp.status.replicas : 0'),
+        readyReplicas: Cel.expr<number>(
           'has(webapp.status.availableReplicas) ? webapp.status.availableReplicas : 0'
         ),
 
@@ -319,7 +314,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
           metadata: { name, namespace: NAMESPACE },
         });
 
-        expect(resource.body).toBeDefined();
+        expect(resource).toBeDefined();
         console.log(`✅ ${kind}: ${name} exists and is accessible`);
       } catch (error) {
         console.error(`❌ Failed to verify ${kind}: ${name}`, error);

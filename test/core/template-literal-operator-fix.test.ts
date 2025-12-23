@@ -17,19 +17,19 @@ describe('Template Literal || Operator Fix', () => {
           endpoint: 'string'
         })
       },
-      (spec) => ({
+      (schema) => ({
         testResource: {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: {
-            name: spec.name,
-            namespace: spec.namespace || 'default-namespace'
+            name: schema.spec.name,
+            namespace: schema.spec.namespace || 'default-namespace'
           },
           data: {}
-        }
+        } as any
       }),
-      (spec, resources) => ({
-        endpoint: `http://${spec.name}.${spec.namespace || 'default-ns'}.svc:8080`
+      (schema, resources) => ({
+        endpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:8080`
       })
     );
 
@@ -55,24 +55,24 @@ describe('Template Literal || Operator Fix', () => {
           fullEndpoint: 'string'
         })
       },
-      (spec) => ({
+      (schema) => ({
         resource: {
           apiVersion: 'v1',
           kind: 'Service',
           metadata: {
-            name: spec.name,
-            namespace: spec.namespace || 'default'
+            name: schema.spec.name,
+            namespace: schema.spec.namespace || 'default'
           },
           spec: {
             ports: [{
-              port: spec.port || 80
+              port: schema.spec.port || 80
             }]
           }
-        }
+        } as any
       }),
-      (spec, resources) => ({
-        url: `http://${spec.name}.${spec.namespace || 'default-ns'}.svc`,
-        fullEndpoint: `http://${spec.name}.${spec.namespace || 'default-ns'}.svc:${spec.port || 8080}/metrics`
+      (schema, resources) => ({
+        url: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc`,
+        fullEndpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:${schema.spec.port || 8080}/metrics`
       })
     );
 

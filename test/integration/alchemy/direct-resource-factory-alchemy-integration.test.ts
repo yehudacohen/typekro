@@ -23,10 +23,11 @@ describe('DirectResourceFactory Alchemy Integration', () => {
   // Helper function to create namespace if it doesn't exist
   const ensureNamespace = async (namespace: string) => {
     try {
-      await k8sApi.createNamespace({ metadata: { name: namespace } });
+      // New API format: body wrapper required
+      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
       console.log(`📦 Created test namespace: ${namespace}`);
     } catch (error: any) {
-      if (error.statusCode === 409) {
+      if (error.statusCode === 409 || error.body?.reason === 'AlreadyExists') {
         console.log(`ℹ️  Namespace ${namespace} already exists, continuing...`);
       } else {
         console.warn(`⚠️  Failed to create namespace ${namespace}:`, error.message);

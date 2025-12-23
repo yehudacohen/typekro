@@ -5,15 +5,15 @@
  * and integration with TypeKro features for Cilium networking resources.
  */
 
-import { describe, it, expect, beforeAll } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
 import { ciliumNetworkPolicy, ciliumClusterwideNetworkPolicy } from '../../../src/factories/cilium/resources/networking.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from '../shared-kubeconfig.js';
+import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCoreV1ApiClient } from '../shared-kubeconfig.js';
 import { isCiliumInstalled } from './setup-cilium.js';
 
-const NAMESPACE = 'typekro-test';
+const NAMESPACE = 'typekro-test-cross-resource';
 const clusterAvailable = isClusterAvailable();
 
 // Check if both cluster and Cilium are available
@@ -38,6 +38,7 @@ if (!clusterAvailable) {
 describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
   let _k8sApi: k8s.KubernetesObjectApi;
+  let coreApi: k8s.CoreV1Api;
   let testNamespace: string;
 
   beforeAll(async () => {
@@ -46,10 +47,36 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
     console.log('🚀 SETUP: Connecting to existing cluster for Cilium cross-resource integration tests...');
 
     kubeConfig = getIntegrationTestKubeConfig();
-    _k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
+    _k8sApi = createKubernetesObjectApiClient(kubeConfig);
+    coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE;
 
+    // Create test namespace if it doesn't exist
+    try {
+      await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
+      console.log(`📦 Created test namespace: ${testNamespace}`);
+    } catch (error: any) {
+      if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
+        console.log(`📦 Test namespace ${testNamespace} already exists`);
+      } else {
+        throw error;
+      }
+    }
+
     console.log('✅ Cilium cross-resource integration test environment ready!');
+  });
+
+  afterAll(async () => {
+    if (!clusterAvailable || !coreApi) return;
+
+    // Clean up test namespace
+    try {
+      await coreApi.deleteNamespace({ name: testNamespace });
+      console.log(`🗑️ Deleted test namespace: ${testNamespace}`);
+    } catch (error: any) {
+      // Ignore errors during cleanup
+      console.log(`⚠️ Could not delete test namespace: ${error.message}`);
+    }
   });
 
   describe('Cross-Resource References and Dependency Resolution', () => {

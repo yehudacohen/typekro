@@ -264,22 +264,31 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       );
 
       // Deploy with a short timeout to test error handling
+      // With AbortController support, the deployment should properly cancel
+      // all pending operations when the timeout is reached
       const factory = timeoutComposition.factory('direct', {
         namespace: 'default',
         timeout: 10000, // 10 seconds - should timeout
-        waitForReady: true,
+        waitForReady: true, // Now safe to use with AbortController support
         kubeConfig: kc,
       });
 
-      // This should handle the timeout gracefully
+      // This should handle the timeout gracefully without lingering promises
       let caughtError = false;
       try {
         await factory.deploy({ name: 'timeout-test' });
       } catch (error) {
         caughtError = true;
         expect(error).toBeDefined();
-        // Should be a timeout error, not a crash
-        expect(error instanceof Error ? error.message : String(error)).toContain('Timeout');
+        // Should be a timeout error or abort error
+        const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+        const errorName = error instanceof Error ? error.name : '';
+        const isTimeoutOrAbortError = 
+          errorMessage.includes('timeout') || 
+          errorMessage.includes('abort') ||
+          errorName === 'TimeoutError' ||
+          errorName === 'AbortError';
+        expect(isTimeoutOrAbortError).toBe(true);
       }
 
       expect(caughtError).toBe(true);
@@ -290,6 +299,10 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       } catch (_error) {
         // Ignore cleanup errors
       }
+
+      // Wait for any pending Kubernetes client operations to settle
+      // This prevents "Unhandled error between tests" from lingering HTTP requests
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     },
     TEST_TIMEOUT
   );

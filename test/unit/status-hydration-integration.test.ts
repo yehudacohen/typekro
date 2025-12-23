@@ -1,3 +1,7 @@
+/**
+ * NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+ * without a .body wrapper. The mocks must return the resource directly.
+ */
 import { beforeEach, describe, expect, it } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
@@ -12,7 +16,7 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
   beforeEach(() => {
     kubeConfig = new k8s.KubeConfig();
 
-    // Mock the Kubernetes API
+    // Mock the Kubernetes API (new API returns objects directly, no .body wrapper)
     mockK8sApi = {
       read: async (resource: any) => {
         // Determine expected replicas based on resource name
@@ -30,36 +34,34 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
           throw error;
         }
 
-        // Simulate reading a deployment that becomes ready
+        // Simulate reading a deployment that becomes ready (returns object directly)
         return {
-          body: {
-            apiVersion: 'apps/v1',
-            kind: 'Deployment',
-            metadata: {
-              name: resource.metadata.name,
-              namespace: resource.metadata.namespace || 'default',
-            },
-            spec: {
-              replicas: expectedReplicas,
-            },
-            status: {
-              readyReplicas: expectedReplicas,
-              availableReplicas: expectedReplicas,
-              replicas: expectedReplicas,
-              conditions: [
-                {
-                  type: 'Available',
-                  status: 'True',
-                  lastTransitionTime: new Date().toISOString(),
-                },
-              ],
-            },
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: {
+            name: resource.metadata.name,
+            namespace: resource.metadata.namespace || 'default',
+          },
+          spec: {
+            replicas: expectedReplicas,
+          },
+          status: {
+            readyReplicas: expectedReplicas,
+            availableReplicas: expectedReplicas,
+            replicas: expectedReplicas,
+            conditions: [
+              {
+                type: 'Available',
+                status: 'True',
+                lastTransitionTime: new Date().toISOString(),
+              },
+            ],
           },
         };
       },
-      create: async (resource: any) => ({ body: resource }),
-      replace: async (resource: any) => ({ body: resource }),
-      patch: async (resource: any) => ({ body: resource }),
+      create: async (resource: any) => resource, // Returns object directly
+      replace: async (resource: any) => resource, // Returns object directly
+      patch: async (resource: any) => resource, // Returns object directly
       _resourceExists: false, // Track state for mock
     };
 
@@ -154,40 +156,37 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
 
   it('should handle status hydration failures gracefully', async () => {
     // Mock API to return resource without status initially, then with status
+    // NOTE: In the new API, methods return objects directly (no .body wrapper)
     let callCount = 0;
     mockK8sApi.read = async () => {
       callCount++;
       if (callCount === 1) {
-        // First call - no status (resource not ready yet)
+        // First call - no status (resource not ready yet) - returns object directly
         return {
-          body: {
-            apiVersion: 'apps/v1',
-            kind: 'Deployment',
-            metadata: { name: 'test-deployment-fail', namespace: 'test' },
-            spec: { replicas: 1 },
-            // No status field - this should cause readiness check to fail initially
-          },
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'test-deployment-fail', namespace: 'test' },
+          spec: { replicas: 1 },
+          // No status field - this should cause readiness check to fail initially
         };
       } else {
-        // Subsequent calls - resource becomes ready
+        // Subsequent calls - resource becomes ready - returns object directly
         return {
-          body: {
-            apiVersion: 'apps/v1',
-            kind: 'Deployment',
-            metadata: { name: 'test-deployment-fail', namespace: 'test' },
-            spec: { replicas: 1 },
-            status: {
-              readyReplicas: 1,
-              availableReplicas: 1,
-              replicas: 1,
-              conditions: [
-                {
-                  type: 'Available',
-                  status: 'True',
-                  lastTransitionTime: new Date().toISOString(),
-                },
-              ],
-            },
+          apiVersion: 'apps/v1',
+          kind: 'Deployment',
+          metadata: { name: 'test-deployment-fail', namespace: 'test' },
+          spec: { replicas: 1 },
+          status: {
+            readyReplicas: 1,
+            availableReplicas: 1,
+            replicas: 1,
+            conditions: [
+              {
+                type: 'Available',
+                status: 'True',
+                lastTransitionTime: new Date().toISOString(),
+              },
+            ],
           },
         };
       }
@@ -228,6 +227,7 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
     let resourceExists = false;
 
     // Create a fresh mock for this test to track API calls
+    // NOTE: In the new API, methods return objects directly (no .body wrapper)
     mockK8sApi.read = async (resource: any) => {
       apiCallCount++;
 
@@ -240,37 +240,35 @@ describe('Status Hydration Integration with DirectDeploymentEngine', () => {
         throw error;
       }
 
-      // Simulate reading a deployment that becomes ready
+      // Simulate reading a deployment that becomes ready (returns object directly)
       return {
-        body: {
-          apiVersion: 'apps/v1',
-          kind: 'Deployment',
-          metadata: {
-            name: resource.metadata.name,
-            namespace: resource.metadata.namespace || 'default',
-          },
-          spec: {
-            replicas: 1,
-          },
-          status: {
-            readyReplicas: 1,
-            availableReplicas: 1,
-            replicas: 1,
-            conditions: [
-              {
-                type: 'Available',
-                status: 'True',
-                lastTransitionTime: new Date().toISOString(),
-              },
-            ],
-          },
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: {
+          name: resource.metadata.name,
+          namespace: resource.metadata.namespace || 'default',
+        },
+        spec: {
+          replicas: 1,
+        },
+        status: {
+          readyReplicas: 1,
+          availableReplicas: 1,
+          replicas: 1,
+          conditions: [
+            {
+              type: 'Available',
+              status: 'True',
+              lastTransitionTime: new Date().toISOString(),
+            },
+          ],
         },
       };
     };
 
     mockK8sApi.create = async (resource: any) => {
       apiCallCount++;
-      return { body: resource };
+      return resource; // Returns object directly
     };
 
     const deploymentResource = deployment({

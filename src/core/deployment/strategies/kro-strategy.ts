@@ -278,6 +278,7 @@ export class KroDeploymentStrategy<
         const apiVersion = this.getApiVersion();
         const k8sApi = this.directEngine.getKubernetesApi(); // Use public getter method
 
+        // In the new API, methods return objects directly (no .body wrapper)
         const response = await k8sApi.read({
           apiVersion,
           kind: this.schemaDefinition.kind,
@@ -287,7 +288,7 @@ export class KroDeploymentStrategy<
           },
         });
 
-        const instance = response.body as KubernetesResource & {
+        const instance = response as KubernetesResource & {
           status?: {
             state?: string;
             conditions?: Array<{ type: string; status: string; message?: string }>;
@@ -320,13 +321,14 @@ export class KroDeploymentStrategy<
         let expectedCustomStatusFields = false;
         const rgdName = this.convertToKubernetesName(this.factoryName);
         try {
-          const rgdResponse = await this.getCustomObjectsApi().getClusterCustomObject(
-            'kro.run',
-            'v1alpha1',
-            'resourcegraphdefinitions',
-            rgdName
-          );
-          const rgd = rgdResponse.body as any;
+          // In the new API, methods take request objects and return objects directly
+          const rgdResponse = await this.getCustomObjectsApi().getClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name: rgdName,
+          });
+          const rgd = rgdResponse as any;
           const rgdStatusSchema = rgd.spec?.schema?.status || {};
           const rgdStatusKeys = Object.keys(rgdStatusSchema);
           expectedCustomStatusFields = rgdStatusKeys.length > 0;

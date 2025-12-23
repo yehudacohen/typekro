@@ -12,6 +12,7 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { getComponentLogger } from '../logging/index.js';
+import { createBunCompatibleApiClient, createBunCompatibleKubernetesObjectApi, isBunRuntime } from './bun-api-client.js';
 
 /**
  * Retry configuration options for operations with exponential backoff
@@ -192,7 +193,9 @@ export class KubernetesClientProvider {
     try {
       this.config = config || {};
       this.kubeConfig = this.createKubeConfig(this.config);
-      this.k8sApi = this.kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
+      // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
+      // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
+      this.k8sApi = createBunCompatibleKubernetesObjectApi(this.kubeConfig);
       this.initialized = true;
 
       const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
@@ -225,7 +228,9 @@ export class KubernetesClientProvider {
 
     try {
       this.kubeConfig = kubeConfig;
-      this.k8sApi = this.kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
+      // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
+      // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
+      this.k8sApi = createBunCompatibleKubernetesObjectApi(this.kubeConfig);
       this.initialized = true;
       this.config = null; // No config object when using pre-configured KubeConfig
 
@@ -233,6 +238,7 @@ export class KubernetesClientProvider {
         currentContext: this.kubeConfig.getCurrentContext(),
         server: this.kubeConfig.getCurrentCluster()?.server,
         skipTLSVerify: this.kubeConfig.getCurrentCluster()?.skipTLSVerify,
+        runtime: isBunRuntime() ? 'bun' : 'node',
       });
     } catch (error) {
       this.logger.error('Failed to initialize with pre-configured KubeConfig', error as Error);
@@ -504,11 +510,14 @@ export class KubernetesClientProvider {
    * Get a cached API client instance or create a new one
    * This method implements client caching to avoid recreating clients unnecessarily
    *
+   * When running in Bun, uses a custom HTTP library that properly handles
+   * TLS certificates (workaround for https://github.com/oven-sh/bun/issues/10642)
+   *
    * @param clientType - String identifier for the client type
    * @param clientClass - The API client class constructor
    * @returns Cached or new API client instance
    */
-  private getCachedClient<T>(clientType: string, clientClass: new (server: string) => T): T {
+  private getCachedClient<T>(clientType: string, clientClass: new (...args: any[]) => T): T {
     // Check if we have a cached client
     if (this.clientCache.has(clientType)) {
       this.logger.debug('Using cached API client', { clientType });
@@ -518,31 +527,31 @@ export class KubernetesClientProvider {
     let client: T;
 
     try {
-      // Use the standard makeApiClient approach
-      client = this.kubeConfig?.makeApiClient(clientClass as any) as T;
-      this.logger.debug('Created API client using makeApiClient', {
-        clientType,
-        constructorName: (client as any).constructor.name,
-        hasValidPrototype: Object.getPrototypeOf(client) !== null,
-        hasSetDefaultAuth: typeof (client as any).setDefaultAuthentication === 'function',
-      });
+      // Use Bun-compatible client creation when running in Bun
+      // This works around Bun's fetch TLS issues
+      if (isBunRuntime() && this.kubeConfig) {
+        client = createBunCompatibleApiClient(this.kubeConfig, clientClass as any) as T;
+        this.logger.debug('Created API client using Bun-compatible HTTP library', {
+          clientType,
+          runtime: 'bun',
+        });
+      } else {
+        // Use the standard makeApiClient approach for Node.js
+        client = this.kubeConfig?.makeApiClient(clientClass as any) as T;
+        this.logger.debug('Created API client using makeApiClient', {
+          clientType,
+          runtime: 'node',
+        });
+      }
     } catch (error) {
-      // Log detailed information about why makeApiClient failed
+      // Log detailed information about why client creation failed
       this.logger.error(
-        'makeApiClient failed - this indicates a serious issue with the Kubernetes client library',
+        'API client creation failed',
         error as Error,
         {
           clientType,
-          clientClass: typeof clientClass,
           clientClassName: clientClass?.name,
-          clientClassString: String(clientClass),
-          hasPrototype: !!clientClass?.prototype,
-          prototypeType: typeof clientClass?.prototype,
-          prototypeHasSetDefaultAuth: clientClass?.prototype
-            ? typeof clientClass.prototype.setDefaultAuthentication === 'function'
-            : 'no prototype',
-          classHasSetDefaultAuth:
-            typeof (clientClass as any)?.setDefaultAuthentication === 'function',
+          isBun: isBunRuntime(),
           kubeConfigValid: !!this.kubeConfig,
           currentCluster: this.kubeConfig?.getCurrentCluster()?.name,
           currentUser: this.kubeConfig?.getCurrentUser()?.name,
@@ -618,9 +627,7 @@ export class KubernetesClientProvider {
         {
           name: config.cluster.name,
           server: config.cluster.server,
-          ...(config.cluster.skipTLSVerify !== undefined && {
-            skipTLSVerify: config.cluster.skipTLSVerify,
-          }),
+          skipTLSVerify: config.cluster.skipTLSVerify ?? false,
           ...(config.cluster.caData && { caData: config.cluster.caData }),
           ...(config.cluster.caFile && { caFile: config.cluster.caFile }),
         },

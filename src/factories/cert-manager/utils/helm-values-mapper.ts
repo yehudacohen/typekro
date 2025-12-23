@@ -11,8 +11,9 @@ import type { CertManagerBootstrapConfig, CertManagerHelmValues } from '../types
  */
 export function mapCertManagerConfigToHelmValues(config: CertManagerBootstrapConfig): CertManagerHelmValues {
   const helmValues: Partial<CertManagerHelmValues> = {
-    // Installation configuration
-    ...(config.installCRDs !== undefined && { installCRDs: config.installCRDs }),
+    // Installation configuration - default to true for TypeKro comprehensive deployment
+    // This ensures CRDs are installed automatically, which is required for cert-manager to function
+    installCRDs: config.installCRDs ?? true,
     
     // Global configuration
     ...(config.global && { global: config.global }),

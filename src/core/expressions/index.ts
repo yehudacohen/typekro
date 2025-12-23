@@ -6,6 +6,18 @@
  * type inference, and resource reference validation.
  */
 
+// Unified Parser Utility
+export {
+  parseExpression,
+  parseExpressionSafe,
+  parseScript,
+  parseScriptSafe,
+  canParse,
+  ParserError,
+  DEFAULT_PARSER_OPTIONS,
+} from './parser.js';
+export type { ParseOptions, ParseResult } from './parser.js';
+
 // Core analyzer
 export { JavaScriptToCelAnalyzer } from './analyzer.js';
 export type { 

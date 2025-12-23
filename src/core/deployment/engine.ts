@@ -5,10 +5,11 @@
  * without requiring the Kro controller, using in-process dependency resolution.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { ensureReadinessEvaluator } from '../../utils/helpers.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { CircularDependencyError } from '../errors.js';
+import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentModeType } from '../references/index.js';
 import { DeploymentMode, ReferenceResolver } from '../references/index.js';
@@ -27,13 +28,18 @@ import type {
   ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
-import { ResourceDeploymentError, UnsupportedMediaTypeError } from '../types/deployment.js';
+import { ResourceDeploymentError, ResourceConflictError, UnsupportedMediaTypeError } from '../types/deployment.js';
 import type { Scope } from '../types/serialization.js';
 import type {
+  CustomResourceDefinitionItem,
+  CustomResourceDefinitionList,
   DeployableK8sResource,
   DeployedResource,
   Enhanced,
+  KubernetesApiError,
+  KubernetesCondition,
   KubernetesResource,
+  ResourceWithConditions,
 } from '../types.js';
 import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
 import { ResourceReadinessChecker } from './readiness.js';
@@ -50,6 +56,7 @@ export class DirectDeploymentEngine {
   private eventMonitor?: EventMonitor;
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
   private readyResources: Set<string> = new Set(); // Track resources that are already ready
+  private activeAbortControllers: Set<AbortController> = new Set(); // Track active abort controllers for cleanup
   private logger = getComponentLogger('deployment-engine');
 
   constructor(
@@ -61,7 +68,9 @@ export class DirectDeploymentEngine {
     this.dependencyResolver = new DependencyResolver();
     this.referenceResolver =
       referenceResolver || new ReferenceResolver(kubeClient, this.deploymentMode, k8sApi);
-    this.k8sApi = k8sApi || kubeClient.makeApiClient(k8s.KubernetesObjectApi);
+    // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
+    // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
+    this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient);
     this.readinessChecker = new ResourceReadinessChecker(this.k8sApi);
     this.statusHydrator = new StatusHydrator(this.k8sApi);
     // this.eventFilter = createEventFilter();
@@ -78,6 +87,104 @@ export class DirectDeploymentEngine {
   }
 
   /**
+   * Create an abortable delay that can be cancelled via AbortSignal
+   * @param ms - Delay in milliseconds
+   * @param signal - Optional AbortSignal to cancel the delay
+   * @returns Promise that resolves after the delay or rejects if aborted
+   */
+  private abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException('Delay aborted', 'AbortError'));
+        return;
+      }
+
+      const timeoutId = setTimeout(() => {
+        resolve();
+      }, ms);
+
+      signal?.addEventListener('abort', () => {
+        clearTimeout(timeoutId);
+        reject(new DOMException('Delay aborted', 'AbortError'));
+      }, { once: true });
+    });
+  }
+
+  /**
+   * Wrap an async operation with abort signal handling
+   * If the signal is aborted, the promise will reject with AbortError
+   * Note: This doesn't actually cancel the underlying operation, but it allows
+   * the caller to stop waiting for it and handle the abort gracefully
+   * @param operation - The async operation to wrap
+   * @param signal - Optional AbortSignal to cancel the wait
+   * @returns Promise that resolves with the operation result or rejects if aborted
+   */
+  private async withAbortSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) {
+      return operation;
+    }
+
+    if (signal.aborted) {
+      throw new DOMException('Operation aborted', 'AbortError');
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      const abortHandler = () => {
+        reject(new DOMException('Operation aborted', 'AbortError'));
+      };
+
+      signal.addEventListener('abort', abortHandler, { once: true });
+
+      operation
+        .then((result) => {
+          signal.removeEventListener('abort', abortHandler);
+          resolve(result);
+        })
+        .catch((error) => {
+          signal.removeEventListener('abort', abortHandler);
+          // If the signal was aborted, throw AbortError instead of the original error
+          if (signal.aborted) {
+            reject(new DOMException('Operation aborted', 'AbortError'));
+          } else {
+            reject(error);
+          }
+        });
+    });
+  }
+
+  /**
+   * Create and track an AbortController for a deployment operation
+   * @returns AbortController that is tracked for cleanup
+   */
+  private createTrackedAbortController(): AbortController {
+    const controller = new AbortController();
+    this.activeAbortControllers.add(controller);
+    return controller;
+  }
+
+  /**
+   * Remove an AbortController from tracking
+   * @param controller - The AbortController to remove
+   */
+  private removeTrackedAbortController(controller: AbortController): void {
+    this.activeAbortControllers.delete(controller);
+  }
+
+  /**
+   * Abort all active operations and clean up
+   * This is called when a deployment times out or is cancelled
+   */
+  public abortAllOperations(): void {
+    this.logger.debug('Aborting all active operations', {
+      activeControllers: this.activeAbortControllers.size,
+    });
+    for (const controller of this.activeAbortControllers) {
+      controller.abort();
+    }
+    this.activeAbortControllers.clear();
+  }
+
+  /**
    * Get the Kubernetes API client for external integrations
    * @returns The configured KubernetesObjectApi instance
    */
@@ -89,10 +196,14 @@ export class DirectDeploymentEngine {
    * Enhance a resource for evaluation by applying kind-specific logic
    * This allows generic evaluators to work correctly without needing special cases
    */
-  private enhanceResourceForEvaluation(resource: any, kind: string): any {
+  private enhanceResourceForEvaluation(
+    resource: ResourceWithConditions,
+    kind: string
+  ): ResourceWithConditions {
     // For HelmRepository resources, handle OCI special case
     if (kind === 'HelmRepository') {
-      const isOciRepository = resource.spec?.type === 'oci';
+      const spec = resource.spec as { type?: string } | undefined;
+      const isOciRepository = spec?.type === 'oci';
       const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
 
       // If it's an OCI repo without Ready condition, synthesize one
@@ -101,7 +212,7 @@ export class DirectDeploymentEngine {
       if (
         isOciRepository &&
         hasBeenProcessed &&
-        !resource.status?.conditions?.some((c: any) => c.type === 'Ready')
+        !resource.status?.conditions?.some((c: KubernetesCondition) => c.type === 'Ready')
       ) {
         return {
           ...resource,
@@ -146,11 +257,12 @@ export class DirectDeploymentEngine {
         };
 
         // Get the live resource from the cluster
+        // In the new API, methods return objects directly (no .body wrapper)
         const liveResource = await this.k8sApi.read(resourceRef);
 
         // Apply kind-specific enhancements before calling custom evaluator
         const enhancedResource = this.enhanceResourceForEvaluation(
-          liveResource.body,
+          liveResource,
           deployedResource.kind
         );
 
@@ -196,8 +308,9 @@ export class DirectDeploymentEngine {
           },
         };
 
+        // In the new API, methods return objects directly (no .body wrapper)
         const liveResource = await this.k8sApi.read(resourceRef);
-        return this.readinessChecker.isResourceReady(liveResource.body);
+        return this.readinessChecker.isResourceReady(liveResource);
       }
     } catch (error) {
       this.logger.debug('Failed to check resource readiness', {
@@ -225,6 +338,20 @@ export class DirectDeploymentEngine {
     const deploymentId = this.generateDeploymentId();
     const startTime = Date.now();
     const deployedResources: DeployedResource[] = [];
+
+    // Create an AbortController for this deployment to enable proper cancellation
+    const deploymentAbortController = this.createTrackedAbortController();
+    const abortSignal = deploymentAbortController.signal;
+
+    // Set up timeout-based abort if timeout is specified
+    const timeout = options.timeout || 300000; // 5 minutes default
+    const timeoutId = setTimeout(() => {
+      this.logger.debug('Deployment timeout reached, aborting operations', {
+        deploymentId,
+        timeout,
+      });
+      deploymentAbortController.abort();
+    }, timeout);
     const errors: DeploymentError[] = [];
     const deploymentLogger = this.logger.child({
       deploymentId,
@@ -283,10 +410,32 @@ export class DirectDeploymentEngine {
         deploymentLogger.debug('Debug logging initialized');
       }
 
-      // 4. Create resolution context
+      // 4. Create resolution context with resourceKeyMapping for cross-resource references
+      // The resourceKeyMapping maps original resource IDs (like 'webappDeployment') to their manifests
+      // This allows the reference resolver to find resources by their original IDs during deployment
+      const resourceKeyMapping = new Map<string, unknown>();
+      for (const resource of graph.resources) {
+        const manifest = resource.manifest as KubernetesResource & { __resourceId?: string };
+        const originalResourceId = manifest.__resourceId;
+        if (originalResourceId) {
+          // Convert the Enhanced proxy to a plain object for reliable field extraction
+          // The proxy's toJSON method returns a clean object without proxy behavior
+          const plainManifest = typeof manifest.toJSON === 'function' 
+            ? manifest.toJSON() 
+            : JSON.parse(JSON.stringify(manifest));
+          resourceKeyMapping.set(originalResourceId, plainManifest);
+          deploymentLogger.debug('Added resource to resourceKeyMapping', {
+            originalResourceId,
+            kind: manifest.kind,
+            name: manifest.metadata?.name,
+          });
+        }
+      }
+
       const context: ResolutionContext = {
         deployedResources,
         kubeClient: this.kubeClient,
+        resourceKeyMapping,
         ...(options.namespace && { namespace: options.namespace }),
         timeout: options.timeout || 30000,
       };
@@ -371,7 +520,8 @@ export class DirectDeploymentEngine {
             const deployedResource = await this.deploySingleResource(
               resourceWithEvaluator,
               context,
-              options
+              options,
+              abortSignal
             );
             resourceLogger.debug('Resource deployed successfully');
 
@@ -416,6 +566,37 @@ export class DirectDeploymentEngine {
             const deploymentResult = result.value;
             if (deploymentResult.success && deploymentResult.deployedResource) {
               deployedResources.push(deploymentResult.deployedResource);
+              
+              // Update resourceKeyMapping with the live resource from the cluster (including status)
+              // This is critical for CEL expression evaluation which needs access to resource status
+              const deployedRes = deploymentResult.deployedResource;
+              const manifestWithId = deployedRes.manifest as KubernetesResource & { __resourceId?: string };
+              const originalResourceId = manifestWithId.__resourceId;
+              if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
+                try {
+                  // Query the live resource from the cluster to get its current status
+                  const liveResource = await this.k8sApi.read({
+                    apiVersion: deployedRes.manifest.apiVersion || '',
+                    kind: deployedRes.kind,
+                    metadata: {
+                      name: deployedRes.name,
+                      namespace: deployedRes.namespace,
+                    },
+                  });
+                  resourceKeyMapping.set(originalResourceId, liveResource);
+                  deploymentLogger.debug('Updated resourceKeyMapping with live resource status', {
+                    originalResourceId,
+                    kind: deployedRes.kind,
+                    name: deployedRes.name,
+                    hasStatus: !!(liveResource as any).status,
+                  });
+                } catch (error) {
+                  deploymentLogger.warn('Failed to update resourceKeyMapping with live resource', {
+                    originalResourceId,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                }
+              }
             } else {
               levelHasFailures = true;
               if (deploymentResult.error) {
@@ -512,6 +693,10 @@ export class DirectDeploymentEngine {
         }
       }
 
+      // Clean up abort controller and timeout
+      clearTimeout(timeoutId);
+      this.removeTrackedAbortController(deploymentAbortController);
+
       // Store deployment state for rollback
       this.deploymentState.set(deploymentId, {
         deploymentId,
@@ -534,8 +719,15 @@ export class DirectDeploymentEngine {
     } catch (error) {
       // Re-throw circular dependency errors immediately - these are configuration errors
       if (error instanceof CircularDependencyError) {
+        // Clean up abort controller and timeout before re-throwing
+        clearTimeout(timeoutId);
+        this.removeTrackedAbortController(deploymentAbortController);
         throw error;
       }
+
+      // Clean up abort controller and timeout
+      clearTimeout(timeoutId);
+      this.removeTrackedAbortController(deploymentAbortController);
 
       const duration = Date.now() - startTime;
       this.emitEvent(options, {
@@ -733,6 +925,20 @@ export class DirectDeploymentEngine {
       closureCount: Object.keys(closures).length,
     });
 
+    // Create an AbortController for this deployment to enable proper cancellation
+    const deploymentAbortController = this.createTrackedAbortController();
+    const abortSignal = deploymentAbortController.signal;
+
+    // Set up timeout-based abort if timeout is specified
+    const timeout = options.timeout || 300000; // 5 minutes default
+    const timeoutId = setTimeout(() => {
+      deploymentLogger.debug('Deployment timeout reached, aborting operations', {
+        deploymentId,
+        timeout,
+      });
+      deploymentAbortController.abort();
+    }, timeout);
+
     deploymentLogger.info('Starting deployment with closures', {
       options,
       closures: Object.keys(closures),
@@ -775,10 +981,31 @@ export class DirectDeploymentEngine {
         maxParallelism: enhancedPlan.maxParallelism,
       });
 
-      // 4. Create resolution context
+      // 4. Create resolution context with resourceKeyMapping for cross-resource references
+      // The resourceKeyMapping maps original resource IDs (like 'webappDeployment') to their manifests
+      const resourceKeyMapping = new Map<string, unknown>();
+      for (const resource of graph.resources) {
+        const manifest = resource.manifest as KubernetesResource & { __resourceId?: string };
+        const originalResourceId = manifest.__resourceId;
+        if (originalResourceId) {
+          // Convert the Enhanced proxy to a plain object for reliable field extraction
+          // The proxy's toJSON method returns a clean object without proxy behavior
+          const plainManifest = typeof manifest.toJSON === 'function' 
+            ? manifest.toJSON() 
+            : JSON.parse(JSON.stringify(manifest));
+          resourceKeyMapping.set(originalResourceId, plainManifest);
+          deploymentLogger.debug('Added resource to resourceKeyMapping', {
+            originalResourceId,
+            kind: manifest.kind,
+            name: manifest.metadata?.name,
+          });
+        }
+      }
+
       const context: ResolutionContext = {
         deployedResources,
         kubeClient: this.kubeClient,
+        resourceKeyMapping,
         ...(options.namespace && { namespace: options.namespace }),
         timeout: options.timeout || 30000,
       };
@@ -851,11 +1078,16 @@ export class DirectDeploymentEngine {
 
           try {
             resourceLogger.debug('Calling deploySingleResource');
+
+            // Wait for CRD establishment if this is a custom resource
+            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger);
+
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
             const deployedResource = await this.deploySingleResource(
               resourceWithEvaluator,
               context,
-              options
+              options,
+              abortSignal
             );
             resourceLogger.debug('Resource deployed successfully');
 
@@ -955,6 +1187,37 @@ export class DirectDeploymentEngine {
               if (deploymentResult.success && deploymentResult.deployedResource) {
                 deployedResources.push(deploymentResult.deployedResource);
                 successfulResources++;
+                
+                // Update resourceKeyMapping with the live resource from the cluster (including status)
+                // This is critical for CEL expression evaluation which needs access to resource status
+                const deployedRes = deploymentResult.deployedResource;
+                const manifestWithId = deployedRes.manifest as KubernetesResource & { __resourceId?: string };
+                const originalResourceId = manifestWithId.__resourceId;
+                if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
+                  try {
+                    // Query the live resource from the cluster to get its current status
+                    const liveResource = await this.k8sApi.read({
+                      apiVersion: deployedRes.manifest.apiVersion || '',
+                      kind: deployedRes.kind,
+                      metadata: {
+                        name: deployedRes.name,
+                        namespace: deployedRes.namespace,
+                      },
+                    });
+                    resourceKeyMapping.set(originalResourceId, liveResource);
+                    deploymentLogger.debug('Updated resourceKeyMapping with live resource status', {
+                      originalResourceId,
+                      kind: deployedRes.kind,
+                      name: deployedRes.name,
+                      hasStatus: !!(liveResource as any).status,
+                    });
+                  } catch (error) {
+                    deploymentLogger.warn('Failed to update resourceKeyMapping with live resource', {
+                      originalResourceId,
+                      error: error instanceof Error ? error.message : String(error),
+                    });
+                  }
+                }
               } else {
                 levelHasFailures = true;
                 failedResources++;
@@ -1032,6 +1295,10 @@ export class DirectDeploymentEngine {
         timestamp: new Date(),
       });
 
+      // Clean up abort controller and timeout
+      clearTimeout(timeoutId);
+      this.removeTrackedAbortController(deploymentAbortController);
+
       // Store deployment state for rollback
       this.deploymentState.set(deploymentId, {
         deploymentId,
@@ -1054,8 +1321,15 @@ export class DirectDeploymentEngine {
     } catch (error) {
       // Re-throw circular dependency errors immediately - these are configuration errors
       if (error instanceof CircularDependencyError) {
+        // Clean up abort controller and timeout before re-throwing
+        clearTimeout(timeoutId);
+        this.removeTrackedAbortController(deploymentAbortController);
         throw error;
       }
+
+      // Clean up abort controller and timeout
+      clearTimeout(timeoutId);
+      this.removeTrackedAbortController(deploymentAbortController);
 
       const duration = Date.now() - startTime;
       this.emitEvent(options, {
@@ -1099,10 +1373,18 @@ export class DirectDeploymentEngine {
   private async deploySingleResource(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>,
     context: ResolutionContext,
-    options: DeploymentOptions
+    options: DeploymentOptions,
+    abortSignal?: AbortSignal
   ): Promise<DeployedResource> {
+    // Check if already aborted
+    if (abortSignal?.aborted) {
+      throw new DOMException('Operation aborted', 'AbortError');
+    }
+
+    // __resourceId is an internal field that may be set during resource processing
+    const resourceWithInternalId = resource as KubernetesResource & { __resourceId?: string };
     const resourceId =
-      resource.id || (resource as any).__resourceId || resource.metadata?.name || 'unknown';
+      resource.id || resourceWithInternalId.__resourceId || resource.metadata?.name || 'unknown';
     const resourceLogger = this.logger.child({
       resourceId,
       kind: resource.kind,
@@ -1130,12 +1412,25 @@ export class DirectDeploymentEngine {
           setTimeout(() => reject(new Error('Reference resolution timeout')), resolveTimeout)
         ),
       ])) as KubernetesResource;
+      // Check for readinessEvaluator which may be on Enhanced resources
+      const enhancedResource = resolvedResource as KubernetesResource & {
+        readinessEvaluator?: (liveResource: unknown) => { ready: boolean; message?: string };
+      };
       resourceLogger.debug('References resolved successfully', {
         resolvedMetadata: resolvedResource.metadata,
-        hasReadinessEvaluator: !!(resolvedResource as any).readinessEvaluator,
+        hasReadinessEvaluator: !!enhancedResource.readinessEvaluator,
       });
     } catch (error) {
-      resourceLogger.warn('Reference resolution failed, using original resource', error as Error);
+      // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
+      // one at a time. This is expected behavior, so we log at debug level instead of warn.
+      const hasResourceKeyMapping = context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
+      if (hasResourceKeyMapping) {
+        resourceLogger.warn('Reference resolution failed, using original resource', error as Error);
+      } else {
+        resourceLogger.debug('Reference resolution skipped (no resourceKeyMapping), using original resource', {
+          error: (error as Error).message,
+        });
+      }
       resolvedResource = resource;
     }
 
@@ -1164,10 +1459,25 @@ export class DirectDeploymentEngine {
       };
 
       // Copy the non-enumerable readiness evaluator if it exists
-      const readinessEvaluator = (resolvedResource as any).readinessEvaluator;
+      const resourceWithEvaluator = resolvedResource as KubernetesResource & {
+        readinessEvaluator?: (liveResource: unknown) => { ready: boolean; message?: string };
+        __resourceId?: string;
+      };
+      const readinessEvaluator = resourceWithEvaluator.readinessEvaluator;
       if (readinessEvaluator) {
         Object.defineProperty(newResolvedResource, 'readinessEvaluator', {
           value: readinessEvaluator,
+          enumerable: false,
+          configurable: true,
+          writable: false,
+        });
+      }
+
+      // Copy the non-enumerable __resourceId if it exists (used for cross-resource references)
+      const originalResourceId = resourceWithEvaluator.__resourceId;
+      if (originalResourceId) {
+        Object.defineProperty(newResolvedResource, '__resourceId', {
+          value: originalResourceId,
           enumerable: false,
           configurable: true,
           writable: false,
@@ -1207,7 +1517,8 @@ export class DirectDeploymentEngine {
           // Check if resource already exists
           let existing: k8s.KubernetesObject | undefined;
           try {
-            const readResult = await this.k8sApi.read({
+            // In the new API, methods return objects directly (no .body wrapper)
+            existing = await this.k8sApi.read({
               apiVersion: resolvedResource.apiVersion,
               kind: resolvedResource.kind,
               metadata: {
@@ -1215,19 +1526,44 @@ export class DirectDeploymentEngine {
                 namespace: resolvedResource.metadata?.namespace || 'default',
               },
             });
-            existing = readResult.body;
-          } catch (error: any) {
+          } catch (error: unknown) {
             // If it's a 404, the resource doesn't exist, which is expected for creation
-            if (error.statusCode !== 404) {
-              resourceLogger.error('Error checking resource existence', error);
+            const apiError = error as KubernetesApiError;
+            // Check for 404 in various error formats:
+            // - apiError.statusCode (direct property)
+            // - apiError.response?.statusCode (nested response)
+            // - apiError.body?.code (body code)
+            // - error message containing "HTTP-Code: 404"
+            const is404 =
+              apiError.statusCode === 404 ||
+              apiError.response?.statusCode === 404 ||
+              apiError.body?.code === 404 ||
+              (typeof apiError.message === 'string' && apiError.message.includes('HTTP-Code: 404'));
+
+            if (!is404) {
+              // Also check for "Unrecognized API version and kind" errors - these indicate
+              // the CRD is not installed yet, which should trigger CRD waiting logic
+              const isUnrecognizedApiError =
+                typeof apiError.message === 'string' &&
+                apiError.message.includes('Unrecognized API version and kind');
+
+              if (isUnrecognizedApiError) {
+                resourceLogger.debug(
+                  'CRD not yet registered, will retry after CRD establishment',
+                  error as Error
+                );
+              } else {
+                resourceLogger.error('Error checking resource existence', error as Error);
+              }
               throw error;
             }
+            // 404 means resource doesn't exist - this is expected, we'll create it below
           }
 
           if (existing) {
             // Resource exists, use patch for safer updates
             // Log the full resource being patched, including non-standard fields like 'data' for Secrets
-            const patchPayload: any = {
+            const patchPayload: Partial<KubernetesResource> = {
               apiVersion: resolvedResource.apiVersion,
               kind: resolvedResource.kind,
               metadata: resolvedResource.metadata,
@@ -1239,41 +1575,51 @@ export class DirectDeploymentEngine {
             }
 
             // Include data if present (Secrets)
-            if ((resolvedResource as any).data !== undefined) {
-              patchPayload.data = (resolvedResource as any).data;
+            if (resolvedResource.data !== undefined) {
+              patchPayload.data = resolvedResource.data;
             }
 
             // Include stringData if present (Secrets)
-            if ((resolvedResource as any).stringData !== undefined) {
-              patchPayload.stringData = (resolvedResource as any).stringData;
+            if (resolvedResource.stringData !== undefined) {
+              patchPayload.stringData = resolvedResource.stringData;
             }
 
             // Include rules if present (RBAC resources)
-            if ((resolvedResource as any).rules !== undefined) {
+            if (resolvedResource.rules !== undefined) {
               // Ensure arrays are preserved (not converted to objects with numeric keys)
-              const rules = (resolvedResource as any).rules;
+              const rules = resolvedResource.rules;
               patchPayload.rules = Array.isArray(rules) ? [...rules] : rules;
             }
 
             // Include subjects if present (ClusterRoleBinding, RoleBinding)
-            if ((resolvedResource as any).subjects !== undefined) {
+            if (resolvedResource.subjects !== undefined) {
               // Ensure arrays are preserved (not converted to objects with numeric keys)
-              const subjects = (resolvedResource as any).subjects;
+              const subjects = resolvedResource.subjects;
               patchPayload.subjects = Array.isArray(subjects) ? [...subjects] : subjects;
             }
 
             // Include roleRef if present (ClusterRoleBinding, RoleBinding)
-            if ((resolvedResource as any).roleRef !== undefined) {
-              patchPayload.roleRef = (resolvedResource as any).roleRef;
+            if (resolvedResource.roleRef !== undefined) {
+              patchPayload.roleRef = resolvedResource.roleRef;
             }
 
             // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
-            const cleanPayload =
-              typeof patchPayload.toJSON === 'function' ? patchPayload.toJSON() : patchPayload;
+            // Then use JSON.parse(JSON.stringify()) to ensure we have a plain object without proxies
+            const jsonPayload =
+              typeof resolvedResource.toJSON === 'function'
+                ? resolvedResource.toJSON()
+                : patchPayload;
+
+            // Deep clone to remove any proxy wrappers that might cause serialization issues
+            const cleanPayload = JSON.parse(JSON.stringify(jsonPayload));
+
+            // Strip internal TypeKro fields that should not be sent to Kubernetes
+            // The 'id' field is used internally for resource mapping but is not a valid K8s field
+            delete cleanPayload.id;
 
             resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
-            const patchResult = await this.patchResourceWithCorrectContentType(cleanPayload);
-            appliedResource = patchResult.body;
+            // In the new API, methods return objects directly (no .body wrapper)
+            appliedResource = await this.patchResourceWithCorrectContentType(cleanPayload);
           } else {
             // Resource does not exist, create it
             resourceLogger.debug('Resource does not exist, creating');
@@ -1284,21 +1630,27 @@ export class DirectDeploymentEngine {
                 name: resolvedResource.metadata?.name,
                 hasData: 'data' in resolvedResource,
                 hasSpec: 'spec' in resolvedResource,
-                dataKeys: (resolvedResource as any).data
-                  ? Object.keys((resolvedResource as any).data)
-                  : [],
-                specValue: (resolvedResource as any).spec,
+                dataKeys: resolvedResource.data ? Object.keys(resolvedResource.data) : [],
+                specValue: resolvedResource.spec,
               });
             }
 
             // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
-            const cleanResource =
-              typeof (resolvedResource as any).toJSON === 'function'
-                ? (resolvedResource as any).toJSON()
+            // Then use JSON.parse(JSON.stringify()) to ensure we have a plain object without proxies
+            const jsonResource =
+              typeof resolvedResource.toJSON === 'function'
+                ? resolvedResource.toJSON()
                 : resolvedResource;
 
-            const createResult = await this.k8sApi.create(cleanResource);
-            appliedResource = createResult.body;
+            // Deep clone to remove any proxy wrappers that might cause serialization issues
+            const cleanResource = JSON.parse(JSON.stringify(jsonResource));
+
+            // Strip internal TypeKro fields that should not be sent to Kubernetes
+            // The 'id' field is used internally for resource mapping but is not a valid K8s field
+            delete cleanResource.id;
+
+            // In the new API, methods return objects directly (no .body wrapper)
+            appliedResource = await this.k8sApi.create(cleanResource);
           }
 
           resourceLogger.debug('Resource applied successfully', {
@@ -1312,6 +1664,129 @@ export class DirectDeploymentEngine {
           break;
         } catch (error) {
           lastError = error as Error;
+
+          // Check for 409 Conflict errors - resource already exists
+          const apiError = error as KubernetesApiError;
+          const is409 =
+            apiError.statusCode === 409 ||
+            apiError.response?.statusCode === 409 ||
+            apiError.body?.code === 409 ||
+            (typeof apiError.message === 'string' && apiError.message.includes('HTTP-Code: 409'));
+
+          if (is409) {
+            const conflictStrategy = options.conflictStrategy || 'warn';
+            const resourceName = resolvedResource.metadata?.name || 'unknown';
+            const resourceKind = resolvedResource.kind || 'Unknown';
+            const resourceNamespace = resolvedResource.metadata?.namespace;
+            let conflictHandled = false;
+
+            resourceLogger.debug('Resource already exists (409)', {
+              name: resourceName,
+              kind: resourceKind,
+              conflictStrategy,
+            });
+
+            // Handle based on conflict strategy
+            switch (conflictStrategy) {
+              case 'fail':
+                // Throw error immediately - don't retry
+                throw new ResourceConflictError(resourceName, resourceKind, resourceNamespace);
+
+              case 'warn':
+                // Log warning and treat as success - fetch existing resource
+                resourceLogger.warn('Resource already exists, treating as success', {
+                  name: resourceName,
+                  kind: resourceKind,
+                  namespace: resourceNamespace,
+                });
+                try {
+                  // Fetch the existing resource to return it
+                  appliedResource = await this.k8sApi.read({
+                    apiVersion: resolvedResource.apiVersion,
+                    kind: resolvedResource.kind,
+                    metadata: {
+                      name: resourceName,
+                      namespace: resourceNamespace || 'default',
+                    },
+                  });
+                  conflictHandled = true;
+                } catch (readError) {
+                  resourceLogger.warn('Failed to read existing resource after 409, falling back to patch', readError as Error);
+                  // Fall back to patch strategy
+                  try {
+                    const jsonResource =
+                      typeof resolvedResource.toJSON === 'function'
+                        ? resolvedResource.toJSON()
+                        : resolvedResource;
+                    const cleanResource = JSON.parse(JSON.stringify(jsonResource));
+                    delete cleanResource.id;
+
+                    appliedResource = await this.patchResourceWithCorrectContentType(cleanResource);
+                    resourceLogger.debug('Resource patched successfully after 409 conflict (warn fallback)');
+                    conflictHandled = true;
+                  } catch (patchError) {
+                    resourceLogger.warn('Failed to patch resource after 409 conflict', patchError as Error);
+                  }
+                }
+                break;
+
+              case 'patch':
+                // Attempt to patch the existing resource
+                try {
+                  const jsonResource =
+                    typeof resolvedResource.toJSON === 'function'
+                      ? resolvedResource.toJSON()
+                      : resolvedResource;
+                  const cleanResource = JSON.parse(JSON.stringify(jsonResource));
+                  delete cleanResource.id;
+
+                  appliedResource = await this.patchResourceWithCorrectContentType(cleanResource);
+                  resourceLogger.debug('Resource patched successfully after 409 conflict');
+                  conflictHandled = true;
+                } catch (patchError) {
+                  resourceLogger.warn('Failed to patch resource after 409 conflict', patchError as Error);
+                }
+                break;
+
+              case 'replace':
+                // Delete and recreate the resource
+                try {
+                  resourceLogger.debug('Deleting existing resource for replace strategy');
+                  await this.k8sApi.delete({
+                    apiVersion: resolvedResource.apiVersion,
+                    kind: resolvedResource.kind,
+                    metadata: {
+                      name: resourceName,
+                      namespace: resourceNamespace || 'default',
+                    },
+                  });
+                  
+                  // Wait a moment for deletion to propagate
+                  await new Promise((resolve) => setTimeout(resolve, 500));
+                  
+                  // Create the new resource
+                  const jsonResource =
+                    typeof resolvedResource.toJSON === 'function'
+                      ? resolvedResource.toJSON()
+                      : resolvedResource;
+                  const cleanResource = JSON.parse(JSON.stringify(jsonResource));
+                  delete cleanResource.id;
+
+                  appliedResource = await this.k8sApi.create(cleanResource);
+                  resourceLogger.debug('Resource replaced successfully after 409 conflict');
+                  conflictHandled = true;
+                } catch (replaceError) {
+                  resourceLogger.warn('Failed to replace resource after 409 conflict', replaceError as Error);
+                }
+                break;
+            }
+
+            // If we successfully handled the conflict, break out of retry loop
+            if (conflictHandled) {
+              break;
+            }
+          }
+
           resourceLogger.error('Failed to apply resource to cluster', lastError, { attempt });
 
           // Check for HTTP 415 Unsupported Media Type errors
@@ -1366,7 +1841,7 @@ export class DirectDeploymentEngine {
     // 5. Wait for resource to be ready if requested
     if (options.waitForReady !== false) {
       resourceLogger.debug('Waiting for resource to be ready');
-      await this.waitForResourceReady(deployedResource, options);
+      await this.waitForResourceReady(deployedResource, options, abortSignal);
       deployedResource.status = 'ready';
     }
 
@@ -1376,10 +1851,14 @@ export class DirectDeploymentEngine {
 
   /**
    * Wait for a resource to be ready
+   * @param deployedResource - The deployed resource to wait for
+   * @param options - Deployment options
+   * @param abortSignal - Optional AbortSignal to cancel the wait
    */
   private async waitForResourceReady(
     deployedResource: DeployedResource,
-    options: DeploymentOptions
+    options: DeploymentOptions,
+    abortSignal?: AbortSignal
   ): Promise<void> {
     const resourceKey = `${deployedResource.kind}/${deployedResource.name}/${deployedResource.namespace}`;
 
@@ -1389,8 +1868,21 @@ export class DirectDeploymentEngine {
       return;
     }
 
+    // Check if already aborted
+    if (abortSignal?.aborted) {
+      throw new DOMException('Operation aborted', 'AbortError');
+    }
+
     // Safety-first approach: check for readiness evaluator before starting the wait loop
-    const readinessEvaluator = (deployedResource.manifest as Enhanced<any, any>).readinessEvaluator;
+    // Import ResourceStatus type for proper typing
+    type ResourceStatusResult = {
+      ready: boolean;
+      reason?: string;
+      message?: string;
+      details?: Record<string, unknown>;
+    };
+    const enhancedManifest = deployedResource.manifest as Enhanced<unknown, unknown>;
+    const readinessEvaluator = enhancedManifest.readinessEvaluator;
 
     // Debug logging removed
 
@@ -1402,19 +1894,29 @@ export class DirectDeploymentEngine {
 
     const startTime = Date.now();
     const timeout = options.timeout || 300000; // 5 minutes default
-    let lastStatus: any = null;
+    let lastStatus: ResourceStatusResult | null = null;
 
     while (Date.now() - startTime < timeout) {
+      // Check if aborted before each iteration
+      if (abortSignal?.aborted) {
+        throw new DOMException('Operation aborted', 'AbortError');
+      }
+
       try {
         // Use custom readiness evaluator
-        const { body: liveResource } = await this.k8sApi.read({
-          apiVersion: deployedResource.manifest.apiVersion || '',
-          kind: deployedResource.kind,
-          metadata: {
-            name: deployedResource.name,
-            namespace: deployedResource.namespace,
-          },
-        });
+        // In the new API, methods return objects directly (no .body wrapper)
+        // Wrap with abort signal handling to stop waiting if aborted
+        const liveResource = await this.withAbortSignal(
+          this.k8sApi.read({
+            apiVersion: deployedResource.manifest.apiVersion || '',
+            kind: deployedResource.kind,
+            metadata: {
+              name: deployedResource.name,
+              namespace: deployedResource.namespace,
+            },
+          }),
+          abortSignal
+        );
 
         // Apply kind-specific enhancements before calling custom evaluator
         const enhancedResource = this.enhanceResourceForEvaluation(
@@ -1465,9 +1967,21 @@ export class DirectDeploymentEngine {
           });
         }
 
-        // Wait before next check
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        // Wait before next check - use abortable delay
+        try {
+          await this.abortableDelay(2000, abortSignal);
+        } catch (error) {
+          if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+            throw error; // Re-throw abort/timeout errors
+          }
+          // Ignore other errors from delay
+        }
       } catch (error) {
+        // Re-throw abort/timeout errors immediately
+        if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+          throw error;
+        }
+
         // Emit error status event
         this.emitEvent(options, {
           type: 'resource-status',
@@ -1476,8 +1990,15 @@ export class DirectDeploymentEngine {
           timestamp: new Date(),
         });
 
-        // If we can't read the resource, it's not ready yet
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        // If we can't read the resource, it's not ready yet - use abortable delay
+        try {
+          await this.abortableDelay(2000, abortSignal);
+        } catch (delayError) {
+          if (delayError instanceof DOMException && (delayError.name === 'AbortError' || delayError.name === 'TimeoutError')) {
+            throw delayError; // Re-throw abort/timeout errors
+          }
+          // Ignore other errors from delay
+        }
       }
     }
 
@@ -1576,7 +2097,8 @@ export class DirectDeploymentEngine {
       timeout: options.timeout || 30000,
     };
 
-    return this.deploySingleResource(resource, context, options);
+    // Legacy method - no abort signal support
+    return this.deploySingleResource(resource, context, options, undefined);
   }
 
   /**
@@ -1642,7 +2164,8 @@ export class DirectDeploymentEngine {
     resource: DeployedResource,
     options: DeploymentOptions
   ): Promise<void> {
-    return this.waitForResourceReady(resource, options);
+    // Legacy method - no abort signal support
+    return this.waitForResourceReady(resource, options, undefined);
   }
 
   /**
@@ -1729,28 +2252,37 @@ export class DirectDeploymentEngine {
   /**
    * Patch a resource with the correct Content-Type header for merge patch operations
    * This fixes HTTP 415 "Unsupported Media Type" errors that occur when using the generic patch method
+   * In the new API, methods return objects directly (no .body wrapper)
    */
   private async patchResourceWithCorrectContentType(
     resource: k8s.KubernetesObject
-  ): Promise<{ body: k8s.KubernetesObject }> {
+  ): Promise<k8s.KubernetesObject> {
     // DEBUG: Log the resource being sent to K8s API for Secrets
     if (resource.kind === 'Secret') {
+      const secretResource = resource as k8s.KubernetesObject & {
+        data?: Record<string, string>;
+        spec?: unknown;
+      };
       this.logger.debug('Patching Secret resource', {
         name: resource.metadata?.name,
         hasData: 'data' in resource,
         hasSpec: 'spec' in resource,
-        dataKeys: (resource as any).data ? Object.keys((resource as any).data) : [],
-        specValue: (resource as any).spec,
+        dataKeys: secretResource.data ? Object.keys(secretResource.data) : [],
+        specValue: secretResource.spec,
       });
     }
 
-    // The k8sApi.patch method already includes the correct Content-Type header for merge patch operations
-    // This was fixed in the deployment engine to use 'application/merge-patch+json'
-    return await this.k8sApi.patch(resource, undefined, undefined, undefined, undefined, {
-      headers: {
-        'Content-Type': 'application/merge-patch+json',
-      },
-    });
+    // The k8sApi.patch method requires the full content-type string for the patchStrategy parameter
+    // Use 'application/merge-patch+json' for merge patch operations
+    // See: https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/
+    return await this.k8sApi.patch(
+      resource,
+      undefined, // pretty
+      undefined, // dryRun
+      undefined, // fieldManager
+      undefined, // force
+      'application/merge-patch+json' // patchStrategy - must be the full content-type string
+    );
   }
 
   /**
@@ -1758,7 +2290,7 @@ export class DirectDeploymentEngine {
    */
   private isNotFoundError(error: unknown): boolean {
     if (error && typeof error === 'object') {
-      const k8sError = error as { statusCode?: number; body?: { code?: number } };
+      const k8sError = error as KubernetesApiError;
       return k8sError.statusCode === 404 || k8sError.body?.code === 404;
     }
     return false;
@@ -1768,9 +2300,9 @@ export class DirectDeploymentEngine {
    * Wait for CRD establishment if the resource is a custom resource
    */
   private async waitForCRDIfCustomResource(
-    resource: any,
+    resource: KubernetesResource,
     options: DeploymentOptions,
-    logger: any
+    logger: ReturnType<typeof getComponentLogger>
   ): Promise<void> {
     // Skip if this is not a custom resource
     if (!this.isCustomResource(resource)) {
@@ -1802,7 +2334,7 @@ export class DirectDeploymentEngine {
   /**
    * Check if a resource is a custom resource (not a built-in Kubernetes resource)
    */
-  private isCustomResource(resource: any): boolean {
+  private isCustomResource(resource: KubernetesResource): boolean {
     if (!resource.apiVersion || !resource.kind) {
       return false;
     }
@@ -1839,7 +2371,7 @@ export class DirectDeploymentEngine {
   /**
    * Get the CRD name for a custom resource
    */
-  private async getCRDNameForResource(resource: any): Promise<string | null> {
+  private async getCRDNameForResource(resource: KubernetesResource): Promise<string | null> {
     if (!resource.apiVersion || !resource.kind) {
       return null;
     }
@@ -1862,13 +2394,15 @@ export class DirectDeploymentEngine {
       const crds = await this.k8sApi.list('apiextensions.k8s.io/v1', 'CustomResourceDefinition');
 
       // Look for a CRD that matches our group and kind
-      const matchingCrd = (crds.body as any)?.items?.find((crd: any) => {
+      // In the new API, methods return objects directly (no .body wrapper)
+      const crdList = crds as unknown as CustomResourceDefinitionList;
+      const matchingCrd = crdList?.items?.find((crd: CustomResourceDefinitionItem) => {
         const crdSpec = crd.spec;
         return crdSpec?.group === group && crdSpec?.names?.kind === resource.kind;
       });
 
       if (matchingCrd) {
-        return matchingCrd.metadata?.name;
+        return matchingCrd.metadata?.name ?? null;
       }
     } catch (error) {
       // If we can't query CRDs, fall back to heuristic
@@ -1899,9 +2433,9 @@ export class DirectDeploymentEngine {
    * Wait for a CRD to be established in the cluster
    */
   private async waitForCRDEstablishment(
-    crd: any,
+    crd: { metadata?: { name?: string } },
     options: DeploymentOptions,
-    logger: any
+    logger: ReturnType<typeof getComponentLogger>
   ): Promise<void> {
     const crdName = crd.metadata?.name;
     const timeout = options.timeout || 300000; // 5 minutes default
@@ -1917,10 +2451,14 @@ export class DirectDeploymentEngine {
           apiVersion: 'apiextensions.k8s.io/v1',
           kind: 'CustomResourceDefinition',
           metadata: { name: crdName }, // CRDs are cluster-scoped, no namespace needed
-        } as any);
+        } as { metadata: { name: string } });
 
-        const conditions = (crdStatus.body as any)?.status?.conditions || [];
-        const establishedCondition = conditions.find((c: any) => c.type === 'Established');
+        // In the new API, methods return objects directly (no .body wrapper)
+        const crdItem = crdStatus as unknown as CustomResourceDefinitionItem;
+        const conditions = crdItem?.status?.conditions || [];
+        const establishedCondition = conditions.find(
+          (c: KubernetesCondition) => c.type === 'Established'
+        );
 
         if (establishedCondition?.status === 'True') {
           logger.debug('CRD exists and is established', { crdName });
@@ -1951,20 +2489,22 @@ export class DirectDeploymentEngine {
   /**
    * Check if an error is an HTTP 415 Unsupported Media Type error
    */
-  private isUnsupportedMediaTypeError(error: any): boolean {
+  private isUnsupportedMediaTypeError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+    const apiError = error as KubernetesApiError;
     return (
-      error &&
-      typeof error === 'object' &&
-      (error.statusCode === 415 ||
-        (error.response && error.response.statusCode === 415) ||
-        (error.body && error.body.code === 415))
+      apiError.statusCode === 415 ||
+      apiError.response?.statusCode === 415 ||
+      apiError.body?.code === 415
     );
   }
 
   /**
    * Extract accepted media types from HTTP 415 error message
    */
-  private extractAcceptedMediaTypes(error: any): string[] {
+  private extractAcceptedMediaTypes(error: unknown): string[] {
     const defaultTypes = [
       'application/json-patch+json',
       'application/merge-patch+json',
@@ -1973,7 +2513,8 @@ export class DirectDeploymentEngine {
 
     try {
       // Try to extract from error message
-      const message = error.message || error.body?.message || '';
+      const apiError = error as KubernetesApiError;
+      const message = apiError.message || apiError.body?.message || '';
       const match = message.match(/accepted media types include: ([^"]+)/);
 
       if (match && match[1]) {

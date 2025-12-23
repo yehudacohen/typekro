@@ -4,6 +4,7 @@ import { type } from 'arktype';
 import { simple, toResourceGraph } from '../../src/index.js';
 import {
   createCoreV1ApiClient,
+  deleteNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from './shared-kubeconfig';
@@ -36,7 +37,7 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
     // Create test namespace
     const k8sApi = createCoreV1ApiClient(kc);
     try {
-      await k8sApi.createNamespace({ metadata: { name: NAMESPACE } });
+      await k8sApi.createNamespace({ body: { metadata: { name: NAMESPACE } } });
       console.log(`📦 Created test namespace: ${NAMESPACE}`);
     } catch (error: any) {
       // Only ignore if namespace already exists (409 conflict)
@@ -89,10 +90,10 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
     console.log('✅ DirectResourceFactory deployed successfully without TLS errors');
 
     // Verify the ConfigMap was actually created in the cluster
-    const configMap = await k8sApi.readNamespacedConfigMap('tls-test-config', NAMESPACE);
+    const configMap = await k8sApi.readNamespacedConfigMap({ name: 'tls-test-config', namespace: NAMESPACE });
 
-    expect(configMap.body.data?.TEST_VALUE).toBe('direct-factory-works');
-    expect(configMap.body.data?.TIMESTAMP).toBeDefined();
+    expect(configMap.data?.TEST_VALUE).toBe('direct-factory-works');
+    expect(configMap.data?.TIMESTAMP).toBeDefined();
 
     console.log('✅ ConfigMap was created successfully in the cluster');
 
@@ -104,19 +105,14 @@ describeOrSkip('DirectResourceFactory TLS Fix Test', () => {
       console.warn('⚠️ Cleanup failed (this is expected for this test):', error);
       // Clean up manually
       try {
-        await k8sApi.deleteNamespacedConfigMap('tls-test-config', NAMESPACE);
+        await k8sApi.deleteNamespacedConfigMap({ name: 'tls-test-config', namespace: NAMESPACE });
         console.log('✅ Manual cleanup successful');
       } catch (manualError) {
         console.warn('⚠️ Manual cleanup also failed:', manualError);
       }
     }
 
-    // Clean up namespace
-    try {
-      await k8sApi.deleteNamespace(NAMESPACE);
-      console.log(`🗑️ Cleaned up test namespace: ${NAMESPACE}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to cleanup namespace ${NAMESPACE}:`, error);
-    }
+    // Clean up namespace and wait for full deletion
+    await deleteNamespaceAndWait(NAMESPACE, kc);
   }, 60000);
 });

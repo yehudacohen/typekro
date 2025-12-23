@@ -5,9 +5,11 @@
  * and evaluating expressions against the current resource state.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/index';
+import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
+import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
 import { ResourceReadinessTimeoutError } from '../types/deployment.js';
@@ -79,7 +81,9 @@ export class ReferenceResolver {
   ) {
     this.kubeClient = kubeClient;
     this.deploymentMode = deploymentMode;
-    this.k8sApi = k8sApi || kubeClient.makeApiClient(k8s.KubernetesObjectApi);
+    // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
+    // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
+    this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient);
     this.celEvaluator = new CelEvaluator();
   }
 
@@ -277,6 +281,20 @@ export class ReferenceResolver {
       });
     }
 
+    // Preserve the non-enumerable __resourceId if present (used for cross-resource references)
+    if (resource.__resourceId && typeof resource.__resourceId === 'string') {
+      this.logger.trace('Preserving __resourceId on cloned resource', {
+        resourceId: resource.id,
+        __resourceId: resource.__resourceId,
+      });
+      Object.defineProperty(resolved, '__resourceId', {
+        value: resource.__resourceId,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
+
     await this.traverseAndResolve(resolved, context);
     return resolved;
   }
@@ -459,6 +477,35 @@ export class ReferenceResolver {
       return value as T;
     }
 
+    // Check if resource is in the resourceKeyMapping (maps original keys like 'webappDeployment' to actual resources)
+    if (context.resourceKeyMapping) {
+      this.logger.debug('Checking resourceKeyMapping for reference', {
+        resourceId: ref.resourceId,
+        mappingKeys: Array.from(context.resourceKeyMapping.keys()),
+        hasKey: context.resourceKeyMapping.has(ref.resourceId),
+      });
+      if (context.resourceKeyMapping.has(ref.resourceId)) {
+        const resource = context.resourceKeyMapping.get(ref.resourceId);
+        this.logger.debug('Found resource in resourceKeyMapping', {
+          resourceId: ref.resourceId,
+          fieldPath: ref.fieldPath,
+          hasResource: !!resource,
+          resourceKind: resource ? (resource as any).kind : undefined,
+        });
+        if (resource) {
+          const value = this.extractFieldValue<T>(resource as any, ref.fieldPath);
+          this.logger.debug('Extracted field value from resourceKeyMapping', {
+            resourceId: ref.resourceId,
+            fieldPath: ref.fieldPath,
+            value,
+            valueType: typeof value,
+          });
+          this.cache.set(cacheKey, value);
+          return value as T;
+        }
+      }
+    }
+
     // Otherwise query from cluster
     try {
       const resource = await this.queryResourceFromCluster(ref, context);
@@ -514,6 +561,7 @@ export class ReferenceResolver {
   ): Promise<T> {
     this.logger.debug('Starting CEL expression evaluation', {
       expression: expr.expression,
+      isTemplate: (expr as any).__isTemplate,
       hasResourceKeyMapping: !!context.resourceKeyMapping,
       resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
       resourceKeyMappingKeys: context.resourceKeyMapping
@@ -522,6 +570,12 @@ export class ReferenceResolver {
       deployedResourcesCount: context.deployedResources.length,
       deployedResourceIds: context.deployedResources.map((r) => r.id),
     });
+
+    // Handle template expressions specially - they contain ${...} placeholders
+    // that need to be resolved individually, not as a single CEL expression
+    if ((expr as any).__isTemplate) {
+      return await this.evaluateTemplateExpression(expr, context);
+    }
 
     // Check cache first
     const cacheKey = `cel:${expr.expression}`;
@@ -615,6 +669,76 @@ export class ReferenceResolver {
   }
 
   /**
+   * Evaluate a template expression by resolving ${...} placeholders
+   * 
+   * Template expressions are strings like "http://${service.metadata.name}" that contain
+   * embedded CEL expressions. Each ${...} placeholder is evaluated separately and the
+   * results are concatenated to form the final string.
+   */
+  private async evaluateTemplateExpression<T = unknown>(
+    expr: CelExpression<T>,
+    context: ResolutionContext
+  ): Promise<T> {
+    const templateString = expr.expression;
+    
+    this.logger.debug('Evaluating template expression', {
+      template: templateString,
+    });
+
+    // Find all ${...} placeholders and evaluate them
+    const placeholderRegex = /\$\{([^}]+)\}/g;
+    let result = templateString;
+    
+    // Collect all matches first to avoid issues with modifying the string while iterating
+    const matches: Array<{ fullMatch: string; celExpr: string }> = [];
+    let match = placeholderRegex.exec(templateString);
+    while (match !== null) {
+      matches.push({
+        fullMatch: match[0],
+        celExpr: match[1] || '',
+      });
+      match = placeholderRegex.exec(templateString);
+    }
+
+    // Evaluate each placeholder
+    for (const { fullMatch, celExpr } of matches) {
+      try {
+        // Create a CEL expression for the placeholder content
+        const placeholderExpr: CelExpression<unknown> = {
+          [CEL_EXPRESSION_BRAND]: true,
+          expression: celExpr,
+        } as CelExpression<unknown>;
+
+        // Evaluate the placeholder expression
+        const evaluatedValue = await this.evaluateCelExpression(placeholderExpr, context);
+        
+        // Replace the placeholder with the evaluated value
+        result = result.replace(fullMatch, String(evaluatedValue));
+        
+        this.logger.debug('Evaluated template placeholder', {
+          placeholder: fullMatch,
+          celExpr,
+          evaluatedValue,
+        });
+      } catch (error) {
+        this.logger.warn('Failed to evaluate template placeholder', {
+          placeholder: fullMatch,
+          celExpr,
+          error: (error as Error).message,
+        });
+        // Keep the original placeholder if evaluation fails
+      }
+    }
+
+    this.logger.debug('Template expression evaluated', {
+      original: templateString,
+      result,
+    });
+
+    return result as T;
+  }
+
+  /**
    * Find a deployed resource by ID
    */
   private findDeployedResource(
@@ -654,8 +778,8 @@ export class ReferenceResolver {
       queryLogger.debug('Querying cluster resource', { resourceRef });
 
       // Query the resource from the cluster
-      const response = await this.k8sApi.read(resourceRef as any);
-      const resource = response.body;
+      // In the new API, methods return objects directly (no .body wrapper)
+      const resource = await this.k8sApi.read(resourceRef as any);
 
       queryLogger.debug('Successfully retrieved cluster resource', {
         resourceName: resource.metadata?.name,

@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import type { KroCompatibleType, KubernetesRef } from '../../src/index';
+import type { KubernetesRef } from '../../src/index';
 import { createSchemaProxy } from '../../src/index';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
@@ -14,7 +14,7 @@ describe('Kro Schema Constraints', () => {
   describe('KroCompatibleType validation', () => {
     it('should accept valid Kro-compatible spec types', () => {
       // These types should be compatible with Kro Simple Schema
-      interface ValidSpec extends KroCompatibleType {
+      interface ValidSpec {
         name: string;
         replicas: number;
         enabled: boolean;
@@ -27,7 +27,7 @@ describe('Kro Schema Constraints', () => {
         };
       }
 
-      interface ValidStatus extends KroCompatibleType {
+      interface ValidStatus {
         ready: boolean;
         url: string;
         conditions: string[];
@@ -42,7 +42,7 @@ describe('Kro Schema Constraints', () => {
     });
 
     it('should provide type-safe access to Kro-compatible fields', () => {
-      interface KroSpec extends KroCompatibleType {
+      interface KroSpec {
         appName: string;
         replicas: number;
         ingress: {
@@ -53,7 +53,7 @@ describe('Kro Schema Constraints', () => {
         ports: number[];
       }
 
-      interface KroStatus extends KroCompatibleType {
+      interface KroStatus {
         phase: string;
         availableReplicas: number;
         conditions: string[];
@@ -99,7 +99,7 @@ describe('Kro Schema Constraints', () => {
     });
 
     it('should work with nested Kro-compatible structures', () => {
-      interface NestedSpec extends KroCompatibleType {
+      interface NestedSpec {
         app: {
           name: string;
           version: string;
@@ -122,7 +122,7 @@ describe('Kro Schema Constraints', () => {
         };
       }
 
-      interface NestedStatus extends KroCompatibleType {
+      interface NestedStatus {
         deployment: {
           ready: boolean;
           available: number;
@@ -154,7 +154,7 @@ describe('Kro Schema Constraints', () => {
     });
 
     it('should work with array and map types', () => {
-      interface ArrayMapSpec extends KroCompatibleType {
+      interface ArrayMapSpec {
         tags: string[];
         ports: number[];
         flags: boolean[];
@@ -163,7 +163,7 @@ describe('Kro Schema Constraints', () => {
         metadata: Record<string, boolean>;
       }
 
-      interface ArrayMapStatus extends KroCompatibleType {
+      interface ArrayMapStatus {
         endpoints: string[];
         metrics: Record<string, number>;
         conditions: string[];
@@ -195,7 +195,7 @@ describe('Kro Schema Constraints', () => {
   describe('Type constraint enforcement', () => {
     it('should demonstrate Kro-compatible type patterns', () => {
       // These are examples of types that SHOULD work with Kro
-      interface GoodWebAppSpec extends KroCompatibleType {
+      interface GoodWebAppSpec {
         // Basic Kro types
         name: string; // string
         replicas: number; // integer
@@ -232,7 +232,7 @@ describe('Kro Schema Constraints', () => {
         };
       }
 
-      interface GoodWebAppStatus extends KroCompatibleType {
+      interface GoodWebAppStatus {
         phase: string;
         ready: boolean;
         replicas: number;
@@ -265,7 +265,7 @@ describe('Kro Schema Constraints', () => {
 
   describe('Integration with existing functionality', () => {
     it('should work with existing schema proxy functionality', () => {
-      interface TestSpec extends KroCompatibleType {
+      interface TestSpec {
         name: string;
         config: {
           enabled: boolean;
@@ -273,7 +273,7 @@ describe('Kro Schema Constraints', () => {
         };
       }
 
-      interface TestStatus extends KroCompatibleType {
+      interface TestStatus {
         ready: boolean;
         url: string;
       }

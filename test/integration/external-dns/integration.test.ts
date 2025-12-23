@@ -1,11 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import {
   externalDnsHelmRepository,
   externalDnsHelmRelease,
 } from '../../../src/factories/external-dns';
 import { type } from 'arktype';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from '../shared-kubeconfig.js';
+import {
+  createCoreV1ApiClient,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+  ensureNamespaceExists,
+  deleteNamespaceIfExists,
+} from '../shared-kubeconfig.js';
 
 // Test schemas for integration testing
 const _ExternalDnsTestSpecSchema = type({
@@ -26,7 +32,7 @@ const clusterAvailable = isClusterAvailable();
 const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('External-DNS Integration Tests', () => {
-  const testNamespace = 'typekro-test';
+  const testNamespace = 'typekro-test-external-dns';
   let kubeConfig: k8s.KubeConfig;
 
   beforeAll(async () => {
@@ -35,11 +41,15 @@ describeOrSkip('External-DNS Integration Tests', () => {
     console.log('Setting up external-dns integration tests...');
     kubeConfig = getIntegrationTestKubeConfig();
     console.log('✅ Cluster connection established');
+    
+    // Create test namespace
+    await ensureNamespaceExists(testNamespace, kubeConfig);
   });
 
   afterAll(async () => {
     if (!clusterAvailable) return;
     console.log('Cleaning up external-dns integration tests...');
+    await deleteNamespaceIfExists(testNamespace, kubeConfig);
   });
 
   it('should deploy external-dns ecosystem successfully', async () => {
@@ -70,10 +80,10 @@ describeOrSkip('External-DNS Integration Tests', () => {
     }
 
     // Create the namespace first
-    const coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
+    const coreApi = createCoreV1ApiClient(kubeConfig);
     try {
       await coreApi.createNamespace({
-        metadata: { name: 'external-dns' },
+        body: { metadata: { name: 'external-dns' } },
       });
     } catch (_e) {
       // Namespace may already exist
@@ -81,13 +91,16 @@ describeOrSkip('External-DNS Integration Tests', () => {
 
     // Deploy the secret with real AWS credentials
     try {
-      await coreApi.createNamespacedSecret('external-dns', {
-        metadata: { name: 'aws-route53-credentials' },
-        stringData: {
-          'access-key-id': awsAccessKeyId,
-          'secret-access-key': awsSecretAccessKey,
-        },
-      } as k8s.V1Secret);
+      await coreApi.createNamespacedSecret({
+        namespace: 'external-dns',
+        body: {
+          metadata: { name: 'aws-route53-credentials' },
+          stringData: {
+            'access-key-id': awsAccessKeyId,
+            'secret-access-key': awsSecretAccessKey,
+          },
+        } as k8s.V1Secret
+      });
     } catch (e: any) {
       if (e.statusCode !== 409) {
         // Ignore AlreadyExists errors

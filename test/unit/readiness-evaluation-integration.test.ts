@@ -3,6 +3,9 @@
  *
  * This test focuses specifically on the readiness evaluation logic
  * without the complexity of full deployment simulation.
+ *
+ * NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+ * without a .body wrapper. The mocks must return the resource directly.
  */
 
 import { describe, expect, it, mock } from 'bun:test';
@@ -15,9 +18,10 @@ import { deployment } from '../../src/factories/kubernetes/workloads/deployment.
 
 describe('Readiness Evaluation Integration', () => {
   // Create a minimal mock for testing readiness evaluation
+  // NOTE: In the new API, methods return objects directly (no .body wrapper)
   const mockKubeConfig = new k8s.KubeConfig();
   const mockK8sApi = {
-    read: mock(() => Promise.resolve({ body: {} })),
+    read: mock(() => Promise.resolve({})),
   } as any;
 
   it('should use custom deployment readiness evaluator', async () => {
@@ -55,15 +59,13 @@ describe('Readiness Evaluation Integration', () => {
       deployedAt: new Date(),
     };
 
-    // Mock the k8s API to return a ready deployment
+    // Mock the k8s API to return a ready deployment (returns object directly, no .body wrapper)
     mockK8sApi.read.mockResolvedValueOnce({
-      body: {
-        ...deploymentResource,
-        status: {
-          readyReplicas: 2,
-          availableReplicas: 2,
-          updatedReplicas: 2,
-        },
+      ...deploymentResource,
+      status: {
+        readyReplicas: 2,
+        availableReplicas: 2,
+        updatedReplicas: 2,
       },
     });
 
@@ -118,14 +120,12 @@ describe('Readiness Evaluation Integration', () => {
       deployedAt: new Date(),
     };
 
-    // Mock the k8s API to return a service with LoadBalancer ingress
+    // Mock the k8s API to return a service with LoadBalancer ingress (returns object directly, no .body wrapper)
     mockK8sApi.read.mockResolvedValueOnce({
-      body: {
-        ...serviceResource,
-        status: {
-          loadBalancer: {
-            ingress: [{ ip: '192.168.1.100' }],
-          },
+      ...serviceResource,
+      status: {
+        loadBalancer: {
+          ingress: [{ ip: '192.168.1.100' }],
         },
       },
     });
@@ -179,26 +179,22 @@ describe('Readiness Evaluation Integration', () => {
       deployedAt: new Date(),
     };
 
-    // Mock the k8s API to return progression: not ready -> ready
+    // Mock the k8s API to return progression: not ready -> ready (returns object directly, no .body wrapper)
     mockK8sApi.read
       .mockResolvedValueOnce({
-        body: {
-          ...deploymentResource,
-          status: {
-            readyReplicas: 1,
-            availableReplicas: 1,
-            updatedReplicas: 3,
-          },
+        ...deploymentResource,
+        status: {
+          readyReplicas: 1,
+          availableReplicas: 1,
+          updatedReplicas: 3,
         },
       })
       .mockResolvedValueOnce({
-        body: {
-          ...deploymentResource,
-          status: {
-            readyReplicas: 3,
-            availableReplicas: 3,
-            updatedReplicas: 3,
-          },
+        ...deploymentResource,
+        status: {
+          readyReplicas: 3,
+          availableReplicas: 3,
+          updatedReplicas: 3,
         },
       });
 
