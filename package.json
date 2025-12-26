@@ -13,6 +13,42 @@
     "./simple": {
       "import": "./dist/factories/simple/index.js",
       "types": "./dist/factories/simple/index.d.ts"
+    },
+    "./helm": {
+      "import": "./dist/factories/helm/index.js",
+      "types": "./dist/factories/helm/index.d.ts"
+    },
+    "./kro": {
+      "import": "./dist/factories/kro/index.js",
+      "types": "./dist/factories/kro/index.d.ts"
+    },
+    "./kubernetes": {
+      "import": "./dist/factories/kubernetes/index.js",
+      "types": "./dist/factories/kubernetes/index.d.ts"
+    },
+    "./cilium": {
+      "import": "./dist/factories/cilium/index.js",
+      "types": "./dist/factories/cilium/index.d.ts"
+    },
+    "./cert-manager": {
+      "import": "./dist/factories/cert-manager/index.js",
+      "types": "./dist/factories/cert-manager/index.d.ts"
+    },
+    "./flux": {
+      "import": "./dist/factories/flux/index.js",
+      "types": "./dist/factories/flux/index.d.ts"
+    },
+    "./apisix": {
+      "import": "./dist/factories/apisix/index.js",
+      "types": "./dist/factories/apisix/index.d.ts"
+    },
+    "./external-dns": {
+      "import": "./dist/factories/external-dns/index.js",
+      "types": "./dist/factories/external-dns/index.d.ts"
+    },
+    "./pebble": {
+      "import": "./dist/factories/pebble/index.js",
+      "types": "./dist/factories/pebble/index.d.ts"
     }
   },
   "files": [
@@ -62,7 +98,11 @@
     "prepare": "husky",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "docs:validate": "bun run scripts/docs-validate.ts",
+    "docs:check-lines": "bun run scripts/docs-check-lines.ts",
+    "docs:check-examples": "bun run scripts/docs-check-examples.ts",
+    "docs:check-links": "bun run scripts/docs-check-links.ts"
   },
   "lint-staged": {
     "*.{ts,js,json,md}": [

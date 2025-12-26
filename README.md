@@ -1,1156 +1,244 @@
-# typekro
+# TypeKro
 
 <div align="center">
-  <img src="docs/public/typekro-logo.svg" alt="TypeKro Logo" width="200" />
+  <img src="docs/public/typekro-logo.svg" alt="TypeKro Logo" width="200" />
+  
+  **Write TypeScript. Deploy Kubernetes. Runtime intelligence included.**
 </div>
 
 [![NPM Version](https://img.shields.io/npm/v/typekro.svg)](https://www.npmjs.com/package/typekro)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/yehudacohen/typekro)](https://github.com/yehudacohen/typekro)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/yehudacohen/typekro/deploy.yml?branch=master)](https://github.com/yehudacohen/typekro/actions)
-[![Coverage](https://codecov.io/gh/yehudacohen/typekro/branch/master/graph/badge.svg)](https://codecov.io/gh/yehudacohen/typekro)
 
-📚 **[Documentation](https://typekro.run)** • 💬 **[Discord Community](https://discord.gg/kKNSDDjW)** • 🚀 **[Getting Started](https://typekro.run/guide/getting-started)**
-## **TypeKro: Kubernetes with TypeScript**
-
-**A control plane aware framework for orchestrating kubernetes resources like a programmer**
-
-TypeKro combines the type safety of TypeScript, the GitOps-friendly output of declarative YAML, and the runtime intelligence of **Kubernetes Resource Orchestrator (KRO)** - an open-source project that enables advanced resource orchestration with runtime dependencies and CEL expressions. Write infrastructure in pure TypeScript with full IDE support, then deploy directly to clusters or generate deterministic YAML for GitOps workflows.
-
-## Table of Contents
-
-- [Quick Start](#quick-start) - See TypeKro in action with a 30-line web app example
-- [Deployment Flexibility](#deployment-flexibility) - Write once, deploy everywhere (YAML/Direct/Kro modes)
-- [Core Architecture](#core-architecture) - Magic proxy system, enhanced types, and CRD intelligence
-- [Comparison Grid](#comparison-grid) - How TypeKro compares to Pulumi, CDK8s, Helm, etc.
-- [GitOps Workflows](#gitops-workflows) - Deterministic YAML generation and Flux HelmRelease integration
-- [Complete Factory Reference](#complete-factory-reference) - All 50+ available resource factories
-- [Which Pattern Should I Use?](#which-pattern-should-i-use) - Decision guide based on your team and workflow
-- [Enhanced Type System](#enhanced-type-system) - Deep dive into schema references and type safety
-- [Multi-Cloud Integration with Alchemy](#multi-cloud-integration-with-alchemy) - Unified cloud + Kubernetes management
-- [Contributing](#contributing) - How to contribute to TypeKro development
+📚 **[Documentation](https://typekro.run)** • 💬 **[Discord](https://discord.gg/kKNSDDjW)** • 🚀 **[Getting Started](https://typekro.run/guide/getting-started)**
 
 ---
+
+## What is TypeKro?
+
+TypeKro is a TypeScript-first framework for orchestrating Kubernetes resources with type safety and runtime intelligence. Write infrastructure in pure TypeScript with full IDE support, then deploy directly to clusters or generate deterministic YAML for GitOps workflows.
 
 ## Quick Start
 
-Write Kubernetes infrastructure in pure TypeScript with full IDE support and type safety:
+```bash
+bun add typekro arktype
+```
 
 ```typescript
 import { type } from 'arktype';
-import { kubernetesComposition, simple, Cel } from 'typekro';
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
-// Build your infrastructure with full type safety using imperative composition
-const deploymentService = kubernetesComposition(
-  {
-    name: 'deployment-service',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'DeploymentService',
-    spec: type({ name: 'string', environment: '"dev" | "staging" | "prod"' }),
-    status: type({ ready: 'boolean', url: 'string' })
-  },
-  (spec) => {
-    // Resources auto-register when created - no explicit builders needed!
-    const deployment = simple.Deployment({
-      name: spec.name,                    // ← Full IDE autocomplete
-      image: 'nginx',
-      replicas: spec.environment === 'prod' ? 3 : 1,  // ← Type-safe logic
-      labels: { 
-        app: 'deployment',
-        env: spec.environment             // ← Validated enum
-      },
-      ports: [{ containerPort: 80 }]
-    });
-    
-    const service = simple.Service({
-      name: spec.name,
-      selector: { app: 'deployment' },           // ← Cross-resource reference
-      ports: [{ port: 80, targetPort: 80 }]
-    });
+// Define a reusable WebApp composition
+const WebApp = kubernetesComposition({
+  name: 'webapp',
+  apiVersion: 'example.com/v1',
+  kind: 'WebApp',
+  spec: type({ name: 'string', image: 'string', replicas: 'number' }),
+  status: type({ ready: 'boolean', endpoint: 'string' })
+}, (spec) => {
+  const deploy = Deployment({ id: 'app', name: spec.name, image: spec.image, replicas: spec.replicas });
+  const svc = Service({ id: 'svc', name: `${spec.name}-svc`, selector: { app: spec.name }, ports: [{ port: 80 }] });
 
-    // Return status with JavaScript expressions - automatically converted to CEL
-    return {
-      ready: deployment.status.readyReplicas > 0,  // ← Natural JavaScript
-      url: `http://${spec.name}.${spec.environment}.svc`  // ← Template literals
-    };
-  }
-);
-
-// Deploy instantly with full type checking
-await deploymentService.factory('direct').deploy({
-  name: 'my-app',           // ← IDE validates this exists
-  environment: 'staging'    // ← Only accepts: "dev" | "staging" | "prod"
+  return {
+    ready: deploy.status.readyReplicas > 0,     // ✨ JavaScript → CEL
+    endpoint: `http://${svc.status.clusterIP}`  // ✨ Template → CEL
+  };
 });
+
+// Deploy multiple instances with a simple loop
+const apps = [
+  { name: 'frontend', image: 'nginx', replicas: 3 },
+  { name: 'api', image: 'node:20', replicas: 2 }
+];
+
+const factory = WebApp.factory('direct', { namespace: 'production' });
+for (const app of apps) await factory.deploy(app);
 ```
 
-**Key Features Demonstrated:**
-- **Full IDE autocomplete** - IntelliSense for all properties
-- **Compile-time type checking** - Catch errors before deployment
-- **JavaScript-to-CEL conversion** - Write natural JavaScript, get CEL automatically
-- **Runtime validation** - ArkType validates deployment specs
-- **Zero YAML required** - Pure TypeScript infrastructure
-- **Instant deployment** - No kubectl, no YAML files
+**What this demonstrates:**
+- **Reusable compositions** - Define once, deploy many times
+- **Type-safe schemas** - ArkType validates at compile-time and runtime
+- **Cross-resource references** - `svc.status.clusterIP` references live cluster state
+- **JavaScript-to-CEL** - Status expressions become runtime CEL
+- **Native loops** - Just `for...of` to deploy multiple apps
 
-**Deploy anywhere:** Generate KRO YAML for GitOps with `factory.toYaml()` or integrate with multi-cloud using Alchemy.
+## Why TypeKro?
 
-::: tip Imperative vs Declarative
-This example uses TypeKro's **imperative composition pattern** (`kubernetesComposition`) - the recommended approach for most use cases. For teams preferring explicit resource/status builders, TypeKro also supports a **declarative pattern** (`toResourceGraph`). [Learn more about both patterns →](https://typekro.run/guide/imperative-composition)
-:::
+| Feature | TypeKro | Pulumi | CDK8s | Helm |
+|---------|---------|--------|-------|------|
+| **Type Safety** | ✅ Full TypeScript | ✅ Multi-lang | ✅ TypeScript | ❌ Templates |
+| **GitOps Ready** | ✅ Deterministic YAML | ❌ State backend | ✅ YAML output | ✅ Charts |
+| **Runtime Refs** | ✅ CEL expressions | ❌ Deploy-time | ❌ Static | ❌ Templates |
+| **Learning Curve** | 🟢 Just TypeScript | 🔴 New concepts | 🟡 TS + K8s | 🔴 Templates |
+| **Stateless** | ✅ | ❌ State backend | ✅ | ✅ |
+| **Cross-Resource** | ✅ Runtime resolution | ❌ Deploy-time | ❌ Manual | ❌ Manual |
 
----
+## Deployment Modes
 
-## Comparison Grid
-
-| Feature | TypeKro | Pulumi | CDK8s | Helm | Kustomize | Crossplane |
-|---------|---------|---------|--------|------|-----------|------------|
-| **Type Safety** | ✅ Full TypeScript | ✅ Multi-language | ✅ TypeScript | ❌ Templates | ❌ YAML | ❌ YAML |
-| **GitOps Ready** | ✅ Deterministic YAML | ❌ State backend | ✅ YAML output | ✅ Charts | ✅ YAML | ✅ YAML |
-| **Runtime Dependencies** | ✅ KRO + CEL expressions | ❌ Deploy-time only | ❌ Static | ❌ Templates | ❌ Static | ✅ Compositions |
-| **IDE Support** | ✅ Full autocomplete | ✅ Language support | ✅ TypeScript | ❌ Limited | ❌ Limited | ❌ Limited |
-| **Learning Curve** | 🟢 Just TypeScript | 🔴 New concepts | 🟡 TypeScript + K8s | 🔴 Templates | 🔴 YAML hell | 🔴 Complex |
-| **Kubernetes Native** | ✅ Pure K8s resources | ❌ Abstraction layer | ✅ Pure K8s | ✅ K8s resources | ✅ K8s resources | ✅ K8s + CRDs |
-| **Cross-Resource Refs** | ✅ Runtime resolution | ❌ Deploy-time | ❌ Manual | ❌ Manual | ❌ Manual | ✅ Built-in |
-| **Multi-Cloud** | 🟡 Via Alchemy | ✅ Native | ❌ K8s only | ❌ K8s only | ❌ K8s only | ✅ Native |
-| **State Management** | ✅ Stateless | ❌ State backend | ✅ Stateless | ✅ Stateless | ✅ Stateless | ✅ Controller |
-| **CRD Timing** | ✅ Automatic | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual | ✅ Built-in |
-
----
-
-## Deployment Flexibility
-
-### Deploy the Same Resource Graph using GitOps, Direct Kubernetes API Integration, or using KRO
-
-TypeKro offers deployment flexibility.
-
-> **What is KRO?** [Kubernetes Resource Orchestrator](https://kro.run/) is an open-source project by AWS Labs that enables resources to reference each other's runtime state using CEL expressions. TypeKro works in Direct Mode (no KRO required) for simple deployments, or KRO Mode for advanced orchestration.
-
- The same TypeScript code can be deployed in multiple ways without modification:
+TypeKro supports multiple deployment strategies from the same code:
 
 ```typescript
-// Define your infrastructure once with imperative composition
-const webappGraph = kubernetesComposition(
-  {
-    name: 'my-webapp',
-    apiVersion: 'example.com/v1',
-    kind: 'WebApp', 
-    spec: WebAppSpec,
-    status: WebAppStatus
-  },
-  (spec) => {
-    // Resources auto-register when created - no explicit builders needed!
-    const deployment = simple.Deployment({
-      name: spec.name,
-      image: spec.image,
-      replicas: spec.replicas
-    });
-    
-    const service = simple.Service({
-      name: `${spec.name}-service`,
-      selector: { app: spec.name },
-      ports: [{ port: 80, targetPort: 80 }]
-    });
+// 1. Direct deployment - immediate, no Kro required
+const factory = graph.factory('direct', { namespace: 'dev' });
+await factory.deploy(spec);
 
-    // Return status with CEL expressions and resource references
-    return {
-      ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' > 0'),
-      url: Cel.template('http://%s-service', spec.name)
-    };
-  }
-);
+// 2. Kro deployment - runtime CEL evaluation
+const kroFactory = graph.factory('kro', { namespace: 'prod' });
+await kroFactory.deploy(spec);
 
-const spec = { name: 'my-app', image: 'nginx:1.21', replicas: 3 };
-
-// Deploy the SAME code in different ways:
-
-// 1. Generate YAML for GitOps (no cluster interaction)
-const kroFactory = webappGraph.factory('kro', { namespace: 'dev' });
+// 3. YAML generation - GitOps workflows
 const yaml = kroFactory.toYaml();
-writeFileSync('k8s/webapp.yaml', yaml);
+writeFileSync('k8s/app.yaml', yaml);
+```
 
-// 2. Deploy directly to cluster (immediate)
-const directFactory = webappGraph.factory('direct', { namespace: 'dev' });
-const directInstance = await directFactory.deploy(spec);
+## Core Features
 
-// 3. Integrate with Alchemy for multi-cloud coordination
-await alchemyScope.run(async () => {
-  const alchemyFactory = webappGraph.factory('direct', { 
-    namespace: 'dev',
-    alchemyScope: alchemyScope 
-  });
-  await alchemyFactory.deploy(spec);
+### Type-Safe Schemas with ArkType
+
+```typescript
+const AppSpec = type({
+  name: 'string',
+  image: 'string',
+  replicas: 'number',
+  'environment?': '"dev" | "staging" | "prod"'
 });
 ```
 
-This flexibility eliminates the need to rewrite infrastructure code when changing deployment strategies or environments.
-
-### Core Deployment Strategies
-
-#### 1. YAML Generation (GitOps)
-
-Generate deterministic Kubernetes YAML that integrates with any GitOps workflow:
+### Cross-Resource References
 
 ```typescript
-// Generate ResourceGraphDefinition YAML
-const kroFactory = webappGraph.factory('kro', { namespace: 'default' });
-const yaml = kroFactory.toYaml();
-
-// Save for GitOps deployment
-writeFileSync('manifests/webapp.yaml', yaml);
-
-// Or pipe directly to kubectl
-console.log(yaml); // bun run generate.ts | kubectl apply -f -
-```
-
-**When to use:**
-- GitOps workflows (ArgoCD, Flux)
-- Audit requirements
-- Multi-environment promotion
-- CI/CD integration
-
-**Benefits:**
-- No cluster access needed during build
-- Git-friendly deterministic output
-- Works with existing GitOps tools
-- Version control for infrastructure changes
-
-#### 2. Direct Deployment (Imperative)
-
-Deploy directly to your cluster for rapid iteration:
-
-```typescript
-// Create factory and deploy immediately
-const factory = webappGraph.factory('direct', { namespace: 'development' });
-
-// Deploy with specific configuration
-const instance = await factory.deploy({
-  name: 'webapp-dev',
-  image: 'nginx:latest',
-  replicas: 1
+const db = Deployment({ id: 'database', name: 'postgres', image: 'postgres:15' });
+const api = Deployment({
+  id: 'api',
+  name: 'api-server',
+  image: 'node:20',
+  env: {
+    DB_HOST: db.metadata.name  // Runtime reference
+  }
 });
-
-// Get the generated ResourceGraphDefinition
-console.log('Generated RGD:', factory.toYaml());
 ```
 
-**When to use:**
-- Local development
-- Testing and experimentation
-- Rapid prototyping
-- Direct cluster management
+### JavaScript-to-CEL Conversion
 
-**Benefits:**
-- Immediate feedback
-- No Git workflow overhead
-- Live iteration on infrastructure
-- Integrated with development workflow
-
-#### 3. Kro Deployment (Recommended for Production)
-
-Leverage Kubernetes Resource Orchestrator for advanced runtime capabilities:
+Write natural JavaScript - TypeKro converts to CEL:
 
 ```typescript
-// Deploy as ResourceGraphDefinition with runtime resolution
-const kroFactory = webappGraph.factory('kro', { namespace: 'production' });
-
-// Apply the ResourceGraphDefinition to cluster
-await kroFactory.deploy({ 
-  name: 'webapp-prod',
-  image: 'nginx:1.21', 
-  replicas: 3 
-});
-
-// Kro handles:
-// - Runtime CEL expression evaluation
-// - Cross-resource dependency resolution  
-// - Automatic reconciliation and drift correction
-// - Status propagation and health monitoring
+return {
+  ready: deploy.status.readyReplicas > 0,           // → ${app.status.readyReplicas > 0}
+  url: `http://${svc.status.clusterIP}`,            // → http://${svc.status.clusterIP}
+  phase: deploy.status.phase === 'Running' ? 'up' : 'down'
+};
 ```
 
-**When to use:**
-- Production environments
-- Complex resource dependencies
-- Self-healing infrastructure requirements
-- Advanced orchestration needs
-
-**Benefits:**
-- Runtime dependency resolution
-- Automatic reconciliation
-- Built-in health monitoring
-- Kubernetes-native operation
-
-### Advanced Deployment Patterns
-
-#### Environment-Specific Deployments
-
-Deploy the same graph to different environments with environment-specific configurations:
-
-```typescript
-// Development: Direct deployment for fast iteration
-const factory = webappGraph.factory('direct', { namespace: 'dev' });
-await devFactory.deploy({
-  name: 'webapp-dev',
-  image: 'nginx:latest',
-  replicas: 1
-});
-
-// Staging: Kro deployment for testing runtime dependencies  
-const factory = webappGraph.factory('kro', { namespace: 'staging' });
-await stagingFactory.deploy({
-  name: 'webapp-staging',
-  image: 'nginx:1.21-rc',
-  replicas: 2,
-});
-
-// Production: GitOps deployment
-const factory = webappGraph.factory('kro', { namespace: 'production' });
-const prodYaml = prodFactory.toYaml();
-writeFileSync('k8s/production/webapp.yaml', prodYaml);
-// Deployed via ArgoCD/Flux
-```
-
-
-### Deployment Strategy Decision Matrix
-
-| **Scenario** | **Recommended Strategy** | **Why** |
-|--------------|-------------------------|---------|
-| Local development | Direct Deployment | Fast feedback, no GitOps overhead |
-| CI/CD pipeline testing | Direct Deployment | Immediate validation, isolated environments |
-| Production deployment | Kro + GitOps | Runtime intelligence + audit trail |
-| Multi-environment promotion | YAML Generation | Consistent artifacts across environments |
-| Complex runtime dependencies | Kro Deployment | Advanced orchestration capabilities |
-| Multi-cloud infrastructure | [Alchemy Integration](#multi-cloud-integration-with-alchemy) | Unified cloud + Kubernetes management |
-| Rapid prototyping | Direct Deployment | Minimal setup, immediate results |
-| Regulated environments | YAML Generation + GitOps | Audit trail, approval workflows |
-
----
-
-## GitOps Workflows
-
-### Deterministic YAML Generation
-
-TypeKro generates stable, deterministic YAML output perfect for GitOps workflows:
-
-```typescript
-// generate-manifests.ts
-import { writeFileSync } from 'fs';
-
-const graph = kubernetesComposition(/* ... */);
-
-// Same input always generates identical YAML
-const factory = graph.factory('kro', { namespace: 'default' });
-const yaml = factory.toYaml();
-
-// Write to file for GitOps
-writeFileSync('k8s/my-app.yaml', yaml);
-console.log('Generated k8s/my-app.yaml for GitOps deployment');
-```
-
-**Multi-Environment GitOps Workflow:**
-
-```typescript
-// scripts/generate-all-environments.ts
-const environments = ['development', 'staging', 'production'];
-
-for (const env of environments) {
-  // Generate ResourceGraphDefinition YAML for this environment
-  const factory = webappGraph.factory('kro', { namespace: env });
-  const rgdYaml = factory.toYaml();
-  writeFileSync(`k8s/${env}/webapp-rgd.yaml`, rgdYaml);
-  
-  // Generate instance YAML with environment-specific spec
-  const instanceSpec = {
-    name: `webapp-${env}`,
-    image: env === 'production' ? 'nginx:1.21' : 'nginx:latest',
-    replicas: env === 'production' ? 3 : 1,
-  };
-  
-  const instanceYaml = factory.toYaml(instanceSpec);
-  writeFileSync(`k8s/${env}/webapp-instance.yaml`, instanceYaml);
-}
-```
-
-**Benefits for GitOps:**
-- **Deterministic Output** - Same input always generates identical YAML
-- **Git-Friendly** - Clean, readable YAML that diffs well  
-- **Stable Resource IDs** - Consistent resource identifiers across deployments
-- **No External State** - Pure functions, no external dependencies
-
-### Flux HelmRelease Integration
-
-Deploy Helm charts with full TypeScript type safety and schema references:
+### Helm Integration
 
 ```typescript
 import { helmRelease, helmRepository } from 'typekro';
 
-const InfraSpec = type({
-  name: 'string',
-  replicas: 'number', 
-  loadBalancerIP: 'string',
-  environment: 'string'
+const repo = helmRepository({
+  name: 'bitnami',
+  url: 'https://charts.bitnami.com/bitnami'
 });
 
-const infraGraph = kubernetesComposition(
-  {
-    name: 'ingress-infrastructure',
-    apiVersion: 'infrastructure.example.com/v1',
-    kind: 'IngressInfra',
-    spec: InfraSpec,
-    status: type({ ready: 'boolean' })
-  },
-  (schema) => {
-    // Create Helm repository first
-    const repository = helmRepository({
-      name: 'nginx-repo',
-      url: 'https://kubernetes.github.io/ingress-nginx'
-    });
-    
-    // Create Helm release using helmRelease factory
-    const controller = helmRelease({
-      name: Cel.template('%s-ingress', schema.spec.name),
-      repository: repository,  // Reference repository
-      chart: 'ingress-nginx',
-      values: {
-        controller: {
-          replicaCount: schema.spec.replicas,                    // Schema reference
-          service: {
-            loadBalancerIP: schema.spec.loadBalancerIP           // Schema reference
-          },
-          config: {
-            'custom-config': Cel.template('env-%s', schema.spec.environment)  // CEL expression
-          }
-        }
-      }
-    });
-
-    return { repository, controller };
-  },
-  (schema, resources) => ({
-    ready: Cel.expr(resources.controller.status.conditions, '[?@.type=="Ready"].status == "True"')
-  })
-);
-
-// Deploy via Flux
-const factory = infraGraph.factory('kro', { namespace: 'flux-system' });
-const yaml = factory.toYaml();
-writeFileSync('k8s/ingress-controller.yaml', yaml);
-```
-
-**Key Benefits:**
-- **Type-safe Helm values** - Full TypeScript validation for chart values
-- **Schema references in values** - Connect Helm charts to your resource graph schema
-- **Runtime value resolution** - CEL expressions evaluate at deployment time
-- **Full integration with Flux CD HelmRelease**
-
-### External YAML Integration
-
-Integrate existing YAML manifests and Kustomizations into TypeKro resource graphs:
-
-```typescript
-import { yamlFile, yamlDirectory } from 'typekro';
-
-const AppSpec = type({
-  name: 'string',
-  image: 'string'
-});
-
-const hybridGraph = kubernetesComposition(
-  {
-    name: 'hybrid-app',
-    apiVersion: 'apps.example.com/v1',
-    kind: 'HybridApp',
-    spec: AppSpec,
-    status: type({ ready: 'boolean' })
-  },
-  (spec) => {
-    // Include external YAML files
-    const monitoring = yamlFile({
-      path: './k8s/prometheus-operator.yaml',
-      namespace: 'default'  // Can use static namespace or reference
-    });
-    
-    // Include entire directories with Kustomization
-    const monitoringStack = yamlDirectory({
-      path: './k8s/monitoring/',
-      recursive: true,
-      kustomization: {
-        namePrefix: Cel.template('%s-', spec.name),     // Dynamic prefix
-        namespace: 'default',
-        commonLabels: {
-          'app.kubernetes.io/instance': spec.name        // Schema reference
-        }
-      }
-    });
-    
-    // Include from Git repositories
-    const kubePrometheus = yamlDirectory({
-      path: 'https://github.com/prometheus-operator/kube-prometheus.git//manifests',
-      ref: 'v0.12.0',
-      namespace: 'monitoring'
-    });
-    
-    // TypeKro resources that reference external resources
-    const app = simple.Deployment({
-      name: spec.name,
-      image: spec.image,
-      env: {
-        PROMETHEUS_URL: 'http://prometheus-operated.monitoring.svc.cluster.local:9090'
-      }
-    });
-
-    // Return status
-    return {
-      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
-    };
-  }
-);
-```
-
-**Integration Capabilities:**
-- **File and directory inclusion** - Bring existing YAML into resource graphs
-- **Kustomization support** - Apply transformations with schema references  
-- **Git repository sources** - Include manifests directly from Git
-- **Mixed TypeKro + YAML** - Combine hand-written YAML with TypeKro resources
-
----
-
-## Complete Factory Reference
-
-TypeKro provides 50+ factory functions for all major Kubernetes resources:
-
-**Core Resources:** `simple.Deployment()`, `simple.Service()`, `simple.ConfigMap()`, `simple.Secret()`, `simple.Pvc()`
-
-**Advanced:** `helmRelease()`, `yamlFile()`, `customResource()`, `networkPolicy()`, `serviceAccount()`, plus comprehensive RBAC, storage, networking, and workload resources.
-
-All resources support full type safety, cross-resource references, IDE autocomplete, and CEL expression integration.
-
-**[📖 View Complete Factory Reference →](docs/api/factories.md)**
-
----
-
-## Which Pattern Should I Use?
-
-### 🆕 "I'm new to Kubernetes"
-**→ Use: Direct Deployment**
-```typescript
-const factory = graph.factory('direct', { namespace: 'default' });
-await factory.deploy(spec);
-```
-- Immediate feedback loop
-- No external dependencies  
-- Built-in CRD timing intelligence
-- Great for learning
-
-### 🔄 "I have existing YAML and want to migrate gradually"  
-**→ Use: yamlFile() + gradual adoption**
-```typescript
-const hybridGraph = kubernetesComposition(
-  {
-    name: 'legacy-app',
-    apiVersion: 'apps.example.com/v1',
-    kind: 'LegacyApp',
-    spec: type({ name: 'string' }),
-    status: type({ ready: 'boolean' })
-  },
-  (spec) => {
-    const existing = yamlFile({ path: './existing/app.yaml' });        // Keep existing
-    const newService = simple.Service({                                 // Add TypeKro gradually
-      name: spec.name,
-      selector: { app: spec.name }
-    });
-
-    return {
-      ready: Cel.expr<boolean>(newService.status.ready, ' == true')
-    };
-  }
-);
-```
-- Preserve existing workflows
-- Migrate incrementally
-- Zero disruption migration path
-
-### 🚀 "I want GitOps workflows"
-**→ Use: YAML Generation + Flux HelmRelease**
-```typescript
-const factory = graph.factory('kro', { namespace: 'production' });
-const yaml = factory.toYaml();
-writeFileSync('k8s/app.yaml', yaml);
-```
-- Deterministic YAML output
-- Git-based workflows  
-- Works with ArgoCD, Flux, kubectl
-
-### ☁️ "I need multi-cloud infrastructure"
-**→ Use: [Alchemy Integration](#multi-cloud-integration-with-alchemy)**
-```typescript
-await alchemyScope.run(async () => {
-  const factory = graph.factory('direct', { 
-    namespace: 'default',
-    alchemyScope: alchemyScope 
-  });
-  await factory.deploy(spec);
-});
-```
-- Unified TypeScript across cloud + K8s
-- Individual resource registration
-- Type-safe cloud resources
-
-### 📦 "I want to deploy Helm charts with type safety"
-**→ Use: helmRelease() patterns**
-```typescript
-helmRelease({
+const release = helmRelease({
   name: 'nginx',
-  repository: repository,
+  repository: repo,
   chart: 'nginx',
   values: {
-    replicaCount: spec.replicas,  // Type-safe values
-    service: {
-      loadBalancerIP: spec.ip     // Schema references
-    }
+    replicaCount: spec.replicas  // Type-safe values
   }
-})
-```
-- Type-safe Helm values
-- Schema references in chart values
-- Flux CD integration
-
-### 🔗 "I have complex runtime dependencies"
-**→ Use: Kro Deployment + CEL expressions**
-```typescript
-simple.Deployment({
-  env: {
-    DB_HOST: database.service.spec.clusterIP,           // Runtime resolution
-    API_URL: Cel.template('http://%s:8080', 
-      webService.status.loadBalancer.ingress[0].ip)     // Status references
-  }
-})
-```
-- Runtime resource resolution
-- Advanced orchestration
-- Self-healing infrastructure
-- Production-ready patterns
-
-### 🎯 "I need to make the right choice for my team"
-
-| **Team Size** | **K8s Experience** | **Deployment Model** | **Recommended Pattern** |
-|---------------|-------------------|---------------------|------------------------|
-| Small (1-3) | Beginner | Any | Direct Deployment |
-| Small (1-3) | Expert | GitOps | YAML Generation |
-| Medium (4-10) | Mixed | GitOps | Kro + GitOps |
-| Large (10+) | Expert | Enterprise GitOps | Kro + GitOps + Alchemy |
-| Any | Any | Multi-cloud | [Alchemy Integration](#multi-cloud-integration-with-alchemy) |
-| Any | Any | Helm-heavy | HelmRelease patterns |
-
-Choose based on your team's needs, not just technical capabilities. You can always evolve your approach as requirements change.
-
----
-
-## Multi-Cloud Integration with Alchemy
-
-TypeKro integrates seamlessly with [Alchemy](https://alchemy.run) to enable unified cloud + Kubernetes infrastructure management. Alchemy is infrastructure-as-TypeScript that lets you deploy to Cloudflare, AWS, and more with pure TypeScript.
-
-### Why Use TypeKro + Alchemy?
-
-- **Unified TypeScript Experience**: Write both cloud resources and Kubernetes resources in the same language
-- **Cross-Platform References**: Cloud resources can reference Kubernetes resources and vice versa
-- **Type-Safe Integration**: Full TypeScript validation across your entire infrastructure stack
-- **Flexible Deployment**: Use any TypeKro deployment strategy (Direct, YAML, KRO) with Alchemy
-
-### Individual Resource Registration Pattern
-
-Register specific TypeKro resources with Alchemy for hybrid cloud-native applications:
-
-```typescript
-import alchemy from 'alchemy';
-import { Bucket } from 'alchemy/aws';
-
-// 1. Create Alchemy scope
-const app = await alchemy('webapp-infrastructure');
-
-// 2. Create cloud resources with Alchemy
-const bucket = await Bucket('webapp-uploads');
-
-// 3. Create Kubernetes resources that reference cloud resources
-const webappGraph = kubernetesComposition(
-  {
-    name: 'webapp-with-cloud',
-    apiVersion: 'example.com/v1',
-    kind: 'CloudWebApp',
-    spec: type({ name: 'string', image: 'string', replicas: 'number' }),
-    status: type({ ready: 'boolean' })
-  },
-  (spec) => {
-    const app = simple.Deployment({
-      name: spec.name,
-      image: spec.image,
-      env: {
-        BUCKET_NAME: bucket.name,  // Reference to Alchemy resource
-        API_URL: Cel.template('http://%s-service', spec.name)
-      }
-    });
-
-    return {
-      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
-    };
-  }
-);
-
-// Deploy TypeKro resources with Alchemy integration
-await app.run(async () => {
-  const factory = webappGraph.factory('direct', { 
-    namespace: 'default',
-    alchemyScope: app 
-  });
-  await factory.deploy({
-    name: 'webapp',
-    image: 'nginx:1.21',
-    replicas: 3
-  });
 });
 ```
 
-### Real-World Cloud-Native Application
-
-Here's a complete example showing TypeKro + Alchemy for a production cloud-native application:
+### YAML File Integration
 
 ```typescript
-import alchemy from 'alchemy';
-import { Bucket, Function as LambdaFunction } from 'alchemy/aws';
-import { kubernetesComposition, simple, type } from 'typekro';
+import { yamlFile } from 'typekro';
 
-// 1. Create Alchemy scope
-const app = await alchemy('cloud-native-app');
-
-// 2. Cloud resources with Alchemy
-const api = await LambdaFunction('database-function', {
-  code: './functions/database.js',
-  environment: {
-    DATABASE_URL: 'postgresql://...'
-  }
-});
-
-const bucket = await Bucket('app-uploads');
-
-// 3. Kubernetes resources with TypeKro that reference cloud resources
-const AppSpec = type({
-  name: 'string',
-  image: 'string',
-  replicas: 'number'
-});
-
-const appGraph = kubernetesComposition(
-  {
-    name: 'cloud-native-app',
-    apiVersion: 'example.com/v1',
-    kind: 'CloudNativeApp',
-    spec: AppSpec,
-    status: type({ ready: 'boolean' })
-  },
-  (spec) => {
-    // Create redis first
-    const redis = simple.Deployment({
-      name: Cel.template('%s-redis', spec.name),
-      image: 'redis:7',
-      labels: { app: Cel.template('%s-redis', spec.name), component: 'cache' }
-    });
-    
-    // Create app that references redis
-    const app = simple.Deployment({
-      name: spec.name,
-      image: spec.image,
-      labels: { app: spec.name, component: 'web' },
-      env: {
-        // Reference cloud resources
-        API_URL: api.url,
-        UPLOAD_BUCKET: bucket.name,
-        // Reference other Kubernetes resources by field
-        REDIS_HOST: redis.metadata.name
-      }
-    });
-
-    return {
-      ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0')
-    };
-  }
-);
-
-// 4. Deploy as unified infrastructure
-await app.run(async () => {
-  const factory = appGraph.factory('direct', { 
-    namespace: 'production',
-    alchemyScope: app 
-  });
-  await factory.deploy({
-    name: 'myapp',
-    image: 'myapp:v1.2.3',
-    replicas: 5
-  });
+const existing = yamlFile({
+  path: './k8s/existing-deployment.yaml',
+  namespace: 'default'
 });
 ```
 
-### Integration Patterns
+## Factory Functions
 
-TypeKro works with all Alchemy deployment patterns:
+TypeKro provides 50+ factory functions for Kubernetes resources:
 
-#### Pattern 1: Cloud-First with Kubernetes Extensions
-```typescript
-// Start with cloud infrastructure
-const app = await alchemy('my-platform');
-const database = await RDS('main-db');
-const cache = await ElastiCache('redis-cluster');
+**Workloads:** `Deployment`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`
 
-// Add Kubernetes workloads that use cloud resources
-const k8sWorkloads = webappGraph.factory('kro', { namespace: 'apps' });
-await app.run(async () => {
-  const factory = k8sWorkloads.factory('kro', { 
-    namespace: 'apps',
-    alchemyScope: app 
-  });
-  await factory.deploy({
-    databaseUrl: database.endpoint,
-    redisUrl: cache.endpoint
-  });
-});
+**Networking:** `Service`, `Ingress`, `NetworkPolicy`
+
+**Config:** `ConfigMap`, `Secret`
+
+**Storage:** `PersistentVolumeClaim`, `PersistentVolume`, `StorageClass`
+
+**RBAC:** `ServiceAccount`, `Role`, `RoleBinding`, `ClusterRole`, `ClusterRoleBinding`
+
+**[View Complete API Reference →](https://typekro.run/api/)**
+
+## What is Kro?
+
+[Kubernetes Resource Orchestrator (Kro)](https://kro.run/) is an open-source project by AWS Labs that enables resources to reference each other's runtime state using CEL expressions.
+
+TypeKro works in **Direct Mode** (no Kro required) for simple deployments, or **Kro Mode** for advanced orchestration with runtime dependencies.
+
+## Documentation
+
+- **[Getting Started](https://typekro.run/guide/getting-started)** - 5-minute quick start
+- **[Core Concepts](https://typekro.run/guide/imperative-composition)** - kubernetesComposition API
+- **[API Reference](https://typekro.run/api/)** - Complete API documentation
+- **[Examples](https://typekro.run/examples/)** - Real-world patterns
+
+## Installation
+
+```bash
+# Using bun (recommended)
+bun add typekro arktype
+
+# Using npm
+npm install typekro arktype
+
+# Using yarn
+yarn add typekro arktype
 ```
 
-#### Pattern 2: Kubernetes-First with Cloud Services
-```typescript
-// Start with cloud infrastructure first
-const app = await alchemy('support-services');
-const monitoring = await CloudWatch('webapp-metrics');
-const storage = await S3('webapp-data');
+## Requirements
 
-// Deploy Kubernetes resources with access to cloud resources
-await app.run(async () => {
-  const factory = webappGraph.factory('direct', { 
-    namespace: 'default',
-    alchemyScope: app 
-  });
-  await factory.deploy({ 
-    name: 'webapp',
-    image: 'myapp:latest',
-    // Kubernetes resources can reference cloud resources
-    monitoring: monitoring.endpoint,
-    storage: storage.bucketName
-  });
-});
-```
-
-### Benefits of TypeKro + Alchemy Integration
-
-- **Single Language**: TypeScript for everything - no YAML, HCL, or domain-specific languages
-- **Type Safety Across Platforms**: Catch configuration errors at compile time, not runtime
-- **Cross-Platform References**: Natural references between cloud and Kubernetes resources
-- **Deployment Flexibility**: Use any TypeKro deployment strategy with Alchemy
-- **IDE Support**: Full autocomplete and refactoring across your entire infrastructure
-- **GitOps Compatible**: Generate deterministic YAML while maintaining cloud resource management
-
----
-
-
-## Core Architecture
-
-TypeKro's architecture enables compile-time type safety with runtime intelligence through three key systems:
-
-```mermaid
-graph TD
-    A[TypeScript Code] --> B[Magic Proxy System]
-    B --> C[Schema References]
-    B --> D[Static Values]
-    C --> E[CEL Expressions]
-    D --> F[Direct Values]
-    E --> G[Runtime Resolution]
-    F --> G
-    G --> H{Deployment Strategy}
-    
-    H --> I[YAML Generation]
-    H --> J[Direct Deployment]
-    H --> K[KRO Deployment]
-    
-    I --> L[GitOps Tools<br/>ArgoCD, Flux, kubectl]
-    J --> M[Kubernetes API<br/>Immediate Deployment]
-    K --> N[KRO Controller<br/>Runtime Dependencies]
-    
-    L --> O[Kubernetes Cluster]
-    M --> O
-    N --> O
-    
-    subgraph "Compile Time"
-        A
-        B
-        C
-        D
-        P[IDE Support<br/>Autocomplete<br/>Type Safety]
-    end
-    
-    subgraph "Runtime"
-        E
-        G
-        Q[CEL Evaluation<br/>Cross-Resource Refs<br/>Status Propagation]
-    end
-    
-    A -.-> P
-    N -.-> Q
-    
-    style A fill:#e1f5fe
-    style B fill:#f3e5f5
-    style O fill:#e8f5e8
-    style P fill:#fff3e0
-    style Q fill:#fff3e0
-```
-
-### Magic Proxy System
-
-TypeKro's "magic" comes from its **proxy system** that creates different behaviors for execution-time vs runtime values:
-
-#### Static Values (Known at Execution Time)
-```typescript
-const deployment = simple.Deployment({
-  name: 'my-app',        // Static string
-  replicas: 3,           // Static number
-});
-
-// Accessing static values returns the actual value
-console.log(deployment.spec.replicas); // Returns: 3
-```
-
-#### Dynamic References (Unknown at Execution Time)
-```typescript
-const deployment = simple.Deployment({
-  name: schema.spec.name,  // Schema reference - unknown until runtime
-});
-
-// Accessing schema or status fields creates KubernetesRef objects
-const nameRef = schema.spec.name;        // Creates: KubernetesRef<string>
-const statusRef = deployment.status.readyReplicas; // Creates: KubernetesRef<number>
-```
-
-#### The `$` Prefix for Explicit References
-```typescript
-const configMap = simple.ConfigMap({
-  name: 'config',
-  data: { key: 'value' }  // Static value
-});
-
-const deployment = simple.Deployment({
-  name: 'app',
-  env: {
-    // Static behavior: Uses the known value "value" at execution time
-    STATIC_VALUE: configMap.data.key,
-    
-    // Dynamic behavior: Creates reference resolved by Kro at runtime
-    DYNAMIC_VALUE: configMap.data.$key,
-  }
-});
-```
-
-**Key Rule**: Schema references (`schema.spec.*`) and status references (`resource.status.*`) are automatically converted to CEL expressions. For explicit runtime references to other resource properties, use the `$` prefix.
-
-### Enhanced Types (RefOrValue Pattern)
-
-Every factory function accepts `RefOrValue<T>`, which means any parameter can be:
-
-```typescript
-// 1. Direct value
-name: "my-app"
-
-// 2. Schema reference (becomes CEL)
-name: schema.spec.name
-
-// 3. CEL expression 
-name: Cel.template("%s-service", schema.spec.name)
-
-// 4. Reference to another resource
-env: {
-  DB_HOST: database.service.spec.clusterIP  // Runtime resolution
-}
-```
-
-This pattern provides **compile-time type safety** while enabling **runtime flexibility**.
-
-### CRD Installation Intelligence
-
-TypeKro's direct deployer automatically handles Custom Resource Definition timing:
-
-```typescript
-// TypeKro automatically detects CRD dependencies
-const kroResources = [
-  kroDefinition,           // CRD must be installed first
-  kroInstance             // Instance depends on CRD
-];
-
-const factory = graph.factory('direct', { namespace: 'default' });
-await factory.deploy(spec);  // ✅ Automatically waits for CRD readiness
-```
-
-**Benefits:**
-- **No "CRD not found" errors** - Automatic timing coordination
-- **Zero manual ordering** - Intelligent dependency detection  
-- **Production reliability** - Handles CRD establishment properly
-
-### Runtime vs Compile-time Behavior
-
-| **Aspect** | **Compile-time** | **Runtime** |
-|------------|------------------|-------------|
-| **Type checking** | Full TypeScript validation | N/A |
-| **IDE support** | Autocomplete, refactoring | N/A |
-| **Schema references** | Appear as typed properties | Resolve to CEL expressions |
-| **Resource references** | Type-safe property access | Runtime cluster state lookup |
-| **Validation** | TypeScript + arktype schemas | Kubernetes validation + CEL |
-
----
-
-
-## Enhanced Type System
-
-TypeKro provides **enhanced types** through its magic proxy system, eliminating the need for optional chaining (`?.`) when working with schema and resource references.
-
-### Schema References - Always Present
-
-When you access schema fields in the resource builder, TypeScript treats them as always present:
-
-```typescript
-const graph = toResourceGraph(
-  {
-    name: 'my-app',
-    spec: type({
-      name: 'string',
-      image: 'string',
-      replicas: 'number',
-      environment: 'string',
-    }),
-    status: type({
-      ready: 'boolean',
-      url: 'string',
-    }),
-  },
-  (schema) => ({
-    deployment: simple.Deployment({
-      // ✅ No optional chaining needed - TypeScript knows these exist
-      name: schema.spec.name,           // Type: string (not string | undefined)
-      image: schema.spec.image,         // Type: string (not string | undefined)
-      replicas: schema.spec.replicas,   // Type: number (not number | undefined)
-      
-      env: {
-        NODE_ENV: schema.spec.environment,  // Type: string
-      },
-    }),
-  }),
-  (schema, resources) => ({
-    // ✅ Status fields are also enhanced - no optional chaining needed
-    ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
-    url: Cel.template('https://%s.example.com', schema.spec.name),
-  })
-);
-```
-
-### Resource Status References - Enhanced Types
-
-Resource status fields are enhanced to be non-optional within the builders:
-
-```typescript
-// Without TypeKro (regular Kubernetes types)
-const regularK8s = {
-  // These would require optional chaining
-  replicas: deployment.status?.readyReplicas,        // number | undefined
-  conditions: deployment.status?.conditions?.[0],   // Condition | undefined
-};
-
-// With TypeKro (enhanced types)
-const graph = toResourceGraph(
-  // ... schema definition
-  (schema, resources) => ({
-    // ✅ No optional chaining needed - enhanced types guarantee presence
-    replicas: resources.deployment.status.readyReplicas,     // Type: number
-    phase: resources.deployment.status.phase,                // Type: string
-    conditions: resources.deployment.status.conditions[0],   // Type: Condition
-    
-    // Complex expressions work naturally
-    healthy: Cel.expr(
-      resources.deployment.status.readyReplicas, ' == ',
-      resources.deployment.spec.replicas
-    ),
-  })
-);
-```
-
-### How Enhanced Types Work
-
-The magic proxy system provides type enhancement while respecting the static/dynamic value distinction:
-
-1. **Enhanced Type Safety**: Schema and resource references appear as non-optional TypeScript types
-2. **Dynamic Reference Creation**: Schema and status field access creates `KubernetesRef<T>` objects
-3. **Static Value Preservation**: Known values at execution time remain as actual values
-
-```typescript
-// Schema references (always dynamic - unknown until runtime)
-const nameRef = schema.spec.name;                    // Creates: KubernetesRef<string>
-const imageRef = schema.spec.image;                  // Creates: KubernetesRef<string>
-
-// Resource status references (always dynamic - runtime cluster state)
-const replicasRef = resources.deployment.status.readyReplicas;  // Creates: KubernetesRef<number>
-
-// Static values (known at execution time)
-const staticName = 'my-app';                         // Remains: string
-const staticReplicas = 3;                            // Remains: number
-
-// Mixed usage in factory functions
-const deployment = simple.Deployment({
-  name: schema.spec.name,        // Dynamic: KubernetesRef<string> → CEL expression
-  replicas: 3,                   // Static: number → direct value
-  image: 'nginx:latest'          // Static: string → direct value
-});
-```
-
-### Benefits of Enhanced Types
-
-- **No Optional Chaining**: Write cleaner code without `?.` operators
-- **Better IntelliSense**: Full autocomplete for all schema and status fields
-- **Execution-Time Safety**: Catch typos and missing fields when building resources
-- **Runtime Flexibility**: References are resolved dynamically by Kro
-- **Natural Syntax**: Write code that looks like direct property access
-
-This enhanced type system makes TypeKro feel natural to use while maintaining the powerful reference resolution capabilities needed for complex Kubernetes deployments.
-
----
+- Node.js 18+ or Bun
+- TypeScript 5.0+
+- Kubernetes cluster (for deployment)
+- Kro controller (optional, for runtime features)
 
 ## Contributing
 
-We welcome contributions to TypeKro! Whether you're fixing bugs, adding features, or improving documentation, your help makes TypeKro better for everyone.
-
-### Quick Start for Contributors
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
-# Fork and clone the repository
-git clone https://github.com/your-username/typekro.git
+# Clone the repository
+git clone https://github.com/yehudacohen/typekro.git
 cd typekro
 
-# Install dependencies (we use Bun)
+# Install dependencies
 bun install
 
-# Run tests to ensure everything works
+# Run tests
 bun run test
 
-# Make your changes and run quality checks
-bun run quality
+# Build
+bun run build
 ```
-
-### What Can You Contribute?
-
-- 🐛 **Bug Fixes** - Help us squash bugs and improve reliability
-- ✨ **New Features** - Add factory functions for new Kubernetes resources
-- 📚 **Documentation** - Improve examples, guides, and API documentation
-- 🧪 **Tests** - Add test coverage for edge cases and new functionality
-- 🔧 **Tooling** - Improve development experience and CI/CD
-
-**[📖 Read the Complete Contributing Guide →](CONTRIBUTING.md)**
-
-The contributing guide includes:
-- Detailed setup instructions
-- Code structure and architectural principles
-- Testing guidelines and examples
-- PR submission process
-- Release workflow
 
 ## License
 
-Apache 2.0 - see [LICENSE](LICENSE) for details.
+Apache 2.0 - See [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+  <strong>Built with ❤️ for the Kubernetes community</strong>
+  
+  [Documentation](https://typekro.run) • [Discord](https://discord.gg/kKNSDDjW) • [GitHub](https://github.com/yehudacohen/typekro)
+</div>
