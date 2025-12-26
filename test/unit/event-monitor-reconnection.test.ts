@@ -47,9 +47,8 @@ describe('EventMonitor Reconnection Logic', () => {
   }) => {
     let failuresRemaining = options?.failCount ?? 0;
 
-    return (_config: k8s.KubeConfig): k8s.Watch => ({
+    return ((_config: k8s.KubeConfig) => ({
       config: _config,
-      requestTimeoutMs: 0,
       watch: mock(
         (
           _path: string,
@@ -72,7 +71,7 @@ describe('EventMonitor Reconnection Logic', () => {
           });
         }
       ),
-    } as unknown as k8s.Watch);
+    })) as unknown as (config: k8s.KubeConfig) => k8s.Watch;
   };
 
   describe('calculateReconnectDelay', () => {

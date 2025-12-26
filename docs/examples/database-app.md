@@ -1,134 +1,94 @@
-# Database + Application Pattern
+# Database + App
 
-A complete stack with PostgreSQL database and web application.
+Cross-resource references for database connection strings.
 
 ## Complete Example
 
 ```typescript
 import { type } from 'arktype';
 import { kubernetesComposition } from 'typekro';
-import { Deployment, Service, ConfigMap } from 'typekro/simple';
+import { Deployment, Service, Secret } from 'typekro/simple';
 
-const FullStackSpec = type({
-  name: 'string',
-  appImage: 'string',
-  replicas: 'number',
-  dbSize: 'string',
-  environment: '"development" | "staging" | "production"'
+const FullStackSpec = type({ 
+  name: 'string', 
+  appImage: 'string', 
+  replicas: 'number' 
 });
 
-const FullStackStatus = type({
-  phase: '"pending" | "ready" | "failed"',
-  databaseReady: 'boolean',
-  appReady: 'boolean',
-  url: 'string'
+const FullStackStatus = type({ 
+  ready: 'boolean', 
+  dbReady: 'boolean', 
+  appReady: 'boolean' 
 });
 
-export const fullStack = kubernetesComposition(
-  {
-    name: 'fullstack-app',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'FullStack',
-    spec: FullStackSpec,
-    status: FullStackStatus,
-  },
-  (schema) => ({
-    // Database configuration
-    dbConfig: ConfigMap({
-      name: `${schema.spec.name}-db-config`,
-      data: {
-        POSTGRES_DB: schema.spec.name,
-        POSTGRES_USER: 'app'
-      }
-    }),
+export const fullstack = kubernetesComposition({
+  name: 'fullstack',
+  apiVersion: 'example.com/v1alpha1',
+  kind: 'FullStack',
+  spec: FullStackSpec,
+  status: FullStackStatus,
+}, (spec) => {
+  Secret({ 
+    id: 'dbSecret', 
+    name: `${spec.name}-db-secret`, 
+    stringData: { password: 'secret123' } 
+  });
 
-    // Database deployment
-    database: Deployment({
-      name: `${schema.spec.name}-db`,
-      image: 'postgres:15',
-      env: {
-        POSTGRES_DB: schema.spec.name,
-        POSTGRES_USER: 'app',
-        POSTGRES_PASSWORD: 'password' // Use secrets in production
-      },
-      ports: [{ containerPort: 5432 }],
-      resources: schema.spec.environment === 'production' 
-        ? { cpu: '500m', memory: '1Gi' }
-        : { cpu: '100m', memory: '256Mi' }
-    }),
+  const db = Deployment({
+    id: 'db',
+    name: `${spec.name}-db`,
+    image: 'postgres:15',
+    ports: [{ containerPort: 5432 }],
+    env: { POSTGRES_PASSWORD: 'secret123', POSTGRES_DB: spec.name }
+  });
 
-    // Database service
-    dbService: Service({
-      name: `${schema.spec.name}-db-service`,
-      selector: { app: `${schema.spec.name}-db` },
-      ports: [{ port: 5432, targetPort: 5432 }]
-    }),
+  const dbSvc = Service({
+    id: 'dbSvc',
+    name: `${spec.name}-db-svc`,
+    selector: { app: `${spec.name}-db` },
+    ports: [{ port: 5432, targetPort: 5432 }]
+  });
 
-    // Application deployment
-    app: Deployment({
-      name: schema.spec.name,
-      image: schema.spec.appImage,
-      replicas: schema.spec.replicas,
-      env: {
-        DATABASE_HOST: `${schema.spec.name}-db-service`,
-        DATABASE_PORT: '5432',
-        DATABASE_NAME: schema.spec.name,
-        NODE_ENV: schema.spec.environment
-      },
-      ports: [{ containerPort: 3000 }]
-    }),
+  const app = Deployment({
+    id: 'app',
+    name: spec.name,
+    image: spec.appImage,
+    replicas: spec.replicas,
+    ports: [{ containerPort: 3000 }],
+    env: {
+      DATABASE_HOST: dbSvc.status.clusterIP,  // ✨ Cross-resource reference
+      DATABASE_URL: `postgresql://postgres:secret123@${spec.name}-db-svc:5432/${spec.name}`
+    }
+  });
 
-    // Application service
-    appService: Service({
-      name: `${schema.spec.name}-service`,
-      selector: { app: schema.spec.name },
-      ports: [{ port: 80, targetPort: 3000 }],
-      type: 'LoadBalancer'
-    })
-  }),
-  // Status builder using JavaScript expressions
-  (schema, resources) => ({
-    phase: resources.database.status.readyReplicas > 0 && 
-           resources.app.status.readyReplicas > 0 ? 'ready' : 'pending',
-    databaseReady: resources.database.status.readyReplicas > 0,
-    appReady: resources.app.status.readyReplicas >= schema.spec.replicas,
-    url: resources.appService.status.loadBalancer.ingress?.length > 0 
-      ? `http://${resources.appService.status.loadBalancer.ingress[0].ip}` 
-      : 'pending'
-  })
-);
+  return {
+    ready: db.status.readyReplicas > 0 && app.status.readyReplicas >= spec.replicas,
+    dbReady: db.status.readyReplicas > 0,
+    appReady: app.status.readyReplicas >= spec.replicas
+  };
+});
 ```
 
-## Key Features
+## Deploy
 
-- **Database Integration**: PostgreSQL with proper configuration
-- **Environment Variables**: Database connection details passed to app
-- **Resource Scaling**: Different resource allocations per environment
-- **Health Checking**: Status reflects both database and app readiness
-- **Service Discovery**: App connects to database via service name
-
-## Usage Patterns
-
-### Development
 ```typescript
-const factory = fullStack.factory('direct');
-await factory.deploy({
-  name: 'dev-app',
-  appImage: 'myapp:latest',
-  replicas: 1,
-  dbSize: '1Gi',
-  environment: 'development'
-});
+const factory = fullstack.factory('direct', { namespace: 'dev' });
+await factory.deploy({ name: 'myapp', appImage: 'node:20', replicas: 2 });
 ```
 
-### Production
-```typescript
-const factory = fullStack.factory('kro');
-await factory.deploy({
-  name: 'prod-app', 
-  appImage: 'myapp:v1.2.3',
-  replicas: 5,
-  dbSize: '100Gi',
-  environment: 'production'
-});
-```
+## Key Concepts
+
+- **Cross-resource references**: `dbSvc.status.clusterIP` references the database service's runtime IP
+- **Service discovery**: App connects to database via service name
+- **Status aggregation**: Overall readiness depends on both database and app
+- **Template literals**: Dynamic connection strings with `` `${spec.name}` ``
+- **Resource IDs**: Every resource that's referenced (in status or from other resources) has an `id`
+
+::: tip When is `id` optional?
+The Secret in this example has `id: 'dbSecret'` but it's not referenced anywhere. You could omit it, but including `id` on all resources is good practice for consistency and future-proofing.
+:::
+
+## Next Steps
+
+- [Helm Integration](./helm-integration.md) - Use Helm charts for databases
+- [Multi-Environment](./multi-environment.md) - Environment-specific configs
