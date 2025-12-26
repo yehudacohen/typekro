@@ -22,6 +22,7 @@ import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kuber
 import { simple } from '../../src/index.js';
 import {
   createCoreV1ApiClient,
+  deleteNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
 } from './shared-kubeconfig';
@@ -65,7 +66,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
     // Create a test namespace to avoid TLS errors from non-existent namespaces
     testNamespace = `alchemy-test-${Date.now().toString().slice(-6)}`;
     try {
-      await k8sApi.createNamespace({ metadata: { name: testNamespace } });
+      await k8sApi.createNamespace({ body: { metadata: { name: testNamespace } } });
       console.log(`✅ Created test namespace: ${testNamespace}`);
     } catch (error) {
       console.warn(`⚠️ Failed to create test namespace: ${error}`);
@@ -106,14 +107,9 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
   afterAll(async () => {
     console.log('🧹 Cleaning up alchemy scope...');
 
-    // Clean up test namespace
+    // Clean up test namespace and wait for full deletion
     if (testNamespace && testNamespace !== 'default') {
-      try {
-        await k8sApi.deleteNamespace(testNamespace);
-        console.log(`✅ Cleaned up test namespace: ${testNamespace}`);
-      } catch (error) {
-        console.warn(`⚠️ Failed to cleanup test namespace: ${error}`);
-      }
+      await deleteNamespaceAndWait(testNamespace, kubeConfig);
     }
   });
 

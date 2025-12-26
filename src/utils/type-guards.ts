@@ -9,8 +9,10 @@ import {
   CEL_EXPRESSION_BRAND,
   KUBERNETES_REF_BRAND,
   MIXED_TEMPLATE_BRAND,
+  BrandChecks,
 } from '../core/constants/brands.js';
 import type { CelExpression, KubernetesRef, ResourceReference } from '../core/types.js';
+import type { NestedCompositionResource } from '../core/types/deployment.js';
 
 /**
  * Type guard to check if a value is a compile-time KubernetesRef.
@@ -72,15 +74,15 @@ export function containsKubernetesRefs(value: unknown): boolean {
   if (isKubernetesRef(value)) {
     return true;
   }
-  
+
   if (Array.isArray(value)) {
-    return value.some(item => containsKubernetesRefs(item));
+    return value.some((item) => containsKubernetesRefs(item));
   }
-  
+
   if (value && typeof value === 'object') {
-    return Object.values(value).some(val => containsKubernetesRefs(val));
+    return Object.values(value).some((val) => containsKubernetesRefs(val));
   }
-  
+
   return false;
 }
 
@@ -106,4 +108,13 @@ export function extractResourceReferences(obj: unknown): KubernetesRef<unknown>[
   }
 
   return refs;
+}
+
+/**
+ * Type guard for NestedCompositionResource
+ */
+export function isNestedCompositionResource(
+  obj: unknown
+): obj is NestedCompositionResource<any, any> {
+  return BrandChecks.isNestedComposition(obj);
 }

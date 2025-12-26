@@ -19,9 +19,7 @@ import type {
 import { validateResourceId } from '../core/validation/cel-validator.js';
 import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index';
 import { isCelExpression } from '../utils/type-guards.js';
-import { 
-  conditionalExpressionIntegrator,
-} from '../core/expressions/conditional-integration.js';
+import { conditionalExpressionIntegrator } from '../core/expressions/conditional-integration.js';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
@@ -46,10 +44,16 @@ export interface CompositionContext {
   resourceCounter: number;
   /** Counter for generating unique closure IDs */
   closureCounter: number;
+  /** Counter for composition instances */
+  compositionInstanceCounter: number;
+  /** Map of variable names to resource IDs for CEL expression generation */
+  variableMappings: Record<string, string>;
   /** Add a resource to the context */
   addResource(id: string, resource: Enhanced<any, any>): void;
   /** Add a deployment closure to the context */
   addClosure(id: string, closure: any): void;
+  /** Add a variable to resource ID mapping */
+  addVariableMapping(variableName: string, resourceId: string): void;
   /** Generate a unique resource ID */
   generateResourceId(kind: string, name?: string): string;
   /** Generate a unique closure ID */
@@ -113,11 +117,16 @@ export function createCompositionContext(name?: string): CompositionContext {
     closures: {},
     resourceCounter: 0,
     closureCounter: 0,
+    compositionInstanceCounter: 0,
+    variableMappings: {},
     addResource(id: string, resource: Enhanced<any, any>) {
       this.resources[id] = resource;
     },
     addClosure(id: string, closure: any) {
       this.closures[id] = closure;
+    },
+    addVariableMapping(variableName: string, resourceId: string) {
+      this.variableMappings[variableName] = resourceId;
     },
     generateResourceId(kind: string, resourceName?: string) {
       return resourceName || `${kind.toLowerCase()}-${++this.resourceCounter}`;
@@ -157,10 +166,10 @@ function createRefFactory(resourceId: string, basePath: string): any {
       if (prop === KUBERNETES_REF_BRAND || prop === 'resourceId' || prop === 'fieldPath') {
         return target[prop as keyof typeof target];
       }
-      
+
       // Check for other properties that exist on the target
       if (prop in target) return target[prop as keyof typeof target];
-      
+
       // For unknown properties, create nested references
       return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
     },
@@ -177,13 +186,46 @@ function createPropertyProxy<T extends object>(
   }
 
   return new Proxy(target, {
+    /**
+     * Trap for Object.keys, JSON.stringify, etc.
+     * This is crucial for making the proxy serializable. It ensures that
+     * when something tries to get the keys of the proxy, it gets the keys
+     * of the underlying target object.
+     */
+    ownKeys(obj) {
+      return Reflect.ownKeys(obj);
+    },
+    /**
+     * Required for Object.keys() to work correctly with ownKeys trap
+     */
+    getOwnPropertyDescriptor(obj, prop) {
+      return Reflect.getOwnPropertyDescriptor(obj, prop);
+    },
     get: (obj, prop) => {
       // Handle toJSON specially to ensure proper serialization
       if (prop === 'toJSON') {
         return () => {
+          // Deep clone with array preservation
+          const deepClone = (value: any): any => {
+            if (value === null || value === undefined) return value;
+            if (typeof value !== 'object') return value;
+            if (value instanceof Date) return new Date(value);
+            if (value instanceof RegExp) return new RegExp(value);
+            if (Array.isArray(value)) {
+              return value.map((item) => deepClone(item));
+            }
+            const cloned: Record<string, any> = {};
+            for (const k of Object.keys(value)) {
+              if (typeof value[k] !== 'function') {
+                cloned[k] = deepClone(value[k]);
+              }
+            }
+            return cloned;
+          };
+
           const result: Record<string, any> = {};
           for (const key of Object.keys(obj)) {
-            result[key] = (obj as any)[key];
+            result[key] = deepClone((obj as any)[key]);
           }
           return result;
         };
@@ -205,13 +247,13 @@ function createPropertyProxy<T extends object>(
       // IMPORTANT: For JavaScript-to-CEL conversion to work, we need to check if we're in
       // a status builder context where ALL property access should return KubernetesRef objects
       const isStatusBuilderContext = (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
-      
+
       if (isStatusBuilderContext && (basePath === 'status' || basePath === 'spec')) {
         // In status builder context, ALWAYS return KubernetesRef objects for spec/status fields
         // This allows expressions like `resources.deployment.status.readyReplicas > 0` to work
         return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
       }
-      
+
       if (prop in obj) {
         // If it's a known property, return its value.
         return obj[prop as keyof T];
@@ -259,16 +301,35 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
       // Handle toJSON specially to ensure proper serialization
       if (prop === 'toJSON') {
         return () => {
-          // Create a plain object with all enumerable properties
+          // Deep clone with array preservation
+          // Cannot use structuredClone because it can't clone functions (readinessEvaluator)
+          const deepClone = (obj: any): any => {
+            if (obj === null || obj === undefined) return obj;
+            if (typeof obj !== 'object') return obj;
+            if (obj instanceof Date) return new Date(obj);
+            if (obj instanceof RegExp) return new RegExp(obj);
+            if (Array.isArray(obj)) {
+              return obj.map((item) => deepClone(item));
+            }
+            const result: Record<string, any> = {};
+            for (const key of Object.keys(obj)) {
+              if (typeof obj[key] !== 'function') {
+                result[key] = deepClone(obj[key]);
+              }
+            }
+            return result;
+          };
+
+          // Clone and filter out internal fields that should not be sent to Kubernetes
           const result: Record<string, any> = {};
-          const targetObj = target as Record<string, any>;
           for (const key of Object.keys(target)) {
             if (
               key !== '__resourceId' &&
               key !== 'withReadinessEvaluator' &&
-              key !== 'readinessEvaluator'
+              key !== 'readinessEvaluator' &&
+              key !== 'id' // Filter out id field - it's for TypeKro internal use only
             ) {
-              result[key] = targetObj[key];
+              result[key] = deepClone((target as any)[key]);
             }
           }
           return result;
@@ -453,9 +514,44 @@ function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
   };
 }
 
+/**
+ * Options for createResource function
+ */
+export interface CreateResourceOptions {
+  /**
+   * Kubernetes scope of the resource
+   * - 'namespaced': Resource must exist within a namespace
+   * - 'cluster': Resource is cluster-scoped and cannot have a namespace
+   */
+  scope?: 'namespaced' | 'cluster';
+}
+
 export function createResource<TSpec extends object, TStatus extends object>(
-  resource: KubernetesResource<TSpec, TStatus>
+  resource: KubernetesResource<TSpec, TStatus>,
+  options?: CreateResourceOptions
 ): Enhanced<TSpec, TStatus> {
+  // Validate namespace scope rules
+  if (options?.scope) {
+    const hasNamespace = !!resource.metadata?.namespace;
+
+    if (options.scope === 'cluster' && hasNamespace) {
+      throw new Error(
+        `${resource.kind} is cluster-scoped and cannot have a namespace. ` +
+          `Remove the 'namespace' field from metadata.`
+      );
+    }
+
+    if (options.scope === 'namespaced' && !hasNamespace) {
+      debugLogger.warn(
+        `${resource.kind} is namespaced but no namespace specified. Kubernetes will use 'default'.`,
+        {
+          kind: resource.kind,
+          name: resource.metadata?.name,
+        }
+      );
+    }
+  }
+
   let resourceId: string;
 
   // Check for id field on the resource itself
@@ -467,6 +563,10 @@ export function createResource<TSpec extends object, TStatus extends object>(
     if (!validation.isValid) {
       throw new Error(`Invalid resource ID: ${validation.error}`);
     }
+
+    // Remove the id field from the resource to prevent it from being sent to Kubernetes
+    const { id: _id, ...cleanResource } = resource as any;
+    resource = cleanResource;
   } else {
     // Use deterministic ID generation by default
     const name = resource.metadata?.name || resource.kind.toLowerCase();
@@ -519,7 +619,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
   // Add conditional expression support
   const enhancedWithConditionals = conditionalExpressionIntegrator.addConditionalSupport(enhanced, {
     autoProcess: false, // Don't auto-process until we know the factory type
-    validateExpressions: true
+    validateExpressions: true,
   });
 
   return enhancedWithConditionals as Enhanced<TSpec, TStatus>;

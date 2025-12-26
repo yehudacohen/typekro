@@ -118,6 +118,8 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
   describe('KroDeploymentStrategy', () => {
     it('should handle RGD deployment failures', async () => {
       // Mock the deployment engine to handle both RGD and custom resource deployment
+      // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+      // without a .body wrapper. The mocks must return the resource directly.
       const mockKroEngine = {
         ...mockDeploymentEngine,
         deployResource: async (resource: any, options: any) => {
@@ -133,36 +135,34 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
           };
         },
         // Add the getKubernetesApi method that KroDeploymentStrategy needs
+        // NOTE: Returns objects directly (no .body wrapper)
         getKubernetesApi: () => ({
           read: async (resource: any) => ({
-            body: {
-              ...resource,
-              status: {
-                state: 'ACTIVE',
-                conditions: [
-                  { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
-                ],
-                // Add custom status fields to make the readiness check pass
-                customField: 'ready',
-                url: 'http://test-app.example.com',
-              },
+            ...resource,
+            status: {
+              state: 'ACTIVE',
+              conditions: [
+                { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
+              ],
+              // Add custom status fields to make the readiness check pass
+              customField: 'ready',
+              url: 'http://test-app.example.com',
             },
           }),
         }),
         // Keep the k8sApi property for backward compatibility
+        // NOTE: Returns objects directly (no .body wrapper)
         k8sApi: {
           read: async (resource: any) => ({
-            body: {
-              ...resource,
-              status: {
-                state: 'ACTIVE',
-                conditions: [
-                  { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
-                ],
-                // Add custom status fields to make the readiness check pass
-                customField: 'ready',
-                url: 'http://test-app.example.com',
-              },
+            ...resource,
+            status: {
+              state: 'ACTIVE',
+              conditions: [
+                { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
+              ],
+              // Add custom status fields to make the readiness check pass
+              customField: 'ready',
+              url: 'http://test-app.example.com',
             },
           }),
         },
@@ -190,6 +190,7 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
 
     it('should handle RGD deployment failures gracefully', async () => {
       // Mock the deployment engine to fail on RGD deployment
+      // NOTE: In the new API, methods return objects directly (no .body wrapper)
       const failingKroEngine = {
         ...mockDeploymentEngine,
         deployResource: async (resource: any, _options: any) => {
@@ -203,16 +204,15 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
           };
         },
         // Add the getKubernetesApi method that KroDeploymentStrategy needs
+        // NOTE: Returns objects directly (no .body wrapper)
         getKubernetesApi: () => ({
           read: async (resource: any) => ({
-            body: {
-              ...resource,
-              status: {
-                state: 'ACTIVE',
-                conditions: [
-                  { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
-                ],
-              },
+            ...resource,
+            status: {
+              state: 'ACTIVE',
+              conditions: [
+                { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
+              ],
             },
           }),
         }),

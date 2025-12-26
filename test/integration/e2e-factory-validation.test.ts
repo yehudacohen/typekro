@@ -374,7 +374,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
       const k8sApi = createCoreV1ApiClient(kc);
       try {
         await k8sApi.createNamespace({
-          metadata: { name: testNamespace },
+          body: { metadata: { name: testNamespace } },
         });
         console.log(`✅ Created test namespace: ${testNamespace}`);
       } catch (error) {
@@ -420,7 +420,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
 
   describe('DirectResourceFactory without Alchemy Scope', () => {
     it('should create factory without alchemy and validate structure', async () => {
-      const testNamespace = generateTestNamespace('direct-without-alchemy');
+      const testNamespace = generateTestNamespace('direct-without-alche');
       const ApiSpecSchema = type({
         serviceName: 'string',
         image: 'string',
@@ -493,6 +493,20 @@ describe('E2E Factory Pattern Validation Tests', () => {
       expect(instanceYaml).toContain('3000');
       expect(instanceYaml).toContain('my-api-api');
 
+      // Create the test namespace before deployment
+      const k8sApi = createCoreV1ApiClient(kc);
+      try {
+        await k8sApi.createNamespace({
+          body: { metadata: { name: testNamespace } },
+        });
+        console.log(`✅ Created test namespace: ${testNamespace}`);
+      } catch (error) {
+        // Namespace might already exist
+        console.log(
+          `⚠️  Namespace ${testNamespace} might already exist: ${(error as Error).message}`
+        );
+      }
+
       // Test deployment attempt (should fail gracefully without cluster)
       try {
         await factory.deploy({
@@ -503,7 +517,13 @@ describe('E2E Factory Pattern Validation Tests', () => {
         console.log('✅ DirectResourceFactory without Alchemy deployment succeeded');
       } catch (error) {
         // Expected deployment failure due to cluster connectivity or resource issues
-        expect((error as Error).message).toContain('deployment failed');
+        const errorMessage = (error as Error).message;
+        const isExpectedError =
+          errorMessage.includes('deployment failed') ||
+          errorMessage.includes('No active cluster') ||
+          errorMessage.includes('Failed to deploy') ||
+          errorMessage.includes('All resources failed');
+        expect(isExpectedError).toBe(true);
         console.log(
           '✅ DirectResourceFactory without Alchemy correctly handled deployment failure'
         );

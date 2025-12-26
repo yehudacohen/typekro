@@ -1,6 +1,6 @@
 /**
  * Composition Integration for JavaScript to CEL Expression Conversion
- * 
+ *
  * This module provides integration between the kubernetesComposition API and the
  * JavaScript to CEL expression conversion system. It handles KubernetesRef detection
  * and conversion within imperative composition patterns.
@@ -12,7 +12,7 @@ import type { KubernetesRef } from '../types/common.js';
 import type {
   MagicAssignableShape,
   KroCompatibleType,
-  SchemaProxy
+  SchemaProxy,
 } from '../types/serialization.js';
 import type { Enhanced } from '../types.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
@@ -73,20 +73,26 @@ export class CompositionExpressionAnalyzer {
 
     // Initialize pattern-specific configurations
     this.patternConfigs = new Map([
-      ['imperative', {
-        pattern: 'imperative',
-        allowSideEffects: true,
-        trackResourceCreation: true,
-        validateScope: true,
-        convertTocel: true,
-      }],
-      ['declarative', {
-        pattern: 'declarative',
-        allowSideEffects: false,
-        trackResourceCreation: false,
-        validateScope: false,
-        convertTocel: true,
-      }],
+      [
+        'imperative',
+        {
+          pattern: 'imperative',
+          allowSideEffects: true,
+          trackResourceCreation: true,
+          validateScope: true,
+          convertTocel: true,
+        },
+      ],
+      [
+        'declarative',
+        {
+          pattern: 'declarative',
+          allowSideEffects: false,
+          trackResourceCreation: false,
+          validateScope: false,
+          convertTocel: true,
+        },
+      ],
     ]);
   }
 
@@ -107,13 +113,13 @@ export class CompositionExpressionAnalyzer {
 
     // Look for imperative patterns
     const imperativeIndicators = [
-      /\.add\w+\(/,  // .addResource, .addService, etc.
-      /register\w+\(/,  // registerResource, etc.
-      /create\w+\(/,  // createResource, etc.
-      /simple\w+\(/,  // simpleDeployment, simpleService, etc.
+      /\.add\w+\(/, // .addResource, .addService, etc.
+      /register\w+\(/, // registerResource, etc.
+      /create\w+\(/, // createResource, etc.
+      /simple\w+\(/, // simpleDeployment, simpleService, etc.
     ];
 
-    const hasImperativeIndicators = imperativeIndicators.some(pattern => pattern.test(fnString));
+    const hasImperativeIndicators = imperativeIndicators.some((pattern) => pattern.test(fnString));
 
     return hasImperativeIndicators ? 'imperative' : 'declarative';
   }
@@ -123,7 +129,7 @@ export class CompositionExpressionAnalyzer {
    */
   analyzeCompositionFunctionWithPattern<
     TSpec extends KroCompatibleType,
-    TStatus extends KroCompatibleType
+    TStatus extends KroCompatibleType,
   >(
     compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
     schemaProxy: SchemaProxy<TSpec, TStatus>,
@@ -154,7 +160,7 @@ export class CompositionExpressionAnalyzer {
 
       // Check for side effects
       const resourcesAfter = Object.keys(context.resources);
-      sideEffectsDetected = resourcesAfter.some(id => !resourcesBefore.has(id));
+      sideEffectsDetected = resourcesAfter.some((id) => !resourcesBefore.has(id));
       resourceCreationTracked = true;
 
       // Perform scope validation if enabled
@@ -228,7 +234,9 @@ export class CompositionExpressionAnalyzer {
     // Check imperative pattern with direct factory
     if (pattern === 'imperative' && factoryType === 'direct') {
       if (!context) {
-        warnings.push('Imperative pattern without composition context may not work correctly with direct factory');
+        warnings.push(
+          'Imperative pattern without composition context may not work correctly with direct factory'
+        );
         recommendations.push('Ensure kubernetesComposition is used with proper context management');
       }
     }
@@ -238,14 +246,18 @@ export class CompositionExpressionAnalyzer {
       const resourceCount = Object.keys(context.resources).length;
       if (resourceCount > 0) {
         warnings.push('Declarative pattern detected but resources found in composition context');
-        recommendations.push('Consider using imperative pattern (kubernetesComposition) for side-effect based resource creation');
+        recommendations.push(
+          'Consider using imperative pattern (kubernetesComposition) for side-effect based resource creation'
+        );
       }
     }
 
     // Check CEL conversion compatibility
     if (factoryType === 'kro' && !config.convertTocel) {
       isCompatible = false;
-      warnings.push(`Pattern '${pattern}' is not compatible with Kro factory (CEL conversion required)`);
+      warnings.push(
+        `Pattern '${pattern}' is not compatible with Kro factory (CEL conversion required)`
+      );
       recommendations.push('Use direct factory or enable CEL conversion for this pattern');
     }
 
@@ -267,17 +279,23 @@ export class CompositionExpressionAnalyzer {
 
     if (pattern === 'imperative') {
       if (analysisResult.kubernetesRefs.length === 0) {
-        recommendations.push('Consider using declarative pattern (toResourceGraph) for static compositions without KubernetesRef objects');
+        recommendations.push(
+          'Consider using declarative pattern (toResourceGraph) for static compositions without KubernetesRef objects'
+        );
       }
 
       if (analysisResult.referencedResources.length > 10) {
-        recommendations.push('Large number of resource references detected - consider breaking into smaller compositions');
+        recommendations.push(
+          'Large number of resource references detected - consider breaking into smaller compositions'
+        );
       }
     }
 
     if (pattern === 'declarative') {
       if (analysisResult.kubernetesRefs.length > 0) {
-        recommendations.push('KubernetesRef objects detected - imperative pattern (kubernetesComposition) might be more suitable');
+        recommendations.push(
+          'KubernetesRef objects detected - imperative pattern (kubernetesComposition) might be more suitable'
+        );
       }
     }
 
@@ -287,10 +305,7 @@ export class CompositionExpressionAnalyzer {
   /**
    * Analyze a composition function for KubernetesRef usage and expression conversion needs
    */
-  analyzeCompositionFunction<
-    TSpec extends KroCompatibleType,
-    TStatus extends KroCompatibleType
-  >(
+  analyzeCompositionFunction<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
     compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
     schemaProxy: SchemaProxy<TSpec, TStatus>,
     context?: CompositionContext
@@ -310,7 +325,10 @@ export class CompositionExpressionAnalyzer {
       };
 
       // Analyze the status shape for KubernetesRef objects
-      const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(statusShape, analysisContext);
+      const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
+        statusShape,
+        analysisContext
+      );
 
       // Extract referenced resources from the composition context if available
       const referencedResources = this.extractReferencedResources(context);
@@ -321,7 +339,9 @@ export class CompositionExpressionAnalyzer {
       const conversionMetadata = {
         expressionsAnalyzed: Object.keys(analysisResult.fieldResults).length,
         kubernetesRefsDetected: analysisResult.dependencies.length,
-        celExpressionsGenerated: requiresCelConversion ? Object.keys(analysisResult.fieldResults).length : 0,
+        celExpressionsGenerated: requiresCelConversion
+          ? Object.keys(analysisResult.fieldResults).length
+          : 0,
       };
 
       return {
@@ -369,7 +389,7 @@ export class CompositionExpressionAnalyzer {
 
       // Find newly created resources
       const resourcesAfter = Object.keys(currentContext.resources);
-      const resourcesCreated = resourcesAfter.filter(id => !resourcesBefore.has(id));
+      const resourcesCreated = resourcesAfter.filter((id) => !resourcesBefore.has(id));
 
       // Analyze newly created resources for KubernetesRef objects
       const kubernetesRefsInResources: KubernetesRef<unknown>[] = [];
@@ -398,12 +418,12 @@ export class CompositionExpressionAnalyzer {
    * Process a composition's status shape for CEL conversion
    */
   processCompositionStatus<TStatus extends KroCompatibleType>(
-    statusShape: MagicAssignableShape<TStatus>,
+    statusShape: TStatus | MagicAssignableShape<TStatus>,
     factoryType: 'direct' | 'kro' = 'kro'
   ): MagicAssignableShape<TStatus> {
     if (factoryType === 'direct') {
       // For direct factory, leave expressions as-is for runtime evaluation
-      return statusShape;
+      return statusShape as MagicAssignableShape<TStatus>;
     }
 
     // Create analysis context
@@ -414,14 +434,17 @@ export class CompositionExpressionAnalyzer {
     };
 
     // For Kro factory, convert KubernetesRef-containing expressions to CEL
-    return this.magicAssignableAnalyzer.analyzeMagicAssignableShape(statusShape, analysisContext).processedShape;
+    return this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
+      statusShape as MagicAssignableShape<TStatus>,
+      analysisContext
+    ).processedShape as MagicAssignableShape<TStatus>;
   }
 
   /**
    * Enhanced status building with comprehensive KubernetesRef handling
    */
   buildCompositionStatus<TStatus extends KroCompatibleType>(
-    statusShape: MagicAssignableShape<TStatus>,
+    statusShape: TStatus | MagicAssignableShape<TStatus>,
     context: CompositionContext,
     factoryType: 'direct' | 'kro' = 'kro'
   ): {
@@ -444,7 +467,10 @@ export class CompositionExpressionAnalyzer {
     };
 
     // Analyze the status shape for KubernetesRef objects
-    const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(statusShape, analysisContext);
+    const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
+      statusShape as MagicAssignableShape<TStatus>,
+      analysisContext
+    );
 
     // Track context for dependency analysis
     const contextTracking = this.contextTracker.trackCompositionContext(context);
@@ -470,10 +496,10 @@ export class CompositionExpressionAnalyzer {
 
     if (factoryType === 'direct') {
       // For direct factory, leave expressions as-is for runtime evaluation
-      processedStatus = statusShape;
+      processedStatus = statusShape as MagicAssignableShape<TStatus>;
     } else {
       // For Kro factory, convert KubernetesRef-containing expressions to CEL
-      processedStatus = analysisResult.processedShape;
+      processedStatus = analysisResult.processedShape as MagicAssignableShape<TStatus>;
       celExpressionsGenerated = Object.keys(analysisResult.fieldResults).length;
     }
 
@@ -514,7 +540,10 @@ export class CompositionExpressionAnalyzer {
       };
 
       // Analyze the status shape
-      const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(statusShape, analysisContext);
+      const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
+        statusShape,
+        analysisContext
+      );
 
       // Validate each KubernetesRef
       for (const ref of analysisResult.dependencies) {
@@ -577,9 +606,10 @@ export class CompositionExpressionAnalyzer {
           }
         }
       }
-
     } catch (error) {
-      errors.push(`Status shape validation failed: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(
+        `Status shape validation failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
     return {
@@ -607,7 +637,9 @@ export class CompositionExpressionAnalyzer {
   /**
    * Extract KubernetesRef objects from a resource
    */
-  public extractKubernetesRefsFromResource(resource: Enhanced<unknown, unknown>): KubernetesRef<unknown>[] {
+  public extractKubernetesRefsFromResource(
+    resource: Enhanced<unknown, unknown>
+  ): KubernetesRef<unknown>[] {
     const refs: KubernetesRef<unknown>[] = [];
 
     const traverse = (obj: unknown): void => {
@@ -703,7 +735,9 @@ export class CompositionContextTracker {
   /**
    * Extract KubernetesRef objects from a resource
    */
-  public extractKubernetesRefsFromResource(resource: Enhanced<unknown, unknown>): KubernetesRef<unknown>[] {
+  public extractKubernetesRefsFromResource(
+    resource: Enhanced<unknown, unknown>
+  ): KubernetesRef<unknown>[] {
     const refs: KubernetesRef<unknown>[] = [];
 
     const traverse = (obj: unknown, path: string = ''): void => {
@@ -803,7 +837,7 @@ export class MagicProxyScopeManager {
       // Also register these resources in the current scope for accessibility
       const currentScope = this.getCurrentScope();
       if (currentScope && currentScope !== scope) {
-        mergedResourceIds.forEach(id => currentScope.resourceIds.add(id));
+        mergedResourceIds.forEach((id) => currentScope.resourceIds.add(id));
       }
     }
   }
@@ -871,11 +905,11 @@ export class MagicProxyScopeManager {
     // Collect resources from current scope and all parent scopes
     let scope: NestedCompositionScope | undefined = currentScope;
     while (scope) {
-      scope.resourceIds.forEach(id => accessibleResources.add(id));
+      scope.resourceIds.forEach((id) => accessibleResources.add(id));
 
       // Add merged resources from nested compositions
       if (scope.mergedResourceIds) {
-        scope.mergedResourceIds.forEach(id => accessibleResources.add(id));
+        scope.mergedResourceIds.forEach((id) => accessibleResources.add(id));
       }
 
       scope = scope.parentScope;
@@ -905,7 +939,9 @@ export class MagicProxyScopeManager {
     let scope: NestedCompositionScope | undefined = currentScope;
 
     while (scope) {
-      hierarchy.unshift(`${scope.contextId} (depth: ${scope.depth}, resources: ${scope.resourceIds.size})`);
+      hierarchy.unshift(
+        `${scope.contextId} (depth: ${scope.depth}, resources: ${scope.resourceIds.size})`
+      );
       scope = scope.parentScope;
     }
 
@@ -1017,10 +1053,7 @@ export class CompositionIntegrationHooks {
   /**
    * Hook called before composition execution to set up expression analysis
    */
-  beforeCompositionExecution<
-    TSpec extends KroCompatibleType,
-    TStatus extends KroCompatibleType
-  >(
+  beforeCompositionExecution<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
     compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
     schemaProxy: SchemaProxy<TSpec, TStatus>,
     contextId: string
@@ -1030,10 +1063,7 @@ export class CompositionIntegrationHooks {
 
     // Pre-analyze the composition for optimization opportunities
     try {
-      const analysisResult = this.analyzer.analyzeCompositionFunction(
-        compositionFn,
-        schemaProxy
-      );
+      const analysisResult = this.analyzer.analyzeCompositionFunction(compositionFn, schemaProxy);
 
       // Store analysis result for later use during serialization
       if (analysisResult.requiresCelConversion) {
@@ -1043,7 +1073,9 @@ export class CompositionIntegrationHooks {
       }
     } catch (error) {
       // Non-fatal error - composition can continue without pre-analysis
-      console.warn(`Composition pre-analysis failed: ${error instanceof Error ? error.message : String(error)}`);
+      console.warn(
+        `Composition pre-analysis failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -1089,7 +1121,8 @@ export class CompositionIntegrationHooks {
     this.scopeManager.registerResource(resourceId);
 
     // Analyze KubernetesRef usage
-    const refs = this.contextTracker.getCachedResourceKubernetesRefs(resourceId) ||
+    const refs =
+      this.contextTracker.getCachedResourceKubernetesRefs(resourceId) ||
       this.contextTracker.extractKubernetesRefsFromResource(resource);
 
     if (refs.length > 0) {
@@ -1101,7 +1134,9 @@ export class CompositionIntegrationHooks {
       for (const ref of refs) {
         const validation = this.scopeManager.validateKubernetesRefScope(ref);
         if (!validation.isValid) {
-          console.warn(`KubernetesRef validation failed for resource ${resourceId}: ${validation.error}`);
+          console.warn(
+            `KubernetesRef validation failed for resource ${resourceId}: ${validation.error}`
+          );
         }
       }
     }
@@ -1181,7 +1216,7 @@ export class CompositionIntegrationHooks {
 
     // Check if new resources were created as side effects
     const resourcesAfter = Object.keys(activeContext.resources);
-    const newResources = resourcesAfter.filter(id => !resourcesBefore.has(id));
+    const newResources = resourcesAfter.filter((id) => !resourcesBefore.has(id));
 
     // Handle each new resource
     for (const newResourceId of newResources) {
@@ -1202,14 +1237,12 @@ export class CompositionIntegrationHooks {
   /**
    * Track magic proxy usage during composition execution
    */
-  trackMagicProxyUsage(
-    proxyAccess: {
-      resourceId: string;
-      fieldPath: string;
-      accessType: 'read' | 'write';
-      value?: unknown;
-    }
-  ): void {
+  trackMagicProxyUsage(proxyAccess: {
+    resourceId: string;
+    fieldPath: string;
+    accessType: 'read' | 'write';
+    value?: unknown;
+  }): void {
     const currentScope = this.scopeManager.getCurrentScope();
 
     if (!currentScope) {
@@ -1217,8 +1250,10 @@ export class CompositionIntegrationHooks {
     }
 
     // Validate that the accessed resource is in scope
-    if (proxyAccess.resourceId !== '__schema__' &&
-      !this.scopeManager.isResourceAccessible(proxyAccess.resourceId)) {
+    if (
+      proxyAccess.resourceId !== '__schema__' &&
+      !this.scopeManager.isResourceAccessible(proxyAccess.resourceId)
+    ) {
       console.warn(
         `Magic proxy access to out-of-scope resource: ${proxyAccess.resourceId}.${proxyAccess.fieldPath}`
       );
@@ -1226,12 +1261,12 @@ export class CompositionIntegrationHooks {
 
     // Track KubernetesRef creation from magic proxy access
     if (proxyAccess.accessType === 'read' && isKubernetesRef(proxyAccess.value)) {
-      const validation = this.scopeManager.validateKubernetesRefScope(proxyAccess.value as KubernetesRef<unknown>);
+      const validation = this.scopeManager.validateKubernetesRefScope(
+        proxyAccess.value as KubernetesRef<unknown>
+      );
 
       if (!validation.isValid) {
-        console.warn(
-          `Magic proxy created invalid KubernetesRef: ${validation.error}`
-        );
+        console.warn(`Magic proxy created invalid KubernetesRef: ${validation.error}`);
       }
     }
   }
@@ -1295,7 +1330,7 @@ export const compositionIntegration = new CompositionIntegrationHooks();
  */
 export function compositionUsesKubernetesRefs<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 >(
   compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   schemaProxy: SchemaProxy<TSpec, TStatus>
@@ -1316,7 +1351,7 @@ export function compositionUsesKubernetesRefs<
  */
 export function getCompositionAnalysis<
   TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType
+  TStatus extends KroCompatibleType,
 >(
   compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   schemaProxy: SchemaProxy<TSpec, TStatus>

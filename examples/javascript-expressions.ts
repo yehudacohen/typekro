@@ -303,10 +303,10 @@ export const advancedExample = toResourceGraph(
     ready: resources.deployment.status.readyReplicas > 0,
 
     // ✅ Use explicit CEL for complex list operations (escape hatch)
-    podNames: Cel.expr('resources.deployment.status.pods.map(item, item.metadata.name)'),
+    podNames: Cel.expr<string[]>('resources.deployment.status.pods.map(item, item.metadata.name)'),
 
     // ✅ Complex list operations still require explicit CEL (escape hatch)
-    healthyPods: Cel.expr(
+    healthyPods: Cel.expr<number>(
       'size(resources.deployment.status.pods.filter(p, p.status.phase == "Running"))'
     ),
 
@@ -352,7 +352,7 @@ export function migrationExample() {
   console.log('=== Migration from Manual CEL ===');
   
   // Before: Manual CEL expressions (legacy approach - DON'T DO THIS)
-  const _beforeStatus = (schema: any, resources: any) => ({
+  const _beforeStatus = (_schema: any, resources: any) => ({
     ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
     url: Cel.template('https://%s', resources.service.status.clusterIP),
     phase: Cel.expr(
@@ -362,7 +362,7 @@ export function migrationExample() {
   });
   
   // After: Natural JavaScript expressions (modern approach)
-  const _afterStatus = (schema: any, resources: any) => ({
+  const _afterStatus = (_schema: any, resources: any) => ({
     // ✨ Natural JavaScript - automatically converted to CEL
     ready: resources.deployment.status.readyReplicas > 0,
     url: `https://${resources.service.status.clusterIP}`,

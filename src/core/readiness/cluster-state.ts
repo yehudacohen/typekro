@@ -286,10 +286,11 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         ? await Promise.race([resourcePromise, timeoutPromise])
         : await resourcePromise;
 
+      // In the new API, methods return objects directly (no .body wrapper)
       return {
-        resource: result.body as T,
+        resource: result as T,
         exists: true,
-        statusCode: result.response.statusCode || 200,
+        statusCode: 200,
       };
     } catch (error: any) {
       if (error.statusCode === 404) {
@@ -338,12 +339,13 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         ? await Promise.race([resourcePromise, timeoutPromise])
         : await resourcePromise;
 
-      const items = (result.body as any)?.items || [];
+      // In the new API, methods return objects directly (no .body wrapper)
+      const items = (result as any)?.items || [];
 
       return {
         items: items as T[],
         totalItems: items.length,
-        statusCode: result.response.statusCode || 200,
+        statusCode: 200,
       };
     } catch (error: any) {
       return {

@@ -5,9 +5,11 @@
  * and evaluating expressions against the current resource state.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/index';
+import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
+import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
 import { ResourceReadinessTimeoutError } from '../types/deployment.js';
@@ -79,14 +81,162 @@ export class ReferenceResolver {
   ) {
     this.kubeClient = kubeClient;
     this.deploymentMode = deploymentMode;
-    this.k8sApi = k8sApi || kubeClient.makeApiClient(k8s.KubernetesObjectApi);
+    // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
+    // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
+    this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient);
     this.celEvaluator = new CelEvaluator();
+  }
+
+  /**
+   * Filter out fields that cannot be cloned by structuredClone
+   * This includes:
+   * - Internal fields prefixed with __ (often contain functions)
+   * - Function values (structuredClone cannot clone functions)
+   * BUT preserve KubernetesRef and CEL expression objects intact
+   */
+  private filterInternalFields(obj: any): any {
+    if (obj === null || obj === undefined || typeof obj !== 'object') {
+      return obj;
+    }
+
+    // Preserve KubernetesRef and CEL expressions as-is
+    if (isKubernetesRef(obj) || isCelExpression(obj)) {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      return obj.map((item) => this.filterInternalFields(item));
+    }
+
+    // Create new object without non-cloneable fields
+    const filtered: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      // Skip fields starting with __ as they are internal
+      if (key.startsWith('__')) {
+        continue;
+      }
+
+      // Skip function values as they cannot be cloned
+      if (typeof value === 'function') {
+        continue;
+      }
+
+      // Recursively filter nested objects and arrays
+      if (value !== null && typeof value === 'object') {
+        filtered[key] = this.filterInternalFields(value);
+      } else {
+        filtered[key] = value;
+      }
+    }
+    return filtered;
+  }
+
+  /**
+   * Check if an object contains CEL expressions at any level
+   * CEL expressions have Symbol brands that cannot be cloned by structuredClone
+   */
+  private containsCelExpressions(obj: any, visited = new Set<any>()): boolean {
+    if (obj === null || obj === undefined) {
+      return false;
+    }
+
+    // Prevent infinite loops from circular references
+    if (visited.has(obj)) {
+      return false;
+    }
+
+    // Check if this object is a CEL expression
+    if (isCelExpression(obj)) {
+      return true;
+    }
+
+    // Recursively check arrays
+    if (Array.isArray(obj)) {
+      visited.add(obj);
+      const result = obj.some((item) => this.containsCelExpressions(item, visited));
+      visited.delete(obj);
+      return result;
+    }
+
+    // Recursively check object properties
+    if (typeof obj === 'object') {
+      visited.add(obj);
+      const result = Object.values(obj).some((value) =>
+        this.containsCelExpressions(value, visited)
+      );
+      visited.delete(obj);
+      return result;
+    }
+
+    return false;
+  }
+
+  /**
+   * Selectively clone an object, preserving CEL expressions as-is
+   * CEL expressions are immutable and don't need deep cloning
+   * This avoids structuredClone failures on Symbol-branded objects
+   */
+  private selectiveClone(obj: any, visited = new Set<any>()): any {
+    if (obj === null || obj === undefined) {
+      return obj;
+    }
+
+    // Prevent infinite loops from circular references
+    if (visited.has(obj)) {
+      return obj;
+    }
+
+    // CEL expressions don't need cloning - preserve as-is
+    // They're immutable objects with just { expression: string, [Symbol]: true }
+    if (isCelExpression(obj)) {
+      return obj;
+    }
+
+    // Clone arrays recursively
+    if (Array.isArray(obj)) {
+      visited.add(obj);
+      const cloned = obj.map((item) => this.selectiveClone(item, visited));
+      visited.delete(obj);
+      return cloned;
+    }
+
+    // Clone plain objects recursively
+    if (typeof obj === 'object') {
+      visited.add(obj);
+      const cloned: any = {};
+
+      // Clone string-keyed properties
+      for (const [key, value] of Object.entries(obj)) {
+        cloned[key] = this.selectiveClone(value, visited);
+      }
+
+      // Preserve Symbol-keyed properties (like KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND)
+      const symbols = Object.getOwnPropertySymbols(obj);
+      for (const sym of symbols) {
+        cloned[sym] = obj[sym];
+      }
+
+      visited.delete(obj);
+      return cloned;
+    }
+
+    // Return primitives as-is
+    return obj;
   }
 
   /**
    * Resolve all references in a resource
    */
   async resolveReferences(resource: any, context: ResolutionContext): Promise<any> {
+    this.logger.debug('ReferenceResolver.resolveReferences called', {
+      hasResourceKeyMapping: !!context.resourceKeyMapping,
+      resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
+      resourceKeyMappingKeys: context.resourceKeyMapping
+        ? Array.from(context.resourceKeyMapping.keys())
+        : [],
+      contextKeys: Object.keys(context),
+    });
+
     // Quick check - if there are no references, return the resource as-is
     if (!this.hasReferences(resource)) {
       this.logger.trace('No references found in resource, returning as-is', {
@@ -96,13 +246,29 @@ export class ReferenceResolver {
     }
 
     this.logger.trace('Cloning resource and resolving references', { resourceId: resource.id });
-    // Deep clone the resource to avoid modifying the original
-    // JSON.stringify/parse properly handles Enhanced proxies by triggering all getters
-    const resolved = JSON.parse(JSON.stringify(resource));
-    // Restore Symbol brands that were lost during JSON serialization
-    this.restoreBrands(resolved);
 
-    // FIX: Preserve the non-enumerable readinessEvaluator which is lost during JSON serialization.
+    // Deep clone the resource to avoid modifying the original
+    // Since we know hasReferences() returned true, use selectiveClone to preserve
+    // Symbol-branded objects (KubernetesRef, CEL expressions)
+    // This avoids structuredClone failures on objects with Symbols
+    let resolved: any;
+
+    if (typeof (resource as any).toJSON === 'function') {
+      this.logger.trace('Resource has toJSON method, calling it first', {
+        resourceId: resource.id,
+      });
+      const plainObject = (resource as any).toJSON();
+      // toJSON might still contain Symbol-branded objects, so use selectiveClone
+      resolved = this.selectiveClone(plainObject);
+    } else {
+      this.logger.trace('Using selective clone to preserve Symbol brands', {
+        resourceId: resource.id,
+      });
+      // Use selective cloning to preserve KubernetesRef and CEL expression Symbols
+      resolved = this.selectiveClone(resource);
+    }
+
+    // Preserve the non-enumerable readinessEvaluator if present
     if (resource.readinessEvaluator && typeof resource.readinessEvaluator === 'function') {
       this.logger.trace('Preserving readiness evaluator on cloned resource', {
         resourceId: resource.id,
@@ -111,6 +277,20 @@ export class ReferenceResolver {
         value: resource.readinessEvaluator,
         enumerable: false,
         configurable: false,
+        writable: false,
+      });
+    }
+
+    // Preserve the non-enumerable __resourceId if present (used for cross-resource references)
+    if (resource.__resourceId && typeof resource.__resourceId === 'string') {
+      this.logger.trace('Preserving __resourceId on cloned resource', {
+        resourceId: resource.id,
+        __resourceId: resource.__resourceId,
+      });
+      Object.defineProperty(resolved, '__resourceId', {
+        value: resource.__resourceId,
+        enumerable: false,
+        configurable: true,
         writable: false,
       });
     }
@@ -278,12 +458,52 @@ export class ReferenceResolver {
       return this.cache.get(cacheKey) as T;
     }
 
+    // Check if this is a reference to the schema
+    if (ref.resourceId === 'schema' || ref.resourceId === '__schema__') {
+      if (context.schema) {
+        const value = this.extractFieldValue<T>(context.schema as any, ref.fieldPath);
+        this.cache.set(cacheKey, value);
+        return value as T;
+      }
+      // If schema not in context, this is an error
+      throw new Error(`Schema reference found but schema not provided in context`);
+    }
+
     // First check if resource is in our deployment context
     const deployedResource = this.findDeployedResource(ref.resourceId, context);
     if (deployedResource) {
       const value = this.extractFieldValue<T>(deployedResource.manifest, ref.fieldPath);
       this.cache.set(cacheKey, value);
       return value as T;
+    }
+
+    // Check if resource is in the resourceKeyMapping (maps original keys like 'webappDeployment' to actual resources)
+    if (context.resourceKeyMapping) {
+      this.logger.debug('Checking resourceKeyMapping for reference', {
+        resourceId: ref.resourceId,
+        mappingKeys: Array.from(context.resourceKeyMapping.keys()),
+        hasKey: context.resourceKeyMapping.has(ref.resourceId),
+      });
+      if (context.resourceKeyMapping.has(ref.resourceId)) {
+        const resource = context.resourceKeyMapping.get(ref.resourceId);
+        this.logger.debug('Found resource in resourceKeyMapping', {
+          resourceId: ref.resourceId,
+          fieldPath: ref.fieldPath,
+          hasResource: !!resource,
+          resourceKind: resource ? (resource as any).kind : undefined,
+        });
+        if (resource) {
+          const value = this.extractFieldValue<T>(resource as any, ref.fieldPath);
+          this.logger.debug('Extracted field value from resourceKeyMapping', {
+            resourceId: ref.resourceId,
+            fieldPath: ref.fieldPath,
+            value,
+            valueType: typeof value,
+          });
+          this.cache.set(cacheKey, value);
+          return value as T;
+        }
+      }
     }
 
     // Otherwise query from cluster
@@ -339,28 +559,83 @@ export class ReferenceResolver {
     expr: CelExpression<T>,
     context: ResolutionContext
   ): Promise<T> {
+    this.logger.debug('Starting CEL expression evaluation', {
+      expression: expr.expression,
+      isTemplate: (expr as any).__isTemplate,
+      hasResourceKeyMapping: !!context.resourceKeyMapping,
+      resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
+      resourceKeyMappingKeys: context.resourceKeyMapping
+        ? Array.from(context.resourceKeyMapping.keys())
+        : [],
+      deployedResourcesCount: context.deployedResources.length,
+      deployedResourceIds: context.deployedResources.map((r) => r.id),
+    });
+
+    // Handle template expressions specially - they contain ${...} placeholders
+    // that need to be resolved individually, not as a single CEL expression
+    if ((expr as any).__isTemplate) {
+      return await this.evaluateTemplateExpression(expr, context);
+    }
+
     // Check cache first
     const cacheKey = `cel:${expr.expression}`;
     if (this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey) as T;
     }
 
-    try {
-      // Build the resources map for CEL evaluation
-      const resourcesMap = new Map<string, unknown>();
+    // Build the resources map for CEL evaluation
+    const resourcesMap = new Map<string, unknown>();
 
+    try {
       // If we have a resource key mapping, use it to map original keys to resources
       if (context.resourceKeyMapping && context.resourceKeyMapping.size > 0) {
         // Use the resource key mapping to provide resources with their original keys
         for (const [originalKey, resource] of context.resourceKeyMapping) {
           resourcesMap.set(originalKey, resource);
+          this.logger.debug('Added resource to CEL context from key mapping', {
+            originalKey,
+            resourceId: (resource as any).id,
+            resourceKind: (resource as any).kind,
+            resourceName: (resource as any).name,
+          });
         }
       } else {
         // Fallback to using deployed resource IDs
         for (const deployedResource of context.deployedResources) {
           resourcesMap.set(deployedResource.id, deployedResource.manifest);
+          this.logger.debug('Added resource to CEL context from deployed resources', {
+            deployedResourceId: deployedResource.id,
+            resourceKind: deployedResource.manifest?.kind,
+            resourceName: deployedResource.manifest?.metadata?.name,
+          });
         }
       }
+
+      // Add schema to resourcesMap if provided in context
+      if (context.schema) {
+        resourcesMap.set('schema', context.schema);
+        // Also add as __schema__ for backward compatibility
+        resourcesMap.set('__schema__', context.schema);
+        this.logger.debug('Added schema to CEL context', {
+          schemaSpec: Object.keys((context.schema as any).spec || {}),
+        });
+      }
+
+      // Add schema to resourcesMap if provided in context
+      if (context.schema) {
+        resourcesMap.set('schema', context.schema);
+        // Also add as __schema__ for backward compatibility
+        resourcesMap.set('__schema__', context.schema);
+        this.logger.debug('Added schema to CEL context', {
+          schemaSpec: Object.keys((context.schema as any).spec || {}),
+        });
+      }
+
+      this.logger.debug('CEL context prepared', {
+        expression: expr.expression,
+        resourcesMapSize: resourcesMap.size,
+        resourcesMapKeys: Array.from(resourcesMap.keys()),
+      });
 
       // Create CEL evaluation context
       const celContext: CelEvaluationContext = {
@@ -372,11 +647,95 @@ export class ReferenceResolver {
 
       // Use the proper CEL evaluator
       const result = await this.celEvaluator.evaluate(expr, celContext);
+      this.logger.debug('CEL expression evaluated successfully', {
+        expression: expr.expression,
+        result,
+        resultType: typeof result,
+      });
       this.cache.set(cacheKey, result);
       return result as T;
     } catch (error) {
+      this.logger.error('CEL expression evaluation failed', error as Error, {
+        expression: expr.expression,
+        hasResourceKeyMapping: !!context.resourceKeyMapping,
+        resourceKeyMappingKeys: context.resourceKeyMapping
+          ? Array.from(context.resourceKeyMapping.keys())
+          : [],
+        resourcesMapSize: resourcesMap.size,
+        resourcesMapKeys: Array.from(resourcesMap.keys()),
+      });
       throw new CelExpressionError(expr, error as Error);
     }
+  }
+
+  /**
+   * Evaluate a template expression by resolving ${...} placeholders
+   * 
+   * Template expressions are strings like "http://${service.metadata.name}" that contain
+   * embedded CEL expressions. Each ${...} placeholder is evaluated separately and the
+   * results are concatenated to form the final string.
+   */
+  private async evaluateTemplateExpression<T = unknown>(
+    expr: CelExpression<T>,
+    context: ResolutionContext
+  ): Promise<T> {
+    const templateString = expr.expression;
+    
+    this.logger.debug('Evaluating template expression', {
+      template: templateString,
+    });
+
+    // Find all ${...} placeholders and evaluate them
+    const placeholderRegex = /\$\{([^}]+)\}/g;
+    let result = templateString;
+    
+    // Collect all matches first to avoid issues with modifying the string while iterating
+    const matches: Array<{ fullMatch: string; celExpr: string }> = [];
+    let match = placeholderRegex.exec(templateString);
+    while (match !== null) {
+      matches.push({
+        fullMatch: match[0],
+        celExpr: match[1] || '',
+      });
+      match = placeholderRegex.exec(templateString);
+    }
+
+    // Evaluate each placeholder
+    for (const { fullMatch, celExpr } of matches) {
+      try {
+        // Create a CEL expression for the placeholder content
+        const placeholderExpr: CelExpression<unknown> = {
+          [CEL_EXPRESSION_BRAND]: true,
+          expression: celExpr,
+        } as CelExpression<unknown>;
+
+        // Evaluate the placeholder expression
+        const evaluatedValue = await this.evaluateCelExpression(placeholderExpr, context);
+        
+        // Replace the placeholder with the evaluated value
+        result = result.replace(fullMatch, String(evaluatedValue));
+        
+        this.logger.debug('Evaluated template placeholder', {
+          placeholder: fullMatch,
+          celExpr,
+          evaluatedValue,
+        });
+      } catch (error) {
+        this.logger.warn('Failed to evaluate template placeholder', {
+          placeholder: fullMatch,
+          celExpr,
+          error: (error as Error).message,
+        });
+        // Keep the original placeholder if evaluation fails
+      }
+    }
+
+    this.logger.debug('Template expression evaluated', {
+      original: templateString,
+      result,
+    });
+
+    return result as T;
   }
 
   /**
@@ -419,8 +778,8 @@ export class ReferenceResolver {
       queryLogger.debug('Querying cluster resource', { resourceRef });
 
       // Query the resource from the cluster
-      const response = await this.k8sApi.read(resourceRef as any);
-      const resource = response.body;
+      // In the new API, methods return objects directly (no .body wrapper)
+      const resource = await this.k8sApi.read(resourceRef as any);
 
       queryLogger.debug('Successfully retrieved cluster resource', {
         resourceName: resource.metadata?.name,

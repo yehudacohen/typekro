@@ -20,11 +20,12 @@ import {
   type KubernetesClientConfig,
   type KubernetesClientProvider,
 } from '../kubernetes/client-provider.js';
+import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
-import type { KubernetesRef } from '../types/common.js';
+import type { KubernetesRef, CelExpression } from '../types/common.js';
 import type {
   AppliedResource,
   DeploymentClosure,
@@ -71,6 +72,7 @@ export class KroResourceFactoryImpl<
   private readonly logger = getComponentLogger('kro-factory');
   private readonly factoryOptions: FactoryOptions;
   private clientProvider?: KubernetesClientProvider;
+  private customObjectsApi?: k8s.CustomObjectsApi;
 
   constructor(
     name: string,
@@ -197,6 +199,17 @@ export class KroResourceFactoryImpl<
   }
 
   /**
+   * Get CustomObjectsApi client
+   */
+  private getCustomObjectsApi(): k8s.CustomObjectsApi {
+    if (!this.customObjectsApi) {
+      const clientProvider = this.getClientProvider();
+      this.customObjectsApi = clientProvider.getCustomObjectsApi();
+    }
+    return this.customObjectsApi;
+  }
+
+  /**
    * Deploy a new instance by creating a custom resource
    */
   async deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
@@ -263,8 +276,10 @@ export class KroResourceFactoryImpl<
     const allResults: AppliedResource[] = [];
 
     // Only create deployment context after validation passes
+    // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
+    const kubeConfig = this.getKubeConfig();
     const deploymentContext: DeploymentContext = {
-      kubernetesApi: this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi),
+      kubernetesApi: createBunCompatibleKubernetesObjectApi(kubeConfig),
       ...(this.alchemyScope && { alchemyScope: this.alchemyScope }),
       namespace: this.namespace,
       deployedResources: new Map(), // Empty for pre-RGD execution
@@ -477,7 +492,9 @@ export class KroResourceFactoryImpl<
    */
   async getInstances(): Promise<Enhanced<TSpec, TStatus>[]> {
     const kubeConfig = this.getKubeConfig();
-    const customApi = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+    // Use Bun-compatible API client to ensure proper TLS handling
+    const { createBunCompatibleCustomObjectsApi } = await import('../kubernetes/bun-api-client.js');
+    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
 
     try {
       // The schema definition should contain just the version part (e.g., 'v1alpha1')
@@ -486,28 +503,43 @@ export class KroResourceFactoryImpl<
         ? this.schemaDefinition.apiVersion.split('/')[1] || this.schemaDefinition.apiVersion
         : this.schemaDefinition.apiVersion;
 
-      const listResponse = await customApi.listNamespacedCustomObject(
-        'kro.run',
+      // In the new API, methods take request objects and return objects directly
+      const listResponse = await customApi.listNamespacedCustomObject({
+        group: 'kro.run',
         version,
-        this.namespace,
-        `${this.schemaDefinition.kind.toLowerCase()}s` // Pluralize the kind
-      );
+        namespace: this.namespace,
+        plural: `${this.schemaDefinition.kind.toLowerCase()}s`, // Pluralize the kind
+      });
 
-      const instances = (listResponse.body as any).items || [];
+      // Custom object list response structure
+      interface CustomObjectListResponse {
+        items?: Array<{
+          spec?: TSpec;
+          metadata?: { name?: string };
+        }>;
+      }
+      const listResult = listResponse as CustomObjectListResponse;
+      const instances = listResult.items || [];
 
       return await Promise.all(
-        instances.map(async (instance: any) => {
-          return await this.createEnhancedProxy(instance.spec, instance.metadata.name);
+        instances.map(async (instance) => {
+          return await this.createEnhancedProxy(
+            instance.spec as TSpec,
+            instance.metadata?.name || 'unknown'
+          );
         })
       );
     } catch (error) {
-      const k8sError = error as { message?: string; body?: string; statusCode?: number };
+      const k8sError = error as { message?: string; body?: string | object; statusCode?: number };
       // If the CRD doesn't exist yet or there are no instances, return empty array
+      const bodyString =
+        typeof k8sError.body === 'string' ? k8sError.body : JSON.stringify(k8sError.body || '');
+
       if (
         k8sError.message?.includes('not found') ||
         k8sError.message?.includes('404') ||
-        k8sError.body?.includes('not found') ||
-        k8sError.body?.includes('404') ||
+        bodyString.includes('not found') ||
+        bodyString.includes('404') ||
         k8sError.statusCode === 404 ||
         String(error).includes('404') ||
         String(error).includes('not found')
@@ -522,7 +554,8 @@ export class KroResourceFactoryImpl<
    * Delete a specific instance by name
    */
   async deleteInstance(name: string): Promise<void> {
-    const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
+    const kubeConfig = this.getKubeConfig();
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
     const apiVersion = this.schemaDefinition.apiVersion.includes('/')
       ? this.schemaDefinition.apiVersion
@@ -567,9 +600,11 @@ export class KroResourceFactoryImpl<
    * Get ResourceGraphDefinition status
    */
   async getRGDStatus(): Promise<RGDStatus> {
-    const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
+    const kubeConfig = this.getKubeConfig();
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
     try {
+      // In the new API, methods return objects directly (no .body wrapper)
       const response = await k8sApi.read({
         apiVersion: 'kro.run/v1alpha1',
         kind: 'ResourceGraphDefinition',
@@ -579,7 +614,7 @@ export class KroResourceFactoryImpl<
         },
       });
 
-      const rgd = response.body as k8s.KubernetesObject & {
+      const rgd = response as k8s.KubernetesObject & {
         status?: {
           state?: string;
           conditions?: Array<{
@@ -609,8 +644,21 @@ export class KroResourceFactoryImpl<
         observedGeneration: rgd.status?.observedGeneration || 0,
       };
     } catch (error) {
-      const k8sError = error as { statusCode?: number; message?: string };
-      if (k8sError.statusCode === 404) {
+      const k8sError = error as { statusCode?: number; message?: string; body?: string | object };
+      // Check for 404 in multiple ways since different API clients report it differently
+      const bodyString =
+        typeof k8sError.body === 'string' ? k8sError.body : JSON.stringify(k8sError.body || '');
+      const is404 =
+        k8sError.statusCode === 404 ||
+        k8sError.message?.includes('404') ||
+        k8sError.message?.includes('not found') ||
+        k8sError.message?.includes('NotFound') ||
+        bodyString.includes('"code":404') ||
+        bodyString.includes('"reason":"NotFound"') ||
+        String(error).includes('404') ||
+        String(error).includes('not found');
+
+      if (is404) {
         return {
           name: this.rgdName,
           phase: 'pending',
@@ -710,7 +758,7 @@ ${Object.entries(spec as Record<string, any>)
     // Debug: Log the RGD being deployed
     this.logger.debug('Deploying RGD', {
       rgdName: this.rgdName,
-      rgdManifest: JSON.stringify(rgdWithMetadata, null, 2)
+      rgdManifest: JSON.stringify(rgdWithMetadata, null, 2),
     });
 
     try {
@@ -727,21 +775,31 @@ ${Object.entries(spec as Record<string, any>)
     } catch (error) {
       // Debug: Check the actual RGD status when it fails
       try {
-        const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
+        const kubeConfig = this.getKubeConfig();
+        const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+        // In the new API, methods return objects directly (no .body wrapper)
         const rgdStatus = await k8sApi.read({
           apiVersion: 'kro.run/v1alpha1',
           kind: 'ResourceGraphDefinition',
-          metadata: { name: this.rgdName, namespace: this.namespace }
+          metadata: { name: this.rgdName, namespace: this.namespace },
         });
+        // RGD status structure
+        interface RGDStatusResponse {
+          status?: {
+            conditions?: Array<{ type?: string; status?: string; message?: string }>;
+            [key: string]: unknown;
+          };
+        }
+        const rgdResult = rgdStatus as RGDStatusResponse;
         this.logger.error('RGD deployment failed, current status:', undefined, {
           rgdName: this.rgdName,
-          status: (rgdStatus.body as any).status,
-          conditions: (rgdStatus.body as any).status?.conditions
+          status: rgdResult.status,
+          conditions: rgdResult.status?.conditions,
         });
       } catch (statusError) {
         this.logger.error('Could not fetch RGD status for debugging', statusError as Error);
       }
-      
+
       throw new Error(
         `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -749,10 +807,43 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
+   * Pluralize a Kubernetes Kind name following Kubernetes CRD naming conventions
+   * This matches the pluralization rules used by Kubernetes for CRD names
+   */
+  private pluralizeKind(kind: string): string {
+    const lowerKind = kind.toLowerCase();
+
+    // Handle common English pluralization rules that Kubernetes follows
+    if (
+      lowerKind.endsWith('s') ||
+      lowerKind.endsWith('sh') ||
+      lowerKind.endsWith('ch') ||
+      lowerKind.endsWith('x') ||
+      lowerKind.endsWith('z')
+    ) {
+      return `${lowerKind}es`;
+    } else if (lowerKind.endsWith('o')) {
+      return `${lowerKind}es`;
+    } else if (
+      lowerKind.endsWith('y') &&
+      lowerKind.length > 1 &&
+      !'aeiou'.includes(lowerKind[lowerKind.length - 2] || '')
+    ) {
+      return `${lowerKind.slice(0, -1)}ies`;
+    } else if (lowerKind.endsWith('f')) {
+      return `${lowerKind.slice(0, -1)}ves`;
+    } else if (lowerKind.endsWith('fe')) {
+      return `${lowerKind.slice(0, -2)}ves`;
+    } else {
+      return `${lowerKind}s`;
+    }
+  }
+
+  /**
    * Wait for the CRD to be created by Kro using DirectDeploymentEngine
    */
   private async waitForCRDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
-    const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
+    const crdName = `${this.pluralizeKind(this.schemaDefinition.kind)}.kro.run`;
 
     // Debug: Check if the method exists
     if (typeof deploymentEngine.waitForCRDReady !== 'function') {
@@ -780,6 +871,174 @@ ${Object.entries(spec as Record<string, any>)
     // Use dynamic import to avoid circular dependencies
     const { separateStatusFields } = await import('../validation/cel-validator.js');
     return separateStatusFields(this.statusMappings);
+  }
+
+  /**
+   * Evaluate static CEL expressions with actual spec values
+   */
+  private async evaluateStaticFields(
+    staticFields: Record<string, any>,
+    spec: TSpec
+  ): Promise<Record<string, any>> {
+    const evaluatedFields: Record<string, any> = {};
+
+    for (const [fieldName, fieldValue] of Object.entries(staticFields)) {
+      if (this.isCelExpression(fieldValue)) {
+        try {
+          // Evaluate CEL expressions that contain only schema references
+          const evaluatedValue = this.evaluateStaticCelExpression(fieldValue, spec);
+          evaluatedFields[fieldName] = evaluatedValue;
+        } catch (error) {
+          this.logger.warn('Failed to evaluate static CEL expression', {
+            field: fieldName,
+            expression: fieldValue.expression,
+            error: (error as Error).message,
+          });
+          // Fallback to the original value
+          evaluatedFields[fieldName] = fieldValue;
+        }
+      } else if (
+        typeof fieldValue === 'object' &&
+        fieldValue !== null &&
+        !Array.isArray(fieldValue)
+      ) {
+        // Recursively evaluate nested objects
+        evaluatedFields[fieldName] = await this.evaluateStaticFields(fieldValue, spec);
+      } else {
+        // Keep non-CEL values as-is
+        evaluatedFields[fieldName] = fieldValue;
+      }
+    }
+
+    return evaluatedFields;
+  }
+
+  /**
+   * Evaluate a static CEL expression that contains only schema references or literal values
+   */
+  private evaluateStaticCelExpression(celExpression: CelExpression, spec: TSpec): unknown {
+    const expression = celExpression.expression;
+
+    // Handle expressions that reference schema.spec fields FIRST (before checking just spec.)
+    if (expression.includes('schema.spec.')) {
+      // Replace schema.spec.fieldName with actual spec values
+      let evaluatedExpression = expression;
+
+      // Find all schema.spec.fieldName patterns and replace them with actual values
+      const schemaRefPattern = /schema\.spec\.(\w+)/g;
+      const specRecord = spec as Record<string, unknown>;
+      evaluatedExpression = evaluatedExpression.replace(
+        schemaRefPattern,
+        (originalMatch: string, fieldName: string) => {
+          const fieldValue = specRecord[fieldName];
+
+          if (fieldValue !== undefined) {
+            // Return the properly formatted value for JavaScript evaluation
+            if (typeof fieldValue === 'string') {
+              return `"${fieldValue}"`; // Wrap strings in quotes
+            } else if (typeof fieldValue === 'boolean') {
+              return String(fieldValue); // true/false as-is
+            } else if (typeof fieldValue === 'number') {
+              return String(fieldValue); // Numbers as-is
+            } else {
+              return JSON.stringify(fieldValue); // Other types as JSON
+            }
+          }
+
+          // If field value is undefined, keep the original reference
+          return originalMatch;
+        }
+      );
+
+      // Now evaluate the expression with actual values
+      try {
+        // Use Function constructor for safer evaluation than eval
+        const result = new Function(`return ${evaluatedExpression}`)();
+        return result;
+      } catch (error) {
+        this.logger.warn('Failed to evaluate schema expression with Function constructor', {
+          expression: evaluatedExpression,
+          originalExpression: expression,
+          error: (error as Error).message,
+        });
+        throw error;
+      }
+    }
+
+    // Handle expressions that reference spec fields (not schema.spec, just spec)
+    if (expression.includes('spec.')) {
+      // Replace spec.fieldName with actual spec values
+      let evaluatedExpression = expression;
+
+      // Find all spec.fieldName patterns (not schema.spec) and replace them with actual values
+      const specRefPattern = /\bspec\.(\w+)/g;
+      const specRecord = spec as Record<string, unknown>;
+      evaluatedExpression = evaluatedExpression.replace(
+        specRefPattern,
+        (match: string, fieldName: string) => {
+          const fieldValue = specRecord[fieldName];
+
+          if (fieldValue !== undefined) {
+            // Return the properly formatted value for JavaScript evaluation
+            if (typeof fieldValue === 'string') {
+              return `"${fieldValue}"`; // Wrap strings in quotes
+            } else if (typeof fieldValue === 'boolean') {
+              return String(fieldValue); // true/false as-is
+            } else if (typeof fieldValue === 'number') {
+              return String(fieldValue); // Numbers as-is
+            } else {
+              return JSON.stringify(fieldValue); // Other types as JSON
+            }
+          }
+
+          // If field value is undefined, keep the original reference
+          return match;
+        }
+      );
+
+      // Now evaluate the expression with actual values
+      try {
+        // Use Function constructor for safer evaluation than eval
+        // This creates a new function that returns the result of the expression
+        const result = new Function(`return ${evaluatedExpression}`)();
+        return result;
+      } catch (error) {
+        this.logger.warn('Failed to evaluate expression with Function constructor', {
+          expression: evaluatedExpression,
+          originalExpression: expression,
+          error: (error as Error).message,
+        });
+        throw error;
+      }
+    }
+
+    // Handle static literal expressions (no schema or spec references)
+    // These are expressions like "running", 'http://example.com', true, 123, etc.
+    // Try to evaluate them directly as JavaScript expressions
+    try {
+      const result = new Function(`return ${expression}`)();
+      return result;
+    } catch (error) {
+      // If evaluation fails, the expression might be an unquoted string like: http://kro-webapp-service
+      // In this case, return it as-is (it's already a string value)
+      this.logger.debug('Static expression evaluation failed, returning as string literal', {
+        expression,
+        error: (error as Error).message,
+      });
+      return expression;
+    }
+  }
+
+  /**
+   * Check if a value is a CEL expression
+   */
+  private isCelExpression(value: unknown): value is CelExpression {
+    return (
+      value !== null &&
+      typeof value === 'object' &&
+      (value as Record<symbol, unknown>)[Symbol.for('TypeKro.CelExpression')] === true &&
+      typeof (value as { expression?: unknown }).expression === 'string'
+    );
   }
 
   /**
@@ -835,8 +1094,11 @@ ${Object.entries(spec as Record<string, any>)
     // Separate static and dynamic status fields
     const { staticFields, dynamicFields } = await this.separateStatusFields();
 
-    // Start with static fields as the base status
-    const status: TStatus = { ...staticFields } as TStatus;
+    // Evaluate static CEL expressions with actual spec values
+    const evaluatedStaticFields = await this.evaluateStaticFields(staticFields, spec);
+
+    // Start with evaluated static fields as the base status
+    const status: TStatus = { ...evaluatedStaticFields } as TStatus;
 
     // Create the initial Enhanced proxy
     // The Enhanced proxy should represent the actual instance, which uses the full API version
@@ -914,7 +1176,8 @@ ${Object.entries(spec as Record<string, any>)
           ? this.schemaDefinition.apiVersion
           : `kro.run/${this.schemaDefinition.apiVersion}`;
 
-        const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
+        const kubeConfig = this.getKubeConfig();
+        const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
         const response = await k8sApi.read({
           apiVersion,
           kind: this.schemaDefinition.kind,
@@ -924,7 +1187,8 @@ ${Object.entries(spec as Record<string, any>)
           },
         });
 
-        const instance = response.body as k8s.KubernetesObject & {
+        // In the new API, methods return objects directly (no .body wrapper)
+        const instance = response as k8s.KubernetesObject & {
           status?: {
             state?: string;
             phase?: string;
@@ -959,18 +1223,57 @@ ${Object.entries(spec as Record<string, any>)
         const isActive = state === 'ACTIVE';
         const isSynced = syncedCondition?.status === 'True';
 
+        // Check what status fields are expected by looking at the ResourceGraphDefinition
+        let expectedCustomStatusFields = false;
+        try {
+          // In the new API, methods take request objects and return objects directly
+          const rgdResponse = await this.getCustomObjectsApi().getClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name: this.name,
+          });
+          const rgd = rgdResponse as any;
+          const rgdStatusSchema = rgd.spec?.schema?.status || {};
+          const rgdStatusKeys = Object.keys(rgdStatusSchema);
+          expectedCustomStatusFields = rgdStatusKeys.length > 0;
+
+          readinessLogger.debug('ResourceGraphDefinition status schema check', {
+            rgdName: this.name,
+            rgdStatusKeys,
+            expectedCustomStatusFields,
+          });
+        } catch (error) {
+          readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
+            rgdName: this.name,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
+          expectedCustomStatusFields = false;
+        }
+
         readinessLogger.debug('Kro instance status check', {
           instanceName,
           state,
           isActive,
           isSynced,
           hasCustomStatusFields,
+          expectedCustomStatusFields,
           statusKeys,
         });
 
-        // Resource is ready when it's active, synced, and has custom status fields populated
-        if (isActive && isSynced && hasCustomStatusFields) {
-          readinessLogger.info('Kro instance is ready', { instanceName });
+        // Resource is ready when it's active, synced, and either:
+        // 1. Has the expected custom status fields populated, OR
+        // 2. No custom status fields are expected (empty status schema in RGD)
+        const isReady =
+          isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
+
+        if (isReady) {
+          readinessLogger.info('Kro instance is ready', {
+            instanceName,
+            hasCustomStatusFields,
+            expectedCustomStatusFields,
+          });
           return;
         }
 
@@ -1020,7 +1323,8 @@ ${Object.entries(spec as Record<string, any>)
       ? this.schemaDefinition.apiVersion
       : `kro.run/${this.schemaDefinition.apiVersion}`;
 
-    const k8sApi = this.getKubeConfig().makeApiClient(k8s.KubernetesObjectApi);
+    const kubeConfig = this.getKubeConfig();
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
     const response = await k8sApi.read({
       apiVersion,
       kind: this.schemaDefinition.kind,
@@ -1030,7 +1334,8 @@ ${Object.entries(spec as Record<string, any>)
       },
     });
 
-    const liveInstance = response.body as any;
+    // In the new API, methods return objects directly (no .body wrapper)
+    const liveInstance = response as any;
 
     if (!liveInstance.status) {
       dynamicLogger.warn('No status found in live instance, returning empty dynamic fields');

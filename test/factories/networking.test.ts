@@ -250,7 +250,7 @@ describe('Networking Factories', () => {
         policyTypes: ['Ingress', 'Egress'],
         ingress: [
           {
-            from: [
+            _from: [
               {
                 podSelector: {
                   matchLabels: { app: 'frontend' },
@@ -343,7 +343,7 @@ describe('Networking Factories', () => {
           policyTypes: ['Ingress', 'Egress'],
           ingress: [
             {
-              from: [
+              _from: [
                 {
                   podSelector: {
                     matchLabels: { app: 'frontend' },
@@ -404,7 +404,7 @@ describe('Networking Factories', () => {
       expect(enhanced.spec).toEqual(complexPolicy.spec! as any);
       expect(enhanced.spec!.ingress).toHaveLength(1);
       expect(enhanced.spec!.egress).toHaveLength(2);
-      expect(enhanced.spec?.ingress?.[0]?.from).toHaveLength(2);
+      expect(enhanced.spec?.ingress?.[0]?._from).toHaveLength(2);
       expect(enhanced.spec?.ingress?.[0]?.ports).toHaveLength(2);
     });
 

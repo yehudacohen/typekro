@@ -2,11 +2,18 @@ import { beforeAll, describe, expect, it } from 'bun:test';
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { secret } from '../../src/factories/index';
 import { Cel, simple, toResourceGraph } from '../../src/index';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import {
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  createCustomObjectsApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 // Test configuration
 const _CLUSTER_NAME = 'typekro-e2e-test';
@@ -38,9 +45,9 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
     // Use shared kubeconfig helper for consistent TLS configuration
     kc = getIntegrationTestKubeConfig();
 
-    k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-    appsApi = kc.makeApiClient(k8s.AppsV1Api);
-    customApi = kc.makeApiClient(k8s.CustomObjectsApi);
+    k8sApi = createCoreV1ApiClient(kc);
+    appsApi = createAppsV1ApiClient(kc);
+    customApi = createCustomObjectsApiClient(kc);
 
     // Install complete Kro system (CRDs + Controller)
     console.log('🔧 SETUP: Installing complete Kro system...');
@@ -102,7 +109,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       }
 
       for (const file of helmFiles) {
-        const url = `https://raw.githubusercontent.com/kro-run/kro/main/helm/${file}`;
+        const url = `https://raw.githubusercontent.com/kro-run/kro/v0.3.0/helm/${file}`;
         const filePath = join(helmDir, file);
         console.log(`📥 Downloading ${file}...`);
         try {
@@ -200,7 +207,7 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
     console.log('📁 Creating test namespace...');
     try {
       await k8sApi.createNamespace({
-        metadata: { name: NAMESPACE },
+        body: { metadata: { name: NAMESPACE } },
       });
       console.log(`📦 Created test namespace: ${NAMESPACE}`);
     } catch (_error) {
@@ -413,15 +420,15 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
     let rgdBody: any;
     try {
       // Check if the ResourceGraphDefinition was created (cluster-scoped)
-      const rgd = await customApi.getClusterCustomObject(
-        'kro.run',
-        'v1alpha1',
-        'resourcegraphdefinitions',
-        'webapp-stack'
-      );
+      const rgd = await customApi.getClusterCustomObject({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        plural: 'resourcegraphdefinitions',
+        name: 'webapp-stack'
+      });
 
-      expect(rgd.body).toBeDefined();
-      rgdBody = rgd.body as any;
+      expect(rgd).toBeDefined();
+      rgdBody = rgd as any;
       console.log('✅ ResourceGraphDefinition created successfully');
 
       // Log some details about the created RGD
@@ -443,13 +450,13 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       // Wait up to 30 seconds
       try {
         console.log(`🔍 CRD Check attempt ${i + 1}/30: Looking for WebappStack CRD...`);
-        const crds = await customApi.listClusterCustomObject(
-          'apiextensions.k8s.io',
-          'v1',
-          'customresourcedefinitions'
-        );
+        const crds = await customApi.listClusterCustomObject({
+          group: 'apiextensions.k8s.io',
+          version: 'v1',
+          plural: 'customresourcedefinitions'
+        });
 
-        const crdList = crds.body as any;
+        const crdList = crds as any;
         const webappStackCrds = crdList.items.filter(
           (crd: any) =>
             crd.metadata.name.includes('webappstack') || crd.spec?.names?.kind === 'WebappStack'
@@ -503,13 +510,13 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
 
       // Try to create the instance (this might fail if CRD isn't ready)
       try {
-        await customApi.createNamespacedCustomObject(
-          'kro.run', // group
-          'v1alpha1', // version
-          NAMESPACE, // namespace
-          'webappstacks', // plural
-          webappStackInstance // body
-        );
+        await customApi.createNamespacedCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          namespace: NAMESPACE,
+          plural: 'webappstacks',
+          body: webappStackInstance
+        });
         console.log('✅ WebappStack instance created successfully');
       } catch (error) {
         console.warn('⚠️  Could not create WebappStack instance, but continuing with test...');
@@ -527,15 +534,15 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
         // Wait up to 30 seconds
         try {
           console.log(`🔍 WebappStack status check attempt ${i + 1}/30...`);
-          const webappStackStatus = await customApi.getNamespacedCustomObjectStatus(
-            'kro.run',
-            'v1alpha1',
-            NAMESPACE,
-            'webappstacks',
-            'test-webapp-stack'
-          );
+          const webappStackStatus = await customApi.getNamespacedCustomObjectStatus({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            namespace: NAMESPACE,
+            plural: 'webappstacks',
+            name: 'test-webapp-stack'
+          });
 
-          const status = (webappStackStatus.body as any)?.status;
+          const status = (webappStackStatus as any)?.status;
           const conditions = status?.conditions || [];
           const syncedCondition = conditions.find((c: any) => c.type === 'InstanceSynced');
 
@@ -624,9 +631,9 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
     const checkAllResources = async () => {
       // Check ConfigMap
       try {
-        const configMap = await k8sApi.readNamespacedConfigMap('webapp-config', NAMESPACE);
-        expect(configMap.body.data?.LOG_LEVEL).toBe('info');
-        expect(configMap.body.data?.FEATURE_FLAGS).toBe('auth,metrics,logging');
+        const configMap = await k8sApi.readNamespacedConfigMap({ name: 'webapp-config', namespace: NAMESPACE });
+        expect(configMap.data?.LOG_LEVEL).toBe('info');
+        expect(configMap.data?.FEATURE_FLAGS).toBe('auth,metrics,logging');
         resourcesCreated.configMap = true;
         console.log('✅ ConfigMap created by Kro successfully');
       } catch (_error) {
@@ -635,8 +642,8 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
 
       // Check Secret
       try {
-        const secret = await k8sApi.readNamespacedSecret('webapp-secrets', NAMESPACE);
-        expect(secret.body.data).toBeDefined();
+        const secret = await k8sApi.readNamespacedSecret({ name: 'webapp-secrets', namespace: NAMESPACE });
+        expect(secret.data).toBeDefined();
         resourcesCreated.secret = true;
         console.log('✅ Secret created by Kro successfully');
       } catch (_error) {
@@ -645,9 +652,9 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
 
       // Check Database Deployment
       try {
-        const dbDeployment = await appsApi.readNamespacedDeployment('postgres-db', NAMESPACE);
-        expect(dbDeployment.body.spec?.replicas).toBe(1);
-        expect(dbDeployment.body.spec?.template.spec?.containers?.[0]?.image).toBe(
+        const dbDeployment = await appsApi.readNamespacedDeployment({ name: 'postgres-db', namespace: NAMESPACE });
+        expect(dbDeployment.spec?.replicas).toBe(1);
+        expect(dbDeployment.spec?.template.spec?.containers?.[0]?.image).toBe(
           'postgres:13-alpine'
         );
         resourcesCreated.dbDeployment = true;
@@ -658,14 +665,14 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
 
       // Check Web App Deployment
       try {
-        const webDeployment = await appsApi.readNamespacedDeployment('webapp', NAMESPACE);
-        expect(webDeployment.body.spec?.replicas).toBe(2);
-        expect(webDeployment.body.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
+        const webDeployment = await appsApi.readNamespacedDeployment({ name: 'webapp', namespace: NAMESPACE });
+        expect(webDeployment.spec?.replicas).toBe(2);
+        expect(webDeployment.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
         resourcesCreated.webDeployment = true;
         console.log('✅ Web App Deployment created by Kro successfully');
 
         // Check for cross-resource references in environment variables
-        const container = webDeployment.body.spec?.template.spec?.containers?.[0];
+        const container = webDeployment.spec?.template.spec?.containers?.[0];
         const envVars = container?.env || [];
 
         const logLevelEnv = envVars.find((env) => env.name === 'LOG_LEVEL');
@@ -682,8 +689,8 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
 
       // Check Services
       try {
-        const dbService = await k8sApi.readNamespacedService('postgres-service', NAMESPACE);
-        expect(dbService.body.spec?.ports?.[0]?.port).toBe(5432);
+        const dbService = await k8sApi.readNamespacedService({ name: 'postgres-service', namespace: NAMESPACE });
+        expect(dbService.spec?.ports?.[0]?.port).toBe(5432);
         resourcesCreated.dbService = true;
         console.log('✅ Database Service created by Kro successfully');
       } catch (_error) {
@@ -691,8 +698,8 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       }
 
       try {
-        const webService = await k8sApi.readNamespacedService('webapp-service', NAMESPACE);
-        expect(webService.body.spec?.ports?.[0]?.port).toBe(80);
+        const webService = await k8sApi.readNamespacedService({ name: 'webapp-service', namespace: NAMESPACE });
+        expect(webService.spec?.ports?.[0]?.port).toBe(80);
         resourcesCreated.webService = true;
         console.log('✅ Web App Service created by Kro successfully');
       } catch (_error) {
@@ -730,13 +737,8 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
       `� Foinal result: ${createdCount}/${totalCount} resources successfully created by Kro`
     );
 
-    // Cleanup test namespace
-    try {
-      await k8sApi.deleteNamespace(NAMESPACE);
-      console.log(`🗑️ Cleaned up test namespace: ${NAMESPACE}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to cleanup namespace ${NAMESPACE}:`, error);
-    }
+    // Cleanup test namespace and wait for full deletion
+    await deleteNamespaceAndWait(NAMESPACE, kc);
   }, 180000); // 3 minute timeout for the test itself to account for retry logic
 
   // Helper function to wait for deployment to be ready
@@ -760,8 +762,8 @@ describeOrSkip('End-to-End Kubernetes Cluster Test with Kro Controller', () => {
         console.log(
           `⏳ Attempt ${attemptCount}: Checking deployment ${name} (elapsed: ${elapsed}ms)`
         );
-        const deployment = await appsApi.readNamespacedDeployment(name, namespace);
-        const status = deployment.body.status;
+        const deployment = await appsApi.readNamespacedDeployment({ name, namespace });
+        const status = deployment.status;
 
         console.log(
           `📊 Deployment ${name} status: ready=${status?.readyReplicas}/${status?.replicas}, available=${status?.availableReplicas}`

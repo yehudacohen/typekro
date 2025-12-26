@@ -4,13 +4,21 @@
  * Simple test to validate basic Kro functionality works
  */
 
-import { beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import {
+  cleanupTestNamespaces,
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  createCustomObjectsApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-e2e-basic';
@@ -46,9 +54,9 @@ describeOrSkip('Basic E2E Kro Test', () => {
     try {
       kc = getIntegrationTestKubeConfig();
 
-      k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-      appsApi = kc.makeApiClient(k8s.AppsV1Api);
-      customApi = kc.makeApiClient(k8s.CustomObjectsApi);
+      k8sApi = createCoreV1ApiClient(kc);
+      appsApi = createAppsV1ApiClient(kc);
+      customApi = createCustomObjectsApiClient(kc);
     } catch (error) {
       console.error('❌ Failed to initialize Kubernetes client:', error);
       throw new Error(
@@ -64,6 +72,14 @@ describeOrSkip('Basic E2E Kro Test', () => {
     // Note: Individual test namespaces will be created per test for better isolation
   });
 
+  // Clean up any leftover test namespaces after all tests complete
+  afterAll(async () => {
+    if (kc) {
+      console.log('🧹 Cleaning up any leftover test namespaces...');
+      await cleanupTestNamespaces(/^typekro-e2e-basic-/, kc);
+    }
+  });
+
   // Helper function to create and cleanup test namespace
   const _withTestNamespace = async <T>(
     testName: string,
@@ -73,7 +89,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
 
     try {
       // Create namespace
-      await k8sApi.createNamespace({ metadata: { name: namespace } });
+      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
       console.log(`📦 Created test namespace: ${namespace}`);
 
       // Run test
@@ -81,13 +97,8 @@ describeOrSkip('Basic E2E Kro Test', () => {
 
       return result;
     } finally {
-      // Cleanup namespace
-      try {
-        await k8sApi.deleteNamespace(namespace);
-        console.log(`🗑️ Cleaned up test namespace: ${namespace}`);
-      } catch (error) {
-        console.warn(`⚠️ Failed to cleanup namespace ${namespace}:`, error);
-      }
+      // Cleanup namespace and wait for full deletion
+      await deleteNamespaceAndWait(namespace, kc);
     }
   };
 
@@ -99,7 +110,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
 
     // Create test namespace
     try {
-      await k8sApi.createNamespace({ metadata: { name: testNamespace } });
+      await k8sApi.createNamespace({ body: { metadata: { name: testNamespace } } });
       console.log(`📦 Created test namespace: ${testNamespace}`);
     } catch (_error) {
       console.log(`⚠️ Namespace ${testNamespace} might already exist`);
@@ -194,11 +205,11 @@ describeOrSkip('Basic E2E Kro Test', () => {
     checkTimeout();
 
     // Validate that the underlying Kubernetes resources were created
-    const deployment = await appsApi.readNamespacedDeployment('test-app', testNamespace);
-    expect(deployment.body.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
+    const deployment = await appsApi.readNamespacedDeployment({ name: 'test-app', namespace: testNamespace });
+    expect(deployment.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
 
-    const service = await k8sApi.readNamespacedService('test-app-svc', testNamespace);
-    expect(service.body.spec?.selector?.app).toBe('test-app');
+    const service = await k8sApi.readNamespacedService({ name: 'test-app-svc', namespace: testNamespace });
+    expect(service.spec?.selector?.app).toBe('test-app');
 
     console.log('✅ Basic E2E test completed successfully');
 
@@ -210,13 +221,8 @@ describeOrSkip('Basic E2E Kro Test', () => {
       console.warn('⚠️ Factory cleanup failed:', error);
     }
 
-    // Cleanup test namespace
-    try {
-      await k8sApi.deleteNamespace(testNamespace);
-      console.log(`🗑️ Cleaned up test namespace: ${testNamespace}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to cleanup namespace ${testNamespace}:`, error);
-    }
+    // Cleanup test namespace and wait for full deletion
+    await deleteNamespaceAndWait(testNamespace, kc);
   });
 
   // Helper functions
@@ -228,13 +234,13 @@ describeOrSkip('Basic E2E Kro Test', () => {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
-        const rgd = await customApi.getClusterCustomObject(
-          'kro.run',
-          'v1alpha1',
-          'resourcegraphdefinitions',
-          name
-        );
-        const status = (rgd.body as any).status;
+        const rgd = await customApi.getClusterCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          plural: 'resourcegraphdefinitions',
+          name,
+        });
+        const status = (rgd as any).status;
         // Check if RGD is in Active state and all conditions are True
         if (
           status?.state === 'Active' &&
@@ -269,8 +275,8 @@ describeOrSkip('Basic E2E Kro Test', () => {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
-        const deployment = await appsApi.readNamespacedDeployment(name, namespace);
-        const status = deployment.body.status;
+        const deployment = await appsApi.readNamespacedDeployment({ name, namespace });
+        const status = deployment.status;
         if (status?.readyReplicas && status.readyReplicas > 0) {
           console.log(`✅ Deployment ${name} is ready`);
           return;
@@ -287,7 +293,7 @@ describeOrSkip('Basic E2E Kro Test', () => {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
       try {
-        await k8sApi.readNamespacedService(name, namespace);
+        await k8sApi.readNamespacedService({ name, namespace });
         console.log(`✅ Service ${name} is ready`);
         return;
       } catch (_error) {

@@ -538,4 +538,423 @@ describe('ReferenceResolver', () => {
       );
     });
   });
+
+  describe('containsCelExpressions', () => {
+    it('should detect CEL expressions at root level', () => {
+      const obj = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'test.expression',
+      };
+
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions(obj)).toBe(true);
+    });
+
+    it('should detect CEL expressions in nested objects', () => {
+      const obj = {
+        spec: {
+          env: {
+            value: {
+              [CEL_EXPRESSION_BRAND]: true,
+              expression: 'schema.spec.name',
+            },
+          },
+        },
+      };
+
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions(obj)).toBe(true);
+    });
+
+    it('should detect CEL expressions in arrays', () => {
+      const obj = {
+        items: [
+          { name: 'static' },
+          {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'dynamic.value',
+          },
+        ],
+      };
+
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions(obj)).toBe(true);
+    });
+
+    it('should return false for objects without CEL expressions', () => {
+      const obj = {
+        spec: {
+          name: 'test',
+          replicas: 3,
+          nested: {
+            value: 'static',
+          },
+        },
+      };
+
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions(obj)).toBe(false);
+    });
+
+    it('should handle null and undefined', () => {
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions(null)).toBe(false);
+      expect(containsCelExpressions(undefined)).toBe(false);
+    });
+
+    it('should handle primitive values', () => {
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions('string')).toBe(false);
+      expect(containsCelExpressions(42)).toBe(false);
+      expect(containsCelExpressions(true)).toBe(false);
+    });
+
+    it('should handle circular references without infinite loop', () => {
+      const obj: any = { name: 'test' };
+      obj.circular = obj;
+
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions(obj)).toBe(false);
+    });
+
+    it('should detect CEL in deeply nested structures', () => {
+      const obj = {
+        level1: {
+          level2: {
+            level3: {
+              level4: {
+                level5: {
+                  [CEL_EXPRESSION_BRAND]: true,
+                  expression: 'deep.value',
+                },
+              },
+            },
+          },
+        },
+      };
+
+      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
+      expect(containsCelExpressions(obj)).toBe(true);
+    });
+  });
+
+  describe('selectiveClone', () => {
+    it('should clone simple objects without CEL expressions', () => {
+      const obj = {
+        name: 'test',
+        value: 42,
+        nested: {
+          prop: 'value',
+        },
+      };
+
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const cloned = selectiveClone(obj);
+
+      expect(cloned).toEqual(obj);
+      expect(cloned).not.toBe(obj); // Different reference
+      expect(cloned.nested).not.toBe(obj.nested); // Nested object also cloned
+    });
+
+    it('should preserve CEL expressions without cloning them', () => {
+      const celExpr = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'test.expression',
+      };
+
+      const obj = {
+        spec: {
+          value: celExpr,
+        },
+      };
+
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const cloned = selectiveClone(obj);
+
+      expect(cloned.spec.value).toBe(celExpr); // Same reference, not cloned
+      expect(cloned.spec).not.toBe(obj.spec); // Parent object cloned
+    });
+
+    it('should clone arrays while preserving CEL expressions', () => {
+      const celExpr = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'array.value',
+      };
+
+      const obj = {
+        items: ['static', 42, celExpr, { nested: 'object' }],
+      };
+
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const cloned = selectiveClone(obj);
+
+      expect(cloned.items).not.toBe(obj.items); // Array cloned
+      expect(cloned.items[0]).toBe('static');
+      expect(cloned.items[1]).toBe(42);
+      expect(cloned.items[2]).toBe(celExpr); // CEL preserved
+      expect(cloned.items[3]).toEqual(obj.items[3]);
+      expect(cloned.items[3]).not.toBe(obj.items[3]); // Nested object cloned
+    });
+
+    it('should handle null and undefined', () => {
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      expect(selectiveClone(null)).toBeNull();
+      expect(selectiveClone(undefined)).toBeUndefined();
+    });
+
+    it('should handle primitive values', () => {
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      expect(selectiveClone('string')).toBe('string');
+      expect(selectiveClone(42)).toBe(42);
+      expect(selectiveClone(true)).toBe(true);
+    });
+
+    it('should handle circular references without infinite loop', () => {
+      const obj: any = { name: 'test', value: 123 };
+      obj.circular = obj;
+
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const cloned = selectiveClone(obj);
+
+      expect(cloned.name).toBe('test');
+      expect(cloned.value).toBe(123);
+      expect(cloned.circular).toBe(obj);
+      expect(cloned.circular).toBe(obj);
+    });
+
+    it('should preserve multiple CEL expressions in same object', () => {
+      const celExpr1 = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'expr1',
+      };
+      const celExpr2 = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'expr2',
+      };
+
+      const obj = {
+        field1: celExpr1,
+        field2: celExpr2,
+        field3: 'static',
+      };
+
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const cloned = selectiveClone(obj);
+
+      expect(cloned.field1).toBe(celExpr1);
+      expect(cloned.field2).toBe(celExpr2);
+      expect(cloned.field3).toBe('static');
+      expect(cloned).not.toBe(obj);
+    });
+
+    it('should handle deeply nested CEL expressions', () => {
+      const celExpr = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'deep.expr',
+      };
+
+      const obj = {
+        level1: {
+          level2: {
+            level3: {
+              celField: celExpr,
+              staticField: 'value',
+            },
+          },
+        },
+      };
+
+      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const cloned = selectiveClone(obj);
+
+      expect(cloned.level1.level2.level3.celField).toBe(celExpr);
+      expect(cloned.level1.level2.level3.staticField).toBe('value');
+      expect(cloned.level1.level2.level3).not.toBe(obj.level1.level2.level3);
+    });
+  });
+
+  describe('resolveReferences with CEL expressions (integration)', () => {
+    it('should use selective cloning when CEL expressions are present', async () => {
+      const celExpr = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'webapp.status.readyReplicas > 0',
+      };
+
+      const deployedResource = {
+        id: 'webapp',
+        kind: 'Deployment',
+        name: 'webapp',
+        namespace: 'default',
+        manifest: {
+          status: {
+            readyReplicas: 2,
+          },
+        },
+        status: 'deployed' as const,
+        deployedAt: new Date(),
+      };
+
+      context.deployedResources = [deployedResource];
+      context.resourceKeyMapping = new Map([['webapp', deployedResource.manifest]]);
+
+      const resource = {
+        spec: {
+          ready: celExpr,
+          name: 'test-app',
+        },
+      };
+
+      const resolved = await resolver.resolveReferences(resource, context);
+
+      // CEL expression should be evaluated to boolean
+      expect(resolved.spec.ready).toBe(true);
+      expect(resolved.spec.name).toBe('test-app');
+    });
+
+    it('should handle mixed CEL and KubernetesRef objects', async () => {
+      const celExpr = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'deployment.spec.replicas * 2',
+      };
+
+      const kubeRef = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: 'deployment',
+        fieldPath: 'status.readyReplicas',
+      };
+
+      const deployedResource = {
+        id: 'deployment',
+        kind: 'Deployment',
+        name: 'app',
+        namespace: 'default',
+        manifest: {
+          spec: {
+            replicas: 3,
+          },
+          status: {
+            readyReplicas: 3,
+          },
+        },
+        status: 'deployed' as const,
+        deployedAt: new Date(),
+      };
+
+      context.deployedResources = [deployedResource];
+      context.resourceKeyMapping = new Map([['deployment', deployedResource.manifest]]);
+
+      const resource = {
+        spec: {
+          maxReplicas: celExpr,
+          currentReplicas: kubeRef,
+        },
+      };
+
+      const resolved = await resolver.resolveReferences(resource, context);
+
+      expect(resolved.spec.maxReplicas).toBe(6);
+      expect(resolved.spec.currentReplicas).toBe(3);
+    });
+
+    it('should avoid structuredClone error with Symbol-branded objects', async () => {
+      // This test verifies that we don't hit the "object cannot be cloned" error
+      const statusWithCel = {
+        ready: {
+          [CEL_EXPRESSION_BRAND]: true,
+          expression: 'resource.status.ready',
+        },
+        phase: 'Running',
+        nested: {
+          celField: {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: 'resource.status.phase',
+          },
+        },
+      };
+
+      const deployedResource = {
+        id: 'resource',
+        kind: 'Deployment',
+        name: 'test',
+        namespace: 'default',
+        manifest: {
+          status: {
+            ready: true,
+            phase: 'Active',
+          },
+        },
+        status: 'deployed' as const,
+        deployedAt: new Date(),
+      };
+
+      context.deployedResources = [deployedResource];
+      context.resourceKeyMapping = new Map([['resource', deployedResource.manifest]]);
+
+      // This should not throw "The object can not be cloned" error
+      const resolved = await resolver.resolveReferences(statusWithCel, context);
+
+      expect(resolved.ready).toBe(true);
+      expect(resolved.phase).toBe('Running');
+      expect(resolved.nested.celField).toBe('Active');
+    });
+
+    it('should handle CEL expressions in toJSON() output from Enhanced proxies', async () => {
+      // This test covers the specific bug where Enhanced proxies return CEL expressions
+      // from their toJSON() method, and we were calling structuredClone on the result
+      // Without the fix, this would throw "The object can not be cloned"
+      const celExpr = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'resource.status.ready',
+      };
+
+      const deployedResource = {
+        id: 'resource',
+        kind: 'Deployment',
+        name: 'test',
+        namespace: 'default',
+        manifest: {
+          status: {
+            ready: true,
+          },
+        },
+        status: 'deployed' as const,
+        deployedAt: new Date(),
+      };
+
+      context.deployedResources = [deployedResource];
+      context.resourceKeyMapping = new Map([['resource', deployedResource.manifest]]);
+
+      // Simulate an Enhanced proxy that has both:
+      // 1. A toJSON() method (triggers the toJSON code path)
+      // 2. CEL expressions in the toJSON result (would cause structuredClone to fail without fix)
+      const resourceWithToJSON = {
+        id: 'test-resource',
+        kind: 'Deployment',
+        spec: {
+          replicas: 3,
+        },
+        status: {
+          ready: celExpr, // This CEL expression should be detected after toJSON()
+        },
+        toJSON: function () {
+          // toJSON returns a plain object that still contains CEL expressions
+          return {
+            id: this.id,
+            kind: this.kind,
+            spec: this.spec,
+            status: this.status, // Contains CEL expression!
+          };
+        },
+      };
+
+      // Before fix: This would throw "The object can not be cloned" because
+      // structuredClone was called on toJSON() result without checking for CEL
+      // After fix: selectiveClone is used when CEL detected in toJSON() output
+      const resolved = await resolver.resolveReferences(resourceWithToJSON, context);
+
+      // CEL expression should be evaluated
+      expect(resolved.status.ready).toBe(true);
+      expect(resolved.spec.replicas).toBe(3);
+    });
+  });
 });

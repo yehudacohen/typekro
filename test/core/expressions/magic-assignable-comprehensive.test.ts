@@ -395,10 +395,11 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
       ];
 
       for (const malformedRef of malformedRefs) {
-        const result = analyzer.analyzeMagicAssignable(malformedRef, mockContext);
+        // Use type assertion since we're intentionally testing malformed inputs
+        const result = analyzer.analyzeMagicAssignable(malformedRef as any, mockContext);
         
         expect(result).toBeDefined();
-        expect(result.originalValue).toBe(malformedRef);
+        expect(result.originalValue).toBe(malformedRef as any);
         
         // Should treat as static value if not a valid KubernetesRef
         expect(result.requiresConversion).toBe(false);

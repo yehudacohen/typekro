@@ -29,61 +29,25 @@ export default withMermaid(
 
       nav: [
         { text: 'Get Started', link: '/guide/getting-started' },
-        { text: 'Learning Path', link: '/guide/first-app' },
-        { text: 'Examples', link: '/examples/' },
+        { text: 'Guide', link: '/guide/philosophy' },
+        { text: 'Examples', link: '/examples/basic-webapp' },
         { text: 'API Reference', link: '/api/' },
+        { text: 'Advanced', link: '/advanced/arktype-schemas' },
         { text: 'Discord', link: 'https://discord.gg/kKNSDDjW' },
       ],
 
       sidebar: {
         '/guide/': [
           {
-            text: '🚀 Getting Started',
+            text: 'Guide',
             items: [
-              { text: 'What is TypeKro?', link: '/guide/what-is-typekro' },
-              { text: '🎯 Decision Guide', link: '/guide/decision-guide' },
-              { text: '5-Minute Quick Start', link: '/guide/getting-started' },
-              { text: 'Comprehensive Setup', link: '/guide/comprehensive-setup' },
-            ],
-          },
-          {
-            text: '📚 Learning Path',
-            items: [
-              { text: '1. Your First App', link: '/guide/first-app' },
-              { text: '2. Factory Functions', link: '/guide/factories' },
-              { text: '3. Magic Proxy System', link: '/guide/magic-proxy' },
-              { text: '4. External References', link: '/guide/external-references' },
-              { text: '5. Advanced Architecture', link: '/guide/architecture' },
-            ],
-          },
-          {
-            text: '🛠 Core Concepts',
-            items: [
-              { text: 'kubernetesComposition', link: '/guide/imperative-composition' },
-              { text: 'Schema Definition', link: '/guide/schema-definition' },
-              { text: 'Cross-Resource References', link: '/guide/cross-references' },
+              { text: 'Getting Started', link: '/guide/getting-started' },
+              { text: 'Philosophy', link: '/guide/philosophy' },
+              { text: 'Magic Proxy System', link: '/guide/magic-proxy' },
               { text: 'JavaScript to CEL', link: '/guide/javascript-to-cel' },
-              { text: 'Explicit CEL Expressions', link: '/guide/cel-expressions' },
-              { text: 'Status Hydration', link: '/guide/status-hydration' },
-            ],
-          },
-          {
-            text: '🚢 Deployment',
-            items: [
-              { text: 'Overview & Decision Guide', link: '/guide/deployment/' },
-              { text: 'Direct Deployment', link: '/guide/deployment/direct' },
-              { text: 'Kro Integration', link: '/guide/deployment/kro' },
-              { text: 'GitOps Workflows', link: '/guide/deployment/gitops' },
-              { text: 'Helm Integration', link: '/guide/deployment/helm' },
-            ],
-          },
-          {
-            text: '🔧 Advanced Topics',
-            items: [
-              { text: 'Custom Factory Functions', link: '/guide/custom-factories' },
-              { text: 'TypeKro vs Alternatives', link: '/guide/comparison' },
-              { text: 'Type Safety Patterns', link: '/guide/type-safety' },
-              { text: 'Debugging Guide', link: '/guide/debugging' },
+              { text: 'Deployment Modes', link: '/guide/deployment-modes' },
+              { text: 'External References', link: '/guide/external-references' },
+              { text: 'Troubleshooting', link: '/guide/troubleshooting' },
             ],
           },
         ],
@@ -91,41 +55,62 @@ export default withMermaid(
           {
             text: 'Core API',
             items: [
+              { text: 'Overview', link: '/api/' },
+              { text: 'Import Patterns', link: '/api/imports' },
               { text: 'kubernetesComposition', link: '/api/kubernetes-composition' },
-              { text: 'toResourceGraph', link: '/api/to-resource-graph' },
-              { text: 'Factory Functions', link: '/api/factories' },
               { text: 'CEL Expressions', link: '/api/cel' },
+              { text: 'YAML & Helm Integration', link: '/api/yaml-closures' },
               { text: 'Types', link: '/api/types' },
             ],
           },
           {
             text: 'Factory Functions',
             items: [
+              { text: 'Overview', link: '/api/factories/' },
               { text: 'Workloads', link: '/api/factories/workloads' },
               { text: 'Networking', link: '/api/factories/networking' },
+              { text: 'Config', link: '/api/factories/config' },
               { text: 'Storage', link: '/api/factories/storage' },
-              { text: 'Configuration', link: '/api/factories/config' },
               { text: 'RBAC', link: '/api/factories/rbac' },
-              { text: 'YAML Integration', link: '/api/factories/yaml' },
+              { text: 'YAML', link: '/api/factories/yaml' },
+            ],
+          },
+          {
+            text: 'Ecosystems',
+            items: [
+              { text: 'Kubernetes', link: '/api/kubernetes/' },
+              { text: 'Cilium', link: '/api/cilium/' },
+              { text: 'Cert-Manager', link: '/api/cert-manager/' },
+              { text: 'Flux', link: '/api/flux/' },
+              { text: 'Kro', link: '/api/kro/' },
+              { text: 'Kro Runtime Bootstrap', link: '/api/kro/compositions/runtime' },
+              { text: 'APISix', link: '/api/apisix/' },
+              { text: 'External-DNS', link: '/api/external-dns/' },
+              { text: 'Pebble', link: '/api/pebble/' },
             ],
           },
         ],
         '/examples/': [
           {
-            text: 'Basic Examples',
+            text: 'Examples',
             items: [
               { text: 'Basic Web App', link: '/examples/basic-webapp' },
-              { text: 'Basic Patterns', link: '/examples/basic-patterns' },
               { text: 'Database App', link: '/examples/database-app' },
-              { text: 'Microservices', link: '/examples/microservices' },
+              { text: 'Helm Integration', link: '/examples/helm-integration' },
+              { text: 'Multi-Environment', link: '/examples/multi-environment' },
+              { text: 'Custom CRD', link: '/examples/custom-crd' },
             ],
           },
+        ],
+        '/advanced/': [
           {
-            text: 'Advanced Examples',
+            text: 'Advanced Topics',
             items: [
-              { text: 'Multi-Environment', link: '/examples/multi-environment' },
-              { text: 'Monitoring Stack', link: '/examples/monitoring' },
-              { text: 'Helm Patterns', link: '/examples/helm-patterns' },
+              { text: 'ArkType Schemas', link: '/advanced/arktype-schemas' },
+              { text: 'Custom Integrations', link: '/advanced/custom-integrations' },
+              { text: 'Alchemy Integration', link: '/advanced/alchemy-integration' },
+              { text: 'Migration Guide', link: '/advanced/migration' },
+              { text: 'Resource IDs', link: '/advanced/resource-ids' },
             ],
           },
         ],
@@ -167,10 +152,6 @@ export default withMermaid(
     ignoreDeadLinks: [
       /typekro-examples$/,
       /discord\.gg\/typekro$/,
-      /guide\/direct-deployment$/,
-      /guide\/security$/,
-      /api\/factories\/index$/,
-      /direct-deployment$/,
     ],
   })
 );

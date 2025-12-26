@@ -7,7 +7,8 @@ import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { KubernetesRef } from './common.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
-import type { KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
+import type { KroCompatibleType, SchemaProxy, Scope, InferType } from './serialization.js';
+import { NESTED_COMPOSITION_BRAND, CALLABLE_COMPOSITION_BRAND } from '../constants/brands.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status
@@ -86,6 +87,15 @@ export interface EnhancedDeploymentPlan {
 // DEPLOYMENT OPTIONS AND CONFIGURATION
 // =============================================================================
 
+/**
+ * Strategy for handling resource conflicts (409 AlreadyExists errors)
+ * - 'warn': Log warning and treat existing resource as success (default)
+ * - 'fail': Throw ResourceConflictError on conflict
+ * - 'patch': Attempt to patch the existing resource with new values
+ * - 'replace': Delete and recreate the resource
+ */
+export type ConflictStrategy = 'warn' | 'fail' | 'patch' | 'replace';
+
 export interface DeploymentOptions {
   mode: 'direct' | 'kro' | 'alchemy' | 'auto';
   namespace?: string;
@@ -98,6 +108,16 @@ export interface DeploymentOptions {
 
   /** Hydrate Enhanced proxy status fields with live cluster data (default: true) */
   hydrateStatus?: boolean;
+
+  /**
+   * Strategy for handling resource conflicts (409 AlreadyExists errors)
+   * - 'warn': Log warning and treat existing resource as success (default)
+   * - 'fail': Throw ResourceConflictError on conflict
+   * - 'patch': Attempt to patch the existing resource with new values
+   * - 'replace': Delete and recreate the resource
+   * @default 'warn'
+   */
+  conflictStrategy?: ConflictStrategy;
 
   /** Event monitoring configuration */
   eventMonitoring?: {
@@ -292,6 +312,48 @@ export interface TypedResourceGraph<
   schema?: SchemaProxy<TSpec, TStatus>; // Only for typed graphs from builder functions
 }
 
+/**
+ * Status proxy for nested compositions - returns KubernetesRef objects
+ * that reference the nested composition's computed status fields.
+ *
+ * Supports nested property access at the type level to match runtime Proxy behavior.
+ * Uses MagicProxy to enable property access on KubernetesRef-wrapped objects.
+ *
+ * Example: status.components.kroSystem is valid when components is an object.
+ * Example: status.ingressClass?.name properly resolves to string type, not any.
+ */
+export type StatusProxy<TStatus> = TStatus;
+
+/**
+ * Resource returned when a composition is called as a function with a spec.
+ * Contains the spec, a status proxy, and metadata about the nested composition instance.
+ */
+export interface NestedCompositionResource<TSpec, TStatus> {
+  readonly [NESTED_COMPOSITION_BRAND]: true;
+  readonly spec: TSpec;
+  readonly status: StatusProxy<TStatus>;
+  readonly __compositionId: string;
+  readonly __resources: KubernetesResource[];
+}
+
+/**
+ * A composition that can be both:
+ * 1. Called as a function with a spec to create nested composition instances
+ * 2. Used as a TypedResourceGraph for deployment
+ * 3. Has a .status property for cross-composition status references
+ */
+export type CallableComposition<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+> = {
+  readonly [CALLABLE_COMPOSITION_BRAND]: true;
+  (spec: TSpec): NestedCompositionResource<TSpec, TStatus>;
+
+  // Status proxy for cross-composition references
+  // Enables: composition.status.field in status builders
+  readonly status: InferType<TStatus>;
+} & TypedResourceGraph<TSpec, TStatus>;
+
 // Factory options determine deployment strategy
 export interface FactoryOptions {
   namespace?: string;
@@ -309,6 +371,11 @@ export interface FactoryOptions {
 
   // Deployment closures - for direct mode factories
   closures?: Record<string, DeploymentClosure>;
+
+  // Composition re-execution - for providing actual values to composition functions
+  compositionFn?: (spec: any) => any;
+  compositionDefinition?: any;
+  compositionOptions?: any;
 
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
@@ -484,6 +551,24 @@ export class ResourceDeploymentError extends Error {
   }
 }
 
+/**
+ * Error thrown when a resource already exists and conflictStrategy is 'fail'
+ */
+export class ResourceConflictError extends Error {
+  public readonly resourceName: string;
+  public readonly resourceKind: string;
+  public readonly namespace: string | undefined;
+
+  constructor(resourceName: string, resourceKind: string, namespace?: string | undefined) {
+    const nsInfo = namespace ? ` in namespace '${namespace}'` : '';
+    super(`Resource ${resourceKind}/${resourceName} already exists${nsInfo}`);
+    this.name = 'ResourceConflictError';
+    this.resourceName = resourceName;
+    this.resourceKind = resourceKind;
+    this.namespace = namespace;
+  }
+}
+
 export class ResourceReadinessTimeoutError extends Error {
   constructor(resource: DeployedResource, timeout: number) {
     super(`Timeout after ${timeout}ms waiting for ${resource.kind}/${resource.name} to be ready`);
@@ -493,7 +578,9 @@ export class ResourceReadinessTimeoutError extends Error {
 
 export class UnsupportedMediaTypeError extends Error {
   constructor(resourceName: string, resourceKind: string, acceptedTypes: string[], cause: Error) {
-    super(`Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`);
+    super(
+      `Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`
+    );
     this.name = 'UnsupportedMediaTypeError';
     this.cause = cause;
   }
@@ -515,4 +602,5 @@ export interface ResolutionContext {
   cache?: Map<string, unknown>;
   deploymentId?: string;
   resourceKeyMapping?: Map<string, unknown>;
+  schema?: { spec?: unknown; status?: unknown };
 }

@@ -5,7 +5,8 @@
  * ensuring consistent behavior and eliminating code duplication.
  */
 
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
+import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentError, DeploymentEvent, RollbackResult } from '../types/deployment.js';
 import type {
@@ -295,10 +296,13 @@ export function createRollbackManager(k8sApi: k8s.KubernetesObjectApi): Resource
 
 /**
  * Factory function for creating rollback managers with KubeConfig
+ * Uses createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
  */
 export function createRollbackManagerWithKubeConfig(
   kubeConfig: k8s.KubeConfig
 ): ResourceRollbackManager {
-  const k8sApi = kubeConfig.makeApiClient(k8s.KubernetesObjectApi);
+  // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
+  // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
+  const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
   return new ResourceRollbackManager(k8sApi);
 }

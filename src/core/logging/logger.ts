@@ -31,10 +31,14 @@ class PinoLogger implements TypeKroLogger {
   error(msg: string, error?: Error, meta?: Record<string, any>): void {
     const logData = { ...meta };
     if (error) {
+      const k8sError = error as any;
       logData.error = {
         name: error.name,
         message: error.message,
         stack: error.stack,
+        statusCode: k8sError.statusCode,
+        body: k8sError.body,
+        response: k8sError.response?.body,
       };
     }
     this.pinoLogger.error(logData, msg);
@@ -43,10 +47,14 @@ class PinoLogger implements TypeKroLogger {
   fatal(msg: string, error?: Error, meta?: Record<string, any>): void {
     const logData = { ...meta };
     if (error) {
+      const k8sError = error as any;
       logData.error = {
         name: error.name,
         message: error.message,
         stack: error.stack,
+        statusCode: k8sError.statusCode,
+        body: k8sError.body,
+        response: k8sError.response?.body,
       };
     }
     this.pinoLogger.fatal(logData, msg);

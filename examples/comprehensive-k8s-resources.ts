@@ -52,7 +52,7 @@ import {
   storageClass,
   validatingWebhookConfiguration,
 } from '../src/index.js';
-import { kubernetesComposition, Cel } from '../src/index.js';
+import { kubernetesComposition, } from '../src/index.js';
 // =============================================================================
 // 1. INFRASTRUCTURE FOUNDATION
 // =============================================================================
@@ -609,7 +609,7 @@ const appNetworkPolicy = networkPolicy({
     policyTypes: ['Ingress', 'Egress'],
     ingress: [
       {
-        from: [{ namespaceSelector: { matchLabels: { name: 'ingress-nginx' } } }],
+        _from: [{ namespaceSelector: { matchLabels: { name: 'ingress-nginx' } } }],
         ports: [{ protocol: 'TCP', port: 8080 }],
       },
     ],

@@ -1,12 +1,161 @@
 # Types API
 
-TypeKro provides a comprehensive type system that ensures type safety across resource definitions, references, and deployments. This page documents the core types and interfaces used throughout the TypeKro ecosystem.
+Core TypeScript types for TypeKro's type-safe resource system.
+
+## External References
+
+### `externalRef<TSpec, TStatus>()`
+
+Creates a reference to a resource deployed by another composition.
+
+```typescript
+function externalRef<TSpec extends object, TStatus extends object>(
+  apiVersion: string,
+  kind: string,
+  instanceName: string,
+  namespace?: string
+): Enhanced<TSpec, TStatus>
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `apiVersion` | `string` | API version of the external CRD |
+| `kind` | `string` | Kind of the external CRD |
+| `instanceName` | `string` | Name of the CRD instance to reference |
+| `namespace` | `string` (optional) | Namespace of the CRD instance |
+
+**Returns:** `Enhanced<TSpec, TStatus>` - A proxy that can be used in resource templates.
+
+**Example:**
+
+```typescript
+import { externalRef, kubernetesComposition } from 'typekro';
+import { Deployment } from 'typekro/simple';
+
+interface DatabaseSpec { name: string; }
+interface DatabaseStatus { ready: boolean; host: string; }
+
+const dbRef = externalRef<DatabaseSpec, DatabaseStatus>(
+  'database.example.com/v1alpha1',
+  'Database',
+  'production-db',
+  'databases'  // optional namespace
+);
+
+const app = kubernetesComposition(definition, (spec) => {
+  const deploy = Deployment({
+    id: 'app',
+    name: spec.name,
+    image: spec.image,
+    env: {
+      DATABASE_HOST: dbRef.status.host  // Reference external resource
+    }
+  });
+  
+  return { ready: deploy.status.readyReplicas > 0 };
+});
+```
+
+See [External References Guide](/guide/external-references) for more patterns.
 
 ## Core Types
 
+### `Enhanced<TSpec, TStatus>`
+
+A Kubernetes resource enhanced with TypeKro functionality.
+
+```typescript
+type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
+  withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
+  withDependencies(...deps: string[]): Enhanced<TSpec, TStatus>;
+}
+```
+
+**Usage:**
+
+```typescript
+import { Deployment } from 'typekro/simple';
+
+const deploy = Deployment({ id: 'app', name: 'app', image: 'nginx' });
+// deploy is Enhanced<V1DeploymentSpec, V1DeploymentStatus>
+
+// Access spec and status with full type safety
+deploy.spec.replicas;           // number | undefined
+deploy.status.readyReplicas;    // KubernetesRef<number>
+```
+
+### `RefOrValue<T>`
+
+Union type for values that can be direct values, references, or expressions.
+
+```typescript
+type RefOrValue<T> = T | KubernetesRef<NonNullable<T>> | CelExpression<T>
+```
+
+**Usage:**
+
+```typescript
+// All valid RefOrValue<string>:
+const direct: RefOrValue<string> = 'hello';
+const ref: RefOrValue<string> = deploy.metadata.name;
+const expr: RefOrValue<string> = Cel.template('app-%s', schema.spec.name);
+```
+
+### `KubernetesRef<T>`
+
+Type-safe reference to a field in another Kubernetes resource.
+
+```typescript
+interface KubernetesRef<T = unknown> {
+  readonly [KUBERNETES_REF_BRAND]: true;
+  readonly resourceId: string;
+  readonly fieldPath: string;
+}
+```
+
+**How it works:**
+
+```typescript
+const deploy = Deployment({ id: 'myDeploy', name: 'app', image: 'nginx' });
+
+// TypeScript sees: string
+// Runtime value: KubernetesRef<string>
+const name = deploy.metadata.name;
+
+// Serializes to CEL: ${myDeploy.metadata.name}
+```
+
+### `CelExpression<T>`
+
+A CEL expression that evaluates to type `T` at runtime.
+
+```typescript
+interface CelExpression<T = unknown> {
+  readonly [CEL_EXPRESSION_BRAND]: true;
+  readonly expression: string;
+}
+```
+
+**Usage:**
+
+```typescript
+import { Cel } from 'typekro';
+
+// Recommended: Use natural JavaScript (auto-converted to CEL)
+// ready: deploy.status.readyReplicas > 0
+
+// Explicit CEL for advanced patterns (list operations, etc.)
+const containerCount: CelExpression<number> = Cel.size(deploy.spec.template.spec.containers);
+const podNames: CelExpression<string[]> = Cel.expr('pods.map(p, p.metadata.name)');
+```
+
+## Resource Types
+
 ### `KubernetesResource<TSpec, TStatus>`
 
-Base interface for all Kubernetes resources in TypeKro.
+Base interface for all Kubernetes resources.
 
 ```typescript
 interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
@@ -19,332 +168,152 @@ interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
 }
 ```
 
-#### Type Parameters
+### `DeploymentClosure<T>`
 
-- **`TSpec`**: Type of the resource specification
-- **`TStatus`**: Type of the resource status
-
-#### Properties
-
-- **`apiVersion`**: Kubernetes API version (e.g., "apps/v1")
-- **`kind`**: Resource type (e.g., "Deployment", "Service")
-- **`metadata`**: Kubernetes metadata including name, namespace, labels
-- **`spec`**: Resource specification (optional)
-- **`status`**: Resource status (optional)
-- **`id`**: Unique identifier for TypeKro dependency tracking
-
-#### Example
+A closure that executes during deployment phase.
 
 ```typescript
-import type { KubernetesResource } from 'typekro';
-import type { V1DeploymentSpec, V1DeploymentStatus } from '@kubernetes/client-node';
-
-// Custom deployment resource type
-type MyDeployment = KubernetesResource<V1DeploymentSpec, V1DeploymentStatus>;
-```
-
-### `Enhanced<TSpec, TStatus>`
-
-Enhanced version of a Kubernetes resource with TypeKro functionality.
-
-```typescript
-type Enhanced<TSpec, TStatus> = KubernetesResource<TSpec, TStatus> & {
-  // TypeKro enhancement methods
-  withReadinessEvaluator(evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus>;
-  withDependencies(...deps: string[]): Enhanced<TSpec, TStatus>;
+type DeploymentClosure<T> = {
+  readonly [DEPLOYMENT_CLOSURE_BRAND]: true;
+  readonly name: string;
+  execute(context: DeploymentContext): Promise<T>;
 }
 ```
 
-#### Features
+**Used by:** `yamlFile()`, `yamlDirectory()`
 
-- **Readiness evaluation**: Custom logic to determine when a resource is ready
-- **Dependency management**: Explicit dependency declarations
-- **Type preservation**: Maintains original Kubernetes types
+## Proxy Types
 
-#### Example
+TypeKro uses two proxy types to create references at runtime while preserving TypeScript types at compile time.
 
-```typescript
-import { deployment } from 'typekro';
+### `SchemaProxy<TSpec, TStatus>`
 
-const myDeploy = deployment({
-  metadata: { name: 'web-server' },
-  spec: { /* deployment spec */ }
-})
-.withReadinessEvaluator((resource) => ({
-  ready: resource.status?.readyReplicas === resource.spec?.replicas,
-  message: 'Deployment ready when all replicas are available'
-}))
-.withDependencies('database', 'config');
-```
-
-## Reference Types
-
-### `KubernetesRef<T>`
-
-Type-safe reference to a field in another Kubernetes resource.
+The proxy for the `spec` parameter in composition functions. Creates references to input schema values.
 
 ```typescript
-interface KubernetesRef<T = unknown> {
-  [KUBERNETES_REF_BRAND]: true;
-  resourceId: string;
-  fieldPath: string;
-  expectedType: string;
-  _type?: T;
+interface SchemaProxy<TSpec, TStatus> {
+  spec: SchemaMagicProxy<TSpec>;
+  status: SchemaMagicProxy<TStatus>;
 }
 ```
 
-#### Type Parameters
-
-- **`T`**: Expected type of the referenced value
-
-#### Properties
-
-- **`resourceId`**: ID of the target resource
-- **`fieldPath`**: Path to the specific field (e.g., "spec.replicas")
-- **`expectedType`**: TypeScript type name for validation
-
-#### Example
+**How it works:**
 
 ```typescript
-import { deployment, service } from 'typekro';
-
-const myDeploy = deployment({ /* spec */ });
-const myService = service({
-  spec: {
-    selector: { app: myDeploy.metadata.name }, // KubernetesRef<string>
-    ports: [{ port: 80, targetPort: myDeploy.spec.containers[0].ports[0].containerPort }]
-  }
+// The spec parameter is a SchemaProxy
+kubernetesComposition(definition, (spec) => {
+  // TypeScript sees: spec.name as string
+  // Runtime: spec.name is KubernetesRef with resourceId: '__schema__'
+  const deploy = Deployment({ name: spec.name, ... });
+  // Generates: name: ${schema.spec.name}
 });
 ```
-
-### `CelExpression<T>`
-
-Type-safe CEL expression that evaluates to type `T`.
-
-```typescript
-interface CelExpression<T = unknown> {
-  [CEL_EXPRESSION_BRAND]: true;
-  expression: string;
-  _type?: T;
-}
-```
-
-#### Type Parameters
-
-- **`T`**: Expected type of the expression result
-
-#### Properties
-
-- **`expression`**: CEL expression string
-- **`_type`**: TypeScript type marker (compile-time only)
-
-#### Example
-
-```typescript
-import { deployment } from 'typekro';
-
-const myDeploy = deployment({ /* spec */ });
-
-// ✨ Natural JavaScript expressions - automatically converted to CEL
-// Boolean expression
-const isHealthy = myDeploy.status.readyReplicas >= myDeploy.spec.replicas;
-
-// String template
-const statusMessage = `Deployment ${myDeploy.metadata.name} has ${myDeploy.status.readyReplicas} ready replicas`;
-```
-
-### `RefOrValue<T>`
-
-Union type for values that can be either direct values, references, or expressions.
-
-```typescript
-type RefOrValue<T> = T | KubernetesRef<NonNullable<T>> | CelExpression<T>
-```
-
-#### Type Parameters
-
-- **`T`**: Base type of the value
-
-#### Usage
-
-Used throughout TypeKro APIs to accept flexible value types:
-
-```typescript
-import { configMap } from 'typekro';
-
-const config = configMap({
-  metadata: { name: 'app-config' },
-  data: {
-    // Direct string value
-    environment: 'production',
-    
-    // Reference to another resource
-    databaseUrl: myDatabase.status.connectionString, // KubernetesRef<string>
-    
-    // ✨ JavaScript expression - automatically converted to CEL
-    maxConnections: `${myDatabase.spec.maxConnections}` // Automatically converted to CEL
-  }
-});
-```
-
-## Magic Proxy Types
 
 ### `MagicProxy<T>`
 
-Advanced proxy type that enables transparent reference creation while preserving TypeScript types.
+The proxy wrapping resources (Deployment, Service, etc.). Creates references to live Kubernetes resource state.
 
 ```typescript
 type MagicProxy<T> = T & {
-  [P in keyof T as `${P & string}`]: MagicAssignable<T[P]>;
-} & {
-  [key: string]: MagicAssignable<any>;
+  [P in keyof T]: MagicAssignable<T[P]>;
 }
 ```
 
-#### Features
-
-- **Type preservation**: Maintains original TypeScript types for IDE support
-- **Reference creation**: Automatically creates `KubernetesRef` objects at runtime
-- **Unknown property access**: Allows accessing any property path
-
-#### Example
+**How it works:**
 
 ```typescript
-// TypeScript sees this as a regular Deployment object
-const myDeploy = deployment({ /* spec */ });
+// Resources are wrapped with MagicProxy
+const deploy = Deployment({ id: 'app', name: 'app', image: 'nginx' });
 
-// But these create KubernetesRef objects at runtime:
-const deployName = myDeploy.metadata.name; // KubernetesRef<string>
-const replicas = myDeploy.spec.replicas; // KubernetesRef<number>
-const readyReplicas = myDeploy.status.readyReplicas; // KubernetesRef<number>
+// TypeScript sees: deploy.status.readyReplicas as number
+// Runtime: deploy.status.readyReplicas is KubernetesRef with resourceId: 'app'
+return { ready: deploy.status.readyReplicas > 0 };
+// Generates: ready: ${app.status.readyReplicas > 0}
 ```
+
+### Key Difference
+
+| Proxy | References | CEL Path Prefix |
+|-------|------------|-----------------|
+| Schema Proxy | Input spec values | `schema.spec.*` |
+| Magic Proxy | Live resource state | `{resourceId}.*` |
 
 ### `MagicAssignable<T>`
 
-Type that defines what values can be assigned in the magic proxy system.
+Values that can be assigned through the magic proxy system.
 
 ```typescript
-type MagicAssignable<T> = T | undefined | KubernetesRef<T> | KubernetesRef<T | undefined> | CelExpression<T>
+type MagicAssignable<T> = 
+  | T 
+  | undefined 
+  | KubernetesRef<T> 
+  | KubernetesRef<T | undefined> 
+  | CelExpression<T>
 ```
 
-#### Use Cases
+### `MagicAssignableShape<T>`
 
-- Function parameters that accept references or direct values
-- Resource field assignments with dynamic values
-- Status builder computations
-
-## Resource Graph Types
-
-### `ResourceGraph`
-
-Represents a complete resource graph with dependencies and metadata.
+The return type for composition status builders. Maps each property of `T` to `MagicAssignable`.
 
 ```typescript
-interface ResourceGraph {
-  id: string;
-  resources: Map<string, DeployableK8sResource>;
-  dependencies: DependencyGraph;
-  metadata: {
-    name: string;
-    created: Date;
-    namespace?: string;
-  };
+type MagicAssignableShape<T> = {
+  [K in keyof T]: MagicAssignable<T[K]>;
 }
 ```
 
-#### Properties
+**Usage:**
 
-- **`id`**: Unique identifier for the resource graph
-- **`resources`**: Map of resource ID to resource definition
-- **`dependencies`**: Dependency graph for ordered deployment
-- **`metadata`**: Graph metadata including name and creation time
-
-### `ResourceGraphDefinition<T>`
-
-Type-safe resource graph definition with schema validation.
+When you return a status object from a composition function, TypeKro accepts `MagicAssignableShape<TStatus>`:
 
 ```typescript
-type ResourceGraphDefinition<T> = (schema: SchemaProxy<T>) => Record<string, Enhanced<any, any>>
+// Your status schema
+const WebAppStatus = type({ ready: 'boolean', url: 'string' });
+
+// In composition function, you can return:
+return {
+  ready: deploy.status.readyReplicas > 0,  // JavaScript expression → CEL
+  url: `https://${spec.hostname}`          // Template literal → CEL
+};
+// TypeKro accepts this as MagicAssignableShape<{ ready: boolean; url: string }>
 ```
 
-#### Type Parameters
-
-- **`T`**: Type of the input schema
-
-#### Example
-
-```typescript
-import { kubernetesComposition } from 'typekro';
-import { Deployment, Service } from 'typekro/simple';
-import { type } from 'arktype';
-
-const WebAppSpec = type({
-  name: 'string',
-  replicas: 'number', 
-  image: 'string'
-});
-
-const webApp = kubernetesComposition(
-  {
-    name: 'web-app',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'WebApp',
-    spec: WebAppSpec,
-    status: type({ ready: 'boolean' })
-  },
-  (schema) => ({
-    deploy: Deployment({
-      name: schema.spec.name,
-    spec: {
-      replicas: schema.replicas,
-      template: {
-        spec: {
-          containers: [{
-            name: 'web',
-            image: schema.image
-          }]
-        }
-      }
-    }
-  });
-
-  const svc = service({
-    metadata: { name: `${schema.name}-service` },
-    spec: {
-      selector: { app: schema.name },
-      ports: [{ port: 80, targetPort: 8080 }]
-    }
-  });
-
-  return { deployment: deploy, service: svc };
-});
-```
+This type allows you to mix:
+- Direct values: `ready: true`
+- Resource references: `ready: deploy.status.readyReplicas`
+- JavaScript expressions: `ready: deploy.status.readyReplicas > 0`
+- CEL expressions: `ready: Cel.expr(...)`
 
 ## Deployment Types
 
-### `DeploymentOptions`
+### `FactoryOptions`
 
-Configuration options for resource deployment.
+Options for creating deployment factories.
 
 ```typescript
-interface DeploymentOptions {
+interface FactoryOptions {
   namespace?: string;
-  kubeconfig?: string | KubeConfig;
-  dryRun?: boolean;
-  waitForReady?: boolean;
   timeout?: number;
-  alchemyScope?: Scope;
+  waitForReady?: boolean;
+  progressCallback?: (event: DeploymentEvent) => void;
+  
+  // Event monitoring - stream control plane logs
+  eventMonitoring?: {
+    enabled?: boolean;
+    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
+    includeChildResources?: boolean;
+    deduplicationWindow?: number;
+    maxEventsPerSecond?: number;
+  };
+  
+  // Debug logging
+  debugLogging?: {
+    enabled?: boolean;
+    statusPolling?: boolean;
+    readinessEvaluation?: boolean;
+    verboseMode?: boolean;
+  };
 }
 ```
-
-#### Properties
-
-- **`namespace`**: Target Kubernetes namespace
-- **`kubeconfig`**: Kubernetes configuration (file path or object)
-- **`dryRun`**: If true, validate without applying changes
-- **`waitForReady`**: Wait for resources to become ready
-- **`timeout`**: Maximum wait time in milliseconds
-- **`alchemyScope`**: Alchemy integration scope
 
 ### `DeploymentResult`
 
@@ -353,128 +322,63 @@ Result of a deployment operation.
 ```typescript
 interface DeploymentResult {
   success: boolean;
-  resourceGraph: ResourceGraph;
   deployedResources: DeployedResource[];
   errors: Error[];
   duration: number;
 }
 ```
 
-#### Properties
-
-- **`success`**: Whether deployment completed successfully
-- **`resourceGraph`**: The deployed resource graph
-- **`deployedResources`**: List of successfully deployed resources
-- **`errors`**: Any errors encountered during deployment
-- **`duration`**: Total deployment time in milliseconds
-
-### `DeployedResource`
-
-Metadata about a deployed Kubernetes resource.
-
-```typescript
-interface DeployedResource {
-  id: string;
-  kind: string;
-  name: string;
-  namespace: string;
-  manifest: KubernetesResource;
-  status: 'deployed' | 'ready' | 'failed';
-  deployedAt: Date;
-  error?: Error;
-}
-```
-
-## Status and Readiness Types
-
-### `ResourceStatus`
-
-Standardized status information for resources.
-
-```typescript
-interface ResourceStatus {
-  ready: boolean;
-  reason?: string;
-  message?: string;
-  details?: Record<string, unknown>;
-}
-```
-
-#### Properties
-
-- **`ready`**: Whether the resource is ready for use
-- **`reason`**: Machine-readable reason code
-- **`message`**: Human-readable status message
-- **`details`**: Additional status details
+## Status Types
 
 ### `ReadinessEvaluator<T>`
 
-Function type for custom readiness evaluation logic.
+Function type for custom readiness evaluation.
 
 ```typescript
 type ReadinessEvaluator<T extends KubernetesResource> = (
   resource: T
 ) => ResourceStatus | Promise<ResourceStatus>
-```
 
-#### Example
-
-```typescript
-import { deployment } from 'typekro';
-
-const myDeploy = deployment({
-  metadata: { name: 'web-server' },
-  spec: { /* deployment spec */ }
-})
-.withReadinessEvaluator((resource) => {
-  const ready = resource.status?.readyReplicas === resource.spec?.replicas;
-  
-  return {
-    ready,
-    reason: ready ? 'AllReplicasReady' : 'ReplicasPending',
-    message: ready 
-      ? 'All replicas are ready and available'
-      : `${resource.status?.readyReplicas || 0}/${resource.spec?.replicas || 1} replicas ready`,
-    details: {
-      readyReplicas: resource.status?.readyReplicas,
-      desiredReplicas: resource.spec?.replicas
-    }
-  };
-});
-```
-
-## Validation Types
-
-### `ValidationResult`
-
-Result of resource or schema validation.
-
-```typescript
-interface ValidationResult {
-  valid: boolean;
-  errors: ValidationError[];
-  warnings: ValidationWarning[];
+interface ResourceStatus {
+  ready: boolean;
+  reason?: string;
+  message?: string;
 }
 ```
 
-### `ValidationError`
-
-Detailed validation error information.
+**Usage:**
 
 ```typescript
-interface ValidationError {
-  path: string;
-  message: string;
-  code: string;
-  value?: unknown;
+const deploy = Deployment({ id: 'app', name: 'app', image: 'nginx' })
+  .withReadinessEvaluator((resource) => ({
+    ready: resource.status?.readyReplicas === resource.spec?.replicas,
+    message: `${resource.status?.readyReplicas}/${resource.spec?.replicas} ready`
+  }));
+```
+
+## Type Guards
+
+Runtime type checking functions:
+
+```typescript
+import { isKubernetesRef, isCelExpression } from 'typekro';
+
+function processValue(value: RefOrValue<string>): string {
+  if (isKubernetesRef(value)) {
+    return `Reference: ${value.resourceId}.${value.fieldPath}`;
+  }
+  if (isCelExpression(value)) {
+    return `CEL: ${value.expression}`;
+  }
+  return `Direct: ${value}`;
 }
 ```
 
-## Utility Types
+## Schema Types
 
 ### `KroCompatibleType`
 
-Union type for types that can be used in KRO schemas.
+Types that can be used in Kro schemas.
 
 ```typescript
 type KroCompatibleType = 
@@ -485,149 +389,26 @@ type KroCompatibleType =
   | unknown[]
 ```
 
-### `EnvVarValue`
+### ArkType Integration
 
-Specific type for environment variable values.
-
-```typescript
-type EnvVarValue = 
-  | string
-  | KubernetesRef<string>
-  | KubernetesRef<string | undefined>
-  | CelExpression<string>
-```
-
-#### Usage
+TypeKro uses ArkType for schema definitions:
 
 ```typescript
-import { deployment, configMap } from 'typekro';
+import { type } from 'arktype';
 
-const config = configMap({ /* config spec */ });
-
-const deploy = deployment({
-  spec: {
-    template: {
-      spec: {
-        containers: [{
-          name: 'web',
-          image: 'nginx:1.21',
-          env: [
-            {
-              name: 'API_URL',
-              value: config.data.apiUrl // EnvVarValue (KubernetesRef<string>)
-            },
-            {
-              name: 'PORT',
-              value: '8080' // EnvVarValue (string)
-            }
-          ]
-        }]
-      }
-    }
-  }
+const AppSpec = type({
+  name: 'string',
+  replicas: 'number',
+  'image?': 'string'  // Optional field
 });
+
+// Infer TypeScript type from schema
+type AppSpecType = typeof AppSpec.infer;
+// { name: string; replicas: number; image?: string }
 ```
 
-## Type Guards
+## Next Steps
 
-TypeKro provides several type guard functions for runtime type checking:
-
-### `isKubernetesRef()`
-
-```typescript
-function isKubernetesRef(value: unknown): value is KubernetesRef
-```
-
-### `isCelExpression()`
-
-```typescript
-function isCelExpression(value: unknown): value is CelExpression
-```
-
-### `isSchemaReference()`
-
-```typescript
-function isSchemaReference(value: unknown): value is SchemaReference
-```
-
-#### Example
-
-```typescript
-import { isKubernetesRef, isCelExpression } from 'typekro';
-
-function processValue(value: RefOrValue<string>): string {
-  if (isKubernetesRef(value)) {
-    return `Reference to ${value.resourceId}.${value.fieldPath}`;
-  }
-  
-  if (isCelExpression(value)) {
-    return `CEL expression: ${value.expression}`;
-  }
-  
-  return `Direct value: ${value}`;
-}
-```
-
-## Best Practices
-
-### 1. Use Specific Types
-
-Always use the most specific types available:
-
-```typescript
-// Good: Specific deployment type
-import type { V1Deployment } from '@kubernetes/client-node';
-const deploy: Enhanced<V1DeploymentSpec, V1DeploymentStatus> = deployment({...});
-
-// Avoid: Generic resource type
-const deploy: KubernetesResource = deployment({...});
-```
-
-### 2. Leverage Type Parameters
-
-Use type parameters for reusable functions:
-
-```typescript
-function createWebService<TSpec>(
-  spec: TSpec
-): Enhanced<TSpec, V1ServiceStatus> {
-  return service({
-    metadata: { name: 'web-service' },
-    spec
-  });
-}
-```
-
-### 3. Type-Safe References
-
-Always specify expected types for references:
-
-```typescript
-// Good: Explicit type
-const serviceName: KubernetesRef<string> = myService.metadata.name;
-
-// Better: Type assertion in usage
-const selector = { app: myService.metadata.name as string };
-```
-
-### 4. Validate Input Types
-
-Use type guards for runtime validation:
-
-```typescript
-function deployResource(resource: RefOrValue<KubernetesResource>) {
-  if (isKubernetesRef(resource)) {
-    throw new Error('Cannot deploy resource reference directly');
-  }
-  
-  // Safe to use as direct resource
-  return resource;
-}
-```
-
-## Related APIs
-
-- [CEL Expressions API](/api/cel) - Working with expressions and references
-- [Factory Functions API](/api/factories) - Creating typed resources
-- [Resource Graphs Guide](/guide/resource-graphs) - Understanding resource relationships
-- [Type Safety Guide](/guide/type-safety) - Advanced TypeScript patterns
+- [CEL Expressions](./cel.md) - Working with CelExpression
+- [kubernetesComposition](./kubernetes-composition.md) - Using types in compositions
+- [Magic Proxy Guide](/guide/magic-proxy) - Understanding the proxy system
