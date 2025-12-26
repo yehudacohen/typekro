@@ -38,12 +38,12 @@
 }
 
 .dark {
-  --vp-c-brand-1: #38BDF8;
-  --vp-c-brand-2: #0EA5E9;
-  --vp-c-brand-3: #0284C7;
-  --vp-c-brand-soft: rgba(56, 189, 248, 0.14);
-  --vp-c-brand-softer: rgba(56, 189, 248, 0.08);
-  --vp-c-brand-softest: rgba(56, 189, 248, 0.04);
+  --vp-c-brand-1: #60A5FA;
+  --vp-c-brand-2: #3B82F6;
+  --vp-c-brand-3: #2563EB;
+  --vp-c-brand-soft: rgba(96, 165, 250, 0.14);
+  --vp-c-brand-softer: rgba(96, 165, 250, 0.08);
+  --vp-c-brand-softest: rgba(96, 165, 250, 0.04);
 
   --typekro-navy: #3B82F6;
   --typekro-navy-light: #60A5FA;
@@ -52,22 +52,11 @@
   --typekro-cyan: #38BDF8;
   --typekro-cyan-light: #7DD3FC;
 
-  /* Dark Mode - Deep Forest Green (harmonizes with emerald logo) */
-  --vp-c-bg: #0F1B0F;
-  --vp-c-bg-alt: #152215;
-  --vp-c-bg-soft: #1B291B;
-  --vp-c-bg-mute: #213021;
-  
-  /* Better dark mode text colors */
-  --vp-c-text-1: #F0F6FC;
-  --vp-c-text-2: #C9D1D9;
-  --vp-c-text-3: #8B949E;
-  --vp-c-divider: rgba(240, 246, 252, 0.1);
-  --vp-c-border: rgba(240, 246, 252, 0.15);
-  --vp-c-bg: #0F1B0F;
-  --vp-c-bg-alt: #152215;
-  --vp-c-bg-soft: #1B291B;
-  --vp-c-bg-mute: #213021;
+  /* Dark Mode - Clean dark theme (standard VitePress dark) */
+  --vp-c-bg: #1a1a1a;
+  --vp-c-bg-alt: #161616;
+  --vp-c-bg-soft: #242424;
+  --vp-c-bg-mute: #2e2e2e;
   
   /* Dark mode text colors */
   --vp-c-text-1: #f6f6f7;

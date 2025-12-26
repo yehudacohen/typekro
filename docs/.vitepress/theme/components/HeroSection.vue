@@ -1,14 +1,14 @@
 <template>
   <div class="hero-section">
     <div class="hero-container">
-      <!-- Left 40% - Logo stacked above text, positioned higher -->
+      <!-- Top 25% - Logo and text -->
       <div class="hero-content">
         <div class="hero-branding">
           <img src="/typekro-logo.svg" alt="TypeKro Logo" class="hero-logo" />
         </div>
         <div class="hero-text">
-          <h1 class="hero-title">Kubernetes with TypeScript</h1>
-          <p class="hero-tagline">A control plane aware framework for orchestrating kubernetes resources like a programmer</p>
+          <h1 class="hero-title">Write TypeScript. Deploy Kubernetes.</h1>
+          <p class="hero-tagline">Runtime intelligence included.</p>
         </div>
         <div class="hero-actions">
           <button @click="navigateToGuide" class="VPButton medium brand">Get Started</button>
@@ -17,7 +17,7 @@
         </div>
       </div>
       
-      <!-- Right 60% - Code example positioned lower and taller -->
+      <!-- Bottom 75% - Code example -->
       <div class="code-sidebar">
         <div class="code-container" v-html="highlightedCode"></div>
       </div>
@@ -38,35 +38,31 @@ export default {
 import { kubernetesComposition } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
-const webapp = kubernetesComposition(
-  {
-    name: 'webapp',
-    apiVersion: 'example.com/v1',
-    kind: 'WebApp',
-    spec: type({ replicas: 'number' }),
-    status: type({ ready: 'boolean' })
-  },
-  (spec) => {
-    const deployment = Deployment({
-      name: 'webapp',
-      image: 'nginx',
-      replicas: spec.replicas
-    });
-    
-    const service = Service({
-      name: 'webapp-service',
-      selector: { app: 'webapp' },
-      ports: [{ port: 80 }]
-    });
+// Define a reusable WebApp composition
+const WebApp = kubernetesComposition({
+  name: 'webapp',
+  apiVersion: 'example.com/v1',
+  kind: 'WebApp',
+  spec: type({ name: 'string', image: 'string', replicas: 'number' }),
+  status: type({ ready: 'boolean', endpoint: 'string' })
+}, (spec) => {
+  const deploy = Deployment({ id: 'app', name: spec.name, image: spec.image, replicas: spec.replicas });
+  const svc = Service({ id: 'svc', name: \`\${spec.name}-svc\`, selector: { app: spec.name }, ports: [{ port: 80 }] });
 
-    return {
-      // ✨ Natural JavaScript - automatically converted to CEL
-      ready: deployment.status.readyReplicas > 0
-    };  
-  }
-);
+  return {
+    ready: deploy.status.readyReplicas > 0,     // ✨ JavaScript → CEL
+    endpoint: \`http://\${svc.status.clusterIP}\`  // ✨ Template → CEL
+  };
+});
 
-await webapp.factory('direct').deploy({ replicas: 3 });`;
+// Deploy multiple instances with a simple loop
+const apps = [
+  { name: 'frontend', image: 'nginx', replicas: 3 },
+  { name: 'api', image: 'node:20', replicas: 2 }
+];
+
+const factory = WebApp.factory('direct', { namespace: 'production' });
+for (const app of apps) await factory.deploy(app);`;
 
     const navigateToGuide = () => {
       document.getElementById('getting-started')?.scrollIntoView({ behavior: 'smooth' });
@@ -102,62 +98,60 @@ await webapp.factory('direct').deploy({ replicas: 3 });`;
 </script>
 
 <style scoped>
-/* 40/60 Hero Layout - Keep size, adjust positioning */
+/* Vertical 25/75 Hero Layout */
+.hero-section {
+  min-height: 90vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
 .hero-container {
   display: flex;
-  align-items: flex-start;
-  min-height: 70vh;
-  max-width: 1400px;
+  flex-direction: column;
+  align-items: center;
+  max-width: 1000px;
   margin: 0 auto;
-  padding: 2rem 2rem 1rem;
-  gap: 3rem;
+  gap: 2rem;
+  width: 100%;
 }
 
-/* Left 40% - Logo stacked above text, positioned higher */
+/* Top section - Logo and text (25%) */
 .hero-content {
-  flex: 0 0 42%;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  text-align: left;
-  padding-left: 4rem;
+  align-items: center;
+  text-align: center;
+  width: 100%;
 }
 
-/* Right 60% - Code example positioned lower and taller */
-.code-sidebar {
-  flex: 0 0 55%;
-  display: flex;
-  align-items: flex-start;
-  padding-top: 3rem; padding-right: 2rem;
-}
-
-/* Logo styling matching docs */
+/* Logo styling */
 .hero-branding {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
 
 .hero-logo {
   height: 80px;
   width: auto;
-  margin-bottom: 0.5rem;
 }
 
-/* Text positioning higher */
+/* Text */
 .hero-text {
-  margin-bottom: 2.5rem;
+  margin-bottom: 1.5rem;
 }
 
 .hero-title {
-  font-size: 3.5rem;
+  font-size: 2.5rem;
   font-weight: 700;
   color: var(--vp-c-text-1);
   line-height: 1.2;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
   font-family: var(--vp-font-family-mono);
 }
 
 .hero-tagline {
-  font-size: 1.4rem;
+  font-size: 1.2rem;
   font-weight: 400;
   color: var(--vp-c-text-2);
   line-height: 1.6;
@@ -165,17 +159,23 @@ await webapp.factory('direct').deploy({ replicas: 3 });`;
   font-family: var(--vp-font-family-mono);
 }
 
-/* Action buttons - EXACT COPY of VitePress styling */
+/* Action buttons */
 .hero-actions {
   display: flex;
-  gap: 1rem;
+  gap: 0.75rem;
   flex-wrap: wrap;
+  justify-content: center;
 }
 
-/* Code container - taller and positioned lower */
+/* Bottom section - Code (75%) */
+.code-sidebar {
+  width: 100%;
+  max-width: 900px;
+}
+
 .code-container {
   width: 100%;
-  height: 500px;
+  max-height: 450px;
   overflow-y: auto;
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -183,8 +183,8 @@ await webapp.factory('direct').deploy({ replicas: 3 });`;
 
 .code-container :deep(pre) {
   margin: 0;
-  padding: 1.5rem;
-  font-size: 0.85rem;
+  padding: 1.25rem;
+  font-size: 0.8rem;
   line-height: 1.4;
   border-radius: 8px;
   font-family: var(--vp-font-family-mono);
@@ -199,10 +199,10 @@ await webapp.factory('direct').deploy({ replicas: 3 });`;
 .fallback-code {
   background: var(--vp-c-bg-soft);
   color: var(--vp-c-text-1);
-  padding: 1.5rem;
+  padding: 1.25rem;
   border-radius: 8px;
   font-family: var(--vp-font-family-mono);
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   line-height: 1.4;
   overflow-x: auto;
   border: 1px solid var(--vp-c-border);
@@ -254,41 +254,39 @@ await webapp.factory('direct').deploy({ replicas: 3 });`;
 
 /* Mobile Layout */
 @media (max-width: 768px) {
-  .hero-container {
-    flex-direction: column;
-    gap: 2rem;
+  .hero-section {
+    min-height: auto;
     padding: 1rem;
   }
   
-  .hero-content {
-    flex: none;
-    padding-left: 0;
-    text-align: center;
-    align-items: center;
-  }
-  
-  .code-sidebar {
-    flex: none;
-    padding-top: 0;
+  .hero-container {
+    gap: 1.5rem;
   }
   
   .hero-title {
-    font-size: 2.5rem;
+    font-size: 1.8rem;
   }
   
   .hero-tagline {
-    font-size: 1.1rem;
+    font-size: 1rem;
   }
   
   .code-container {
-    height: 350px;
+    max-height: 350px;
+  }
+  
+  .code-container :deep(pre) {
+    font-size: 0.75rem;
+    padding: 1rem;
   }
   
   .hero-actions {
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
   }
 }
-/* Dark theme code block overrides - use proper code colors, not green theme colors */
+
+/* Dark theme code block overrides */
 .dark .code-container :deep(pre) {
   background: #0d1117 !important;
   color: #f0f6fc !important;
@@ -300,16 +298,10 @@ await webapp.factory('direct').deploy({ replicas: 3 });`;
   background: #0d1117 !important;
 }
 
-/* Dark mode syntax highlighting overrides */
 .dark .code-container :deep(.shiki span) {
   color: var(--shiki-dark) !important;
 }
 
-.dark .code-container :deep(.shiki .token) {
-  color: var(--shiki-dark) !important;
-}
-
-/* Force all text in dark mode code blocks to be light */
 .dark .code-container :deep(pre),
 .dark .code-container :deep(pre *) {
   color: #f0f6fc !important;
@@ -321,4 +313,3 @@ await webapp.factory('direct').deploy({ replicas: 3 });`;
   border: 1px solid #30363d !important;
 }
 </style>
-

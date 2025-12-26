@@ -1,28 +1,48 @@
 # kubernetesComposition API
 
-The `kubernetesComposition` function is TypeKro's primary API for creating typed resource graphs using an imperative composition pattern.
-
-## Overview
-
-The `kubernetesComposition` API provides a structured way to create TypeKro resource graphs using two separate functions: a resource builder that creates named resources, and a status builder that computes status from the created resources. This pattern provides clear separation between resource creation and status computation while maintaining full type safety.
+The primary API for creating typed resource graphs with full type safety and automatic CEL generation.
 
 ## Syntax
 
 ```typescript
 function kubernetesComposition<TSpec, TStatus>(
-  definition: ResourceGraphDefinition<TSpec, TStatus>,
-  compositionFunction: (spec: TSpec) => TStatus
+  definition: {
+    name: string;
+    apiVersion: string;
+    kind: string;
+    spec: ArkTypeSchema<TSpec>;
+    status: ArkTypeSchema<TStatus>;
+  },
+  compositionFunction: (spec: MagicProxy<TSpec>) => TStatus
 ): ResourceGraph<TSpec, TStatus>
 ```
 
-### Parameters
+## Parameters
 
-- **`definition`**: Resource graph definition containing metadata and schema
-- **`compositionFunction`**: Function that receives the spec and creates resources (auto-registered) and returns status
+### `definition`
 
-### Returns
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | `string` | Unique name for the resource graph |
+| `apiVersion` | `string` | Kubernetes API version (e.g., `example.com/v1alpha1`) |
+| `kind` | `string` | Kubernetes resource kind (e.g., `WebApp`) |
+| `spec` | `ArkTypeSchema` | ArkType schema defining the spec structure |
+| `status` | `ArkTypeSchema` | ArkType schema defining the status structure |
 
-A `ResourceGraph` instance that can be deployed or converted to YAML.
+### `compositionFunction`
+
+Function that receives a magic proxy of the spec and:
+1. Creates resources (automatically registered)
+2. Returns status object with JavaScript expressions (auto-converted to CEL)
+
+## Returns
+
+A `ResourceGraph` instance with methods:
+
+| Method | Description |
+|--------|-------------|
+| `factory(mode, options)` | Create deployment factory (`'direct'` or `'kro'`) |
+| `toYaml(spec?)` | Generate YAML representation |
 
 ## Basic Example
 
@@ -33,78 +53,147 @@ import { Deployment, Service } from 'typekro/simple';
 
 const webApp = kubernetesComposition(
   {
-    name: 'simple-webapp',
+    name: 'webapp',
     apiVersion: 'example.com/v1alpha1',
     kind: 'WebApp',
     spec: type({ name: 'string', image: 'string', replicas: 'number' }),
     status: type({ ready: 'boolean', url: 'string' })
   },
-  // Single composition function: creates resources (auto-registered) and returns status
   (spec) => {
-    // Resources are automatically registered when created
-    const deployment = Deployment({
+    const deploy = Deployment({
+      id: 'deploy',
       name: spec.name,
       image: spec.image,
-      replicas: spec.replicas,
-      ports: [{ containerPort: 80 }]
+      replicas: spec.replicas
     });
     
-    const service = Service({
-      name: `${spec.name}-service`,
+    const svc = Service({
+      id: 'svc',
+      name: `${spec.name}-svc`,
       selector: { app: spec.name },
-      ports: [{ port: 80, targetPort: 80 }]
+      ports: [{ port: 80 }]
     });
 
-    // ✨ Return status using natural JavaScript expressions - automatically converted to CEL
     return {
-      ready: deployment.status.readyReplicas > 0,
-      url: `http://${service.status.clusterIP}`
+      ready: deploy.status.readyReplicas >= spec.replicas,
+      url: `http://${svc.status.clusterIP}`
     };
   }
 );
 ```
 
-## Deployment
+## Cross-Resource References
+
+Resources can reference each other's fields:
 
 ```typescript
-// Direct deployment
-const factory = webApp.factory('direct', { namespace: 'default' });
-await factory.deploy({
-  name: 'my-app',
-  image: 'nginx:latest', 
-  replicas: 2
-});
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
 
-// Generate YAML
-const yaml = webApp.toYaml({
-  name: 'my-app',
-  image: 'nginx:latest',
-  replicas: 2
+const app = kubernetesComposition(definition, (spec) => {
+  const db = Deployment({ id: 'db', name: 'db', image: 'postgres' });
+  const dbService = Service({
+    id: 'dbSvc',
+    name: 'db-svc',
+    selector: { app: 'db' },
+    ports: [{ port: 5432 }]
+  });
+  
+  const api = Deployment({
+    id: 'api',
+    name: 'api',
+    image: spec.image,
+    env: {
+      DATABASE_HOST: dbService.status.clusterIP,  // Reference service's status
+      DATABASE_PORT: '5432'
+    }
+  });
+
+  return { ready: api.status.readyReplicas > 0 };
 });
 ```
 
-## Key Benefits
+## Status Expressions
 
-- **Clear separation**: Resource creation and status computation are separate functions
-- **Named resources**: Resources are organized in a named object structure  
-- **Type-safe references**: Resources can reference each other with full type safety
-- **Full TypeScript support**: Complete validation and IDE support
-- **CEL integration**: Use CEL expressions for dynamic values and templates
+JavaScript expressions in the return object are automatically converted to CEL:
 
-## Comparison with toResourceGraph
+```typescript
+return {
+  // Boolean expressions
+  ready: deploy.status.readyReplicas >= spec.replicas,
+  
+  // String templates
+  url: `https://${ingress.status.loadBalancer.ingress[0].hostname}`,
+  
+  // Conditionals
+  phase: deploy.status.readyReplicas > 0 ? 'running' : 'pending',
+  
+  // Fallbacks
+  endpoint: svc.status.loadBalancer?.ingress?.[0]?.ip || 'pending'
+};
+```
 
-| Aspect | kubernetesComposition | toResourceGraph |
-|--------|----------------------|------------------|
-| **Function signature** | Separate resource & status builders | Combined in schema object |
-| **Resource creation** | Named object return | Named object return |
-| **Status definition** | Separate status builder | Separate status builder |
-| **Pattern** | Explicit two-function pattern | Unified schema-based pattern |
-| **Use case** | Alternative API surface | Primary recommended API |
+## Deployment
 
-Both APIs generate identical output and support the same features - they are equivalent in functionality with different API ergonomics.
+```typescript
+// Direct deployment (immediate, no Kro controller)
+const factory = webApp.factory('direct', { namespace: 'production' });
+await factory.deploy({ name: 'my-app', image: 'nginx', replicas: 3 });
 
-## See Also
+// Kro deployment (creates ResourceGraphDefinition)
+const kroFactory = webApp.factory('kro', { namespace: 'production' });
+await kroFactory.deploy({ name: 'my-app', image: 'nginx', replicas: 3 });
 
-- [Imperative Composition Guide](../guide/imperative-composition.md) - Complete guide with examples
-- [toResourceGraph API](./to-resource-graph.md) - Alternative declarative API
-- [Factory Functions](./factories.md) - Available resource factories
+// Generate YAML for GitOps
+const yaml = webApp.toYaml({ name: 'my-app', image: 'nginx', replicas: 3 });
+```
+
+## Factory Options
+
+```typescript
+interface FactoryOptions {
+  namespace?: string;           // Target namespace
+  timeout?: number;             // Deployment timeout (ms)
+  waitForReady?: boolean;       // Wait for resources to be ready
+  
+  // Event monitoring - stream control plane logs
+  eventMonitoring?: {
+    enabled?: boolean;
+    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
+    includeChildResources?: boolean;
+  };
+  
+  // Debug logging
+  debugLogging?: {
+    enabled?: boolean;
+    statusPolling?: boolean;
+    readinessEvaluation?: boolean;
+    verboseMode?: boolean;
+  };
+  
+  // Progress callback for custom handling
+  progressCallback?: (event: DeploymentEvent) => void;
+}
+```
+
+## The `id` Parameter
+
+Every resource needs an `id` for cross-resource references:
+
+```typescript
+import { Deployment } from 'typekro/simple';
+
+const deploy = Deployment({
+  id: 'webDeploy',  // Required for references
+  name: spec.name,
+  image: spec.image
+});
+
+// Now you can reference it
+return { replicas: deploy.status.readyReplicas };
+```
+
+## Next Steps
+
+- [CEL Expressions](./cel.md) - Advanced expression patterns
+- [Factory Functions](./factories/) - All factory functions

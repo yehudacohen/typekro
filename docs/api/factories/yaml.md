@@ -163,7 +163,7 @@ YAML deployment closures integrate seamlessly with TypeKro compositions alongsid
 
 ### Basic Integration
 ```typescript
-import { kubernetesComposition, Cel } from 'typekro';
+import { kubernetesComposition, yamlFile, Cel } from 'typekro';
 import { Deployment, Service } from 'typekro/simple';
 
 const webApp = kubernetesComposition(definition, (spec) => {
@@ -175,6 +175,7 @@ const webApp = kubernetesComposition(definition, (spec) => {
 
   // Enhanced resources
   const app = Deployment({
+    id: 'app',
     name: spec.name,
     image: spec.image,
     env: {
@@ -183,6 +184,7 @@ const webApp = kubernetesComposition(definition, (spec) => {
   });
 
   const service = Service({
+    id: 'service',
     name: `${spec.name}-service`,
     selector: { app: spec.name },
     ports: [{ port: 80 }]
@@ -190,7 +192,7 @@ const webApp = kubernetesComposition(definition, (spec) => {
 
   return {
     // Enhanced resources provide live status
-    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    ready: app.status.readyReplicas > 0,
     endpoint: service.status.clusterIP,
     
     // YAML closures don't have status - use static values
@@ -201,6 +203,9 @@ const webApp = kubernetesComposition(definition, (spec) => {
 
 ### Multi-Environment Pattern
 ```typescript
+import { kubernetesComposition, yamlFile, yamlDirectory } from 'typekro';
+import { Deployment } from 'typekro/simple';
+
 const multiEnvApp = kubernetesComposition(definition, (spec) => {
   // Environment-specific manifests
   const envConfig = yamlFile({
@@ -218,13 +223,14 @@ const multiEnvApp = kubernetesComposition(definition, (spec) => {
   });
 
   const app = Deployment({
+    id: 'app',
     name: spec.name,
     image: spec.image,
     replicas: spec.environment === 'production' ? 3 : 1
   });
 
   return {
-    ready: Cel.expr<boolean>(app.status.readyReplicas, ' > 0'),
+    ready: app.status.readyReplicas > 0,
     environment: spec.environment,
     bootstrapped: true
   };
@@ -332,5 +338,12 @@ try {
 ## Related APIs
 
 - [kubernetesComposition](../kubernetes-composition) - Creating compositions with YAML integration
-- [Factory Functions](../factories) - Enhanced resource factory functions
+- [Factory Functions](./) - Enhanced resource factory functions
 - [CEL Expressions](../cel) - Dynamic expressions for status builders
+
+
+## Next Steps
+
+- **[kubernetesComposition API](../kubernetes-composition.md)** - Creating compositions with YAML
+- **[Factory Functions](./)** - Enhanced resource factories
+- **[Deployment Modes](../../guide/deployment-modes.md)** - Deployment strategies
