@@ -6,89 +6,20 @@
  */
 
 import { DependencyGraph } from '../core/dependencies/index.js';
+import { getComponentLogger } from '../core/logging/index.js';
 import type { DeploymentOptions, ResourceGraph } from '../core/types/deployment.js';
 import { ResourceDeploymentError } from '../core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.js';
 import { ensureReadinessEvaluator, generateDeterministicResourceId } from '../utils/helpers.js';
 import type { TypeKroDeployer } from './types.js';
+
+const logger = getComponentLogger('deployers');
+
 /**
  * Direct deployment implementation using TypeKro's DirectDeploymentEngine
  */
 export class DirectTypeKroDeployer implements TypeKroDeployer {
   constructor(private engine: import('../core/deployment/engine.js').DirectDeploymentEngine) {}
-
-  /**
-   * Recreate readiness evaluator with proper closure context
-   * This fixes the issue where JSON serialization breaks closures
-   */
-  private recreateReadinessEvaluator<T extends Enhanced<any, any>>(resource: T): T {
-    // Only handle Deployment resources for now
-    if (resource.kind !== 'Deployment') {
-      return resource;
-    }
-
-    // Extract the expected replicas from the resource spec
-    const expectedReplicas = (resource.spec as any)?.replicas || 1;
-
-    // Create a new readiness evaluator with the correct closure
-    const newReadinessEvaluator = (liveResource: any) => {
-      try {
-        const status = liveResource.status;
-
-        // Handle missing status gracefully
-        if (!status) {
-          return {
-            ready: false,
-            reason: 'StatusMissing',
-            message: 'Deployment status not available yet',
-            details: { expectedReplicas },
-          };
-        }
-
-        const readyReplicas = status.readyReplicas || 0;
-        const availableReplicas = status.availableReplicas || 0;
-
-        // Check if deployment is ready
-        const ready = readyReplicas >= expectedReplicas && availableReplicas >= expectedReplicas;
-
-        if (ready) {
-          return {
-            ready: true,
-            message: `Deployment has ${readyReplicas}/${expectedReplicas} ready replicas and ${availableReplicas}/${expectedReplicas} available replicas`,
-          };
-        } else {
-          return {
-            ready: false,
-            reason: 'ReplicasNotReady',
-            message: `Waiting for replicas: ${readyReplicas}/${expectedReplicas} ready, ${availableReplicas}/${expectedReplicas} available`,
-            details: {
-              expectedReplicas,
-              readyReplicas,
-              availableReplicas,
-              updatedReplicas: status.updatedReplicas || 0,
-            },
-          };
-        }
-      } catch (error) {
-        return {
-          ready: false,
-          reason: 'EvaluationError',
-          message: `Error evaluating deployment readiness: ${error}`,
-          details: { expectedReplicas, error: String(error) },
-        };
-      }
-    };
-
-    // Replace the readiness evaluator with the new one
-    Object.defineProperty(resource, 'readinessEvaluator', {
-      value: newReadinessEvaluator,
-      enumerable: false,
-      configurable: true,
-      writable: false,
-    });
-
-    return resource;
-  }
 
   /**
    * Create a ResourceGraph for a single resource
@@ -131,13 +62,20 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
   }
 
   async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
-    // Ensure the resource has a readiness evaluator using factory functions
+    // Ensure the resource has a readiness evaluator using factory functions or registry lookup
+    // The ensureReadinessEvaluator function:
+    // 1. Returns the resource if it already has a readinessEvaluator attached
+    // 2. Looks up the evaluator in the global ReadinessEvaluatorRegistry by kind
+    // 3. Throws an error if no evaluator is found
     const resourceWithEvaluator = ensureReadinessEvaluator(resource);
 
-    // Fix any broken closures in the readiness evaluator before deployment
-    const resourceWithFixedEvaluator = this.recreateReadinessEvaluator(resourceWithEvaluator);
+    logger.debug('Ensured readiness evaluator for resource', {
+      kind: resource.kind,
+      name: resource.metadata?.name,
+      hasEvaluator: typeof (resourceWithEvaluator as any).readinessEvaluator === 'function',
+    });
 
-    const resourceGraph = this.createResourceGraph(resourceWithFixedEvaluator);
+    const resourceGraph = this.createResourceGraph(resourceWithEvaluator);
 
     const deploymentOptions = {
       mode: 'direct' as const,
@@ -163,7 +101,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     }
 
     // Return the deployed resource with readiness evaluator
-    return resourceWithFixedEvaluator;
+    return resourceWithEvaluator;
   }
 
   async delete<T extends Enhanced<any, any>>(
@@ -212,7 +150,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       dependencyGraph: new DependencyGraph(),
     };
 
-    const _result = await this.engine.deploy(resourceGraph, options);
+    await this.engine.deploy(resourceGraph, options);
 
     // Return the original resource (DirectDeploymentEngine doesn't modify the input)
     return resource;

@@ -5,13 +5,20 @@
  * via ResourceGraphDefinitions using the Kro controller.
  */
 
+import type * as k8s from '@kubernetes/client-node';
 import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
+import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { generateKroSchemaFromArktype } from '../../serialization/schema.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
-import type { KubernetesResource } from '../../types/kubernetes.js';
+import type {
+  DeployableK8sResource,
+  Enhanced,
+  KubernetesResource,
+  WithKroStatusFields,
+} from '../../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { handleDeploymentError } from '../shared-utilities.js';
@@ -24,6 +31,8 @@ export class KroDeploymentStrategy<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
 > extends BaseDeploymentStrategy<TSpec, TStatus> {
+  private customObjectsApi?: k8s.CustomObjectsApi;
+
   constructor(
     factoryName: string,
     namespace: string,
@@ -34,6 +43,16 @@ export class KroDeploymentStrategy<
     private statusMappings: Record<string, unknown> = {}
   ) {
     super(factoryName, namespace, schemaDefinition, undefined, resources, factoryOptions);
+  }
+
+  /**
+   * Get CustomObjectsApi client
+   */
+  private getCustomObjectsApi(): k8s.CustomObjectsApi {
+    if (!this.customObjectsApi) {
+      this.customObjectsApi = getCustomObjectsApi();
+    }
+    return this.customObjectsApi;
   }
 
   protected async executeDeployment(spec: TSpec, instanceName: string): Promise<DeploymentResult> {
@@ -176,7 +195,7 @@ export class KroDeploymentStrategy<
         name: instanceName,
         namespace: this.namespace,
       },
-    };
+    } as DeployableK8sResource<Enhanced<TSpec, WithKroStatusFields<object>>>;
 
     // Deploy using DirectDeploymentEngine with KRO mode
     // Don't wait for ready here - we'll handle Kro-specific readiness logic ourselves
@@ -259,6 +278,7 @@ export class KroDeploymentStrategy<
         const apiVersion = this.getApiVersion();
         const k8sApi = this.directEngine.getKubernetesApi(); // Use public getter method
 
+        // In the new API, methods return objects directly (no .body wrapper)
         const response = await k8sApi.read({
           apiVersion,
           kind: this.schemaDefinition.kind,
@@ -268,7 +288,7 @@ export class KroDeploymentStrategy<
           },
         });
 
-        const instance = response.body as KubernetesResource & {
+        const instance = response as KubernetesResource & {
           status?: {
             state?: string;
             conditions?: Array<{ type: string; status: string; message?: string }>;
@@ -297,18 +317,58 @@ export class KroDeploymentStrategy<
         const isActive = state === 'ACTIVE';
         const isSynced = syncedCondition?.status === 'True';
 
+        // Check what status fields are expected by looking at the ResourceGraphDefinition
+        let expectedCustomStatusFields = false;
+        const rgdName = this.convertToKubernetesName(this.factoryName);
+        try {
+          // In the new API, methods take request objects and return objects directly
+          const rgdResponse = await this.getCustomObjectsApi().getClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name: rgdName,
+          });
+          const rgd = rgdResponse as any;
+          const rgdStatusSchema = rgd.spec?.schema?.status || {};
+          const rgdStatusKeys = Object.keys(rgdStatusSchema);
+          expectedCustomStatusFields = rgdStatusKeys.length > 0;
+
+          logger.debug('ResourceGraphDefinition status schema check', {
+            rgdName,
+            rgdStatusKeys,
+            expectedCustomStatusFields,
+          });
+        } catch (error) {
+          logger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
+            rgdName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
+          expectedCustomStatusFields = false;
+        }
+
         logger.debug('Kro resource status check', {
           instanceName,
           state,
           isActive,
           isSynced,
           hasCustomStatusFields,
+          expectedCustomStatusFields,
           statusKeys,
         });
 
-        // Resource is ready when it's active, synced, and has custom status fields populated
-        if (isActive && isSynced && hasCustomStatusFields) {
-          logger.info('Kro resource is ready', { instanceName });
+        // Resource is ready when it's active, synced, and either:
+        // 1. Has the expected custom status fields populated, OR
+        // 2. No custom status fields are expected (empty status schema in RGD)
+        const isReady =
+          isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
+
+        if (isReady) {
+          logger.info('Kro resource is ready', {
+            instanceName,
+            hasCustomStatusFields,
+            expectedCustomStatusFields,
+          });
           return;
         }
 

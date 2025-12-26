@@ -35,12 +35,20 @@ export type EnvVarValue =
   | KubernetesRef<string | undefined>
   | CelExpression<string>;
 
+/**
+ * MagicAssignable allows assignment of plain values, KubernetesRef-wrapped values,
+ * and CEL expressions to composition properties.
+ *
+ * Note: We avoid recursive DeepKubernetesRef wrapping to prevent infinite type expansion.
+ */
 export type MagicAssignable<T> =
   | T
   | undefined
+  | CelExpression<T>
   | KubernetesRef<T>
   | KubernetesRef<T | undefined>
-  | CelExpression<T>;
+  | (T extends DeepKubernetesRef<any> ? never : DeepKubernetesRef<T>)
+  | (T extends DeepKubernetesRef<any> ? never : DeepKubernetesRef<T | undefined>);
 
 // Type assertion helpers for the magic proxy system
 export type MagicString = string | KubernetesRef<string> | CelExpression<string>;
@@ -67,3 +75,30 @@ export interface KubernetesRef<T = unknown> {
   readonly fieldPath: string;
   readonly _type?: T;
 }
+
+/**
+ * Deep proxy type for KubernetesRef that allows nested property access
+ * AND primitive value operations (boolean expressions, arithmetic, etc.)
+ *
+ * This makes the type system match the runtime Proxy behavior where:
+ * - Nested objects: Can access properties like .field.subfield
+ * - Primitives: Can be used in expressions like && || + - etc.
+ *
+ * The union with primitive types (T) allows the magic proxy system to work:
+ * - KubernetesRef<boolean> | boolean → can be used in boolean expressions
+ * - KubernetesRef<number> | number → can be used in arithmetic
+ * - KubernetesRef<string> | string → can be used in string operations
+ */
+export type DeepKubernetesRef<T> = T extends any // Distributive conditional - enables proper union handling
+  ? T extends boolean
+    ? KubernetesRef<boolean> | boolean
+    : T extends number
+      ? KubernetesRef<T> | number
+      : T extends string
+        ? KubernetesRef<T> | string
+        : T extends object
+          ? {
+              [K in keyof T]: DeepKubernetesRef<T[K]>;
+            } & KubernetesRef<T>
+          : KubernetesRef<T> | T
+  : never;

@@ -122,7 +122,7 @@ export const completeWebApp = kubernetesComposition(
       policyTypes: ['Ingress'],
       ingress: [
         {
-          from: [{ namespaceSelector: {} }],
+          _from: [{ namespaceSelector: {} }],
           ports: [{ protocol: 'TCP', port: 3000 }],
         },
       ],
@@ -137,7 +137,7 @@ export const completeWebApp = kubernetesComposition(
       policyTypes: ['Ingress'],
       ingress: [
         {
-          from: [{ podSelector: { matchLabels: { app: spec.name } } }],
+          _from: [{ podSelector: { matchLabels: { app: spec.name } } }],
           ports: [{ protocol: 'TCP', port: 5432 }],
         },
       ],
@@ -149,9 +149,10 @@ export const completeWebApp = kubernetesComposition(
     return {
       url: `https://${spec.hostname}`,
       ready: database.status.readyReplicas >= 1 && webApp.status.readyReplicas >= spec.replicas,
-      phase: database.status.readyReplicas > 0 && webApp.status.readyReplicas >= webApp.status.replicas
-        ? 'running' 
-        : 'failed',
+      phase: (database.status.readyReplicas > 0 &&
+      webApp.status.readyReplicas >= webApp.status.replicas
+        ? 'running'
+        : 'failed') as 'pending' | 'running' | 'failed',
       databaseReady: database.status.readyReplicas >= 1,
       webReady: webApp.status.readyReplicas >= spec.replicas,
     };

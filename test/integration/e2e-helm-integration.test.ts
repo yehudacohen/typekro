@@ -9,13 +9,21 @@ import { beforeAll, describe, expect, it } from 'bun:test';
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import * as k8s from '@kubernetes/client-node';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { toResourceGraph } from '../../src/core/serialization/index.js';
 import { helmRelease, helmRepository } from '../../src/factories/helm/index.js';
 import { namespace } from '../../src/factories/kubernetes/index.js';
 import { yamlFile } from '../../src/factories/kubernetes/yaml/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig.js';
+import {
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  createCustomObjectsApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig.js';
+import { fixCRDSchemaForK8s133 } from '../../src/core/utils/crd-schema-fix.js';
 
 // Test configuration
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
@@ -55,9 +63,9 @@ describeOrSkip('End-to-End Helm Integration', () => {
 
     try {
       kc = getIntegrationTestKubeConfig();
-      k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-      appsApi = kc.makeApiClient(k8s.AppsV1Api);
-      customApi = kc.makeApiClient(k8s.CustomObjectsApi);
+      k8sApi = createCoreV1ApiClient(kc);
+      appsApi = createAppsV1ApiClient(kc);
+      customApi = createCustomObjectsApiClient(kc);
       console.log('✅ Kubernetes API clients initialized');
     } catch (error) {
       console.error('❌ Failed to initialize Kubernetes clients:', error);
@@ -78,7 +86,7 @@ describeOrSkip('End-to-End Helm Integration', () => {
 
       // Create test namespace
       try {
-        await k8sApi.createNamespace({ metadata: { name: testNamespace } });
+        await k8sApi.createNamespace({ body: { metadata: { name: testNamespace } } });
         console.log(`📦 Created test namespace: ${testNamespace}`);
       } catch (_error) {
         console.log(`⚠️ Namespace ${testNamespace} might already exist`);
@@ -91,13 +99,13 @@ describeOrSkip('End-to-End Helm Integration', () => {
 
         while (Date.now() - startTime < timeout) {
           try {
-            const deployment = await appsApi.readNamespacedDeployment(name, namespace);
-            const readyReplicas = deployment.body.status?.readyReplicas || 0;
-            const replicas = deployment.body.spec?.replicas || 1;
+            const deployment = await appsApi.readNamespacedDeployment({ name, namespace });
+            const readyReplicas = deployment.status?.readyReplicas || 0;
+            const replicas = deployment.spec?.replicas || 1;
 
             if (readyReplicas >= replicas) {
               console.log(`✅ Deployment ${name} is ready (${readyReplicas}/${replicas})`);
-              return deployment.body;
+              return deployment;
             }
 
             console.log(`⏳ Deployment ${name}: ${readyReplicas}/${replicas} replicas ready`);
@@ -140,10 +148,12 @@ describeOrSkip('End-to-End Helm Integration', () => {
         (schema) => ({
           // Install complete Flux system using the official installation manifests
           // This includes all CRDs and controllers needed for GitOps operations
+          // Use 'replace' strategy with CRD schema fix for Kubernetes 1.33+ compatibility
           fluxSystem: yamlFile({
             name: 'flux-system-install',
             path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
-            deploymentStrategy: 'skipIfExists',
+            deploymentStrategy: 'replace',
+            manifestTransform: fixCRDSchemaForK8s133,
           }),
 
           // Flux System Namespace is included in the Flux installation YAML above
@@ -274,17 +284,17 @@ describeOrSkip('End-to-End Helm Integration', () => {
       // Step 3.5: Verify HelmRepository was created
       console.log('🔍 Step 3.5: Verifying HelmRepository was created...');
       try {
-        const helmRepo = await customApi.getNamespacedCustomObject(
-          'source.toolkit.fluxcd.io',
-          'v1beta2',
-          'flux-system',
-          'helmrepositories',
-          'bitnami'
-        );
+        const helmRepo = await customApi.getNamespacedCustomObject({
+          group: 'source.toolkit.fluxcd.io',
+          version: 'v1beta2',
+          namespace: 'flux-system',
+          plural: 'helmrepositories',
+          name: 'bitnami'
+        });
         console.log('✅ HelmRepository created successfully');
         console.log(
           '📦 HelmRepository spec:',
-          JSON.stringify((helmRepo.body as any).spec, null, 2)
+          JSON.stringify((helmRepo as any).spec, null, 2)
         );
       } catch (error) {
         console.log('⚠️ Could not get HelmRepository:', error);
@@ -295,33 +305,33 @@ describeOrSkip('End-to-End Helm Integration', () => {
 
       try {
         // Check for NGINX HelmRelease
-        const nginxHelmRelease = await customApi.getNamespacedCustomObject(
-          'helm.toolkit.fluxcd.io',
-          'v2beta2',
-          testNamespace,
-          'helmreleases',
-          'nginx-app'
-        );
+        const nginxHelmRelease = await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2beta2',
+          namespace: testNamespace,
+          plural: 'helmreleases',
+          name: 'nginx-app'
+        });
         expect(nginxHelmRelease).toBeDefined();
         console.log('✅ NGINX HelmRelease created successfully');
         console.log(
           '📊 NGINX HelmRelease spec:',
-          JSON.stringify((nginxHelmRelease.body as any).spec, null, 2)
+          JSON.stringify((nginxHelmRelease as any).spec, null, 2)
         );
 
         // Check for Redis HelmRelease
-        const redisHelmRelease = await customApi.getNamespacedCustomObject(
-          'helm.toolkit.fluxcd.io',
-          'v2beta2',
-          testNamespace,
-          'helmreleases',
-          'redis-cache'
-        );
+        const redisHelmRelease = await customApi.getNamespacedCustomObject({
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2beta2',
+          namespace: testNamespace,
+          plural: 'helmreleases',
+          name: 'redis-cache'
+        });
         expect(redisHelmRelease).toBeDefined();
         console.log('✅ Redis HelmRelease created successfully');
         console.log(
           '📊 Redis HelmRelease spec:',
-          JSON.stringify((redisHelmRelease.body as any).spec, null, 2)
+          JSON.stringify((redisHelmRelease as any).spec, null, 2)
         );
       } catch (error) {
         console.log('❌ Failed to verify HelmRelease resources:', error);
@@ -420,13 +430,8 @@ describeOrSkip('End-to-End Helm Integration', () => {
         console.warn('⚠️ Factory cleanup failed:', error);
       }
 
-      // Fallback: cleanup test namespace
-      try {
-        await k8sApi.deleteNamespace(testNamespace);
-        console.log(`🗑️ Cleaned up test namespace: ${testNamespace}`);
-      } catch (error) {
-        console.warn(`⚠️ Failed to cleanup namespace ${testNamespace}:`, error);
-      }
+      // Fallback: cleanup test namespace and wait for full deletion
+      await deleteNamespaceAndWait(testNamespace, kc);
     },
     TEST_TIMEOUT
   );

@@ -7,11 +7,18 @@
  * Requirements tested: 6.1, 6.2, 6.3, 6.4, 6.5
  */
 
-import { beforeAll, describe, expect, it } from 'bun:test';
-import * as k8s from '@kubernetes/client-node';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, kubernetesComposition, simple, toResourceGraph } from '../../src/index';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig';
+import {
+  cleanupTestNamespaces,
+  createAppsV1ApiClient,
+  createCoreV1ApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-imperative-e2e';
@@ -44,10 +51,18 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
     // Use shared kubeconfig helper for consistent TLS configuration
     kc = getIntegrationTestKubeConfig();
 
-    k8sApi = kc.makeApiClient(k8s.CoreV1Api);
-    appsApi = kc.makeApiClient(k8s.AppsV1Api);
+    k8sApi = createCoreV1ApiClient(kc);
+    appsApi = createAppsV1ApiClient(kc);
 
     console.log('✅ Imperative composition test environment ready!');
+  });
+
+  // Clean up any leftover test namespaces after all tests complete
+  afterAll(async () => {
+    if (kc) {
+      console.log('🧹 Cleaning up any leftover test namespaces...');
+      await cleanupTestNamespaces(/^typekro-imperative-e2e-/, kc);
+    }
   });
 
   // Helper function to create and cleanup test namespace
@@ -59,7 +74,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
     try {
       // Create namespace
-      await k8sApi.createNamespace({ metadata: { name: namespace } });
+      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
       console.log(`📦 Created test namespace: ${namespace}`);
 
       // Run test
@@ -67,13 +82,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
       return result;
     } finally {
-      // Cleanup namespace
-      try {
-        await k8sApi.deleteNamespace(namespace);
-        console.log(`🗑️ Cleaned up test namespace: ${namespace}`);
-      } catch (error) {
-        console.warn(`⚠️ Failed to cleanup namespace ${namespace}:`, error);
-      }
+      // Cleanup namespace and wait for full deletion
+      await deleteNamespaceAndWait(namespace, kc);
     }
   };
 
@@ -675,16 +685,16 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           try {
             switch (resource.kind) {
               case 'Deployment': {
-                const deployment = await appsApi.readNamespacedDeployment(
-                  resource.name,
-                  testNamespace
-                );
-                expect(deployment.body.spec?.replicas).toBe(2);
+                const deployment = await appsApi.readNamespacedDeployment({
+                  name: resource.name,
+                  namespace: testNamespace,
+                });
+                expect(deployment.spec?.replicas).toBe(2);
                 break;
               }
               case 'Service': {
-                const service = await k8sApi.readNamespacedService(resource.name, testNamespace);
-                expect(service.body.spec?.ports?.[0]?.port).toBe(80);
+                const service = await k8sApi.readNamespacedService({ name: resource.name, namespace: testNamespace });
+                expect(service.spec?.ports?.[0]?.port).toBe(80);
                 break;
               }
             }
@@ -854,17 +864,17 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(typeof result.status.readyReplicas).toBe('number');
 
           // Verify underlying resources were created through Alchemy
-          const deployment = await appsApi.readNamespacedDeployment(
-            'webapp-factory',
-            testNamespace
-          );
-          expect(deployment.body.spec?.replicas).toBe(1);
+          const deployment = await appsApi.readNamespacedDeployment({
+            name: 'webapp-factory',
+            namespace: testNamespace
+          });
+          expect(deployment.spec?.replicas).toBe(1);
 
-          const service = await k8sApi.readNamespacedService(
-            'webapp-factory-service',
-            testNamespace
-          );
-          expect(service.body.spec?.ports?.[0]?.port).toBe(80);
+          const service = await k8sApi.readNamespacedService({
+            name: 'webapp-factory-service',
+            namespace: testNamespace
+          });
+          expect(service.spec?.ports?.[0]?.port).toBe(80);
 
           console.log('✅ Alchemy integration verified');
         } catch (error) {
@@ -966,7 +976,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       console.log('🚀 Testing synchronous context management...');
 
       // Test multiple synchronous compositions in sequence
-      const compositions: ReturnType<typeof kubernetesComposition>[] = [];
+      const compositions: any[] = [];
 
       for (let i = 0; i < 5; i++) {
         const composition = kubernetesComposition(

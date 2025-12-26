@@ -1,5 +1,8 @@
 /**
  * Simple tests for StatusHydrator - New interface
+ *
+ * NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
+ * without a .body wrapper. The mocks must return the resource directly.
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
@@ -12,22 +15,20 @@ describe('StatusHydrator - New Interface', () => {
   let mockK8sApi: k8s.KubernetesObjectApi;
 
   beforeEach(() => {
-    // Create a mock Kubernetes API
+    // Create a mock Kubernetes API (new API returns objects directly, no .body wrapper)
     mockK8sApi = {
       read: async () => ({
-        body: {
-          apiVersion: 'apps/v1',
-          kind: 'Deployment',
-          metadata: { name: 'test-deployment', namespace: 'default' },
-          status: {
-            replicas: 3,
-            readyReplicas: 3,
-            availableReplicas: 3,
-            conditions: [
-              { type: 'Available', status: 'True' },
-              { type: 'Progressing', status: 'True' },
-            ],
-          },
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'test-deployment', namespace: 'default' },
+        status: {
+          replicas: 3,
+          readyReplicas: 3,
+          availableReplicas: 3,
+          conditions: [
+            { type: 'Available', status: 'True' },
+            { type: 'Progressing', status: 'True' },
+          ],
         },
       }),
     } as any;

@@ -10,9 +10,10 @@
  * detect these access patterns in JavaScript expressions and converts them to CEL.
  */
 
-import * as esprima from 'esprima';
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode, MemberExpression, Identifier, } from 'estree';
+
+import { parseScript, ParserError } from './parser.js';
 
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type { SchemaProxy } from '../types/serialization.js';
@@ -201,18 +202,23 @@ export class MagicProxyAnalyzer {
     }
 
     /**
-     * Parse JavaScript expression string into AST using esprima
+     * Parse JavaScript expression string into AST using unified acorn parser
      */
     private parseExpression(expressionSource: string): ESTreeNode {
         try {
-            // Use esprima to parse the expression
-            const ast = esprima.parseScript(expressionSource, {
-                loc: true,
-                range: true
-            });
+            // Use unified acorn parser with ES2022 support
+            const ast = parseScript(expressionSource);
             
             return ast;
         } catch (error) {
+            // Convert ParserError to ConversionError for consistent error handling
+            if (error instanceof ParserError) {
+                throw new ConversionError(
+                    `Failed to parse JavaScript expression at line ${error.line}, column ${error.column}: ${error.message}`,
+                    expressionSource,
+                    'javascript'
+                );
+            }
             throw new ConversionError(
                 `Failed to parse JavaScript expression: ${error instanceof Error ? error.message : 'Unknown error'}`,
                 expressionSource,

@@ -30,7 +30,7 @@ function createMockKubernetesRef(resourceId: string, fieldPath: string): Kuberne
 }
 
 // Mock Enhanced resource for testing
-function createMockEnhanced(resourceId: string): Enhanced<any, any> {
+function createMockEnhanced(resourceId: string): Enhanced<object, object> {
   return {
     __resourceId: resourceId,
     apiVersion: 'v1',
@@ -38,15 +38,15 @@ function createMockEnhanced(resourceId: string): Enhanced<any, any> {
     metadata: { name: 'test' },
     spec: {},
     status: {},
-    withReadinessEvaluator: () => ({} as Enhanced<any, any>),
+    withReadinessEvaluator: () => ({} as Enhanced<object, object>),
     toYaml: () => '',
     toJson: () => ({}),
     toKubernetesResource: () => ({} as any),
     getReadinessEvaluator: () => undefined,
     __brand: 'Enhanced' as const,
-    __specType: {} as any,
-    __statusType: {} as any
-  } as Enhanced<any, any>;
+    __specType: {} as object,
+    __statusType: {} as object
+  } as unknown as Enhanced<object, object>;
 }
 
 describe('Enhanced Type Optionality Handler', () => {

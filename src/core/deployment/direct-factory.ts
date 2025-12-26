@@ -237,9 +237,15 @@ export class DirectResourceFactoryImpl<
       // Remove from tracking
       this.deployedInstances.delete(name);
     } catch (error) {
-      throw new Error(
-        `Failed to delete instance ${name}: ${error instanceof Error ? error.message : String(error)}`
-      );
+      // If the deployment isn't found in the state, it may have already been cleaned up
+      // or the deployment ID format changed. Log and remove from tracking anyway.
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes('not found') || errorMessage.includes('Cannot rollback')) {
+        this.deployedInstances.delete(name);
+        // Don't throw - the instance is already gone
+        return;
+      }
+      throw new Error(`Failed to delete instance ${name}: ${errorMessage}`);
     }
   }
 
@@ -436,9 +442,10 @@ export class DirectResourceFactoryImpl<
                 namespace: deployedResource.namespace,
               },
             };
+            // In the new API, methods return objects directly (no .body wrapper)
             const liveResource = await k8sApi.read(resourceRef);
 
-            const isReady = readinessChecker.isResourceReady(liveResource.body);
+            const isReady = readinessChecker.isResourceReady(liveResource);
 
             if (isReady) {
               healthyCount++;
@@ -620,11 +627,56 @@ metadata:
 
     const instanceName = this.generateInstanceName(spec);
     const resourceArray = Object.values(resolvedResources).map((resource, index) => {
+      this.logger.debug('Processing resource for ID generation', {
+        index,
+        resourceId: resource.id,
+        resourceKind: resource.kind,
+        hasId: !!resource.id,
+        resourceKeys: Object.keys(resource),
+      });
       const baseId = `${instanceName}-resource-${index}-${resource.id || resource.kind?.toLowerCase() || 'unknown'}`;
+      const finalId = toCamelCase(baseId);
+      this.logger.debug('Generated resource ID', {
+        index,
+        originalId: resource.id,
+        resourceKind: resource.kind,
+        baseId,
+        finalId,
+      });
       const resourceWithId = {
         ...resource,
-        id: toCamelCase(baseId),
+        id: finalId,
       };
+
+      // Preserve the __resourceId property if it exists (it's non-enumerable)
+      // This is the original resource ID (e.g., 'webappConfig') that's used for cross-resource references
+      // Note: For Enhanced proxy resources, __resourceId is on the target object and accessible via Reflect.get
+      const originalResourceId = (resource as any).__resourceId;
+      
+      // Also check if the resource has an 'id' property that was set by the factory
+      // The proxy returns resourceId when accessing 'id' property
+      const resourceIdFromProxy = (resource as any).id;
+      const effectiveOriginalId = originalResourceId || resourceIdFromProxy;
+      
+      this.logger.debug('Checking __resourceId preservation', {
+        originalResourceId,
+        resourceIdFromProxy,
+        effectiveOriginalId,
+        hasOriginalResourceId: !!originalResourceId,
+        hasResourceIdFromProxy: !!resourceIdFromProxy,
+      });
+      
+      if (effectiveOriginalId) {
+        Object.defineProperty(resourceWithId, '__resourceId', {
+          value: effectiveOriginalId,
+          enumerable: false,
+          configurable: true,
+        });
+        this.logger.debug('Preserved __resourceId on resource', {
+          originalResourceId: effectiveOriginalId,
+          newId: finalId,
+        });
+      }
 
       // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
       const originalResource = resource as { readinessEvaluator?: (resource: unknown) => boolean };
@@ -664,9 +716,47 @@ metadata:
 
   /**
    * Resolve resources for a specific spec
-   * This uses the existing processResourceReferences system to handle schema references
+   * This uses composition re-execution when available, or falls back to reference resolution
    */
+  private reExecutedStatus: TStatus | null = null; // Store the re-executed status
+
   private resolveResourcesForSpec(spec: TSpec): Record<string, KubernetesResource> {
+    // Reset the re-executed status
+    this.reExecutedStatus = null;
+
+    // Check if we have composition re-execution parameters
+    if (this.factoryOptions.compositionFn && this.factoryOptions.compositionDefinition) {
+      this.logger.debug('Re-executing composition with actual spec values', {
+        hasCompositionFn: !!this.factoryOptions.compositionFn,
+        hasCompositionDefinition: !!this.factoryOptions.compositionDefinition,
+      });
+
+      try {
+        // Re-execute the composition with actual spec values
+        const reExecutionResult = this.reExecuteCompositionWithActualValues(spec);
+        if (reExecutionResult) {
+          this.logger.debug('Successfully re-executed composition with actual values', {
+            resourceCount: Object.keys(reExecutionResult.resources).length,
+            statusFields: reExecutionResult.status ? Object.keys(reExecutionResult.status) : [],
+          });
+
+          // Store the re-executed status for later use
+          this.reExecutedStatus = reExecutionResult.status;
+
+          return reExecutionResult.resources;
+        }
+      } catch (error) {
+        this.logger.warn(
+          'Failed to re-execute composition, falling back to reference resolution',
+          error as Error
+        );
+      }
+    }
+
+    // Fall back to the original reference resolution approach
+    this.logger.debug(
+      'Using reference resolution approach (no composition re-execution available)'
+    );
     const resolvedResources: Record<string, KubernetesResource> = {};
     for (const [key, resource] of Object.entries(this.resources)) {
       try {
@@ -682,6 +772,175 @@ metadata:
     }
 
     return resolvedResources;
+  }
+
+  /**
+   * Re-execute the composition function with actual spec values
+   * This provides actual values instead of proxy functions to the composition
+   */
+  private reExecuteCompositionWithActualValues(
+    spec: TSpec
+  ): { resources: Record<string, KubernetesResource>; status: TStatus } | null {
+    if (!this.factoryOptions.compositionFn || !this.factoryOptions.compositionDefinition) {
+      return null;
+    }
+
+    try {
+      this.logger.debug('Re-executing composition with actual spec values');
+
+      // Import the composition context utilities
+      const {
+        createCompositionContext,
+        runWithCompositionContext,
+      } = require('../../factories/shared.js');
+
+      // Create a new composition context for re-execution
+      const reExecutionContext = createCompositionContext('re-execution');
+
+      // Execute the composition function within the new context and capture both resources and status
+      const { resources, status } = runWithCompositionContext(reExecutionContext, () => {
+        // Execute the composition function with actual spec values
+        const computedStatus = this.factoryOptions.compositionFn?.(spec);
+        return {
+          resources: reExecutionContext.resources,
+          status: computedStatus,
+        };
+      });
+
+      this.logger.debug('Composition re-execution completed', {
+        capturedResourceCount: Object.keys(resources).length,
+        resourceIds: Object.keys(resources),
+        statusFields: status ? Object.keys(status) : [],
+      });
+
+      // Convert Enhanced resources back to KubernetesResource format
+      const kubernetesResources: Record<string, KubernetesResource> = {};
+      for (const [id, enhanced] of Object.entries(resources)) {
+        // Extract the underlying Kubernetes resource from the Enhanced proxy
+        const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
+          enhanced as Enhanced<any, any>
+        );
+        kubernetesResources[id] = kubernetesResource;
+      }
+
+      // The status returned from re-execution should preserve CEL expressions
+      // Only spec-based values should be resolved, resource-based CEL expressions should remain
+      return {
+        resources: kubernetesResources,
+        status: status as TStatus,
+      };
+    } catch (error) {
+      this.logger.error('Failed to re-execute composition', error as Error);
+      return null;
+    }
+  }
+
+  /**
+   * Get the re-executed status if available
+   * This is used by the deployment strategy to use computed status instead of calling status builder with proxy functions
+   */
+  public getReExecutedStatus(): TStatus | null {
+    return this.reExecutedStatus;
+  }
+
+  /**
+   * Deep resolve any KubernetesRef objects in a value to their string representation
+   * This is needed because when composition functions build objects with schema proxy values,
+   * those values are KubernetesRef objects that need to be converted to actual values or
+   * placeholder strings for serialization.
+   * 
+   * For schema references (resourceId === '__schema__'), we return a placeholder that will
+   * be resolved later when actual spec values are available.
+   * 
+   * For resource references, we return a CEL expression placeholder.
+   */
+  private deepResolveKubernetesRefs(value: unknown, path = 'root'): unknown {
+    // Handle KubernetesRef objects
+    if (isKubernetesRef(value)) {
+      this.logger.trace('Found KubernetesRef in value', {
+        path,
+        resourceId: value.resourceId,
+        fieldPath: value.fieldPath,
+      });
+      
+      // For schema references, return a marker that can be resolved later
+      if (value.resourceId === '__schema__') {
+        return `__KUBERNETES_REF___schema___${value.fieldPath}__`;
+      }
+      
+      // For resource references, return a CEL expression placeholder
+      return `__KUBERNETES_REF_${value.resourceId}_${value.fieldPath}__`;
+    }
+
+    // Handle CelExpression objects
+    if (isCelExpression(value)) {
+      this.logger.trace('Found CelExpression in value', {
+        path,
+        expression: value.expression,
+      });
+      return value.expression;
+    }
+
+    // Handle arrays
+    if (Array.isArray(value)) {
+      return value.map((item, index) => 
+        this.deepResolveKubernetesRefs(item, `${path}[${index}]`)
+      );
+    }
+
+    // Handle objects
+    if (value !== null && typeof value === 'object') {
+      const resolved: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+        resolved[key] = this.deepResolveKubernetesRefs(val, `${path}.${key}`);
+      }
+      return resolved;
+    }
+
+    // Return primitives as-is
+    return value;
+  }
+
+  /**
+   * Extract the underlying Kubernetes resource from an Enhanced proxy
+   *
+   * IMPORTANT: This method preserves ALL enumerable properties from the Enhanced resource,
+   * not just standard Kubernetes fields. This is critical for resources like Secret (data),
+   * ConfigMap (data, binaryData), RBAC resources (rules, roleRef, subjects), etc.
+   * 
+   * It also resolves any KubernetesRef objects in the resource properties to their
+   * string representations, which is critical for HelmRelease values that may contain
+   * schema proxy references.
+   */
+  private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<any, any>): KubernetesResource {
+    // Start with required Kubernetes resource structure
+    const resource: KubernetesResource = {
+      apiVersion: enhanced.apiVersion,
+      kind: enhanced.kind,
+      metadata: this.deepResolveKubernetesRefs(enhanced.metadata) as KubernetesResource['metadata'],
+    };
+
+    // Preserve ALL other enumerable properties from the Enhanced resource
+    // This ensures resource-specific fields (data, rules, roleRef, etc.) are not lost
+    for (const [key, value] of Object.entries(enhanced)) {
+      // Skip the core fields we've already set
+      if (key === 'apiVersion' || key === 'kind' || key === 'metadata') {
+        continue;
+      }
+
+      // Include all other properties (spec, status, data, rules, etc.)
+      // Deep resolve any KubernetesRef objects in the value
+      if (value !== undefined && value !== null) {
+        (resource as any)[key] = this.deepResolveKubernetesRefs(value);
+      }
+    }
+
+    // Preserve the non-enumerable id field if it exists (needed for resource mapping in CEL resolution)
+    if ((enhanced as any).id) {
+      (resource as any).id = (enhanced as any).id;
+    }
+
+    return resource;
   }
 
   /**
@@ -767,6 +1026,17 @@ metadata:
         resolved[key] = this.resolveSchemaReferencesToValues(value, spec, `${path}.${key}`);
       }
 
+      // Debug: Check if id field is being preserved
+      if (path === 'root' && (resource as any).id) {
+        this.logger.debug('Resource ID preservation check', {
+          path,
+          originalId: (resource as any).id,
+          resolvedId: resolved.id,
+          originalKeys: Object.keys(resource),
+          resolvedKeys: Object.keys(resolved),
+        });
+      }
+
       // FIX: Explicitly check for and preserve the non-enumerable readinessEvaluator property.
       const evaluator = (resource as { readinessEvaluator?: (resource: unknown) => boolean })
         .readinessEvaluator;
@@ -780,7 +1050,72 @@ metadata:
         });
       }
 
+      // FIX: Preserve the id field if it exists (needed for resource mapping in CEL resolution)
+      if ((resource as any).id) {
+        this.logger.trace('Preserving resource id field', { path, id: (resource as any).id });
+        (resolved as any).id = (resource as any).id;
+      }
+
       return resolved;
+    }
+
+    // Case 4: Handle strings that contain __KUBERNETES_REF_ markers from template literals
+    // These are generated when schema references are used in template literals like `${schema.spec.name}-suffix`
+    if (typeof resource === 'string' && resource.includes('__KUBERNETES_REF_')) {
+      this.logger.trace('Found string with KubernetesRef markers', { path, value: resource });
+      
+      // Replace all __KUBERNETES_REF_ markers with actual values from spec
+      // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+      // For schema: __KUBERNETES_REF___schema___{fieldPath}__
+      // The fieldPath for schema refs is like "spec.baseName" or "spec.nested.field"
+      const resolvedString = resource.replace(
+        /__KUBERNETES_REF___schema___(.+?)__/g,
+        (_match, fieldPath) => {
+          // fieldPath is like "spec.baseName" - we need to traverse starting from the schema root
+          const pathParts = fieldPath.split('.');
+          
+          // The first part should be 'spec' or 'status'
+          if (pathParts[0] === 'spec') {
+            // Traverse the spec object using the remaining path parts
+            let currentValue: any = spec;
+            for (const part of pathParts.slice(1)) {
+              if (currentValue && typeof currentValue === 'object' && part in currentValue) {
+                currentValue = currentValue[part];
+              } else {
+                this.logger.warn('Schema path not found in spec', {
+                  path,
+                  fieldPath,
+                  part,
+                  availableKeys: currentValue ? Object.keys(currentValue) : [],
+                });
+                return _match; // Keep original marker if path not found
+              }
+            }
+            
+            this.logger.trace('Resolved schema marker to value', {
+              fieldPath,
+              resolvedValue: currentValue,
+            });
+            return String(currentValue);
+          } else {
+            // Status references or other paths - keep as-is for now
+            this.logger.trace('Keeping non-spec schema reference marker', {
+              fieldPath,
+            });
+            return _match;
+          }
+        }
+      );
+      
+      // Also handle non-schema resource references (keep them as-is for now)
+      // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__ where resourceId is not __schema__
+      
+      this.logger.trace('Resolved string with markers', {
+        path,
+        original: resource,
+        resolved: resolvedString,
+      });
+      return resolvedString;
     }
 
     this.logger.trace('Returning primitive value as-is', { path, value: resource });

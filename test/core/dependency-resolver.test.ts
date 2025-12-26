@@ -8,17 +8,28 @@ import { CircularDependencyError, DependencyGraph, DependencyResolver, type Depl
 
 // Helper function to create properly typed test resources
 function createMockResource(
-  overrides: Partial<DeployableK8sResource<Enhanced<any, any>>> = {}
-): DeployableK8sResource<Enhanced<any, any>> {
-  return {
+  overrides: {
+    id?: string;
+    kind?: string;
+    apiVersion?: string;
+    metadata?: { name?: string; namespace?: string; [key: string]: unknown };
+    spec?: Record<string, unknown>;
+    status?: Record<string, unknown>;
+  } = {}
+): DeployableK8sResource<Enhanced<object, object>> {
+  const base = {
     id: 'testResource',
     kind: 'Deployment',
     apiVersion: 'apps/v1',
     metadata: { name: 'test-resource' },
     spec: {},
     status: {},
+  };
+  return {
+    ...base,
     ...overrides,
-  } as DeployableK8sResource<Enhanced<any, any>>;
+    metadata: { ...base.metadata, ...overrides.metadata },
+  } as unknown as DeployableK8sResource<Enhanced<object, object>>;
 }
 
 describe('DependencyResolver', () => {

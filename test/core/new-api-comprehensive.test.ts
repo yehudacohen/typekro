@@ -226,10 +226,10 @@ describe('New toResourceGraph API with StatusBuilder', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: Cel.expr('"http://" + ${celExpressionDeployment.status.loadBalancer.ingress[0].ip}'),
+          url: Cel.expr<string>('"http://" + ${celExpressionDeployment.status.loadBalancer.ingress[0].ip}'),
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
-          healthy: Cel.expr('${celExpressionDeployment.status.readyReplicas} > 0'), // CEL expression
+          healthy: Cel.expr<boolean>('${celExpressionDeployment.status.readyReplicas} > 0'), // CEL expression
         })
       );
 

@@ -16,7 +16,28 @@ export interface HelmReleaseSpec {
 }
 
 export interface HelmReleaseStatus {
-  phase?: 'Pending' | 'Installing' | 'Upgrading' | 'Ready' | 'Failed';
-  revision?: number;
-  lastDeployed?: string;
+  conditions?: Array<{
+    type: string;
+    status: string;
+    reason?: string;
+    message?: string;
+    lastTransitionTime?: string;
+    observedGeneration?: number;
+  }>;
+  helmChart?: string;
+  lastAttemptedRevision?: string;
+  observedGeneration?: number;
+  storageNamespace?: string;
+  history?: Array<{
+    name?: string;
+    namespace?: string;
+    version?: number;
+    status?: string;
+    chartName?: string;
+    chartVersion?: string;
+    appVersion?: string;
+    digest?: string;
+    firstDeployed?: string;
+    lastDeployed?: string;
+  }>;
 }

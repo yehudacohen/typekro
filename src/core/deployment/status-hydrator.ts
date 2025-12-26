@@ -51,7 +51,7 @@ export class StatusHydrator {
   /**
    * Hydrate status fields for a single resource
    */
-  async hydrateStatus<TSpec, TStatus extends Record<string, unknown>>(
+  async hydrateStatus<TSpec, TStatus>(
     enhanced: Enhanced<TSpec, TStatus>,
     deployedResource?: DeployedResource
   ): Promise<{ success: boolean; resourceId: string; hydratedFields: string[]; error?: Error }> {
@@ -176,7 +176,7 @@ export class StatusHydrator {
   /**
    * Populate Enhanced proxy status fields with live data
    */
-  private populateEnhancedStatus<TSpec, TStatus extends Record<string, unknown>>(
+  private populateEnhancedStatus<TSpec, TStatus>(
     enhanced: Enhanced<TSpec, TStatus>,
     status: TStatus,
     hydratedFields: string[]
@@ -194,17 +194,19 @@ export class StatusHydrator {
     const statusProxy = enhanced.status as Record<string, unknown>;
 
     // Get all keys from the live status object
-    const allLiveStatusKeys = Object.keys(status || {});
+    // Cast status to Record for indexing - we know it's an object at this point
+    const statusRecord = status as Record<string, unknown>;
+    const allLiveStatusKeys = Object.keys(statusRecord);
 
     for (const field of allLiveStatusKeys) {
       // Check if the field exists on the live status
-      if (status[field] !== undefined) {
+      if (statusRecord[field] !== undefined) {
         try {
           // Assign the value directly to the proxy.
           // The proxy's setter will handle it.
-          statusProxy[field] = status[field];
+          statusProxy[field] = statusRecord[field];
           hydratedFields.push(field);
-          statusLogger.debug('Status field hydrated', { field, value: status[field] });
+          statusLogger.debug('Status field hydrated', { field, value: statusRecord[field] });
         } catch (error) {
           statusLogger.debug('Failed to set status field', {
             field,
@@ -275,7 +277,8 @@ export class StatusHydrator {
         },
       });
 
-      return response.body as KubernetesResource;
+      // In the new API, methods return objects directly (no .body wrapper)
+      return response as KubernetesResource;
     } catch (error: unknown) {
       const apiError = error as { statusCode?: number };
       if (apiError.statusCode === 404) {

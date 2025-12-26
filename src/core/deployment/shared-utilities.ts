@@ -82,7 +82,7 @@ export function createEnhancedMetadata(
     annotations: {
       'typekro.io/deployed-at': new Date().toISOString(),
     },
-  };
+  } as unknown as Enhanced<unknown, unknown>['metadata'];
 }
 
 /**

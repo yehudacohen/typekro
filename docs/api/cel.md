@@ -1,194 +1,82 @@
 # CEL Expressions API
 
-Use explicit CEL expressions for advanced patterns that can't be expressed with JavaScript.
+Explicit CEL expressions for advanced patterns that can't be expressed with JavaScript.
 
 ## When to Use
 
-**Recommended**: JavaScript expressions for most cases:
+**Recommended**: Use natural JavaScript expressions (auto-converted to CEL):
+
 ```typescript
-ready: resources.deployment.status.readyReplicas > 0,
-url: `https://${resources.service.status.clusterIP}`,
-phase: resources.deployment.status.readyReplicas > 0 ? 'running' : 'pending'
+return {
+  ready: deployment.status.readyReplicas > 0,
+  url: `https://${service.status.clusterIP}`,
+  phase: deployment.status.readyReplicas > 0 ? 'running' : 'pending'
+};
 ```
 
 **Use explicit CEL for**:
-- Complex list operations (filter, map, reduce)
+- Complex list operations (filter, map, size)
 - Advanced CEL functions not available in JavaScript
 
-## JavaScript vs Explicit CEL Comparison
+## JavaScript vs Explicit CEL
 
-| Pattern | JavaScript (Recommended) | Explicit CEL (Escape Hatch) |
-|---------|---------------------------|------------------------------|
-| **Boolean logic** | `deployment.status.readyReplicas > 0` | `Cel.expr(deployment.status.readyReplicas, ' > 0')` |
-| **String templates** | `` `https://${service.status.clusterIP}` `` | `Cel.template('https://%s', service.status.clusterIP)` |
-| **Conditionals** | `env === 'prod' ? 'warn' : 'info'` | `Cel.conditional(env === 'prod', 'warn', 'info')` |
-| **Complex lists** | ❌ Not supported | `Cel.expr('size(pods.filter(p, p.ready))')` |
+| Pattern | JavaScript (Recommended) | Explicit CEL |
+|---------|--------------------------|--------------|
+| Boolean | `deploy.status.readyReplicas > 0` | `Cel.expr(deploy.status.readyReplicas, ' > 0')` |
+| String | `` `https://${svc.status.clusterIP}` `` | `Cel.template('https://%s', svc.status.clusterIP)` |
+| Conditional | `ready ? 'yes' : 'no'` | `Cel.conditional(ready, 'yes', 'no')` |
+| List ops | ❌ Not supported | `Cel.expr('size(pods.filter(p, p.ready))')` |
 
 ## Core Functions
 
 ### `Cel.expr()`
 
-Creates a CEL expression that evaluates to a computed value.
+Creates a CEL expression from parts.
 
 ```typescript
-function expr<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T
-function expr<T = unknown>(
-  context: SerializationContext,
-  ...parts: RefOrValue<unknown>[]
-): CelExpression<T> & T
+function expr<T>(...parts: RefOrValue<unknown>[]): CelExpression<T>
 ```
 
-#### Parameters
-
-- **`parts`**: Variable number of expression parts that can be:
-  - `string` - Literal CEL expression text
-  - `KubernetesRef` - References to other resources
-  - `CelExpression` - Nested CEL expressions
-  - `number | boolean` - Primitive values
-- **`context`** (optional): Serialization context for advanced use cases
-
-#### Returns
-
-A `CelExpression<T>` that evaluates to type `T` at runtime.
-
-#### Examples
+**Examples:**
 
 ```typescript
-import { Cel, deployment, service } from 'typekro';
+import { Cel } from 'typekro';
 
 // Simple expression
-const replicas = Cel.expr('size(deployments)');
+const count = Cel.expr('size(deployments)');
 
-// Expression with resource references
-const url = Cel.expr(
-  'http://',
-  myService.spec.clusterIP,
-  ':',
-  myService.spec.ports[0].port
-);
+// With resource references
+const isReady = Cel.expr(deploy.status.readyReplicas, ' >= ', deploy.spec.replicas);
 
-// Complex computation
-const readyReplicas = Cel.expr(
-  myDeployment.status.readyReplicas,
-  ' >= ',
-  myDeployment.spec.replicas
-);
+// Complex expression
+const healthyPods = Cel.expr('size(pods.filter(p, p.status.phase == "Running"))');
 ```
 
 ### `Cel.template()`
 
-Creates a CEL string template with interpolated expressions.
+Creates a string with interpolated values using `%s` placeholders.
 
 ```typescript
-function template(template: string, values?: Record<string, RefOrValue<unknown>>): CelExpression<string>
+function template(template: string, ...values: RefOrValue[]): CelExpression<string>
 ```
 
-#### Parameters
-
-- **`template`**: Template string with `%{variable}` placeholders
-- **`values`** (optional): Object mapping variable names to values
-
-#### Returns
-
-A `CelExpression<string>` that evaluates to a formatted string.
-
-#### Examples
+**Examples:**
 
 ```typescript
 // Basic template
-const message = Cel.template(
-  'Deployment %{name} has %{replicas} replicas',
-  {
-    name: myDeployment.metadata.name,
-    replicas: myDeployment.status.readyReplicas
-  }
-);
+const url = Cel.template('https://%s/api', service.status.clusterIP);
 
-// Template with resource references
+// Multiple placeholders
 const endpoint = Cel.template(
-  'https://%{host}:%{port}/api',
-  {
-    host: myService.spec.clusterIP,
-    port: myService.spec.ports[0].port
-  }
-);
-```
-
-### `Cel.map()`
-
-Creates a CEL expression that transforms a list using a mapping function.
-
-```typescript
-function map<T, R>(
-  list: RefOrValue<T[]>,
-  mapExpr: string
-): CelExpression<R[]>
-```
-
-#### Parameters
-
-- **`list`**: Source list to transform
-- **`mapExpr`**: CEL expression for the transformation (use `item` variable)
-
-#### Returns
-
-A `CelExpression<R[]>` containing the transformed list.
-
-#### Examples
-
-```typescript
-// Transform pod names to URLs
-const podUrls = Cel.map(
-  myDeployment.status.podNames,
-  'item + ".default.svc.cluster.local"'
-);
-
-// Extract port numbers
-const ports = Cel.map(
-  myService.spec.ports,
-  'item.port'
-);
-```
-
-### `Cel.filter()`
-
-Creates a CEL expression that filters a list based on a condition.
-
-```typescript
-function filter<T>(
-  list: RefOrValue<T[]>,
-  condition: string
-): CelExpression<T[]>
-```
-
-#### Parameters
-
-- **`list`**: Source list to filter
-- **`condition`**: CEL boolean expression for filtering (use `item` variable)
-
-#### Returns
-
-A `CelExpression<T[]>` containing filtered items.
-
-#### Examples
-
-```typescript
-// Filter ready pods
-const readyPods = Cel.filter(
-  myDeployment.status.pods,
-  'item.status.phase == "Running"'
-);
-
-// Filter exposed ports
-const exposedPorts = Cel.filter(
-  myService.spec.ports,
-  'item.nodePort != null'
+  'https://%s:%s/api',
+  service.status.clusterIP,
+  service.spec.ports[0].port
 );
 ```
 
 ### `Cel.conditional()`
 
-Creates a conditional CEL expression.
+Creates a ternary expression.
 
 ```typescript
 function conditional<T>(
@@ -198,265 +86,141 @@ function conditional<T>(
 ): CelExpression<T>
 ```
 
-#### Parameters
-
-- **`condition`**: Boolean expression or reference
-- **`trueValue`**: Value when condition is true
-- **`falseValue`**: Value when condition is false
-
-#### Returns
-
-A `CelExpression<T>` that evaluates to one of the provided values.
-
-#### Examples
+**Examples:**
 
 ```typescript
-// Conditional scaling
-const targetReplicas = Cel.conditional(
-  Cel.expr(myDeployment.status.readyReplicas, ' < ', myDeployment.spec.replicas),
-  myDeployment.spec.replicas,
-  1
+const phase = Cel.conditional(
+  Cel.expr(deploy.status.readyReplicas, ' > 0'),
+  'running',
+  'pending'
 );
 
-// Environment-based configuration
 const logLevel = Cel.conditional(
-  myConfigMap.data.environment === 'production',
+  Cel.expr(config.data.environment, ' == "production"'),
   'warn',
   'debug'
 );
 ```
 
-## Type Definitions
+### `Cel.concat()`
 
-### `CelExpression<T>`
-
-Core interface for CEL expressions with type safety.
+Concatenates strings using the CEL `+` operator.
 
 ```typescript
-interface CelExpression<T = unknown> {
-  readonly [CEL_EXPRESSION_BRAND]: true;
-  readonly expression: string;
-  readonly expectedType: string;
-}
+function concat(...parts: RefOrValue[]): CelExpression<string>
 ```
 
-### `RefOrValue<T>`
-
-Union type for values that can be either direct values or references.
+**Examples:**
 
 ```typescript
-type RefOrValue<T> = T | KubernetesRef<T> | CelExpression<T>
+const fullName = Cel.concat(deploy.metadata.name, '-service');
+const url = Cel.concat('http://', service.status.clusterIP, ':8080');
 ```
 
-### `SerializationContext`
+### `Cel.math()`
 
-Context object for advanced CEL serialization scenarios.
+Creates mathematical CEL expressions.
 
 ```typescript
-interface SerializationContext {
-  celPrefix: string;
-  resourceId?: string;
-  resourceType?: string;
-}
+function math<T>(operation: string, ...operands: RefOrValue[]): CelExpression<T>
 ```
 
-## Advanced Patterns
-
-### Resource Status Computation
-
-Use CEL expressions in status builders to compute dynamic status values:
+**Examples:**
 
 ```typescript
-const myApp = createResourceGraph('my-app', (schema) => {
-  const deploy = deployment({
-    metadata: { name: 'web-server' },
-    spec: {
-      replicas: 3,
-      selector: { matchLabels: { app: 'web' } },
-      template: {
-        metadata: { labels: { app: 'web' } },
-        spec: {
-          containers: [{
-            name: 'web',
-            image: 'nginx:1.21'
-          }]
-        }
-      }
-    }
-  });
-
-  return {
-    deployment: deploy,
-    status: {
-      // CEL expression for computed status
-      healthStatus: Cel.conditional(
-        Cel.expr(deploy.status.readyReplicas, ' >= ', deploy.spec.replicas),
-        'healthy',
-        'degraded'
-      ),
-      
-      // Template with multiple references
-      summary: Cel.template(
-        'Deployment %{name}: %{ready}/%{desired} replicas ready',
-        {
-          name: deploy.metadata.name,
-          ready: deploy.status.readyReplicas,
-          desired: deploy.spec.replicas
-        }
-      )
-    }
-  };
-});
+const total = Cel.math('sum', deploy.status.readyReplicas, deploy.status.unavailableReplicas);
 ```
 
-### Cross-Resource References
+## Utility Functions
 
-Reference values from other resources in your expressions:
+### `Cel.min()` / `Cel.max()`
 
 ```typescript
-const webApp = createResourceGraph('web-app', (schema) => {
-  const configMap = configMap({
-    metadata: { name: 'app-config' },
-    data: {
-      maxConnections: '100',
-      timeout: '30s'
-    }
-  });
-
-  const deploy = deployment({
-    metadata: { name: 'web-server' },
-    spec: {
-      template: {
-        spec: {
-          containers: [{
-            name: 'web',
-            image: 'nginx:1.21',
-            env: [
-              {
-                name: 'MAX_CONNECTIONS',
-                // Reference value from ConfigMap
-                value: configMap.data.maxConnections
-              },
-              {
-                name: 'CONNECTION_URL',
-                // Computed value using CEL
-                value: Cel.template(
-                  'redis://redis-service:6379/0?timeout=%{timeout}',
-                  { timeout: configMap.data.timeout }
-                )
-              }
-            ]
-          }]
-        }
-      }
-    }
-  });
-
-  return { configMap, deployment: deploy };
-});
+const minReplicas = Cel.min(deploy.spec.replicas, 10);
+const maxReplicas = Cel.max(deploy.status.readyReplicas, 1);
 ```
+
+### `Cel.size()`
+
+```typescript
+const containerCount = Cel.size(deploy.spec.template.spec.containers);
+```
+
+### `Cel.string()` / `Cel.int()` / `Cel.double()`
+
+Type conversion functions:
+
+```typescript
+const portStr = Cel.string(service.spec.ports[0].port);
+const replicaInt = Cel.int(config.data.replicas);
+```
+
+## Template Literal Tag
+
+The `cel` template tag provides natural syntax:
+
+```typescript
+import { cel } from 'typekro';
+
+const url = cel`https://${spec.hostname}/api`;
+// Produces: "https://" + spec.hostname + "/api"
+```
+
+## Context-Aware API
+
+For advanced serialization scenarios:
+
+```typescript
+const celWithContext = Cel.withContext({ celPrefix: 'resources' });
+
+const expr = celWithContext.expr(deploy.status.readyReplicas, ' > 0');
+```
+
+## Type Safety
+
+Always specify the expected return type:
+
+```typescript
+// Explicit type parameter
+const isReady = Cel.expr<boolean>(deploy.status.readyReplicas, ' > 0');
+const url = Cel.template<string>('https://%s', service.status.clusterIP);
+```
+
+## Common Patterns
 
 ### List Operations
 
-Work with arrays and collections using CEL list functions:
-
 ```typescript
-const microservices = createResourceGraph('microservices', (schema) => {
-  const services = ['auth', 'api', 'worker'].map(name => 
-    service({
-      metadata: { name: Cel.expr(name, "-service") },
-      spec: {
-        selector: { app: name },
-        ports: [{ port: 8080, targetPort: 8080 }]
-      }
-    })
-  );
+// Count items in a list
+const containerCount = Cel.expr('size(deployment.spec.template.spec.containers)');
 
-  return {
-    services,
-    status: {
-      // Count ready services
-      readyServices: Cel.expr('size(services)'),
-      
-      // List service endpoints
-      endpoints: Cel.map(
-        services,
-        'item.spec.clusterIP + ":" + string(item.spec.ports[0].port)'
-      ),
-      
-      // Find services with external access
-      externalServices: Cel.filter(
-        services,
-        'item.spec.type == "LoadBalancer"'
-      )
-    }
-  };
-});
+// Filter conditions
+const readyCondition = Cel.expr('deployment.status.conditions.filter(c, c.type == "Available")[0].status');
+
+// Check if any condition is true
+const hasAvailable = Cel.expr('deployment.status.conditions.exists(c, c.type == "Available" && c.status == "True")');
 ```
 
-## Best Practices
-
-### 1. Use Appropriate CEL Functions
-
-- **`Cel.expr()`** for general computations and boolean logic
-- **`Cel.template()`** for string interpolation and formatting
-- **`Cel.map()`** and **`Cel.filter()`** for list operations
-- **`Cel.conditional()`** for if-then-else logic
-
-### 2. Type Safety
-
-Always specify the expected return type for better IDE support:
+### Null Safety
 
 ```typescript
-// Good: Explicit type annotation
-const isHealthy: CelExpression<boolean> = Cel.expr(
-  myDeployment.status.readyReplicas, ' >= ', myDeployment.spec.replicas
-);
-
-// Better: Type parameter
-const isHealthy = Cel.expr<boolean>(
-  myDeployment.status.readyReplicas, ' >= ', myDeployment.spec.replicas
+// Check existence before access
+const endpoint = Cel.expr(
+  'has(service.status.loadBalancer.ingress) ? service.status.loadBalancer.ingress[0].ip : "pending"'
 );
 ```
 
-### 3. Resource Reference Patterns
-
-Use consistent patterns for referencing resources:
+### Complex Conditions
 
 ```typescript
-// Direct property access
-const serviceName = myService.metadata.name;
-
-// Nested property access
-const firstPortNumber = myService.spec.ports[0].port;
-
-// Status field access (common in status builders)
-const readyReplicas = myDeployment.status.readyReplicas;
-```
-
-### 4. Error Handling
-
-CEL expressions should handle potential null values:
-
-```typescript
-// Safe access with defaults
-const replicas = Cel.expr(
-  'has(deployment.status.readyReplicas) ? deployment.status.readyReplicas : 0'
-);
-
-// Conditional with existence check
-const endpoint = Cel.conditional(
-  Cel.expr('has(service.status.loadBalancer.ingress)'),
-  Cel.template('http://%{ip}', { 
-    ip: myService.status.loadBalancer.ingress[0].ip 
-  }),
-  'pending'
+const status = Cel.expr(
+  'deployment.status.readyReplicas == deployment.spec.replicas ? "healthy" : ',
+  'deployment.status.readyReplicas > 0 ? "degraded" : "unhealthy"'
 );
 ```
 
-## Related APIs
+## Next Steps
 
-- [Status Hydration Guide](/guide/status-hydration) - Using CEL in status builders
-- [Resource Graphs Guide](/guide/resource-graphs) - Resource reference patterns  
-- [Factory Functions API](/api/factories) - Creating resources with CEL expressions
-- [Types API](/api/types) - Type definitions for CEL expressions
+- [JavaScript to CEL](/guide/javascript-to-cel) - Supported JavaScript patterns
+- [kubernetesComposition](./kubernetes-composition.md) - Using CEL in compositions
+- [Types](./types.md) - CelExpression type definition

@@ -100,6 +100,7 @@
     }
   },
   "javascript": {
+    "globals": ["Bun"],
     "formatter": {
       "jsxQuoteStyle": "double",
       "quoteProperties": "asNeeded",
@@ -167,7 +168,8 @@
           "suspicious": {
             "noExplicitAny": "off",
             "noTemplateCurlyInString": "off",
-            "noThenProperty": "off"
+            "noThenProperty": "off",
+            "noEmptyBlockStatements": "off"
           }
         }
       }

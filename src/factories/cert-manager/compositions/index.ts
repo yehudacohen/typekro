@@ -1,0 +1,1 @@
+export { certManagerBootstrap } from './cert-manager-bootstrap.js';

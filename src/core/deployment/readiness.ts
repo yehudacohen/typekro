@@ -92,7 +92,8 @@ export class ResourceReadinessChecker {
       attempt++;
 
       try {
-        const { body: currentResource } = await this.k8sApi.read({
+        // In the new API, methods return objects directly (no .body wrapper)
+        const currentResource = await this.k8sApi.read({
           apiVersion: deployedResource.manifest.apiVersion,
           kind: deployedResource.kind,
           metadata: {
@@ -181,7 +182,8 @@ export class ResourceReadinessChecker {
     // Debug logging for timeout with final status
     if (this.debugLogger) {
       try {
-        const { body: finalResource } = await this.k8sApi.read({
+        // In the new API, methods return objects directly (no .body wrapper)
+        const finalResource = await this.k8sApi.read({
           apiVersion: deployedResource.manifest.apiVersion,
           kind: deployedResource.kind,
           metadata: {

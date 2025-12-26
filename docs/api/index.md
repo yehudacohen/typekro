@@ -1,288 +1,152 @@
 # API Reference
 
-Complete reference for all TypeKro APIs, functions, and types.
+Complete reference for TypeKro APIs, functions, and types.
 
-> **Note**: TypeKro is currently v0.1.0 and APIs may change before v1.0. Examples use the current recommended patterns: `kubernetesComposition()` and `import { Resource } from 'typekro/simple'`.
+## Core Composition API
 
-## Core Functions
+### [kubernetesComposition](./kubernetes-composition.md)
 
-### [kubernetesComposition](./kubernetes-composition.md) (Recommended)
-The imperative composition pattern for creating typed resource graphs.
+The primary API for creating typed resource graphs.
 
 ```typescript
-const graph = kubernetesComposition(definition, compositionFunction);
+import { type } from 'arktype';
+import { kubernetesComposition } from 'typekro';
+import { Deployment } from 'typekro/simple';
+
+const webApp = kubernetesComposition(
+  {
+    name: 'webapp',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: type({ name: 'string', image: 'string' }),
+    status: type({ ready: 'boolean' })
+  },
+  (spec) => {
+    const deploy = Deployment({ id: 'deploy', name: spec.name, image: spec.image });
+    return { ready: deploy.status.readyReplicas > 0 };
+  }
+);
 ```
 
-### [toResourceGraph](./to-resource-graph.md) (Declarative)
-Alternative declarative function for creating typed resource graphs.
+## Expression APIs
+
+### [CEL Expressions](./cel.md)
+
+Explicit CEL expressions for advanced patterns.
 
 ```typescript
-const graph = toResourceGraph(definition, resourceBuilder, statusBuilder);
-```
-
-### [Factory Functions](./factories.md)
-Pre-built functions for creating common Kubernetes resources.
-
-```typescript
-import { kubernetesComposition, toResourceGraph } from 'typekro';
-import { Deployment, Secret } from 'typekro/simple';
-```
-
-### CEL Expressions
-Common Expression Language integration for dynamic field evaluation. See the [CEL Expressions Guide](../guide/cel-expressions.md) for detailed documentation.
-
-```typescript
-// ✨ Natural JavaScript expressions (automatically converted to CEL)
-const ready = deployment.status.readyReplicas > 0;
-const url = `https://${service.status.loadBalancer.ingress[0].hostname}/api`;
-
-// ✨ Natural JavaScript expressions are automatically converted to CEL
-const ready = deployment.status.readyReplicas > 0;
-
-// For advanced cases, explicit CEL is still available as an escape hatch
 import { Cel } from 'typekro';
-const complexExpr = Cel.expr('size(deployments.filter(d, d.status.phase == "Running"))');
+
+// Most cases: use natural JavaScript (auto-converted to CEL)
+ready: deployment.status.readyReplicas > 0
+
+// Advanced: explicit CEL for complex list operations
+Cel.expr('size(pods.filter(p, p.status.phase == "Running"))')
 ```
 
-## Factory Functions by Category
+### [YAML & Helm Closures](./yaml-closures.md)
 
-All factory functions are documented in the [Factory Functions](./factories.md) reference. Key categories include:
-
-### Workloads
-- `Deployment` / `simple.Deployment` - Create Kubernetes Deployments
-- `StatefulSet` / `simple.StatefulSet` - Create StatefulSets
-- `Job` / `simple.Job` - Create Jobs
-- `CronJob` / `simple.CronJob` - Create CronJobs
-
-### Networking
-- `Service` / `simple.Service` - Create Services
-- `Ingress` / `simple.Ingress` - Create Ingress resources
-- `NetworkPolicy` / `simple.NetworkPolicy` - Create NetworkPolicies
-
-### Storage
-- `Pvc` / `simple.Pvc` - Create PersistentVolumeClaims
-
-### Configuration
-- `ConfigMap` / `simple` - Create ConfigMaps
-- `Secret` / `simple.Secret` - Create Secrets
-
-### Autoscaling
-- `Hpa` / `simple.Hpa` - Create Horizontal Pod Autoscalers
-
-### Helm & YAML
-- `HelmChart` / `simple.HelmChart` - Create Helm releases
-- `YamlFile` / `simple.YamlFile` - Include YAML files
-
-## Types
-
-Essential TypeScript types and interfaces are documented inline with IntelliSense support. See the [Factory Functions](./factories.md) reference for detailed type information.
+Deploy external YAML files and Helm charts.
 
 ```typescript
-interface ResourceGraph<TSpec, TStatus> {
-  factory(mode: 'direct' | 'kro', options?: FactoryOptions): Promise<ResourceFactory>;
-  toYaml(spec?: TSpec): string;
-}
+import { helmRelease } from 'typekro';
+import { YamlFile, HelmChart } from 'typekro/simple';
 
-interface Enhanced<T, S> extends KubernetesResource {
-  spec: T;
-  status: S;
-}
+// Simple YAML file
+YamlFile('./manifests/crds.yaml')
+
+// Simple Helm chart
+HelmChart('nginx', 'https://charts.bitnami.com/bitnami', 'nginx')
+
+// Full HelmRelease configuration
+helmRelease({ 
+  id: 'nginx',
+  name: 'nginx', 
+  chart: { repository: 'https://charts.bitnami.com/bitnami', name: 'nginx' } 
+})
 ```
+
+## Type System
+
+### [Core Types](./types.md)
+
+Essential TypeScript types: `Enhanced`, `RefOrValue`, `KubernetesRef`, `CelExpression`.
+
+## Factory Functions
+
+### [Factory Functions](/api/factories/)
+
+All factory functions: Deployment, Service, ConfigMap, etc.
+
+### [Kubernetes](/api/kubernetes/)
+
+Native Kubernetes resources: Deployment, Service, ConfigMap, Secret, etc.
+
+### [Cilium](./cilium/)
+
+Cilium network policies. Import: `import * as cilium from 'typekro/cilium'`
+
+### [Cert-Manager](./cert-manager/)
+
+Certificate management. Import: `import * as certManager from 'typekro/cert-manager'`
+
+### [Flux](./flux/)
+
+GitOps: HelmRelease, HelmRepository. Import: `import { helmRelease } from 'typekro'`
+
+### [Kro](./kro/)
+
+ResourceGraphDefinition and TypeKro runtime bootstrap.
 
 ## Quick Reference
+
+### Import Patterns
+
+See [Import Patterns](./imports.md) for complete import documentation.
+
+```typescript
+// Core APIs
+import { kubernetesComposition, Cel, externalRef } from 'typekro';
+
+// Simple factories (recommended)
+import { Deployment, Service, ConfigMap } from 'typekro/simple';
+
+// Helm integration
+import { helmRelease, helmRepository } from 'typekro';
+
+// Types
+import type { Enhanced, KubernetesRef } from 'typekro';
+```
 
 ### Common Patterns
 
 ```typescript
-// Basic resource graph
-const app = toResourceGraph(
-  {
-    name: 'my-app',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'MyApp',
-    spec: MyAppSpec,
-    status: MyAppStatus,
-  },
-  (schema) => ({
-  deployment: Deployment({
-    name: schema.spec.name,
-    image: schema.spec.image
-  })
-}), { spec: AppSpec, status: AppStatus });
+import { Deployment, Service } from 'typekro/simple';
 
 // Cross-resource references
-const database = Deployment({ name: 'db' });
+const db = Deployment({ id: 'db', name: 'db', image: 'postgres' });
+const dbService = Service({
+  id: 'dbSvc',
+  name: 'db-svc',
+  selector: { app: 'db' },
+  ports: [{ port: 5432 }]
+});
 const app = Deployment({
-  env: { DB_HOST: database.status.podIP }
+  id: 'app',
+  name: 'app',
+  image: 'myapp',
+  env: { DB_HOST: dbService.status.clusterIP }
 });
 
-// ✨ JavaScript expressions (automatically converted to CEL)
-const status = {
-  ready: deployment.status.readyReplicas > 0,
-  url: `https://${ingress.status.loadBalancer.ingress[0].hostname}`
+// Status expressions (JavaScript auto-converted to CEL)
+return {
+  ready: app.status.readyReplicas >= spec.replicas,
+  url: `https://${spec.hostname}`
 };
-
-// Factory deployment
-const factory = graph.factory('direct', { namespace: 'prod' });
-await factory.deploy(spec);
 ```
 
-### Import Paths
+## Next Steps
 
-```typescript
-// Core functions
-import { kubernetesComposition, toResourceGraph, Cel } from 'typekro';
-
-// Factory functions (recommended - direct imports)
-import { Deployment, Service, ConfigMap, Secret } from 'typekro/simple';
-
-// Or use simple namespace
-import { simple } from 'typekro';
-
-// Direct imports (cleaner)
-const deployment = Deployment({ /* ... */ });
-const service = Service({ /* ... */ });
-
-// Namespace imports (also valid)
-const configMap = simple.ConfigMap({ /* ... */ });
-const secret = simple.Secret({ /* ... */ });
-
-// Types
-import type { 
-  ResourceGraph,
-  Enhanced,
-  FactoryOptions,
-  KubernetesRef
-} from 'typekro';
-```
-
-## Error Handling
-
-### Common Errors
-
-```typescript
-// Deployment errors
-try {
-  await factory.deploy(spec);
-} catch (error) {
-  if (error instanceof ResourceDeploymentError) {
-    console.error('Deployment failed:', error.message);
-    console.error('Failed resources:', error.failedResources);
-  }
-}
-
-// Reference resolution errors
-try {
-  const resolved = await resolver.resolve(ref);
-} catch (error) {
-  if (error instanceof ReferenceResolutionError) {
-    console.error('Reference resolution failed:', error.reference);
-  }
-}
-
-// CEL evaluation errors
-try {
-  const result = await evaluator.evaluate(expression);
-} catch (error) {
-  if (error instanceof CelExpressionError) {
-    console.error('CEL evaluation failed:', error.expression);
-  }
-}
-```
-
-## Configuration
-
-### Factory Options
-
-```typescript
-interface FactoryOptions {
-  namespace?: string;
-  kubeconfig?: string;
-  timeout?: number;
-  dryRun?: boolean;
-  skipTLSVerify?: boolean;
-}
-
-const factory = graph.factory('direct', {
-  namespace: 'production',
-  timeout: 300000,  // 5 minutes
-  dryRun: false
-});
-```
-
-### Logging Configuration
-
-```typescript
-import { createLogger } from 'typekro';
-
-const logger = createLogger({
-  level: 'info',
-  pretty: process.env.NODE_ENV === 'development'
-});
-```
-
-## Advanced Usage
-
-### Custom Factory Functions
-
-```typescript
-import { createResource } from 'typekro';
-
-export function customDeployment(config: CustomDeploymentConfig) {
-  return createResource({
-    apiVersion: 'apps/v1',
-    kind: 'Deployment',
-    metadata: {
-      name: config.name,
-      labels: { app: config.name, ...config.labels }
-    },
-    spec: {
-      replicas: config.replicas,
-      selector: { matchLabels: { app: config.name } },
-      template: {
-        metadata: { labels: { app: config.name } },
-        spec: {
-          containers: [{
-            name: config.name,
-            image: config.image,
-            // ... custom logic
-          }]
-        }
-      }
-    }
-  });
-}
-```
-
-### Schema Validation
-
-```typescript
-import { type } from 'arktype';
-
-const StrictAppSpec = type({
-  name: 'string>2',  // At least 3 characters
-  image: 'string',
-  replicas: 'number>0',  // At least 1
-  environment: '"dev" | "staging" | "prod"'
-});
-
-// Validation happens automatically
-const graph = toResourceGraph(
-  {
-    name: 'app',
-    apiVersion: 'example.com/v1alpha1',
-    kind: 'App',
-    spec: StrictAppSpec,
-    status: AppStatus,
-  },
-  builder,
-  statusBuilder
-);
-```
-
-## Support
-
-- **Documentation**: [TypeKro Docs](../index.md)
-- **Examples**: [Examples Gallery](../examples/)
-- **Issues**: [GitHub Issues](https://github.com/yehudacohen/typekro/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yehudacohen/typekro/discussions)
+- [Getting Started](/guide/getting-started) - 5-minute quick start
+- [kubernetesComposition](./kubernetes-composition.md) - Primary composition API
+- [Factory Functions](./factories/) - All factory functions
