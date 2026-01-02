@@ -3,6 +3,10 @@
   "version": "0.4.0",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yehudacohen/typekro"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
