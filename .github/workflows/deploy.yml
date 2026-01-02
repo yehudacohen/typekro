@@ -132,16 +132,14 @@ jobs:
       - name: Build library
         run: bun run build
           
-      - name: Setup Node.js for npm with provenance
+      - name: Setup Node.js for npm with OIDC
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           
-      - name: Publish to npm with provenance
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm (OIDC trusted publishing)
+        run: npm publish --access public
           
       - name: Create git tag
         run: |
