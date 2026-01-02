@@ -45,6 +45,17 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
       });
     }
 
+    // Preserve the __resourceId field if it exists (it's non-enumerable)
+    // This is used for cross-resource reference resolution
+    if (originalResource.__resourceId && typeof originalResource.__resourceId === 'string') {
+      Object.defineProperty(resourceWithId, '__resourceId', {
+        value: originalResource.__resourceId,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
+
     // Create a proper DependencyGraph instance
     const dependencyGraph = new DependencyGraph();
     dependencyGraph.addNode(resourceWithId.id, resourceWithId as any);

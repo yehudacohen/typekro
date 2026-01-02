@@ -8,7 +8,7 @@
  * without a .body wrapper. The mocks must return the resource directly.
  */
 
-import { describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { V1Deployment, V1Service } from '@kubernetes/client-node';
 import * as k8s from '@kubernetes/client-node';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
@@ -20,9 +20,14 @@ describe('Readiness Evaluation Integration', () => {
   // Create a minimal mock for testing readiness evaluation
   // NOTE: In the new API, methods return objects directly (no .body wrapper)
   const mockKubeConfig = new k8s.KubeConfig();
-  const mockK8sApi = {
-    read: mock(() => Promise.resolve({})),
-  } as any;
+  let mockK8sApi: any;
+
+  // Reset mock before each test to ensure clean state
+  beforeEach(() => {
+    mockK8sApi = {
+      read: mock(() => Promise.resolve({})),
+    };
+  });
 
   it('should use custom deployment readiness evaluator', async () => {
     const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
@@ -60,7 +65,8 @@ describe('Readiness Evaluation Integration', () => {
     };
 
     // Mock the k8s API to return a ready deployment (returns object directly, no .body wrapper)
-    mockK8sApi.read.mockResolvedValueOnce({
+    // Use mockResolvedValue to return the same value for all calls (the readiness loop polls multiple times)
+    mockK8sApi.read.mockResolvedValue({
       ...deploymentResource,
       status: {
         readyReplicas: 2,
@@ -73,13 +79,14 @@ describe('Readiness Evaluation Integration', () => {
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
+      timeout: 5000, // 5 second timeout for tests
       progressCallback: (event: any) => events.push(event),
     };
 
     // Test the readiness evaluation directly
-    await (engine as any).waitForResourceReady(deployedResource, options, (event: any) =>
-      events.push(event)
-    );
+    // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
+    // The progressCallback in options is used for event emission
+    await (engine as any).waitForResourceReady(deployedResource, options);
 
     // Check that custom readiness evaluation was used
     const readyEvent = events.find((e) => e.type === 'resource-ready');
@@ -121,7 +128,8 @@ describe('Readiness Evaluation Integration', () => {
     };
 
     // Mock the k8s API to return a service with LoadBalancer ingress (returns object directly, no .body wrapper)
-    mockK8sApi.read.mockResolvedValueOnce({
+    // Use mockResolvedValue to return the same value for all calls (the readiness loop polls multiple times)
+    mockK8sApi.read.mockResolvedValue({
       ...serviceResource,
       status: {
         loadBalancer: {
@@ -134,13 +142,14 @@ describe('Readiness Evaluation Integration', () => {
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
+      timeout: 5000, // 5 second timeout for tests
       progressCallback: (event: any) => events.push(event),
     };
 
     // Test the readiness evaluation directly
-    await (engine as any).waitForResourceReady(deployedResource, options, (event: any) =>
-      events.push(event)
-    );
+    // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
+    // The progressCallback in options is used for event emission
+    await (engine as any).waitForResourceReady(deployedResource, options);
 
     // Check that custom readiness evaluation was used
     const readyEvent = events.find((e) => e.type === 'resource-ready');
@@ -180,6 +189,15 @@ describe('Readiness Evaluation Integration', () => {
     };
 
     // Mock the k8s API to return progression: not ready -> ready (returns object directly, no .body wrapper)
+    // After the two specific responses, return the ready state for any subsequent calls
+    const readyDeployment = {
+      ...deploymentResource,
+      status: {
+        readyReplicas: 3,
+        availableReplicas: 3,
+        updatedReplicas: 3,
+      },
+    };
     mockK8sApi.read
       .mockResolvedValueOnce({
         ...deploymentResource,
@@ -189,26 +207,20 @@ describe('Readiness Evaluation Integration', () => {
           updatedReplicas: 3,
         },
       })
-      .mockResolvedValueOnce({
-        ...deploymentResource,
-        status: {
-          readyReplicas: 3,
-          availableReplicas: 3,
-          updatedReplicas: 3,
-        },
-      });
+      .mockResolvedValue(readyDeployment); // All subsequent calls return ready state
 
     const events: any[] = [];
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
+      timeout: 10000, // 10 second timeout for progression test
       progressCallback: (event: any) => events.push(event),
     };
 
     // Test the readiness evaluation directly
-    await (engine as any).waitForResourceReady(deployedResource, options, (event: any) =>
-      events.push(event)
-    );
+    // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
+    // The progressCallback in options is used for event emission
+    await (engine as any).waitForResourceReady(deployedResource, options);
 
     // Check that we got both status and ready events
     const statusEvents = events.filter((e) => e.type === 'resource-status');
@@ -251,17 +263,26 @@ describe('Readiness Evaluation Integration', () => {
       deployedAt: new Date(),
     };
 
+    // Mock the k8s API to return the ConfigMap (ConfigMaps are immediately ready)
+    mockK8sApi.read.mockResolvedValue({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata: { name: 'test-config', namespace: 'default' },
+      data: { key: 'value' },
+    });
+
     const events: any[] = [];
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
+      timeout: 5000, // 5 second timeout for tests
       progressCallback: (event: any) => events.push(event),
     };
 
     // Test the readiness evaluation - should use default evaluator
-    await (engine as any).waitForResourceReady(deployedResource, options, (event: any) =>
-      events.push(event)
-    );
+    // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
+    // The progressCallback in options is used for event emission
+    await (engine as any).waitForResourceReady(deployedResource, options);
 
     // Should complete without errors using the default ConfigMap readiness evaluator
     const readyEvent = events.find((e) => e.type === 'resource-ready');
@@ -312,10 +333,10 @@ describe('Readiness Evaluation Integration', () => {
     };
 
     // Test the readiness evaluation - should handle error gracefully
+    // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
+    // The progressCallback in options is used for event emission
     await expect(
-      (engine as any).waitForResourceReady(deployedResource, options, (event: any) =>
-        events.push(event)
-      )
+      (engine as any).waitForResourceReady(deployedResource, options)
     ).rejects.toThrow();
 
     // Should have emitted a status event about the API error

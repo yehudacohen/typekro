@@ -35,8 +35,8 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     const namespaceResources = bootstrap.resources.filter((r: any) => r.kind === 'Namespace');
     expect(namespaceResources.length).toBe(2); // system and kro namespaces
 
-    // Verify Kro namespace is named 'kro'
-    const kroNamespace = namespaceResources.find((r: any) => r.metadata?.name === 'kro');
+    // Verify Kro namespace is named 'kro-system' (must match ClusterRoleBinding in Kro Helm chart)
+    const kroNamespace = namespaceResources.find((r: any) => r.metadata?.name === 'kro-system');
     expect(kroNamespace).toBeDefined();
 
     // Find HelmReleases (should have only KRO. Flux is a deployment closure not a resource)
@@ -47,7 +47,7 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
     const kroHelmRelease = helmReleases.find((r: any) => r.metadata?.name === 'kro') as any;
     expect(kroHelmRelease).toBeDefined();
     expect(kroHelmRelease.metadata?.name).toBe('kro');
-    expect(kroHelmRelease.metadata?.namespace).toBe('kro');
+    expect(kroHelmRelease.metadata?.namespace).toBe('kro-system');
   });
 
   it('should use correct Flux URLs for different versions', () => {

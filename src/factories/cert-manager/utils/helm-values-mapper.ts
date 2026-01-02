@@ -53,7 +53,10 @@ export function mapCertManagerConfigToHelmValues(config: CertManagerBootstrapCon
     ...(config.acmesolver && { acmesolver: config.acmesolver }),
     
     // Startup API check configuration
-    ...(config.startupapicheck && { startupapicheck: config.startupapicheck }),
+    // Only pass startupapicheck if it's explicitly enabled, otherwise don't include it
+    // to ensure the Helm chart uses its default behavior (which may be to skip the hook)
+    ...(config.startupapicheck && config.startupapicheck.enabled !== false && { startupapicheck: config.startupapicheck }),
+    ...(config.startupapicheck?.enabled === false && { startupapicheck: { enabled: false } }),
     
     // Monitoring configuration
     ...(config.prometheus && { prometheus: config.prometheus }),

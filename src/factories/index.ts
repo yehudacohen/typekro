@@ -9,7 +9,24 @@
 // =============================================================================
 // HELM ECOSYSTEM
 // =============================================================================
-export * from './helm/index.js';
+export {
+  helmRelease,
+  simpleHelmChart,
+  helmRepository,
+  helmReleaseReadinessEvaluator,
+  createHelmRevisionReadinessEvaluator,
+  createHelmTestReadinessEvaluator,
+  createHelmTimeoutReadinessEvaluator,
+  createComprehensiveHelmReadinessEvaluator,
+} from './helm/index.js';
+export type {
+  HelmReleaseConfig,
+  HelmRepositoryConfig,
+  HelmReleaseSpec,
+  HelmReleaseStatus,
+  HelmRepositorySpec,
+  HelmRepositoryStatus,
+} from './helm/index.js';
 
 // =============================================================================
 // KRO ECOSYSTEM

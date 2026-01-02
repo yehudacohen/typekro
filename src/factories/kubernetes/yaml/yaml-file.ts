@@ -7,6 +7,7 @@ import type {
   DeploymentClosure,
   DeploymentContext,
 } from '../../../core/types/deployment.js';
+import { PatchStrategy } from '@kubernetes/client-node';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { registerDeploymentClosure } from '../../shared.js';
@@ -53,12 +54,14 @@ async function applyWithServerSideApply(
   try {
     // Server-side apply uses PATCH with specific content type
     // The kubernetes client's patch method supports this via options
+    // IMPORTANT: force parameter is ONLY valid with ServerSideApply strategy
     await kubernetesApi.patch(
       manifest,
       undefined, // pretty
       undefined, // dryRun
       fieldManager, // fieldManager
-      forceConflicts // force
+      forceConflicts, // force - only valid with ServerSideApply
+      PatchStrategy.ServerSideApply // patchStrategy - required for force to work
     );
 
     logger.debug('Applied resource using server-side apply', {

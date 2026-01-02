@@ -426,10 +426,12 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       );
 
       // Deploy with cross-composition reference
+      // Note: We use waitForReady: true to wait for the deployment to be ready
+      // The certificate won't be ready because there's no issuer, but that's expected
       const factory = crossRefComposition.factory('direct', {
         namespace: 'default',
         timeout: 60000,
-        waitForReady: false, // Don't wait for certificate to be ready
+        waitForReady: true,
         kubeConfig: kc,
       });
 
@@ -439,8 +441,11 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       });
 
       expect(result).toBeDefined();
+      expect(result.status).toBeDefined();
+      // The deployment should be ready (readyReplicas >= 1)
       expect(result.status.ready).toBe(true);
-      // Certificate may not be ready due to missing issuer, but that's expected
+      // Certificate won't be ready because there's no issuer - this is expected
+      // The certificateReady status may be false or a CEL expression that couldn't be evaluated
 
       // Cleanup
       await factory.deleteInstance('cross-ref-test');

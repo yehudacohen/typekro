@@ -60,10 +60,11 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
         id: 'systemNamespace',
       });
 
-      // Kro system namespace
+      // Kro system namespace - must be 'kro-system' to match the ClusterRoleBinding
+      // that the Kro Helm chart creates (it references namespace: kro-system)
       const _kroNamespace = namespace({
         metadata: {
-          name: 'kro',
+          name: 'kro-system',
         },
         id: 'kroNamespace',
       });
@@ -147,9 +148,11 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       });
 
       // Kro using HelmRelease with OCI chart - Flux will manage the lifecycle
+      // IMPORTANT: Must deploy to 'kro-system' namespace to match the ClusterRoleBinding
+      // that the Kro Helm chart creates (it references namespace: kro-system for the service account)
       const kroHelmRelease = helmRelease({
         name: 'kro',
-        namespace: 'kro',
+        namespace: 'kro-system',
         chart: {
           name: 'kro',
           repository: `oci://ghcr.io/kro-run/kro`,
