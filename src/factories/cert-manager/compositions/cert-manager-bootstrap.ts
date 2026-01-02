@@ -232,29 +232,33 @@ export const certManagerBootstrap = kubernetesComposition(
       },
 
       // Startup API check defaults
+      // IMPORTANT: startupapicheck is a post-install hook that can cause timeouts
+      // We disable it by default for TypeKro deployments to avoid installation failures
+      // Only enable if explicitly requested by the user
       startupapicheck: {
-        enabled: spec.startupapicheck?.enabled !== undefined ? spec.startupapicheck.enabled : false, // Disable by default for testing
-        image: {
-          repository:
-            spec.startupapicheck?.image?.repository || 'quay.io/jetstack/cert-manager-ctl',
-          tag: spec.startupapicheck?.image?.tag || ensureVersionPrefix(spec.version || '1.13.3'),
-          pullPolicy: spec.startupapicheck?.image?.pullPolicy || 'IfNotPresent',
-        },
-        resources: {
-          requests: {
-            cpu: spec.startupapicheck?.resources?.requests?.cpu || '10m',
-            memory: spec.startupapicheck?.resources?.requests?.memory || '32Mi',
+        enabled: spec.startupapicheck?.enabled === true, // Only enable if explicitly set to true
+        ...(spec.startupapicheck?.enabled === true && {
+          image: {
+            repository:
+              spec.startupapicheck?.image?.repository || 'quay.io/jetstack/cert-manager-ctl',
+            tag: spec.startupapicheck?.image?.tag || ensureVersionPrefix(spec.version || '1.13.3'),
+            pullPolicy: spec.startupapicheck?.image?.pullPolicy || 'IfNotPresent',
           },
-          limits: {
-            cpu: spec.startupapicheck?.resources?.limits?.cpu || '100m',
-            memory: spec.startupapicheck?.resources?.limits?.memory || '128Mi',
+          resources: {
+            requests: {
+              cpu: spec.startupapicheck?.resources?.requests?.cpu || '10m',
+              memory: spec.startupapicheck?.resources?.requests?.memory || '32Mi',
+            },
+            limits: {
+              cpu: spec.startupapicheck?.resources?.limits?.cpu || '100m',
+              memory: spec.startupapicheck?.resources?.limits?.memory || '128Mi',
+            },
+            ...spec.startupapicheck?.resources,
           },
-          ...spec.startupapicheck?.resources,
-        },
-        nodeSelector: spec.startupapicheck?.nodeSelector || {},
-        timeout: spec.startupapicheck?.timeout || '1m',
-        backoffLimit: spec.startupapicheck?.backoffLimit || 4,
-        ...spec.startupapicheck,
+          nodeSelector: spec.startupapicheck?.nodeSelector || {},
+          timeout: spec.startupapicheck?.timeout || '1m',
+          backoffLimit: spec.startupapicheck?.backoffLimit || 4,
+        }),
       },
 
       // Prometheus defaults

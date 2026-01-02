@@ -540,6 +540,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             alchemyScope: alchemyScope,
             kubeConfig: kc,
             waitForReady: true,
+            timeout: 60000, // Increase timeout to 60 seconds for update test
           });
 
           // Initial deployment

@@ -253,6 +253,22 @@ export interface ExternalDnsHelmValues {
   interval?: string;
   triggerLoopOnEvent?: boolean;
 
+  // Environment variables configuration (for credentials, etc.)
+  env?: Array<{
+    name: string;
+    value?: string;
+    valueFrom?: {
+      secretKeyRef?: {
+        name: string;
+        key: string;
+      };
+      configMapKeyRef?: {
+        name: string;
+        key: string;
+      };
+    };
+  }>;
+
   // Additional custom values
   [key: string]: any;
 }

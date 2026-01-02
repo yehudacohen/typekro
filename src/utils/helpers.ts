@@ -210,6 +210,13 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
     return `\${${obj.expression}}`;
   }
 
+  // Handle strings that contain __KUBERNETES_REF__ markers from template literals
+  // These are created when schema proxy values are used in template literals
+  // e.g., `${spec.name}-policy` becomes "__KUBERNETES_REF___schema___spec.name__-policy"
+  if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_')) {
+    return convertKubernetesRefMarkersTocel(obj);
+  }
+
   if (Array.isArray(obj)) {
     return obj.map((item) => processResourceReferences(item, context));
   }
@@ -239,6 +246,77 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   }
 
   return obj;
+}
+
+/**
+ * Converts __KUBERNETES_REF__ markers in a string to CEL expressions.
+ * 
+ * This handles template literals where schema proxy values are used:
+ * - Input: "__KUBERNETES_REF___schema___spec.name__-policy"
+ * - Output: "${schema.spec.name}-policy" (for simple cases)
+ * - Or: ${"" + schema.spec.name + "-policy"} (for complex cases with CEL concatenation)
+ * 
+ * Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+ * For schema: __KUBERNETES_REF___schema___{fieldPath}__
+ * 
+ * The field path is a dot-separated path like "spec.name" or "status.readyReplicas".
+ * It cannot contain underscores, so we use [a-zA-Z0-9.]+ to match it precisely.
+ */
+function convertKubernetesRefMarkersTocel(str: string): string {
+  // Pattern handles both regular resource IDs and __schema__ (which has underscores)
+  // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+  // For schema: __KUBERNETES_REF___schema___{fieldPath}__
+  // 
+  // The field path is matched with [a-zA-Z0-9.]+ which captures dot-separated identifiers
+  // like "spec.name" or "status.readyReplicas" without capturing trailing underscores
+  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.]+)__/g;
+  
+  // Check if the entire string is just a single reference (no surrounding text)
+  const singleRefMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.]+)__$/);
+  if (singleRefMatch) {
+    const [, resourceId, fieldPath] = singleRefMatch;
+    const celPath = resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+    return `\${${celPath}}`;
+  }
+  
+  // For strings with mixed content (text + references), we need to build a CEL concatenation
+  // e.g., "__KUBERNETES_REF___schema___spec.name__-policy" -> ${"" + schema.spec.name + "-policy"}
+  const parts: string[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  
+  // Reset the regex
+  refPattern.lastIndex = 0;
+  
+  match = refPattern.exec(str);
+  while (match !== null) {
+    // Add any text before this match as a string literal
+    if (match.index > lastIndex) {
+      const textBefore = str.slice(lastIndex, match.index);
+      parts.push(`"${textBefore}"`);
+    }
+    
+    // Add the CEL reference
+    const [, resourceId, fieldPath] = match;
+    const celPath = resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+    parts.push(celPath);
+    
+    lastIndex = match.index + match[0].length;
+    match = refPattern.exec(str);
+  }
+  
+  // Add any remaining text after the last match
+  if (lastIndex < str.length) {
+    const textAfter = str.slice(lastIndex);
+    parts.push(`"${textAfter}"`);
+  }
+  
+  // Join with + for CEL concatenation
+  if (parts.length === 1) {
+    return `\${${parts[0]}}`;
+  }
+  
+  return `\${${parts.join(' + ')}}`;
 }
 
 /**

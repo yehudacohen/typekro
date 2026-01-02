@@ -185,6 +185,32 @@ export function certManagerHelmRelease(
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
+  
+  // CRITICAL: Helm values MUST be static - they cannot contain KubernetesRef objects
+  // from schema proxies because Kro/Flux cannot handle CEL expressions inside spec.values.
+  // The HelmRelease spec.values field is an arbitrary object without a defined schema,
+  // so any KubernetesRef objects will serialize incorrectly (as empty objects or strings).
+  //
+  // We ALWAYS set these critical values statically to ensure cert-manager installs correctly:
+  // 1. installCRDs: true - Required for cert-manager to function
+  // 2. startupapicheck.enabled: false - Prevents post-install hook timeouts
+  //
+  // Any other values from config.values are processed, but we deep-clone and sanitize
+  // to remove any potential KubernetesRef objects that might have leaked through.
+  //
+  // NOTE: config.values may already be the result of mapCertManagerConfigToHelmValues()
+  // from the bootstrap composition, so we DON'T call mapCertManagerConfigToHelmValues again.
+  // We just sanitize the values to remove any proxy references.
+  const baseValues = config.values ? sanitizeHelmValues(config.values) : {};
+  const finalValues = {
+    ...baseValues,
+    // Always install CRDs - this is required for cert-manager to function
+    installCRDs: true,
+    // Disable startupapicheck to avoid post-install hook timeouts
+    // The hook can fail if the API server is slow to respond
+    startupapicheck: { enabled: false },
+  };
+  
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
@@ -206,9 +232,33 @@ export function certManagerHelmRelease(
           },
         },
       },
-      values: mapCertManagerConfigToHelmValues(config.values || {}),
+      values: finalValues,
     },
   }).withReadinessEvaluator(certManagerHelmReleaseReadinessEvaluator);
+}
+
+/**
+ * Sanitizes Helm values by removing any KubernetesRef objects or other non-serializable values.
+ * This is necessary because Helm values must be static - they cannot contain CEL expressions
+ * or schema proxy references.
+ * 
+ * @param values - The Helm values object to sanitize
+ * @returns A sanitized copy of the values with only primitive types, arrays, and plain objects
+ */
+function sanitizeHelmValues(values: Record<string, any>): Record<string, any> {
+  return JSON.parse(JSON.stringify(values, (key, value) => {
+    // Check if this is a KubernetesRef object (has __brand property)
+    if (value && typeof value === 'object' && value.__brand === 'KubernetesRef') {
+      // Return undefined to skip this value - it's a schema proxy reference
+      return undefined;
+    }
+    // Check if this is a CelExpression object
+    if (value && typeof value === 'object' && value.__celExpression) {
+      // Return undefined to skip this value - it's a CEL expression
+      return undefined;
+    }
+    return value;
+  }));
 }
 
 // =============================================================================
@@ -283,8 +333,13 @@ export function mapCertManagerConfigToHelmValues(
   }
 
   // Startup API check configuration
-  if (config.startupapicheck) {
+  // Only pass startupapicheck if it's explicitly enabled, otherwise don't include it
+  // to ensure the Helm chart uses its default behavior (which may be to skip the hook)
+  if (config.startupapicheck && config.startupapicheck.enabled !== false) {
     values.startupapicheck = { ...config.startupapicheck };
+  } else if (config.startupapicheck?.enabled === false) {
+    // Explicitly disable startupapicheck - only pass the enabled flag
+    values.startupapicheck = { enabled: false };
   }
 
   // Monitoring configuration

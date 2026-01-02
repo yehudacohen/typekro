@@ -5,7 +5,9 @@ import type { V1ServiceSpec, V1ServiceStatus } from '../types.js';
 
 export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceStatus> {
   // Capture service type in closure for readiness evaluation
-  const serviceType = resource.spec?.type || 'ClusterIP';
+  // Handle the case where type might be a KubernetesRef (magic proxy) instead of a string
+  const rawType = resource.spec?.type;
+  const staticServiceType = typeof rawType === 'string' ? rawType : null;
 
   return createResource({
     ...resource,
@@ -13,6 +15,10 @@ export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceS
     kind: 'Service',
     metadata: resource.metadata ?? { name: 'unnamed-service' },
   }).withReadinessEvaluator((liveResource: V1Service): ResourceStatus => {
+    // Use the live resource's spec.type if we don't have a static value
+    // This handles the case where type was a KubernetesRef that got resolved during deployment
+    const serviceType = staticServiceType ?? liveResource.spec?.type ?? 'ClusterIP';
+
     try {
       if (serviceType === 'LoadBalancer') {
         const ingress = liveResource.status?.loadBalancer?.ingress;

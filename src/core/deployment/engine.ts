@@ -489,7 +489,7 @@ export class DirectDeploymentEngine {
             resourceLogger.debug('Calling deploySingleResource');
 
             // Wait for CRD establishment if this is a custom resource
-            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger);
+            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger, abortSignal);
 
             // FIX: Unconditionally ensure the readiness evaluator is attached just before deployment.
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
@@ -1080,7 +1080,7 @@ export class DirectDeploymentEngine {
             resourceLogger.debug('Calling deploySingleResource');
 
             // Wait for CRD establishment if this is a custom resource
-            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger);
+            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger, abortSignal);
 
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
             const deployedResource = await this.deploySingleResource(
@@ -2302,8 +2302,14 @@ export class DirectDeploymentEngine {
   private async waitForCRDIfCustomResource(
     resource: KubernetesResource,
     options: DeploymentOptions,
-    logger: ReturnType<typeof getComponentLogger>
+    logger: ReturnType<typeof getComponentLogger>,
+    abortSignal?: AbortSignal
   ): Promise<void> {
+    // Check if already aborted
+    if (abortSignal?.aborted) {
+      throw new DOMException('Operation aborted', 'AbortError');
+    }
+
     // Skip if this is not a custom resource
     if (!this.isCustomResource(resource)) {
       return;
@@ -2323,7 +2329,7 @@ export class DirectDeploymentEngine {
       crdName,
     });
 
-    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger);
+    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger, abortSignal);
 
     logger.debug('CRD established, proceeding with custom resource deployment', {
       resourceKind: resource.kind,
@@ -2419,14 +2425,14 @@ export class DirectDeploymentEngine {
   /**
    * Public method to wait for CRD readiness by name
    */
-  async waitForCRDReady(crdName: string, timeout: number = 300000): Promise<void> {
+  async waitForCRDReady(crdName: string, timeout: number = 300000, abortSignal?: AbortSignal): Promise<void> {
     const logger = this.logger.child({ crdName, timeout });
     const options: DeploymentOptions = {
       mode: this.deploymentMode as 'direct' | 'kro' | 'alchemy' | 'auto',
       timeout,
     };
 
-    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger);
+    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger, abortSignal);
   }
 
   /**
@@ -2435,7 +2441,8 @@ export class DirectDeploymentEngine {
   private async waitForCRDEstablishment(
     crd: { metadata?: { name?: string } },
     options: DeploymentOptions,
-    logger: ReturnType<typeof getComponentLogger>
+    logger: ReturnType<typeof getComponentLogger>,
+    abortSignal?: AbortSignal
   ): Promise<void> {
     const crdName = crd.metadata?.name;
     const timeout = options.timeout || 300000; // 5 minutes default
@@ -2445,13 +2452,22 @@ export class DirectDeploymentEngine {
     logger.debug('Waiting for CRD to exist and be established', { crdName, timeout });
 
     while (Date.now() - startTime < timeout) {
+      // Check if aborted before each iteration
+      if (abortSignal?.aborted) {
+        throw new DOMException('Operation aborted', 'AbortError');
+      }
+
       try {
         // Check if CRD is established by reading its status
-        const crdStatus = await this.k8sApi.read({
-          apiVersion: 'apiextensions.k8s.io/v1',
-          kind: 'CustomResourceDefinition',
-          metadata: { name: crdName }, // CRDs are cluster-scoped, no namespace needed
-        } as { metadata: { name: string } });
+        // Wrap with abort signal handling
+        const crdStatus = await this.withAbortSignal(
+          this.k8sApi.read({
+            apiVersion: 'apiextensions.k8s.io/v1',
+            kind: 'CustomResourceDefinition',
+            metadata: { name: crdName }, // CRDs are cluster-scoped, no namespace needed
+          } as { metadata: { name: string } }),
+          abortSignal
+        );
 
         // In the new API, methods return objects directly (no .body wrapper)
         const crdItem = crdStatus as unknown as CustomResourceDefinitionItem;
@@ -2470,6 +2486,11 @@ export class DirectDeploymentEngine {
           establishedStatus: establishedCondition?.status || 'unknown',
         });
       } catch (error) {
+        // Re-throw abort/timeout errors immediately
+        if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+          throw error;
+        }
+
         // CRD might not exist yet (e.g., being installed by a closure)
         // This is expected in scenarios where closures install CRDs
         logger.debug('CRD not found yet, waiting for it to be created...', {
@@ -2478,8 +2499,15 @@ export class DirectDeploymentEngine {
         });
       }
 
-      // Wait before next poll
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+      // Wait before next poll - use abortable delay
+      try {
+        await this.abortableDelay(pollInterval, abortSignal);
+      } catch (error) {
+        if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+          throw error; // Re-throw abort/timeout errors
+        }
+        // Ignore other errors from delay
+      }
     }
 
     // Timeout reached

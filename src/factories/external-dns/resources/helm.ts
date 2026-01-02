@@ -379,6 +379,11 @@ export function mapExternalDnsConfigToHelmValues(config: ExternalDnsHelmValues):
     values.ingressClass = config.ingressClass;
   }
 
+  // Environment variables configuration (for credentials, etc.)
+  if (config.env) {
+    values.env = [...config.env];
+  }
+
   // Include any additional custom values
   Object.keys(config).forEach(key => {
     if (!Object.hasOwn(values, key) && 
@@ -389,7 +394,7 @@ export function mapExternalDnsConfigToHelmValues(config: ExternalDnsHelmValues):
           'nodeSelector', 'tolerations', 'affinity', 'securityContext', 
           'containerSecurityContext', 'podSecurityContext', 'serviceAccount', 'rbac',
           'metrics', 'logLevel', 'logFormat', 'dryRun', 'annotationFilter', 
-          'labelFilter', 'ingressClass'].includes(key)) {
+          'labelFilter', 'ingressClass', 'env'].includes(key)) {
       values[key] = (config as any)[key];
     }
   });

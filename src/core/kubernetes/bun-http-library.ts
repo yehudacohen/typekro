@@ -120,8 +120,8 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         reject(err);
       });
 
-      // Handle abort signal
-      const signal = request.getSignal();
+      // Handle abort signal (if available - added in newer versions)
+      const signal = (request as any).getSignal?.();
       if (signal) {
         signal.addEventListener('abort', () => {
           req.destroy(new Error('Request aborted'));

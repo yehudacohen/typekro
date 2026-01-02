@@ -1,6 +1,6 @@
 import { kubernetesComposition } from '../../../index.js';
 import { ExternalDnsBootstrapConfigSchema, ExternalDnsBootstrapStatusSchema } from '../types.js';
-import { externalDnsHelmRepository, externalDnsHelmRelease } from '../resources/helm.js';
+import { externalDnsHelmRepository, externalDnsHelmRelease, mapExternalDnsConfigToHelmValues } from '../resources/helm.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 
 /**
@@ -83,42 +83,53 @@ export const externalDnsBootstrap = kubernetesComposition(
     });
 
     // Create HelmRelease for external-dns deployment
+    // NOTE: Helm values must be static - Kro cannot handle CEL expressions inside spec.values
+    // because HelmRelease's spec.values is an arbitrary object without a defined schema.
+    // We use mapExternalDnsConfigToHelmValues to convert schema references to static values.
+    const helmValuesConfig: Record<string, any> = {
+      provider: fullConfig.provider as string,
+      policy: fullConfig.policy as 'sync' | 'upsert-only' | 'create-only' | undefined,
+      dryRun: fullConfig.dryRun as boolean | undefined,
+      // AWS credentials configuration via environment variables
+      env: [
+        {
+          name: 'AWS_ACCESS_KEY_ID',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'aws-route53-credentials',
+              key: 'access-key-id',
+            },
+          },
+        },
+        {
+          name: 'AWS_SECRET_ACCESS_KEY',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'aws-route53-credentials',
+              key: 'secret-access-key',
+            },
+          },
+        },
+        {
+          name: 'AWS_DEFAULT_REGION',
+          value: 'us-east-1',
+        },
+      ],
+    };
+    
+    // Only add domainFilters if it's defined and non-empty
+    const domainFilters = fullConfig.domainFilters as string[] | undefined;
+    if (domainFilters && domainFilters.length > 0) {
+      helmValuesConfig.domainFilters = domainFilters;
+    }
+    
+    const helmValues = mapExternalDnsConfigToHelmValues(helmValuesConfig);
+
     const _helmRelease = externalDnsHelmRelease({
       name: spec.name,
       namespace: spec.namespace || 'external-dns',
       repositoryName: 'external-dns-repo', // Match the repository name
-      values: {
-        provider: fullConfig.provider, // Simple string provider name
-        domainFilters: fullConfig.domainFilters,
-        policy: fullConfig.policy,
-        dryRun: fullConfig.dryRun,
-        // AWS credentials configuration
-        env: [
-          {
-            name: 'AWS_ACCESS_KEY_ID',
-            valueFrom: {
-              secretKeyRef: {
-                name: 'aws-route53-credentials',
-                key: 'access-key-id',
-              },
-            },
-          },
-          {
-            name: 'AWS_SECRET_ACCESS_KEY',
-            valueFrom: {
-              secretKeyRef: {
-                name: 'aws-route53-credentials',
-                key: 'secret-access-key',
-              },
-            },
-          },
-          {
-            name: 'AWS_DEFAULT_REGION',
-            value: 'us-east-1',
-          },
-        ],
-        // Add other provider-specific configuration as needed
-      },
+      values: helmValues,
       id: 'externalDnsHelmRelease',
     });
 

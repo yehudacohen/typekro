@@ -5,7 +5,10 @@ import type { V1DeploymentSpec, V1DeploymentStatus } from '../types.js';
 
 export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   // Capture expected replicas in closure for readiness evaluation
-  const expectedReplicas = resource.spec?.replicas || 1;
+  // Handle the case where replicas might be a KubernetesRef (magic proxy) instead of a number
+  // When replicas is a KubernetesRef, we'll use the live resource's spec.replicas at evaluation time
+  const rawReplicas = resource.spec?.replicas;
+  const staticExpectedReplicas = typeof rawReplicas === 'number' ? rawReplicas : null;
 
   // Fluent builder pattern with serialization-safe readiness evaluator
   return createResource({
@@ -17,11 +20,14 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
     try {
       const status = liveResource.status;
 
+      // Use the live resource's spec.replicas if we don't have a static value
+      // This handles the case where replicas was a KubernetesRef that got resolved during deployment
+      const expectedReplicas = staticExpectedReplicas ?? liveResource.spec?.replicas ?? 1;
+
       // Handle missing status gracefully
       if (!status) {
         return {
           ready: false,
-
           reason: 'StatusMissing',
           message: 'Deployment status not available yet',
           details: { expectedReplicas },
@@ -31,8 +37,7 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
       const readyReplicas = status.readyReplicas || 0;
       const availableReplicas = status.availableReplicas || 0;
 
-      // FIX: The readiness condition was too strict. It should check for >= instead of ===
-      // to correctly handle rolling updates and scaling events.
+      // Check if replicas are ready - use >= to handle rolling updates and scaling events
       const ready = readyReplicas >= expectedReplicas && availableReplicas >= expectedReplicas;
 
       if (ready) {
@@ -49,7 +54,6 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
             expectedReplicas,
             readyReplicas,
             availableReplicas,
-
             updatedReplicas: status.updatedReplicas || 0,
           },
         };
@@ -59,7 +63,7 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
         ready: false,
         reason: 'EvaluationError',
         message: `Error evaluating deployment readiness: ${error}`,
-        details: { expectedReplicas, error: String(error) },
+        details: { expectedReplicas: staticExpectedReplicas ?? 1, error: String(error) },
       };
     }
   });
