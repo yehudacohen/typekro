@@ -109,11 +109,14 @@ jobs:
             echo "New version detected: $VERSION"
           fi
 
-  # Publish to npm when version changes
+  # Publish to npm when version changes using OIDC trusted publishing
   publish-npm:
     needs: check-version
     runs-on: ubuntu-latest
     if: needs.check-version.outputs.version-changed == 'true'
+    permissions:
+      contents: write
+      id-token: write  # Required for OIDC trusted publishing
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -129,14 +132,14 @@ jobs:
       - name: Build library
         run: bun run build
           
-      - name: Setup Node.js for npm
+      - name: Setup Node.js for npm with provenance
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
           
-      - name: Publish to npm
-        run: npm publish --access public
+      - name: Publish to npm with provenance
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           
