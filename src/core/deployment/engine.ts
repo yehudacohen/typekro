@@ -28,7 +28,11 @@ import type {
   ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
-import { ResourceDeploymentError, ResourceConflictError, UnsupportedMediaTypeError } from '../types/deployment.js';
+import {
+  ResourceConflictError,
+  ResourceDeploymentError,
+  UnsupportedMediaTypeError,
+} from '../types/deployment.js';
 import type { Scope } from '../types/serialization.js';
 import type {
   CustomResourceDefinitionItem,
@@ -42,9 +46,9 @@ import type {
   ResourceWithConditions,
 } from '../types.js';
 import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
+import { createEventMonitor, type EventMonitor } from './event-monitor.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { StatusHydrator } from './status-hydrator.js';
-import { type EventMonitor, createEventMonitor } from './event-monitor.js';
 
 export class DirectDeploymentEngine {
   private dependencyResolver: DependencyResolver;
@@ -57,20 +61,23 @@ export class DirectDeploymentEngine {
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
   private readyResources: Set<string> = new Set(); // Track resources that are already ready
   private activeAbortControllers: Set<AbortController> = new Set(); // Track active abort controllers for cleanup
+  private fluxCRDsPatched = false; // Track if Flux CRDs have been patched (instance-level cache)
   private logger = getComponentLogger('deployment-engine');
 
   constructor(
     private kubeClient: k8s.KubeConfig,
     k8sApi?: k8s.KubernetesObjectApi,
     referenceResolver?: ReferenceResolver,
-    private deploymentMode: DeploymentModeType = DeploymentMode.DIRECT
+    private deploymentMode: DeploymentModeType = DeploymentMode.DIRECT,
+    httpTimeouts?: DeploymentOptions['httpTimeouts']
   ) {
     this.dependencyResolver = new DependencyResolver();
     this.referenceResolver =
       referenceResolver || new ReferenceResolver(kubeClient, this.deploymentMode, k8sApi);
     // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
     // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
-    this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient);
+    // Pass HTTP timeout configuration if provided
+    this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient, httpTimeouts);
     this.readinessChecker = new ResourceReadinessChecker(this.k8sApi);
     this.statusHydrator = new StatusHydrator(this.k8sApi);
     // this.eventFilter = createEventFilter();
@@ -103,10 +110,14 @@ export class DirectDeploymentEngine {
         resolve();
       }, ms);
 
-      signal?.addEventListener('abort', () => {
-        clearTimeout(timeoutId);
-        reject(new DOMException('Delay aborted', 'AbortError'));
-      }, { once: true });
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timeoutId);
+          reject(new DOMException('Delay aborted', 'AbortError'));
+        },
+        { once: true }
+      );
     });
   }
 
@@ -345,11 +356,25 @@ export class DirectDeploymentEngine {
 
     // Set up timeout-based abort if timeout is specified
     const timeout = options.timeout || 300000; // 5 minutes default
-    const timeoutId = setTimeout(() => {
+    const timeoutId = setTimeout(async () => {
       this.logger.debug('Deployment timeout reached, aborting operations', {
         deploymentId,
         timeout,
       });
+
+      // Stop event monitoring immediately when timeout is reached
+      // This prevents watch connections from continuing to run and throwing errors
+      if (this.eventMonitor) {
+        try {
+          await this.eventMonitor.stopMonitoring();
+          this.logger.debug('Event monitoring stopped due to timeout');
+        } catch (error) {
+          this.logger.debug('Error stopping event monitoring on timeout', {
+            error: (error as Error)?.message,
+          });
+        }
+      }
+
       deploymentAbortController.abort();
     }, timeout);
     const errors: DeploymentError[] = [];
@@ -420,9 +445,10 @@ export class DirectDeploymentEngine {
         if (originalResourceId) {
           // Convert the Enhanced proxy to a plain object for reliable field extraction
           // The proxy's toJSON method returns a clean object without proxy behavior
-          const plainManifest = typeof manifest.toJSON === 'function' 
-            ? manifest.toJSON() 
-            : JSON.parse(JSON.stringify(manifest));
+          const plainManifest =
+            typeof manifest.toJSON === 'function'
+              ? manifest.toJSON()
+              : JSON.parse(JSON.stringify(manifest));
           resourceKeyMapping.set(originalResourceId, plainManifest);
           deploymentLogger.debug('Added resource to resourceKeyMapping', {
             originalResourceId,
@@ -489,7 +515,12 @@ export class DirectDeploymentEngine {
             resourceLogger.debug('Calling deploySingleResource');
 
             // Wait for CRD establishment if this is a custom resource
-            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger, abortSignal);
+            await this.waitForCRDIfCustomResource(
+              resource.manifest,
+              options,
+              resourceLogger,
+              abortSignal
+            );
 
             // FIX: Unconditionally ensure the readiness evaluator is attached just before deployment.
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
@@ -566,11 +597,13 @@ export class DirectDeploymentEngine {
             const deploymentResult = result.value;
             if (deploymentResult.success && deploymentResult.deployedResource) {
               deployedResources.push(deploymentResult.deployedResource);
-              
+
               // Update resourceKeyMapping with the live resource from the cluster (including status)
               // This is critical for CEL expression evaluation which needs access to resource status
               const deployedRes = deploymentResult.deployedResource;
-              const manifestWithId = deployedRes.manifest as KubernetesResource & { __resourceId?: string };
+              const manifestWithId = deployedRes.manifest as KubernetesResource & {
+                __resourceId?: string;
+              };
               const originalResourceId = manifestWithId.__resourceId;
               if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
                 try {
@@ -931,11 +964,25 @@ export class DirectDeploymentEngine {
 
     // Set up timeout-based abort if timeout is specified
     const timeout = options.timeout || 300000; // 5 minutes default
-    const timeoutId = setTimeout(() => {
+    const timeoutId = setTimeout(async () => {
       deploymentLogger.debug('Deployment timeout reached, aborting operations', {
         deploymentId,
         timeout,
       });
+
+      // Stop event monitoring immediately when timeout is reached
+      // This prevents watch connections from continuing to run and throwing errors
+      if (this.eventMonitor) {
+        try {
+          await this.eventMonitor.stopMonitoring();
+          deploymentLogger.debug('Event monitoring stopped due to timeout');
+        } catch (error) {
+          deploymentLogger.debug('Error stopping event monitoring on timeout', {
+            error: (error as Error)?.message,
+          });
+        }
+      }
+
       deploymentAbortController.abort();
     }, timeout);
 
@@ -990,9 +1037,10 @@ export class DirectDeploymentEngine {
         if (originalResourceId) {
           // Convert the Enhanced proxy to a plain object for reliable field extraction
           // The proxy's toJSON method returns a clean object without proxy behavior
-          const plainManifest = typeof manifest.toJSON === 'function' 
-            ? manifest.toJSON() 
-            : JSON.parse(JSON.stringify(manifest));
+          const plainManifest =
+            typeof manifest.toJSON === 'function'
+              ? manifest.toJSON()
+              : JSON.parse(JSON.stringify(manifest));
           resourceKeyMapping.set(originalResourceId, plainManifest);
           deploymentLogger.debug('Added resource to resourceKeyMapping', {
             originalResourceId,
@@ -1037,6 +1085,7 @@ export class DirectDeploymentEngine {
 
         const deploymentContext: DeploymentContext = {
           kubernetesApi: this.k8sApi,
+          kubeConfig: this.kubeClient,
           ...(alchemyScope && { alchemyScope }),
           ...(options.namespace && { namespace: options.namespace }),
           deployedResources: deployedResourcesMap,
@@ -1080,7 +1129,12 @@ export class DirectDeploymentEngine {
             resourceLogger.debug('Calling deploySingleResource');
 
             // Wait for CRD establishment if this is a custom resource
-            await this.waitForCRDIfCustomResource(resource.manifest, options, resourceLogger, abortSignal);
+            await this.waitForCRDIfCustomResource(
+              resource.manifest,
+              options,
+              resourceLogger,
+              abortSignal
+            );
 
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
             const deployedResource = await this.deploySingleResource(
@@ -1187,11 +1241,13 @@ export class DirectDeploymentEngine {
               if (deploymentResult.success && deploymentResult.deployedResource) {
                 deployedResources.push(deploymentResult.deployedResource);
                 successfulResources++;
-                
+
                 // Update resourceKeyMapping with the live resource from the cluster (including status)
                 // This is critical for CEL expression evaluation which needs access to resource status
                 const deployedRes = deploymentResult.deployedResource;
-                const manifestWithId = deployedRes.manifest as KubernetesResource & { __resourceId?: string };
+                const manifestWithId = deployedRes.manifest as KubernetesResource & {
+                  __resourceId?: string;
+                };
                 const originalResourceId = manifestWithId.__resourceId;
                 if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
                   try {
@@ -1212,10 +1268,13 @@ export class DirectDeploymentEngine {
                       hasStatus: !!(liveResource as any).status,
                     });
                   } catch (error) {
-                    deploymentLogger.warn('Failed to update resourceKeyMapping with live resource', {
-                      originalResourceId,
-                      error: error instanceof Error ? error.message : String(error),
-                    });
+                    deploymentLogger.warn(
+                      'Failed to update resourceKeyMapping with live resource',
+                      {
+                        originalResourceId,
+                        error: error instanceof Error ? error.message : String(error),
+                      }
+                    );
                   }
                 }
               } else {
@@ -1423,13 +1482,17 @@ export class DirectDeploymentEngine {
     } catch (error) {
       // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
       // one at a time. This is expected behavior, so we log at debug level instead of warn.
-      const hasResourceKeyMapping = context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
+      const hasResourceKeyMapping =
+        context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
       if (hasResourceKeyMapping) {
         resourceLogger.warn('Reference resolution failed, using original resource', error as Error);
       } else {
-        resourceLogger.debug('Reference resolution skipped (no resourceKeyMapping), using original resource', {
-          error: (error as Error).message,
-        });
+        resourceLogger.debug(
+          'Reference resolution skipped (no resourceKeyMapping), using original resource',
+          {
+            error: (error as Error).message,
+          }
+        );
       }
       resolvedResource = resource;
     }
@@ -1711,7 +1774,10 @@ export class DirectDeploymentEngine {
                   });
                   conflictHandled = true;
                 } catch (readError) {
-                  resourceLogger.warn('Failed to read existing resource after 409, falling back to patch', readError as Error);
+                  resourceLogger.warn(
+                    'Failed to read existing resource after 409, falling back to patch',
+                    readError as Error
+                  );
                   // Fall back to patch strategy
                   try {
                     const jsonResource =
@@ -1722,10 +1788,15 @@ export class DirectDeploymentEngine {
                     delete cleanResource.id;
 
                     appliedResource = await this.patchResourceWithCorrectContentType(cleanResource);
-                    resourceLogger.debug('Resource patched successfully after 409 conflict (warn fallback)');
+                    resourceLogger.debug(
+                      'Resource patched successfully after 409 conflict (warn fallback)'
+                    );
                     conflictHandled = true;
                   } catch (patchError) {
-                    resourceLogger.warn('Failed to patch resource after 409 conflict', patchError as Error);
+                    resourceLogger.warn(
+                      'Failed to patch resource after 409 conflict',
+                      patchError as Error
+                    );
                   }
                 }
                 break;
@@ -1744,7 +1815,10 @@ export class DirectDeploymentEngine {
                   resourceLogger.debug('Resource patched successfully after 409 conflict');
                   conflictHandled = true;
                 } catch (patchError) {
-                  resourceLogger.warn('Failed to patch resource after 409 conflict', patchError as Error);
+                  resourceLogger.warn(
+                    'Failed to patch resource after 409 conflict',
+                    patchError as Error
+                  );
                 }
                 break;
 
@@ -1760,10 +1834,10 @@ export class DirectDeploymentEngine {
                       namespace: resourceNamespace || 'default',
                     },
                   });
-                  
+
                   // Wait a moment for deletion to propagate
                   await new Promise((resolve) => setTimeout(resolve, 500));
-                  
+
                   // Create the new resource
                   const jsonResource =
                     typeof resolvedResource.toJSON === 'function'
@@ -1776,7 +1850,10 @@ export class DirectDeploymentEngine {
                   resourceLogger.debug('Resource replaced successfully after 409 conflict');
                   conflictHandled = true;
                 } catch (replaceError) {
-                  resourceLogger.warn('Failed to replace resource after 409 conflict', replaceError as Error);
+                  resourceLogger.warn(
+                    'Failed to replace resource after 409 conflict',
+                    replaceError as Error
+                  );
                 }
                 break;
             }
@@ -1971,14 +2048,20 @@ export class DirectDeploymentEngine {
         try {
           await this.abortableDelay(2000, abortSignal);
         } catch (error) {
-          if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+          if (
+            error instanceof DOMException &&
+            (error.name === 'AbortError' || error.name === 'TimeoutError')
+          ) {
             throw error; // Re-throw abort/timeout errors
           }
           // Ignore other errors from delay
         }
       } catch (error) {
         // Re-throw abort/timeout errors immediately
-        if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        if (
+          error instanceof DOMException &&
+          (error.name === 'AbortError' || error.name === 'TimeoutError')
+        ) {
           throw error;
         }
 
@@ -1994,7 +2077,10 @@ export class DirectDeploymentEngine {
         try {
           await this.abortableDelay(2000, abortSignal);
         } catch (delayError) {
-          if (delayError instanceof DOMException && (delayError.name === 'AbortError' || delayError.name === 'TimeoutError')) {
+          if (
+            delayError instanceof DOMException &&
+            (delayError.name === 'AbortError' || delayError.name === 'TimeoutError')
+          ) {
             throw delayError; // Re-throw abort/timeout errors
           }
           // Ignore other errors from delay
@@ -2297,6 +2383,54 @@ export class DirectDeploymentEngine {
   }
 
   /**
+   * Determine if auto-fix should run for Flux CRDs
+   */
+  private shouldAutoFixFluxCRDs(resource: KubernetesResource, options: DeploymentOptions): boolean {
+    // Only for Flux resources (HelmRelease, Kustomization, etc.)
+    if (!resource.apiVersion?.includes('toolkit.fluxcd.io')) {
+      return false;
+    }
+
+    // Check if auto-fix is enabled (default: true)
+    const autoFixEnabled = options.autoFix?.fluxCRDs !== false;
+    return autoFixEnabled;
+  }
+
+  /**
+   * Ensure Flux CRDs are patched for Kubernetes 1.33+ compatibility
+   * Uses lazy import and instance-level caching to only patch once per engine instance
+   */
+  private async ensureFluxCRDsPatched(
+    options: DeploymentOptions,
+    logger: ReturnType<typeof getComponentLogger>
+  ): Promise<void> {
+    if (this.fluxCRDsPatched) {
+      return; // Already patched in this engine instance
+    }
+
+    const logLevel = options.autoFix?.logLevel || 'info';
+    logger[logLevel]('Checking Flux CRDs for Kubernetes 1.33+ compatibility...');
+
+    try {
+      // Lazy import to avoid loading CRD patcher unless actually needed
+      const { patchFluxCRDSchemas } = await import('../utils/crd-patcher.js');
+      await patchFluxCRDSchemas(this.kubeClient);
+      logger[logLevel]('✅ Flux CRDs patched successfully');
+      this.fluxCRDsPatched = true;
+    } catch (error) {
+      logger.warn(
+        'Failed to auto-patch Flux CRDs - deployment may fail if CRDs lack proper schema',
+        {
+          error: error instanceof Error ? error.message : String(error),
+          suggestion: 'Ensure RBAC permissions to patch CRDs, or set autoFix.fluxCRDs: false',
+        }
+      );
+      // Don't throw - allow deployment to proceed and fail naturally if CRDs are broken
+      // This provides better error messages and allows users to diagnose the issue
+    }
+  }
+
+  /**
    * Wait for CRD establishment if the resource is a custom resource
    */
   private async waitForCRDIfCustomResource(
@@ -2324,12 +2458,22 @@ export class DirectDeploymentEngine {
       return;
     }
 
+    // Auto-patch Flux CRDs if this is a Flux resource and auto-fix is enabled
+    if (this.shouldAutoFixFluxCRDs(resource, options)) {
+      await this.ensureFluxCRDsPatched(options, logger);
+    }
+
     logger.debug('Custom resource detected, waiting for CRD establishment', {
       resourceKind: resource.kind,
       crdName,
     });
 
-    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger, abortSignal);
+    await this.waitForCRDEstablishment(
+      { metadata: { name: crdName } },
+      options,
+      logger,
+      abortSignal
+    );
 
     logger.debug('CRD established, proceeding with custom resource deployment', {
       resourceKind: resource.kind,
@@ -2425,14 +2569,23 @@ export class DirectDeploymentEngine {
   /**
    * Public method to wait for CRD readiness by name
    */
-  async waitForCRDReady(crdName: string, timeout: number = 300000, abortSignal?: AbortSignal): Promise<void> {
+  async waitForCRDReady(
+    crdName: string,
+    timeout: number = 300000,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
     const logger = this.logger.child({ crdName, timeout });
     const options: DeploymentOptions = {
       mode: this.deploymentMode as 'direct' | 'kro' | 'alchemy' | 'auto',
       timeout,
     };
 
-    await this.waitForCRDEstablishment({ metadata: { name: crdName } }, options, logger, abortSignal);
+    await this.waitForCRDEstablishment(
+      { metadata: { name: crdName } },
+      options,
+      logger,
+      abortSignal
+    );
   }
 
   /**
@@ -2487,7 +2640,10 @@ export class DirectDeploymentEngine {
         });
       } catch (error) {
         // Re-throw abort/timeout errors immediately
-        if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        if (
+          error instanceof DOMException &&
+          (error.name === 'AbortError' || error.name === 'TimeoutError')
+        ) {
           throw error;
         }
 
@@ -2503,7 +2659,10 @@ export class DirectDeploymentEngine {
       try {
         await this.abortableDelay(pollInterval, abortSignal);
       } catch (error) {
-        if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        if (
+          error instanceof DOMException &&
+          (error.name === 'AbortError' || error.name === 'TimeoutError')
+        ) {
           throw error; // Re-throw abort/timeout errors
         }
         // Ignore other errors from delay

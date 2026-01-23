@@ -12,7 +12,12 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { getComponentLogger } from '../logging/index.js';
-import { createBunCompatibleApiClient, createBunCompatibleKubernetesObjectApi, isBunRuntime } from './bun-api-client.js';
+import {
+  createBunCompatibleApiClient,
+  createBunCompatibleKubernetesObjectApi,
+  type HttpTimeoutConfig,
+  isBunRuntime,
+} from './bun-api-client.js';
 
 /**
  * Retry configuration options for operations with exponential backoff
@@ -106,6 +111,12 @@ export interface KubernetesClientConfig {
    * Custom kubeconfig file path (optional)
    */
   kubeconfigPath?: string;
+
+  /**
+   * HTTP request timeout configuration for Bun runtime
+   * Configures timeouts for different types of Kubernetes API operations
+   */
+  httpTimeouts?: HttpTimeoutConfig;
 }
 
 /**
@@ -195,7 +206,8 @@ export class KubernetesClientProvider {
       this.kubeConfig = this.createKubeConfig(this.config);
       // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
       // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
-      this.k8sApi = createBunCompatibleKubernetesObjectApi(this.kubeConfig);
+      // Pass HTTP timeout configuration if provided
+      this.k8sApi = createBunCompatibleKubernetesObjectApi(this.kubeConfig, config?.httpTimeouts);
       this.initialized = true;
 
       const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
@@ -530,10 +542,15 @@ export class KubernetesClientProvider {
       // Use Bun-compatible client creation when running in Bun
       // This works around Bun's fetch TLS issues
       if (isBunRuntime() && this.kubeConfig) {
-        client = createBunCompatibleApiClient(this.kubeConfig, clientClass as any) as T;
+        client = createBunCompatibleApiClient(
+          this.kubeConfig,
+          clientClass as any,
+          this.config?.httpTimeouts
+        ) as T;
         this.logger.debug('Created API client using Bun-compatible HTTP library', {
           clientType,
           runtime: 'bun',
+          hasCustomTimeouts: !!this.config?.httpTimeouts,
         });
       } else {
         // Use the standard makeApiClient approach for Node.js
@@ -545,18 +562,14 @@ export class KubernetesClientProvider {
       }
     } catch (error) {
       // Log detailed information about why client creation failed
-      this.logger.error(
-        'API client creation failed',
-        error as Error,
-        {
-          clientType,
-          clientClassName: clientClass?.name,
-          isBun: isBunRuntime(),
-          kubeConfigValid: !!this.kubeConfig,
-          currentCluster: this.kubeConfig?.getCurrentCluster()?.name,
-          currentUser: this.kubeConfig?.getCurrentUser()?.name,
-        }
-      );
+      this.logger.error('API client creation failed', error as Error, {
+        clientType,
+        clientClassName: clientClass?.name,
+        isBun: isBunRuntime(),
+        kubeConfigValid: !!this.kubeConfig,
+        currentCluster: this.kubeConfig?.getCurrentCluster()?.name,
+        currentUser: this.kubeConfig?.getCurrentUser()?.name,
+      });
 
       // Re-throw the error instead of falling back
       throw new Error(`Failed to create ${clientType} API client: ${(error as Error).message}`);
