@@ -110,11 +110,13 @@ export class DirectResourceFactoryImpl<
     // Create client provider with configuration from factory options
     const clientConfig: KubernetesClientConfig = {
       ...(options.skipTLSVerify !== undefined && { skipTLSVerify: options.skipTLSVerify }),
+      ...(options.httpTimeouts && { httpTimeouts: options.httpTimeouts }),
       // Add other configuration options as needed
     };
 
     this.logger.debug('Creating new KubernetesClientProvider with configuration', {
       skipTLSVerify: clientConfig.skipTLSVerify,
+      hasCustomHttpTimeouts: !!options.httpTimeouts,
     });
 
     return createKubernetesClientProvider(clientConfig);
@@ -132,11 +134,13 @@ export class DirectResourceFactoryImpl<
       const kubeConfig = clientProvider.getKubeConfig();
 
       // Create the deployment engine with the provider's KubeConfig
+      // Pass HTTP timeout configuration if provided in factory options
       this.deploymentEngine = new DirectDeploymentEngine(
         kubeConfig,
         undefined,
         undefined,
-        'direct'
+        'direct',
+        this.factoryOptions.httpTimeouts
       );
 
       this.logger.debug('DirectDeploymentEngine created successfully', {
@@ -652,12 +656,12 @@ metadata:
       // This is the original resource ID (e.g., 'webappConfig') that's used for cross-resource references
       // Note: For Enhanced proxy resources, __resourceId is on the target object and accessible via Reflect.get
       const originalResourceId = (resource as any).__resourceId;
-      
+
       // Also check if the resource has an 'id' property that was set by the factory
       // The proxy returns resourceId when accessing 'id' property
       const resourceIdFromProxy = (resource as any).id;
       const effectiveOriginalId = originalResourceId || resourceIdFromProxy;
-      
+
       this.logger.debug('Checking __resourceId preservation', {
         originalResourceId,
         resourceIdFromProxy,
@@ -665,7 +669,7 @@ metadata:
         hasOriginalResourceId: !!originalResourceId,
         hasResourceIdFromProxy: !!resourceIdFromProxy,
       });
-      
+
       if (effectiveOriginalId) {
         Object.defineProperty(resourceWithId, '__resourceId', {
           value: effectiveOriginalId,
@@ -848,10 +852,10 @@ metadata:
    * This is needed because when composition functions build objects with schema proxy values,
    * those values are KubernetesRef objects that need to be converted to actual values or
    * placeholder strings for serialization.
-   * 
+   *
    * For schema references (resourceId === '__schema__'), we return a placeholder that will
    * be resolved later when actual spec values are available.
-   * 
+   *
    * For resource references, we return a CEL expression placeholder.
    */
   private deepResolveKubernetesRefs(value: unknown, path = 'root'): unknown {
@@ -862,12 +866,12 @@ metadata:
         resourceId: value.resourceId,
         fieldPath: value.fieldPath,
       });
-      
+
       // For schema references, return a marker that can be resolved later
       if (value.resourceId === '__schema__') {
         return `__KUBERNETES_REF___schema___${value.fieldPath}__`;
       }
-      
+
       // For resource references, return a CEL expression placeholder
       return `__KUBERNETES_REF_${value.resourceId}_${value.fieldPath}__`;
     }
@@ -883,9 +887,7 @@ metadata:
 
     // Handle arrays
     if (Array.isArray(value)) {
-      return value.map((item, index) => 
-        this.deepResolveKubernetesRefs(item, `${path}[${index}]`)
-      );
+      return value.map((item, index) => this.deepResolveKubernetesRefs(item, `${path}[${index}]`));
     }
 
     // Handle objects
@@ -907,7 +909,7 @@ metadata:
    * IMPORTANT: This method preserves ALL enumerable properties from the Enhanced resource,
    * not just standard Kubernetes fields. This is critical for resources like Secret (data),
    * ConfigMap (data, binaryData), RBAC resources (rules, roleRef, subjects), etc.
-   * 
+   *
    * It also resolves any KubernetesRef objects in the resource properties to their
    * string representations, which is critical for HelmRelease values that may contain
    * schema proxy references.
@@ -1063,7 +1065,7 @@ metadata:
     // These are generated when schema references are used in template literals like `${schema.spec.name}-suffix`
     if (typeof resource === 'string' && resource.includes('__KUBERNETES_REF_')) {
       this.logger.trace('Found string with KubernetesRef markers', { path, value: resource });
-      
+
       // Replace all __KUBERNETES_REF_ markers with actual values from spec
       // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
       // For schema: __KUBERNETES_REF___schema___{fieldPath}__
@@ -1073,7 +1075,7 @@ metadata:
         (_match, fieldPath) => {
           // fieldPath is like "spec.baseName" - we need to traverse starting from the schema root
           const pathParts = fieldPath.split('.');
-          
+
           // The first part should be 'spec' or 'status'
           if (pathParts[0] === 'spec') {
             // Traverse the spec object using the remaining path parts
@@ -1091,7 +1093,7 @@ metadata:
                 return _match; // Keep original marker if path not found
               }
             }
-            
+
             this.logger.trace('Resolved schema marker to value', {
               fieldPath,
               resolvedValue: currentValue,
@@ -1106,10 +1108,10 @@ metadata:
           }
         }
       );
-      
+
       // Also handle non-schema resource references (keep them as-is for now)
       // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__ where resourceId is not __schema__
-      
+
       this.logger.trace('Resolved string with markers', {
         path,
         original: resource,

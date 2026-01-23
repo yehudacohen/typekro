@@ -3,12 +3,12 @@
  */
 
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
-
+import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
+import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
-import type { KroCompatibleType, SchemaProxy, Scope, InferType } from './serialization.js';
-import { NESTED_COMPOSITION_BRAND, CALLABLE_COMPOSITION_BRAND } from '../constants/brands.js';
+import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status
@@ -45,6 +45,7 @@ export interface AppliedResource {
  */
 export interface DeploymentContext {
   kubernetesApi?: KubernetesObjectApi;
+  kubeConfig?: KubeConfig; // For operations that need direct API access (e.g., CRD patching)
   alchemyScope?: Scope;
   namespace?: string;
   // Level-based execution context - enables future closure extensibility
@@ -147,6 +148,14 @@ export interface DeploymentOptions {
     verboseMode?: boolean;
   };
 
+  /** Automatic environment fixes configuration */
+  autoFix?: {
+    /** Automatically patch Flux CRDs for Kubernetes 1.33+ compatibility (default: true) */
+    fluxCRDs?: boolean;
+    /** Log level for auto-fix operations (default: 'info') */
+    logLevel?: 'error' | 'warn' | 'info' | 'debug';
+  };
+
   /** Output configuration */
   outputOptions?: {
     /** Enable console logging (default: true) */
@@ -156,6 +165,22 @@ export interface DeploymentOptions {
     /** Event types to deliver via progress callbacks (default: all) */
     progressCallbackEvents?: ('kubernetes-event' | 'status-debug' | 'child-resource-discovered')[];
   };
+
+  /**
+   * HTTP request timeout configuration for Kubernetes API operations
+   * Configures timeouts for different operation types (watch, GET, POST, PATCH, DELETE)
+   *
+   * These timeouts apply when running in Bun runtime to prevent requests from hanging
+   * indefinitely. The defaults are:
+   * - watch: 5 seconds (allows clean reconnection)
+   * - default (GET/LIST): 30 seconds
+   * - create (POST): 60 seconds (may trigger webhooks)
+   * - update (PATCH/PUT): 60 seconds (may trigger webhooks)
+   * - delete (DELETE): 90 seconds (may wait for finalizers)
+   *
+   * @default Uses built-in defaults for each operation type
+   */
+  httpTimeouts?: HttpTimeoutConfig;
 }
 
 export interface AlchemyDeploymentOptions {
@@ -414,11 +439,35 @@ export interface FactoryOptions {
     verboseMode?: boolean;
   };
 
+  /** Automatic environment fixes configuration */
+  autoFix?: {
+    /** Automatically patch Flux CRDs for Kubernetes 1.33+ compatibility (default: true) */
+    fluxCRDs?: boolean;
+    /** Log level for auto-fix operations (default: 'info') */
+    logLevel?: 'error' | 'warn' | 'info' | 'debug';
+  };
+
   // Factory pattern integration for expression handling
   /** Factory type for expression analysis and conversion */
   factoryType?: 'direct' | 'kro';
   /** Pre-analyzed status mappings for factory-specific handling */
   statusMappings?: Record<string, any>;
+
+  /**
+   * HTTP request timeout configuration for Kubernetes API operations
+   * Configures timeouts for different operation types (watch, GET, POST, PATCH, DELETE)
+   *
+   * These timeouts apply when running in Bun runtime to prevent requests from hanging
+   * indefinitely. The defaults are:
+   * - watch: 5 seconds (allows clean reconnection)
+   * - default (GET/LIST): 30 seconds
+   * - create (POST): 60 seconds (may trigger webhooks)
+   * - update (PATCH/PUT): 60 seconds (may trigger webhooks)
+   * - delete (DELETE): 90 seconds (may wait for finalizers)
+   *
+   * @default Uses built-in defaults for each operation type
+   */
+  httpTimeouts?: HttpTimeoutConfig;
 }
 
 // Type mapping for factory selection
