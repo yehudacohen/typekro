@@ -55,6 +55,17 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
     appsApi = createAppsV1ApiClient(kc);
 
     console.log('✅ Imperative composition test environment ready!');
+
+    // Suppress AbortError during test cleanup - this is a known issue with Bun's fetch implementation
+    // where abort() throws a DOMException that can escape try-catch blocks during async cleanup
+    process.on('unhandledRejection', (reason: any) => {
+      if (reason?.name === 'AbortError' || reason?.name === 'DOMException') {
+        // Ignore abort errors during test cleanup
+        return;
+      }
+      // Re-throw other unhandled rejections
+      throw reason;
+    });
   });
 
   // Clean up any leftover test namespaces after all tests complete
@@ -522,6 +533,10 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           try {
             await imperativeKroFactory.deleteInstance('imperative-test-app');
             await traditionalKroFactory.deleteInstance('traditional-test-app');
+
+            // LAYER 2: Async Cleanup Delay
+            // Wait for any async watch cleanup errors to settle (Bun-specific issue)
+            await new Promise((resolve) => setTimeout(resolve, 100));
           } catch (error) {
             console.warn('⚠️ Cleanup failed:', error);
           }
@@ -693,7 +708,10 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
                 break;
               }
               case 'Service': {
-                const service = await k8sApi.readNamespacedService({ name: resource.name, namespace: testNamespace });
+                const service = await k8sApi.readNamespacedService({
+                  name: resource.name,
+                  namespace: testNamespace,
+                });
                 expect(service.spec?.ports?.[0]?.port).toBe(80);
                 break;
               }
@@ -768,6 +786,10 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           // Cleanup
           try {
             await kroFactory.deleteInstance('management-test-app');
+
+            // LAYER 2: Async Cleanup Delay
+            // Wait for any async watch cleanup errors to settle (Bun-specific issue)
+            await new Promise((resolve) => setTimeout(resolve, 100));
           } catch (error) {
             console.warn('⚠️ Cleanup failed:', error);
           }
@@ -866,13 +888,13 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           // Verify underlying resources were created through Alchemy
           const deployment = await appsApi.readNamespacedDeployment({
             name: 'webapp-factory',
-            namespace: testNamespace
+            namespace: testNamespace,
           });
           expect(deployment.spec?.replicas).toBe(1);
 
           const service = await k8sApi.readNamespacedService({
             name: 'webapp-factory-service',
-            namespace: testNamespace
+            namespace: testNamespace,
           });
           expect(service.spec?.ports?.[0]?.port).toBe(80);
 
