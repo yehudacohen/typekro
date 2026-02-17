@@ -1,31 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { deleteNamespaceIfExists, ensureNamespaceExists } from '../shared-kubeconfig.js';
-
-/**
- * Wait for namespace to be fully deleted to avoid "Terminating" state race conditions
- */
-async function waitForNamespaceDeletion(kubeConfig: any, namespaceName: string): Promise<void> {
-  const k8s = await import('@kubernetes/client-node');
-  const coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
-
-  let retries = 0;
-  while (retries < 30) {
-    // Max 30 seconds
-    try {
-      await coreApi.readNamespace(namespaceName);
-      // Still exists, wait
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      retries++;
-    } catch (error: any) {
-      if (error.statusCode === 404 || error.response?.statusCode === 404) {
-        // Namespace fully deleted
-        return;
-      }
-      throw error;
-    }
-  }
-}
+import { ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Bootstrap Composition Tests', () => {
   let kubeConfig: any;
@@ -49,7 +24,15 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager bootstrap composition tests...');
-    await deleteNamespaceIfExists(testNamespace, kubeConfig);
+    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
+    // Clean up the main test namespace and all cert-manager test namespaces
+    const namespacesToClean = [
+      testNamespace,
+      'cert-manager-test-1',
+      'cert-manager-test-2',
+      'cert-manager-test-3',
+    ];
+    await Promise.all(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kubeConfig)));
   });
 
   it('should create cert-manager bootstrap composition with comprehensive configuration', async () => {

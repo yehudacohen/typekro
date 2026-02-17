@@ -36,6 +36,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
   let kc: k8s.KubeConfig;
   let kroAlchemyScope: any;
   let directAlchemyScope: any;
+  const createdNamespaces: string[] = [];
 
   beforeAll(async () => {
     // Initialize Kubernetes client (even if cluster isn't available)
@@ -74,6 +75,14 @@ describe('E2E Factory Pattern Validation Tests', () => {
       }
     } catch {
       // Ignore cleanup errors
+    }
+
+    // Clean up any namespaces created during tests
+    if (createdNamespaces.length > 0 && kc) {
+      const { deleteNamespaceAndWait } = await import('./shared-kubeconfig.js');
+      console.log(`🧹 Cleaning up ${createdNamespaces.length} test namespaces...`);
+      await Promise.all(createdNamespaces.map((ns) => deleteNamespaceAndWait(ns, kc)));
+      console.log('✅ Test namespace cleanup complete');
     }
   });
 
@@ -376,6 +385,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
         await k8sApi.createNamespace({
           body: { metadata: { name: testNamespace } },
         });
+        createdNamespaces.push(testNamespace);
         console.log(`✅ Created test namespace: ${testNamespace}`);
       } catch (error) {
         // Namespace might already exist
@@ -499,6 +509,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
         await k8sApi.createNamespace({
           body: { metadata: { name: testNamespace } },
         });
+        createdNamespaces.push(testNamespace);
         console.log(`✅ Created test namespace: ${testNamespace}`);
       } catch (error) {
         // Namespace might already exist

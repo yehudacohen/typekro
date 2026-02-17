@@ -13,7 +13,7 @@ import { certManager, toResourceGraph } from '../../../src/index.js';
 import {
   createCustomObjectsApiClient,
   createKubernetesObjectApiClient,
-  deleteNamespaceIfExists,
+  deleteNamespaceAndWait,
   ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
@@ -149,7 +149,7 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
   afterAll(async () => {
     if (!clusterAvailable) return;
     console.log('Cleaning up cert-manager Challenge integration tests...');
-    await deleteNamespaceIfExists(testNamespace, kubeConfig);
+    await deleteNamespaceAndWait(testNamespace, kubeConfig);
   });
 
   describe('Challenge Factory Integration', () => {
