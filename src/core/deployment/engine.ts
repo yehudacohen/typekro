@@ -526,6 +526,9 @@ export class DirectDeploymentEngine {
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
 
             // Add resource to event monitoring before deployment to capture creation events
+            // NOTE: This is fire-and-forget to avoid blocking the deployment path.
+            // The event monitor's watch connection management can cause deadlocks when
+            // many resources contend for the same connection during parallel deployment.
             if (this.eventMonitor) {
               const preDeployedResource: DeployedResource = {
                 id: resourceId,
@@ -537,15 +540,17 @@ export class DirectDeploymentEngine {
                 status: 'deployed',
                 deployedAt: new Date(),
               };
-              try {
-                await this.eventMonitor.addResources([preDeployedResource]);
-                resourceLogger.debug('Added resource to event monitoring before deployment');
-              } catch (error) {
-                resourceLogger.warn(
-                  'Failed to add resource to event monitoring, continuing deployment',
-                  error as Error
-                );
-              }
+              this.eventMonitor.addResources([preDeployedResource]).then(
+                () => {
+                  resourceLogger.debug('Added resource to event monitoring before deployment');
+                },
+                (error: unknown) => {
+                  resourceLogger.warn(
+                    'Failed to add resource to event monitoring, continuing deployment',
+                    error as Error
+                  );
+                }
+              );
             }
 
             const deployedResource = await this.deploySingleResource(

@@ -104,10 +104,23 @@ export interface DeploymentOptions {
   waitForReady?: boolean;
   dryRun?: boolean;
   rollbackOnFailure?: boolean;
+
+  /**
+   * Abort readiness waits for all resources when any resource in the same level fails
+   * This significantly speeds up deployments when failures occur
+   * @default true
+   */
+  abortOnFailure?: boolean;
+
   retryPolicy?: RetryPolicy;
   progressCallback?: (event: DeploymentEvent) => void;
 
-  /** Hydrate Enhanced proxy status fields with live cluster data (default: true) */
+  /**
+   * Hydrate Enhanced proxy status fields with live cluster data
+   * IMPORTANT: Requires waitForReady: true to ensure resources have status
+   * When false, status will be null and only spec will be accessible
+   * @default true
+   */
   hydrateStatus?: boolean;
 
   /**

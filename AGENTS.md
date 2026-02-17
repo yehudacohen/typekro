@@ -10,17 +10,20 @@
 - **Test single file**: `bun test test/path/to/file.test.ts --timeout 10000`
 - **Test unit only**: `bun run test` (excludes integration tests)
 - **Test integration**: `bun run test:integration`
+- **Test with coverage**: `bun run test:coverage` (generates lcov report)
 - **Lint**: `bun run lint` (check) / `bun run lint:fix` (auto-fix)
 - **Typecheck**: `bun run typecheck` (all) / `bun run typecheck:lib` (src only)
 - **Format**: `bun run format:fix`
 
 ### Code Style
 - **Tool**: Use `bun` (never npm/yarn). Biome for linting/formatting.
-- **Imports**: External libraries first, internal modules second, types last. Use `type` imports for types.
+- **Imports**: External libraries first, internal modules second, types last. Use `type` imports for types (enforced by Biome).
 - **Format**: 2 spaces, single quotes, 100 char lines, trailing commas ES5, semicolons always
 - **Types**: Strict TypeScript. No `as any` except in specific core files. No `!` assertions except tests.
+- **Type Safety**: Arrays/objects require null checks (`arr[0]?.value`). Optional properties are exact - no `undefined` when not specified.
 - **Naming**: camelCase variables/functions, PascalCase types/interfaces, UPPER_SNAKE constants
 - **Errors**: Custom error classes extending `TypeKroError`. Use structured error messages.
+- **Documentation**: Use JSDoc comments for public APIs, exported functions, and complex types.
 - **Patterns**: Use `createResource` pattern for factories. Follow `src/core/`, `src/factories/` structure.
 
 ### Resource Graph Creation (toResourceGraph)

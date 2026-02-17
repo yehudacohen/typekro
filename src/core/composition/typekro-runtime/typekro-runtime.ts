@@ -78,6 +78,9 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       // 1. Kubernetes 1.33+ requires the x-kubernetes-preserve-unknown-fields annotation
       // 2. CRDs may have stored versions that can't be removed until data is migrated
       // 3. Server-side apply merges changes without requiring full replacement
+      //
+      // forceConflicts: true is needed to take ownership of fields that may have been
+      // modified by other field managers (e.g., kubectl-patch for manual CRD fixes)
       yamlFile({
         name: 'flux-system-install',
         path:
@@ -86,6 +89,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
             : `https://github.com/fluxcd/flux2/releases/download/${fluxVersion}/install.yaml`,
         deploymentStrategy: 'serverSideApply',
         fieldManager: 'typekro-bootstrap',
+        forceConflicts: true,
         manifestTransform: fixCRDSchemaForK8s133,
       });
 

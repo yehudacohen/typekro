@@ -280,6 +280,7 @@ export class KroResourceFactoryImpl<
     const kubeConfig = this.getKubeConfig();
     const deploymentContext: DeploymentContext = {
       kubernetesApi: createBunCompatibleKubernetesObjectApi(kubeConfig),
+      kubeConfig: kubeConfig,
       ...(this.alchemyScope && { alchemyScope: this.alchemyScope }),
       namespace: this.namespace,
       deployedResources: new Map(), // Empty for pre-RGD execution

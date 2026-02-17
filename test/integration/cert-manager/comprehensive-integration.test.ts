@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
-import { kubernetesComposition, } from '../../../src/index.js';
 import { type } from 'arktype';
-import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
+import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { kubernetesComposition } from '../../../src/index.js';
+import { deleteNamespaceIfExists, ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -21,7 +21,16 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       customObjectsApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       console.log('✅ Cluster connection established');
-      
+
+      // Ensure cert-manager is installed and ready
+      const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
+      await ensureCertManagerInstalled({
+        namespace: 'cert-manager',
+        version: '1.13.3',
+        installCRDs: true,
+        kubeConfig,
+      });
+
       // Create test namespace
       await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
@@ -57,7 +66,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
             response = await customObjectsApi.listClusterCustomObject({
               group: resourceType.group,
               version: resourceType.version,
-              plural: resourceType.plural
+              plural: resourceType.plural,
             });
           } else {
             // Namespace-scoped resources
@@ -65,7 +74,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
               group: resourceType.group,
               version: resourceType.version,
               namespace: testNamespace,
-              plural: resourceType.plural
+              plural: resourceType.plural,
             });
           }
 
@@ -84,7 +93,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
                     group: resourceType.group,
                     version: resourceType.version,
                     plural: resourceType.plural,
-                    name: item.metadata.name
+                    name: item.metadata.name,
                   });
                 } else {
                   await customObjectsApi.deleteNamespacedCustomObject({
@@ -92,7 +101,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
                     version: resourceType.version,
                     namespace: testNamespace,
                     plural: resourceType.plural,
-                    name: item.metadata.name
+                    name: item.metadata.name,
                   });
                 }
                 console.log(`🗑️ Deleted ${resourceType.plural}: ${item.metadata.name}`);
@@ -227,7 +236,8 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     // Deploy using direct factory
     const directFactory = acmeCertificateComposition.factory('direct', {
       namespace: testNamespace,
-      waitForReady: false, // Don't wait for full readiness as ACME challenges may not complete in test environment
+      waitForReady: true, // Required for status hydration
+      timeout: 540000, // 9 minutes for ACME challenges (allows time for Pebble ACME operations)
       kubeConfig: kubeConfig,
     });
 
@@ -259,7 +269,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     const clusterIssuers = await customObjectsApi.listClusterCustomObject({
       group: 'cert-manager.io',
       version: 'v1',
-      plural: 'clusterissuers'
+      plural: 'clusterissuers',
     });
     const createdIssuer = (clusterIssuers as any).items.find((issuer: any) =>
       issuer.metadata.name.includes('issuer')
@@ -276,7 +286,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       group: 'cert-manager.io',
       version: 'v1',
       namespace: testNamespace,
-      plural: 'certificates'
+      plural: 'certificates',
     });
     const createdCert = (certificates as any).items.find((cert: any) =>
       cert.metadata.name.includes('cert')
@@ -298,7 +308,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
 
     // Note: In a real environment with Pebble running and proper DNS/ingress setup,
     // the certificate would be issued and the secret would be created with the actual certificate
-  }, 300000); // 300 second timeout for comprehensive deployment with Pebble
+  }, 600000); // 10 minute timeout for comprehensive deployment with Pebble ACME server
 
   it('should validate cert-manager CRD resources integration with TypeKro features', async () => {
     console.log('🚀 Testing cert-manager CRD resources integration with TypeKro features...');
@@ -512,7 +522,8 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     // Test with direct factory
     const directFactory = crossReferenceComposition.factory('direct', {
       namespace: testNamespace,
-      waitForReady: false,
+      waitForReady: true, // Required for status hydration and cross-reference resolution
+      timeout: 300000, // 5 minutes for cross-reference resolution
       kubeConfig: kubeConfig,
     });
 
@@ -541,7 +552,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       group: 'cert-manager.io',
       version: 'v1',
       plural: 'clusterissuers',
-      name: issuerName
+      name: issuerName,
     });
     expect(issuerResource).toBeDefined();
 
@@ -550,7 +561,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       version: 'v1',
       namespace: testNamespace,
       plural: 'certificates',
-      name: certName
+      name: certName,
     });
     expect(certificateResource).toBeDefined();
 
@@ -561,5 +572,5 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     console.log('✅ Cross-resource references and dependency resolution validated');
     console.log('📋 Certificate correctly references ClusterIssuer');
     console.log(`🔗 Cross-reference: ${certName} -> ${issuerName}`);
-  }, 180000); // 180 second timeout for cross-reference testing
+  }, 360000); // 6 minute timeout for cross-reference testing with cert-manager
 });

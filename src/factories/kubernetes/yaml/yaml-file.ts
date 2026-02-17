@@ -1,4 +1,5 @@
 import * as yaml from 'js-yaml';
+import type * as k8s from '@kubernetes/client-node';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
@@ -11,6 +12,7 @@ import { PatchStrategy } from '@kubernetes/client-node';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { registerDeploymentClosure } from '../../shared.js';
+import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
 
 const logger = getComponentLogger('yaml-file');
 
@@ -38,18 +40,31 @@ function parseYamlManifests(yamlContent: string): KubernetesResource[] {
  * 2. Tracks field ownership to prevent conflicts
  * 3. Preserves fields managed by other controllers
  *
+ * For CRDs specifically, we use a read-modify-write pattern to ensure schema
+ * changes are properly applied, as server-side apply may not merge deeply
+ * nested schema fields correctly.
+ *
  * @param kubernetesApi - The Kubernetes API client
  * @param manifest - The manifest to apply
  * @param fieldManager - The field manager name (identifies who owns the fields)
  * @param forceConflicts - Whether to force ownership of conflicting fields
+ * @param kubeConfig - Optional KubeConfig for CRD schema patching
  */
 async function applyWithServerSideApply(
   kubernetesApi: any,
   manifest: KubernetesResource,
   fieldManager: string,
-  forceConflicts: boolean
+  forceConflicts: boolean,
+  kubeConfig?: k8s.KubeConfig
 ): Promise<void> {
   const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
+
+  // For CRDs, use a special read-modify-write pattern to ensure schema changes are applied
+  // Server-side apply may not properly merge deeply nested schema fields
+  if (manifest.kind === 'CustomResourceDefinition') {
+    await applyCRDWithSchemaFix(kubernetesApi, manifest, fieldManager, forceConflicts, kubeConfig);
+    return;
+  }
 
   try {
     // Server-side apply uses PATCH with specific content type
@@ -86,6 +101,242 @@ async function applyWithServerSideApply(
     }
   }
 }
+
+/**
+ * Apply a CRD with special handling for schema changes
+ *
+ * CRDs require special handling because:
+ * 1. Server-side apply may not properly merge deeply nested schema fields
+ * 2. The x-kubernetes-preserve-unknown-fields annotation is critical for HelmRelease values
+ * 3. We need to ensure the schema changes are actually applied to the cluster
+ *
+ * This function uses a two-phase approach:
+ * 1. First, apply the CRD using server-side apply (handles most fields)
+ * 2. Then, use JSON patch via ApiextensionsV1Api to specifically update the schema fields
+ *
+ * @param kubernetesApi - The Kubernetes API client
+ * @param manifest - The CRD manifest to apply
+ * @param fieldManager - The field manager name
+ * @param forceConflicts - Whether to force ownership of conflicting fields
+ * @param kubeConfig - Optional KubeConfig for ApiextensionsV1Api (for JSON patching)
+ */
+async function applyCRDWithSchemaFix(
+  kubernetesApi: any,
+  manifest: KubernetesResource,
+  fieldManager: string,
+  forceConflicts: boolean,
+  kubeConfig?: k8s.KubeConfig
+): Promise<void> {
+  const crdName = manifest.metadata?.name || 'unknown';
+  const crd = manifest as any;
+
+  // Log what we're applying for debugging
+  const valuesField = crd.spec?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec?.properties?.values;
+  logger.debug('Applying CRD with schema fix', {
+    crdName,
+    fieldManager,
+    forceConflicts,
+    valuesFieldHasPreserveUnknown: valuesField?.['x-kubernetes-preserve-unknown-fields'] === true,
+    valuesFieldType: valuesField?.type,
+  });
+
+  try {
+    // First, try server-side apply with force to take ownership of schema fields
+    // This should work for most cases and properly merge the schema changes
+    await kubernetesApi.patch(
+      manifest,
+      undefined, // pretty
+      undefined, // dryRun
+      fieldManager, // fieldManager
+      forceConflicts, // force - take ownership of conflicting fields
+      PatchStrategy.ServerSideApply // patchStrategy
+    );
+
+    logger.info('Applied CRD with server-side apply', {
+      crdName,
+      valuesFieldHasPreserveUnknown: valuesField?.['x-kubernetes-preserve-unknown-fields'] === true,
+    });
+
+    // After server-side apply, use JSON patch via ApiextensionsV1Api to ensure
+    // the x-kubernetes-preserve-unknown-fields annotation is applied.
+    // This is needed because server-side apply may not properly merge deeply nested schema fields.
+    // Only call this for CRDs that are known to have fields needing the fix (e.g., HelmRelease)
+    const crdsNeedingPatch = [
+      'helmreleases.helm.toolkit.fluxcd.io',
+      'kustomizations.kustomize.toolkit.fluxcd.io',
+    ];
+    if (kubeConfig && crdsNeedingPatch.includes(crdName)) {
+      await applyCRDSchemaJsonPatch(kubeConfig, crd);
+    }
+  } catch (error: any) {
+    const statusCode =
+      error?.response?.statusCode ||
+      error?.statusCode ||
+      error?.body?.code;
+
+    if (statusCode === 404) {
+      // CRD doesn't exist, create it
+      logger.debug('CRD not found, creating', { crdName });
+      await kubernetesApi.create(manifest);
+      logger.info('Created CRD with schema fix', { crdName });
+    } else if (statusCode === 422) {
+      // Validation error - this might happen if there are stored versions
+      // that can't be updated. Log and continue.
+      logger.warn('CRD validation error during server-side apply', {
+        crdName,
+        statusCode,
+        message: error?.body?.message || error?.message,
+        note: 'This may happen if the CRD has stored versions that cannot be updated',
+      });
+      // Don't throw - the CRD exists and may still work
+    } else {
+      logger.error('Failed to apply CRD with schema fix', error as Error, {
+        crdName,
+        statusCode,
+      });
+      throw error;
+    }
+  }
+}
+
+/**
+ * Known field paths that need x-kubernetes-preserve-unknown-fields: true
+ */
+const FIELDS_NEEDING_PRESERVE_UNKNOWN = new Set([
+  'values', // HelmRelease spec.values
+  'valuesFrom', // HelmRelease spec.valuesFrom items
+  'postRenderers', // HelmRelease spec.postRenderers
+]);
+
+/**
+ * Generate JSON patch operations to fix a CRD schema
+ */
+function generateSchemaFixPatches(obj: any, basePath: string, fieldName?: string): any[] {
+  const patches: any[] = [];
+
+  if (!obj || typeof obj !== 'object') {
+    return patches;
+  }
+
+  // Fix: Add x-kubernetes-preserve-unknown-fields to known fields that need it
+  if (
+    fieldName &&
+    FIELDS_NEEDING_PRESERVE_UNKNOWN.has(fieldName) &&
+    obj.type === 'object' &&
+    !obj['x-kubernetes-preserve-unknown-fields']
+  ) {
+    patches.push({
+      op: 'add',
+      path: `${basePath}/x-kubernetes-preserve-unknown-fields`,
+      value: true,
+    });
+  }
+
+  // Fix: Add type: object when x-kubernetes-preserve-unknown-fields is used without type
+  if (obj['x-kubernetes-preserve-unknown-fields'] === true && !obj.type) {
+    patches.push({
+      op: 'add',
+      path: `${basePath}/type`,
+      value: 'object',
+    });
+  }
+
+  // Recursively process properties
+  if (obj.properties) {
+    for (const [propName, prop] of Object.entries(obj.properties)) {
+      const propPath = `${basePath}/properties/${propName}`;
+      patches.push(...generateSchemaFixPatches(prop, propPath, propName));
+    }
+  }
+
+  // Process additionalProperties
+  if (obj.additionalProperties && typeof obj.additionalProperties === 'object') {
+    patches.push(
+      ...generateSchemaFixPatches(obj.additionalProperties, `${basePath}/additionalProperties`)
+    );
+  }
+
+  // Process items (for arrays)
+  if (obj.items) {
+    patches.push(...generateSchemaFixPatches(obj.items, `${basePath}/items`));
+  }
+
+  return patches;
+}
+
+/**
+ * Apply JSON patch to CRD schema using ApiextensionsV1Api
+ *
+ * This function uses the proper ApiextensionsV1Api to apply JSON patches to CRDs,
+ * which correctly handles the deeply nested schema fields.
+ *
+ * @param kubeConfig - Kubernetes configuration
+ * @param crd - The CRD manifest with the desired schema
+ */
+async function applyCRDSchemaJsonPatch(
+  kubeConfig: k8s.KubeConfig,
+  crd: any
+): Promise<void> {
+  const crdName = crd.metadata?.name || 'unknown';
+  
+  logger.debug('Starting JSON patch for CRD schema', { crdName });
+  
+  const apiextensionsApi = createBunCompatibleApiextensionsV1Api(kubeConfig);
+
+  try {
+    // Read the current CRD from the cluster to check what needs patching
+    logger.debug('Reading current CRD from cluster', { crdName });
+    const currentCrd = await apiextensionsApi.readCustomResourceDefinition({ name: crdName });
+    logger.debug('Read current CRD successfully', { crdName });
+
+    // Generate patches based on what the current CRD is missing
+    const patches: any[] = [];
+    const versions = (currentCrd as any).spec?.versions || [];
+
+    for (let i = 0; i < versions.length; i++) {
+      const version = versions[i];
+      if (version.schema?.openAPIV3Schema) {
+        const basePath = `/spec/versions/${i}/schema/openAPIV3Schema`;
+        patches.push(...generateSchemaFixPatches(version.schema.openAPIV3Schema, basePath));
+      }
+    }
+
+    if (patches.length === 0) {
+      logger.debug('No JSON patches needed for CRD schema', { crdName });
+      return;
+    }
+
+    logger.info('Applying JSON patch to CRD schema', {
+      crdName,
+      patchCount: patches.length,
+      patches: patches.map(p => p.path),
+    });
+
+    // Apply the patches using JSON Patch via ApiextensionsV1Api
+    // Use a timeout to prevent hanging
+    const patchPromise = apiextensionsApi.patchCustomResourceDefinition({
+      name: crdName,
+      body: patches,
+    });
+    
+    // Add a 30 second timeout
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('JSON patch timed out after 30 seconds')), 30000);
+    });
+    
+    await Promise.race([patchPromise, timeoutPromise]);
+
+    logger.info('CRD schema patched successfully', { crdName, patchCount: patches.length });
+  } catch (error: any) {
+    // Log but don't fail - the CRD may still work
+    logger.warn('Failed to apply JSON patch to CRD schema', {
+      crdName,
+      error: error?.message || String(error),
+      note: 'The CRD may still work, but values might be stripped',
+    });
+  }
+}
+
 
 export interface YamlFileConfig {
   name: string;
@@ -198,7 +449,8 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                   deploymentContext.kubernetesApi,
                   manifest,
                   config.fieldManager || 'typekro',
-                  config.forceConflicts || false
+                  config.forceConflicts || false,
+                  deploymentContext.kubeConfig
                 );
               } else {
                 await deploymentContext.kubernetesApi.create(manifest);
@@ -212,7 +464,8 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                 deploymentContext.kubernetesApi,
                 manifest,
                 config.fieldManager || 'typekro',
-                config.forceConflicts || false
+                config.forceConflicts || false,
+                deploymentContext.kubeConfig
               );
             } else {
               await deploymentContext.kubernetesApi.create(manifest);

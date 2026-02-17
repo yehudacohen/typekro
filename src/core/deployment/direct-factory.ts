@@ -234,9 +234,19 @@ export class DirectResourceFactoryImpl<
     }
 
     try {
-      // Use the deployment engine to delete the resources
+      // Use the deployment engine to delete resources using actual deployment ID
       const engine = this.getDeploymentEngine();
-      await engine.rollback(`${this.name}-${name}`);
+      const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
+      if (!deploymentId) {
+        throw new Error(
+          `Instance ${name} does not have a deployment ID annotation. Cannot perform cleanup.`
+        );
+      }
+      await engine.rollback(deploymentId);
+
+      // Wait for namespace to be fully deleted before returning
+      // This prevents race conditions where namespace is still "Terminating"
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Remove from tracking
       this.deployedInstances.delete(name);

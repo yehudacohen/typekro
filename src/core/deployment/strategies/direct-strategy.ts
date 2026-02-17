@@ -13,13 +13,13 @@ import type {
   ResourceGraph,
 } from '../../types/deployment.js';
 import { ResourceDeploymentError } from '../../types/deployment.js';
+import type { Enhanced } from '../../types/index.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
 import type {
   KroCompatibleType,
   SchemaDefinition,
   StatusBuilder,
 } from '../../types/serialization.js';
-import type { Enhanced } from '../../types/index.js';
 import type { DirectDeploymentEngine } from '../engine.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';
@@ -39,7 +39,7 @@ export class DirectDeploymentStrategy<
     resourceKeys: Record<string, KubernetesResource> | undefined,
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
-    public resourceResolver: { 
+    public resourceResolver: {
       createResourceGraphForInstance(spec: TSpec): ResourceGraph;
       getReExecutedStatus?(): TStatus | null;
     } // Resource resolution logic
@@ -117,7 +117,7 @@ export class DirectDeploymentStrategy<
   ): Promise<Enhanced<TSpec, TStatus>> {
     // Check if we have re-executed status from composition re-execution
     const reExecutedStatus = this.resourceResolver.getReExecutedStatus?.();
-    
+
     if (reExecutedStatus) {
       this.logger.debug('Using hybrid status approach (re-executed + base strategy)', {
         instanceName,
@@ -126,18 +126,29 @@ export class DirectDeploymentStrategy<
 
       // Get the base proxy which includes CEL expression resolution
       const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
-      
+
+      // If base status is null (e.g., waitForReady: false), use re-executed status directly
+      if (baseProxy.status == null) {
+        this.logger.debug('Base status is null, using re-executed status directly', {
+          instanceName,
+        });
+        return {
+          ...baseProxy,
+          status: reExecutedStatus as TStatus,
+        } as Enhanced<TSpec, TStatus>;
+      }
+
       // Import the CEL expression utility
       const { isCelExpression } = require('../../../utils/type-guards.js');
-      
+
       // Merge re-executed status with base status
       // Priority: resolved spec-based values from re-execution > evaluated CEL expressions from base
       const hybridStatus = { ...baseProxy.status };
-      
+
       for (const [key, value] of Object.entries(reExecutedStatus)) {
         const baseValue = (baseProxy.status as any)[key];
         const reExecutedValue = value;
-        
+
         // If the re-executed value is not a CEL expression, it's a resolved spec-based value - use it
         if (!isCelExpression(reExecutedValue)) {
           (hybridStatus as any)[key] = reExecutedValue;

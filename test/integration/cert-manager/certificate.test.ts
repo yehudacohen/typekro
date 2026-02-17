@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
-import { toResourceGraph, kubernetesComposition } from '../../../src/index.js';
 import { type } from 'arktype';
-import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
+import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { kubernetesComposition, toResourceGraph } from '../../../src/index.js';
+import { deleteNamespaceIfExists, ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Certificate Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -19,7 +19,16 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       customObjectsApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       console.log('✅ Cluster connection established');
-      
+
+      // Ensure cert-manager is installed and ready
+      const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
+      await ensureCertManagerInstalled({
+        namespace: 'cert-manager',
+        version: '1.13.3',
+        installCRDs: true,
+        kubeConfig,
+      });
+
       // Create test namespace
       await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
@@ -32,64 +41,73 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     // Clean up test resources to prevent conflicts between tests
     try {
       console.log('🧹 Cleaning up Certificate test resources...');
-      
+
       // Delete all Certificates in test namespace that start with 'test-'
-      await customObjectsApi.listNamespacedCustomObject({
-        group: 'cert-manager.io',
-        version: 'v1',
-        namespace: testNamespace,
-        plural: 'certificates'
-      }).then(async (response: any) => {
-        const items = response.items || [];
-        for (const item of items) {
-          if (item.metadata.name.startsWith('test-')) {
-            try {
-              await customObjectsApi.deleteNamespacedCustomObject({
-                group: 'cert-manager.io',
-                version: 'v1',
-                namespace: testNamespace,
-                plural: 'certificates',
-                name: item.metadata.name
-              });
-              console.log(`🗑️ Deleted Certificate: ${item.metadata.name}`);
-            } catch (deleteError) {
-              console.warn(`⚠️ Failed to delete Certificate ${item.metadata.name}:`, deleteError);
+      await customObjectsApi
+        .listNamespacedCustomObject({
+          group: 'cert-manager.io',
+          version: 'v1',
+          namespace: testNamespace,
+          plural: 'certificates',
+        })
+        .then(async (response: any) => {
+          const items = response.items || [];
+          for (const item of items) {
+            if (item.metadata.name.startsWith('test-')) {
+              try {
+                await customObjectsApi.deleteNamespacedCustomObject({
+                  group: 'cert-manager.io',
+                  version: 'v1',
+                  namespace: testNamespace,
+                  plural: 'certificates',
+                  name: item.metadata.name,
+                });
+                console.log(`🗑️ Deleted Certificate: ${item.metadata.name}`);
+              } catch (deleteError) {
+                console.warn(`⚠️ Failed to delete Certificate ${item.metadata.name}:`, deleteError);
+              }
             }
           }
-        }
-      }).catch((error) => {
-        console.warn('⚠️ Failed to list Certificates for cleanup:', error);
-      });
+        })
+        .catch((error) => {
+          console.warn('⚠️ Failed to list Certificates for cleanup:', error);
+        });
 
       // Delete all ClusterIssuers that start with 'test-'
-      await customObjectsApi.listClusterCustomObject({
-        group: 'cert-manager.io',
-        version: 'v1',
-        plural: 'clusterissuers'
-      }).then(async (response: any) => {
-        const items = response.items || [];
-        for (const item of items) {
-          if (item.metadata.name.startsWith('test-')) {
-            try {
-              await customObjectsApi.deleteClusterCustomObject({
-                group: 'cert-manager.io',
-                version: 'v1',
-                plural: 'clusterissuers',
-                name: item.metadata.name
-              });
-              console.log(`🗑️ Deleted ClusterIssuer: ${item.metadata.name}`);
-            } catch (deleteError) {
-              console.warn(`⚠️ Failed to delete ClusterIssuer ${item.metadata.name}:`, deleteError);
+      await customObjectsApi
+        .listClusterCustomObject({
+          group: 'cert-manager.io',
+          version: 'v1',
+          plural: 'clusterissuers',
+        })
+        .then(async (response: any) => {
+          const items = response.items || [];
+          for (const item of items) {
+            if (item.metadata.name.startsWith('test-')) {
+              try {
+                await customObjectsApi.deleteClusterCustomObject({
+                  group: 'cert-manager.io',
+                  version: 'v1',
+                  plural: 'clusterissuers',
+                  name: item.metadata.name,
+                });
+                console.log(`🗑️ Deleted ClusterIssuer: ${item.metadata.name}`);
+              } catch (deleteError) {
+                console.warn(
+                  `⚠️ Failed to delete ClusterIssuer ${item.metadata.name}:`,
+                  deleteError
+                );
+              }
             }
           }
-        }
-      }).catch((error) => {
-        console.warn('⚠️ Failed to list ClusterIssuers for cleanup:', error);
-      });
+        })
+        .catch((error) => {
+          console.warn('⚠️ Failed to list ClusterIssuers for cleanup:', error);
+        });
 
       // Wait a moment for cleanup to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
       console.log('✅ Certificate test resource cleanup completed');
     } catch (error) {
       console.warn('⚠️ Certificate test cleanup failed (non-critical):', error);
@@ -103,10 +121,14 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
 
   it('should deploy Certificate resource to Kubernetes using direct factory', async () => {
     console.log('🚀 Testing Certificate deployment with direct factory...');
-    
-    const { certificate } = await import('../../../src/factories/cert-manager/resources/certificates.js');
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
-    
+
+    const { certificate } = await import(
+      '../../../src/factories/cert-manager/resources/certificates.js'
+    );
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
+
     // First, create a ClusterIssuer for the certificate to reference
     const issuerComposition = kubernetesComposition(
       {
@@ -120,13 +142,15 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
         const issuer = clusterIssuer({
           name: spec.name,
           spec: {
-            selfSigned: {}
+            selfSigned: {},
           },
-          id: 'testIssuer'
+          id: 'testIssuer',
         });
 
         return {
-          ready: issuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false
+          ready:
+            issuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') ||
+            false,
         };
       }
     );
@@ -139,9 +163,9 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
 
     const issuerName = `test-issuer-${Date.now()}`;
     console.log(`📦 Creating ClusterIssuer: ${issuerName}`);
-    
+
     await issuerFactory.deploy({
-      name: issuerName
+      name: issuerName,
     });
 
     // Now create a Certificate composition
@@ -149,13 +173,13 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       name: 'string',
       secretName: 'string',
       commonName: 'string',
-      issuerName: 'string'
+      issuerName: 'string',
     });
 
     const CertificateStatus = type({
       ready: 'boolean',
       issued: 'boolean',
-      secretName: 'string'
+      secretName: 'string',
     });
 
     const certificateComposition = kubernetesComposition(
@@ -176,18 +200,22 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
             dnsNames: [spec.commonName],
             issuerRef: {
               name: spec.issuerName,
-              kind: 'ClusterIssuer'
+              kind: 'ClusterIssuer',
             },
             duration: '24h',
-            renewBefore: '1h'
+            renewBefore: '1h',
           },
-          id: 'testCertificate'
+          id: 'testCertificate',
         });
 
         return {
-          ready: cert.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-          issued: cert.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-          secretName: spec.secretName
+          ready:
+            cert.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') ||
+            false,
+          issued:
+            cert.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') ||
+            false,
+          secretName: spec.secretName,
         };
       }
     );
@@ -202,12 +230,12 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     const certName = `test-certificate-${Date.now()}`;
     const secretName = `test-secret-${Date.now()}`;
     console.log(`📦 Deploying Certificate: ${certName}`);
-    
+
     const deploymentResult = await directFactory.deploy({
       name: certName,
       secretName: secretName,
       commonName: 'test.example.com',
-      issuerName: issuerName
+      issuerName: issuerName,
     });
 
     // Validate deployment result
@@ -221,7 +249,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       version: 'v1',
       namespace: testNamespace,
       plural: 'certificates',
-      name: certName
+      name: certName,
     });
 
     expect(certificateResource).toBeDefined();
@@ -236,20 +264,23 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     console.log('✅ Certificate successfully deployed to Kubernetes');
     console.log('📋 Certificate resource verified in cluster');
     console.log(`🔐 Certificate will create secret: ${secretName}`);
-    
   }, 120000); // 120 second timeout for real deployment
 
   it('should deploy complete certificate issuance stack and verify certificate lifecycle', async () => {
     console.log('🚀 Testing complete certificate lifecycle with real cert-manager...');
-    
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
-    const { certificate } = await import('../../../src/factories/cert-manager/resources/certificates.js');
-    
+
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
+    const { certificate } = await import(
+      '../../../src/factories/cert-manager/resources/certificates.js'
+    );
+
     // Create a comprehensive certificate issuance composition
     const CertificateLifecycleSpecSchema = type({
       baseName: 'string',
       commonName: 'string',
-      dnsNames: 'string[]'
+      dnsNames: 'string[]',
     });
 
     const CertificateLifecycleStatusSchema = type({
@@ -258,7 +289,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       secretCreated: 'boolean',
       issuerName: 'string',
       certificateName: 'string',
-      secretName: 'string'
+      secretName: 'string',
     });
 
     const certificateLifecycleGraph = toResourceGraph(
@@ -279,11 +310,11 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
           issuer: clusterIssuer({
             name: issuerName,
             spec: {
-              selfSigned: {}
+              selfSigned: {},
             },
-            id: 'lifecycleIssuer'
+            id: 'lifecycleIssuer',
           }),
-          
+
           // Create certificate with comprehensive configuration
           certificate: certificate({
             name: certName,
@@ -294,32 +325,34 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
               dnsNames: schema.spec.dnsNames,
               issuerRef: {
                 name: issuerName,
-                kind: 'ClusterIssuer'
+                kind: 'ClusterIssuer',
               },
               duration: '24h',
               renewBefore: '1h',
               privateKey: {
                 algorithm: 'RSA',
                 size: 2048,
-                rotationPolicy: 'Always'
+                rotationPolicy: 'Always',
               },
-              usages: [
-                'digital signature',
-                'key encipherment',
-                'server auth'
-              ]
+              usages: ['digital signature', 'key encipherment', 'server auth'],
             },
-            id: 'lifecycleCertificate'
-          })
+            id: 'lifecycleCertificate',
+          }),
         };
       },
       (_schema, resources) => ({
-        issuerReady: resources.issuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-        certificateReady: resources.certificate.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
+        issuerReady:
+          resources.issuer.status.conditions?.some(
+            (c: any) => c.type === 'Ready' && c.status === 'True'
+          ) || false,
+        certificateReady:
+          resources.certificate.status.conditions?.some(
+            (c: any) => c.type === 'Ready' && c.status === 'True'
+          ) || false,
         secretCreated: resources.certificate.status.conditions?.length > 0 || false,
         issuerName: `${_schema.spec.baseName}-issuer`,
         certificateName: `${_schema.spec.baseName}-cert`,
-        secretName: `${_schema.spec.baseName}-secret`
+        secretName: `${_schema.spec.baseName}-secret`,
       })
     );
 
@@ -334,31 +367,37 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     const _issuerName = `${uniqueBaseName}-issuer`;
     const _certName = `${uniqueBaseName}-cert`;
     const _secretName = `${uniqueBaseName}-secret`;
-    
+
     console.log(`📦 Deploying certificate lifecycle stack: ${uniqueBaseName}`);
-    
+
     const deploymentResult = await directFactory.deploy({
       baseName: uniqueBaseName,
       commonName: 'lifecycle.example.com',
-      dnsNames: ['lifecycle.example.com', 'www.lifecycle.example.com']
+      dnsNames: ['lifecycle.example.com', 'www.lifecycle.example.com'],
     });
 
     // Debug: List all ClusterIssuers to see what was actually created
     const allIssuers = await customObjectsApi.listClusterCustomObject({
       group: 'cert-manager.io',
       version: 'v1',
-      plural: 'clusterissuers'
+      plural: 'clusterissuers',
     });
-    console.log('📋 Available ClusterIssuers:', (allIssuers as any).items.map((i: any) => i.metadata.name));
+    console.log(
+      '📋 Available ClusterIssuers:',
+      (allIssuers as any).items.map((i: any) => i.metadata.name)
+    );
 
     // Debug: List all Certificates to see what was actually created
     const allCerts = await customObjectsApi.listNamespacedCustomObject({
       group: 'cert-manager.io',
       version: 'v1',
       namespace: testNamespace,
-      plural: 'certificates'
+      plural: 'certificates',
     });
-    console.log('📋 Available Certificates:', (allCerts as any).items.map((c: any) => c.metadata.name));
+    console.log(
+      '📋 Available Certificates:',
+      (allCerts as any).items.map((c: any) => c.metadata.name)
+    );
 
     // Validate deployment result
     expect(deploymentResult).toBeDefined();
@@ -368,9 +407,9 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     const lifecycleIssuers = await customObjectsApi.listClusterCustomObject({
       group: 'cert-manager.io',
       version: 'v1',
-      plural: 'clusterissuers'
+      plural: 'clusterissuers',
     });
-    const createdIssuer = (lifecycleIssuers as any).items.find((issuer: any) => 
+    const createdIssuer = (lifecycleIssuers as any).items.find((issuer: any) =>
       issuer.metadata.name.includes('issuer')
     );
     expect(createdIssuer).toBeDefined();
@@ -382,7 +421,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     expect(issuerBody.spec.selfSigned).toEqual({});
 
     // Find the Certificate that was actually created
-    const createdCert = (allCerts as any).items.find((cert: any) => 
+    const createdCert = (allCerts as any).items.find((cert: any) =>
       cert.metadata.name.includes('cert')
     );
     expect(createdCert).toBeDefined();
@@ -405,12 +444,13 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     expect(certBody.spec.usages).toContain('server auth');
 
     console.log('✅ Complete certificate lifecycle stack deployed to Kubernetes');
-    console.log('📋 ClusterIssuer and Certificate resources verified with comprehensive configuration');
+    console.log(
+      '📋 ClusterIssuer and Certificate resources verified with comprehensive configuration'
+    );
     console.log(`🔐 Certificate configured for: lifecycle.example.com, www.lifecycle.example.com`);
     console.log(`📝 Certificate will be stored in secret: ${certBody.spec.secretName}`);
-    
+
     // Note: In a real environment with cert-manager running, the certificate would be issued
     // and the secret would be created with the actual certificate and private key
-    
   }, 120000); // 120 second timeout for comprehensive deployment
 });

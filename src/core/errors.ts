@@ -809,11 +809,148 @@ export class ContextRegistrationError extends TypeKroError {
  * Error thrown when JavaScript to CEL expression conversion fails
  * Provides detailed context about the conversion failure with source mapping
  */
+/**
+ * Error thrown when status hydration fails
+ * Provides detailed context about deployment state and resource failures
+ */
+export class StatusHydrationError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly instanceName: string,
+    public readonly deploymentStatus: 'failed' | 'partial' | 'success',
+    public readonly failedResources?: Array<{
+      id: string;
+      kind: string;
+      name: string;
+      error: string;
+    }>,
+    public readonly celError?: string,
+    public readonly suggestions?: string[]
+  ) {
+    super(message, 'STATUS_HYDRATION_ERROR', {
+      instanceName,
+      deploymentStatus,
+      failedResources,
+      celError,
+      suggestions,
+    });
+    this.name = 'StatusHydrationError';
+  }
+
+  /**
+   * Create error for failed deployment
+   */
+  static forFailedDeployment(
+    instanceName: string,
+    failedResources: Array<{ id: string; kind: string; name: string; error: string }>
+  ): StatusHydrationError {
+    const message =
+      `Cannot hydrate status for '${instanceName}': deployment failed.\n\n` +
+      `Failed resources (${failedResources.length}):\n` +
+      failedResources
+        .map((r, i) => `  ${i + 1}. ${r.kind}/${r.name} (${r.id})\n     Error: ${r.error}`)
+        .join('\n');
+
+    const suggestions = [
+      'Check the deployment errors above to identify the root cause',
+      'Ensure all required resources can be deployed successfully',
+      'Verify that dependencies (like webhooks) are ready before deploying dependent resources',
+      'Use waitForReady: true to ensure resources are fully deployed before status hydration',
+    ];
+
+    return new StatusHydrationError(
+      message,
+      instanceName,
+      'failed',
+      failedResources,
+      undefined,
+      suggestions
+    );
+  }
+
+  /**
+   * Create error for partial deployment
+   */
+  static forPartialDeployment(
+    instanceName: string,
+    failedResources: Array<{ id: string; kind: string; name: string; error: string }>,
+    successCount: number
+  ): StatusHydrationError {
+    const message =
+      `Cannot hydrate status for '${instanceName}': partial deployment.\n\n` +
+      `${successCount} resources succeeded, ${failedResources.length} failed:\n` +
+      failedResources
+        .map((r, i) => `  ${i + 1}. ${r.kind}/${r.name} (${r.id})\n     Error: ${r.error}`)
+        .join('\n');
+
+    const suggestions = [
+      'Fix the failed resources listed above',
+      'All resources must deploy successfully for status hydration',
+      'Check deployment logs for detailed error information',
+    ];
+
+    return new StatusHydrationError(
+      message,
+      instanceName,
+      'partial',
+      failedResources,
+      undefined,
+      suggestions
+    );
+  }
+
+  /**
+   * Create error for CEL evaluation failure
+   */
+  static forCelEvaluationFailure(
+    instanceName: string,
+    celExpression: string,
+    celError: string,
+    resourceContext?: string
+  ): StatusHydrationError {
+    let message =
+      `Status hydration failed for '${instanceName}': CEL expression evaluation error.\n\n` +
+      `Expression: ${celExpression}\n` +
+      `Error: ${celError}`;
+
+    if (resourceContext) {
+      message += `\nResource context: ${resourceContext}`;
+    }
+
+    const suggestions = [
+      'Check if the referenced resource field exists and is populated',
+      'Ensure all resources have completed deployment and have status fields',
+      'Verify that waitForReady: true is set to ensure resources are ready',
+      'Use optional chaining (?.) in CEL expressions for fields that might not exist',
+    ];
+
+    return new StatusHydrationError(
+      message,
+      instanceName,
+      'success',
+      undefined,
+      celError,
+      suggestions
+    );
+  }
+}
+
 export class ConversionError extends TypeKroError {
   constructor(
     message: string,
     public readonly originalExpression: string,
-    public readonly expressionType: 'javascript' | 'template-literal' | 'function-call' | 'member-access' | 'binary-operation' | 'conditional' | 'optional-chaining' | 'nullish-coalescing' | 'magic-assignable' | 'magic-assignable-shape' | 'unknown',
+    public readonly expressionType:
+      | 'javascript'
+      | 'template-literal'
+      | 'function-call'
+      | 'member-access'
+      | 'binary-operation'
+      | 'conditional'
+      | 'optional-chaining'
+      | 'nullish-coalescing'
+      | 'magic-assignable'
+      | 'magic-assignable-shape'
+      | 'unknown',
     public readonly sourceLocation?: {
       line: number;
       column: number;
@@ -856,7 +993,7 @@ export class ConversionError extends TypeKroError {
     suggestions?: string[]
   ): ConversionError {
     const message = `Unsupported JavaScript syntax in expression: ${syntaxType}\n  Expression: ${originalExpression}`;
-    
+
     const defaultSuggestions = [
       'Use supported JavaScript patterns (binary operators, member access, conditionals)',
       'Consider using CEL expressions directly with Cel.expr() or Cel.template()',
@@ -883,7 +1020,7 @@ export class ConversionError extends TypeKroError {
     sourceLocation?: { line: number; column: number; length: number }
   ): ConversionError {
     const message = `Failed to resolve KubernetesRef in expression: ${kubernetesRefPath}\n  Expression: ${originalExpression}\n  Available references: ${availableReferences.join(', ')}`;
-    
+
     const suggestions = [
       `Check that the referenced resource '${kubernetesRefPath.split('.')[0]}' exists in your resource graph`,
       'Verify the field path is correct for the referenced resource type',
@@ -913,7 +1050,7 @@ export class ConversionError extends TypeKroError {
   ): ConversionError {
     const failedPart = templateParts[failedExpressionIndex] || 'unknown';
     const message = `Failed to convert template literal expression\n  Template: ${originalExpression}\n  Failed part: ${failedPart}`;
-    
+
     const suggestions = [
       'Ensure all template expressions contain valid JavaScript syntax',
       'Use simple expressions in template literals (avoid complex nested expressions)',
@@ -942,7 +1079,7 @@ export class ConversionError extends TypeKroError {
     sourceLocation?: { line: number; column: number; length: number }
   ): ConversionError {
     const message = `Unsupported function call in expression: ${functionName}\n  Expression: ${originalExpression}\n  Supported methods: ${supportedMethods.join(', ')}`;
-    
+
     const suggestions = [
       `Use one of the supported methods: ${supportedMethods.join(', ')}`,
       'Consider using CEL expressions for complex operations',
@@ -970,7 +1107,7 @@ export class ConversionError extends TypeKroError {
     cause?: Error
   ): ConversionError {
     const message = `Failed to parse JavaScript expression\n  Expression: ${originalExpression}\n  Parse error: ${parsingError}`;
-    
+
     const suggestions = [
       'Check for syntax errors in the JavaScript expression',
       'Ensure proper bracket and parenthesis matching',
@@ -999,7 +1136,7 @@ export class ConversionError extends TypeKroError {
     sourceLocation?: { line: number; column: number; length: number }
   ): ConversionError {
     const message = `Expression not valid in current context\n  Expression: ${originalExpression}\n  Current context: ${currentContext}\n  Required context: ${requiredContext}`;
-    
+
     const suggestions = [
       `Move this expression to a ${requiredContext} context`,
       'Check that you are using the correct type of references for this context',

@@ -12,7 +12,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, certManager, kubernetesComposition, simple } from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig.js';
+import {
+  ensureCertManagerInstalled,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig.js';
 
 // Test timeout for integration tests
 const TEST_TIMEOUT = 300000; // 5 minutes
@@ -29,6 +33,11 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
     // Configure kubeconfig with TLS skip for integration tests
     kc = getIntegrationTestKubeConfig();
+
+    // Ensure cert-manager is installed (idempotent - skips if already present)
+    console.log('📦 Ensuring cert-manager is available for nested compositions tests...');
+    await ensureCertManagerInstalled({ kubeConfig: kc });
+    console.log('✅ Cert-manager is ready');
 
     // Ensure we have a clean test environment
     console.log('🧪 Setting up nested compositions integration tests...');
@@ -409,8 +418,11 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       expect(result.status.ready).toBe(true);
       expect(result.status.issuerReady).toBe(true);
 
-      // Cleanup
-      await factory.deleteInstance('nested-test');
+      // NOTE: We intentionally do NOT delete 'nested-test' here because it contains
+      // a cert-manager HelmRelease with installCRDs: true. Deleting it would cause
+      // Flux to uninstall cert-manager and remove its CRDs, breaking subsequent tests
+      // that depend on cert-manager (e.g., the cross-composition references test).
+      // The afterAll cleanup handles this at the end of the test suite.
     },
     TEST_TIMEOUT
   );
@@ -418,6 +430,47 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
   it(
     'should handle cross-composition references',
     async () => {
+      // Re-ensure cert-manager is available - the previous nested composition test
+      // deletes its cert-manager HelmRelease which causes Flux to uninstall cert-manager
+      await ensureCertManagerInstalled({ kubeConfig: kc });
+
+      // Deploy a self-signed ClusterIssuer using typekro's composition pattern
+      // so the certificate can actually become ready
+      const IssuerSetupSpec = type({ name: 'string' });
+      const IssuerSetupStatus = type({ ready: 'boolean' });
+
+      const issuerComposition = kubernetesComposition(
+        {
+          name: 'cross-ref-issuer-setup',
+          apiVersion: 'test.typekro.dev/v1alpha1',
+          kind: 'CrossRefIssuerSetup',
+          spec: IssuerSetupSpec,
+          status: IssuerSetupStatus,
+        },
+        (spec) => {
+          const _issuer = certManager.clusterIssuer({
+            name: spec.name,
+            spec: {
+              selfSigned: {},
+            },
+            id: 'selfSignedIssuer',
+          });
+
+          return {
+            ready: true,
+          };
+        }
+      );
+
+      const issuerFactory = issuerComposition.factory('direct', {
+        namespace: 'default',
+        timeout: 60000,
+        waitForReady: true,
+        kubeConfig: kc,
+      });
+
+      await issuerFactory.deploy({ name: 'cross-ref-test-issuer' });
+
       // Test cross-composition reference patterns
       const CrossRefSpec = type({
         name: 'string',
@@ -469,30 +522,29 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
         }
       );
 
-      // Deploy with cross-composition reference
-      // Note: We use waitForReady: true to wait for the deployment to be ready
-      // The certificate won't be ready because there's no issuer, but that's expected
+      // Deploy with cross-composition reference pointing to our self-signed issuer
       const factory = crossRefComposition.factory('direct', {
         namespace: 'default',
-        timeout: 60000,
+        timeout: 120000,
         waitForReady: true,
         kubeConfig: kc,
       });
 
       const result = await factory.deploy({
         name: 'cross-ref-test',
-        issuerName: 'test-issuer', // This would come from another composition
+        issuerName: 'cross-ref-test-issuer', // References the issuer we deployed above
       });
 
       expect(result).toBeDefined();
       expect(result.status).toBeDefined();
       // The deployment should be ready (readyReplicas >= 1)
       expect(result.status.ready).toBe(true);
-      // Certificate won't be ready because there's no issuer - this is expected
-      // The certificateReady status may be false or a CEL expression that couldn't be evaluated
+      // The certificate should be ready since we have a self-signed issuer
+      expect(result.status.certificateReady).toBe(true);
 
       // Cleanup
       await factory.deleteInstance('cross-ref-test');
+      await issuerFactory.deleteInstance('cross-ref-test-issuer');
     },
     TEST_TIMEOUT
   );

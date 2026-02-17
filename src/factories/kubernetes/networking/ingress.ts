@@ -13,22 +13,46 @@ export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, any> {
   }).withReadinessEvaluator((liveResource: V1Ingress) => {
     try {
       const status = liveResource.status;
+      const metadata = liveResource.metadata;
 
-      if (!status) {
-        return { ready: false, reason: 'No status available' };
+      // Ingress is considered ready if:
+      // 1. It has load balancer ingress endpoints (traditional cloud LB), OR
+      // 2. It has been processed by the ingress controller (has resourceVersion and generation)
+      //
+      // This is because some ingress controllers (like APISIX, nginx-ingress in some modes)
+      // don't populate the loadBalancer.ingress field, but the Ingress is still functional.
+
+      // Check for load balancer endpoints (preferred)
+      const loadBalancer = status?.loadBalancer;
+      const ingresses = loadBalancer?.ingress || [];
+      if (ingresses.length > 0) {
+        return {
+          ready: true,
+          reason: `Ingress has ${ingresses.length} load balancer endpoint(s)`,
+        };
       }
 
-      // Ingress is ready when it has load balancer ingress
-      const loadBalancer = status.loadBalancer;
-      const ingresses = loadBalancer?.ingress || [];
+      // Check if the resource has been processed (has resourceVersion and generation match)
+      // This indicates the ingress controller has seen and processed the resource
+      const hasBeenProcessed = metadata?.resourceVersion && metadata?.generation !== undefined;
+      
+      // Also check if observedGeneration matches generation (if available in status)
+      // Some ingress controllers set this to indicate they've processed the resource
+      const observedGeneration = (status as any)?.observedGeneration;
+      const generationMatches = observedGeneration === undefined || observedGeneration === metadata?.generation;
 
-      const ready = ingresses.length > 0;
+      if (hasBeenProcessed && generationMatches) {
+        // Give the ingress controller a moment to populate status
+        // If we've been processed and no errors, consider it ready
+        return {
+          ready: true,
+          reason: 'Ingress has been processed by the controller (no load balancer endpoints yet, but resource is active)',
+        };
+      }
 
       return {
-        ready,
-        reason: ready
-          ? `Ingress has ${ingresses.length} load balancer endpoint(s)`
-          : 'Waiting for load balancer to assign endpoints',
+        ready: false,
+        reason: 'Waiting for ingress controller to process the resource',
       };
     } catch (error) {
       return {

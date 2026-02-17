@@ -222,6 +222,16 @@ export const apisixBootstrap = kubernetesComposition(
       interval: '5m',
       timeout: '10m',
       values: {
+        // Configure the APISIX admin service connection
+        // This is used by the init container to wait for APISIX to be ready
+        // The service name follows the pattern: <namespace>-<release-name>-admin
+        apisix: {
+          adminService: {
+            namespace: actualNamespace,
+            name: `${actualNamespace}-${actualName}-admin`,
+            port: 9180,
+          },
+        },
         config: {
           apisix: {
             // Use actual string values for service configuration

@@ -40,6 +40,7 @@ export function createDeploymentOptions(
     ...(factoryOptions.progressCallback && { progressCallback: factoryOptions.progressCallback }),
     ...(factoryOptions.eventMonitoring && { eventMonitoring: factoryOptions.eventMonitoring }),
     ...(factoryOptions.debugLogging && { debugLogging: factoryOptions.debugLogging }),
+    ...(factoryOptions.autoFix && { autoFix: factoryOptions.autoFix }),
   };
 }
 
