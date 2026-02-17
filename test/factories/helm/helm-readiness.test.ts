@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { createComprehensiveHelmReadinessEvaluator, createHelmRevisionReadinessEvaluator, createHelmTestReadinessEvaluator, createHelmTimeoutReadinessEvaluator, helmReleaseReadinessEvaluator,  } from '../../../src/factories/helm/readiness-evaluators.js';
+import {
+  createComprehensiveHelmReadinessEvaluator,
+  createHelmRevisionReadinessEvaluator,
+  createHelmTestReadinessEvaluator,
+  createHelmTimeoutReadinessEvaluator,
+  helmReleaseReadinessEvaluator,
+} from '../../../src/factories/helm/readiness-evaluators.js';
 
 describe('Helm Readiness Evaluators', () => {
   describe('helmReleaseReadinessEvaluator', () => {
@@ -8,7 +14,7 @@ describe('Helm Readiness Evaluators', () => {
       const result = helmReleaseReadinessEvaluator(resource);
 
       expect(result.ready).toBe(false);
-      expect(result.reason).toBe('StatusMissing');
+      expect(result.reason).toBe('Installing');
       expect(result.message).toContain('status not available');
     });
 
@@ -44,7 +50,7 @@ describe('Helm Readiness Evaluators', () => {
 
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('Installing');
-      expect(result.message).toContain('being installed');
+      expect(result.message).toContain('installation in progress');
     });
 
     it('should return not ready when Upgrading', () => {
@@ -56,7 +62,7 @@ describe('Helm Readiness Evaluators', () => {
 
       expect(result.ready).toBe(false);
       expect(result.reason).toBe('Upgrading');
-      expect(result.message).toContain('being upgraded');
+      expect(result.message).toContain('upgrade in progress');
     });
 
     it('should handle Flux CD v2 conditions', () => {

@@ -6,6 +6,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import { StatusHydrationError } from '../../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { createResourcesProxy } from '../../references/schema-proxy.js';
@@ -99,10 +100,15 @@ export abstract class BaseDeploymentStrategy<
       this.getStrategyMode()
     );
 
-    // Add deployment status to metadata for factory-level error handling
+    // Add deployment status and ID to metadata for factory-level error handling and cleanup
     if (deploymentResult?.status) {
       metadata.annotations = metadata.annotations || {};
       metadata.annotations['typekro.io/deployment-status'] = deploymentResult.status;
+
+      // Store deployment ID for cleanup/rollback
+      if (deploymentResult.deploymentId) {
+        metadata.annotations['typekro.io/deployment-id'] = deploymentResult.deploymentId;
+      }
 
       // Add error message for failed deployments
       if (deploymentResult.status === 'failed' && deploymentResult.errors?.length > 0) {
@@ -124,302 +130,364 @@ export abstract class BaseDeploymentStrategy<
     });
 
     if (this.statusBuilder) {
-      try {
-        // Create enhanced resources for the status builder using original resource keys
-        const enhancedResources: Record<string, Enhanced<unknown, unknown>> = {};
-
-        if (deploymentResult && 'resources' in deploymentResult && this.resourceKeys) {
-          // Create a mapping from resource ID to deployed resource
-          const deployedResourcesById: Record<string, unknown> = {};
-          for (const deployedResource of deploymentResult.resources) {
-            if (deployedResource?.manifest) {
-              deployedResourcesById[deployedResource.id] = deployedResource;
-            }
-          }
-
-          this.logger.debug('Resource mapping debug', {
-            instanceName,
-            originalResourceKeys: Object.keys(this.resourceKeys),
-            deployedResourceIds: Object.keys(deployedResourcesById),
-            deployedResourceDetails: deploymentResult.resources.map((r) => ({
-              id: r.id,
-              kind: r.manifest?.kind,
-              name: r.manifest?.metadata?.name,
-              labels: r.manifest?.metadata?.labels,
-            })),
-            resourceKeysMapping: Object.entries(this.resourceKeys).map(([key, resource]) => ({
-              key,
-              resourceId: resource.id,
-              resourceKind: resource.kind,
-              resourceName: resource.metadata?.name,
-              hasDeployedResource: !!(resource.id && deployedResourcesById[resource.id]),
-            })),
-          });
-
-          // Map original resource keys to deployed resources by matching kind and name
-          for (const [originalKey, originalResource] of Object.entries(this.resourceKeys)) {
-            // Find deployed resource by matching kind and name
-            const deployedResource = deploymentResult.resources.find(
-              (dr) =>
-                dr.manifest?.kind === originalResource.kind &&
-                dr.manifest?.metadata?.name === originalResource.metadata?.name
-            );
-
-            if (deployedResource?.manifest) {
-              // Try to get the actual resource status from the cluster
-              let actualResource = deployedResource.manifest;
-
-              try {
-                // Query the cluster for the actual resource with current status
-                const resourceRef: k8s.KubernetesObject = {
-                  apiVersion: deployedResource.manifest.apiVersion,
-                  kind: deployedResource.manifest.kind,
-                  metadata: {
-                    name: deployedResource.manifest.metadata?.name,
-                    namespace:
-                      deployedResource.manifest.metadata?.namespace || this.namespace || 'default',
-                  } as k8s.V1ObjectMeta,
-                };
-
-                // Use Bun-compatible API client for proper TLS handling
-                const k8sApi = this.factoryOptions.kubeConfig
-                  ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
-                  : undefined;
-                if (k8sApi && resourceRef.metadata && resourceRef.apiVersion && resourceRef.kind) {
-                  // In the new API, methods return objects directly (no .body wrapper)
-                  // The read method requires apiVersion, kind, and metadata
-                  actualResource = (await k8sApi.read({
-                    apiVersion: resourceRef.apiVersion,
-                    kind: resourceRef.kind,
-                    metadata: {
-                      name: resourceRef.metadata.name || '',
-                      namespace: resourceRef.metadata.namespace || this.namespace || 'default',
-                    },
-                  })) as KubernetesResource<unknown, unknown>;
-                }
-              } catch (_error) {
-                // Ignore CEL evaluation errors during status hydration
-              }
-
-              enhancedResources[originalKey] = {
-                metadata: actualResource.metadata || {},
-                spec: (actualResource as { spec?: unknown }).spec || {},
-                status: (actualResource as { status?: unknown }).status || {},
-              } as Enhanced<unknown, unknown>;
-            }
-          }
-
-          this.logger.debug('Enhanced resources created', {
-            instanceName,
-            enhancedResourceKeys: Object.keys(enhancedResources),
-            enhancedResourcesWithStatus: Object.entries(enhancedResources).map(
-              ([key, resource]) => ({
-                key,
-                hasStatus: !!resource.status && Object.keys(resource.status).length > 0,
-                statusKeys: resource.status ? Object.keys(resource.status) : [],
-              })
-            ),
-          });
-        }
-
-        // Create a schema proxy for the status builder
-        const schemaProxy = {
-          spec,
-          status: {} as TStatus, // Empty status for the schema proxy
-        };
-
-        // Call the status builder to get the computed status
-        // Wrap enhanced resources with proxy to enable resource reference magic
-        const resourcesProxy = createResourcesProxy(enhancedResources);
-        const computedStatus = this.statusBuilder(
-          schemaProxy as SchemaProxy<TSpec, TStatus>,
-          resourcesProxy
-        );
-        status = computedStatus as TStatus;
-
-        this.logger.debug('Status built using status builder', {
+      // CRITICAL: Status hydration requires waitForReady: true
+      // When waitForReady is false, resources may not have status yet
+      // Return proxy with spec accessible but status set to null
+      if (this.factoryOptions.waitForReady === false) {
+        this.logger.info('Status hydration skipped: waitForReady is false', {
           instanceName,
-          statusFields: Object.keys(status),
+          message: 'Set waitForReady: true to enable status hydration',
         });
 
-        // In direct mode, resolve CEL expressions in the status against deployed resources
-        if (this.getStrategyMode() === 'direct' && this.factoryOptions.kubeConfig) {
-          try {
-            const { ReferenceResolver } = await import('../../references/resolver.js');
-            const resolver = new ReferenceResolver(this.factoryOptions.kubeConfig, 'direct');
+        status = null as unknown as TStatus;
+      }
+      // Check deployment status before attempting hydration (only if waitForReady is true)
+      else if (deploymentResult) {
+        if (deploymentResult.status === 'failed') {
+          // Extract failed resources with full details
+          const resourcesById = new Map(deploymentResult.resources.map((r) => [r.id, r]));
 
-            // Create resolution context with deployed resources
-            const deployedResources = deploymentResult?.resources || [];
+          const failedResources = deploymentResult.errors.map((err) => {
+            const resource = resourcesById.get(err.resourceId);
+            return {
+              id: err.resourceId,
+              kind: resource?.kind || 'Unknown',
+              name: resource?.name || 'unknown',
+              error: err.error?.message || String(err.error),
+            };
+          });
 
-            this.logger.debug('Available deployed resources for CEL resolution', {
+          throw StatusHydrationError.forFailedDeployment(instanceName, failedResources);
+        }
+
+        if (deploymentResult.status === 'partial') {
+          const resourcesById = new Map(deploymentResult.resources.map((r) => [r.id, r]));
+
+          const failedResources = deploymentResult.errors.map((err) => {
+            const resource = resourcesById.get(err.resourceId);
+            return {
+              id: err.resourceId,
+              kind: resource?.kind || 'Unknown',
+              name: resource?.name || 'unknown',
+              error: err.error?.message || String(err.error),
+            };
+          });
+          const successCount = deploymentResult.resources?.length || 0;
+
+          throw StatusHydrationError.forPartialDeployment(
+            instanceName,
+            failedResources,
+            successCount
+          );
+        }
+      }
+
+      // Only proceed with status hydration if waitForReady: true and deployment succeeded
+      if (this.factoryOptions.waitForReady !== false && status !== null) {
+        try {
+          // Create enhanced resources for the status builder using original resource keys
+          const enhancedResources: Record<string, Enhanced<unknown, unknown>> = {};
+
+          if (deploymentResult && 'resources' in deploymentResult && this.resourceKeys) {
+            // Create a mapping from resource ID to deployed resource
+            const deployedResourcesById: Record<string, unknown> = {};
+            for (const deployedResource of deploymentResult.resources) {
+              if (deployedResource?.manifest) {
+                deployedResourcesById[deployedResource.id] = deployedResource;
+              }
+            }
+
+            this.logger.debug('Resource mapping debug', {
               instanceName,
-              hasDeploymentResult: !!deploymentResult,
-              resourceCount: deployedResources.length,
-              resourceIds: deployedResources.map((r) => r.id),
-              resourceNames: deployedResources.map((r) => r.name),
-              resourceKinds: deployedResources.map((r) => r.kind),
+              originalResourceKeys: Object.keys(this.resourceKeys),
+              deployedResourceIds: Object.keys(deployedResourcesById),
+              deployedResourceDetails: deploymentResult.resources.map((r) => ({
+                id: r.id,
+                kind: r.manifest?.kind,
+                name: r.manifest?.metadata?.name,
+                labels: r.manifest?.metadata?.labels,
+              })),
+              resourceKeysMapping: Object.entries(this.resourceKeys).map(([key, resource]) => ({
+                key,
+                resourceId: resource.id,
+                resourceKind: resource.kind,
+                resourceName: resource.metadata?.name,
+                hasDeployedResource: !!(resource.id && deployedResourcesById[resource.id]),
+              })),
             });
 
-            // Create a mapping from original resource keys to deployed resources
-            // The deployed resource IDs follow the pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey}
-            // We need to extract the original key and map it back
-            const resourceKeyMapping = new Map<string, unknown>();
+            // Map original resource keys to deployed resources by matching kind and name
+            for (const [originalKey, originalResource] of Object.entries(this.resourceKeys)) {
+              // Find deployed resource by matching kind and name
+              const deployedResource = deploymentResult.resources.find(
+                (dr) =>
+                  dr.manifest?.kind === originalResource.kind &&
+                  dr.manifest?.metadata?.name === originalResource.metadata?.name
+              );
 
-            // Convert instance name to camelCase for pattern matching
-            const camelCaseInstanceName = instanceName.replace(/-([a-z])/g, (_, letter) =>
-              letter.toUpperCase()
-            );
+              if (deployedResource?.manifest) {
+                // Try to get the actual resource status from the cluster
+                let actualResource = deployedResource.manifest;
 
-            // Query the actual resources from the cluster to get their current status
-            // Use Bun-compatible API client for proper TLS handling
-            const k8sApi = this.factoryOptions.kubeConfig
-              ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
-              : undefined;
-
-            for (const deployedResource of deployedResources) {
-              // First, check if the manifest has __resourceId (the original resource ID)
-              // This is the most reliable way to get the original key
-              const manifestResourceId = (deployedResource.manifest as any).__resourceId;
-              
-              // Extract the original resource key from the deployed resource ID
-              // Pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey} -> originalKey
-              const resourceIdPattern = new RegExp(`^${camelCaseInstanceName}Resource\\d+(.+)$`);
-              const match = deployedResource.id.match(resourceIdPattern);
-
-              this.logger.debug('Processing deployed resource for CEL mapping', {
-                instanceName,
-                camelCaseInstanceName,
-                deployedResourceId: deployedResource.id,
-                manifestResourceId,
-                resourceIdPattern: resourceIdPattern.source,
-                match: match,
-                matchedGroup: match?.[1],
-              });
-
-              // Use __resourceId if available, otherwise fall back to pattern extraction
-              let originalKey: string | undefined;
-              if (manifestResourceId) {
-                originalKey = manifestResourceId;
-                this.logger.debug('Using __resourceId for original key', {
-                  originalKey,
-                  deployedResourceId: deployedResource.id,
-                });
-              } else if (match?.[1]) {
-                // Convert from PascalCase to camelCase (e.g., "Webapp" -> "webapp")
-                originalKey = match[1].charAt(0).toLowerCase() + match[1].slice(1);
-                this.logger.debug('Extracted original key from resource ID', {
-                  instanceName,
-                  deployedResourceId: deployedResource.id,
-                  extractedKey: originalKey,
-                });
-              } else {
-                this.logger.debug('Failed to match resource ID pattern', {
-                  deployedResourceId: deployedResource.id,
-                  pattern: `^${camelCaseInstanceName}Resource\\d+(.+)$`,
-                  camelCaseInstanceName,
-                });
-              }
-
-              // If we have an original key, query the cluster and add to mapping
-              if (originalKey) {
                 try {
-                  // Query the actual resource from the cluster to get its current status
-                  const resourceRef = {
+                  // Query the cluster for the actual resource with current status
+                  const resourceRef: k8s.KubernetesObject = {
                     apiVersion: deployedResource.manifest.apiVersion,
                     kind: deployedResource.manifest.kind,
                     metadata: {
-                      name: deployedResource.name,
-                      namespace: deployedResource.namespace,
-                    },
+                      name: deployedResource.manifest.metadata?.name,
+                      namespace:
+                        deployedResource.manifest.metadata?.namespace ||
+                        this.namespace ||
+                        'default',
+                    } as k8s.V1ObjectMeta,
                   };
 
-                  // In the new API, methods return objects directly (no .body wrapper)
-                  const actualResource = await (
-                    k8sApi as { read?: (ref: unknown) => Promise<unknown> }
-                  )?.read?.(resourceRef);
+                  // Use Bun-compatible API client for proper TLS handling
+                  const k8sApi = this.factoryOptions.kubeConfig
+                    ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
+                    : undefined;
+                  if (
+                    k8sApi &&
+                    resourceRef.metadata &&
+                    resourceRef.apiVersion &&
+                    resourceRef.kind
+                  ) {
+                    // In the new API, methods return objects directly (no .body wrapper)
+                    // The read method requires apiVersion, kind, and metadata
+                    actualResource = (await k8sApi.read({
+                      apiVersion: resourceRef.apiVersion,
+                      kind: resourceRef.kind,
+                      metadata: {
+                        name: resourceRef.metadata.name || '',
+                        namespace: resourceRef.metadata.namespace || this.namespace || 'default',
+                      },
+                    })) as KubernetesResource<unknown, unknown>;
+                  }
+                } catch (_error) {
+                  // Ignore CEL evaluation errors during status hydration
+                }
 
-                  if (actualResource) {
-                    resourceKeyMapping.set(originalKey, actualResource);
-                    this.logger.debug('Mapped resource key with cluster status', {
-                      instanceName,
-                      originalKey,
-                      resourceKind: deployedResource.kind,
-                      resourceName: deployedResource.name,
-                      hasStatus: !!(actualResource as { status?: unknown }).status,
-                      statusKeys: (actualResource as { status?: unknown }).status
-                        ? Object.keys((actualResource as { status?: unknown }).status as object)
-                        : [],
-                    });
-                  } else {
+                enhancedResources[originalKey] = {
+                  metadata: actualResource.metadata || {},
+                  spec: (actualResource as { spec?: unknown }).spec || {},
+                  status: (actualResource as { status?: unknown }).status || {},
+                } as Enhanced<unknown, unknown>;
+              }
+            }
+
+            this.logger.debug('Enhanced resources created', {
+              instanceName,
+              enhancedResourceKeys: Object.keys(enhancedResources),
+              enhancedResourcesWithStatus: Object.entries(enhancedResources).map(
+                ([key, resource]) => ({
+                  key,
+                  hasStatus: !!resource.status && Object.keys(resource.status).length > 0,
+                  statusKeys: resource.status ? Object.keys(resource.status) : [],
+                })
+              ),
+            });
+          }
+
+          // Create a schema proxy for the status builder
+          const schemaProxy = {
+            spec,
+            status: {} as TStatus, // Empty status for the schema proxy
+          };
+
+          // Call the status builder to get the computed status
+          // Wrap enhanced resources with proxy to enable resource reference magic
+          const resourcesProxy = createResourcesProxy(enhancedResources);
+          const computedStatus = this.statusBuilder(
+            schemaProxy as SchemaProxy<TSpec, TStatus>,
+            resourcesProxy
+          );
+          status = computedStatus as TStatus;
+
+          this.logger.debug('Status built using status builder', {
+            instanceName,
+            statusFields: Object.keys(status),
+          });
+
+          // In direct mode, resolve CEL expressions in the status against deployed resources
+          if (this.getStrategyMode() === 'direct' && this.factoryOptions.kubeConfig) {
+            try {
+              const { ReferenceResolver } = await import('../../references/resolver.js');
+              const resolver = new ReferenceResolver(this.factoryOptions.kubeConfig, 'direct');
+
+              // Create resolution context with deployed resources
+              const deployedResources = deploymentResult?.resources || [];
+
+              this.logger.debug('Available deployed resources for CEL resolution', {
+                instanceName,
+                hasDeploymentResult: !!deploymentResult,
+                resourceCount: deployedResources.length,
+                resourceIds: deployedResources.map((r) => r.id),
+                resourceNames: deployedResources.map((r) => r.name),
+                resourceKinds: deployedResources.map((r) => r.kind),
+              });
+
+              // Create a mapping from original resource keys to deployed resources
+              // The deployed resource IDs follow the pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey}
+              // We need to extract the original key and map it back
+              const resourceKeyMapping = new Map<string, unknown>();
+
+              // Convert instance name to camelCase for pattern matching
+              const camelCaseInstanceName = instanceName.replace(/-([a-z])/g, (_, letter) =>
+                letter.toUpperCase()
+              );
+
+              // Query the actual resources from the cluster to get their current status
+              // Use Bun-compatible API client for proper TLS handling
+              const k8sApi = this.factoryOptions.kubeConfig
+                ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
+                : undefined;
+
+              for (const deployedResource of deployedResources) {
+                // First, check if the manifest has __resourceId (the original resource ID)
+                // This is the most reliable way to get the original key
+                const manifestResourceId = (deployedResource.manifest as any).__resourceId;
+
+                // Extract the original resource key from the deployed resource ID
+                // Pattern: {camelCaseInstanceName}Resource{index}{PascalCaseOriginalKey} -> originalKey
+                const resourceIdPattern = new RegExp(`^${camelCaseInstanceName}Resource\\d+(.+)$`);
+                const match = deployedResource.id.match(resourceIdPattern);
+
+                this.logger.debug('Processing deployed resource for CEL mapping', {
+                  instanceName,
+                  camelCaseInstanceName,
+                  deployedResourceId: deployedResource.id,
+                  manifestResourceId,
+                  resourceIdPattern: resourceIdPattern.source,
+                  match: match,
+                  matchedGroup: match?.[1],
+                });
+
+                // Use __resourceId if available, otherwise fall back to pattern extraction
+                let originalKey: string | undefined;
+                if (manifestResourceId) {
+                  originalKey = manifestResourceId;
+                  this.logger.debug('Using __resourceId for original key', {
+                    originalKey,
+                    deployedResourceId: deployedResource.id,
+                  });
+                } else if (match?.[1]) {
+                  // Convert from PascalCase to camelCase (e.g., "Webapp" -> "webapp")
+                  originalKey = match[1].charAt(0).toLowerCase() + match[1].slice(1);
+                  this.logger.debug('Extracted original key from resource ID', {
+                    instanceName,
+                    deployedResourceId: deployedResource.id,
+                    extractedKey: originalKey,
+                  });
+                } else {
+                  this.logger.debug('Failed to match resource ID pattern', {
+                    deployedResourceId: deployedResource.id,
+                    pattern: `^${camelCaseInstanceName}Resource\\d+(.+)$`,
+                    camelCaseInstanceName,
+                  });
+                }
+
+                // If we have an original key, query the cluster and add to mapping
+                if (originalKey) {
+                  try {
+                    // Query the actual resource from the cluster to get its current status
+                    const resourceRef = {
+                      apiVersion: deployedResource.manifest.apiVersion,
+                      kind: deployedResource.manifest.kind,
+                      metadata: {
+                        name: deployedResource.name,
+                        namespace: deployedResource.namespace,
+                      },
+                    };
+
+                    // In the new API, methods return objects directly (no .body wrapper)
+                    const actualResource = await (
+                      k8sApi as { read?: (ref: unknown) => Promise<unknown> }
+                    )?.read?.(resourceRef);
+
+                    if (actualResource) {
+                      resourceKeyMapping.set(originalKey, actualResource);
+                      this.logger.debug('Mapped resource key with cluster status', {
+                        instanceName,
+                        originalKey,
+                        resourceKind: deployedResource.kind,
+                        resourceName: deployedResource.name,
+                        hasStatus: !!(actualResource as { status?: unknown }).status,
+                        statusKeys: (actualResource as { status?: unknown }).status
+                          ? Object.keys((actualResource as { status?: unknown }).status as object)
+                          : [],
+                      });
+                    } else {
+                      // Fallback to manifest if cluster query fails
+                      resourceKeyMapping.set(originalKey, deployedResource.manifest);
+                      this.logger.debug('Fallback to manifest for resource key', {
+                        originalKey,
+                        reason: 'cluster query returned no resource',
+                      });
+                    }
+                  } catch (error) {
                     // Fallback to manifest if cluster query fails
                     resourceKeyMapping.set(originalKey, deployedResource.manifest);
                     this.logger.debug('Fallback to manifest for resource key', {
                       originalKey,
-                      reason: 'cluster query returned no resource',
+                      reason: 'cluster query failed',
+                      error: error instanceof Error ? error.message : String(error),
                     });
                   }
-                } catch (error) {
-                  // Fallback to manifest if cluster query fails
-                  resourceKeyMapping.set(originalKey, deployedResource.manifest);
-                  this.logger.debug('Fallback to manifest for resource key', {
-                    originalKey,
-                    reason: 'cluster query failed',
-                    error: error instanceof Error ? error.message : String(error),
-                  });
                 }
               }
-            }
 
-            this.logger.debug('Resource key mapping created', {
-              instanceName,
-              mappingSize: resourceKeyMapping.size,
-              mappedKeys: Array.from(resourceKeyMapping.keys()),
-            });
-
-            const resolutionContext = {
-              deployedResources,
-              kubeClient: this.factoryOptions.kubeConfig,
-              namespace: this.namespace,
-              timeout: this.factoryOptions.timeout || 30000,
-              resourceKeyMapping,
-              schema: { spec, status: {} },
-            };
-
-            // Resolve all CEL expressions in the status
-            status = (await resolver.resolveReferences(status, resolutionContext)) as TStatus;
-
-            this.logger.debug('Status CEL expressions resolved in direct mode', {
-              instanceName,
-              statusFields: Object.keys(status),
-            });
-          } catch (error) {
-            this.logger.warn(
-              'Failed to resolve CEL expressions in status, using unresolved status',
-              {
+              this.logger.debug('Resource key mapping created', {
                 instanceName,
-                error: error instanceof Error ? error.message : String(error),
-              }
-            );
-          }
-        }
-      } catch (error) {
-        this.logger.warn(
-          'Failed to build status using status builder, falling back to resource extraction',
-          {
-            instanceName,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        );
+                mappingSize: resourceKeyMapping.size,
+                mappedKeys: Array.from(resourceKeyMapping.keys()),
+              });
 
-        // Fallback to extracting status from the first deployed resource
-        if (
-          deploymentResult &&
-          'resources' in deploymentResult &&
-          deploymentResult.resources.length > 0
-        ) {
-          const firstResource = deploymentResult.resources[0];
-          if (firstResource?.manifest && 'status' in firstResource.manifest) {
-            status = firstResource.manifest.status as TStatus;
+              const resolutionContext = {
+                deployedResources,
+                kubeClient: this.factoryOptions.kubeConfig,
+                namespace: this.namespace,
+                timeout: this.factoryOptions.timeout || 30000,
+                resourceKeyMapping,
+                schema: { spec, status: {} },
+              };
+
+              // Resolve all CEL expressions in the status
+              status = (await resolver.resolveReferences(status, resolutionContext)) as TStatus;
+
+              this.logger.debug('Status CEL expressions resolved in direct mode', {
+                instanceName,
+                statusFields: Object.keys(status),
+              });
+            } catch (error) {
+              this.logger.warn(
+                'Failed to resolve CEL expressions in status, using unresolved status',
+                {
+                  instanceName,
+                  error: error instanceof Error ? error.message : String(error),
+                }
+              );
+            }
+          }
+        } catch (error) {
+          this.logger.warn(
+            'Failed to build status using status builder, falling back to resource extraction',
+            {
+              instanceName,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+
+          // Fallback to extracting status from the first deployed resource
+          if (
+            deploymentResult &&
+            'resources' in deploymentResult &&
+            deploymentResult.resources.length > 0
+          ) {
+            const firstResource = deploymentResult.resources[0];
+            if (firstResource?.manifest && 'status' in firstResource.manifest) {
+              status = firstResource.manifest.status as TStatus;
+            }
           }
         }
       }

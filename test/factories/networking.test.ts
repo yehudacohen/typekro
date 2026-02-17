@@ -68,12 +68,17 @@ describe('Networking Factories', () => {
       expect(result.reason).toContain('Ingress has 2 load balancer endpoint(s)');
     });
 
-    it('should evaluate as not ready when no load balancer endpoints', () => {
+    it('should evaluate as not ready when no load balancer endpoints and not processed', () => {
       const ingressResource = createTestIngress('pending-ingress');
       const enhanced = ingress(ingressResource);
       const evaluator = (enhanced as any).readinessEvaluator;
 
+      // Resource without resourceVersion/generation (not yet processed by controller)
       const pendingState = {
+        metadata: {
+          name: 'pending-ingress',
+          // No resourceVersion or generation - not yet processed
+        },
         status: {
           loadBalancer: {
             ingress: [], // No endpoints yet
@@ -83,7 +88,31 @@ describe('Networking Factories', () => {
 
       const result = evaluator(pendingState);
       expect(result.ready).toBe(false);
-      expect(result.reason).toBe('Waiting for load balancer to assign endpoints');
+      expect(result.reason).toBe('Waiting for ingress controller to process the resource');
+    });
+
+    it('should evaluate as ready when processed by controller even without load balancer', () => {
+      const ingressResource = createTestIngress('processed-ingress');
+      const enhanced = ingress(ingressResource);
+      const evaluator = (enhanced as any).readinessEvaluator;
+
+      // Resource with resourceVersion and generation (processed by controller)
+      const processedState = {
+        metadata: {
+          name: 'processed-ingress',
+          resourceVersion: '12345',
+          generation: 1,
+        },
+        status: {
+          loadBalancer: {
+            ingress: [], // No endpoints yet, but resource is processed
+          },
+        },
+      };
+
+      const result = evaluator(processedState);
+      expect(result.ready).toBe(true);
+      expect(result.reason).toContain('Ingress has been processed by the controller');
     });
 
     it('should handle missing status gracefully', () => {
@@ -91,20 +120,27 @@ describe('Networking Factories', () => {
       const enhanced = ingress(ingressResource);
       const evaluator = (enhanced as any).readinessEvaluator;
 
-      // Test with null status
-      const nullStatusResult = evaluator({ status: null });
+      // Test with null status but no resourceVersion (not processed)
+      const nullStatusResult = evaluator({ status: null, metadata: {} });
       expect(nullStatusResult.ready).toBe(false);
-      expect(nullStatusResult.reason).toBe('No status available');
+      expect(nullStatusResult.reason).toBe('Waiting for ingress controller to process the resource');
 
-      // Test with undefined status
-      const undefinedStatusResult = evaluator({ status: undefined });
+      // Test with undefined status but no resourceVersion (not processed)
+      const undefinedStatusResult = evaluator({ status: undefined, metadata: {} });
       expect(undefinedStatusResult.ready).toBe(false);
-      expect(undefinedStatusResult.reason).toBe('No status available');
+      expect(undefinedStatusResult.reason).toBe('Waiting for ingress controller to process the resource');
 
-      // Test with missing status entirely
-      const noStatusResult = evaluator({});
+      // Test with missing status entirely but no resourceVersion (not processed)
+      const noStatusResult = evaluator({ metadata: {} });
       expect(noStatusResult.ready).toBe(false);
-      expect(noStatusResult.reason).toBe('No status available');
+      expect(noStatusResult.reason).toBe('Waiting for ingress controller to process the resource');
+
+      // Test with missing status but with resourceVersion (processed)
+      const processedNoStatusResult = evaluator({ 
+        metadata: { resourceVersion: '12345', generation: 1 } 
+      });
+      expect(processedNoStatusResult.ready).toBe(true);
+      expect(processedNoStatusResult.reason).toContain('Ingress has been processed by the controller');
     });
 
     it('should handle missing load balancer gracefully', () => {
@@ -112,15 +148,36 @@ describe('Networking Factories', () => {
       const enhanced = ingress(ingressResource);
       const evaluator = (enhanced as any).readinessEvaluator;
 
-      const noLoadBalancerState = {
+      // No loadBalancer field and not processed
+      const noLoadBalancerNotProcessed = {
+        metadata: {
+          name: 'no-lb',
+          // No resourceVersion or generation
+        },
         status: {
           // No loadBalancer field
         },
       };
 
-      const result = evaluator(noLoadBalancerState);
-      expect(result.ready).toBe(false);
-      expect(result.reason).toBe('Waiting for load balancer to assign endpoints');
+      const notProcessedResult = evaluator(noLoadBalancerNotProcessed);
+      expect(notProcessedResult.ready).toBe(false);
+      expect(notProcessedResult.reason).toBe('Waiting for ingress controller to process the resource');
+
+      // No loadBalancer field but processed
+      const noLoadBalancerProcessed = {
+        metadata: {
+          name: 'no-lb',
+          resourceVersion: '12345',
+          generation: 1,
+        },
+        status: {
+          // No loadBalancer field
+        },
+      };
+
+      const processedResult = evaluator(noLoadBalancerProcessed);
+      expect(processedResult.ready).toBe(true);
+      expect(processedResult.reason).toContain('Ingress has been processed by the controller');
     });
 
     it('should handle multiple load balancer ingress endpoints', () => {

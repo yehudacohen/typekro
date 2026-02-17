@@ -57,7 +57,8 @@ import { fixCRDSchemaForK8s133 } from '../../utils/crd-schema-fix.js';
 yamlFile({
   name: 'flux-system-install',
   path: `https://github.com/fluxcd/flux2/releases/download/${fluxVersion}/install.yaml`,
-  deploymentStrategy: 'skipIfExists',
+  deploymentStrategy: 'serverSideApply',
+  fieldManager: 'typekro-bootstrap',
   manifestTransform: fixCRDSchemaForK8s133,  // Apply the fix here
 });
 ```
@@ -151,14 +152,32 @@ spec.values: Invalid value: "object": unknown field "myCustomValue" not allowed
 
 ### Important: Deployment Strategy Considerations
 
-The `typeKroRuntimeBootstrap` uses `deploymentStrategy: 'skipIfExists'` for the Flux installation. This means:
+The `typeKroRuntimeBootstrap` now uses `deploymentStrategy: 'serverSideApply'` for the Flux installation. This means:
 
 1. **First-time deployment**: The CRD fix is applied correctly
-2. **Subsequent deployments**: Existing CRDs are skipped, so the fix is NOT re-applied
+2. **Subsequent deployments**: Server-side apply merges the CRD schema fixes with existing CRDs
 
-**If you have existing Flux CRDs without the fix**, you have two options:
+**However**, if you have an existing cluster where Flux was installed before TypeKro's CRD fix was implemented, the CRDs may be missing the `x-kubernetes-preserve-unknown-fields: true` annotation on the `spec.values` field. This causes HelmRelease values to be silently stripped.
 
-#### Option 1: Delete and Re-deploy (Recommended for Development)
+**If you have existing Flux CRDs without the fix**, you have several options:
+
+#### Option 1: Quick Patch Command (Recommended for Existing Clusters)
+Apply the CRD fix directly using kubectl patch:
+
+```bash
+# Patch the HelmRelease CRD to add x-kubernetes-preserve-unknown-fields to spec.values
+kubectl patch crd helmreleases.helm.toolkit.fluxcd.io --type=json -p='[
+  {"op": "add", "path": "/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/values/x-kubernetes-preserve-unknown-fields", "value": true},
+  {"op": "add", "path": "/spec/versions/1/schema/openAPIV3Schema/properties/spec/properties/values/x-kubernetes-preserve-unknown-fields", "value": true}
+]'
+
+# Verify the patch was applied
+kubectl get crd helmreleases.helm.toolkit.fluxcd.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values}' | jq .
+```
+
+This is the fastest way to fix existing clusters without disrupting running workloads.
+
+#### Option 2: Delete and Re-deploy (For Development Clusters)
 ```bash
 # Delete existing Flux CRDs (WARNING: This will delete all Flux resources!)
 kubectl delete crd helmreleases.helm.toolkit.fluxcd.io
@@ -168,7 +187,7 @@ kubectl delete crd helmrepositories.source.toolkit.fluxcd.io
 # Re-run the bootstrap - the fix will be applied
 ```
 
-#### Option 2: Manually Apply the Fix
+#### Option 3: Manually Edit the CRD YAML
 ```bash
 # Get the current CRD
 kubectl get crd helmreleases.helm.toolkit.fluxcd.io -o yaml > helmrelease-crd.yaml
@@ -181,7 +200,7 @@ kubectl get crd helmreleases.helm.toolkit.fluxcd.io -o yaml > helmrelease-crd.ya
 kubectl apply -f helmrelease-crd.yaml
 ```
 
-#### Option 3: Use Server-Side Apply Strategy (Recommended for Production)
+#### Option 4: Re-run TypeKro Bootstrap with Server-Side Apply
 For production clusters where you want to update CRDs without disruption:
 
 ```typescript
@@ -200,7 +219,7 @@ Server-side apply is safer because it:
 - Preserves fields managed by other controllers
 - Tracks field ownership to prevent conflicts
 
-#### Option 4: Use 'replace' Strategy (For Fresh Clusters)
+#### Option 5: Use 'replace' Strategy (For Fresh Clusters)
 If you're setting up a fresh cluster and want to ensure the fix is always applied:
 
 ```typescript
@@ -213,6 +232,45 @@ yamlFile({
 ```
 
 **Warning**: Using `replace` on CRDs can cause brief disruption to existing resources.
+
+## Troubleshooting
+
+### HelmRelease Values Being Stripped (Empty `values: {}`)
+
+**Symptom**: Your HelmRelease resources show `values: {}` even though you specified values in your TypeKro composition. Pods may fail to start or have incorrect configuration.
+
+**Cause**: The Flux HelmRelease CRD is missing `x-kubernetes-preserve-unknown-fields: true` on the `spec.values` field. Kubernetes silently strips any fields it doesn't recognize in the schema.
+
+**Diagnosis**:
+```bash
+# Check if the CRD has the annotation
+kubectl get crd helmreleases.helm.toolkit.fluxcd.io -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values}' | jq .
+
+# If you see this, the fix is NOT applied:
+# { "type": "object" }
+
+# If you see this, the fix IS applied:
+# { "type": "object", "x-kubernetes-preserve-unknown-fields": true }
+```
+
+**Fix**: Apply the quick patch command from Option 1 above, then recreate your HelmRelease resources.
+
+### Init Container Stuck Waiting for Admin API
+
+**Symptom**: APISIX Ingress Controller pods are stuck in Init:0/1 state, with logs showing connection refused to the admin API.
+
+**Cause**: The ingress controller is trying to connect to the APISIX admin API before it's ready, or the service name is incorrect.
+
+**Diagnosis**:
+```bash
+# Check the init container logs
+kubectl logs -n <namespace> <pod-name> -c wait-apisix-admin
+
+# Check if the admin service exists
+kubectl get svc -n <namespace> | grep admin
+```
+
+**Fix**: Ensure the `adminService` configuration in your APISIX bootstrap matches the actual service name created by the Helm chart.
 
 ## Adding New Compatibility Fixes
 

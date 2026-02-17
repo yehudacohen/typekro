@@ -30,10 +30,10 @@ import { getComponentLogger } from '../logging/index.js';
  * (due to webhook delays, network issues, etc.).
  *
  * Timeout values are based on kubectl defaults and operation characteristics:
- * - Watch operations need short timeouts because they're long-lived and should reconnect
- * - Read operations (GET/LIST) should complete quickly
- * - Write operations (CREATE/PATCH/PUT) may trigger webhooks, so need longer timeouts
- * - Delete operations may wait for finalizers, so need even longer timeouts
+ * - Watch operations: DISABLED (handled by API server via timeoutSeconds parameter)
+ * - Read operations (GET/LIST): Complete quickly
+ * - Write operations (CREATE/PATCH/PUT): May trigger webhooks, need longer timeouts
+ * - Delete operations: May wait for finalizers, need even longer timeouts
  */
 export interface HttpTimeoutConfig {
   /**
@@ -44,31 +44,30 @@ export interface HttpTimeoutConfig {
 
   /**
    * Timeout for watch operations (long-lived connections with ?watch=true)
-   * @default 5000 (5 seconds) - matches EventMonitor.watchTimeoutSeconds
-   * Watch connections intentionally use short timeouts to allow clean reconnection
-   * when monitoring is stopped. The reconnection logic re-establishes connections
-   * as needed during active monitoring.
+   * @default 3600000 (1 hour) - effectively disabled
+   * Watch connections are controlled by the Kubernetes API server via timeoutSeconds
+   * query parameter. HTTP-level timeouts interfere with EventMonitor reconnection logic.
    */
   watch?: number;
 
   /**
    * Timeout for create operations (POST)
-   * @default 60000 (60 seconds)
+   * @default 120000 (2 minutes)
    * May trigger admission webhooks for validation, CRD defaults, mutations
    */
   create?: number;
 
   /**
-   * Timeout for update/patch operations (PATCH, PUT)
-   * @default 60000 (60 seconds)
-   * May trigger admission webhooks for validation, mutations
+   * Timeout for update operations (PATCH, PUT)
+   * @default 120000 (2 minutes)
+   * May trigger admission webhooks for validation, CRD defaults, mutations
    */
   update?: number;
 
   /**
    * Timeout for delete operations (DELETE)
-   * @default 90000 (90 seconds)
-   * May need to wait for finalizers, graceful termination
+   * @default 180000 (3 minutes)
+   * May wait for finalizers, graceful termination
    */
   delete?: number;
 }
@@ -78,11 +77,11 @@ export interface HttpTimeoutConfig {
  * Based on kubectl defaults and operation characteristics
  */
 const DEFAULT_TIMEOUTS: Required<HttpTimeoutConfig> = {
-  default: 30000, // 30 seconds - read operations
-  watch: 5000, // 5 seconds - watch connections (allows clean reconnection)
-  create: 60000, // 60 seconds - write operations with webhooks
-  update: 60000, // 60 seconds - write operations with webhooks
-  delete: 90000, // 90 seconds - may need to wait for finalizers
+  default: 30000, // 30 seconds - read operations (matches kubectl default)
+  watch: 3600000, // 1 hour - effectively disabled (API server controls watch timeouts)
+  create: 120000, // 2 minutes - write operations with webhooks
+  update: 120000, // 2 minutes - write operations with webhooks
+  delete: 180000, // 3 minutes - may need to wait for finalizers
 };
 
 /**
@@ -141,27 +140,33 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
    * @returns Timeout in milliseconds
    */
   private getTimeoutForRequest(method: string, url: string): number {
-    // Watch operations use short timeouts to allow clean reconnection
+    // Watch operations are long-lived streaming connections controlled by the
+    // Kubernetes API server via timeoutSeconds query parameter. Do NOT set
+    // HTTP-level timeouts on watch connections as this interferes with the
+    // EventMonitor's reconnection logic and causes AbortError issues.
     if (url.includes('?watch=true') || url.includes('&watch=true')) {
-      return this.timeouts.watch;
+      // Return a very long timeout (1 hour) to effectively disable HTTP timeout
+      // for watch operations. The API server handles watch timeouts via query params.
+      return 60 * 60 * 1000; // 1 hour
     }
 
     // Operation-specific timeouts based on HTTP method
+    // Increased for complex operations that may involve webhooks/finalizers
     const upperMethod = method.toUpperCase();
     switch (upperMethod) {
       case 'POST':
-        return this.timeouts.create;
+        return 120000; // 2 minutes for creates (may trigger admission webhooks)
       case 'PATCH':
       case 'PUT':
-        return this.timeouts.update;
+        return 120000; // 2 minutes for updates (may trigger admission webhooks)
       case 'DELETE':
-        return this.timeouts.delete;
+        return 180000; // 3 minutes for deletes (may wait for finalizers)
       case 'GET':
       case 'LIST':
       case 'HEAD':
       case 'OPTIONS':
       default:
-        return this.timeouts.default;
+        return 30000; // 30 seconds for reads (matches kubectl default)
     }
   }
 
@@ -174,6 +179,10 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
 
       // Determine appropriate timeout for this request
       const timeoutMs = this.getTimeoutForRequest(method, url.toString());
+
+      // For watch operations, skip HTTP timeout entirely - let API server handle it
+      const shouldSetTimeout =
+        !url.toString().includes('?watch=true') && !url.toString().includes('&watch=true');
 
       const agent = request.getAgent();
       const headers = request.getHeaders();
@@ -252,29 +261,32 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         reject(err);
       });
 
-      // ⭐ SET HTTP REQUEST TIMEOUT
+      // ⭐ SET HTTP REQUEST TIMEOUT (skip for watch operations)
       // This is critical for preventing requests from hanging indefinitely
       // when the Kubernetes API server doesn't respond (webhooks, network issues)
-      req.setTimeout(timeoutMs, () => {
-        req.destroy(); // Abort the request
-        const timeoutError = new Error(
-          `HTTP request timeout: ${method} ${url.pathname} timed out after ${timeoutMs}ms\n` +
-            `URL: ${url.toString()}\n` +
-            `\n` +
-            `💡 Possible causes:\n` +
-            `  • Kubernetes API server is not responding\n` +
-            `  • Admission webhooks are slow or unavailable\n` +
-            `  • Network connectivity issues\n` +
-            `  • Request is legitimately slow and timeout is too short\n` +
-            `\n` +
-            `✅ Solutions:\n` +
-            `  • Verify Kubernetes API server is running: kubectl cluster-info\n` +
-            `  • Check webhook status: kubectl get validatingwebhookconfigurations\n` +
-            `  • Increase timeout via httpTimeouts option if needed\n` +
-            `  • For watch operations: timeouts are intentionally short (5s) for reconnection`
-        );
-        reject(timeoutError);
-      });
+      // Watch operations are handled by the API server via timeoutSeconds parameter
+      if (shouldSetTimeout) {
+        req.setTimeout(timeoutMs, () => {
+          req.destroy(); // Abort the request
+          const timeoutError = new Error(
+            `HTTP request timeout: ${method} ${url.pathname} timed out after ${timeoutMs}ms\n` +
+              `URL: ${url.toString()}\n` +
+              `\n` +
+              `💡 Possible causes:\n` +
+              `  • Kubernetes API server is not responding\n` +
+              `  • Admission webhooks are slow or unavailable\n` +
+              `  • Network connectivity issues\n` +
+              `  • Request is legitimately slow and timeout is too short\n` +
+              `\n` +
+              `✅ Solutions:\n` +
+              `  • Verify Kubernetes API server is running: kubectl cluster-info\n` +
+              `  • Check webhook status: kubectl get validatingwebhookconfigurations\n` +
+              `  • Increase timeout via httpTimeouts option if needed\n` +
+              `  • For watch operations: timeouts are disabled (API server controls via timeoutSeconds)`
+          );
+          reject(timeoutError);
+        });
+      }
 
       // Handle abort signal (if available - added in newer versions)
       const signal = (request as any).getSignal?.();

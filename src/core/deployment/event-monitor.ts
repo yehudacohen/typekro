@@ -188,6 +188,10 @@ export class EventMonitor {
     });
 
     try {
+      // Set isMonitoring FIRST so that startWatchConnection doesn't skip the connection
+      // (it checks this.isMonitoring and returns early if false)
+      this.isMonitoring = true;
+
       // Get resource version for time-based filtering
       this.startResourceVersion = await this.getResourceVersionForTime(this.options.startTime);
 
@@ -202,7 +206,6 @@ export class EventMonitor {
         await this.createNamespaceWideWatchConnection();
       }
 
-      this.isMonitoring = true;
       this.logger.info('Event monitoring started successfully', {
         watchConnections: this.watchConnections.size,
         monitoredResources: this.monitoredResources.size,
@@ -236,84 +239,15 @@ export class EventMonitor {
     this.childDiscoveryTimeouts.clear();
 
     // Close all watch connections
-    // We need to actually abort the connections to prevent them from continuing to run
-    // and throwing TimeoutError that causes the process to hang.
-    //
-    // In Bun's runtime, calling abort() on fetch requests throws DOMException (AbortError)
-    // that can escape try-catch blocks. We handle this by:
-    // 1. Setting isMonitoring = false first (so error handlers know we're cleaning up)
-    // 2. Wrapping abort() in a try-catch and using setImmediate to defer the abort
-    // 3. The handleWatchError callback will ignore AbortError/TimeoutError when isMonitoring is false
+    // NOTE: We don't call abort() on connections because in Bun's runtime, abort() throws
+    // async AbortErrors that escape all error handling (try-catch, unhandled rejection handlers, etc.)
+    // Instead, we simply clear the connection references and let them be garbage collected.
+    // Setting isMonitoring = false (above) ensures our error handlers ignore any errors from these connections.
 
-    const abortPromises: Promise<void>[] = [];
-
-    for (const [key, connection] of this.watchConnections) {
-      if (connection.request && typeof connection.request.abort === 'function') {
-        // Wrap abort in a promise that handles errors gracefully
-        const abortPromise = new Promise<void>((resolve) => {
-          // Use setImmediate/setTimeout to defer the abort and allow error handlers to run
-          // This helps prevent unhandled errors from escaping
-          setTimeout(() => {
-            try {
-              connection.request?.abort();
-            } catch (error) {
-              // Ignore AbortError and TimeoutError - these are expected
-              const errorName = (error as Error)?.name;
-              if (errorName !== 'AbortError' && errorName !== 'TimeoutError') {
-                this.logger.debug('Error aborting watch connection', {
-                  key,
-                  kind: connection.kind,
-                  error: (error as Error)?.message,
-                });
-              }
-            }
-
-            // LAYER 3: Defensive Async Error Handler
-            // =======================================
-            // Why this layer exists:
-            // Bun's fetch/watch implementation can throw an async AbortError
-            // that fires on the NEXT event loop tick after abort() completes.
-            // This happens because:
-            //
-            // 1. abort() is called on the fetch request
-            // 2. The function returns
-            // 3. THEN an async error fires from Bun's internal watch stream
-            // 4. This error is outside any try-catch or promise chain
-            //
-            // We schedule a second setTimeout with an empty catch-all error
-            // handler to capture any errors that fire on the next tick.
-            // This is defensive programming against Bun's async error propagation.
-            setTimeout(() => {
-              try {
-                // This callback does nothing but ensures any async errors
-                // that fire on this tick are caught by our handler
-              } catch {
-                // Silently ignore - any error here would be from Bun's watch stream
-              }
-            }, 0);
-
-            resolve();
-          }, 0);
-        });
-        abortPromises.push(abortPromise);
-        this.logger.debug('Scheduled abort for watch connection', { key, kind: connection.kind });
-      }
-    }
-
-    // Wait for all abort operations to complete (with a timeout)
-    if (abortPromises.length > 0) {
-      try {
-        await Promise.race([
-          Promise.all(abortPromises),
-          new Promise<void>((resolve) => setTimeout(resolve, 1000)), // 1 second timeout
-        ]);
-      } catch (error) {
-        // Ignore errors during cleanup
-        this.logger.debug('Error during watch connection cleanup', {
-          error: (error as Error)?.message,
-        });
-      }
-    }
+    this.logger.debug('Clearing watch connections without explicit abort', {
+      connectionCount: this.watchConnections.size,
+      reason: 'Avoiding unhandled AbortErrors in Bun runtime',
+    });
 
     this.watchConnections.clear();
     this.monitoredResources.clear();

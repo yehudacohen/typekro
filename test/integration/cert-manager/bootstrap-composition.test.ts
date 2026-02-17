@@ -1,6 +1,31 @@
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
+import { deleteNamespaceIfExists, ensureNamespaceExists } from '../shared-kubeconfig.js';
+
+/**
+ * Wait for namespace to be fully deleted to avoid "Terminating" state race conditions
+ */
+async function waitForNamespaceDeletion(kubeConfig: any, namespaceName: string): Promise<void> {
+  const k8s = await import('@kubernetes/client-node');
+  const coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
+
+  let retries = 0;
+  while (retries < 30) {
+    // Max 30 seconds
+    try {
+      await coreApi.readNamespace(namespaceName);
+      // Still exists, wait
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      retries++;
+    } catch (error: any) {
+      if (error.statusCode === 404 || error.response?.statusCode === 404) {
+        // Namespace fully deleted
+        return;
+      }
+      throw error;
+    }
+  }
+}
 
 describe('Cert-Manager Bootstrap Composition Tests', () => {
   let kubeConfig: any;
@@ -13,7 +38,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       console.log('✅ Cluster connection established');
-      
+
       // Create test namespace
       await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
@@ -29,38 +54,44 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
   it('should create cert-manager bootstrap composition with comprehensive configuration', async () => {
     // Import cert-manager bootstrap composition
-    const { certManagerBootstrap } = await import('../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js');
+    const { certManagerBootstrap } = await import(
+      '../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js'
+    );
+
+    // Use unique namespace for this test to avoid conflicts with shared infrastructure
+    const testCertManagerNs = 'cert-manager-test-1';
 
     // Test with comprehensive configuration
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
       waitForReady: true, // Test with proper readiness checking
-      kubeConfig: kubeConfig
+      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      kubeConfig: kubeConfig,
     });
 
     const instance = await directFactory.deploy({
       name: 'cert-manager-bootstrap-test',
-      namespace: 'cert-manager',
+      namespace: testCertManagerNs, // Use unique namespace
       version: '1.13.3',
       installCRDs: true,
       controller: {
         resources: {
           requests: { cpu: '100m', memory: '128Mi' },
-          limits: { cpu: '500m', memory: '512Mi' }
-        }
+          limits: { cpu: '500m', memory: '512Mi' },
+        },
       },
       webhook: {
         enabled: true,
-        replicaCount: 1
+        replicaCount: 1,
       },
       cainjector: {
         enabled: true,
-        replicaCount: 1
+        replicaCount: 1,
       },
       prometheus: {
         enabled: true,
-        servicemonitor: { enabled: false } // Disable ServiceMonitor since Prometheus Operator is not installed
-      }
+        servicemonitor: { enabled: false }, // Disable ServiceMonitor since Prometheus Operator is not installed
+      },
     });
 
     // Validate bootstrap composition deployment
@@ -76,34 +107,42 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(instance.spec.cainjector?.enabled).toBe(true);
     expect(instance.spec.prometheus?.enabled).toBe(true);
 
-    // Clean up - skip for now due to cleanup bug
-    // await directFactory.deleteInstance('cert-manager-bootstrap-test');
-  }, 300000); // 5 minute timeout for complete bootstrap deployment
+    // Clean up
+    await directFactory.deleteInstance('cert-manager-bootstrap-test');
+    // // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
+  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
 
   it('should handle different cert-manager configurations', async () => {
     // Import cert-manager bootstrap composition
-    const { certManagerBootstrap } = await import('../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js');
+    const { certManagerBootstrap } = await import(
+      '../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js'
+    );
+
+    // Use unique namespaces for this test to avoid conflicts with shared infrastructure
+    const testCertManagerNs2 = 'cert-manager-test-2';
+    const testCertManagerNs3 = 'cert-manager-test-3';
 
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
       waitForReady: true, // Wait for readiness to validate proper deployment
-      kubeConfig: kubeConfig
+      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      kubeConfig: kubeConfig,
     });
 
     // Test minimal configuration
     const minimalInstance = await directFactory.deploy({
       name: 'cert-manager-minimal',
-      namespace: 'cert-manager'
+      namespace: testCertManagerNs2, // Use unique namespace
     });
 
     // The spec only contains explicitly provided values, defaults are applied internally
     expect(minimalInstance.spec.name).toBe('cert-manager-minimal');
-    expect(minimalInstance.spec.namespace).toBe('cert-manager');
+    expect(minimalInstance.spec.namespace).toBe(testCertManagerNs2);
 
     // Test comprehensive configuration
     const comprehensiveInstance = await directFactory.deploy({
       name: 'cert-manager-comprehensive',
-      namespace: 'cert-manager',
+      namespace: testCertManagerNs3, // Use unique namespace
       version: '1.14.0',
       installCRDs: false,
       replicaCount: 2,
@@ -111,49 +150,56 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
         image: {
           repository: 'quay.io/jetstack/cert-manager-controller', // Use valid repository
           tag: 'v1.14.0', // Use valid tag with v prefix
-          pullPolicy: 'Always'
+          pullPolicy: 'Always',
         },
         resources: {
           requests: { cpu: '200m', memory: '256Mi' },
-          limits: { cpu: '1000m', memory: '1Gi' }
+          limits: { cpu: '1000m', memory: '1Gi' },
         },
-        nodeSelector: { 'kubernetes.io/os': 'linux' }
+        nodeSelector: { 'kubernetes.io/os': 'linux' },
       },
       webhook: {
         enabled: true,
         replicaCount: 3,
         resources: {
-          requests: { cpu: '50m', memory: '64Mi' }
-        }
+          requests: { cpu: '50m', memory: '64Mi' },
+        },
       },
       cainjector: {
         enabled: true,
-        replicaCount: 2
+        replicaCount: 2,
       },
       prometheus: {
         enabled: true,
         servicemonitor: {
           enabled: false, // Disable ServiceMonitor since Prometheus Operator is not installed
-          interval: '30s'
-        }
-      }
+          interval: '30s',
+        },
+      },
     });
 
     expect(comprehensiveInstance.spec.version).toBe('1.14.0');
     expect(comprehensiveInstance.spec.installCRDs).toBe(false);
     expect(comprehensiveInstance.spec.replicaCount).toBe(2);
-    expect(comprehensiveInstance.spec.controller?.image?.repository).toBe('quay.io/jetstack/cert-manager-controller');
+    expect(comprehensiveInstance.spec.controller?.image?.repository).toBe(
+      'quay.io/jetstack/cert-manager-controller'
+    );
     expect(comprehensiveInstance.spec.webhook?.replicaCount).toBe(3);
     expect(comprehensiveInstance.spec.prometheus?.enabled).toBe(true);
 
-    // Clean up - skip for now due to cleanup bug
-    // await directFactory.deleteInstance('cert-manager-minimal');
-    // await directFactory.deleteInstance('cert-manager-comprehensive');
-  });
+    // Clean up
+    await directFactory.deleteInstance('cert-manager-minimal');
+    await directFactory.deleteInstance('cert-manager-comprehensive');
+
+    // Wait for namespace deletion
+    // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
+  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
 
   it('should generate proper CEL expressions for status fields', async () => {
     // Import cert-manager bootstrap composition
-    const { certManagerBootstrap } = await import('../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js');
+    const { certManagerBootstrap } = await import(
+      '../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js'
+    );
 
     // Test YAML generation to validate CEL expressions
     const yaml = certManagerBootstrap.toYaml();
@@ -173,20 +219,24 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
   it('should support both kro and direct deployment strategies', async () => {
     // Import cert-manager bootstrap composition
-    const { certManagerBootstrap } = await import('../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js');
+    const { certManagerBootstrap } = await import(
+      '../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js'
+    );
 
     // Test direct deployment strategy
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
       waitForReady: true, // Wait for readiness to validate proper deployment
-      kubeConfig: kubeConfig
+      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      kubeConfig: kubeConfig,
     });
 
     // Test kro factory creation (but don't deploy since we don't have CRDs)
     const kroFactory = certManagerBootstrap.factory('kro', {
       namespace: testNamespace,
       waitForReady: true, // Use proper readiness checking
-      kubeConfig: kubeConfig
+      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      kubeConfig: kubeConfig,
     });
 
     // Both factories should be created successfully
@@ -200,7 +250,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       name: 'cert-manager-dual-direct',
       namespace: 'cert-manager',
       version: '1.13.3',
-      installCRDs: true
+      installCRDs: true,
     });
 
     // Validate direct deployment structure
@@ -209,13 +259,16 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(directInstance.spec.version).toBe('1.13.3');
     expect(directInstance.spec.installCRDs).toBe(true);
 
-    // Clean up - skip for now due to cleanup bug
-    // await directFactory.deleteInstance('cert-manager-dual-direct');
-  });
+    // Clean up
+    await directFactory.deleteInstance('cert-manager-dual-direct');
+    // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
+  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
 
   it('should validate schema compatibility with ArkType', async () => {
     // Import schemas
-    const { CertManagerBootstrapConfigSchema, CertManagerBootstrapStatusSchema } = await import('../../../src/factories/cert-manager/types.js');
+    const { CertManagerBootstrapConfigSchema, CertManagerBootstrapStatusSchema } = await import(
+      '../../../src/factories/cert-manager/types.js'
+    );
 
     // Test valid configuration
     const validConfig = {
@@ -225,19 +278,19 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       installCRDs: true,
       controller: {
         resources: {
-          requests: { cpu: '100m', memory: '128Mi' }
-        }
+          requests: { cpu: '100m', memory: '128Mi' },
+        },
       },
       webhook: {
         enabled: true,
-        replicaCount: 1
-      }
+        replicaCount: 1,
+      },
     };
 
     const configResult = CertManagerBootstrapConfigSchema(validConfig);
     // ArkType returns the validated data directly when validation succeeds, or ArkErrors on failure
     expect(configResult).toBeDefined();
-    
+
     // Type guard to check if validation succeeded
     if ('name' in configResult) {
       expect(configResult.name).toBe('test-cert-manager');
@@ -258,14 +311,14 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       cainjectorReady: true,
       crds: {
         installed: true,
-        version: '1.13.3'
-      }
+        version: '1.13.3',
+      },
     };
 
     const statusResult = CertManagerBootstrapStatusSchema(validStatus);
     // ArkType returns the validated data directly when validation succeeds, or ArkErrors on failure
     expect(statusResult).toBeDefined();
-    
+
     // Type guard to check if validation succeeded
     if ('phase' in statusResult) {
       expect(statusResult.phase).toBe('Ready');
@@ -279,12 +332,15 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
   it('should handle readiness evaluation correctly', async () => {
     // Import cert-manager bootstrap composition
-    const { certManagerBootstrap } = await import('../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js');
+    const { certManagerBootstrap } = await import(
+      '../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js'
+    );
 
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
       waitForReady: true, // Wait for readiness to validate proper deployment
-      kubeConfig: kubeConfig
+      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      kubeConfig: kubeConfig,
     });
 
     const instance = await directFactory.deploy({
@@ -292,7 +348,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       namespace: 'cert-manager',
       version: '1.13.3',
       webhook: { enabled: true },
-      cainjector: { enabled: true }
+      cainjector: { enabled: true },
     });
 
     // Validate status structure exists
@@ -307,7 +363,8 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(typeof instance.status.crds.installed).toBe('boolean');
     expect(typeof instance.status.crds.version).toBe('string');
 
-    // Clean up - skip for now due to cleanup bug
-    // await directFactory.deleteInstance('cert-manager-readiness-test');
-  });
+    // Clean up
+    await directFactory.deleteInstance('cert-manager-readiness-test');
+    // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
+  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
 });

@@ -385,7 +385,7 @@ export interface APISixHelmValues {
     };
   };
 
-  // APISix configuration
+  // APISix configuration (for main apisix chart)
   apisix?: {
     image?: {
       repository?: string;
@@ -401,6 +401,13 @@ export interface APISixHelmValues {
     extraArgs?: string[];
     env?: EnvVar[];
     config?: Record<string, any>;
+    // Admin service configuration (for ingress controller chart)
+    // This configures the init container to wait for the correct APISIX admin service
+    adminService?: {
+      namespace?: string;
+      name?: string;
+      port?: number;
+    };
   };
 
   // Dashboard configuration

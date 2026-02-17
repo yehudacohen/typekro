@@ -7,15 +7,15 @@
  * while reusing existing readiness evaluators.
  */
 
-import { createResource } from '../../shared.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
+import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import { createResource } from '../../shared.js';
 import type {
-  CertManagerHelmRepositoryConfig,
   CertManagerHelmReleaseConfig,
+  CertManagerHelmRepositoryConfig,
   CertManagerHelmValues,
 } from '../types.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
-import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
 
 // =============================================================================
 // CERT-MANAGER HELM REPOSITORY WRAPPER
@@ -185,7 +185,7 @@ export function certManagerHelmRelease(
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
-  
+
   // CRITICAL: Helm values MUST be static - they cannot contain KubernetesRef objects
   // from schema proxies because Kro/Flux cannot handle CEL expressions inside spec.values.
   // The HelmRelease spec.values field is an arbitrary object without a defined schema,
@@ -206,11 +206,16 @@ export function certManagerHelmRelease(
     ...baseValues,
     // Always install CRDs - this is required for cert-manager to function
     installCRDs: true,
-    // Disable startupapicheck to avoid post-install hook timeouts
-    // The hook can fail if the API server is slow to respond
-    startupapicheck: { enabled: false },
+    // Enable startupapicheck by default with increased timeout to ensure webhook is ready
+    // This prevents "webhook not found" errors when deploying cert-manager CRDs
+    // Can be overridden by passing startupapicheck: { enabled: false } in config.values
+    startupapicheck: {
+      enabled: true,
+      timeout: '5m',
+      ...baseValues.startupapicheck, // Allow override from config.values
+    },
   };
-  
+
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
@@ -241,24 +246,26 @@ export function certManagerHelmRelease(
  * Sanitizes Helm values by removing any KubernetesRef objects or other non-serializable values.
  * This is necessary because Helm values must be static - they cannot contain CEL expressions
  * or schema proxy references.
- * 
+ *
  * @param values - The Helm values object to sanitize
  * @returns A sanitized copy of the values with only primitive types, arrays, and plain objects
  */
 function sanitizeHelmValues(values: Record<string, any>): Record<string, any> {
-  return JSON.parse(JSON.stringify(values, (key, value) => {
-    // Check if this is a KubernetesRef object (has __brand property)
-    if (value && typeof value === 'object' && value.__brand === 'KubernetesRef') {
-      // Return undefined to skip this value - it's a schema proxy reference
-      return undefined;
-    }
-    // Check if this is a CelExpression object
-    if (value && typeof value === 'object' && value.__celExpression) {
-      // Return undefined to skip this value - it's a CEL expression
-      return undefined;
-    }
-    return value;
-  }));
+  return JSON.parse(
+    JSON.stringify(values, (key, value) => {
+      // Check if this is a KubernetesRef object (has __brand property)
+      if (value && typeof value === 'object' && value.__brand === 'KubernetesRef') {
+        // Return undefined to skip this value - it's a schema proxy reference
+        return undefined;
+      }
+      // Check if this is a CelExpression object
+      if (value && typeof value === 'object' && value.__celExpression) {
+        // Return undefined to skip this value - it's a CEL expression
+        return undefined;
+      }
+      return value;
+    })
+  );
 }
 
 // =============================================================================
@@ -313,8 +320,25 @@ export function mapCertManagerConfigToHelmValues(
   }
 
   // Controller configuration
+  // NOTE: The cert-manager Helm chart places most controller settings at the root level,
+  // not under a "controller" key. Specifically:
+  //   - extraArgs, resources, nodeSelector, image, serviceAccount at root = controller settings
+  //   - webhook.extraArgs = webhook settings
+  //   - cainjector.extraArgs = cainjector settings
   if (config.controller) {
-    values.controller = { ...config.controller };
+    const { extraArgs, env, resources, nodeSelector, image, serviceAccount, ...rest } =
+      config.controller;
+    // Map controller fields to root level where the chart expects them
+    if (extraArgs) values.extraArgs = extraArgs;
+    if (env) values.extraEnv = env;
+    if (resources) values.resources = resources;
+    if (nodeSelector) values.nodeSelector = nodeSelector;
+    if (image) values.image = { ...values.image, ...image };
+    if (serviceAccount) values.serviceAccount = serviceAccount;
+    // Any remaining fields stay under controller
+    if (Object.keys(rest).length > 0) {
+      values.controller = { ...rest };
+    }
   }
 
   // Webhook configuration
@@ -348,21 +372,27 @@ export function mapCertManagerConfigToHelmValues(
   }
 
   // Include any additional custom values
+  const handledKeys = new Set([
+    'installCRDs',
+    'global',
+    'replicaCount',
+    'strategy',
+    'image',
+    'controller',
+    'webhook',
+    'cainjector',
+    'acmesolver',
+    'startupapicheck',
+    'prometheus',
+    // Root-level fields that may be mapped from controller config
+    'extraArgs',
+    'extraEnv',
+    'resources',
+    'nodeSelector',
+    'serviceAccount',
+  ]);
   Object.keys(config).forEach((key) => {
-    if (
-      !Object.hasOwn(values, key) &&
-      key !== 'installCRDs' &&
-      key !== 'global' &&
-      key !== 'replicaCount' &&
-      key !== 'strategy' &&
-      key !== 'image' &&
-      key !== 'controller' &&
-      key !== 'webhook' &&
-      key !== 'cainjector' &&
-      key !== 'acmesolver' &&
-      key !== 'startupapicheck' &&
-      key !== 'prometheus'
-    ) {
+    if (!Object.hasOwn(values, key) && !handledKeys.has(key)) {
       values[key] = (config as any)[key];
     }
   });

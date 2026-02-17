@@ -1,12 +1,12 @@
-import { kubernetesComposition, Cel } from '../../../index.js';
+import { Cel, kubernetesComposition } from '../../../index.js';
+import { namespace } from '../../kubernetes/core/namespace.js';
+import { certManagerHelmRelease, certManagerHelmRepository } from '../resources/helm.js';
 import {
+  type CertManagerBootstrapConfig,
   CertManagerBootstrapConfigSchema,
   CertManagerBootstrapStatusSchema,
-  type CertManagerBootstrapConfig,
 } from '../types.js';
-import { certManagerHelmRepository, certManagerHelmRelease } from '../resources/helm.js';
 import { mapCertManagerConfigToHelmValues } from '../utils/helm-values-mapper.js';
-import { namespace } from '../../kubernetes/core/namespace.js';
 
 /**
  * Helper function to ensure version has 'v' prefix for image tags
@@ -232,12 +232,15 @@ export const certManagerBootstrap = kubernetesComposition(
       },
 
       // Startup API check defaults
-      // IMPORTANT: startupapicheck is a post-install hook that can cause timeouts
-      // We disable it by default for TypeKro deployments to avoid installation failures
-      // Only enable if explicitly requested by the user
+      // IMPORTANT: startupapicheck validates the webhook is working before marking cert-manager as ready
+      // This is ENABLED by default to ensure accurate readiness reporting and prevent
+      // "webhook not found" errors when deploying cert-manager CRDs (Certificate, ClusterIssuer, etc.)
+      // It runs as a post-install Helm hook that verifies the cert-manager API is responding
+      // Set enabled: false to disable if you have custom readiness requirements
+      // Timeout increased to 5m to handle slower environments (configurable via startupapicheck.timeout)
       startupapicheck: {
-        enabled: spec.startupapicheck?.enabled === true, // Only enable if explicitly set to true
-        ...(spec.startupapicheck?.enabled === true && {
+        enabled: spec.startupapicheck?.enabled !== false, // Enabled by default, disable only if explicitly set to false
+        ...(spec.startupapicheck?.enabled !== false && {
           image: {
             repository:
               spec.startupapicheck?.image?.repository || 'quay.io/jetstack/cert-manager-ctl',
@@ -256,7 +259,7 @@ export const certManagerBootstrap = kubernetesComposition(
             ...spec.startupapicheck?.resources,
           },
           nodeSelector: spec.startupapicheck?.nodeSelector || {},
-          timeout: spec.startupapicheck?.timeout || '1m',
+          timeout: spec.startupapicheck?.timeout || '5m', // Increased from 1m to handle slower environments
           backoffLimit: spec.startupapicheck?.backoffLimit || 4,
         }),
       },

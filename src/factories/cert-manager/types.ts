@@ -977,7 +977,7 @@ export interface OrderStatus {
 // ARKTYPE SCHEMAS FOR BOOTSTRAP COMPOSITION
 // =============================================================================
 
-import { type, type Type } from 'arktype';
+import { type Type, type } from 'arktype';
 
 /**
  * ArkType schema for CertManagerBootstrapConfig
@@ -1244,14 +1244,27 @@ export interface CertManagerHelmValues {
     };
   };
 
-  // Image configuration
+  // Controller extra arguments (root-level in cert-manager Helm chart)
+  // Use this for flags like --dns01-recursive-nameservers
+  extraArgs?: string[];
+
+  // Controller extra environment variables (root-level in cert-manager Helm chart)
+  extraEnv?: EnvVar[];
+
+  // Image configuration (root-level = controller image in cert-manager Helm chart)
   image?: {
     repository?: string;
     tag?: string;
     pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
   };
 
-  // Controller configuration
+  // Resource requirements (root-level = controller resources in cert-manager Helm chart)
+  resources?: ResourceRequirements;
+
+  // Node selector (root-level = controller nodeSelector in cert-manager Helm chart)
+  nodeSelector?: Record<string, string>;
+
+  // Controller configuration (nested fields that ARE under 'controller' in the chart)
   controller?: {
     image?: {
       repository?: string;
