@@ -49,7 +49,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
       waitForReady: true,
-      timeout: 300000, // 5 minutes - startupapicheck disabled so much faster
+      timeout: 600000, // 10 minutes - first deploy needs Flux chart pull + pod startup
       kubeConfig: kubeConfig,
     });
 
@@ -94,7 +94,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
     // Clean up - deleteInstance rolls back the deployment including the namespace
     await directFactory.deleteInstance('cert-manager-bootstrap-test');
-  }, 600000); // 10 minute timeout
+  }, 900000); // 15 minute timeout - first deploy pulls chart from registry
 
   it('should handle different cert-manager configurations', async () => {
     // Import cert-manager bootstrap composition

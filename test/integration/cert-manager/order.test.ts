@@ -154,11 +154,12 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     );
 
     // Test with direct factory - this will actually deploy to Kubernetes
-    // Note: Order resources may not complete in test environment but we need waitForReady for status hydration
+    // Order resources will never reach "ready" without a real ACME server,
+    // so we use waitForReady: false since we're testing deployment mechanics
     const directFactory = orderComposition.factory('direct', {
       namespace: testNamespace,
-      waitForReady: true, // Required for status hydration
-      timeout: 180000, // 3 minutes
+      waitForReady: false,
+      timeout: 60000, // 1 minute - just needs to create the resource
       kubeConfig: kubeConfig,
     });
 
@@ -275,10 +276,12 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     );
 
     // Deploy using direct factory
+    // Order resources will never reach "ready" without a real ACME server,
+    // so we use waitForReady: false since we're testing deployment mechanics
     const directFactory = comprehensiveOrderGraph.factory('direct', {
       namespace: testNamespace,
-      waitForReady: true, // Required for status hydration
-      timeout: 240000, // 4 minutes for comprehensive order deployment
+      waitForReady: false,
+      timeout: 60000, // 1 minute - just needs to create the resource
       kubeConfig: kubeConfig,
     });
 
