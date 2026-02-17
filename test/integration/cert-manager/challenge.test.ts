@@ -298,10 +298,12 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       );
 
       // Deploy using direct factory - this should trigger Challenge creation
+      // ACME resources will never reach "ready" without a real ACME server,
+      // so we use waitForReady: false since we're testing deployment mechanics
       const directFactory = acmeCertificateGraph.factory('direct', {
         namespace: testNamespace,
-        waitForReady: true, // Required for status hydration
-        timeout: 180000, // 3 minutes for ACME certificate creation
+        waitForReady: false,
+        timeout: 60000, // 1 minute - just needs to create the resources
         kubeConfig: kubeConfig,
       });
 
