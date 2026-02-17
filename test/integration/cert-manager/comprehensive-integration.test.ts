@@ -4,7 +4,7 @@ import { type } from 'arktype';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { kubernetesComposition } from '../../../src/index.js';
-import { deleteNamespaceIfExists, ensureNamespaceExists } from '../shared-kubeconfig.js';
+import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -129,7 +129,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
 
   afterAll(async () => {
     console.log('Cleaning up comprehensive cert-manager integration tests...');
-    await deleteNamespaceIfExists(testNamespace, kubeConfig);
+    await deleteNamespaceAndWait(testNamespace, kubeConfig);
   });
 
   it('should deploy complete ACME certificate issuance stack with Pebble test server', async () => {

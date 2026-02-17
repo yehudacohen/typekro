@@ -21,7 +21,7 @@ import {
   createCoreV1ApiClient,
   createCustomObjectsApiClient,
   createKubernetesObjectApiClient,
-  deleteNamespaceIfExists,
+  deleteNamespaceAndWait,
   ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
@@ -285,7 +285,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       console.log('✅ End-to-end test resource cleanup completed');
 
       // Clean up test namespace
-      await deleteNamespaceIfExists(testNamespace, kubeConfig);
+      await deleteNamespaceAndWait(testNamespace, kubeConfig);
     } catch (error) {
       console.warn('⚠️ End-to-end test cleanup failed (non-critical):', error);
     }

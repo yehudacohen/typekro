@@ -4,7 +4,7 @@ import { type } from 'arktype';
 import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import { kubernetesComposition, toResourceGraph } from '../../../src/index.js';
-import { deleteNamespaceIfExists, ensureNamespaceExists } from '../shared-kubeconfig.js';
+import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Order Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -84,7 +84,7 @@ describe('Cert-Manager Order Real Integration Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager Order real integration tests...');
-    await deleteNamespaceIfExists(testNamespace, kubeConfig);
+    await deleteNamespaceAndWait(testNamespace, kubeConfig);
   });
 
   it('should deploy Order resource to Kubernetes using direct factory', async () => {

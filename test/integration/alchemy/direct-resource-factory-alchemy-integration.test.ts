@@ -73,7 +73,17 @@ describe('DirectResourceFactory Alchemy Integration', () => {
   });
 
   afterAll(async () => {
-    console.log('🧹 Cleaning up alchemy scope...');
+    console.log('🧹 Cleaning up alchemy scope and test namespaces...');
+    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
+    const namespacesToClean = [
+      'direct-alchemy-test',
+      'multi-deploy-test',
+      'shared-type-test',
+      'failure-test',
+      'update-test',
+    ];
+    await Promise.all(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kc)));
+    console.log('✅ Test namespace cleanup complete');
   });
 
   describe('DirectResourceFactory with Alchemy integration end-to-end', () => {
