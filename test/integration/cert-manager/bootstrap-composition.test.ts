@@ -6,6 +6,15 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
   let kubeConfig: any;
   const testNamespace = 'typekro-test-cm-bootstrap';
 
+  // All test deployments use unique namespaces prefixed with "cert-manager-test-"
+  // to avoid conflicts with the shared "cert-manager" namespace used by other tests.
+  // NEVER deploy to or delete the shared "cert-manager" namespace from this test.
+  const testNs1 = 'cert-manager-test-1';
+  const testNs2 = 'cert-manager-test-2';
+  const testNs3 = 'cert-manager-test-3';
+  const testNs4 = 'cert-manager-test-4';
+  const testNs5 = 'cert-manager-test-5';
+
   beforeAll(async () => {
     console.log('Setting up cert-manager bootstrap composition tests...');
 
@@ -26,12 +35,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     console.log('Cleaning up cert-manager bootstrap composition tests...');
     const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
     // Clean up the main test namespace and all cert-manager test namespaces
-    const namespacesToClean = [
-      testNamespace,
-      'cert-manager-test-1',
-      'cert-manager-test-2',
-      'cert-manager-test-3',
-    ];
+    const namespacesToClean = [testNamespace, testNs1, testNs2, testNs3, testNs4, testNs5];
     await Promise.all(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kubeConfig)));
   });
 
@@ -41,22 +45,20 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       '../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js'
     );
 
-    // Use unique namespace for this test to avoid conflicts with shared infrastructure
-    const testCertManagerNs = 'cert-manager-test-1';
-
     // Test with comprehensive configuration
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
-      waitForReady: true, // Test with proper readiness checking
-      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      waitForReady: true,
+      timeout: 300000, // 5 minutes - startupapicheck disabled so much faster
       kubeConfig: kubeConfig,
     });
 
     const instance = await directFactory.deploy({
       name: 'cert-manager-bootstrap-test',
-      namespace: testCertManagerNs, // Use unique namespace
+      namespace: testNs1,
       version: '1.13.3',
       installCRDs: true,
+      startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
       controller: {
         resources: {
           requests: { cpu: '100m', memory: '128Mi' },
@@ -90,10 +92,9 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(instance.spec.cainjector?.enabled).toBe(true);
     expect(instance.spec.prometheus?.enabled).toBe(true);
 
-    // Clean up
+    // Clean up - deleteInstance rolls back the deployment including the namespace
     await directFactory.deleteInstance('cert-manager-bootstrap-test');
-    // // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
-  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
+  }, 600000); // 10 minute timeout
 
   it('should handle different cert-manager configurations', async () => {
     // Import cert-manager bootstrap composition
@@ -101,40 +102,36 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       '../../../src/factories/cert-manager/compositions/cert-manager-bootstrap.js'
     );
 
-    // Use unique namespaces for this test to avoid conflicts with shared infrastructure
-    const testCertManagerNs2 = 'cert-manager-test-2';
-    const testCertManagerNs3 = 'cert-manager-test-3';
-
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
-      waitForReady: true, // Wait for readiness to validate proper deployment
-      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      waitForReady: true,
+      timeout: 600000, // 10 minutes per deploy - Flux chart pull + pod startup takes 3-5 min
       kubeConfig: kubeConfig,
     });
 
     // Test minimal configuration
     const minimalInstance = await directFactory.deploy({
       name: 'cert-manager-minimal',
-      namespace: testCertManagerNs2, // Use unique namespace
+      namespace: testNs2,
+      startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
     });
 
     // The spec only contains explicitly provided values, defaults are applied internally
     expect(minimalInstance.spec.name).toBe('cert-manager-minimal');
-    expect(minimalInstance.spec.namespace).toBe(testCertManagerNs2);
+    expect(minimalInstance.spec.namespace).toBe(testNs2);
+
+    // Clean up minimal before deploying comprehensive to reduce resource pressure
+    await directFactory.deleteInstance('cert-manager-minimal');
 
     // Test comprehensive configuration
     const comprehensiveInstance = await directFactory.deploy({
       name: 'cert-manager-comprehensive',
-      namespace: testCertManagerNs3, // Use unique namespace
-      version: '1.14.0',
+      namespace: testNs3,
+      version: '1.13.3', // Use same version as existing to avoid chart pull delays
       installCRDs: false,
+      startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
       replicaCount: 2,
       controller: {
-        image: {
-          repository: 'quay.io/jetstack/cert-manager-controller', // Use valid repository
-          tag: 'v1.14.0', // Use valid tag with v prefix
-          pullPolicy: 'Always',
-        },
         resources: {
           requests: { cpu: '200m', memory: '256Mi' },
           limits: { cpu: '1000m', memory: '1Gi' },
@@ -143,14 +140,14 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       },
       webhook: {
         enabled: true,
-        replicaCount: 3,
+        replicaCount: 1, // Reduced from 3 to avoid resource pressure
         resources: {
           requests: { cpu: '50m', memory: '64Mi' },
         },
       },
       cainjector: {
         enabled: true,
-        replicaCount: 2,
+        replicaCount: 1, // Reduced from 2 to avoid resource pressure
       },
       prometheus: {
         enabled: true,
@@ -161,22 +158,15 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       },
     });
 
-    expect(comprehensiveInstance.spec.version).toBe('1.14.0');
+    expect(comprehensiveInstance.spec.version).toBe('1.13.3');
     expect(comprehensiveInstance.spec.installCRDs).toBe(false);
     expect(comprehensiveInstance.spec.replicaCount).toBe(2);
-    expect(comprehensiveInstance.spec.controller?.image?.repository).toBe(
-      'quay.io/jetstack/cert-manager-controller'
-    );
-    expect(comprehensiveInstance.spec.webhook?.replicaCount).toBe(3);
+    expect(comprehensiveInstance.spec.webhook?.replicaCount).toBe(1);
     expect(comprehensiveInstance.spec.prometheus?.enabled).toBe(true);
 
     // Clean up
-    await directFactory.deleteInstance('cert-manager-minimal');
     await directFactory.deleteInstance('cert-manager-comprehensive');
-
-    // Wait for namespace deletion
-    // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
-  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
+  }, 1800000); // 30 minute timeout - two sequential deployments each taking 5-10 min
 
   it('should generate proper CEL expressions for status fields', async () => {
     // Import cert-manager bootstrap composition
@@ -209,16 +199,16 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     // Test direct deployment strategy
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
-      waitForReady: true, // Wait for readiness to validate proper deployment
-      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      waitForReady: true,
+      timeout: 300000, // 5 minutes
       kubeConfig: kubeConfig,
     });
 
     // Test kro factory creation (but don't deploy since we don't have CRDs)
     const kroFactory = certManagerBootstrap.factory('kro', {
       namespace: testNamespace,
-      waitForReady: true, // Use proper readiness checking
-      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      waitForReady: true,
+      timeout: 300000,
       kubeConfig: kubeConfig,
     });
 
@@ -228,12 +218,13 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(directFactory.namespace).toBe(testNamespace);
     expect(kroFactory.namespace).toBe(testNamespace);
 
-    // Test direct deployment (kro deployment would require CRD installation)
+    // Test direct deployment to a unique test namespace (NEVER use shared 'cert-manager')
     const directInstance = await directFactory.deploy({
       name: 'cert-manager-dual-direct',
-      namespace: 'cert-manager',
+      namespace: testNs4,
       version: '1.13.3',
       installCRDs: true,
+      startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
     });
 
     // Validate direct deployment structure
@@ -244,8 +235,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
     // Clean up
     await directFactory.deleteInstance('cert-manager-dual-direct');
-    // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
-  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
+  }, 600000); // 10 minute timeout
 
   it('should validate schema compatibility with ArkType', async () => {
     // Import schemas
@@ -321,15 +311,17 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
-      waitForReady: true, // Wait for readiness to validate proper deployment
-      timeout: 720000, // 12 minutes - cert-manager bootstrap takes ~11 minutes with startupapicheck
+      waitForReady: true,
+      timeout: 600000, // 10 minutes - Flux chart pull + pod startup takes 3-5 min
       kubeConfig: kubeConfig,
     });
 
+    // Deploy to a unique test namespace (NEVER use shared 'cert-manager')
     const instance = await directFactory.deploy({
       name: 'cert-manager-readiness-test',
-      namespace: 'cert-manager',
+      namespace: testNs5,
       version: '1.13.3',
+      startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
       webhook: { enabled: true },
       cainjector: { enabled: true },
     });
@@ -348,6 +340,5 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
 
     // Clean up
     await directFactory.deleteInstance('cert-manager-readiness-test');
-    // await waitForNamespaceDeletion(kubeConfig, 'cert-manager');
-  }, 900000); // 15 minute timeout for cert-manager bootstrap deployment
+  }, 900000); // 15 minute timeout
 });

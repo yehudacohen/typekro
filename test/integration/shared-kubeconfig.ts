@@ -551,6 +551,11 @@ export async function ensureCertManagerInstalled(
     namespace,
     version,
     installCRDs,
+    // Disable startupapicheck to avoid post-install hook timeouts.
+    // The startupapicheck job validates the webhook API, but it often times out
+    // in CI/test environments due to slow pod scheduling. Instead, we rely on
+    // the HelmRelease readiness check which validates the same thing.
+    startupapicheck: { enabled: false },
   });
 
   if (verbose) {
