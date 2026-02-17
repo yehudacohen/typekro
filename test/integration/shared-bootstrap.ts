@@ -11,8 +11,8 @@
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition, typeKroRuntimeBootstrap, certManager } from '../../src/index.js';
 import { namespace } from '../../src/factories/kubernetes/core/namespace.js';
+import { certManager, kubernetesComposition, typeKroRuntimeBootstrap } from '../../src/index.js';
 
 const IntegrationTestBootstrapSpec = type({
   namespace: 'string',
@@ -50,7 +50,8 @@ export const integrationTestBootstrap = kubernetesComposition(
 
     // 2. Cert-Manager (with CRDs) - Needed for certificate tests
     // Call resources directly (not nested in objects) to ensure proper registration
-    let certManagerBootstrapInstance = null;
+    let certManagerBootstrapInstance: ReturnType<typeof certManager.certManagerBootstrap> | null =
+      null;
     if (config.enableCertManager) {
       namespace({
         metadata: { name: 'cert-manager' },
@@ -62,6 +63,11 @@ export const integrationTestBootstrap = kubernetesComposition(
         namespace: 'cert-manager',
         version: '1.13.3',
         installCRDs: true,
+        // Disable startupapicheck to avoid post-install hook timeouts.
+        // The startupapicheck job validates the webhook API, but it often times out
+        // in CI/test environments due to slow pod scheduling. Instead, we rely on
+        // the HelmRelease readiness check which validates cert-manager is operational.
+        startupapicheck: { enabled: false },
       });
     }
 

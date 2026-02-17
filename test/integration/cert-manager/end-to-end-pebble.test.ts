@@ -96,6 +96,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       namespace: 'cert-manager',
       version: '1.13.3',
       installCRDs: true,
+      startupapicheck: { enabled: false }, // Disable to avoid post-install hook timeouts
       // Minimal resource configuration for testing
       controller: {
         resources: {
