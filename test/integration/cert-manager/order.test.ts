@@ -24,8 +24,7 @@ describe('Cert-Manager Order Real Integration Tests', () => {
       const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
       await ensureCertManagerInstalled({
         namespace: 'cert-manager',
-        version: '1.13.3',
-        installCRDs: true,
+        version: '1.19.3',
         kubeConfig,
       });
 
@@ -196,7 +195,7 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     expect(orderBody.spec.dnsNames).toEqual(['test.example.com', 'www.test.example.com']);
     expect(orderBody.spec.issuerRef.name).toBe('test-issuer');
     expect(orderBody.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(orderBody.spec.duration).toBe('2160h0m0s'); // cert-manager normalizes duration format
+    expect(orderBody.spec.duration).toBe('2160h'); // cert-manager 1.19.3 normalizes duration format
 
     console.log('✅ Order successfully deployed to Kubernetes');
     console.log('📋 Order resource verified in cluster');
@@ -325,7 +324,7 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     expect(orderBody.spec.ipAddresses).toEqual(['192.168.1.100', '10.0.0.100']);
     expect(orderBody.spec.issuerRef.name).toBe('test-comprehensive-issuer');
     expect(orderBody.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(orderBody.spec.duration).toBe('8760h0m0s'); // cert-manager normalizes duration format
+    expect(orderBody.spec.duration).toBe('8760h'); // cert-manager 1.19.3 normalizes duration format
 
     console.log('✅ Comprehensive Order successfully deployed to Kubernetes');
     console.log('📋 Order resource verified with multiple domains and IP addresses');

@@ -405,37 +405,6 @@ export async function deleteResourceIfExists(
 // =============================================================================
 
 /**
- * Check if cert-manager CRDs are installed and established
- */
-async function areCertManagerCRDsInstalled(kc?: k8s.KubeConfig): Promise<boolean> {
-  const kubeConfig = kc || getIntegrationTestKubeConfig();
-  const customObjectsApi = createCustomObjectsApiClient(kubeConfig);
-
-  const crdNames = [
-    'certificates.cert-manager.io',
-    'clusterissuers.cert-manager.io',
-    'issuers.cert-manager.io',
-  ];
-
-  try {
-    for (const crdName of crdNames) {
-      await customObjectsApi.getClusterCustomObject({
-        group: 'apiextensions.k8s.io',
-        version: 'v1',
-        plural: 'customresourcedefinitions',
-        name: crdName,
-      });
-    }
-    return true;
-  } catch (error: any) {
-    if (error.statusCode === 404 || error.body?.code === 404) {
-      return false;
-    }
-    throw error;
-  }
-}
-
-/**
  * Check if cert-manager is installed and ready in a specific namespace
  */
 async function isCertManagerReady(
@@ -465,15 +434,68 @@ async function isCertManagerReady(
 }
 
 /**
+ * Clean up cert-manager webhook configurations created by test installations.
+ *
+ * When cert-manager is deployed to a test namespace (e.g., 'nested-test-cm'),
+ * it creates cluster-scoped MutatingWebhookConfiguration and ValidatingWebhookConfiguration
+ * resources. If the test namespace is deleted without cleaning up these webhooks,
+ * they will intercept all cert-manager resource creation (Certificates, ClusterIssuers, etc.)
+ * and route to the now-deleted webhook service, causing HTTP 500 errors.
+ *
+ * The cert-manager Helm chart names webhooks based on its fullname template:
+ * - If release name contains "cert-manager": webhook = `{releaseName}-webhook`
+ * - Otherwise: webhook = `{releaseName}-cert-manager-webhook`
+ *
+ * This function tries both patterns to ensure cleanup.
+ *
+ * @param releaseName The Helm release name used for cert-manager (e.g., 'nested-test-cm')
+ * @param kc KubeConfig to use
+ */
+export async function cleanupCertManagerWebhooks(
+  releaseName: string,
+  kc?: k8s.KubeConfig
+): Promise<void> {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  const k8sApi = createKubernetesObjectApiClient(kubeConfig);
+
+  // The cert-manager chart's fullname template produces different names depending
+  // on whether the release name contains "cert-manager"
+  const webhookNames = releaseName.includes('cert-manager')
+    ? [`${releaseName}-webhook`]
+    : [`${releaseName}-cert-manager-webhook`, `${releaseName}-webhook`];
+
+  for (const webhookName of webhookNames) {
+    for (const kind of ['MutatingWebhookConfiguration', 'ValidatingWebhookConfiguration']) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'admissionregistration.k8s.io/v1',
+          kind,
+          metadata: { name: webhookName },
+        });
+        console.log(`🗑️ Deleted ${kind}/${webhookName}`);
+      } catch (error: any) {
+        if (
+          error.statusCode === 404 ||
+          error.body?.code === 404 ||
+          error.body?.reason === 'NotFound'
+        ) {
+          // Already gone, no action needed
+        } else {
+          console.warn(`⚠️ Failed to delete ${kind}/${webhookName}:`, error.message);
+        }
+      }
+    }
+  }
+}
+
+/**
  * Options for ensuring cert-manager is installed
  */
 export interface EnsureCertManagerOptions {
   /** Namespace to install cert-manager in (default: 'cert-manager') */
   namespace?: string;
-  /** Cert-manager version (default: '1.13.3') */
+  /** Cert-manager version (default: '1.19.3') */
   version?: string;
-  /** Whether to install CRDs (default: true) */
-  installCRDs?: boolean;
   /** Timeout for waiting for cert-manager to be ready (default: 300000ms) */
   timeout?: number;
   /** KubeConfig to use */
@@ -487,9 +509,14 @@ export interface EnsureCertManagerOptions {
  *
  * This is an idempotent operation that:
  * - Checks if cert-manager is already running and ready
- * - If not, deploys cert-manager using the bootstrap composition
+ * - If not, deploys cert-manager using the bootstrap composition with installCRDs: true
  * - Waits for cert-manager to be ready before returning
  * - Can be called multiple times safely
+ *
+ * CRDs are installed by the Helm chart (installCRDs: true) as part of the HelmRelease.
+ * Tests that deploy additional cert-manager instances to test-specific namespaces should
+ * use installCRDs: false to avoid CRD ownership conflicts, and must NEVER call
+ * deleteInstance() on the shared cert-manager installation.
  *
  * @example
  * ```typescript
@@ -503,8 +530,7 @@ export async function ensureCertManagerInstalled(
 ): Promise<void> {
   const {
     namespace = 'cert-manager',
-    version = '1.13.3',
-    installCRDs = true,
+    version = '1.19.3',
     timeout = 300000,
     kubeConfig,
     verbose = true,
@@ -514,22 +540,23 @@ export async function ensureCertManagerInstalled(
 
   // Check if cert-manager is already ready
   if (verbose) {
-    console.log('🔍 Checking if cert-manager is already installed...');
+    console.log('Checking if cert-manager is already installed...');
   }
 
-  const crdsInstalled = await areCertManagerCRDsInstalled(kc);
   const isReady = await isCertManagerReady(namespace, kc);
 
-  if (crdsInstalled && isReady) {
+  if (isReady) {
     if (verbose) {
-      console.log(`✅ Cert-manager already installed and ready in namespace '${namespace}'`);
+      console.log(`Cert-manager already installed and ready in namespace '${namespace}'`);
     }
     return;
   }
 
-  // Deploy cert-manager
+  // Deploy cert-manager via the bootstrap composition.
+  // installCRDs: true tells the Helm chart to include CRD manifests in the release.
+  // The HelmRelease factory hardcodes installCRDs: true, so CRDs are always installed.
   if (verbose) {
-    console.log(`📦 Deploying cert-manager ${version} to namespace '${namespace}'...`);
+    console.log(`Deploying cert-manager ${version} to namespace '${namespace}'...`);
   }
 
   const { certManagerBootstrap } = await import(
@@ -550,7 +577,7 @@ export async function ensureCertManagerInstalled(
     name: 'cert-manager',
     namespace,
     version,
-    installCRDs,
+    installCRDs: true,
     // Disable startupapicheck to avoid post-install hook timeouts.
     // The startupapicheck job validates the webhook API, but it often times out
     // in CI/test environments due to slow pod scheduling. Instead, we rely on
@@ -559,7 +586,7 @@ export async function ensureCertManagerInstalled(
   });
 
   if (verbose) {
-    console.log(`✅ Cert-manager ${version} deployed and ready in namespace '${namespace}'`);
+    console.log(`Cert-manager ${version} deployed and ready in namespace '${namespace}'`);
   }
 }
 

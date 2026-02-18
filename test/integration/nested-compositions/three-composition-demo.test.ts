@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import {
-  kubernetesComposition,
-  typeKroRuntimeBootstrap,
   certManager,
   externalDns,
+  kubernetesComposition,
   simple,
+  typeKroRuntimeBootstrap,
 } from '../../../src/index.js';
 
 describe('Three-Composition Demo Integration', () => {
@@ -53,7 +53,7 @@ describe('Three-Composition Demo Integration', () => {
         const certManagerInstance = certManager.certManagerBootstrap({
           name: 'cert-manager-test',
           namespace: 'cert-manager',
-          version: '1.13.3',
+          version: '1.19.3',
           installCRDs: true,
           controller: {
             resources: {
@@ -61,7 +61,7 @@ describe('Three-Composition Demo Integration', () => {
               limits: { cpu: '100m', memory: '128Mi' },
             },
           },
-          webhook: { enabled: true, replicaCount: 1 },
+          webhook: { replicaCount: 1 },
           cainjector: { enabled: true, replicaCount: 1 },
         });
 
@@ -335,7 +335,7 @@ describe('Three-Composition Demo Integration', () => {
         const certMgr = certManager.certManagerBootstrap({
           name: 'cert-manager',
           namespace: 'cert-manager',
-          version: '1.13.3',
+          version: '1.19.3',
           installCRDs: true,
         });
 

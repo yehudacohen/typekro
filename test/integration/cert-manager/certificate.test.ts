@@ -24,8 +24,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
       const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
       await ensureCertManagerInstalled({
         namespace: 'cert-manager',
-        version: '1.13.3',
-        installCRDs: true,
+        version: '1.19.3',
         kubeConfig,
       });
 
@@ -435,8 +434,8 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     expect(certBody.spec.dnsNames).toEqual(['lifecycle.example.com', 'www.lifecycle.example.com']);
     expect(certBody.spec.issuerRef.name).toContain('issuer');
     expect(certBody.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(certBody.spec.duration).toBe('24h0m0s'); // cert-manager normalizes duration format
-    expect(certBody.spec.renewBefore).toBe('1h0m0s'); // cert-manager normalizes duration format
+    expect(certBody.spec.duration).toBe('24h'); // cert-manager 1.19.3 normalizes duration format
+    expect(certBody.spec.renewBefore).toBe('1h'); // cert-manager 1.19.3 normalizes duration format
     expect(certBody.spec.privateKey.algorithm).toBe('RSA');
     expect(certBody.spec.privateKey.size).toBe(2048);
     expect(certBody.spec.usages).toContain('digital signature');

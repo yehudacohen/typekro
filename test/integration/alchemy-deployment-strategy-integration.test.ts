@@ -9,6 +9,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import type * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
@@ -44,12 +46,24 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
   beforeAll(async () => {
     console.log('🔧 Creating alchemy scope for error handling tests...');
     try {
+      // Clean stale alchemy state from previous runs to prevent orphan destruction hangs.
+      // When a previous test run crashes or times out, state files are left with status "updating"
+      // which causes alchemy's finalize() to try destroying orphan resources in non-existent
+      // namespaces, hanging indefinitely with no timeout.
+      const ALCHEMY_STATE_DIR = './temp/.alchemy';
+      const SCOPE_NAME = 'alchemy-error-handling-test';
+      const scopeStateDir = join(ALCHEMY_STATE_DIR, SCOPE_NAME);
+      if (existsSync(scopeStateDir)) {
+        console.log(`🧹 Cleaning stale alchemy state: ${scopeStateDir}`);
+        rmSync(scopeStateDir, { recursive: true, force: true });
+      }
+
       const { FileSystemStateStore } = await import('alchemy/state');
 
       alchemyScope = await alchemy('alchemy-error-handling-test', {
         stateStore: (scope) =>
           new FileSystemStateStore(scope, {
-            rootDir: './temp/.alchemy',
+            rootDir: ALCHEMY_STATE_DIR,
           }),
       });
       console.log(`✅ Alchemy scope created: ${alchemyScope.name}`);

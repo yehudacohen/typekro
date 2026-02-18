@@ -13,6 +13,8 @@ import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, certManager, kubernetesComposition, simple } from '../../src/index.js';
 import {
+  cleanupCertManagerWebhooks,
+  deleteNamespaceAndWait,
   ensureCertManagerInstalled,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
@@ -79,6 +81,24 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
   afterAll(async () => {
     // Cleanup test resources
     console.log('🧹 Cleaning up nested compositions integration tests...');
+
+    // Clean up the nested-test-cm namespace created by the nested compositions test.
+    // We can't use factory.deleteInstance() because it would also delete the shared
+    // cert-manager HelmRepository in flux-system.
+    try {
+      await deleteNamespaceAndWait('nested-test-cm', kc);
+    } catch (_e) {
+      // Ignore - namespace may not exist if the test didn't run
+    }
+
+    // Clean up cluster-scoped webhook configurations created by the test cert-manager
+    // installation. These are NOT namespace-scoped and persist after namespace deletion,
+    // causing HTTP 500 errors for all subsequent cert-manager resource operations.
+    try {
+      await cleanupCertManagerWebhooks('nested-test-cm', kc);
+    } catch (_e) {
+      // Ignore - webhooks may not exist if the test didn't run
+    }
   });
 
   it(
@@ -155,7 +175,9 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
   );
 
   it('should deploy ClusterIssuer successfully', async () => {
-    // Test ClusterIssuer deployment in isolation using a composition
+    // Test ClusterIssuer deployment in isolation using a composition.
+    // Uses a selfSigned issuer for fast, reliable readiness in test environments
+    // (ACME issuers require real internet connectivity from the cluster which is unreliable).
     const ClusterIssuerSpec = type({
       name: 'string',
     });
@@ -176,20 +198,7 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
         const _issuer = certManager.clusterIssuer({
           name: spec.name,
           spec: {
-            acme: {
-              server: 'https://acme-staging-v02.api.letsencrypt.org/directory',
-              email: 'typekro-test@funwiththec.cloud',
-              privateKeySecretRef: { name: 'test-issuer-key' },
-              solvers: [
-                {
-                  http01: {
-                    ingress: {
-                      class: 'nginx',
-                    },
-                  },
-                },
-              ],
-            },
+            selfSigned: {},
           },
           id: 'testIssuer',
         });
@@ -383,12 +392,16 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
           status: NestedStatus,
         },
         (_spec) => {
-          // Call cert-manager bootstrap as a nested composition
+          // Call cert-manager bootstrap as a nested composition.
+          // Use a unique namespace to avoid conflicting with the existing cert-manager
+          // installation in 'cert-manager' namespace. Disable startupapicheck to avoid
+          // post-install hook timeouts.
           const _certManagerInstance = certManager.certManagerBootstrap({
-            name: 'test-cert-manager',
-            namespace: 'cert-manager',
-            version: '1.13.3',
-            installCRDs: true,
+            name: 'nested-test-cm',
+            namespace: 'nested-test-cm',
+            version: '1.19.3',
+            installCRDs: false, // Don't install CRDs - they already exist from the main cert-manager
+            startupapicheck: { enabled: false },
             id: 'certManagerInstance',
           });
 
@@ -418,11 +431,11 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       expect(result.status.ready).toBe(true);
       expect(result.status.issuerReady).toBe(true);
 
-      // NOTE: We intentionally do NOT delete 'nested-test' here because it contains
-      // a cert-manager HelmRelease with installCRDs: true. Deleting it would cause
-      // Flux to uninstall cert-manager and remove its CRDs, breaking subsequent tests
-      // that depend on cert-manager (e.g., the cross-composition references test).
-      // The afterAll cleanup handles this at the end of the test suite.
+      // NOTE: We intentionally do NOT call factory.deleteInstance('nested-test') here
+      // because it contains a HelmRepository ('cert-manager-repo' in flux-system) that
+      // is shared with the main cert-manager installation. Deleting it via rollback
+      // would remove the shared HelmRepo, breaking subsequent cert-manager tests.
+      // The 'nested-test-cm' namespace is cleaned up in afterAll instead.
     },
     TEST_TIMEOUT
   );

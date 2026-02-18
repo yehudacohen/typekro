@@ -217,7 +217,7 @@ const infrastructureStack = kubernetesComposition(
     const certManagerInstance = certManager.certManagerBootstrap({
       name: 'cert-manager',
       namespace: 'cert-manager',
-      version: '1.13.3',
+      version: '1.19.3',
       installCRDs: true,
       controller: {
         extraArgs: [

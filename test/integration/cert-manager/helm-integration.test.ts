@@ -1,8 +1,18 @@
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { certManagerHelmRepository, certManagerHelmRelease } from '../../../src/factories/cert-manager';
 import { type } from 'arktype';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCoreV1ApiClient, createResourceWithConflictHandling, deleteResourceIfExists } from '../shared-kubeconfig.js';
+import {
+  certManagerHelmRelease,
+  certManagerHelmRepository,
+} from '../../../src/factories/cert-manager';
+import {
+  createCoreV1ApiClient,
+  createKubernetesObjectApiClient,
+  createResourceWithConflictHandling,
+  deleteResourceIfExists,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from '../shared-kubeconfig.js';
 
 // Test schemas for integration testing
 const _TestSpecSchema = type({
@@ -66,7 +76,7 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
         });
 
         // Wait a bit for the repository to be processed
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise((resolve) => setTimeout(resolve, 5000));
 
         expect((createdRepo as any).spec.url).toBe('https://charts.jetstack.io');
         expect((createdRepo as any).metadata?.name).toBe('cert-manager-repo-direct-test');
@@ -77,8 +87,8 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
           kind: 'HelmRepository',
           metadata: {
             name: 'cert-manager-repo-direct-test',
-            namespace: 'flux-system'
-          }
+            namespace: 'flux-system',
+          },
         });
       } catch (error) {
         console.error('Direct deployment test failed:', error);
@@ -131,7 +141,7 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
         // Create cert-manager namespace if it doesn't exist
         try {
           await coreApi.createNamespace({
-            body: { metadata: { name: 'cert-manager' } }
+            body: { metadata: { name: 'cert-manager' } },
           });
         } catch (_error) {
           // Namespace might already exist
@@ -144,7 +154,7 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
         });
 
         // Wait for repository to be ready
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        await new Promise((resolve) => setTimeout(resolve, 10000));
 
         // Apply the HelmRelease - use conflict handling
         const createdRelease = await createResourceWithConflictHandling(k8sApi, release, {
@@ -165,16 +175,16 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
           kind: 'HelmRelease',
           metadata: {
             name: 'cert-manager-test-release',
-            namespace: 'cert-manager'
-          }
+            namespace: 'cert-manager',
+          },
         });
         await deleteResourceIfExists(k8sApi, {
           apiVersion: 'source.toolkit.fluxcd.io/v1',
           kind: 'HelmRepository',
           metadata: {
             name: 'cert-manager-repo-for-release',
-            namespace: 'flux-system'
-          }
+            namespace: 'flux-system',
+          },
         });
       } catch (error) {
         console.error('HelmRelease test failed:', error);
@@ -194,7 +204,6 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
           installCRDs: true, // Install CRDs for comprehensive deployment
           replicaCount: 2,
           webhook: {
-            enabled: true,
             replicaCount: 2,
           },
           cainjector: {
@@ -214,7 +223,6 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
       // Validate generated Helm values
       expect(release.spec.values?.installCRDs).toBe(true);
       expect(release.spec.values?.replicaCount).toBe(2);
-      expect(release.spec.values?.webhook?.enabled).toBe(true);
       expect(release.spec.values?.cainjector?.enabled).toBe(true);
       expect(release.spec.values?.prometheus?.enabled).toBe(true);
     });
@@ -280,7 +288,6 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
             },
           },
           webhook: {
-            enabled: true,
             replicaCount: 2,
             resources: {
               requests: {
@@ -323,7 +330,9 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
   describe('Helm Values Validation', () => {
     it('should validate Helm values correctly', async () => {
       // Import the validation function
-      const { validateCertManagerHelmValues } = await import('../../../src/factories/cert-manager/resources/helm.js');
+      const { validateCertManagerHelmValues } = await import(
+        '../../../src/factories/cert-manager/resources/helm.js'
+      );
 
       // Test valid configuration
       const validConfig = {
@@ -372,13 +381,14 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
 
     it('should handle mapping function correctly', async () => {
       // Import the mapping function
-      const { mapCertManagerConfigToHelmValues } = await import('../../../src/factories/cert-manager/resources/helm.js');
+      const { mapCertManagerConfigToHelmValues } = await import(
+        '../../../src/factories/cert-manager/resources/helm.js'
+      );
 
       const config = {
         installCRDs: true,
         replicaCount: 2,
         webhook: {
-          enabled: true,
           replicaCount: 2,
         },
         customValue: 'test', // Custom values should be preserved
@@ -388,7 +398,6 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
 
       expect(mappedValues.installCRDs).toBe(true);
       expect(mappedValues.replicaCount).toBe(2);
-      expect(mappedValues.webhook.enabled).toBe(true);
       expect(mappedValues.webhook.replicaCount).toBe(2);
       expect(mappedValues.customValue).toBe('test');
     });
