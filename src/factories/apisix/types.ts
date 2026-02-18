@@ -5,13 +5,13 @@
  * following the same patterns as cert-manager types.
  */
 
-import { type, type Type } from 'arktype';
+import { type Type, type } from 'arktype';
 import type {
-  ResourceRequirements,
-  Toleration,
   Affinity,
-  SecurityContext,
   EnvVar,
+  ResourceRequirements,
+  SecurityContext,
+  Toleration,
 } from '../cert-manager/types.js';
 
 // APISix Bootstrap Configuration
@@ -462,6 +462,8 @@ export interface APISixHelmValues {
   // Service configuration (for gateway service type)
   service?: {
     type?: 'NodePort' | 'LoadBalancer' | 'ClusterIP';
+    /** External traffic policy. Set to '' to disable for ClusterIP on Kubernetes 1.33+. */
+    externalTrafficPolicy?: string;
     annotations?: Record<string, string>;
     labels?: Record<string, string>;
     http?: {
