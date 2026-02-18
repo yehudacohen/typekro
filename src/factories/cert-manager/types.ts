@@ -399,35 +399,6 @@ export interface CertManagerBootstrapStatus {
   // These should be added in future compositions that manage resources directly
 }
 
-// Webhook configuration types
-export interface WebhookConfig {
-  name: string;
-  clientConfig: {
-    service?: {
-      name: string;
-      namespace: string;
-      path?: string;
-      port?: number;
-    };
-    url?: string;
-    caBundle?: string;
-  };
-  rules?: {
-    operations: ('CREATE' | 'UPDATE' | 'DELETE' | 'CONNECT')[];
-    apiGroups: string[];
-    apiVersions: string[];
-    resources: string[];
-    scope?: 'Cluster' | 'Namespaced' | '*';
-  }[];
-  admissionReviewVersions: string[];
-  sideEffects: 'None' | 'NoneOnDryRun' | 'Some' | 'Unknown';
-  timeoutSeconds?: number;
-  failurePolicy?: 'Fail' | 'Ignore';
-  matchPolicy?: 'Exact' | 'Equivalent';
-  namespaceSelector?: LabelSelector;
-  objectSelector?: LabelSelector;
-}
-
 // Certificate CRD Types (following cert-manager.io/v1 API)
 export interface CertificateConfig {
   name: string;
