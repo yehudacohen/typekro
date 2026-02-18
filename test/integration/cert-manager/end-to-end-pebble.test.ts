@@ -12,16 +12,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import {
-  CiliumIngress,
-  CiliumIngressClass,
-} from '../../../src/factories/cilium/resources/gateway.js';
+import { ingress } from '../../../src/factories/kubernetes/networking/ingress.js';
 import { certManager, kubernetesComposition, pebble, simple } from '../../../src/index.js';
 import {
   createCoreV1ApiClient,
   createCustomObjectsApiClient,
   createKubernetesObjectApiClient,
   deleteNamespaceAndWait,
+  ensureApisixInstalled,
   ensureNamespaceExists,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
@@ -82,6 +80,15 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
 
     // Create test namespace
     await ensureNamespaceExists(testNamespace, kubeConfig);
+
+    // Install APISIX ingress controller for HTTP-01 challenges
+    console.log('📦 Installing APISIX ingress controller...');
+    await ensureApisixInstalled({
+      namespace: 'apisix-system',
+      kubeConfig: kubeConfig,
+      gatewayType: 'NodePort',
+    });
+    console.log('✅ APISIX ingress controller installed');
 
     // Install cert-manager through TypeKro (following dependency management philosophy)
     console.log('📦 Installing cert-manager through TypeKro bootstrap...');
@@ -194,7 +201,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
               itemName &&
               (itemName.startsWith('e2e-test-') ||
                 itemName.includes('pebble') ||
-                itemName.includes('cilium-test'))
+                itemName.includes('apisix'))
             ) {
               try {
                 if (resourceType.namespaced) {
@@ -376,14 +383,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           id: 'pebbleRelease',
         });
 
-        // Step 3: Create Cilium IngressClass for HTTP-01 challenges
-        const _ciliumIngressClass = CiliumIngressClass({
-          name: 'cilium-test',
-          default: false,
-          id: 'ciliumIngressClass',
-        });
+        // Step 3: APISIX IngressClass is pre-installed via ensureApisixInstalled()
+        // No need to create it in the composition
 
-        // Step 4: Create ClusterIssuer pointing to Pebble with Cilium ingress
+        // Step 4: Create ClusterIssuer pointing to Pebble with APISIX ingress
         const acmeIssuer =
           require('../../../src/factories/cert-manager/resources/issuers.js').clusterIssuer({
             name: issuerName,
@@ -399,7 +402,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
                   {
                     http01: {
                       ingress: {
-                        class: 'cilium-test',
+                        class: 'apisix',
                       },
                     },
                   },
@@ -427,20 +430,45 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           id: 'challengeDeployment',
         });
 
-        // Step 6: Create Cilium Ingress for HTTP-01 challenges
-        const challengeIngress = CiliumIngress({
-          name: `${baseName}-ingress`,
-          namespace: testNamespace,
-          host: spec.commonName,
-          serviceName: `${baseName}-challenge-svc`,
-          servicePort: 80,
-          tlsSecretName: secretName,
-          ingressClassName: 'cilium-test',
-          annotations: {
-            'cert-manager.io/cluster-issuer': issuerName,
+        // Step 6: Create standard Ingress for HTTP-01 challenges (served by APISIX)
+        const challengeIngress = ingress({
+          metadata: {
+            name: `${baseName}-ingress`,
+            namespace: testNamespace,
+            annotations: {
+              'cert-manager.io/cluster-issuer': issuerName,
+            },
+          },
+          spec: {
+            ingressClassName: 'apisix',
+            rules: [
+              {
+                host: spec.commonName,
+                http: {
+                  paths: [
+                    {
+                      path: '/',
+                      pathType: 'Prefix',
+                      backend: {
+                        service: {
+                          name: `${baseName}-challenge-svc`,
+                          port: { number: 80 },
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            tls: [
+              {
+                hosts: [spec.commonName],
+                secretName: secretName,
+              },
+            ],
           },
           id: 'challengeIngress',
-        });
+        } as any);
 
         // Step 7: Create Certificate that will trigger ACME challenges
         const acmeCertificate =
@@ -588,7 +616,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     );
     expect(createdIssuer.spec.acme?.email).toBe('e2e-test@funwiththe.cloud');
     expect(createdIssuer.spec.acme?.skipTLSVerify).toBe(true);
-    expect(createdIssuer.spec.acme?.solvers?.[0]?.http01?.ingress?.class).toBe('cilium-test');
+    expect(createdIssuer.spec.acme?.solvers?.[0]?.http01?.ingress?.class).toBe('apisix');
     console.log('✅ ClusterIssuer configured to use Pebble ACME server');
 
     // Step 3: Verify Certificate creation
