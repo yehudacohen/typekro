@@ -10,5 +10,8 @@ export function csiNode(resource: V1CSINode): Enhanced<V1CSINodeSpec, unknown> {
     apiVersion: 'storage.k8s.io/v1',
     kind: 'CSINode',
     metadata: resource.metadata ?? { name: 'unnamed-csinode' },
-  });
+  }).withReadinessEvaluator(() => ({
+    ready: true,
+    message: 'CSINode is ready (immediately ready resource)',
+  }));
 }

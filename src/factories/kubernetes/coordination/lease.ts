@@ -10,5 +10,8 @@ export function lease(resource: V1Lease): Enhanced<V1LeaseSpec, unknown> {
     apiVersion: 'coordination.k8s.io/v1',
     kind: 'Lease',
     metadata: resource.metadata ?? { name: 'unnamed-lease' },
-  });
+  }).withReadinessEvaluator(() => ({
+    ready: true,
+    message: 'Lease is ready (immediately ready resource)',
+  }));
 }

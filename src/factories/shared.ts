@@ -8,6 +8,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
+import { conditionalExpressionIntegrator } from '../core/expressions/conditional-integration.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
 import type {
@@ -19,7 +20,6 @@ import type {
 import { validateResourceId } from '../core/validation/cel-validator.js';
 import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index';
 import { isCelExpression } from '../utils/type-guards.js';
-import { conditionalExpressionIntegrator } from '../core/expressions/conditional-integration.js';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
@@ -424,97 +424,6 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
 }
 
 /**
- * Default readiness evaluator for resources that don't have custom logic
- */
-function createDefaultReadinessEvaluator(kind: string): ReadinessEvaluator {
-  return (liveResource: any) => {
-    try {
-      // For resources that are immediately ready when they exist
-      const immediatelyReadyKinds = [
-        'ConfigMap',
-        'Secret',
-        'Role',
-        'ClusterRole',
-        'RoleBinding',
-        'ClusterRoleBinding',
-        'ServiceAccount',
-        'StorageClass',
-        'NetworkPolicy',
-        'LimitRange',
-        'CSIDriver',
-        'CSINode',
-        'IngressClass',
-        'RuntimeClass',
-        'Lease',
-        'ComponentStatus',
-      ];
-
-      if (immediatelyReadyKinds.includes(kind)) {
-        return {
-          ready: true,
-          message: `${kind} is ready when it exists`,
-        };
-      }
-
-      // For resources with status conditions, check for common readiness patterns
-      const status = liveResource.status;
-      if (!status) {
-        return {
-          ready: false,
-          reason: 'StatusMissing',
-          message: `${kind} status not available yet`,
-        };
-      }
-
-      // Check for common readiness conditions
-      if (status.conditions && Array.isArray(status.conditions)) {
-        const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
-        if (readyCondition) {
-          return {
-            ready: readyCondition.status === 'True',
-            reason: readyCondition.reason,
-            message: readyCondition.message || `${kind} readiness: ${readyCondition.status}`,
-          };
-        }
-
-        const availableCondition = status.conditions.find((c: any) => c.type === 'Available');
-        if (availableCondition) {
-          return {
-            ready: availableCondition.status === 'True',
-            reason: availableCondition.reason,
-            message:
-              availableCondition.message || `${kind} availability: ${availableCondition.status}`,
-          };
-        }
-      }
-
-      // For resources with phase, check if it's active/bound/running
-      if (status.phase) {
-        const readyPhases = ['Active', 'Bound', 'Running', 'Succeeded'];
-        const ready = readyPhases.includes(status.phase);
-        return {
-          ready,
-          reason: ready ? 'PhaseReady' : 'PhaseNotReady',
-          message: `${kind} phase: ${status.phase}`,
-        };
-      }
-
-      // Default: assume ready if status exists
-      return {
-        ready: true,
-        message: `${kind} has status, assuming ready`,
-      };
-    } catch (error) {
-      return {
-        ready: false,
-        reason: 'EvaluationError',
-        message: `Error evaluating ${kind} readiness: ${error}`,
-      };
-    }
-  };
-}
-
-/**
  * Options for createResource function
  */
 export interface CreateResourceOptions {
@@ -582,14 +491,9 @@ export function createResource<TSpec extends object, TStatus extends object>(
     context.addResource(resourceId, enhanced);
   }
 
-  // Always provide a readiness evaluator for factory-created resources
-  const defaultEvaluator = createDefaultReadinessEvaluator(resource.kind);
-  Object.defineProperty(enhanced, 'readinessEvaluator', {
-    value: defaultEvaluator,
-    enumerable: false, // Prevents serialization - key requirement
-    configurable: true, // Allow withReadinessEvaluator to override
-    writable: false, // Cannot be overwritten directly
-  });
+  // NOTE: No default readiness evaluator is assigned here. Each factory must
+  // explicitly call .withReadinessEvaluator() to provide one. Resources without
+  // an evaluator will cause ensureReadinessEvaluator() to throw at deploy time.
 
   // Add fluent builder method for readiness evaluator with serialization protection
   Object.defineProperty(enhanced, 'withReadinessEvaluator', {
