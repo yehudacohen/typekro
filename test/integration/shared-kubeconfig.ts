@@ -232,7 +232,9 @@ export async function cleanupTestNamespaces(
     );
 
     // Delete all matching namespaces in parallel
-    await Promise.all(testNamespaces.map((ns) => deleteNamespaceAndWait(ns, kubeConfig, 30000)));
+    await Promise.allSettled(
+      testNamespaces.map((ns) => deleteNamespaceAndWait(ns, kubeConfig, 30000))
+    );
 
     console.log(`✅ Cleaned up ${testNamespaces.length} test namespaces`);
   } catch (error: any) {

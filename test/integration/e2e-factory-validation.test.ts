@@ -81,7 +81,7 @@ describe('E2E Factory Pattern Validation Tests', () => {
     if (createdNamespaces.length > 0 && kc) {
       const { deleteNamespaceAndWait } = await import('./shared-kubeconfig.js');
       console.log(`🧹 Cleaning up ${createdNamespaces.length} test namespaces...`);
-      await Promise.all(createdNamespaces.map((ns) => deleteNamespaceAndWait(ns, kc)));
+      await Promise.allSettled(createdNamespaces.map((ns) => deleteNamespaceAndWait(ns, kc)));
       console.log('✅ Test namespace cleanup complete');
     }
   });

@@ -82,7 +82,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
       'failure-test',
       'update-test',
     ];
-    await Promise.all(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kc)));
+    await Promise.allSettled(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kc)));
     console.log('✅ Test namespace cleanup complete');
   });
 
