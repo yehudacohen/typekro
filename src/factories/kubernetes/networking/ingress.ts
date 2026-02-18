@@ -1,5 +1,5 @@
 import type { V1Ingress } from '@kubernetes/client-node';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1IngressSpec = NonNullable<V1Ingress['spec']>;
@@ -10,54 +10,61 @@ export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, any> {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'Ingress',
     metadata: resource.metadata ?? { name: 'unnamed-ingress' },
-  }).withReadinessEvaluator((liveResource: V1Ingress) => {
+  }).withReadinessEvaluator((liveResource: V1Ingress): ResourceStatus => {
     try {
       const status = liveResource.status;
       const metadata = liveResource.metadata;
 
-      // Ingress is considered ready if:
-      // 1. It has load balancer ingress endpoints (traditional cloud LB), OR
-      // 2. It has been processed by the ingress controller (has resourceVersion and generation)
-      //
-      // This is because some ingress controllers (like APISIX, nginx-ingress in some modes)
-      // don't populate the loadBalancer.ingress field, but the Ingress is still functional.
-
-      // Check for load balancer endpoints (preferred)
-      const loadBalancer = status?.loadBalancer;
-      const ingresses = loadBalancer?.ingress || [];
+      // Tier 1: Check for load balancer endpoints with actual ip or hostname
+      // This is the primary readiness signal for cloud-provisioned ingress controllers
+      const ingresses = status?.loadBalancer?.ingress || [];
       if (ingresses.length > 0) {
+        const hasEndpoint = ingresses.some((entry) => entry.ip || entry.hostname);
+        if (hasEndpoint) {
+          const endpoint = ingresses[0]?.ip || ingresses[0]?.hostname;
+          return {
+            ready: true,
+            message: `Ingress has load balancer endpoint: ${endpoint}`,
+          };
+        }
+        // LB ingress entries exist but have no ip/hostname — still provisioning
         return {
-          ready: true,
-          reason: `Ingress has ${ingresses.length} load balancer endpoint(s)`,
+          ready: false,
+          reason: 'LoadBalancerProvisioning',
+          message: 'Load balancer ingress entries exist but no IP or hostname assigned yet',
         };
       }
 
-      // Check if the resource has been processed (has resourceVersion and generation match)
-      // This indicates the ingress controller has seen and processed the resource
-      const hasBeenProcessed = metadata?.resourceVersion && metadata?.generation !== undefined;
-      
-      // Also check if observedGeneration matches generation (if available in status)
-      // Some ingress controllers set this to indicate they've processed the resource
+      // Tier 2: Check if the ingress controller has acknowledged the resource
+      // via status.observedGeneration. This handles controllers that don't populate
+      // loadBalancer status (e.g., some APISIX/nginx modes).
+      // NOTE: metadata.resourceVersion and metadata.generation are set by the API server
+      // on creation — they do NOT indicate controller processing. Only a controller-written
+      // status.observedGeneration reliably indicates the controller has seen the resource.
       const observedGeneration = (status as any)?.observedGeneration;
-      const generationMatches = observedGeneration === undefined || observedGeneration === metadata?.generation;
-
-      if (hasBeenProcessed && generationMatches) {
-        // Give the ingress controller a moment to populate status
-        // If we've been processed and no errors, consider it ready
+      if (observedGeneration !== undefined && observedGeneration === metadata?.generation) {
         return {
           ready: true,
-          reason: 'Ingress has been processed by the controller (no load balancer endpoints yet, but resource is active)',
+          message:
+            'Ingress controller has processed the resource (observedGeneration matches generation)',
         };
       }
 
       return {
         ready: false,
-        reason: 'Waiting for ingress controller to process the resource',
+        reason: 'WaitingForController',
+        message: 'Waiting for ingress controller to process the resource',
+        details: {
+          generation: metadata?.generation,
+          observedGeneration,
+          hasLoadBalancer: !!status?.loadBalancer,
+        },
       };
     } catch (error) {
       return {
         ready: false,
-        reason: `Error checking Ingress status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: 'EvaluationError',
+        message: `Error checking Ingress status: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   });
