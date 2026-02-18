@@ -163,7 +163,9 @@ describe('Fluent Builder Pattern', () => {
     expect(resource.metadata?.name).toBe('test-deployment');
     expect(resource.spec?.replicas).toBe(1);
     expect(typeof resource.withReadinessEvaluator).toBe('function');
-    expect(typeof (resource as any).readinessEvaluator).toBe('function');
+    // createResource() no longer assigns a default readiness evaluator.
+    // Each factory must explicitly call .withReadinessEvaluator().
+    expect((resource as any).readinessEvaluator).toBeUndefined();
 
     // Should have the resource ID
     expect((resource as any).id).toBeDefined();

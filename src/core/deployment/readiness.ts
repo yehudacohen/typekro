@@ -42,17 +42,6 @@ export class ResourceReadinessChecker {
     options: DeploymentOptions,
     emitEvent: (event: DeploymentEvent) => void
   ): Promise<void> {
-    // Skip polling for resources that are immediately ready
-    if (this.isImmediatelyReady(deployedResource.kind)) {
-      emitEvent({
-        type: 'progress',
-        resourceId: deployedResource.id,
-        message: `${deployedResource.kind}/${deployedResource.name} is ready after 0ms`,
-        timestamp: new Date(),
-      });
-      return;
-    }
-
     const readinessConfig = this.getReadinessConfig(options);
     await this.waitForResourceReadyWithPolling(
       deployedResource,
@@ -60,13 +49,6 @@ export class ResourceReadinessChecker {
       readinessConfig,
       emitEvent
     );
-  }
-
-  /**
-   * Check if a resource type is immediately ready when created
-   */
-  private isImmediatelyReady(kind: string): boolean {
-    return ['ConfigMap', 'Secret', 'CronJob'].includes(kind);
   }
 
   /**
@@ -248,11 +230,9 @@ export class ResourceReadinessChecker {
   }
 
   /**
-   * Check if a resource is ready based on its kind and status
-   */
-  /**
-   * Simple fallback readiness check for resources without custom evaluators
-   * This should only be used when factory-level readiness evaluators are not available
+   * Simple fallback readiness check for resources without custom evaluators.
+   * @deprecated All resources should have factory-provided readiness evaluators.
+   * This fallback exists only for backward compatibility during migration.
    */
   isResourceReady(resource: DeploymentResource): boolean {
     const status = this.getResourceStatus(resource);

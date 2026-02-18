@@ -1,5 +1,5 @@
 import type { V1VolumeAttachment } from '@kubernetes/client-node';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1VolumeAttachmentSpec = NonNullable<V1VolumeAttachment['spec']>;
@@ -13,5 +13,15 @@ export function volumeAttachment(
     apiVersion: 'storage.k8s.io/v1',
     kind: 'VolumeAttachment',
     metadata: resource.metadata ?? { name: 'unnamed-volumeattachment' },
+  }).withReadinessEvaluator((liveResource: V1VolumeAttachment): ResourceStatus => {
+    const attached = liveResource.status?.attached;
+    if (attached === true) {
+      return { ready: true, message: 'VolumeAttachment is attached' };
+    }
+    return {
+      ready: false,
+      reason: 'NotAttached',
+      message: `VolumeAttachment is not yet attached (attached=${attached})`,
+    };
   });
 }
