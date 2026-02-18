@@ -1,6 +1,8 @@
-import * as yaml from 'js-yaml';
 import type * as k8s from '@kubernetes/client-node';
+import { PatchStrategy } from '@kubernetes/client-node';
+import * as yaml from 'js-yaml';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
+import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
@@ -8,11 +10,9 @@ import type {
   DeploymentClosure,
   DeploymentContext,
 } from '../../../core/types/deployment.js';
-import { PatchStrategy } from '@kubernetes/client-node';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { registerDeploymentClosure } from '../../shared.js';
-import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
 
 const logger = getComponentLogger('yaml-file');
 
@@ -55,14 +55,22 @@ async function applyWithServerSideApply(
   manifest: KubernetesResource,
   fieldManager: string,
   forceConflicts: boolean,
-  kubeConfig?: k8s.KubeConfig
+  kubeConfig?: k8s.KubeConfig,
+  crdPatchTimeout?: number
 ): Promise<void> {
   const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
 
   // For CRDs, use a special read-modify-write pattern to ensure schema changes are applied
   // Server-side apply may not properly merge deeply nested schema fields
   if (manifest.kind === 'CustomResourceDefinition') {
-    await applyCRDWithSchemaFix(kubernetesApi, manifest, fieldManager, forceConflicts, kubeConfig);
+    await applyCRDWithSchemaFix(
+      kubernetesApi,
+      manifest,
+      fieldManager,
+      forceConflicts,
+      kubeConfig,
+      crdPatchTimeout
+    );
     return;
   }
 
@@ -86,10 +94,7 @@ async function applyWithServerSideApply(
     });
   } catch (error: any) {
     // If the resource doesn't exist, create it
-    const statusCode =
-      error?.response?.statusCode ||
-      error?.statusCode ||
-      error?.body?.code;
+    const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code;
 
     if (statusCode === 404) {
       logger.debug('Resource not found, creating with server-side apply', {
@@ -125,13 +130,15 @@ async function applyCRDWithSchemaFix(
   manifest: KubernetesResource,
   fieldManager: string,
   forceConflicts: boolean,
-  kubeConfig?: k8s.KubeConfig
+  kubeConfig?: k8s.KubeConfig,
+  crdPatchTimeout?: number
 ): Promise<void> {
   const crdName = manifest.metadata?.name || 'unknown';
   const crd = manifest as any;
 
   // Log what we're applying for debugging
-  const valuesField = crd.spec?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec?.properties?.values;
+  const valuesField =
+    crd.spec?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec?.properties?.values;
   logger.debug('Applying CRD with schema fix', {
     crdName,
     fieldManager,
@@ -166,13 +173,10 @@ async function applyCRDWithSchemaFix(
       'kustomizations.kustomize.toolkit.fluxcd.io',
     ];
     if (kubeConfig && crdsNeedingPatch.includes(crdName)) {
-      await applyCRDSchemaJsonPatch(kubeConfig, crd);
+      await applyCRDSchemaJsonPatch(kubeConfig, crd, crdPatchTimeout);
     }
   } catch (error: any) {
-    const statusCode =
-      error?.response?.statusCode ||
-      error?.statusCode ||
-      error?.body?.code;
+    const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code;
 
     if (statusCode === 404) {
       // CRD doesn't exist, create it
@@ -275,12 +279,13 @@ function generateSchemaFixPatches(obj: any, basePath: string, fieldName?: string
  */
 async function applyCRDSchemaJsonPatch(
   kubeConfig: k8s.KubeConfig,
-  crd: any
+  crd: any,
+  timeout: number = 30000
 ): Promise<void> {
   const crdName = crd.metadata?.name || 'unknown';
-  
+
   logger.debug('Starting JSON patch for CRD schema', { crdName });
-  
+
   const apiextensionsApi = createBunCompatibleApiextensionsV1Api(kubeConfig);
 
   try {
@@ -309,7 +314,7 @@ async function applyCRDSchemaJsonPatch(
     logger.info('Applying JSON patch to CRD schema', {
       crdName,
       patchCount: patches.length,
-      patches: patches.map(p => p.path),
+      patches: patches.map((p) => p.path),
     });
 
     // Apply the patches using JSON Patch via ApiextensionsV1Api
@@ -318,12 +323,11 @@ async function applyCRDSchemaJsonPatch(
       name: crdName,
       body: patches,
     });
-    
-    // Add a 30 second timeout
+
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('JSON patch timed out after 30 seconds')), 30000);
+      setTimeout(() => reject(new Error(`JSON patch timed out after ${timeout}ms`)), timeout);
     });
-    
+
     await Promise.race([patchPromise, timeoutPromise]);
 
     logger.info('CRD schema patched successfully', { crdName, patchCount: patches.length });
@@ -336,7 +340,6 @@ async function applyCRDSchemaJsonPatch(
     });
   }
 }
-
 
 export interface YamlFileConfig {
   name: string;
@@ -372,6 +375,14 @@ export interface YamlFileConfig {
    * @default false
    */
   forceConflicts?: boolean;
+  /**
+   * Timeout in milliseconds for CRD JSON-patch operations.
+   * Only relevant when deploying CRD manifests with `serverSideApply` strategy,
+   * where a follow-up JSON patch is applied to ensure schema fields like
+   * `x-kubernetes-preserve-unknown-fields` are set correctly.
+   * @default 30000
+   */
+  crdPatchTimeout?: number;
 }
 
 /**
@@ -450,7 +461,8 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                   manifest,
                   config.fieldManager || 'typekro',
                   config.forceConflicts || false,
-                  deploymentContext.kubeConfig
+                  deploymentContext.kubeConfig,
+                  config.crdPatchTimeout
                 );
               } else {
                 await deploymentContext.kubernetesApi.create(manifest);
@@ -465,7 +477,8 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                 manifest,
                 config.fieldManager || 'typekro',
                 config.forceConflicts || false,
-                deploymentContext.kubeConfig
+                deploymentContext.kubeConfig,
+                config.crdPatchTimeout
               );
             } else {
               await deploymentContext.kubernetesApi.create(manifest);

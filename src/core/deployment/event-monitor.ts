@@ -238,15 +238,17 @@ export class EventMonitor {
     }
     this.childDiscoveryTimeouts.clear();
 
-    // Close all watch connections
-    // NOTE: We don't call abort() on connections because in Bun's runtime, abort() throws
-    // async AbortErrors that escape all error handling (try-catch, unhandled rejection handlers, etc.)
-    // Instead, we simply clear the connection references and let them be garbage collected.
-    // Setting isMonitoring = false (above) ensures our error handlers ignore any errors from these connections.
-
+    // Close all watch connections.
+    // IMPORTANT: We deliberately do NOT call abort() on connections because Bun's
+    // runtime throws DOMException/AbortError from native abort() that escapes
+    // try-catch blocks (tested with Bun 1.3.5 and 1.3.9). Instead, we clear the
+    // connection references and rely on:
+    //   1. isMonitoring = false (set above) — causes all handlers to ignore events
+    //   2. Short watchTimeoutSeconds (default 5s) — connections expire quickly
+    //   3. Garbage collection — orphaned connections are cleaned up by the GC
     this.logger.debug('Clearing watch connections without explicit abort', {
       connectionCount: this.watchConnections.size,
-      reason: 'Avoiding unhandled AbortErrors in Bun runtime',
+      reason: 'DOMException from abort() escapes try-catch in Bun runtime',
     });
 
     this.watchConnections.clear();
