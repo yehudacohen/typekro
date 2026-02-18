@@ -145,9 +145,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     // HTTP-level timeouts on watch connections as this interferes with the
     // EventMonitor's reconnection logic and causes AbortError issues.
     if (url.includes('?watch=true') || url.includes('&watch=true')) {
-      // Return a very long timeout (1 hour) to effectively disable HTTP timeout
-      // for watch operations. The API server handles watch timeouts via query params.
-      return 60 * 60 * 1000; // 1 hour
+      return this.timeouts.watch;
     }
 
     // Operation-specific timeouts based on HTTP method
@@ -155,18 +153,17 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
     const upperMethod = method.toUpperCase();
     switch (upperMethod) {
       case 'POST':
-        return 120000; // 2 minutes for creates (may trigger admission webhooks)
+        return this.timeouts.create;
       case 'PATCH':
       case 'PUT':
-        return 120000; // 2 minutes for updates (may trigger admission webhooks)
+        return this.timeouts.update;
       case 'DELETE':
-        return 180000; // 3 minutes for deletes (may wait for finalizers)
+        return this.timeouts.delete;
       case 'GET':
-      case 'LIST':
       case 'HEAD':
       case 'OPTIONS':
       default:
-        return 30000; // 30 seconds for reads (matches kubectl default)
+        return this.timeouts.default;
     }
   }
 
