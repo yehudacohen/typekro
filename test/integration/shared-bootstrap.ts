@@ -61,7 +61,7 @@ export const integrationTestBootstrap = kubernetesComposition(
       certManagerBootstrapInstance = certManager.certManagerBootstrap({
         name: 'cert-manager',
         namespace: 'cert-manager',
-        version: '1.13.3',
+        version: '1.19.3',
         installCRDs: true,
         // Disable startupapicheck to avoid post-install hook timeouts.
         // The startupapicheck job validates the webhook API, but it often times out

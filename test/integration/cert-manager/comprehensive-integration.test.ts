@@ -26,8 +26,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
       await ensureCertManagerInstalled({
         namespace: 'cert-manager',
-        version: '1.13.3',
-        installCRDs: true,
+        version: '1.19.3',
         kubeConfig,
       });
 

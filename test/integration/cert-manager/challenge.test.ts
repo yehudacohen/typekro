@@ -71,8 +71,7 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
     const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
     await ensureCertManagerInstalled({
       namespace: 'cert-manager',
-      version: '1.13.3',
-      installCRDs: true,
+      version: '1.19.3',
       timeout: 360000, // 6 minutes to account for startupapicheck with 5min timeout
       kubeConfig,
     });

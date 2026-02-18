@@ -21,8 +21,8 @@
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition, simple, certManager, externalDns } from '../src/index.js';
 import { typeKroRuntimeBootstrap } from '../src/core/composition/typekro-runtime/index.js';
+import { certManager, externalDns, kubernetesComposition, simple } from '../src/index.js';
 
 // Configuration - Update these for your environment
 const CONFIG = {
@@ -224,7 +224,7 @@ async function deployCompleteStack() {
     await certManagerFactory.deploy({
       name: 'cert-manager',
       namespace: 'cert-manager',
-      version: '1.13.3',
+      version: '1.19.3',
       installCRDs: true,
       controller: {
         resources: {

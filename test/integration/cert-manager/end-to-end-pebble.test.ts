@@ -94,7 +94,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     await certManagerFactory.deploy({
       name: 'cert-manager',
       namespace: 'cert-manager',
-      version: '1.13.3',
+      version: '1.19.3',
       installCRDs: true,
       startupapicheck: { enabled: false }, // Disable to avoid post-install hook timeouts
       // Minimal resource configuration for testing
@@ -105,7 +105,6 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         },
       },
       webhook: {
-        enabled: true,
         replicaCount: 1,
         resources: {
           requests: { cpu: '10m', memory: '32Mi' },

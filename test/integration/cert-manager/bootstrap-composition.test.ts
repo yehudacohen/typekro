@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { ensureNamespaceExists } from '../shared-kubeconfig.js';
+import { cleanupCertManagerWebhooks, ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Bootstrap Composition Tests', () => {
   let kubeConfig: any;
@@ -34,6 +34,19 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
   afterAll(async () => {
     console.log('Cleaning up cert-manager bootstrap composition tests...');
     const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
+
+    // Clean up cluster-scoped webhook configurations created by test cert-manager
+    // installations. These persist after namespace deletion and cause HTTP 500 errors
+    // for all subsequent cert-manager resource operations.
+    const releaseNames = [
+      'cert-manager-bootstrap-test',
+      'cert-manager-minimal',
+      'cert-manager-comprehensive',
+      'cert-manager-dual-direct',
+      'cert-manager-readiness-test',
+    ];
+    await Promise.all(releaseNames.map((name) => cleanupCertManagerWebhooks(name, kubeConfig)));
+
     // Clean up the main test namespace and all cert-manager test namespaces
     const namespacesToClean = [testNamespace, testNs1, testNs2, testNs3, testNs4, testNs5];
     await Promise.all(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kubeConfig)));
@@ -56,8 +69,8 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const instance = await directFactory.deploy({
       name: 'cert-manager-bootstrap-test',
       namespace: testNs1,
-      version: '1.13.3',
-      installCRDs: true,
+      version: '1.19.3',
+      installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
       controller: {
         resources: {
@@ -66,7 +79,6 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
         },
       },
       webhook: {
-        enabled: true,
         replicaCount: 1,
       },
       cainjector: {
@@ -83,12 +95,11 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     expect(instance).toBeDefined();
     expect(instance.kind).toBe('EnhancedResource');
     expect(instance.metadata.name).toBe('cert-manager-bootstrap-test');
-    expect(instance.spec.version).toBe('1.13.3');
-    expect(instance.spec.installCRDs).toBe(true);
+    expect(instance.spec.version).toBe('1.19.3');
+    expect(instance.spec.installCRDs).toBe(false);
 
     // Validate configuration was applied correctly
     expect(instance.spec.controller?.resources?.requests?.cpu).toBe('100m');
-    expect(instance.spec.webhook?.enabled).toBe(true);
     expect(instance.spec.cainjector?.enabled).toBe(true);
     expect(instance.spec.prometheus?.enabled).toBe(true);
 
@@ -113,6 +124,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const minimalInstance = await directFactory.deploy({
       name: 'cert-manager-minimal',
       namespace: testNs2,
+      installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
     });
 
@@ -127,7 +139,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const comprehensiveInstance = await directFactory.deploy({
       name: 'cert-manager-comprehensive',
       namespace: testNs3,
-      version: '1.13.3', // Use same version as existing to avoid chart pull delays
+      version: '1.19.3', // Use same version as existing to avoid chart pull delays
       installCRDs: false,
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
       replicaCount: 2,
@@ -139,7 +151,6 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
         nodeSelector: { 'kubernetes.io/os': 'linux' },
       },
       webhook: {
-        enabled: true,
         replicaCount: 1, // Reduced from 3 to avoid resource pressure
         resources: {
           requests: { cpu: '50m', memory: '64Mi' },
@@ -158,7 +169,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       },
     });
 
-    expect(comprehensiveInstance.spec.version).toBe('1.13.3');
+    expect(comprehensiveInstance.spec.version).toBe('1.19.3');
     expect(comprehensiveInstance.spec.installCRDs).toBe(false);
     expect(comprehensiveInstance.spec.replicaCount).toBe(2);
     expect(comprehensiveInstance.spec.webhook?.replicaCount).toBe(1);
@@ -200,7 +211,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const directFactory = certManagerBootstrap.factory('direct', {
       namespace: testNamespace,
       waitForReady: true,
-      timeout: 300000, // 5 minutes
+      timeout: 600000, // 10 minutes - HelmRelease needs time for chart pull + pod readiness
       kubeConfig: kubeConfig,
     });
 
@@ -208,7 +219,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const kroFactory = certManagerBootstrap.factory('kro', {
       namespace: testNamespace,
       waitForReady: true,
-      timeout: 300000,
+      timeout: 600000,
       kubeConfig: kubeConfig,
     });
 
@@ -222,16 +233,16 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const directInstance = await directFactory.deploy({
       name: 'cert-manager-dual-direct',
       namespace: testNs4,
-      version: '1.13.3',
-      installCRDs: true,
+      version: '1.19.3',
+      installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
     });
 
     // Validate direct deployment structure
     expect(directInstance).toBeDefined();
     expect(directInstance.metadata.name).toBe('cert-manager-dual-direct');
-    expect(directInstance.spec.version).toBe('1.13.3');
-    expect(directInstance.spec.installCRDs).toBe(true);
+    expect(directInstance.spec.version).toBe('1.19.3');
+    expect(directInstance.spec.installCRDs).toBe(false);
 
     // Clean up
     await directFactory.deleteInstance('cert-manager-dual-direct');
@@ -247,7 +258,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const validConfig = {
       name: 'test-cert-manager',
       namespace: 'cert-manager',
-      version: '1.13.3',
+      version: '1.19.3',
       installCRDs: true,
       controller: {
         resources: {
@@ -267,7 +278,7 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     // Type guard to check if validation succeeded
     if ('name' in configResult) {
       expect(configResult.name).toBe('test-cert-manager');
-      expect(configResult.version).toBe('1.13.3');
+      expect(configResult.version).toBe('1.19.3');
     } else {
       // If we get here, validation failed
       console.log('Config validation errors:', configResult);
@@ -278,13 +289,13 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const validStatus = {
       phase: 'Ready',
       ready: true,
-      version: '1.13.3',
+      version: '1.19.3',
       controllerReady: true,
       webhookReady: true,
       cainjectorReady: true,
       crds: {
         installed: true,
-        version: '1.13.3',
+        version: '1.19.3',
       },
     };
 
@@ -320,9 +331,9 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
     const instance = await directFactory.deploy({
       name: 'cert-manager-readiness-test',
       namespace: testNs5,
-      version: '1.13.3',
+      version: '1.19.3',
+      installCRDs: false, // NEVER use installCRDs: true - deleteInstance would remove cluster-wide CRDs
       startupapicheck: { enabled: false }, // Disable when deploying alongside existing cert-manager
-      webhook: { enabled: true },
       cainjector: { enabled: true },
     });
 

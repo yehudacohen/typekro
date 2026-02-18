@@ -908,7 +908,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(composition).toBeDefined();
         }
       });
-    }, 180000);
+    }, 300000); // 5 minutes - deployment readiness polling + namespace cleanup
 
     it('should preserve readiness evaluators through Alchemy integration', async () => {
       await withTestNamespace('alchemy-readiness-test', async (testNamespace) => {
@@ -990,7 +990,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(composition).toBeDefined();
         }
       });
-    }, 180000);
+    }, 300000); // 5 minutes - deployment readiness polling + namespace cleanup
   });
 
   describe('Synchronous Context Management', () => {

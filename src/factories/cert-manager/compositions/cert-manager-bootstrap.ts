@@ -10,7 +10,7 @@ import { mapCertManagerConfigToHelmValues } from '../utils/helm-values-mapper.js
 
 /**
  * Helper function to ensure version has 'v' prefix for image tags
- * Cert-manager Docker images require version tags with 'v' prefix (e.g., 'v1.13.3')
+ * Cert-manager Docker images require version tags with 'v' prefix (e.g., 'v1.19.3')
  */
 function ensureVersionPrefix(version: string): string {
   return version.startsWith('v') ? version : `v${version}`;
@@ -39,7 +39,7 @@ function ensureVersionPrefix(version: string): string {
  * const instance = await certManagerFactory.deploy({
  *   name: 'cert-manager',
  *   namespace: 'cert-manager',
- *   version: '1.13.3',
+ *   version: '1.19.3',
  *   installCRDs: true,
  *   controller: {
  *     resources: {
@@ -77,7 +77,7 @@ export const certManagerBootstrap = kubernetesComposition(
     const fullConfig: CertManagerBootstrapConfig = {
       // Basic defaults
       namespace: spec.namespace || 'cert-manager',
-      version: spec.version || '1.13.3',
+      version: spec.version || '1.19.3',
       installCRDs: spec.installCRDs !== undefined ? spec.installCRDs : true, // TypeKro installs CRDs by default
       replicaCount: spec.replicaCount || 1,
 
@@ -109,7 +109,7 @@ export const certManagerBootstrap = kubernetesComposition(
         image: {
           repository:
             spec.controller?.image?.repository || 'quay.io/jetstack/cert-manager-controller',
-          tag: spec.controller?.image?.tag || ensureVersionPrefix(spec.version || '1.13.3'),
+          tag: spec.controller?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
           pullPolicy: spec.controller?.image?.pullPolicy || 'IfNotPresent',
         },
         resources: {
@@ -136,12 +136,15 @@ export const certManagerBootstrap = kubernetesComposition(
       },
 
       // Webhook defaults
+      // NOTE: cert-manager 1.19+ removed 'enabled', 'mutatingAdmissionWebhooks',
+      // and 'validatingAdmissionWebhooks' from the webhook section.
+      // Webhook is always enabled; admission webhooks are configured via
+      // 'mutatingWebhookConfiguration' and 'validatingWebhookConfiguration'.
       webhook: {
-        enabled: spec.webhook?.enabled !== undefined ? spec.webhook.enabled : true,
         replicaCount: spec.webhook?.replicaCount || 1,
         image: {
           repository: spec.webhook?.image?.repository || 'quay.io/jetstack/cert-manager-webhook',
-          tag: spec.webhook?.image?.tag || ensureVersionPrefix(spec.version || '1.13.3'),
+          tag: spec.webhook?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
           pullPolicy: spec.webhook?.image?.pullPolicy || 'IfNotPresent',
         },
         resources: {
@@ -164,14 +167,6 @@ export const certManagerBootstrap = kubernetesComposition(
           annotations: spec.webhook?.serviceAccount?.annotations || {},
         },
         nodeSelector: spec.webhook?.nodeSelector || {},
-        mutatingAdmissionWebhooks: {
-          failurePolicy: spec.webhook?.mutatingAdmissionWebhooks?.failurePolicy || 'Fail',
-          timeoutSeconds: spec.webhook?.mutatingAdmissionWebhooks?.timeoutSeconds || 10,
-        },
-        validatingAdmissionWebhooks: {
-          failurePolicy: spec.webhook?.validatingAdmissionWebhooks?.failurePolicy || 'Fail',
-          timeoutSeconds: spec.webhook?.validatingAdmissionWebhooks?.timeoutSeconds || 10,
-        },
         ...spec.webhook,
       },
 
@@ -182,7 +177,7 @@ export const certManagerBootstrap = kubernetesComposition(
         image: {
           repository:
             spec.cainjector?.image?.repository || 'quay.io/jetstack/cert-manager-cainjector',
-          tag: spec.cainjector?.image?.tag || ensureVersionPrefix(spec.version || '1.13.3'),
+          tag: spec.cainjector?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
           pullPolicy: spec.cainjector?.image?.pullPolicy || 'IfNotPresent',
         },
         resources: {
@@ -209,25 +204,15 @@ export const certManagerBootstrap = kubernetesComposition(
       },
 
       // ACME solver defaults
+      // NOTE: cert-manager 1.19+ only supports 'image' in acmesolver section.
+      // 'resources' and 'nodeSelector' were removed from the chart schema.
       acmesolver: {
         image: {
           repository:
             spec.acmesolver?.image?.repository || 'quay.io/jetstack/cert-manager-acmesolver',
-          tag: spec.acmesolver?.image?.tag || ensureVersionPrefix(spec.version || '1.13.3'),
+          tag: spec.acmesolver?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
           pullPolicy: spec.acmesolver?.image?.pullPolicy || 'IfNotPresent',
         },
-        resources: {
-          requests: {
-            cpu: spec.acmesolver?.resources?.requests?.cpu || '10m',
-            memory: spec.acmesolver?.resources?.requests?.memory || '32Mi',
-          },
-          limits: {
-            cpu: spec.acmesolver?.resources?.limits?.cpu || '100m',
-            memory: spec.acmesolver?.resources?.limits?.memory || '128Mi',
-          },
-          ...spec.acmesolver?.resources,
-        },
-        nodeSelector: spec.acmesolver?.nodeSelector || {},
         ...spec.acmesolver,
       },
 
@@ -244,7 +229,7 @@ export const certManagerBootstrap = kubernetesComposition(
           image: {
             repository:
               spec.startupapicheck?.image?.repository || 'quay.io/jetstack/cert-manager-ctl',
-            tag: spec.startupapicheck?.image?.tag || ensureVersionPrefix(spec.version || '1.13.3'),
+            tag: spec.startupapicheck?.image?.tag || ensureVersionPrefix(spec.version || '1.19.3'),
             pullPolicy: spec.startupapicheck?.image?.pullPolicy || 'IfNotPresent',
           },
           resources: {
@@ -293,7 +278,7 @@ export const certManagerBootstrap = kubernetesComposition(
         labels: {
           'app.kubernetes.io/name': 'cert-manager',
           'app.kubernetes.io/instance': spec.name,
-          'app.kubernetes.io/version': spec.version || '1.13.3',
+          'app.kubernetes.io/version': spec.version || '1.19.3',
           'app.kubernetes.io/managed-by': 'typekro',
         },
       },
@@ -311,7 +296,7 @@ export const certManagerBootstrap = kubernetesComposition(
     const _helmRelease = certManagerHelmRelease({
       name: spec.name,
       namespace: spec.namespace || 'cert-manager',
-      version: spec.version || '1.13.3',
+      version: spec.version || '1.19.3',
       values: helmValues,
       repositoryName: 'cert-manager-repo', // Match the repository name
       id: 'certManagerHelmRelease',
@@ -345,7 +330,7 @@ export const certManagerBootstrap = kubernetesComposition(
         _helmRelease.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
       ),
-      version: spec.version || '1.13.3',
+      version: spec.version || '1.19.3',
       controllerReady: Cel.expr<boolean>(
         _helmRelease.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True")'
@@ -363,7 +348,7 @@ export const certManagerBootstrap = kubernetesComposition(
         // Using a static true value since we wait for HelmRelease to be Ready anyway
         // TODO: Fix nested CEL expression resolution in ReferenceResolver
         installed: true,
-        version: spec.version || '1.13.3',
+        version: spec.version || '1.19.3',
       },
     };
   }

@@ -52,13 +52,27 @@ export function mapCertManagerConfigToHelmValues(
     }),
 
     // Webhook configuration
-    ...(config.webhook && { webhook: config.webhook }),
+    // NOTE: cert-manager 1.19+ removed 'enabled', 'mutatingAdmissionWebhooks',
+    // and 'validatingAdmissionWebhooks' from the webhook values schema.
+    ...(config.webhook && {
+      webhook: Object.fromEntries(
+        Object.entries(config.webhook).filter(
+          ([key]) =>
+            key !== 'enabled' &&
+            key !== 'mutatingAdmissionWebhooks' &&
+            key !== 'validatingAdmissionWebhooks'
+        )
+      ),
+    }),
 
     // CA Injector configuration
     ...(config.cainjector && { cainjector: config.cainjector }),
 
     // ACME solver configuration
-    ...(config.acmesolver && { acmesolver: config.acmesolver }),
+    // NOTE: cert-manager 1.19+ only supports 'image' in the acmesolver section.
+    ...(config.acmesolver?.image && {
+      acmesolver: { image: config.acmesolver.image },
+    }),
 
     // Startup API check configuration
     // ENABLED by default to ensure webhook is ready before deployment completes
@@ -100,12 +114,7 @@ export function validateCertManagerHelmValues(values: CertManagerHelmValues): st
     );
   }
 
-  // Check webhook configuration
-  if (values.webhook?.enabled === false) {
-    warnings.push(
-      'Webhook is disabled. This may cause issues with certificate validation and mutation.'
-    );
-  }
+  // Note: webhook.enabled was removed in cert-manager 1.19+ (webhook is always enabled)
 
   // Check CA injector configuration
   if (values.cainjector?.enabled === false) {
@@ -120,7 +129,7 @@ export function validateCertManagerHelmValues(values: CertManagerHelmValues): st
   }
 
   // Check replica count for webhook
-  if (values.webhook?.enabled !== false && values.webhook?.replicaCount === 1) {
+  if (values.webhook?.replicaCount === 1) {
     warnings.push(
       'Webhook is running with only 1 replica. Consider increasing for high availability.'
     );
