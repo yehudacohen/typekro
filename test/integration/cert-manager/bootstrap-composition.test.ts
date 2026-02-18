@@ -45,11 +45,13 @@ describe('Cert-Manager Bootstrap Composition Tests', () => {
       'cert-manager-dual-direct',
       'cert-manager-readiness-test',
     ];
-    await Promise.all(releaseNames.map((name) => cleanupCertManagerWebhooks(name, kubeConfig)));
+    await Promise.allSettled(
+      releaseNames.map((name) => cleanupCertManagerWebhooks(name, kubeConfig))
+    );
 
     // Clean up the main test namespace and all cert-manager test namespaces
     const namespacesToClean = [testNamespace, testNs1, testNs2, testNs3, testNs4, testNs5];
-    await Promise.all(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kubeConfig)));
+    await Promise.allSettled(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kubeConfig)));
   });
 
   it('should create cert-manager bootstrap composition with comprehensive configuration', async () => {

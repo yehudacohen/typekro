@@ -139,7 +139,9 @@ export abstract class BaseDeploymentStrategy<
           message: 'Set waitForReady: true to enable status hydration',
         });
 
-        status = null as unknown as TStatus;
+        // Status unavailable when waitForReady is false — resources may not have status yet.
+        // Consumers should check for empty status when waitForReady is false.
+        status = {} as TStatus;
       }
       // Check deployment status before attempting hydration (only if waitForReady is true)
       else if (deploymentResult) {
