@@ -707,3 +707,145 @@ export async function ensureFluxInstalled(options: EnsureFluxOptions = {}): Prom
     console.log(`✅ Flux ${version} deployed and ready in namespace '${namespace}'`);
   }
 }
+
+// =============================================================================
+// APISIX ENSURE UTILITY
+// =============================================================================
+
+/**
+ * Check if APISIX is installed and ready
+ */
+async function isApisixReady(namespace = 'apisix-system', kc?: k8s.KubeConfig): Promise<boolean> {
+  const kubeConfig = kc || getIntegrationTestKubeConfig();
+  const appsApi = createAppsV1ApiClient(kubeConfig);
+
+  try {
+    // Check if the APISIX gateway deployment exists and is ready
+    const deployments = await appsApi.listNamespacedDeployment({ namespace });
+    const apisixDeployments = deployments.items.filter((d) => d.metadata?.name?.includes('apisix'));
+
+    if (apisixDeployments.length === 0) {
+      return false;
+    }
+
+    // All APISIX deployments must be ready
+    for (const deployment of apisixDeployments) {
+      const status = deployment.status;
+      const isDeploymentReady =
+        status?.readyReplicas === status?.replicas && (status?.replicas ?? 0) > 0;
+      if (!isDeploymentReady) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch (error: any) {
+    if (error.statusCode === 404 || error.body?.code === 404) {
+      return false;
+    }
+    console.warn('Error checking APISIX readiness:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Options for ensuring APISIX is installed
+ */
+export interface EnsureApisixOptions {
+  /** Namespace to install APISIX in (default: 'apisix-system') */
+  namespace?: string;
+  /** APISIX chart version (default: '2.13.0') */
+  version?: string;
+  /** Timeout for waiting for APISIX to be ready (default: 600000ms) */
+  timeout?: number;
+  /** KubeConfig to use */
+  kubeConfig?: k8s.KubeConfig;
+  /** Whether to log verbose output (default: true) */
+  verbose?: boolean;
+  /** Gateway service type (default: 'ClusterIP') */
+  gatewayType?: 'NodePort' | 'LoadBalancer' | 'ClusterIP';
+}
+
+/**
+ * Ensure APISIX ingress controller is installed and ready
+ *
+ * This is an idempotent operation that:
+ * - Checks if APISIX is already running and ready
+ * - If not, deploys APISIX using the apisixBootstrap composition
+ * - Waits for APISIX to be ready before returning
+ * - Can be called multiple times safely
+ *
+ * @example
+ * ```typescript
+ * beforeAll(async () => {
+ *   await ensureApisixInstalled({ namespace: 'apisix-system' });
+ * });
+ * ```
+ */
+export async function ensureApisixInstalled(options: EnsureApisixOptions = {}): Promise<void> {
+  const {
+    namespace = 'apisix-system',
+    version = '2.13.0',
+    timeout = 600000,
+    kubeConfig,
+    verbose = true,
+    gatewayType = 'NodePort',
+  } = options;
+
+  const kc = kubeConfig || getIntegrationTestKubeConfig();
+
+  // Check if APISIX is already ready
+  if (verbose) {
+    console.log('Checking if APISIX is already installed...');
+  }
+
+  const isReady = await isApisixReady(namespace, kc);
+
+  if (isReady) {
+    if (verbose) {
+      console.log(`APISIX already installed and ready in namespace '${namespace}'`);
+    }
+    return;
+  }
+
+  // Deploy APISIX via the bootstrap composition
+  if (verbose) {
+    console.log(`Deploying APISIX ${version} to namespace '${namespace}'...`);
+  }
+
+  const { apisixBootstrap } = await import(
+    '../../src/factories/apisix/compositions/apisix-bootstrap.js'
+  );
+
+  const factory = apisixBootstrap.factory('direct', {
+    namespace: 'flux-system', // HelmReleases go to flux-system
+    timeout,
+    waitForReady: true,
+    hydrateStatus: false, // Composition status hydration has un-timed K8s API calls
+    kubeConfig: kc,
+  });
+
+  await factory.deploy({
+    name: 'apisix',
+    namespace,
+    version,
+    replicaCount: 1,
+    gateway: {
+      type: gatewayType,
+      http: { enabled: true, servicePort: 80 },
+      https: { enabled: true, servicePort: 443 },
+    },
+    ingressController: {
+      enabled: true,
+      config: {
+        kubernetes: {
+          ingressClass: 'apisix',
+        },
+      },
+    },
+  });
+
+  if (verbose) {
+    console.log(`APISIX ${version} deployed and ready in namespace '${namespace}'`);
+  }
+}

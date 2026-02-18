@@ -1,30 +1,23 @@
 import { kubernetesComposition } from '../../../index.js';
-import {
-  APISixBootstrapConfigSchema,
-  APISixBootstrapStatusSchema,
-  type APISixBootstrapConfig,
-} from '../types.js';
-import { apisixHelmRepository, apisixHelmRelease } from '../resources/helm.js';
-import { mapAPISixConfigToHelmValues } from '../utils/helm-values-mapper.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { createResource } from '../../shared.js';
-
-/**
- * Helper function to ensure version has 'v' prefix for image tags if needed
- */
-function _ensureVersionPrefix(version: string): string {
-  // APISix versions don't typically use 'v' prefix, so return as-is
-  return version;
-}
+import { apisixHelmRelease, apisixHelmRepository } from '../resources/helm.js';
+import {
+  type APISixBootstrapConfig,
+  APISixBootstrapConfigSchema,
+  APISixBootstrapStatusSchema,
+} from '../types.js';
+import { mapAPISixConfigToHelmValues } from '../utils/helm-values-mapper.js';
 
 /**
  * APISix Bootstrap Composition
  *
  * Creates a complete APISix ingress controller deployment using HelmRepository and HelmRelease resources.
- * Provides comprehensive configuration options and status expressions derived from actual resource status.
+ * Uses chart v2.13.0 which bundles the ingress controller as a subchart, so only one HelmRelease
+ * is needed for the complete deployment (gateway + ingress controller + etcd).
  *
  * Features:
- * - Complete APISix deployment (gateway, ingress controller, dashboard, etcd)
+ * - Complete APISix deployment (gateway, ingress controller, etcd)
  * - Configurable ingress class and gateway settings
  * - Production-ready defaults with customization options
  * - Status expressions for monitoring deployment health
@@ -32,23 +25,26 @@ function _ensureVersionPrefix(version: string): string {
  *
  * @example
  * ```typescript
- * const apisix = apisixBootstrap({
+ * const factory = apisix.apisixBootstrap.factory('direct', {
+ *   namespace: 'flux-system',
+ *   waitForReady: true,
+ *   timeout: 600000,
+ *   kubeConfig,
+ * });
+ *
+ * await factory.deploy({
  *   name: 'apisix',
  *   namespace: 'apisix-system',
- *   version: '2.8.0',
+ *   version: '2.13.0',
+ *   gateway: {
+ *     type: 'NodePort',
+ *     http: { enabled: true, servicePort: 80 },
+ *     https: { enabled: true, servicePort: 443 },
+ *   },
  *   ingressController: {
  *     enabled: true,
- *     config: {
- *       kubernetes: {
- *         ingressClass: 'apisix'
- *       }
- *     }
+ *     config: { kubernetes: { ingressClass: 'apisix' } },
  *   },
- *   gateway: {
- *     type: 'LoadBalancer',
- *     http: { enabled: true, servicePort: 80 },
- *     https: { enabled: true, servicePort: 443 }
- *   }
  * });
  * ```
  */
@@ -69,11 +65,13 @@ export const apisixBootstrap = kubernetesComposition(
     // Use string coercion to get actual values from potential KubernetesRef proxies
     const actualName = String(specName || 'apisix');
     const actualNamespace = String(specNamespace || 'apisix-system');
-    const actualVersion = String(specVersion || '2.8.0');
+    const actualVersion = String(specVersion || '2.13.0');
+
+    const ingressClass = spec.ingressController?.config?.kubernetes?.ingressClass || 'apisix';
 
     // Apply default configuration values using actual string values
     const fullConfig: APISixBootstrapConfig = {
-      // Basic defaults - use actual string values
+      // Basic defaults
       name: actualName,
       namespace: actualNamespace,
       version: actualVersion,
@@ -87,10 +85,12 @@ export const apisixBootstrap = kubernetesComposition(
         imageRegistry: spec.global?.imageRegistry || '',
       },
 
-      // Gateway defaults - enable both HTTP and HTTPS with LoadBalancer
+      // Gateway defaults - NodePort is the default because the APISIX chart's gateway
+      // service template unconditionally sets externalTrafficPolicy which is invalid
+      // for ClusterIP on Kubernetes 1.33+
       gateway: {
         ...spec.gateway,
-        type: spec.gateway?.type || 'LoadBalancer',
+        type: spec.gateway?.type || 'NodePort',
         http: {
           enabled: spec.gateway?.http?.enabled !== undefined ? spec.gateway.http.enabled : true,
           servicePort: spec.gateway?.http?.servicePort || 80,
@@ -112,8 +112,7 @@ export const apisixBootstrap = kubernetesComposition(
         config: {
           ...spec.ingressController?.config,
           kubernetes: {
-            ingressClass: spec.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
-            // Watch all namespaces by default (empty string means all namespaces)
+            ingressClass,
             watchedNamespace: spec.ingressController?.config?.kubernetes?.watchedNamespace || '',
           },
         },
@@ -133,45 +132,60 @@ export const apisixBootstrap = kubernetesComposition(
       },
     };
 
-    // Ensure consistent admin key between gateway and ingress controller
-    const adminKey = 'edd1c9f034335f136f87ad84b625c8f1';
-
-    // Map configuration to Helm values
+    // Map configuration to Helm values for the main APISIX chart
     const helmValues = mapAPISixConfigToHelmValues(fullConfig);
 
     // Configure service type and ports for the gateway
     if (!helmValues.service) {
       helmValues.service = {};
     }
-    helmValues.service.type = fullConfig.gateway?.type || 'LoadBalancer';
-    
+    helmValues.service.type = fullConfig.gateway?.type || 'NodePort';
+
     // Enable HTTP port
     if (!helmValues.service.http) {
       helmValues.service.http = {};
     }
     helmValues.service.http.enabled = fullConfig.gateway?.http?.enabled !== false;
-    
+
     // Enable TLS/HTTPS port
     if (!helmValues.service.tls) {
       helmValues.service.tls = {};
     }
     helmValues.service.tls.enabled = fullConfig.gateway?.https?.enabled !== false;
     helmValues.service.tls.servicePort = fullConfig.gateway?.https?.servicePort || 443;
-    helmValues.service.tls.containerPort = fullConfig.gateway?.https?.containerPort || 9443;
 
     // Configure admin API access - allow from all IPs for cluster-internal access
     if (!helmValues.apisix) {
       helmValues.apisix = {};
     }
     (helmValues.apisix as Record<string, any>).admin = {
-      allow: {
-        ipList: ['0.0.0.0/0'], // Allow from anywhere within the cluster
+      enabled: true,
+      type: 'ClusterIP',
+      credentials: {
+        admin: 'edd1c9f034335f136f87ad84b625c8f1',
+        viewer: '4054f7cf07e344346cd3f287985e76a2',
       },
     };
-    
+
     // Enable SSL in APISix
     (helmValues.apisix as Record<string, any>).ssl = {
       enabled: true,
+      containerPort: 9443,
+    };
+
+    // In chart v2.13.0, the ingress controller is available as a subchart.
+    // However, enabling it causes a duplicate ServiceAccount conflict because both
+    // the parent chart and subchart generate a SA with the same name (the subchart
+    // template uses .Release.Name directly, not a fullname helper).
+    //
+    // The ingress controller subchart is only needed for APISIX-specific CRD-based
+    // routing (ApisixRoute, ApisixUpstream, etc.). For standard Kubernetes Ingress
+    // resources (used by cert-manager HTTP-01 challenges), the APISIX gateway alone
+    // is sufficient — it processes standard Ingress objects natively.
+    //
+    // We explicitly disable the subchart to avoid the ServiceAccount conflict.
+    (helmValues as Record<string, any>)['ingress-controller'] = {
+      enabled: false,
     };
 
     // Create namespace for APISix (required before HelmRelease)
@@ -197,7 +211,8 @@ export const apisixBootstrap = kubernetesComposition(
       id: 'apisixHelmRepository',
     });
 
-    // Create HelmRelease for APISix Gateway
+    // Create single HelmRelease for APISIX (gateway + ingress controller + etcd)
+    // Chart v2.13.0 bundles the ingress controller as a subchart dependency
     const helmRelease = apisixHelmRelease({
       name: actualName,
       namespace: 'flux-system',
@@ -210,64 +225,12 @@ export const apisixBootstrap = kubernetesComposition(
       id: 'apisixHelmRelease',
     });
 
-    // Create HelmRelease for APISix Ingress Controller (separate chart)
-    // Use actual string values for service names to avoid KubernetesRef serialization issues
-    const ingressControllerHelmRelease = apisixHelmRelease({
-      name: `${actualName}-ingress-controller`,
-      namespace: 'flux-system',
-      targetNamespace: actualNamespace,
-      chart: 'apisix-ingress-controller',
-      version: '0.13.0', // Use a stable version of the ingress controller
-      repositoryName: 'apisix-repo', // Use the same repository as the main APISix chart
-      interval: '5m',
-      timeout: '10m',
-      values: {
-        // Configure the APISIX admin service connection
-        // This is used by the init container to wait for APISIX to be ready
-        // The service name follows the pattern: <namespace>-<release-name>-admin
-        apisix: {
-          adminService: {
-            namespace: actualNamespace,
-            name: `${actualNamespace}-${actualName}-admin`,
-            port: 9180,
-          },
-        },
-        config: {
-          apisix: {
-            // Use actual string values for service configuration
-            serviceName: `${actualNamespace}-${actualName}-admin`,
-            serviceNamespace: actualNamespace,
-            servicePort: 9180,
-            adminKey: adminKey, // Use admin key for authentication
-            adminAPIVersion: 'v3', // Use v3 API version for APISix 3.9.1
-          },
-          kubernetes: {
-            ingressClass: fullConfig.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
-            // Watch all namespaces (empty string means all namespaces)
-            watchedNamespace: fullConfig.ingressController?.config?.kubernetes?.watchedNamespace || '',
-          },
-          // Configure ingress status update with the gateway service
-          ingressPublishService: `${actualNamespace}/${actualNamespace}-${actualName}-gateway`,
-        },
-        serviceAccount: {
-          create: true,
-        },
-        rbac: {
-          create: true,
-        },
-        ingressClass: {
-          create: false, // Don't create IngressClass - we create it manually
-        },
-      },
-      id: 'apisixIngressControllerHelmRelease',
-    });
-
     // Create IngressClass for APISix ingress controller
     const _apisixIngressClass = createResource({
       apiVersion: 'networking.k8s.io/v1',
       kind: 'IngressClass',
       metadata: {
-        name: fullConfig.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
+        name: ingressClass,
         labels: {
           'app.kubernetes.io/name': 'apisix',
           'app.kubernetes.io/instance': actualName,
@@ -276,7 +239,7 @@ export const apisixBootstrap = kubernetesComposition(
         },
       },
       spec: {
-        controller: 'apisix.apache.org/apisix-ingress',
+        controller: 'apisix.apache.org/apisix-ingress-controller',
       },
       id: 'apisixIngressClass',
     }).withReadinessEvaluator(() => ({
@@ -284,37 +247,31 @@ export const apisixBootstrap = kubernetesComposition(
       message: 'IngressClass is ready when created (configuration resource)',
     }));
 
-    // Return status with resources AND dynamic references
-    // The imperative pattern expects resources to be returned as part of the status object
-    // so they can be referenced by the status fields
+    // Return status with resource references for status hydration
     return {
-      // Include the resources so they can be referenced
       helmRelease,
-      ingressControllerHelmRelease,
 
-      // Status fields with dynamic resource references
-      // The magic proxy system will convert these to CEL expressions during serialization
-      ready:
-        helmRelease.status.phase === 'Ready' &&
-        ingressControllerHelmRelease.status.phase === 'Ready',
-      phase: (helmRelease.status.phase === 'Ready' &&
-      ingressControllerHelmRelease.status.phase === 'Ready'
-        ? 'Ready'
-        : 'Installing') as 'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading',
+      ready: helmRelease.status.phase === 'Ready',
+      phase: (helmRelease.status.phase === 'Ready' ? 'Ready' : 'Installing') as
+        | 'Pending'
+        | 'Installing'
+        | 'Ready'
+        | 'Failed'
+        | 'Upgrading',
       gatewayReady: helmRelease.status.phase === 'Ready',
-      ingressControllerReady: ingressControllerHelmRelease.status.phase === 'Ready',
-      dashboardReady: false, // Dashboard not deployed in this composition
-      etcdReady: false, // etcd not deployed in this composition (using external etcd assumed)
+      ingressControllerReady: helmRelease.status.phase === 'Ready',
+      dashboardReady: false,
+      etcdReady: false,
       gatewayService: {
         name: `${actualName}-gateway`,
         namespace: actualNamespace,
-        type: fullConfig.gateway?.type || 'LoadBalancer',
-        clusterIP: '', // Will be populated by actual service
-        externalIP: '', // Will be populated by actual service
+        type: fullConfig.gateway?.type || 'NodePort',
+        clusterIP: '',
+        externalIP: '',
       },
       ingressClass: {
-        name: fullConfig.ingressController?.config?.kubernetes?.ingressClass || 'apisix',
-        controller: 'apisix.apache.org/apisix-ingress',
+        name: ingressClass,
+        controller: 'apisix.apache.org/apisix-ingress-controller',
       },
     };
   }
