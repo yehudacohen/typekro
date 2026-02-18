@@ -242,11 +242,20 @@ export class DirectResourceFactoryImpl<
           `Instance ${name} does not have a deployment ID annotation. Cannot perform cleanup.`
         );
       }
-      await engine.rollback(deploymentId);
+      const rollbackResult = await engine.rollback(deploymentId);
 
-      // Wait for namespace to be fully deleted before returning
-      // This prevents race conditions where namespace is still "Terminating"
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Wait for any namespaces to be fully deleted before returning.
+      // Namespace deletion is asynchronous (enters "Terminating" phase) and can
+      // cause race conditions if the caller immediately re-creates resources.
+      const deletedNamespaces = rollbackResult.rolledBackResources
+        .filter((r) => r.startsWith('Namespace/'))
+        .map((r) => r.split('/')[1]!);
+
+      if (deletedNamespaces.length > 0) {
+        const k8sApi = engine.getKubernetesApi();
+        const deleteTimeout = this.factoryOptions.timeout ?? 30000;
+        await this.waitForNamespaceDeletion(k8sApi, deletedNamespaces, deleteTimeout);
+      }
 
       // Remove from tracking
       this.deployedInstances.delete(name);
@@ -260,6 +269,48 @@ export class DirectResourceFactoryImpl<
         return;
       }
       throw new Error(`Failed to delete instance ${name}: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Poll until the given namespaces no longer exist (HTTP 404).
+   * Namespaces enter a "Terminating" phase on deletion and may take time
+   * to fully disappear, especially when finalizers or remaining resources
+   * are involved.
+   */
+  private async waitForNamespaceDeletion(
+    k8sApi: import('@kubernetes/client-node').KubernetesObjectApi,
+    namespaces: string[],
+    timeout: number
+  ): Promise<void> {
+    const pollInterval = 1000;
+    const startTime = Date.now();
+
+    for (const ns of namespaces) {
+      while (Date.now() - startTime < timeout) {
+        try {
+          await k8sApi.read({
+            apiVersion: 'v1',
+            kind: 'Namespace',
+            metadata: { name: ns },
+          });
+          // Namespace still exists (likely "Terminating"), keep polling
+          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        } catch (error: unknown) {
+          // 404 means the namespace is fully gone
+          const k8sErr = error as { statusCode?: number; body?: { code?: number } };
+          if (k8sErr.statusCode === 404 || k8sErr.body?.code === 404) {
+            this.logger.debug('Namespace fully deleted', { namespace: ns });
+            break;
+          }
+          // Unexpected error — log and stop waiting for this namespace
+          this.logger.warn('Error polling namespace deletion', {
+            namespace: ns,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          break;
+        }
+      }
     }
   }
 
