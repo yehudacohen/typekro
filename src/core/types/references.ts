@@ -2,6 +2,7 @@
  * Reference-related types for cross-resource references and CEL expressions
  */
 
+import { TypeKroError } from '../errors.js';
 import type { CelExpression, KubernetesRef, MagicAssignable } from './common.js';
 
 export interface ResourceReference<_T = unknown> {
@@ -130,9 +131,13 @@ export interface CelEvaluationContext {
 /**
  * Error thrown when CEL expression evaluation fails
  */
-export class CelEvaluationError extends Error {
+export class CelEvaluationError extends TypeKroError {
   constructor(expression: CelExpression, cause: Error) {
-    super(`Failed to evaluate CEL expression '${expression.expression}': ${cause.message}`);
+    super(
+      `Failed to evaluate CEL expression '${expression.expression}': ${cause.message}`,
+      'CEL_EVALUATION_ERROR',
+      { expression: expression.expression, cause: cause.message }
+    );
     this.name = 'CelEvaluationError';
     this.cause = cause;
   }

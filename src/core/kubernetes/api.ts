@@ -1,5 +1,6 @@
 // kubernetes-api.ts
 import * as k8s from '@kubernetes/client-node';
+import { KubernetesApiOperationError, KubernetesClientError, ValidationError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createKubernetesClientProvider, type KubernetesClientConfig } from './client-provider.js';
 
@@ -76,10 +77,16 @@ export class KubernetesApi {
     const skipTLSVerify = process.env.KUBERNETES_SKIP_TLS_VERIFY === 'true';
 
     if (!apiServer) {
-      throw new Error('KUBERNETES_API_SERVER environment variable is not set.');
+      throw new KubernetesClientError(
+        'KUBERNETES_API_SERVER environment variable is not set.',
+        'configuration'
+      );
     }
     if (!apiToken) {
-      throw new Error('KUBERNETES_API_TOKEN environment variable is not set.');
+      throw new KubernetesClientError(
+        'KUBERNETES_API_TOKEN environment variable is not set.',
+        'configuration'
+      );
     }
 
     // Log security warning when TLS is disabled
@@ -163,7 +170,13 @@ export class KubernetesApi {
 
     // Ensure metadata and name exist for proper application
     if (!manifest.metadata || !manifest.metadata.name) {
-      throw new Error('Kubernetes manifest must have metadata.name defined.');
+      throw new ValidationError(
+        'Kubernetes manifest must have metadata.name defined.',
+        manifest.kind || 'Unknown',
+        'unknown',
+        'metadata.name',
+        ['Add a metadata.name field to the Kubernetes manifest']
+      );
     }
 
     const resourceLogger = this.logger.child({
@@ -204,7 +217,14 @@ export class KubernetesApi {
       }
     } catch (error: unknown) {
       resourceLogger.error('Error applying Kubernetes manifest', error as Error);
-      throw new Error(`Failed to apply Kubernetes manifest: ${(error as Error).message}`);
+      throw new KubernetesApiOperationError(
+        `Failed to apply Kubernetes manifest: ${(error as Error).message}`,
+        'apply',
+        manifest.kind,
+        manifest.metadata?.name,
+        (error as { statusCode?: number }).statusCode,
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
   }
 
@@ -232,7 +252,14 @@ export class KubernetesApi {
       return result;
     } catch (error: unknown) {
       getLogger.error('Error getting resource', error as Error);
-      throw new Error(`Failed to get Kubernetes resource: ${(error as Error).message}`);
+      throw new KubernetesApiOperationError(
+        `Failed to get Kubernetes resource: ${(error as Error).message}`,
+        'get',
+        kind,
+        name,
+        (error as { statusCode?: number }).statusCode,
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
   }
 
@@ -267,7 +294,14 @@ export class KubernetesApi {
         return;
       }
       deleteLogger.error('Error deleting resource', error as Error);
-      throw new Error(`Failed to delete Kubernetes resource: ${(error as Error).message}`);
+      throw new KubernetesApiOperationError(
+        `Failed to delete Kubernetes resource: ${(error as Error).message}`,
+        'delete',
+        kind,
+        name,
+        (error as { statusCode?: number }).statusCode,
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
   }
 

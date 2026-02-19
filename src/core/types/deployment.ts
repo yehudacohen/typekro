@@ -5,6 +5,7 @@
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
+import { TypeKroError } from '../errors.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
@@ -605,9 +606,17 @@ export interface DeploymentStateRecord {
 // DEPLOYMENT ERROR CLASSES
 // =============================================================================
 
-export class ResourceDeploymentError extends Error {
+export class ResourceDeploymentError extends TypeKroError {
   constructor(resourceName: string, resourceKind: string, cause: Error) {
-    super(`Failed to deploy ${resourceKind}/${resourceName}: ${cause.message}`);
+    super(
+      `Failed to deploy ${resourceKind}/${resourceName}: ${cause.message}`,
+      'RESOURCE_DEPLOYMENT_ERROR',
+      {
+        resourceName,
+        resourceKind,
+        cause: cause.message,
+      }
+    );
     this.name = 'ResourceDeploymentError';
     this.cause = cause;
   }
@@ -616,14 +625,18 @@ export class ResourceDeploymentError extends Error {
 /**
  * Error thrown when a resource already exists and conflictStrategy is 'fail'
  */
-export class ResourceConflictError extends Error {
+export class ResourceConflictError extends TypeKroError {
   public readonly resourceName: string;
   public readonly resourceKind: string;
   public readonly namespace: string | undefined;
 
   constructor(resourceName: string, resourceKind: string, namespace?: string | undefined) {
     const nsInfo = namespace ? ` in namespace '${namespace}'` : '';
-    super(`Resource ${resourceKind}/${resourceName} already exists${nsInfo}`);
+    super(`Resource ${resourceKind}/${resourceName} already exists${nsInfo}`, 'RESOURCE_CONFLICT', {
+      resourceName,
+      resourceKind,
+      namespace,
+    });
     this.name = 'ResourceConflictError';
     this.resourceName = resourceName;
     this.resourceKind = resourceKind;
@@ -631,17 +644,23 @@ export class ResourceConflictError extends Error {
   }
 }
 
-export class ResourceReadinessTimeoutError extends Error {
+export class ResourceReadinessTimeoutError extends TypeKroError {
   constructor(resource: DeployedResource, timeout: number) {
-    super(`Timeout after ${timeout}ms waiting for ${resource.kind}/${resource.name} to be ready`);
+    super(
+      `Timeout after ${timeout}ms waiting for ${resource.kind}/${resource.name} to be ready`,
+      'RESOURCE_READINESS_TIMEOUT',
+      { resourceKind: resource.kind, resourceName: resource.name, timeoutMs: timeout }
+    );
     this.name = 'ResourceReadinessTimeoutError';
   }
 }
 
-export class UnsupportedMediaTypeError extends Error {
+export class UnsupportedMediaTypeError extends TypeKroError {
   constructor(resourceName: string, resourceKind: string, acceptedTypes: string[], cause: Error) {
     super(
-      `Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`
+      `Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`,
+      'UNSUPPORTED_MEDIA_TYPE',
+      { resourceName, resourceKind, acceptedTypes, cause: cause.message }
     );
     this.name = 'UnsupportedMediaTypeError';
     this.cause = cause;

@@ -10,6 +10,7 @@ import { containsKubernetesRefs, isCelExpression } from '../../utils/type-guards
 import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
+import { ValidationError } from '../errors.js';
 import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 import { CelConversionEngine } from '../expressions/cel-conversion-engine.js';
 import { analyzeImperativeComposition } from '../expressions/imperative-analyzer.js';
@@ -496,15 +497,23 @@ function createTypedResourceGraph<
 
   // Validate resource graph name early
   if (!definition.name || typeof definition.name !== 'string') {
-    throw new Error(
-      `Invalid resource graph name: ${JSON.stringify(definition.name)}. Resource graph name must be a non-empty string.`
+    throw new ValidationError(
+      `Invalid resource graph name: ${JSON.stringify(definition.name)}. Resource graph name must be a non-empty string.`,
+      'ResourceGraphDefinition',
+      String(definition.name),
+      'name',
+      ['Provide a non-empty string for the resource graph name']
     );
   }
 
   const trimmedName = definition.name.trim();
   if (trimmedName.length === 0) {
-    throw new Error(
-      `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`
+    throw new ValidationError(
+      `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`,
+      'ResourceGraphDefinition',
+      definition.name,
+      'name',
+      ['Provide a non-whitespace resource graph name']
     );
   }
 
@@ -512,14 +521,25 @@ function createTypedResourceGraph<
   const kubernetesName = trimmedName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
 
   if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-    throw new Error(
-      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
+    throw new ValidationError(
+      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`,
+      'ResourceGraphDefinition',
+      definition.name,
+      'name',
+      [
+        'Use lowercase alphanumeric characters and hyphens only',
+        'Must start and end with an alphanumeric character',
+      ]
     );
   }
 
   if (kubernetesName.length > 253) {
-    throw new Error(
-      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
+    throw new ValidationError(
+      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`,
+      'ResourceGraphDefinition',
+      definition.name,
+      'name',
+      ['Shorten the resource graph name to stay under 253 characters']
     );
   }
 
@@ -869,7 +889,13 @@ function createTypedResourceGraph<
   const validation = validateResourceGraphDefinition(resourcesWithKeys, analyzedStatusMappings);
   if (!validation.isValid) {
     const errorMessages = validation.errors.map((err) => `${err.field}: ${err.error}`).join('\n');
-    throw new Error(`ResourceGraphDefinition validation failed:\n${errorMessages}`);
+    throw new ValidationError(
+      `ResourceGraphDefinition validation failed:\n${errorMessages}`,
+      'ResourceGraphDefinition',
+      definition.name,
+      undefined,
+      ['Fix the validation errors listed above']
+    );
   }
 
   // Log warnings if any
@@ -1083,7 +1109,13 @@ function createTypedResourceGraph<
         );
         return kroFactory as FactoryForMode<TMode, TSpec, TStatus>;
       } else {
-        throw new Error(`Unsupported factory mode: ${mode}`);
+        throw new ValidationError(
+          `Unsupported factory mode: ${mode}`,
+          'ResourceGraphDefinition',
+          definition.name,
+          'mode',
+          ['Use "kro" or "direct" as the factory mode']
+        );
       }
     },
 

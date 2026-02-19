@@ -8,7 +8,11 @@
 import type * as k8s from '@kubernetes/client-node';
 import { ensureReadinessEvaluator } from '../../utils/helpers.js';
 import { DependencyResolver } from '../dependencies/index.js';
-import { CircularDependencyError } from '../errors.js';
+import {
+  CircularDependencyError,
+  DeploymentTimeoutError,
+  ResourceGraphFactoryError,
+} from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentModeType } from '../references/index.js';
@@ -1971,7 +1975,7 @@ export class DirectDeploymentEngine {
     if (!readinessEvaluator) {
       const errorMessage = `Resource ${deployedResource.kind}/${deployedResource.name} does not have a factory-provided readiness evaluator`;
       this.logger.error('Missing factory-provided readiness evaluator');
-      throw new Error(errorMessage);
+      throw new ResourceGraphFactoryError(errorMessage, deployedResource.id, 'deployment');
     }
 
     const startTime = Date.now();
@@ -2098,7 +2102,13 @@ export class DirectDeploymentEngine {
       ? `Timeout waiting for ${deployedResource.kind}/${deployedResource.name}: ${lastStatus.message}`
       : `Timeout waiting for ${deployedResource.kind}/${deployedResource.name} to be ready`;
 
-    throw new Error(timeoutMessage);
+    throw new DeploymentTimeoutError(
+      timeoutMessage,
+      deployedResource.kind,
+      deployedResource.name,
+      timeout,
+      'readiness'
+    );
   }
 
   /**
@@ -2239,8 +2249,12 @@ export class DirectDeploymentEngine {
         }
       }
 
-      throw new Error(
-        `Timeout waiting for resource ${resource.kind}/${resource.name} to be deleted`
+      throw new DeploymentTimeoutError(
+        `Timeout waiting for resource ${resource.kind}/${resource.name} to be deleted`,
+        resource.kind,
+        resource.name,
+        timeout,
+        'deletion'
       );
     } catch (error) {
       deleteLogger.error('Failed to delete resource', error as Error);
@@ -2267,7 +2281,11 @@ export class DirectDeploymentEngine {
     const deploymentRecord = this.deploymentState.get(deploymentId);
 
     if (!deploymentRecord) {
-      throw new Error(`Deployment ${deploymentId} not found. Cannot rollback.`);
+      throw new ResourceGraphFactoryError(
+        `Deployment ${deploymentId} not found. Cannot rollback.`,
+        deploymentId,
+        'cleanup'
+      );
     }
 
     try {
@@ -2675,7 +2693,13 @@ export class DirectDeploymentEngine {
     }
 
     // Timeout reached
-    throw new Error(`Timeout waiting for CRD ${crdName} to be established after ${timeout}ms`);
+    throw new DeploymentTimeoutError(
+      `Timeout waiting for CRD ${crdName} to be established after ${timeout}ms`,
+      'CustomResourceDefinition',
+      crdName || 'unknown',
+      timeout,
+      'crd-establishment'
+    );
   }
 
   /**
