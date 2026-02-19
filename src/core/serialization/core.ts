@@ -573,7 +573,7 @@ function createTypedResourceGraph<
     );
 
     // Check if this is from an imperative composition with original expressions
-    const originalCompositionFn = (statusMappings as any).__originalCompositionFn;
+    const originalCompositionFn = statusMappings.__originalCompositionFn;
 
     // Debug logging removed for cleaner output
 
@@ -586,7 +586,7 @@ function createTypedResourceGraph<
       // If so, we can use those directly instead of parsing the JavaScript source code
       let hasKubernetesRefs = containsKubernetesRefs(statusMappings);
       let hasCelExpressions = containsCelExpressions(statusMappings);
-      const needsPreAnalysis = (statusMappings as any).__needsPreAnalysis === true;
+      const needsPreAnalysis = statusMappings.__needsPreAnalysis === true;
 
       serializationLogger.debug('Imperative composition analysis', {
         hasKubernetesRefs,
@@ -616,7 +616,7 @@ function createTypedResourceGraph<
               fieldCount: Object.keys(analyzedStatusMappings).length,
             });
           } else {
-            analyzedStatusMappings = statusMappings as any;
+            analyzedStatusMappings = statusMappings;
             serializationLogger.debug('No conversion required, using original status mappings');
           }
         } catch (statusAnalysisError) {
@@ -668,7 +668,7 @@ function createTypedResourceGraph<
               }
             );
           } else {
-            analyzedStatusMappings = statusMappings as any;
+            analyzedStatusMappings = statusMappings;
             serializationLogger.debug(
               'No JavaScript expressions found, using original status mappings'
             );
@@ -680,7 +680,7 @@ function createTypedResourceGraph<
               error: (imperativeAnalysisError as Error).message,
             }
           );
-          analyzedStatusMappings = statusMappings as any;
+          analyzedStatusMappings = statusMappings;
         }
       }
     } else {
@@ -705,7 +705,7 @@ function createTypedResourceGraph<
             fieldCount: Object.keys(analyzedStatusMappings).length,
           });
         } else {
-          analyzedStatusMappings = statusMappings as any;
+          analyzedStatusMappings = statusMappings;
         }
       } catch (analysisError) {
         serializationLogger.debug(
@@ -714,7 +714,7 @@ function createTypedResourceGraph<
             error: (analysisError as Error).message,
           }
         );
-        analyzedStatusMappings = statusMappings as any;
+        analyzedStatusMappings = statusMappings;
       }
     }
 
@@ -843,10 +843,7 @@ function createTypedResourceGraph<
         // Only overwrite if imperative analysis hasn't already provided CEL expressions
         if (!imperativeAnalysisSucceeded) {
           // Merge original mappings with preserved CEL expressions
-          analyzedStatusMappings = mergePreservedCelExpressions(
-            statusMappings as any,
-            preservedMappings
-          );
+          analyzedStatusMappings = mergePreservedCelExpressions(statusMappings, preservedMappings);
         }
         serializationLogger.debug('Preserved existing CEL expressions without conversion', {
           preservedFields: Object.keys(preservedMappings).length,
@@ -856,7 +853,7 @@ function createTypedResourceGraph<
       } else {
         // No KubernetesRef objects or CEL expressions, use status mappings as-is
         if (!imperativeAnalysisSucceeded) {
-          analyzedStatusMappings = statusMappings as any;
+          analyzedStatusMappings = statusMappings;
         }
         serializationLogger.debug(
           'Status builder contains only static values and complex expressions',
@@ -874,7 +871,7 @@ function createTypedResourceGraph<
     statusMappings = runInStatusBuilderContext(
       () => statusBuilder(schema, resourcesWithKeys as TResources) as MagicAssignableShape<TStatus>
     );
-    analyzedStatusMappings = statusMappings as any;
+    analyzedStatusMappings = statusMappings;
     // Create empty analysis for fallback
     mappingAnalysis = {
       kubernetesRefFields: [],

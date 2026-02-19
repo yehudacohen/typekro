@@ -720,7 +720,7 @@ metadata:
 
       // Also check if the resource has an 'id' property that was set by the factory
       // The proxy returns resourceId when accessing 'id' property
-      const resourceIdFromProxy = (resource as any).id;
+      const resourceIdFromProxy = resource.id;
       const effectiveOriginalId = originalResourceId || resourceIdFromProxy;
 
       this.logger.debug('Checking __resourceId preservation', {
@@ -994,13 +994,14 @@ metadata:
       // Include all other properties (spec, status, data, rules, etc.)
       // Deep resolve any KubernetesRef objects in the value
       if (value !== undefined && value !== null) {
-        (resource as any)[key] = this.deepResolveKubernetesRefs(value);
+        (resource as unknown as Record<string, unknown>)[key] =
+          this.deepResolveKubernetesRefs(value);
       }
     }
 
     // Preserve the non-enumerable id field if it exists (needed for resource mapping in CEL resolution)
-    if ((enhanced as any).id) {
-      (resource as any).id = (enhanced as any).id;
+    if (enhanced.id) {
+      resource.id = enhanced.id;
     }
 
     return resource;
@@ -1090,10 +1091,11 @@ metadata:
       }
 
       // Debug: Check if id field is being preserved
-      if (path === 'root' && (resource as any).id) {
+      const resourceRecord = resource as Record<string, unknown>;
+      if (path === 'root' && resourceRecord.id) {
         this.logger.debug('Resource ID preservation check', {
           path,
-          originalId: (resource as any).id,
+          originalId: resourceRecord.id,
           resolvedId: resolved.id,
           originalKeys: Object.keys(resource),
           resolvedKeys: Object.keys(resolved),
@@ -1114,9 +1116,9 @@ metadata:
       }
 
       // FIX: Preserve the id field if it exists (needed for resource mapping in CEL resolution)
-      if ((resource as any).id) {
-        this.logger.trace('Preserving resource id field', { path, id: (resource as any).id });
-        (resolved as any).id = (resource as any).id;
+      if (resourceRecord.id) {
+        this.logger.trace('Preserving resource id field', { path, id: resourceRecord.id });
+        resolved.id = resourceRecord.id;
       }
 
       return resolved;
