@@ -6,6 +6,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { compile as compileExpression } from 'angular-expressions';
 import {
   createAlchemyResourceId,
   ensureResourceTypeRegistered,
@@ -25,7 +26,7 @@ import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
-import type { KubernetesRef, CelExpression } from '../types/common.js';
+import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
   AppliedResource,
   DeploymentClosure,
@@ -915,118 +916,50 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
-   * Evaluate a static CEL expression that contains only schema references or literal values
+   * Evaluate a static CEL expression that contains only schema references or literal values.
+   *
+   * Uses `angular-expressions` for safe AST-based evaluation instead of `new Function()` / `eval()`.
+   * Spec field references (e.g., `schema.spec.name`, `spec.replicas`) are resolved by passing the
+   * spec values as a scope object, eliminating string interpolation injection risks entirely.
    */
   private evaluateStaticCelExpression(celExpression: CelExpression, spec: TSpec): unknown {
     const expression = celExpression.expression;
+    const specRecord = spec as Record<string, unknown>;
 
-    // Handle expressions that reference schema.spec fields FIRST (before checking just spec.)
+    // Build a scope expression by stripping schema.spec. or spec. prefixes so that
+    // angular-expressions can resolve field references directly from the spec scope.
+    let scopeExpression = expression;
+
     if (expression.includes('schema.spec.')) {
-      // Replace schema.spec.fieldName with actual spec values
-      let evaluatedExpression = expression;
-
-      // Find all schema.spec.fieldName patterns and replace them with actual values
-      const schemaRefPattern = /schema\.spec\.(\w+)/g;
-      const specRecord = spec as Record<string, unknown>;
-      evaluatedExpression = evaluatedExpression.replace(
-        schemaRefPattern,
-        (originalMatch: string, fieldName: string) => {
-          const fieldValue = specRecord[fieldName];
-
-          if (fieldValue !== undefined) {
-            // Return the properly formatted value for JavaScript evaluation
-            if (typeof fieldValue === 'string') {
-              return `"${fieldValue}"`; // Wrap strings in quotes
-            } else if (typeof fieldValue === 'boolean') {
-              return String(fieldValue); // true/false as-is
-            } else if (typeof fieldValue === 'number') {
-              return String(fieldValue); // Numbers as-is
-            } else {
-              return JSON.stringify(fieldValue); // Other types as JSON
-            }
-          }
-
-          // If field value is undefined, keep the original reference
-          return originalMatch;
-        }
-      );
-
-      // Now evaluate the expression with actual values
-      try {
-        // Use Function constructor for safer evaluation than eval
-        const result = new Function(`return ${evaluatedExpression}`)();
-        return result;
-      } catch (error) {
-        this.logger.warn('Failed to evaluate schema expression with Function constructor', {
-          expression: evaluatedExpression,
-          originalExpression: expression,
-          error: (error as Error).message,
-        });
-        throw error;
-      }
+      // Replace schema.spec.fieldName → fieldName (resolved from scope)
+      scopeExpression = scopeExpression.replace(/schema\.spec\.(\w+)/g, '$1');
     }
 
-    // Handle expressions that reference spec fields (not schema.spec, just spec)
-    if (expression.includes('spec.')) {
-      // Replace spec.fieldName with actual spec values
-      let evaluatedExpression = expression;
-
-      // Find all spec.fieldName patterns (not schema.spec) and replace them with actual values
-      const specRefPattern = /\bspec\.(\w+)/g;
-      const specRecord = spec as Record<string, unknown>;
-      evaluatedExpression = evaluatedExpression.replace(
-        specRefPattern,
-        (match: string, fieldName: string) => {
-          const fieldValue = specRecord[fieldName];
-
-          if (fieldValue !== undefined) {
-            // Return the properly formatted value for JavaScript evaluation
-            if (typeof fieldValue === 'string') {
-              return `"${fieldValue}"`; // Wrap strings in quotes
-            } else if (typeof fieldValue === 'boolean') {
-              return String(fieldValue); // true/false as-is
-            } else if (typeof fieldValue === 'number') {
-              return String(fieldValue); // Numbers as-is
-            } else {
-              return JSON.stringify(fieldValue); // Other types as JSON
-            }
-          }
-
-          // If field value is undefined, keep the original reference
-          return match;
-        }
-      );
-
-      // Now evaluate the expression with actual values
-      try {
-        // Use Function constructor for safer evaluation than eval
-        // This creates a new function that returns the result of the expression
-        const result = new Function(`return ${evaluatedExpression}`)();
-        return result;
-      } catch (error) {
-        this.logger.warn('Failed to evaluate expression with Function constructor', {
-          expression: evaluatedExpression,
-          originalExpression: expression,
-          error: (error as Error).message,
-        });
-        throw error;
-      }
+    if (scopeExpression.includes('spec.')) {
+      // Replace spec.fieldName → fieldName (resolved from scope)
+      scopeExpression = scopeExpression.replace(/\bspec\.(\w+)/g, '$1');
     }
 
-    // Handle static literal expressions (no schema or spec references)
-    // These are expressions like "running", 'http://example.com', true, 123, etc.
-    // Try to evaluate them directly as JavaScript expressions
     try {
-      const result = new Function(`return ${expression}`)();
+      const evaluator = compileExpression(scopeExpression);
+      const result = evaluator(specRecord) as unknown;
       return result;
     } catch (error) {
       // If evaluation fails, the expression might be an unquoted string like: http://kro-webapp-service
       // In this case, return it as-is (it's already a string value)
-      this.logger.debug('Static expression evaluation failed, returning as string literal', {
-        expression,
+      if (!expression.includes('schema.spec.') && !expression.includes('spec.')) {
+        this.logger.debug('Static expression evaluation failed, returning as string literal', {
+          expression,
+          error: (error as Error).message,
+        });
+        return expression;
+      }
+      this.logger.warn('Failed to evaluate expression safely', {
+        expression: scopeExpression,
+        originalExpression: expression,
         error: (error as Error).message,
       });
-      return expression;
+      throw error;
     }
   }
 
