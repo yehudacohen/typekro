@@ -11,16 +11,17 @@ import type { CompositionContext } from '../../factories/shared.js';
 import {
   createCompositionContext,
   getCurrentCompositionContext,
+  runInStatusBuilderContext,
   runWithCompositionContext,
 } from '../../factories/shared.js';
-import { CompositionDebugger, CompositionExecutionError } from '../errors.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
   KUBERNETES_REF_BRAND,
   NESTED_COMPOSITION_BRAND,
 } from '../constants/brands.js';
+import { CompositionDebugger, CompositionExecutionError } from '../errors.js';
 import { toResourceGraph } from '../serialization/core.js';
-import type { TypedResourceGraph, CallableComposition } from '../types/deployment.js';
+import type { CallableComposition, TypedResourceGraph } from '../types/deployment.js';
 
 import type {
   KroCompatibleType,
@@ -462,25 +463,18 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 
           const resourceBuildStart = Date.now();
 
-          // Execute the composition function in a special context that preserves KubernetesRef objects
-          // This allows JavaScript expressions to be converted to CEL during serialization
-          (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
+          // Execute the composition function in a status builder context where
+          // Enhanced resource proxies return KubernetesRef objects, enabling
+          // JavaScript-to-CEL conversion during serialization.
+          const specToUse = actualSpec || (schema.spec as TSpec);
+          capturedStatus = runInStatusBuilderContext(
+            () => compositionFn(specToUse) as MagicAssignableShape<TStatus>
+          );
 
-          try {
-            // Use the actual spec directly when provided, otherwise use schema spec
-            const specToUse = actualSpec || (schema.spec as TSpec);
-            capturedStatus = compositionFn(specToUse) as MagicAssignableShape<TStatus>;
-
-            // Store the original composition function for later analysis
-            // This allows the serialization system to analyze the original JavaScript expressions
-            (capturedStatus as any).__originalCompositionFn = compositionFn;
-            (capturedStatus as any).__originalSchema = schema.spec;
-
-            // Debug logging removed for cleaner output
-          } finally {
-            // Always clean up the global flag
-            delete (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
-          }
+          // Store the original composition function for later analysis
+          // This allows the serialization system to analyze the original JavaScript expressions
+          (capturedStatus as any).__originalCompositionFn = compositionFn;
+          (capturedStatus as any).__originalSchema = schema.spec;
 
           const resourceBuildEnd = Date.now();
           CompositionDebugger.logPerformanceMetrics(

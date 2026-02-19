@@ -67,6 +67,33 @@ export interface CompositionContext {
 const COMPOSITION_CONTEXT = new AsyncLocalStorage<CompositionContext>();
 
 /**
+ * AsyncLocalStorage for status builder context.
+ *
+ * When active, property access on Enhanced resource proxies always returns
+ * KubernetesRef objects (instead of eager values), enabling JavaScript-to-CEL
+ * conversion in status builder functions.
+ *
+ * Replaces the previous `(globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__`
+ * mutable global flag with a properly scoped, async-safe context.
+ */
+const STATUS_BUILDER_CONTEXT = new AsyncLocalStorage<boolean>();
+
+/**
+ * Check if the current execution is within a status builder context.
+ */
+export function isInStatusBuilderContext(): boolean {
+  return STATUS_BUILDER_CONTEXT.getStore() === true;
+}
+
+/**
+ * Run a function within a status builder context where Enhanced resource
+ * proxies return KubernetesRef objects for all property access.
+ */
+export function runInStatusBuilderContext<T>(fn: () => T): T {
+  return STATUS_BUILDER_CONTEXT.run(true, fn);
+}
+
+/**
  * Get the current composition context if one is active
  * @returns The active composition context or undefined if not in composition
  */
@@ -246,9 +273,7 @@ function createPropertyProxy<T extends object>(
       // 3. For any other access, default to the "eager value" or "implicit ref for unknown" logic.
       // IMPORTANT: For JavaScript-to-CEL conversion to work, we need to check if we're in
       // a status builder context where ALL property access should return KubernetesRef objects
-      const isStatusBuilderContext = (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
-
-      if (isStatusBuilderContext && (basePath === 'status' || basePath === 'spec')) {
+      if (isInStatusBuilderContext() && (basePath === 'status' || basePath === 'spec')) {
         // In status builder context, ALWAYS return KubernetesRef objects for spec/status fields
         // This allows expressions like `resources.deployment.status.readyReplicas > 0` to work
         return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
