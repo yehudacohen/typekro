@@ -935,6 +935,72 @@ export class StatusHydrationError extends TypeKroError {
   }
 }
 
+/**
+ * Error thrown when a Kubernetes API operation fails
+ * Wraps HTTP-level failures from the K8s API server
+ */
+export class KubernetesApiOperationError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly operation: 'apply' | 'get' | 'delete' | 'list' | 'patch' | 'watch',
+    public readonly resourceKind?: string,
+    public readonly resourceName?: string,
+    public readonly statusCode?: number,
+    public readonly cause?: Error
+  ) {
+    super(message, 'KUBERNETES_API_OPERATION_ERROR', {
+      operation,
+      resourceKind,
+      resourceName,
+      statusCode,
+      cause: cause?.message,
+    });
+    this.name = 'KubernetesApiOperationError';
+  }
+}
+
+/**
+ * Error thrown when the Kubernetes client provider fails to initialize or configure
+ */
+export class KubernetesClientError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly operation:
+      | 'initialization'
+      | 'configuration'
+      | 'client-creation'
+      | 'cluster-availability',
+    public readonly cause?: Error
+  ) {
+    super(message, 'KUBERNETES_CLIENT_ERROR', {
+      operation,
+      cause: cause?.message,
+    });
+    this.name = 'KubernetesClientError';
+  }
+}
+
+/**
+ * Error thrown when a deployment operation times out
+ */
+export class DeploymentTimeoutError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly resourceKind: string,
+    public readonly resourceName: string,
+    public readonly timeoutMs: number,
+    public readonly operation: 'readiness' | 'deletion' | 'crd-establishment' | 'instance-readiness'
+  ) {
+    super(message, 'DEPLOYMENT_TIMEOUT', {
+      resourceKind,
+      resourceName,
+      timeoutMs,
+      operation,
+    });
+    this.name = 'DeploymentTimeoutError';
+  }
+}
+
 export class ConversionError extends TypeKroError {
   constructor(
     message: string,

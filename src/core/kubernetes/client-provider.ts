@@ -11,6 +11,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
   createBunCompatibleApiClient,
@@ -223,11 +224,11 @@ export class KubernetesClientProvider {
     } catch (error) {
       this.logger.error('Failed to initialize Kubernetes client provider', error as Error);
       this.reset();
-      const enhancedError = new Error(
-        `Failed to initialize Kubernetes client provider: ${(error as Error).message}`
+      throw new KubernetesClientError(
+        `Failed to initialize Kubernetes client provider: ${(error as Error).message}`,
+        'initialization',
+        error instanceof Error ? error : new Error(String(error))
       );
-      enhancedError.cause = error;
-      throw enhancedError;
     }
   }
 
@@ -255,11 +256,11 @@ export class KubernetesClientProvider {
     } catch (error) {
       this.logger.error('Failed to initialize with pre-configured KubeConfig', error as Error);
       this.reset();
-      const enhancedError = new Error(
-        `Failed to initialize with pre-configured KubeConfig: ${(error as Error).message}`
+      throw new KubernetesClientError(
+        `Failed to initialize with pre-configured KubeConfig: ${(error as Error).message}`,
+        'initialization',
+        error instanceof Error ? error : new Error(String(error))
       );
-      enhancedError.cause = error;
-      throw enhancedError;
     }
   }
 
@@ -455,7 +456,10 @@ export class KubernetesClientProvider {
       await new Promise((resolve) => setTimeout(resolve, retryInterval));
     }
 
-    throw new Error(`Cluster did not become available within ${timeout}ms timeout`);
+    throw new KubernetesClientError(
+      `Cluster did not become available within ${timeout}ms timeout`,
+      'cluster-availability'
+    );
   }
 
   /**
@@ -572,7 +576,11 @@ export class KubernetesClientProvider {
       });
 
       // Re-throw the error instead of falling back
-      throw new Error(`Failed to create ${clientType} API client: ${(error as Error).message}`);
+      throw new KubernetesClientError(
+        `Failed to create ${clientType} API client: ${(error as Error).message}`,
+        'client-creation',
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
 
     // Cache the client for future use
@@ -718,8 +726,9 @@ export class KubernetesClientProvider {
         kc.setCurrentContext('mock-context');
       }
     } else {
-      throw new Error(
-        'Either complete cluster/user configuration must be provided, or loadFromDefault must be true'
+      throw new KubernetesClientError(
+        'Either complete cluster/user configuration must be provided, or loadFromDefault must be true',
+        'configuration'
       );
     }
 
@@ -775,7 +784,11 @@ export class KubernetesClientProvider {
           requestedContext: config.context,
           availableContexts: kc.getContexts().map((c) => c.name),
         });
-        throw new Error(`Context '${config.context}' not found in kubeconfig`);
+        throw new KubernetesClientError(
+          `Context '${config.context}' not found in kubeconfig`,
+          'configuration',
+          error instanceof Error ? error : new Error(String(error))
+        );
       }
     }
   }
@@ -838,7 +851,10 @@ export class KubernetesClientProvider {
    */
   private ensureInitialized(): void {
     if (!this.initialized || !this.kubeConfig || !this.k8sApi) {
-      throw new Error('KubernetesClientProvider not initialized. Call initialize() first.');
+      throw new KubernetesClientError(
+        'KubernetesClientProvider not initialized. Call initialize() first.',
+        'initialization'
+      );
     }
   }
 

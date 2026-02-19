@@ -16,6 +16,12 @@ import {
 import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
 import {
+  CRDInstanceError,
+  DeploymentTimeoutError,
+  ResourceGraphFactoryError,
+  ValidationError,
+} from '../errors.js';
+import {
   createKubernetesClientProvider,
   createKubernetesClientProviderWithKubeConfig,
   type KubernetesClientConfig,
@@ -125,15 +131,23 @@ export class KroResourceFactoryImpl<
   private convertToKubernetesName(name: string): string {
     // Validate input name
     if (!name || typeof name !== 'string') {
-      throw new Error(
-        `Invalid resource graph name: ${JSON.stringify(name)}. Resource graph name must be a non-empty string.`
+      throw new ValidationError(
+        `Invalid resource graph name: ${JSON.stringify(name)}. Resource graph name must be a non-empty string.`,
+        'ResourceGraphDefinition',
+        String(name),
+        'name',
+        ['Provide a non-empty string for the resource graph name']
       );
     }
 
     const trimmedName = name.trim();
     if (trimmedName.length === 0) {
-      throw new Error(
-        `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`
+      throw new ValidationError(
+        `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`,
+        'ResourceGraphDefinition',
+        name,
+        'name',
+        ['Provide a non-whitespace resource graph name']
       );
     }
 
@@ -144,14 +158,25 @@ export class KroResourceFactoryImpl<
 
     // Validate Kubernetes naming conventions
     if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-      throw new Error(
-        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
+      throw new ValidationError(
+        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`,
+        'ResourceGraphDefinition',
+        name,
+        'name',
+        [
+          'Use lowercase alphanumeric characters and hyphens only',
+          'Must start and end with an alphanumeric character',
+        ]
       );
     }
 
     if (kubernetesName.length > 253) {
-      throw new Error(
-        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
+      throw new ValidationError(
+        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`,
+        'ResourceGraphDefinition',
+        name,
+        'name',
+        ['Shorten the resource graph name to stay under 253 characters']
       );
     }
 
@@ -217,7 +242,13 @@ export class KroResourceFactoryImpl<
     // Validate spec against ArkType schema
     const validationResult = this.schemaDefinition.spec(spec);
     if (validationResult instanceof Error) {
-      throw new Error(`Invalid spec: ${validationResult.message}`);
+      throw new ValidationError(
+        `Invalid spec: ${validationResult.message}`,
+        this.schemaDefinition.kind,
+        this.name,
+        undefined,
+        ['Check the spec against the schema definition']
+      );
     }
 
     // Execute closures before RGD creation (Kro mode requirement)
@@ -251,8 +282,10 @@ export class KroResourceFactoryImpl<
       namespace: this.namespace,
       deployedResources: new Map(),
       resolveReference: async (ref: KubernetesRef) => {
-        throw new Error(
-          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`
+        throw new ResourceGraphFactoryError(
+          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`,
+          this.name,
+          'deployment'
         );
       },
     };
@@ -270,7 +303,11 @@ export class KroResourceFactoryImpl<
           throw error;
         }
         // For other errors, wrap them with context
-        throw new Error(`Failed to validate closure '${closureName}': ${error}`);
+        throw new ResourceGraphFactoryError(
+          `Failed to validate closure '${closureName}': ${error}`,
+          this.name,
+          'deployment'
+        );
       }
     }
 
@@ -286,8 +323,10 @@ export class KroResourceFactoryImpl<
       namespace: this.namespace,
       deployedResources: new Map(), // Empty for pre-RGD execution
       resolveReference: async (ref: KubernetesRef) => {
-        throw new Error(
-          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`
+        throw new ResourceGraphFactoryError(
+          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`,
+          this.name,
+          'deployment'
         );
       },
     };
@@ -325,8 +364,11 @@ export class KroResourceFactoryImpl<
           name: closureName,
           message: error instanceof Error ? error.message : String(error),
         });
-        throw new Error(
-          `Failed to execute closure '${closureName}': ${error instanceof Error ? error.message : String(error)}`
+        throw new ResourceGraphFactoryError(
+          `Failed to execute closure '${closureName}': ${error instanceof Error ? error.message : String(error)}`,
+          this.name,
+          'deployment',
+          error instanceof Error ? error : undefined
         );
       }
     }
@@ -415,7 +457,11 @@ export class KroResourceFactoryImpl<
    */
   private async deployWithAlchemy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
     if (!this.alchemyScope) {
-      throw new Error('Alchemy scope is required for alchemy deployment');
+      throw new ResourceGraphFactoryError(
+        'Alchemy scope is required for alchemy deployment',
+        this.name,
+        'deployment'
+      );
     }
 
     // Use static registration functions
@@ -548,7 +594,14 @@ export class KroResourceFactoryImpl<
       ) {
         return [];
       }
-      throw new Error(`Failed to list instances: ${k8sError.message || String(error)}`);
+      throw new CRDInstanceError(
+        `Failed to list instances: ${k8sError.message || String(error)}`,
+        this.schemaDefinition.apiVersion,
+        this.schemaDefinition.kind,
+        '*',
+        'statusResolution',
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
   }
 
@@ -575,7 +628,14 @@ export class KroResourceFactoryImpl<
     } catch (error) {
       const k8sError = error as { statusCode?: number; message?: string };
       if (k8sError.statusCode !== 404) {
-        throw new Error(`Failed to delete instance ${name}: ${k8sError.message || String(error)}`);
+        throw new CRDInstanceError(
+          `Failed to delete instance ${name}: ${k8sError.message || String(error)}`,
+          this.schemaDefinition.apiVersion,
+          this.schemaDefinition.kind,
+          name,
+          'deletion',
+          error instanceof Error ? error : new Error(String(error))
+        );
       }
       // Instance already deleted, ignore 404
     }
@@ -667,7 +727,12 @@ export class KroResourceFactoryImpl<
           conditions: [],
         };
       }
-      throw new Error(`Failed to get RGD status: ${k8sError.message || String(error)}`);
+      throw new ResourceGraphFactoryError(
+        `Failed to get RGD status: ${k8sError.message || String(error)}`,
+        this.name,
+        'getInstance',
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
   }
 
@@ -802,8 +867,11 @@ ${Object.entries(spec as Record<string, any>)
         this.logger.error('Could not fetch RGD status for debugging', statusError as Error);
       }
 
-      throw new Error(
-        `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`
+      throw new ResourceGraphFactoryError(
+        `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`,
+        this.name,
+        'deployment',
+        error instanceof Error ? error : undefined
       );
     }
   }
@@ -849,8 +917,10 @@ ${Object.entries(spec as Record<string, any>)
 
     // Debug: Check if the method exists
     if (typeof deploymentEngine.waitForCRDReady !== 'function') {
-      throw new Error(
-        `deploymentEngine.waitForCRDReady is not a function. Available methods: ${Object.getOwnPropertyNames(Object.getPrototypeOf(deploymentEngine)).join(', ')}`
+      throw new ResourceGraphFactoryError(
+        `deploymentEngine.waitForCRDReady is not a function. Available methods: ${Object.getOwnPropertyNames(Object.getPrototypeOf(deploymentEngine)).join(', ')}`,
+        this.name,
+        'deployment'
       );
     }
 
@@ -1215,7 +1285,13 @@ ${Object.entries(spec as Record<string, any>)
         if (state === 'FAILED') {
           const failedCondition = conditions.find((c) => c.status === 'False');
           const errorMessage = failedCondition?.message || 'Unknown error';
-          throw new Error(`Kro instance deployment failed: ${errorMessage}`);
+          throw new CRDInstanceError(
+            `Kro instance deployment failed: ${errorMessage}`,
+            this.schemaDefinition.apiVersion,
+            this.schemaDefinition.kind,
+            instanceName,
+            'creation'
+          );
         }
 
         readinessLogger.debug('Kro instance not ready yet, continuing to wait', {
@@ -1238,8 +1314,12 @@ ${Object.entries(spec as Record<string, any>)
     }
 
     const elapsed = Date.now() - startTime;
-    throw new Error(
-      `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms). This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro`
+    throw new DeploymentTimeoutError(
+      `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms). This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro`,
+      this.schemaDefinition.kind,
+      instanceName,
+      timeout,
+      'instance-readiness'
     );
   }
 
