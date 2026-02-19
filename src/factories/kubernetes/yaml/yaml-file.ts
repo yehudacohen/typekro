@@ -11,6 +11,7 @@ import type {
   DeploymentContext,
 } from '../../../core/types/deployment.js';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
+import { generateSchemaFixPatches } from '../../../core/utils/crd-schema-fix.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { registerDeploymentClosure } from '../../shared.js';
 
@@ -201,71 +202,6 @@ async function applyCRDWithSchemaFix(
       throw error;
     }
   }
-}
-
-/**
- * Known field paths that need x-kubernetes-preserve-unknown-fields: true
- */
-const FIELDS_NEEDING_PRESERVE_UNKNOWN = new Set([
-  'values', // HelmRelease spec.values
-  'valuesFrom', // HelmRelease spec.valuesFrom items
-  'postRenderers', // HelmRelease spec.postRenderers
-]);
-
-/**
- * Generate JSON patch operations to fix a CRD schema
- */
-function generateSchemaFixPatches(obj: any, basePath: string, fieldName?: string): any[] {
-  const patches: any[] = [];
-
-  if (!obj || typeof obj !== 'object') {
-    return patches;
-  }
-
-  // Fix: Add x-kubernetes-preserve-unknown-fields to known fields that need it
-  if (
-    fieldName &&
-    FIELDS_NEEDING_PRESERVE_UNKNOWN.has(fieldName) &&
-    obj.type === 'object' &&
-    !obj['x-kubernetes-preserve-unknown-fields']
-  ) {
-    patches.push({
-      op: 'add',
-      path: `${basePath}/x-kubernetes-preserve-unknown-fields`,
-      value: true,
-    });
-  }
-
-  // Fix: Add type: object when x-kubernetes-preserve-unknown-fields is used without type
-  if (obj['x-kubernetes-preserve-unknown-fields'] === true && !obj.type) {
-    patches.push({
-      op: 'add',
-      path: `${basePath}/type`,
-      value: 'object',
-    });
-  }
-
-  // Recursively process properties
-  if (obj.properties) {
-    for (const [propName, prop] of Object.entries(obj.properties)) {
-      const propPath = `${basePath}/properties/${propName}`;
-      patches.push(...generateSchemaFixPatches(prop, propPath, propName));
-    }
-  }
-
-  // Process additionalProperties
-  if (obj.additionalProperties && typeof obj.additionalProperties === 'object') {
-    patches.push(
-      ...generateSchemaFixPatches(obj.additionalProperties, `${basePath}/additionalProperties`)
-    );
-  }
-
-  // Process items (for arrays)
-  if (obj.items) {
-    patches.push(...generateSchemaFixPatches(obj.items, `${basePath}/items`));
-  }
-
-  return patches;
 }
 
 /**

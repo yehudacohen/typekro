@@ -54,7 +54,14 @@ const logger = getComponentLogger('crd-schema-fix');
  * Known field paths that need x-kubernetes-preserve-unknown-fields: true
  * These are fields that accept arbitrary user-defined values (like Helm values)
  */
-const FIELDS_NEEDING_PRESERVE_UNKNOWN = new Set([
+/**
+ * Known field paths that need x-kubernetes-preserve-unknown-fields: true
+ * These are fields that accept arbitrary user-defined values (like Helm values)
+ *
+ * Shared across crd-schema-fix.ts (manifest transform), crd-patcher.ts (live cluster patching),
+ * and yaml-file.ts (CRD JSON patching after deployment).
+ */
+export const FIELDS_NEEDING_PRESERVE_UNKNOWN = new Set([
   'values', // HelmRelease spec.values
   'valuesFrom', // HelmRelease spec.valuesFrom items
   'postRenderers', // HelmRelease spec.postRenderers
@@ -70,6 +77,126 @@ export interface CRDSchemaCheckResult {
   issues: string[];
   /** CRD name if available */
   crdName?: string;
+}
+
+/**
+ * Recursively check if a schema node needs the preserve-unknown-fields fix.
+ *
+ * Used by crd-patcher.ts for fast boolean checks before generating patches.
+ *
+ * @param obj - Schema node to check
+ * @param fieldName - Field name for known-field matching
+ * @returns true if this node or any descendant needs the fix
+ */
+export function schemaFieldNeedsFix(obj: any, fieldName?: string): boolean {
+  if (!obj || typeof obj !== 'object') {
+    return false;
+  }
+
+  // Check if this field needs the fix
+  if (
+    fieldName &&
+    FIELDS_NEEDING_PRESERVE_UNKNOWN.has(fieldName) &&
+    obj.type === 'object' &&
+    !obj['x-kubernetes-preserve-unknown-fields']
+  ) {
+    return true;
+  }
+
+  // Check if x-kubernetes-preserve-unknown-fields is used without type
+  if (obj['x-kubernetes-preserve-unknown-fields'] === true && !obj.type) {
+    return true;
+  }
+
+  // Recursively check properties
+  if (obj.properties) {
+    for (const [propName, prop] of Object.entries(obj.properties)) {
+      if (schemaFieldNeedsFix(prop, propName)) {
+        return true;
+      }
+    }
+  }
+
+  // Check additionalProperties
+  if (obj.additionalProperties && typeof obj.additionalProperties === 'object') {
+    if (schemaFieldNeedsFix(obj.additionalProperties)) {
+      return true;
+    }
+  }
+
+  // Check items (for arrays)
+  if (obj.items && schemaFieldNeedsFix(obj.items)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Generate JSON patch operations to fix a CRD schema node.
+ *
+ * Used by crd-patcher.ts (live cluster patching) and yaml-file.ts (post-deployment CRD fixing).
+ *
+ * @param obj - Schema node to generate patches for
+ * @param basePath - JSON pointer base path (e.g., `/spec/versions/0/schema/openAPIV3Schema`)
+ * @param fieldName - Field name for known-field matching
+ * @returns Array of JSON patch operations
+ */
+export function generateSchemaFixPatches(
+  obj: any,
+  basePath: string,
+  fieldName?: string
+): Array<{ op: string; path: string; value: unknown }> {
+  const patches: Array<{ op: string; path: string; value: unknown }> = [];
+
+  if (!obj || typeof obj !== 'object') {
+    return patches;
+  }
+
+  // Fix: Add x-kubernetes-preserve-unknown-fields to known fields that need it
+  if (
+    fieldName &&
+    FIELDS_NEEDING_PRESERVE_UNKNOWN.has(fieldName) &&
+    obj.type === 'object' &&
+    !obj['x-kubernetes-preserve-unknown-fields']
+  ) {
+    patches.push({
+      op: 'add',
+      path: `${basePath}/x-kubernetes-preserve-unknown-fields`,
+      value: true,
+    });
+  }
+
+  // Fix: Add type: object when x-kubernetes-preserve-unknown-fields is used without type
+  if (obj['x-kubernetes-preserve-unknown-fields'] === true && !obj.type) {
+    patches.push({
+      op: 'add',
+      path: `${basePath}/type`,
+      value: 'object',
+    });
+  }
+
+  // Recursively process properties
+  if (obj.properties) {
+    for (const [propName, prop] of Object.entries(obj.properties)) {
+      const propPath = `${basePath}/properties/${propName}`;
+      patches.push(...generateSchemaFixPatches(prop, propPath, propName));
+    }
+  }
+
+  // Process additionalProperties
+  if (obj.additionalProperties && typeof obj.additionalProperties === 'object') {
+    patches.push(
+      ...generateSchemaFixPatches(obj.additionalProperties, `${basePath}/additionalProperties`)
+    );
+  }
+
+  // Process items (for arrays)
+  if (obj.items) {
+    patches.push(...generateSchemaFixPatches(obj.items, `${basePath}/items`));
+  }
+
+  return patches;
 }
 
 /**
@@ -111,7 +238,9 @@ export function needsCRDSchemaFix(manifest: KubernetesResource): CRDSchemaCheckR
         issues.push(`${fieldPath}: known field '${fieldName}' missing type`);
       }
       if (!obj['x-kubernetes-preserve-unknown-fields']) {
-        issues.push(`${fieldPath}: known field '${fieldName}' missing x-kubernetes-preserve-unknown-fields`);
+        issues.push(
+          `${fieldPath}: known field '${fieldName}' missing x-kubernetes-preserve-unknown-fields`
+        );
       }
     }
 
@@ -187,7 +316,9 @@ export function fixCRDSchemaForK8s133(manifest: KubernetesResource): KubernetesR
     // If this object has x-kubernetes-preserve-unknown-fields but no type, add type: object
     if (obj['x-kubernetes-preserve-unknown-fields'] === true && !obj.type) {
       obj.type = 'object';
-      changes.push(`Added type: object to ${fieldPath} (had x-kubernetes-preserve-unknown-fields without type)`);
+      changes.push(
+        `Added type: object to ${fieldPath} (had x-kubernetes-preserve-unknown-fields without type)`
+      );
     }
 
     // If this is a known field that needs x-kubernetes-preserve-unknown-fields, add it
@@ -197,7 +328,9 @@ export function fixCRDSchemaForK8s133(manifest: KubernetesResource): KubernetesR
       // Ensure type is set (required by K8s 1.33+)
       if (!obj.type) {
         obj.type = 'object';
-        changes.push(`Added type: object to ${fieldPath} (known field needing preserve-unknown-fields)`);
+        changes.push(
+          `Added type: object to ${fieldPath} (known field needing preserve-unknown-fields)`
+        );
       }
       // Ensure x-kubernetes-preserve-unknown-fields is set
       if (!obj['x-kubernetes-preserve-unknown-fields']) {
@@ -227,7 +360,10 @@ export function fixCRDSchemaForK8s133(manifest: KubernetesResource): KubernetesR
   // Fix each version's schema
   for (const version of fixedCrd.spec.versions) {
     if (version.schema?.openAPIV3Schema) {
-      fixSchemaProperties(version.schema.openAPIV3Schema, `spec.versions[${version.name}].schema.openAPIV3Schema`);
+      fixSchemaProperties(
+        version.schema.openAPIV3Schema,
+        `spec.versions[${version.name}].schema.openAPIV3Schema`
+      );
     }
   }
 
