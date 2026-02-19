@@ -253,11 +253,11 @@ export class ReferenceResolver {
     // This avoids structuredClone failures on objects with Symbols
     let resolved: any;
 
-    if (typeof (resource as any).toJSON === 'function') {
+    if (typeof resource.toJSON === 'function') {
       this.logger.trace('Resource has toJSON method, calling it first', {
         resourceId: resource.id,
       });
-      const plainObject = (resource as any).toJSON();
+      const plainObject = resource.toJSON();
       // toJSON might still contain Symbol-branded objects, so use selectiveClone
       resolved = this.selectiveClone(plainObject);
     } else {
@@ -461,7 +461,7 @@ export class ReferenceResolver {
     // Check if this is a reference to the schema
     if (ref.resourceId === 'schema' || ref.resourceId === '__schema__') {
       if (context.schema) {
-        const value = this.extractFieldValue<T>(context.schema as any, ref.fieldPath);
+        const value = this.extractFieldValue<T>(context.schema, ref.fieldPath);
         this.cache.set(cacheKey, value);
         return value as T;
       }
@@ -490,10 +490,10 @@ export class ReferenceResolver {
           resourceId: ref.resourceId,
           fieldPath: ref.fieldPath,
           hasResource: !!resource,
-          resourceKind: resource ? (resource as any).kind : undefined,
+          resourceKind: resource ? (resource as Record<string, unknown>).kind : undefined,
         });
         if (resource) {
-          const value = this.extractFieldValue<T>(resource as any, ref.fieldPath);
+          const value = this.extractFieldValue<T>(resource, ref.fieldPath);
           this.logger.debug('Extracted field value from resourceKeyMapping', {
             resourceId: ref.resourceId,
             fieldPath: ref.fieldPath,
@@ -559,9 +559,10 @@ export class ReferenceResolver {
     expr: CelExpression<T>,
     context: ResolutionContext
   ): Promise<T> {
+    const exprRecord = expr as CelExpression<T> & Record<string, unknown>;
     this.logger.debug('Starting CEL expression evaluation', {
       expression: expr.expression,
-      isTemplate: (expr as any).__isTemplate,
+      isTemplate: exprRecord.__isTemplate,
       hasResourceKeyMapping: !!context.resourceKeyMapping,
       resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
       resourceKeyMappingKeys: context.resourceKeyMapping
@@ -573,7 +574,7 @@ export class ReferenceResolver {
 
     // Handle template expressions specially - they contain ${...} placeholders
     // that need to be resolved individually, not as a single CEL expression
-    if ((expr as any).__isTemplate) {
+    if (exprRecord.__isTemplate) {
       return await this.evaluateTemplateExpression(expr, context);
     }
 
@@ -592,11 +593,12 @@ export class ReferenceResolver {
         // Use the resource key mapping to provide resources with their original keys
         for (const [originalKey, resource] of context.resourceKeyMapping) {
           resourcesMap.set(originalKey, resource);
+          const resourceInfo = resource as Record<string, unknown>;
           this.logger.debug('Added resource to CEL context from key mapping', {
             originalKey,
-            resourceId: (resource as any).id,
-            resourceKind: (resource as any).kind,
-            resourceName: (resource as any).name,
+            resourceId: resourceInfo.id,
+            resourceKind: resourceInfo.kind,
+            resourceName: resourceInfo.name,
           });
         }
       } else {
@@ -617,7 +619,7 @@ export class ReferenceResolver {
         // Also add as __schema__ for backward compatibility
         resourcesMap.set('__schema__', context.schema);
         this.logger.debug('Added schema to CEL context', {
-          schemaSpec: Object.keys((context.schema as any).spec || {}),
+          schemaSpec: Object.keys((context.schema.spec ?? {}) as Record<string, unknown>),
         });
       }
 
@@ -627,7 +629,7 @@ export class ReferenceResolver {
         // Also add as __schema__ for backward compatibility
         resourcesMap.set('__schema__', context.schema);
         this.logger.debug('Added schema to CEL context', {
-          schemaSpec: Object.keys((context.schema as any).spec || {}),
+          schemaSpec: Object.keys((context.schema.spec ?? {}) as Record<string, unknown>),
         });
       }
 
@@ -670,7 +672,7 @@ export class ReferenceResolver {
 
   /**
    * Evaluate a template expression by resolving ${...} placeholders
-   * 
+   *
    * Template expressions are strings like "http://${service.metadata.name}" that contain
    * embedded CEL expressions. Each ${...} placeholder is evaluated separately and the
    * results are concatenated to form the final string.
@@ -680,7 +682,7 @@ export class ReferenceResolver {
     context: ResolutionContext
   ): Promise<T> {
     const templateString = expr.expression;
-    
+
     this.logger.debug('Evaluating template expression', {
       template: templateString,
     });
@@ -688,7 +690,7 @@ export class ReferenceResolver {
     // Find all ${...} placeholders and evaluate them
     const placeholderRegex = /\$\{([^}]+)\}/g;
     let result = templateString;
-    
+
     // Collect all matches first to avoid issues with modifying the string while iterating
     const matches: Array<{ fullMatch: string; celExpr: string }> = [];
     let match = placeholderRegex.exec(templateString);
@@ -711,10 +713,10 @@ export class ReferenceResolver {
 
         // Evaluate the placeholder expression
         const evaluatedValue = await this.evaluateCelExpression(placeholderExpr, context);
-        
+
         // Replace the placeholder with the evaluated value
         result = result.replace(fullMatch, String(evaluatedValue));
-        
+
         this.logger.debug('Evaluated template placeholder', {
           placeholder: fullMatch,
           celExpr,
@@ -787,12 +789,13 @@ export class ReferenceResolver {
       });
 
       // Convert k8s.KubernetesObject to our KubernetesResource type
+      const rawResource = resource as k8s.KubernetesObject & { spec?: unknown; status?: unknown };
       const kubernetesResource: KubernetesResource = {
         apiVersion: resource.apiVersion || '',
         kind: resource.kind || '',
         metadata: resource.metadata || {},
-        spec: (resource as any).spec,
-        status: (resource as any).status,
+        spec: rawResource.spec,
+        status: rawResource.status,
         ...(resource.metadata?.name && { id: resource.metadata.name }),
       };
 
@@ -1045,7 +1048,7 @@ export class ReferenceResolver {
         kind: 'Unknown',
         name: resourceRef.resourceId,
         namespace: 'default',
-        manifest: {} as any,
+        manifest: { apiVersion: '', kind: 'Unknown', metadata: { name: resourceRef.resourceId } },
         status: 'failed',
         deployedAt: new Date(),
       };

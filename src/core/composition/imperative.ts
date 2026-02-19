@@ -778,7 +778,7 @@ export function kubernetesComposition<
     return {
       [NESTED_COMPOSITION_BRAND]: true,
       spec,
-      status: createStatusProxy<TStatus>(compositionName, null as any, callResult),
+      status: createStatusProxy<TStatus>(compositionName, null, callResult),
       __compositionId: callCompositionName,
       __resources: callResult.resources,
     };
