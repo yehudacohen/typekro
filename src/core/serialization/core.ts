@@ -5,15 +5,20 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
+import { runInStatusBuilderContext } from '../../factories/shared.js';
+import { containsKubernetesRefs, isCelExpression } from '../../utils/type-guards.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
+import { CelConversionEngine } from '../expressions/cel-conversion-engine.js';
+import { analyzeImperativeComposition } from '../expressions/imperative-analyzer.js';
+import { CelToJavaScriptMigrationHelper } from '../expressions/migration-helpers.js';
 import {
   analyzeStatusBuilderForToResourceGraph,
+  StatusBuilderAnalyzer,
   type StatusBuilderFunction,
 } from '../expressions/status-builder-analyzer.js';
-import { analyzeImperativeComposition } from '../expressions/imperative-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, externalRef } from '../references/index.js';
 import type {
@@ -40,11 +45,6 @@ import type {
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
-import { StatusBuilderAnalyzer } from '../expressions/status-builder-analyzer.js';
-import { containsKubernetesRefs } from '../../utils/type-guards.js';
-import { isCelExpression } from '../../utils/type-guards.js';
-import { CelToJavaScriptMigrationHelper } from '../expressions/migration-helpers.js';
-import { CelConversionEngine } from '../expressions/cel-conversion-engine.js';
 
 /**
  * Separate Enhanced<> resources from deployment closures in the builder result
@@ -546,17 +546,11 @@ function createTypedResourceGraph<
   let imperativeAnalysisSucceeded = false;
 
   try {
-    // Execute the status builder to get the return object
-    (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
-
-    try {
-      statusMappings = statusBuilder(
-        schema,
-        resourcesWithKeys as TResources
-      ) as MagicAssignableShape<TStatus>;
-    } finally {
-      delete (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
-    }
+    // Execute the status builder in a context where Enhanced resource proxies
+    // return KubernetesRef objects, enabling JavaScript-to-CEL conversion.
+    statusMappings = runInStatusBuilderContext(
+      () => statusBuilder(schema, resourcesWithKeys as TResources) as MagicAssignableShape<TStatus>
+    );
 
     // Check if this is from an imperative composition with original expressions
     const originalCompositionFn = (statusMappings as any).__originalCompositionFn;
@@ -857,16 +851,9 @@ function createTypedResourceGraph<
   } catch (error) {
     serializationLogger.error('Failed to analyze status builder', error as Error);
     // Fallback to executing status builder normally
-    (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
-
-    try {
-      statusMappings = statusBuilder(
-        schema,
-        resourcesWithKeys as TResources
-      ) as MagicAssignableShape<TStatus>;
-    } finally {
-      delete (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
-    }
+    statusMappings = runInStatusBuilderContext(
+      () => statusBuilder(schema, resourcesWithKeys as TResources) as MagicAssignableShape<TStatus>
+    );
     analyzedStatusMappings = statusMappings as any;
     // Create empty analysis for fallback
     mappingAnalysis = {
