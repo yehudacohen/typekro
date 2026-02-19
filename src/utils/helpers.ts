@@ -15,7 +15,7 @@ import { isCelExpression, isKubernetesRef } from './type-guards.js';
 
 /**
  * Convert a template string with ${...} placeholders to a CEL concatenation expression
- * 
+ *
  * Examples:
  * - "https://${schema.spec.hostname}" -> "https://" + schema.spec.hostname
  * - "prefix-${name}-suffix" -> "prefix-" + name + "-suffix"
@@ -24,11 +24,11 @@ function convertTemplateToCelConcat(templateStr: string): string {
   // Split the template string into parts
   const parts: string[] = [];
   let currentPos = 0;
-  
+
   // Find all ${...} expressions
   const regex = /\$\{([^}]+)\}/g;
   let match: RegExpExecArray | null = regex.exec(templateStr);
-  
+
   while (match !== null) {
     // Add the literal string before the expression
     if (match.index > currentPos) {
@@ -37,15 +37,15 @@ function convertTemplateToCelConcat(templateStr: string): string {
         parts.push(`"${literalPart}"`);
       }
     }
-    
+
     // Add the CEL expression (without ${})
     parts.push(match[1] || '');
     currentPos = match.index + match[0].length;
-    
+
     // Get next match
     match = regex.exec(templateStr);
   }
-  
+
   // Add any remaining literal string
   if (currentPos < templateStr.length) {
     const literalPart = templateStr.slice(currentPos);
@@ -53,7 +53,7 @@ function convertTemplateToCelConcat(templateStr: string): string {
       parts.push(`"${literalPart}"`);
     }
   }
-  
+
   // Join with + operator
   return parts.join(' + ');
 }
@@ -201,7 +201,7 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
       // Convert template expressions to proper CEL concatenation
       // Transform "https://${schema.spec.hostname}" to ${"https://" + schema.spec.hostname}
       const templateExpr = obj.expression;
-      
+
       // Parse template string and convert to CEL concatenation
       const celExpression = convertTemplateToCelConcat(templateExpr);
       return `\${${celExpression}}`;
@@ -232,7 +232,7 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
     }
 
     // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-    const originalObj = obj as any;
+    const originalObj = obj as { readinessEvaluator?: (...args: unknown[]) => unknown };
     if (originalObj.readinessEvaluator && typeof originalObj.readinessEvaluator === 'function') {
       Object.defineProperty(result, 'readinessEvaluator', {
         value: originalObj.readinessEvaluator,
@@ -250,15 +250,15 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
 
 /**
  * Converts __KUBERNETES_REF__ markers in a string to CEL expressions.
- * 
+ *
  * This handles template literals where schema proxy values are used:
  * - Input: "__KUBERNETES_REF___schema___spec.name__-policy"
  * - Output: "${schema.spec.name}-policy" (for simple cases)
  * - Or: ${"" + schema.spec.name + "-policy"} (for complex cases with CEL concatenation)
- * 
+ *
  * Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
  * For schema: __KUBERNETES_REF___schema___{fieldPath}__
- * 
+ *
  * The field path is a dot-separated path like "spec.name" or "status.readyReplicas".
  * It cannot contain underscores, so we use [a-zA-Z0-9.]+ to match it precisely.
  */
@@ -266,28 +266,29 @@ function convertKubernetesRefMarkersTocel(str: string): string {
   // Pattern handles both regular resource IDs and __schema__ (which has underscores)
   // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
   // For schema: __KUBERNETES_REF___schema___{fieldPath}__
-  // 
+  //
   // The field path is matched with [a-zA-Z0-9.]+ which captures dot-separated identifiers
   // like "spec.name" or "status.readyReplicas" without capturing trailing underscores
   const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.]+)__/g;
-  
+
   // Check if the entire string is just a single reference (no surrounding text)
   const singleRefMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.]+)__$/);
   if (singleRefMatch) {
     const [, resourceId, fieldPath] = singleRefMatch;
-    const celPath = resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+    const celPath =
+      resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
     return `\${${celPath}}`;
   }
-  
+
   // For strings with mixed content (text + references), we need to build a CEL concatenation
   // e.g., "__KUBERNETES_REF___schema___spec.name__-policy" -> ${"" + schema.spec.name + "-policy"}
   const parts: string[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
-  
+
   // Reset the regex
   refPattern.lastIndex = 0;
-  
+
   match = refPattern.exec(str);
   while (match !== null) {
     // Add any text before this match as a string literal
@@ -295,27 +296,28 @@ function convertKubernetesRefMarkersTocel(str: string): string {
       const textBefore = str.slice(lastIndex, match.index);
       parts.push(`"${textBefore}"`);
     }
-    
+
     // Add the CEL reference
     const [, resourceId, fieldPath] = match;
-    const celPath = resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+    const celPath =
+      resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
     parts.push(celPath);
-    
+
     lastIndex = match.index + match[0].length;
     match = refPattern.exec(str);
   }
-  
+
   // Add any remaining text after the last match
   if (lastIndex < str.length) {
     const textAfter = str.slice(lastIndex);
     parts.push(`"${textAfter}"`);
   }
-  
+
   // Join with + for CEL concatenation
   if (parts.length === 1) {
     return `\${${parts[0]}}`;
   }
-  
+
   return `\${${parts.join(' + ')}}`;
 }
 
@@ -437,7 +439,7 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
         // Convert template expressions to proper CEL concatenation
         // Transform "https://${schema.spec.hostname}" to ${"https://" + schema.spec.hostname}
         const templateExpr = value.expression;
-        
+
         // Parse template string and convert to CEL concatenation
         const celExpression = convertTemplateToCelConcat(templateExpr);
         return `\${${celExpression}}`;

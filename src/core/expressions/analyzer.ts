@@ -1,49 +1,51 @@
 /**
  * JavaScript to CEL Expression Analyzer
- * 
+ *
  * This module provides the core functionality for detecting KubernetesRef objects
  * in JavaScript expressions and converting them to appropriate CEL expressions.
- * 
+ *
  * The analyzer works with TypeKro's magic proxy system where schema.spec.name and
  * resources.database.status.podIP return KubernetesRef objects at runtime.
  */
 
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode } from 'estree';
-
-import { parseExpression, parseScript, ParserError } from './parser.js';
-
-import { containsKubernetesRefs, extractResourceReferences, isKubernetesRef } from '../../utils/type-guards.js';
+import {
+  containsKubernetesRefs,
+  extractResourceReferences,
+  isKubernetesRef,
+} from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
+import { ConversionError } from '../errors.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { SchemaProxy } from '../types/serialization.js';
-import { ConversionError } from '../errors.js';
-import { type SourceMapBuilder, SourceMapUtils, type SourceMapEntry } from './source-map.js';
-import { ExpressionCache, type CacheOptions, type CacheStats } from './cache.js';
+import { type CacheOptions, type CacheStats, ExpressionCache } from './cache.js';
+import {
+  CompileTimeTypeChecker,
+  type CompileTimeValidationContext,
+  type CompileTimeValidationResult,
+} from './compile-time-validation.js';
 import { handleExpressionWithFactoryPattern } from './factory-pattern-handler.js';
-import {
-  ExpressionTypeValidator,
-  TypeRegistry,
-  TypeSafetyUtils,
-  type TypeInfo,
-  type TypeValidationResult
-} from './type-safety.js';
-import {
-  CelTypeInferenceEngine,
-  type CelTypeInferenceResult,
-  type TypeInferenceContext
-} from './type-inference.js';
+import { ParserError, parseExpression, parseScript } from './parser.js';
 import {
   ResourceReferenceValidator,
   type ResourceValidationResult,
-  type ValidationContext
+  type ValidationContext,
 } from './resource-validation.js';
+import { type SourceMapBuilder, type SourceMapEntry, SourceMapUtils } from './source-map.js';
 import {
-  CompileTimeTypeChecker,
-  type CompileTimeValidationResult,
-  type CompileTimeValidationContext
-} from './compile-time-validation.js';
+  CelTypeInferenceEngine,
+  type CelTypeInferenceResult,
+  type TypeInferenceContext,
+} from './type-inference.js';
+import {
+  ExpressionTypeValidator,
+  type TypeInfo,
+  TypeRegistry,
+  TypeSafetyUtils,
+  type TypeValidationResult,
+} from './type-safety.js';
 
 /**
  * Context information for analyzing JavaScript expressions
@@ -193,8 +195,6 @@ export interface ValidationSummary {
   confidence: number;
 }
 
-
-
 /**
  * Main analyzer class for JavaScript to CEL expression conversion
  */
@@ -214,10 +214,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze any expression type and convert to CEL if needed
    */
-  analyzeExpression(
-    expression: any,
-    context: AnalysisContext
-  ): CelConversionResult {
+  analyzeExpression(expression: any, context: AnalysisContext): CelConversionResult {
     // Handle different expression types
     if (typeof expression === 'string') {
       return this.analyzeStringExpression(expression, context);
@@ -240,10 +237,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze a JavaScript string expression and convert to CEL if it contains KubernetesRef objects
    */
-  analyzeStringExpression(
-    expression: string,
-    context: AnalysisContext
-  ): CelConversionResult {
+  analyzeStringExpression(expression: string, context: AnalysisContext): CelConversionResult {
     // Check cache first
     const cached = this.cache.get(expression, context);
     if (cached) return cached;
@@ -254,8 +248,8 @@ export class JavaScriptToCelAnalyzer {
       const exprNode = parseExpression(expression);
 
       // Create source location from AST (handle case where loc might be undefined)
-      const astLoc = (exprNode as any).loc;
-      const sourceLocation = astLoc 
+      const astLoc = exprNode.loc;
+      const sourceLocation = astLoc
         ? SourceMapUtils.createSourceLocation(astLoc, expression)
         : { line: 1, column: 1, length: expression.length };
 
@@ -265,7 +259,12 @@ export class JavaScriptToCelAnalyzer {
       }
 
       // Convert to CEL with source tracking (this will extract dependencies through AST analysis)
-      const celExpression = this.convertASTNodeWithSourceTracking(exprNode, context, expression, sourceLocation);
+      const celExpression = this.convertASTNodeWithSourceTracking(
+        exprNode,
+        context,
+        expression,
+        sourceLocation
+      );
 
       // Add source mapping entry
       const sourceMapEntries: SourceMapEntry[] = [];
@@ -278,8 +277,9 @@ export class JavaScriptToCelAnalyzer {
           {
             expressionType: SourceMapUtils.determineExpressionType(exprNode.type),
             kubernetesRefs: SourceMapUtils.extractKubernetesRefPaths(celExpression.expression),
-            dependencies: context.dependencies?.map(dep => `${dep.resourceId}.${dep.fieldPath}`) || [],
-            conversionNotes: [`Converted from ${exprNode.type} AST node`]
+            dependencies:
+              context.dependencies?.map((dep) => `${dep.resourceId}.${dep.fieldPath}`) || [],
+            conversionNotes: [`Converted from ${exprNode.type} AST node`],
           }
         );
         sourceMapEntries.push(...context.sourceMap.getEntries());
@@ -350,7 +350,7 @@ export class JavaScriptToCelAnalyzer {
           for (const warning of rv.warnings) {
             const warningObj: ValidationWarning = {
               message: warning.message,
-              type: warning.warningType
+              type: warning.warningType,
             };
             if (rv.suggestions.length > 0) {
               warningObj.suggestion = rv.suggestions.join('; ');
@@ -362,7 +362,7 @@ export class JavaScriptToCelAnalyzer {
             for (const error of rv.errors) {
               const warningObj: ValidationWarning = {
                 message: error instanceof Error ? error.message : String(error),
-                type: 'resource_validation'
+                type: 'resource_validation',
               };
               if (rv.suggestions.length > 0) {
                 warningObj.suggestion = rv.suggestions.join('; ');
@@ -378,7 +378,7 @@ export class JavaScriptToCelAnalyzer {
         for (const warning of typeValidation.warnings) {
           aggregatedWarnings.push({
             message: warning.message,
-            type: 'type_validation'
+            type: 'type_validation',
             // No suggestion property for TypeValidationWarning
           });
         }
@@ -389,7 +389,7 @@ export class JavaScriptToCelAnalyzer {
         for (const warning of compileTimeValidation.warnings) {
           aggregatedWarnings.push({
             message: warning.message,
-            type: 'compile_time'
+            type: 'compile_time',
             // No suggestion property for CompileTimeWarning
           });
         }
@@ -406,7 +406,7 @@ export class JavaScriptToCelAnalyzer {
         inferredType,
         resourceValidation,
         compileTimeValidation,
-        warnings: aggregatedWarnings
+        warnings: aggregatedWarnings,
       };
 
       // Cache the result
@@ -426,17 +426,17 @@ export class JavaScriptToCelAnalyzer {
       // Create detailed error with source location from ParserError if available
       let sourceLocation = { line: 1, column: 1, length: expression.length };
       let errorMessage = error instanceof Error ? error.message : String(error);
-      
+
       // Extract enhanced error information from ParserError
       if (error instanceof ParserError) {
-        sourceLocation = { 
-          line: error.line, 
-          column: error.column, 
-          length: expression.length 
+        sourceLocation = {
+          line: error.line,
+          column: error.column,
+          length: expression.length,
         };
         errorMessage = error.message;
       }
-      
+
       const conversionError = ConversionError.forParsingFailure(
         expression,
         errorMessage,
@@ -451,7 +451,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [conversionError],
         requiresConversion: false,
-        warnings: []
+        warnings: [],
       };
 
       // Don't cache error results to allow retry
@@ -462,7 +462,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze a KubernetesRef object directly
    */
-  private analyzeKubernetesRefObject(ref: KubernetesRef<any>, context: AnalysisContext): CelConversionResult {
+  private analyzeKubernetesRefObject(
+    ref: KubernetesRef<any>,
+    context: AnalysisContext
+  ): CelConversionResult {
     // Use the proper CEL path format
     const resourceId = ref.resourceId === '__schema__' ? 'schema' : ref.resourceId;
     const celPath = `${resourceId}.${ref.fieldPath}`;
@@ -478,13 +481,13 @@ export class JavaScriptToCelAnalyzer {
       celExpression: {
         [CEL_EXPRESSION_BRAND]: true,
         expression: celPath,
-        _type: ref._type
+        _type: ref._type,
       } as CelExpression,
       dependencies: [ref],
       sourceMap: [],
       errors: [],
       warnings: [],
-      requiresConversion: true
+      requiresConversion: true,
     };
   }
 
@@ -510,7 +513,7 @@ export class JavaScriptToCelAnalyzer {
       sourceMap: [],
       errors: [],
       warnings: [],
-      requiresConversion: kubernetesRefs.length > 0
+      requiresConversion: kubernetesRefs.length > 0,
     };
   }
 
@@ -525,14 +528,18 @@ export class JavaScriptToCelAnalyzer {
       sourceMap: [],
       errors: [],
       warnings: [],
-      requiresConversion: false
+      requiresConversion: false,
     };
   }
 
   /**
    * Extract KubernetesRef objects from object structure
    */
-  private extractKubernetesRefsFromObject(obj: any, refs: KubernetesRef<any>[], path: string): void {
+  private extractKubernetesRefsFromObject(
+    obj: any,
+    refs: KubernetesRef<any>[],
+    path: string
+  ): void {
     if (!obj || typeof obj !== 'object') return;
 
     // Check if this object is a KubernetesRef
@@ -598,13 +605,15 @@ export class JavaScriptToCelAnalyzer {
         celExpression: null,
         dependencies: [],
         sourceMap: [],
-        errors: [new ConversionError(
-          `Failed to analyze expression with refs: ${error instanceof Error ? error.message : String(error)}`,
-          String(expression),
-          'javascript'
-        )],
+        errors: [
+          new ConversionError(
+            `Failed to analyze expression with refs: ${error instanceof Error ? error.message : String(error)}`,
+            String(expression),
+            'javascript'
+          ),
+        ],
         requiresConversion: false,
-        warnings: []
+        warnings: [],
       };
     }
   }
@@ -615,27 +624,27 @@ export class JavaScriptToCelAnalyzer {
   convertASTNode(node: ESTreeNode, context: AnalysisContext): CelExpression {
     switch (node.type) {
       case 'BinaryExpression':
-        return this.convertBinaryExpression(node as any, context);
+        return this.convertBinaryExpression(node, context);
       case 'MemberExpression':
-        return this.convertMemberExpression(node as any, context);
+        return this.convertMemberExpression(node, context);
       case 'ConditionalExpression':
-        return this.convertConditionalExpression(node as any, context);
+        return this.convertConditionalExpression(node, context);
       case 'LogicalExpression':
-        return this.convertLogicalExpression(node as any, context);
+        return this.convertLogicalExpression(node, context);
       case 'ChainExpression':
-        return this.convertOptionalChaining(node as any, context);
+        return this.convertOptionalChaining(node, context);
       case 'TemplateLiteral':
-        return this.convertTemplateLiteral(node as any, context);
+        return this.convertTemplateLiteral(node, context);
       case 'Literal':
-        return this.convertLiteral(node as any, context);
+        return this.convertLiteral(node, context);
       case 'CallExpression':
-        return this.convertCallExpression(node as any, context);
+        return this.convertCallExpression(node, context);
       case 'ArrayExpression':
-        return this.convertArrayExpression(node as any, context);
+        return this.convertArrayExpression(node, context);
       case 'Identifier':
-        return this.convertIdentifier(node as any, context);
+        return this.convertIdentifier(node, context);
       case 'UnaryExpression':
-        return this.convertUnaryExpression(node as any, context);
+        return this.convertUnaryExpression(node, context);
       default:
         throw new Error(`Unsupported expression type: ${node.type}`);
     }
@@ -663,8 +672,11 @@ export class JavaScriptToCelAnalyzer {
           {
             expressionType: SourceMapUtils.determineExpressionType(node.type),
             kubernetesRefs: SourceMapUtils.extractKubernetesRefPaths(celExpression.expression),
-            dependencies: context.dependencies?.map(dep => `${dep.resourceId}.${dep.fieldPath}`) || [],
-            conversionNotes: [`Converted ${node.type} at line ${sourceLocation.line}, column ${sourceLocation.column}`]
+            dependencies:
+              context.dependencies?.map((dep) => `${dep.resourceId}.${dep.fieldPath}`) || [],
+            conversionNotes: [
+              `Converted ${node.type} at line ${sourceLocation.line}, column ${sourceLocation.column}`,
+            ],
           }
         );
       }
@@ -702,18 +714,21 @@ export class JavaScriptToCelAnalyzer {
         valid: false,
         celExpression: {
           expression: '/* TODO: Analyze function body */',
-          _type: undefined
+          _type: undefined,
         } as CelExpression,
         dependencies: [],
         sourceMap: [],
         errors: [],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     } catch (error) {
-      const errorMessage = error instanceof ParserError 
-        ? error.message 
-        : (error instanceof Error ? error.message : String(error));
+      const errorMessage =
+        error instanceof ParserError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : String(error);
       return {
         valid: false,
         celExpression: null,
@@ -721,7 +736,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [new ConversionError(errorMessage, fn.toString(), 'function-call')],
         warnings: [],
-        requiresConversion: false
+        requiresConversion: false,
       };
     }
   }
@@ -742,7 +757,7 @@ export class JavaScriptToCelAnalyzer {
       const sourceLocation = {
         line: 1,
         column: 1,
-        length: originalExpression.length
+        length: originalExpression.length,
       };
 
       // Add source mapping
@@ -757,7 +772,7 @@ export class JavaScriptToCelAnalyzer {
             expressionType: 'member-access',
             kubernetesRefs: [originalExpression],
             dependencies: [`${ref.resourceId}.${ref.fieldPath}`],
-            conversionNotes: ['Direct KubernetesRef to CEL conversion']
+            conversionNotes: ['Direct KubernetesRef to CEL conversion'],
           }
         );
         sourceMapEntries.push(...context.sourceMap.getEntries());
@@ -770,7 +785,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: sourceMapEntries,
         errors: [],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     } catch (_error) {
       const originalExpression = `${ref.resourceId}.${ref.fieldPath}`;
@@ -790,7 +805,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [conversionError],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     }
   }
@@ -814,7 +829,7 @@ export class JavaScriptToCelAnalyzer {
           sourceMap: [],
           errors: [],
           warnings: [],
-          requiresConversion: false
+          requiresConversion: false,
         };
       }
 
@@ -824,14 +839,14 @@ export class JavaScriptToCelAnalyzer {
       const celExpression: CelExpression = {
         [CEL_EXPRESSION_BRAND]: true,
         expression: `/* TODO: Convert complex value with ${dependencies.length} references */`,
-        _type: undefined
+        _type: undefined,
       };
 
       // Create source location for the complex value
       const sourceLocation = {
         line: 1,
         column: 1,
-        length: originalExpression.length
+        length: originalExpression.length,
       };
 
       // Add source mapping
@@ -844,9 +859,9 @@ export class JavaScriptToCelAnalyzer {
           context.type,
           {
             expressionType: 'javascript',
-            kubernetesRefs: dependencies.map(dep => `${dep.resourceId}.${dep.fieldPath}`),
-            dependencies: dependencies.map(dep => `${dep.resourceId}.${dep.fieldPath}`),
-            conversionNotes: [`Complex value with ${dependencies.length} KubernetesRef objects`]
+            kubernetesRefs: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
+            dependencies: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
+            conversionNotes: [`Complex value with ${dependencies.length} KubernetesRef objects`],
           }
         );
         sourceMapEntries.push(...context.sourceMap.getEntries());
@@ -859,7 +874,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: sourceMapEntries,
         errors,
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     } catch (error) {
       const originalExpression = JSON.stringify(value);
@@ -881,7 +896,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors,
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     }
   }
@@ -935,7 +950,7 @@ export class JavaScriptToCelAnalyzer {
 
         if (!validation.valid) {
           throw new ConversionError(
-            `KubernetesRef type validation failed: ${validation.errors.map(e => e.message).join(', ')}`,
+            `KubernetesRef type validation failed: ${validation.errors.map((e) => e.message).join(', ')}`,
             `${ref.resourceId}.${ref.fieldPath}`,
             'member-access'
           );
@@ -952,7 +967,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: ref._type
+        _type: ref._type,
       } as CelExpression;
     } catch (error) {
       throw new ConversionError(
@@ -976,7 +991,7 @@ export class JavaScriptToCelAnalyzer {
           return estraverse.VisitorOption.Break;
         }
         return undefined; // Continue traversal
-      }
+      },
     });
 
     return returnStatement;
@@ -1018,7 +1033,7 @@ export class JavaScriptToCelAnalyzer {
         celExpression = {
           [CEL_EXPRESSION_BRAND]: true,
           expression: expression, // Keep the ${} syntax for CEL
-          _type: 'string'
+          _type: 'string',
         };
       } else {
         // Handle structured template literal objects
@@ -1026,7 +1041,7 @@ export class JavaScriptToCelAnalyzer {
         celExpression = {
           [CEL_EXPRESSION_BRAND]: true,
           expression: '/* Complex template literal */',
-          _type: 'string'
+          _type: 'string',
         };
       }
 
@@ -1034,7 +1049,7 @@ export class JavaScriptToCelAnalyzer {
       const sourceLocation = {
         line: 1,
         column: 1,
-        length: originalExpression.length
+        length: originalExpression.length,
       };
 
       // Add source mapping
@@ -1047,9 +1062,9 @@ export class JavaScriptToCelAnalyzer {
           context.type,
           {
             expressionType: 'template-literal',
-            kubernetesRefs: dependencies.map(dep => `${dep.resourceId}.${dep.fieldPath}`),
-            dependencies: dependencies.map(dep => `${dep.resourceId}.${dep.fieldPath}`),
-            conversionNotes: ['Template literal with KubernetesRef interpolations']
+            kubernetesRefs: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
+            dependencies: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
+            conversionNotes: ['Template literal with KubernetesRef interpolations'],
           }
         );
         sourceMapEntries.push(...context.sourceMap.getEntries());
@@ -1062,7 +1077,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: sourceMapEntries,
         errors: [],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     } catch (error) {
       const originalExpression = String(expression);
@@ -1083,7 +1098,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [conversionError],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     }
   }
@@ -1099,7 +1114,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Handle special cases for expressions that can't be parsed normally
    */
-  private handleSpecialCases(expression: string, context: AnalysisContext): CelConversionResult | null {
+  private handleSpecialCases(
+    expression: string,
+    context: AnalysisContext
+  ): CelConversionResult | null {
     // Handle expressions with both optional chaining and nullish coalescing
     if (expression.includes('?.') && expression.includes('??')) {
       return this.handleMixedOptionalAndNullishExpression(expression, context);
@@ -1130,31 +1148,30 @@ export class JavaScriptToCelAnalyzer {
         const celExpression: CelExpression = {
           [CEL_EXPRESSION_BRAND]: true,
           expression: expression,
-          _type: undefined
+          _type: undefined,
         };
 
         const sourceLocation = { line: 1, column: 1, length: expression.length };
         const sourceMapEntries: SourceMapEntry[] = [];
 
         if (context.sourceMap) {
-          context.sourceMap.addMapping(
-            expression,
-            expression,
-            sourceLocation,
-            context.type,
-            {
-              expressionType: 'member-access',
-              kubernetesRefs: this.extractResourceReferencesFromExpression(expression),
-              dependencies: context.dependencies?.map(dep => `${dep.resourceId}.${dep.fieldPath}`) || [],
-              conversionNotes: ['Simple property access path']
-            }
-          );
+          context.sourceMap.addMapping(expression, expression, sourceLocation, context.type, {
+            expressionType: 'member-access',
+            kubernetesRefs: this.extractResourceReferencesFromExpression(expression),
+            dependencies:
+              context.dependencies?.map((dep) => `${dep.resourceId}.${dep.fieldPath}`) || [],
+            conversionNotes: ['Simple property access path'],
+          });
           sourceMapEntries.push(...context.sourceMap.getEntries());
         }
 
         // Perform resource validation if enabled
         let resourceValidation: ResourceValidationResult[] | undefined;
-        if (context.validateResourceReferences !== false && context.dependencies && context.dependencies.length > 0) {
+        if (
+          context.validateResourceReferences !== false &&
+          context.dependencies &&
+          context.dependencies.length > 0
+        ) {
           resourceValidation = this.validateResourceReferences(
             context.dependencies,
             context.availableReferences,
@@ -1168,11 +1185,7 @@ export class JavaScriptToCelAnalyzer {
         if (resourceValidation) {
           for (const validation of resourceValidation) {
             for (const error of validation.errors) {
-              errors.push(new ConversionError(
-                error.message,
-                expression,
-                'member-access'
-              ));
+              errors.push(new ConversionError(error.message, expression, 'member-access'));
             }
           }
         }
@@ -1185,7 +1198,7 @@ export class JavaScriptToCelAnalyzer {
           errors,
           warnings: [],
           requiresConversion: true,
-          resourceValidation
+          resourceValidation,
         };
       } catch (_error) {
         // Fall through to return null
@@ -1200,16 +1213,22 @@ export class JavaScriptToCelAnalyzer {
    * Note: With acorn's native ES2022 support, optional chaining is parsed directly.
    * This method is kept for backward compatibility and special case handling.
    */
-  private handleOptionalChainingExpression(expression: string, context: AnalysisContext): CelConversionResult {
+  private handleOptionalChainingExpression(
+    expression: string,
+    context: AnalysisContext
+  ): CelConversionResult {
     try {
       // Validate that the expression is syntactically valid JavaScript
       // Acorn natively supports optional chaining (ES2020+)
       try {
         parseExpression(expression);
       } catch (syntaxError) {
-        const errorMessage = syntaxError instanceof ParserError 
-          ? syntaxError.message 
-          : (syntaxError instanceof Error ? syntaxError.message : String(syntaxError));
+        const errorMessage =
+          syntaxError instanceof ParserError
+            ? syntaxError.message
+            : syntaxError instanceof Error
+              ? syntaxError.message
+              : String(syntaxError);
         throw new ConversionError(
           `Invalid JavaScript syntax in optional chaining expression: ${errorMessage}`,
           expression,
@@ -1222,7 +1241,7 @@ export class JavaScriptToCelAnalyzer {
       const celExpression: CelExpression = {
         [CEL_EXPRESSION_BRAND]: true,
         expression: expression, // Keep the ?. syntax as CEL supports it
-        _type: undefined
+        _type: undefined,
       };
 
       const sourceLocation = { line: 1, column: 1, length: expression.length };
@@ -1232,18 +1251,12 @@ export class JavaScriptToCelAnalyzer {
       const dependencies = this.extractDependenciesFromExpressionString(expression, context);
 
       if (context.sourceMap) {
-        context.sourceMap.addMapping(
-          expression,
-          expression,
-          sourceLocation,
-          context.type,
-          {
-            expressionType: 'optional-chaining',
-            kubernetesRefs: this.extractResourceReferencesFromExpression(expression),
-            dependencies: dependencies.map(dep => `${dep.resourceId}.${dep.fieldPath}`),
-            conversionNotes: ['Optional chaining expression']
-          }
-        );
+        context.sourceMap.addMapping(expression, expression, sourceLocation, context.type, {
+          expressionType: 'optional-chaining',
+          kubernetesRefs: this.extractResourceReferencesFromExpression(expression),
+          dependencies: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
+          conversionNotes: ['Optional chaining expression'],
+        });
         sourceMapEntries.push(...context.sourceMap.getEntries());
       }
 
@@ -1254,7 +1267,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: sourceMapEntries,
         errors: [],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     } catch (error) {
       return {
@@ -1262,13 +1275,15 @@ export class JavaScriptToCelAnalyzer {
         celExpression: null,
         dependencies: [],
         sourceMap: [],
-        errors: [new ConversionError(
-          `Failed to handle optional chaining: ${error instanceof Error ? error.message : String(error)}`,
-          expression,
-          'optional-chaining'
-        )],
+        errors: [
+          new ConversionError(
+            `Failed to handle optional chaining: ${error instanceof Error ? error.message : String(error)}`,
+            expression,
+            'optional-chaining'
+          ),
+        ],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     }
   }
@@ -1276,7 +1291,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Handle expressions with both optional chaining and nullish coalescing
    */
-  private handleMixedOptionalAndNullishExpression(expression: string, context: AnalysisContext): CelConversionResult {
+  private handleMixedOptionalAndNullishExpression(
+    expression: string,
+    context: AnalysisContext
+  ): CelConversionResult {
     try {
       // For mixed expressions, we'll convert them to a CEL expression that handles both
       // Optional chaining and nullish coalescing together
@@ -1284,7 +1302,7 @@ export class JavaScriptToCelAnalyzer {
       // Becomes: deployment.status?.readyReplicas != null ? deployment.status?.readyReplicas : (deployment.spec?.replicas != null ? deployment.spec?.replicas : 1)
 
       // Split by nullish coalescing operator
-      const parts = expression.split('??').map(part => part.trim());
+      const parts = expression.split('??').map((part) => part.trim());
 
       if (parts.length < 2) {
         throw new Error('Invalid mixed expression');
@@ -1301,7 +1319,7 @@ export class JavaScriptToCelAnalyzer {
       const result: CelExpression = {
         [CEL_EXPRESSION_BRAND]: true,
         expression: celExpression,
-        _type: undefined
+        _type: undefined,
       };
 
       // Extract dependencies from the mixed expression
@@ -1311,18 +1329,14 @@ export class JavaScriptToCelAnalyzer {
       const sourceMapEntries: SourceMapEntry[] = [];
 
       if (context.sourceMap) {
-        context.sourceMap.addMapping(
-          expression,
-          result.expression,
-          sourceLocation,
-          context.type,
-          {
-            expressionType: 'optional-chaining',
-            kubernetesRefs: this.extractResourceReferencesFromExpression(expression),
-            dependencies: dependencies.map(dep => `${dep.resourceId}.${dep.fieldPath}`),
-            conversionNotes: ['Mixed optional chaining and nullish coalescing converted to nested conditionals']
-          }
-        );
+        context.sourceMap.addMapping(expression, result.expression, sourceLocation, context.type, {
+          expressionType: 'optional-chaining',
+          kubernetesRefs: this.extractResourceReferencesFromExpression(expression),
+          dependencies: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
+          conversionNotes: [
+            'Mixed optional chaining and nullish coalescing converted to nested conditionals',
+          ],
+        });
         sourceMapEntries.push(...context.sourceMap.getEntries());
       }
 
@@ -1333,7 +1347,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: sourceMapEntries,
         errors: [],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     } catch (error) {
       return {
@@ -1341,13 +1355,15 @@ export class JavaScriptToCelAnalyzer {
         celExpression: null,
         dependencies: [],
         sourceMap: [],
-        errors: [new ConversionError(
-          `Failed to handle mixed optional chaining and nullish coalescing: ${error instanceof Error ? error.message : String(error)}`,
-          expression,
-          'optional-chaining'
-        )],
+        errors: [
+          new ConversionError(
+            `Failed to handle mixed optional chaining and nullish coalescing: ${error instanceof Error ? error.message : String(error)}`,
+            expression,
+            'optional-chaining'
+          ),
+        ],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     }
   }
@@ -1357,11 +1373,14 @@ export class JavaScriptToCelAnalyzer {
    * Note: With acorn's native ES2022 support, nullish coalescing is parsed directly.
    * This method converts ?? to CEL-compatible conditional syntax.
    */
-  private handleNullishCoalescingExpression(expression: string, context: AnalysisContext): CelConversionResult {
+  private handleNullishCoalescingExpression(
+    expression: string,
+    context: AnalysisContext
+  ): CelConversionResult {
     try {
       // Convert nullish coalescing to CEL-compatible syntax
       // deployment.status.readyReplicas ?? 0 -> deployment.status.readyReplicas != null ? deployment.status.readyReplicas : 0
-      const parts = expression.split('??').map(part => part.trim());
+      const parts = expression.split('??').map((part) => part.trim());
       if (parts.length !== 2) {
         throw new Error('Invalid nullish coalescing expression');
       }
@@ -1370,7 +1389,7 @@ export class JavaScriptToCelAnalyzer {
       const celExpression: CelExpression = {
         [CEL_EXPRESSION_BRAND]: true,
         expression: `${left} != null ? ${left} : ${right}`,
-        _type: undefined
+        _type: undefined,
       };
 
       const sourceLocation = { line: 1, column: 1, length: expression.length };
@@ -1386,7 +1405,7 @@ export class JavaScriptToCelAnalyzer {
             expressionType: 'nullish-coalescing',
             kubernetesRefs: this.extractResourceReferencesFromExpression(expression),
             dependencies: this.extractResourceReferencesFromExpression(expression),
-            conversionNotes: ['Nullish coalescing converted to conditional']
+            conversionNotes: ['Nullish coalescing converted to conditional'],
           }
         );
         sourceMapEntries.push(...context.sourceMap.getEntries());
@@ -1402,7 +1421,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: sourceMapEntries,
         errors: [],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     } catch (error) {
       return {
@@ -1410,13 +1429,15 @@ export class JavaScriptToCelAnalyzer {
         celExpression: null,
         dependencies: [],
         sourceMap: [],
-        errors: [new ConversionError(
-          `Failed to handle nullish coalescing: ${error instanceof Error ? error.message : String(error)}`,
-          expression,
-          'nullish-coalescing'
-        )],
+        errors: [
+          new ConversionError(
+            `Failed to handle nullish coalescing: ${error instanceof Error ? error.message : String(error)}`,
+            expression,
+            'nullish-coalescing'
+          ),
+        ],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     }
   }
@@ -1428,7 +1449,8 @@ export class JavaScriptToCelAnalyzer {
     const refs: string[] = [];
 
     // Look for patterns like deployment.status.readyReplicas or service?.status?.loadBalancer
-    const resourcePattern = /([a-zA-Z_][a-zA-Z0-9_]*)\??\.([a-zA-Z_][a-zA-Z0-9_]*(?:\??\.?[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
+    const resourcePattern =
+      /([a-zA-Z_][a-zA-Z0-9_]*)\??\.([a-zA-Z_][a-zA-Z0-9_]*(?:\??\.?[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
     let match: RegExpExecArray | null = resourcePattern.exec(expression);
 
     while (match !== null) {
@@ -1453,8 +1475,11 @@ export class JavaScriptToCelAnalyzer {
     if (parts.length >= 2) {
       const resourceName = parts[0];
       // This is a heuristic - if it looks like a resource reference pattern
-      return !!(resourceName && /^[a-zA-Z][a-zA-Z0-9-]*$/.test(resourceName) &&
-        (parts[1] === 'status' || parts[1] === 'spec' || parts[1] === 'metadata'));
+      return !!(
+        resourceName &&
+        /^[a-zA-Z][a-zA-Z0-9-]*$/.test(resourceName) &&
+        (parts[1] === 'status' || parts[1] === 'spec' || parts[1] === 'metadata')
+      );
     }
 
     return false;
@@ -1492,11 +1517,7 @@ export class JavaScriptToCelAnalyzer {
     const registry = context.typeRegistry || this.setupTypeRegistry(context);
     const availableTypes = registry.getAvailableTypes();
 
-    return this.typeValidator.validateExpression(
-      expression,
-      availableTypes,
-      context.expectedType
-    );
+    return this.typeValidator.validateExpression(expression, availableTypes, context.expectedType);
   }
 
   /**
@@ -1509,7 +1530,7 @@ export class JavaScriptToCelAnalyzer {
     const inferenceContext: TypeInferenceContext = {
       availableResources: context.availableReferences,
       ...(context.schemaProxy && { schemaProxy: context.schemaProxy }),
-      factoryType: context.factoryType
+      factoryType: context.factoryType,
     };
 
     return this.typeInferenceEngine.inferType(celExpression, inferenceContext);
@@ -1525,7 +1546,7 @@ export class JavaScriptToCelAnalyzer {
     const inferenceContext: TypeInferenceContext = {
       availableResources: context.availableReferences,
       ...(context.schemaProxy && { schemaProxy: context.schemaProxy }),
-      factoryType: context.factoryType
+      factoryType: context.factoryType,
     };
 
     return this.typeInferenceEngine.inferTypes(celExpressions, inferenceContext);
@@ -1550,14 +1571,17 @@ export class JavaScriptToCelAnalyzer {
     if (!celInference.success) {
       return {
         valid: false,
-        errors: celInference.errors.map(e => ({
-          message: e.message,
-          expression: e.celExpression,
-          expectedType: { typeName: 'unknown', optional: false, nullable: false },
-          actualType: { typeName: 'unknown', optional: false, nullable: false }
-        } as any)),
+        errors: celInference.errors.map(
+          (e) =>
+            ({
+              message: e.message,
+              expression: e.celExpression,
+              expectedType: { typeName: 'unknown', optional: false, nullable: false },
+              actualType: { typeName: 'unknown', optional: false, nullable: false },
+            }) as any
+        ),
         warnings: [],
-        suggestions: []
+        suggestions: [],
       };
     }
 
@@ -1610,28 +1634,23 @@ export class JavaScriptToCelAnalyzer {
     availableResources: Record<string, Enhanced<any, any>>,
     schemaProxy?: SchemaProxy<any, any>
   ): ResourceValidationResult {
-    return this.resourceValidator.validateReferenceChain(
-      refs,
-      availableResources,
-      schemaProxy
-    );
+    return this.resourceValidator.validateReferenceChain(refs, availableResources, schemaProxy);
   }
 
   /**
    * Get comprehensive validation report for an expression
    */
-  getValidationReport(
-    expression: string,
-    context: AnalysisContext
-  ): ExpressionValidationReport {
+  getValidationReport(expression: string, context: AnalysisContext): ExpressionValidationReport {
     const conversionResult = this.analyzeExpression(expression, context);
 
     return {
       expression,
       conversionResult,
       ...(conversionResult.typeValidation && { typeValidation: conversionResult.typeValidation }),
-      ...(conversionResult.resourceValidation && { resourceValidation: conversionResult.resourceValidation }),
-      summary: this.createValidationSummary(conversionResult)
+      ...(conversionResult.resourceValidation && {
+        resourceValidation: conversionResult.resourceValidation,
+      }),
+      summary: this.createValidationSummary(conversionResult),
     };
   }
 
@@ -1677,9 +1696,9 @@ export class JavaScriptToCelAnalyzer {
           isGeneric: false,
           optional: context.expectedType.optional,
           nullable: context.expectedType.nullable,
-          undefinable: context.expectedType.optional
-        }
-      })
+          undefinable: context.expectedType.optional,
+        },
+      }),
     };
 
     return this.compileTimeChecker.validateKubernetesRefCompatibility(
@@ -1707,12 +1726,14 @@ export class JavaScriptToCelAnalyzer {
    * Create a validation summary from conversion results
    */
   private createValidationSummary(result: CelConversionResult): ValidationSummary {
-    const totalErrors = result.errors.length +
+    const totalErrors =
+      result.errors.length +
       (result.typeValidation?.errors.length || 0) +
       (result.resourceValidation?.reduce((sum, rv) => sum + rv.errors.length, 0) || 0) +
       (result.compileTimeValidation?.errors.length || 0);
 
-    const totalWarnings = (result.typeValidation?.warnings.length || 0) +
+    const totalWarnings =
+      (result.typeValidation?.warnings.length || 0) +
       (result.resourceValidation?.reduce((sum, rv) => sum + rv.warnings.length, 0) || 0) +
       (result.compileTimeValidation?.warnings.length || 0);
 
@@ -1722,16 +1743,20 @@ export class JavaScriptToCelAnalyzer {
       totalWarnings,
       requiresConversion: result.requiresConversion,
       hasTypeIssues: (result.typeValidation?.errors.length || 0) > 0,
-      hasResourceIssues: (result.resourceValidation?.some(rv => !rv.valid)) || false,
-      hasCompileTimeIssues: (result.compileTimeValidation && !result.compileTimeValidation.valid) || false,
-      confidence: this.calculateOverallConfidence(result)
+      hasResourceIssues: result.resourceValidation?.some((rv) => !rv.valid) || false,
+      hasCompileTimeIssues:
+        (result.compileTimeValidation && !result.compileTimeValidation.valid) || false,
+      confidence: this.calculateOverallConfidence(result),
     };
   }
 
   /**
    * Extract dependencies from JavaScript expression string and return them
    */
-  private extractDependenciesFromExpressionString(expression: string, context: AnalysisContext): KubernetesRef<any>[] {
+  private extractDependenciesFromExpressionString(
+    expression: string,
+    context: AnalysisContext
+  ): KubernetesRef<any>[] {
     const dependencies: KubernetesRef<any>[] = [];
 
     // Look for direct resource references (deployment.status.field)
@@ -1741,21 +1766,24 @@ export class JavaScriptToCelAnalyzer {
         const matches = expression.match(resourcePattern);
         if (matches) {
           for (const match of matches) {
-            const fieldPath = match.substring(resourceKey.length + 1)
-              .replace(/\?\./g, '.')  // Remove optional chaining
+            const fieldPath = match
+              .substring(resourceKey.length + 1)
+              .replace(/\?\./g, '.') // Remove optional chaining
               .replace(/\?\[/g, '['); // Remove optional array access
 
             const ref: KubernetesRef<any> = {
               [KUBERNETES_REF_BRAND]: true,
               resourceId: resourceKey,
               fieldPath,
-              _type: this.inferTypeFromFieldPath(fieldPath)
+              _type: 'unknown',
             };
 
             // Only add if not already present
-            if (!dependencies.some(dep =>
-              dep.resourceId === resourceKey && dep.fieldPath === fieldPath
-            )) {
+            if (
+              !dependencies.some(
+                (dep) => dep.resourceId === resourceKey && dep.fieldPath === fieldPath
+              )
+            ) {
               dependencies.push(ref);
             }
           }
@@ -1768,21 +1796,24 @@ export class JavaScriptToCelAnalyzer {
     const schemaMatches = expression.match(schemaPattern);
     if (schemaMatches) {
       for (const match of schemaMatches) {
-        const fieldPath = match.replace('schema.', '')
-          .replace(/\?\./g, '.')  // Remove optional chaining
+        const fieldPath = match
+          .replace('schema.', '')
+          .replace(/\?\./g, '.') // Remove optional chaining
           .replace(/\?\[/g, '['); // Remove optional array access
 
         const ref: KubernetesRef<any> = {
           [KUBERNETES_REF_BRAND]: true,
           resourceId: '__schema__',
           fieldPath,
-          _type: this.inferTypeFromFieldPath(fieldPath)
+          _type: this.inferTypeFromFieldPath(fieldPath),
         };
 
         // Only add if not already present
-        if (!dependencies.some(dep =>
-          dep.resourceId === '__schema__' && dep.fieldPath === fieldPath
-        )) {
+        if (
+          !dependencies.some(
+            (dep) => dep.resourceId === '__schema__' && dep.fieldPath === fieldPath
+          )
+        ) {
           dependencies.push(ref);
         }
       }
@@ -1805,20 +1836,22 @@ export class JavaScriptToCelAnalyzer {
       for (const match of resourceMatches) {
         const parts = match.split('.');
         if (parts.length >= 3) {
-          const resourceId = parts[1];
+          const resourceId = parts[1]!;
           const fieldPath = parts.slice(2).join('.');
 
           const ref: KubernetesRef<any> = {
             [KUBERNETES_REF_BRAND]: true,
             resourceId,
             fieldPath,
-            _type: 'unknown'
-          } as any;
+            _type: 'unknown',
+          };
 
           // Only add if not already present
-          if (!context.dependencies.some(dep =>
-            dep.resourceId === resourceId && dep.fieldPath === fieldPath
-          )) {
+          if (
+            !context.dependencies.some(
+              (dep) => dep.resourceId === resourceId && dep.fieldPath === fieldPath
+            )
+          ) {
             context.dependencies.push(ref);
           }
         }
@@ -1835,13 +1868,15 @@ export class JavaScriptToCelAnalyzer {
           [KUBERNETES_REF_BRAND]: true,
           resourceId: '__schema__',
           fieldPath,
-          _type: 'unknown'
-        } as any;
+          _type: 'unknown',
+        };
 
         // Only add if not already present
-        if (!context.dependencies.some(dep =>
-          dep.resourceId === '__schema__' && dep.fieldPath === fieldPath
-        )) {
+        if (
+          !context.dependencies.some(
+            (dep) => dep.resourceId === '__schema__' && dep.fieldPath === fieldPath
+          )
+        ) {
           context.dependencies.push(ref);
         }
       }
@@ -1863,7 +1898,7 @@ export class JavaScriptToCelAnalyzer {
       // Optional chaining: deployment.status?.readyReplicas
       /\b([a-zA-Z_][a-zA-Z0-9_]*)\.(status|spec|metadata)\?\?\.([a-zA-Z0-9_.[\]?]+)/g,
       // Mixed patterns: deployment.status.conditions[0].type
-      /\b([a-zA-Z_][a-zA-Z0-9_]*)\.(status|spec|metadata)\.([a-zA-Z0-9_.[\]?]+)/g
+      /\b([a-zA-Z_][a-zA-Z0-9_]*)\.(status|spec|metadata)\.([a-zA-Z0-9_.[\]?]+)/g,
     ];
 
     for (const pattern of directResourcePatterns) {
@@ -1873,8 +1908,8 @@ export class JavaScriptToCelAnalyzer {
       match = pattern.exec(expression);
       while (match !== null) {
         const fullMatch = match[0];
-        const resourceId = match[1];
-        const baseField = match[2]; // status, spec, or metadata
+        const resourceId = match[1]!;
+        const baseField = match[2]!; // status, spec, or metadata
         const remainingPath = match[3];
 
         let fieldPath = baseField;
@@ -1889,7 +1924,8 @@ export class JavaScriptToCelAnalyzer {
           }
         } else {
           // For computed property access, we need to extract the property name differently
-          const computedMatch = fullMatch.match(/\.(status|spec|metadata)\["([^"]+)"\]/) ||
+          const computedMatch =
+            fullMatch.match(/\.(status|spec|metadata)\["([^"]+)"\]/) ||
             fullMatch.match(/\.(status|spec|metadata)\['([^']+)'\]/);
           if (computedMatch) {
             fieldPath = `${computedMatch[1]}.${computedMatch[2]}`;
@@ -1903,7 +1939,8 @@ export class JavaScriptToCelAnalyzer {
         fieldPath = fieldPath.replace(/\[(\d+)\]/g, '[$1]'); // Keep array indices
 
         // Check if this resource exists in available references or add it anyway
-        const shouldAdd = !context.availableReferences ||
+        const shouldAdd =
+          !context.availableReferences ||
           (resourceId ? context.availableReferences[resourceId] : null) ||
           true; // Add all for now, let validation handle it later
 
@@ -1912,17 +1949,19 @@ export class JavaScriptToCelAnalyzer {
             [KUBERNETES_REF_BRAND]: true,
             resourceId,
             fieldPath,
-            _type: 'unknown'
-          } as any;
+            _type: 'unknown',
+          };
 
           // Only add if not already present
-          if (!context.dependencies.some(dep =>
-            dep.resourceId === resourceId && dep.fieldPath === fieldPath
-          )) {
+          if (
+            !context.dependencies.some(
+              (dep) => dep.resourceId === resourceId && dep.fieldPath === fieldPath
+            )
+          ) {
             context.dependencies.push(ref);
           }
         }
-        
+
         // Get next match
         match = pattern.exec(expression);
       }
@@ -1958,9 +1997,9 @@ export class JavaScriptToCelAnalyzer {
 
     // Reduce confidence for resource validation issues
     if (result.resourceValidation) {
-      const invalidResources = result.resourceValidation.filter(rv => !rv.valid).length;
+      const invalidResources = result.resourceValidation.filter((rv) => !rv.valid).length;
       if (invalidResources > 0) {
-        confidence *= Math.max(0.1, 1 - (invalidResources * 0.3));
+        confidence *= Math.max(0.1, 1 - invalidResources * 0.3);
       }
     }
 
@@ -1992,7 +2031,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2011,7 +2050,10 @@ export class JavaScriptToCelAnalyzer {
     }
 
     // Check if the object is a complex expression (like a method call result)
-    if (node.object.type === 'CallExpression' || node.object.type === 'MemberExpression' && this.isComplexExpression(node.object)) {
+    if (
+      node.object.type === 'CallExpression' ||
+      (node.object.type === 'MemberExpression' && this.isComplexExpression(node.object))
+    ) {
       // Convert the object expression first
       const objectExpr = this.convertASTNode(node.object, context);
       const propertyName = node.property.name;
@@ -2022,7 +2064,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -2040,14 +2082,18 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
     // Check if this is a resource reference
     if (context.availableReferences) {
       for (const [resourceKey, resource] of Object.entries(context.availableReferences)) {
-        if (path.startsWith(`resources.${resourceKey}.`) || path.startsWith(`${resourceKey}.`) || path === resourceKey) {
+        if (
+          path.startsWith(`resources.${resourceKey}.`) ||
+          path.startsWith(`${resourceKey}.`) ||
+          path === resourceKey
+        ) {
           let fieldPath: string;
           if (path === resourceKey) {
             // Direct resource reference
@@ -2075,8 +2121,8 @@ export class JavaScriptToCelAnalyzer {
 
       // Check if this is a resources.* prefixed expression
       if (parts[0] === 'resources' && parts.length >= 3) {
-        resourceName = parts[1] || '';  // The actual resource name after "resources."
-        fieldPath = parts.slice(2).join('.');  // The field path after the resource name
+        resourceName = parts[1] || ''; // The actual resource name after "resources."
+        fieldPath = parts.slice(2).join('.'); // The field path after the resource name
       } else {
         resourceName = parts[0] || '';
         fieldPath = parts.slice(1).join('.');
@@ -2090,7 +2136,7 @@ export class JavaScriptToCelAnalyzer {
         [KUBERNETES_REF_BRAND]: true as const,
         resourceId: resourceName,
         fieldPath: fieldPath,
-        _type: this.inferTypeFromFieldPath(fieldPath)
+        _type: this.inferTypeFromFieldPath(fieldPath),
       };
 
       // Add to dependencies
@@ -2104,7 +2150,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -2139,7 +2185,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2163,13 +2209,17 @@ export class JavaScriptToCelAnalyzer {
   private isBooleanExpression(expression: string): boolean {
     // Check for comparison operators
     const comparisonOperators = ['==', '!=', '>', '<', '>=', '<=', '&&', '||'];
-    return comparisonOperators.some(op => expression.includes(` ${op} `));
+    return comparisonOperators.some((op) => expression.includes(` ${op} `));
   }
 
   /**
    * Add parentheses to expression if needed for proper precedence
    */
-  private addParenthesesIfNeeded(expression: string, parentOperator?: string, isLeftOperand?: boolean): string {
+  private addParenthesesIfNeeded(
+    expression: string,
+    parentOperator?: string,
+    isLeftOperand?: boolean
+  ): string {
     // If no parent operator, no parentheses needed
     if (!parentOperator) {
       return expression;
@@ -2186,8 +2236,12 @@ export class JavaScriptToCelAnalyzer {
 
     // Add parentheses if expression has lower precedence than parent
     // or if it's a right operand with equal precedence (for left-associative operators)
-    if (expressionPrecedence < parentPrecedence ||
-      (expressionPrecedence === parentPrecedence && !isLeftOperand && this.isLeftAssociative(parentOperator))) {
+    if (
+      expressionPrecedence < parentPrecedence ||
+      (expressionPrecedence === parentPrecedence &&
+        !isLeftOperand &&
+        this.isLeftAssociative(parentOperator))
+    ) {
       return `(${expression})`;
     }
 
@@ -2251,7 +2305,7 @@ export class JavaScriptToCelAnalyzer {
       '/': 6,
       '%': 6,
       '??': 1, // Same as ||
-      '?': 0   // Ternary has lowest precedence
+      '?': 0, // Ternary has lowest precedence
     };
 
     return precedence[operator] ?? 10; // Unknown operators get high precedence
@@ -2268,7 +2322,11 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Handle complex nested expressions with proper precedence
    */
-  private handleComplexExpression(node: any, context: AnalysisContext, parentOperator?: string): CelExpression {
+  private handleComplexExpression(
+    node: any,
+    context: AnalysisContext,
+    parentOperator?: string
+  ): CelExpression {
     const result = this.convertASTNode(node, context);
 
     // Add parentheses if needed for precedence
@@ -2277,7 +2335,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: expressionWithParens,
-      _type: result._type
+      _type: result._type,
     } as CelExpression;
   }
 
@@ -2308,7 +2366,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2332,7 +2390,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -2343,7 +2401,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2366,7 +2424,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -2376,7 +2434,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2400,11 +2458,9 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
-
-
 
   /**
    * Convert optional chaining expressions (obj?.prop?.field) to Kro conditional CEL
@@ -2450,7 +2506,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2462,9 +2518,9 @@ export class JavaScriptToCelAnalyzer {
     const callee = this.convertASTNode(node.callee, context);
 
     // Convert arguments
-    const args = node.arguments.map((arg: any) =>
-      this.convertASTNode(arg, context).expression
-    ).join(', ');
+    const args = node.arguments
+      .map((arg: any) => this.convertASTNode(arg, context).expression)
+      .join(', ');
 
     // Use Kro's ? operator for null-safe method calls
     const expression = `${callee.expression}?(${args})`;
@@ -2472,7 +2528,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2506,7 +2562,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: result,
-      _type: 'string' // Template literals always produce strings
+      _type: 'string', // Template literals always produce strings
     } as CelExpression;
   }
 
@@ -2540,7 +2596,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: literalValue,
-      _type: typeof node.value
+      _type: typeof node.value,
     } as CelExpression;
   }
 
@@ -2555,9 +2611,11 @@ export class JavaScriptToCelAnalyzer {
     }
 
     // Handle Math.* functions
-    if (node.callee.type === 'MemberExpression' &&
+    if (
+      node.callee.type === 'MemberExpression' &&
       node.callee.object.type === 'Identifier' &&
-      node.callee.object.name === 'Math') {
+      node.callee.object.name === 'Math'
+    ) {
       const mathMethod = node.callee.property.name;
       return this.convertMathFunction(mathMethod, node.arguments, context);
     }
@@ -2625,8 +2683,12 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert global functions like Number(), String(), Boolean()
    */
-  private convertGlobalFunction(functionName: string, args: any[], context: AnalysisContext): CelExpression {
-    const convertedArgs = args.map(arg => this.convertASTNode(arg, context));
+  private convertGlobalFunction(
+    functionName: string,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
+    const convertedArgs = args.map((arg) => this.convertASTNode(arg, context));
 
     switch (functionName) {
       case 'Number':
@@ -2634,7 +2696,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `double(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number'
+            _type: 'number',
           } as CelExpression;
         }
         break;
@@ -2643,7 +2705,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `string(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'string'
+            _type: 'string',
           } as CelExpression;
         }
         break;
@@ -2652,7 +2714,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `bool(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'boolean'
+            _type: 'boolean',
           } as CelExpression;
         }
         break;
@@ -2661,7 +2723,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `int(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number'
+            _type: 'number',
           } as CelExpression;
         }
         break;
@@ -2670,7 +2732,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `double(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number'
+            _type: 'number',
           } as CelExpression;
         }
         break;
@@ -2682,8 +2744,12 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert Math functions like Math.min(), Math.max(), Math.abs()
    */
-  private convertMathFunction(mathMethod: string, args: any[], context: AnalysisContext): CelExpression {
-    const convertedArgs = args.map(arg => this.convertASTNode(arg, context));
+  private convertMathFunction(
+    mathMethod: string,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
+    const convertedArgs = args.map((arg) => this.convertASTNode(arg, context));
 
     switch (mathMethod) {
       case 'min':
@@ -2694,7 +2760,7 @@ export class JavaScriptToCelAnalyzer {
             return {
               [CEL_EXPRESSION_BRAND]: true,
               expression: `${convertedArgs[0]?.expression || 'null'} < ${convertedArgs[1]?.expression || 'null'} ? ${convertedArgs[0]?.expression || 'null'} : ${convertedArgs[1]?.expression || 'null'}`,
-              _type: 'number'
+              _type: 'number',
             } as CelExpression;
           } else {
             // For more than 2 arguments, we'll create a nested conditional
@@ -2705,7 +2771,7 @@ export class JavaScriptToCelAnalyzer {
             return {
               [CEL_EXPRESSION_BRAND]: true,
               expression,
-              _type: 'number'
+              _type: 'number',
             } as CelExpression;
           }
         }
@@ -2716,7 +2782,7 @@ export class JavaScriptToCelAnalyzer {
             return {
               [CEL_EXPRESSION_BRAND]: true,
               expression: `${convertedArgs[0]?.expression || 'null'} > ${convertedArgs[1]?.expression || 'null'} ? ${convertedArgs[0]?.expression || 'null'} : ${convertedArgs[1]?.expression || 'null'}`,
-              _type: 'number'
+              _type: 'number',
             } as CelExpression;
           } else {
             let expression = convertedArgs[0]?.expression || 'null';
@@ -2726,7 +2792,7 @@ export class JavaScriptToCelAnalyzer {
             return {
               [CEL_EXPRESSION_BRAND]: true,
               expression,
-              _type: 'number'
+              _type: 'number',
             } as CelExpression;
           }
         }
@@ -2736,7 +2802,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `${convertedArgs[0]?.expression || 'null'} < 0 ? -${convertedArgs[0]?.expression || 'null'} : ${convertedArgs[0]?.expression || 'null'}`,
-            _type: 'number'
+            _type: 'number',
           } as CelExpression;
         }
         break;
@@ -2745,7 +2811,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `int(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number'
+            _type: 'number',
           } as CelExpression;
         }
         break;
@@ -2754,7 +2820,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `int(${convertedArgs[0]?.expression || 'null'} + 0.999999)`,
-            _type: 'number'
+            _type: 'number',
           } as CelExpression;
         }
         break;
@@ -2763,7 +2829,7 @@ export class JavaScriptToCelAnalyzer {
           return {
             [CEL_EXPRESSION_BRAND]: true,
             expression: `int(${convertedArgs[0]?.expression || 'null'} + 0.5)`,
-            _type: 'number'
+            _type: 'number',
           } as CelExpression;
         }
         break;
@@ -2783,25 +2849,25 @@ export class JavaScriptToCelAnalyzer {
         return {
           [CEL_EXPRESSION_BRAND]: true,
           expression: `!${operand.expression}`,
-          _type: 'boolean'
+          _type: 'boolean',
         } as CelExpression;
       case '+':
         return {
           [CEL_EXPRESSION_BRAND]: true,
           expression: `double(${operand.expression})`,
-          _type: 'number'
+          _type: 'number',
         } as CelExpression;
       case '-':
         return {
           [CEL_EXPRESSION_BRAND]: true,
           expression: `-${operand.expression}`,
-          _type: 'number'
+          _type: 'number',
         } as CelExpression;
       case 'typeof':
         return {
           [CEL_EXPRESSION_BRAND]: true,
           expression: `type(${operand.expression})`,
-          _type: 'string'
+          _type: 'string',
         } as CelExpression;
       default:
         throw new Error(`Unsupported unary operator: ${node.operator}`);
@@ -2822,7 +2888,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2839,7 +2905,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression: `resources.${name}`,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -2848,7 +2914,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression: 'schema',
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -2856,7 +2922,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: name,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2874,7 +2940,7 @@ export class JavaScriptToCelAnalyzer {
       '>=': '>=',
       '<=': '<=',
       '==': '==',
-      '!=': '!='
+      '!=': '!=',
     };
 
     return mapping[operator] || operator;
@@ -2958,7 +3024,7 @@ export class JavaScriptToCelAnalyzer {
       [KUBERNETES_REF_BRAND]: true,
       resourceId: resourceKey,
       fieldPath,
-      _type: this.inferTypeFromFieldPath(fieldPath)
+      _type: this.inferTypeFromFieldPath(fieldPath),
     };
 
     if (!context.dependencies) {
@@ -2969,7 +3035,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -2983,7 +3049,7 @@ export class JavaScriptToCelAnalyzer {
       [KUBERNETES_REF_BRAND]: true,
       resourceId: '__schema__',
       fieldPath,
-      _type: this.inferTypeFromFieldPath(fieldPath)
+      _type: this.inferTypeFromFieldPath(fieldPath),
     };
 
     if (!context.dependencies) {
@@ -2995,14 +3061,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: path,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert array.find() method calls
    */
-  private convertArrayFind(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertArrayFind(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('Array.find() requires exactly one argument');
     }
@@ -3043,7 +3113,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -3053,14 +3123,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert array.filter() method calls
    */
-  private convertArrayFilter(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertArrayFilter(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('Array.filter() requires exactly one argument');
     }
@@ -3078,7 +3152,7 @@ export class JavaScriptToCelAnalyzer {
         return {
           [CEL_EXPRESSION_BRAND]: true,
           expression,
-          _type: undefined
+          _type: undefined,
         } as CelExpression;
       } else if (arg.body.type === 'BinaryExpression') {
         // Binary comparison: i => i.type === "Available"
@@ -3095,7 +3169,7 @@ export class JavaScriptToCelAnalyzer {
         return {
           [CEL_EXPRESSION_BRAND]: true,
           expression,
-          _type: undefined
+          _type: undefined,
         } as CelExpression;
       }
     }
@@ -3106,14 +3180,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.includes() method calls
    */
-  private convertStringIncludes(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringIncludes(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('String.includes() requires exactly one argument');
     }
@@ -3124,14 +3202,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert array.map() method calls
    */
-  private convertArrayMap(object: CelExpression, args: any[], _context: AnalysisContext): CelExpression {
+  private convertArrayMap(
+    object: CelExpression,
+    args: any[],
+    _context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('Array.map() requires exactly one argument');
     }
@@ -3146,7 +3228,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
 
@@ -3156,14 +3238,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert array.some() method calls
    */
-  private convertArraySome(object: CelExpression, args: any[], _context: AnalysisContext): CelExpression {
+  private convertArraySome(
+    object: CelExpression,
+    args: any[],
+    _context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('Array.some() requires exactly one argument');
     }
@@ -3174,14 +3260,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert array.every() method calls
    */
-  private convertArrayEvery(object: CelExpression, args: any[], _context: AnalysisContext): CelExpression {
+  private convertArrayEvery(
+    object: CelExpression,
+    args: any[],
+    _context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('Array.every() requires exactly one argument');
     }
@@ -3192,14 +3282,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.startsWith() method calls
    */
-  private convertStringStartsWith(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringStartsWith(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('String.startsWith() requires exactly one argument');
     }
@@ -3210,14 +3304,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.endsWith() method calls
    */
-  private convertStringEndsWith(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringEndsWith(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('String.endsWith() requires exactly one argument');
     }
@@ -3228,14 +3326,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.toLowerCase() method calls
    */
-  private convertStringToLowerCase(object: CelExpression, args: any[], _context: AnalysisContext): CelExpression {
+  private convertStringToLowerCase(
+    object: CelExpression,
+    args: any[],
+    _context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 0) {
       throw new Error('String.toLowerCase() requires no arguments');
     }
@@ -3245,14 +3347,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.toUpperCase() method calls
    */
-  private convertStringToUpperCase(object: CelExpression, args: any[], _context: AnalysisContext): CelExpression {
+  private convertStringToUpperCase(
+    object: CelExpression,
+    args: any[],
+    _context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 0) {
       throw new Error('String.toUpperCase() requires no arguments');
     }
@@ -3262,14 +3368,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.trim() method calls
    */
-  private convertStringTrim(object: CelExpression, args: any[], _context: AnalysisContext): CelExpression {
+  private convertStringTrim(
+    object: CelExpression,
+    args: any[],
+    _context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 0) {
       throw new Error('String.trim() requires no arguments');
     }
@@ -3280,14 +3390,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.substring() method calls
    */
-  private convertStringSubstring(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringSubstring(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length < 1 || args.length > 2) {
       throw new Error('String.substring() requires 1 or 2 arguments');
     }
@@ -3298,7 +3412,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     } else {
       const endIndex = this.convertASTNode(args[1], context);
@@ -3306,7 +3420,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
   }
@@ -3314,7 +3428,11 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert string.slice() method calls
    */
-  private convertStringSlice(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringSlice(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length < 1 || args.length > 2) {
       throw new Error('String.slice() requires 1 or 2 arguments');
     }
@@ -3325,7 +3443,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     } else {
       const endIndex = this.convertASTNode(args[1], context);
@@ -3333,7 +3451,7 @@ export class JavaScriptToCelAnalyzer {
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression,
-        _type: undefined
+        _type: undefined,
       } as CelExpression;
     }
   }
@@ -3341,7 +3459,11 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert string.split() method calls
    */
-  private convertStringSplit(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringSplit(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('String.split() requires exactly one argument');
     }
@@ -3352,14 +3474,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert array.join() method calls
    */
-  private convertArrayJoin(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertArrayJoin(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('Array.join() requires exactly one argument');
     }
@@ -3370,14 +3496,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert array.flatMap() method calls
    */
-  private convertArrayFlatMap(object: CelExpression, args: any[], _context: AnalysisContext): CelExpression {
+  private convertArrayFlatMap(
+    object: CelExpression,
+    args: any[],
+    _context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('Array.flatMap() requires exactly one argument');
     }
@@ -3396,7 +3526,7 @@ export class JavaScriptToCelAnalyzer {
         return {
           [CEL_EXPRESSION_BRAND]: true,
           expression,
-          _type: undefined
+          _type: undefined,
         } as CelExpression;
       }
     }
@@ -3413,20 +3543,25 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
   /**
    * Convert string.padStart() method calls
    */
-  private convertStringPadStart(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringPadStart(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length < 1 || args.length > 2) {
       throw new Error('String.padStart() requires 1 or 2 arguments');
     }
 
     const targetLength = this.convertASTNode(args[0], context);
-    const padString = args.length > 1 ? this.convertASTNode(args[1], context) : { expression: '" "' };
+    const padString =
+      args.length > 1 ? this.convertASTNode(args[1], context) : { expression: '" "' };
 
     // CEL doesn't have padStart, so we'll simulate it
     const expression = `size(${object.expression}) >= ${targetLength.expression} ? ${object.expression} : (${padString.expression}.repeat(${targetLength.expression} - size(${object.expression})) + ${object.expression})`;
@@ -3434,20 +3569,25 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: 'string'
+      _type: 'string',
     } as CelExpression;
   }
 
   /**
    * Convert string.padEnd() method calls
    */
-  private convertStringPadEnd(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringPadEnd(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length < 1 || args.length > 2) {
       throw new Error('String.padEnd() requires 1 or 2 arguments');
     }
 
     const targetLength = this.convertASTNode(args[0], context);
-    const padString = args.length > 1 ? this.convertASTNode(args[1], context) : { expression: '" "' };
+    const padString =
+      args.length > 1 ? this.convertASTNode(args[1], context) : { expression: '" "' };
 
     // CEL doesn't have padEnd, so we'll simulate it
     const expression = `size(${object.expression}) >= ${targetLength.expression} ? ${object.expression} : (${object.expression} + ${padString.expression}.repeat(${targetLength.expression} - size(${object.expression})))`;
@@ -3455,14 +3595,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: 'string'
+      _type: 'string',
     } as CelExpression;
   }
 
   /**
    * Convert string.repeat() method calls
    */
-  private convertStringRepeat(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringRepeat(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('String.repeat() requires exactly one argument');
     }
@@ -3475,14 +3619,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: 'string'
+      _type: 'string',
     } as CelExpression;
   }
 
   /**
    * Convert string.replace() method calls
    */
-  private convertStringReplace(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringReplace(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 2) {
       throw new Error('String.replace() requires exactly two arguments');
     }
@@ -3496,14 +3644,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: 'string'
+      _type: 'string',
     } as CelExpression;
   }
 
   /**
    * Convert string.indexOf() method calls
    */
-  private convertStringIndexOf(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringIndexOf(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('String.indexOf() requires exactly one argument');
     }
@@ -3516,14 +3668,18 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: 'number'
+      _type: 'number',
     } as CelExpression;
   }
 
   /**
    * Convert string.lastIndexOf() method calls
    */
-  private convertStringLastIndexOf(object: CelExpression, args: any[], context: AnalysisContext): CelExpression {
+  private convertStringLastIndexOf(
+    object: CelExpression,
+    args: any[],
+    context: AnalysisContext
+  ): CelExpression {
     if (args.length !== 1) {
       throw new Error('String.lastIndexOf() requires exactly one argument');
     }
@@ -3536,7 +3692,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: 'number'
+      _type: 'number',
     } as CelExpression;
   }
 
@@ -3545,19 +3701,35 @@ export class JavaScriptToCelAnalyzer {
    */
   private inferTypeFromFieldPath(fieldPath: string): any {
     // Common patterns for type inference
-    if (fieldPath.includes('replicas') || fieldPath.includes('count') || fieldPath.includes('port')) {
+    if (
+      fieldPath.includes('replicas') ||
+      fieldPath.includes('count') ||
+      fieldPath.includes('port')
+    ) {
       return 0; // number
     }
-    if (fieldPath.includes('ready') || fieldPath.includes('available') || fieldPath.includes('enabled')) {
+    if (
+      fieldPath.includes('ready') ||
+      fieldPath.includes('available') ||
+      fieldPath.includes('enabled')
+    ) {
       return false; // boolean
     }
-    if (fieldPath.includes('name') || fieldPath.includes('image') || fieldPath.includes('namespace')) {
+    if (
+      fieldPath.includes('name') ||
+      fieldPath.includes('image') ||
+      fieldPath.includes('namespace')
+    ) {
       return ''; // string
     }
     if (fieldPath.includes('labels') || fieldPath.includes('annotations')) {
       return {}; // object
     }
-    if (fieldPath.includes('conditions') || fieldPath.includes('ingress') || fieldPath.includes('containers')) {
+    if (
+      fieldPath.includes('conditions') ||
+      fieldPath.includes('ingress') ||
+      fieldPath.includes('containers')
+    ) {
       return []; // array
     }
 
@@ -3582,7 +3754,7 @@ export class JavaScriptToCelAnalyzer {
       '-': '-',
       '*': '*',
       '/': '/',
-      '%': '%'
+      '%': '%',
     };
 
     const celOperator = operatorMap[operator];
@@ -3608,7 +3780,7 @@ export class JavaScriptToCelAnalyzer {
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
-      _type: undefined
+      _type: undefined,
     } as CelExpression;
   }
 
@@ -3631,11 +3803,11 @@ export class JavaScriptToCelAnalyzer {
 
     // Arrays and objects need recursive checking
     if (Array.isArray(value)) {
-      return value.every(item => this.isStaticValue(item));
+      return value.every((item) => this.isStaticValue(item));
     }
 
     if (value && typeof value === 'object') {
-      return Object.values(value).every(val => this.isStaticValue(val));
+      return Object.values(value).every((val) => this.isStaticValue(val));
     }
 
     // Default to static for other types
@@ -3653,13 +3825,13 @@ export class JavaScriptToCelAnalyzer {
       sourceMap: [],
       errors: [],
       warnings: [],
-      requiresConversion: false // Key: static values don't need conversion
+      requiresConversion: false, // Key: static values don't need conversion
     };
   }
 
   /**
    * Analyze expression using factory pattern aware handling
-   * 
+   *
    * This method integrates with the factory pattern handler to provide
    * appropriate expression processing based on the deployment strategy.
    */
@@ -3688,20 +3860,21 @@ export class JavaScriptToCelAnalyzer {
 
       // For non-string expressions that need conversion, return the factory result
       return factoryResult;
-
     } catch (error) {
       return {
         valid: false,
         celExpression: null,
         dependencies: [],
         sourceMap: [],
-        errors: [new ConversionError(
-          `Factory pattern expression analysis failed: ${error instanceof Error ? error.message : String(error)}`,
-          String(expression),
-          'javascript'
-        )],
+        errors: [
+          new ConversionError(
+            `Factory pattern expression analysis failed: ${error instanceof Error ? error.message : String(error)}`,
+            String(expression),
+            'javascript'
+          ),
+        ],
         warnings: [],
-        requiresConversion: true
+        requiresConversion: true,
       };
     }
   }
@@ -3734,4 +3907,3 @@ export class JavaScriptToCelAnalyzer {
     this.cache.destroy();
   }
 }
-

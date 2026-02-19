@@ -6,13 +6,13 @@
  */
 
 import {
+  BrandChecks,
   CEL_EXPRESSION_BRAND,
   KUBERNETES_REF_BRAND,
   MIXED_TEMPLATE_BRAND,
-  BrandChecks,
 } from '../core/constants/brands.js';
-import type { CelExpression, KubernetesRef, ResourceReference } from '../core/types.js';
 import type { NestedCompositionResource } from '../core/types/deployment.js';
+import type { CelExpression, KubernetesRef, ResourceReference } from '../core/types.js';
 
 /**
  * Type guard to check if a value is a compile-time KubernetesRef.

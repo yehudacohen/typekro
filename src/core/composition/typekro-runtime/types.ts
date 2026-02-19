@@ -1,4 +1,4 @@
-import { type, type Type } from 'arktype';
+import { type Type, type } from 'arktype';
 
 export interface TypeKroRuntimeSpecType {
   namespace: string;
