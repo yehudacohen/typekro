@@ -131,6 +131,7 @@
     "@types/estraverse": "^5.1.7",
     "acorn": "^8.15.0",
     "alchemy": "^0.62.3",
+    "angular-expressions": "^1.5.1",
     "arktype": "^2.1.20",
     "cel-js": "^0.8.2",
     "estraverse": "^5.3.0",
