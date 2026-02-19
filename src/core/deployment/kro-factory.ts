@@ -278,7 +278,7 @@ export class KroResourceFactoryImpl<
     // The closures returned by the resource builder are deployment closures that expect a DeploymentContext
     // We need to execute them with a mock context to trigger validation
     const mockDeploymentContext: DeploymentContext = {
-      kubernetesApi: null as any, // Not needed for validation
+      // kubernetesApi intentionally omitted - not needed for validation
       namespace: this.namespace,
       deployedResources: new Map(),
       resolveReference: async (ref: KubernetesRef) => {
@@ -423,7 +423,7 @@ export class KroResourceFactoryImpl<
     } as DeployableK8sResource<typeof enhancedCustomResource>;
 
     // Preserve the readiness evaluator (non-enumerable property)
-    const readinessEvaluator = (enhancedCustomResource as any).readinessEvaluator;
+    const readinessEvaluator = enhancedCustomResource.readinessEvaluator;
     if (readinessEvaluator) {
       Object.defineProperty(deployableResource, 'readinessEvaluator', {
         value: readinessEvaluator,
@@ -822,6 +822,12 @@ ${Object.entries(spec as Record<string, any>)
     // Create Enhanced RGD with readiness evaluator
     const enhancedRGD = resourceGraphDefinition(rgdWithMetadata);
 
+    // Create a deployable resource with the required 'id' field
+    const deployableRGD = {
+      ...enhancedRGD,
+      id: this.rgdName,
+    } as DeployableK8sResource<Enhanced<unknown, unknown>>;
+
     // Debug: Log the RGD being deployed
     this.logger.debug('Deploying RGD', {
       rgdName: this.rgdName,
@@ -830,7 +836,7 @@ ${Object.entries(spec as Record<string, any>)
 
     try {
       // Deploy RGD using DirectDeploymentEngine with readiness checking
-      await deploymentEngine.deployResource(enhancedRGD as any, {
+      await deploymentEngine.deployResource(deployableRGD, {
         mode: 'direct',
         namespace: this.namespace,
         waitForReady: true,
@@ -1237,8 +1243,8 @@ ${Object.entries(spec as Record<string, any>)
             plural: 'resourcegraphdefinitions',
             name: this.name,
           });
-          const rgd = rgdResponse as any;
-          const rgdStatusSchema = rgd.spec?.schema?.status || {};
+          const rgd = rgdResponse as { spec?: { schema?: { status?: Record<string, unknown> } } };
+          const rgdStatusSchema = rgd.spec?.schema?.status ?? {};
           const rgdStatusKeys = Object.keys(rgdStatusSchema);
           expectedCustomStatusFields = rgdStatusKeys.length > 0;
 
@@ -1349,7 +1355,7 @@ ${Object.entries(spec as Record<string, any>)
     });
 
     // In the new API, methods return objects directly (no .body wrapper)
-    const liveInstance = response as any;
+    const liveInstance = response as { status?: Record<string, unknown> };
 
     if (!liveInstance.status) {
       dynamicLogger.warn('No status found in live instance, returning empty dynamic fields');

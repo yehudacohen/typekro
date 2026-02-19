@@ -252,7 +252,7 @@ function createPropertyProxy<T extends object>(
 
           const result: Record<string, any> = {};
           for (const key of Object.keys(obj)) {
-            result[key] = deepClone((obj as any)[key]);
+            result[key] = deepClone((obj as Record<string, unknown>)[key]);
           }
           return result;
         };
@@ -354,7 +354,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
               key !== 'readinessEvaluator' &&
               key !== 'id' // Filter out id field - it's for TypeKro internal use only
             ) {
-              result[key] = deepClone((target as any)[key]);
+              result[key] = deepClone((target as unknown as Record<string, unknown>)[key]);
             }
           }
           return result;
@@ -401,38 +401,38 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
       }
       // Handle common Kubernetes resource fields as magic proxies
       if (prop === 'data' && 'data' in target) {
-        const data = (target as any).data ?? {};
+        const data = target.data ?? {};
         return createPropertyProxy(resourceId, 'data', data);
       }
       if (prop === 'stringData' && 'stringData' in target) {
-        const stringData = (target as any).stringData ?? {};
+        const stringData = target.stringData ?? {};
         return createPropertyProxy(resourceId, 'stringData', stringData);
       }
       if (prop === 'rules' && 'rules' in target) {
-        const rules = (target as any).rules ?? [];
+        const rules = target.rules ?? [];
         return createPropertyProxy(resourceId, 'rules', rules);
       }
       if (prop === 'roleRef' && 'roleRef' in target) {
-        const roleRef = (target as any).roleRef ?? {};
+        const roleRef = target.roleRef ?? {};
         return createPropertyProxy(resourceId, 'roleRef', roleRef);
       }
       if (prop === 'subjects' && 'subjects' in target) {
-        const subjects = (target as any).subjects ?? [];
+        const subjects = target.subjects ?? [];
         return createPropertyProxy(resourceId, 'subjects', subjects);
       }
       if (prop === 'provisioner' && 'provisioner' in target) {
-        const provisioner = (target as any).provisioner;
+        const provisioner = target.provisioner;
         if (provisioner !== undefined) {
           return provisioner; // Return the actual string value
         }
         return createRefFactory(resourceId, 'provisioner'); // Create reference if not set
       }
       if (prop === 'parameters' && 'parameters' in target) {
-        const parameters = (target as any).parameters ?? {};
+        const parameters = target.parameters ?? {};
         return createPropertyProxy(resourceId, 'parameters', parameters);
       }
       if (prop === 'subsets' && 'subsets' in target) {
-        const subsets = (target as any).subsets ?? [];
+        const subsets = target.subsets ?? [];
         return createPropertyProxy(resourceId, 'subsets', subsets);
       }
       if (typeof prop === 'string' && prop.startsWith('$')) {
@@ -489,8 +489,8 @@ export function createResource<TSpec extends object, TStatus extends object>(
   let resourceId: string;
 
   // Check for id field on the resource itself
-  if ((resource as any).id) {
-    resourceId = (resource as any).id;
+  if (resource.id) {
+    resourceId = resource.id;
 
     // Validate that the ID follows camelCase convention
     const validation = validateResourceId(resourceId);
@@ -499,7 +499,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
     }
 
     // Remove the id field from the resource to prevent it from being sent to Kubernetes
-    const { id: _id, ...cleanResource } = resource as any;
+    const { id: _id, ...cleanResource } = resource;
     resource = cleanResource;
   } else {
     // Use deterministic ID generation by default
@@ -512,7 +512,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
   // Auto-register with composition context if active (but not for external references)
   const context = getCurrentCompositionContext();
-  if (context && !(resource as any).__externalRef) {
+  if (context && !resource.__externalRef) {
     context.addResource(resourceId, enhanced);
   }
 
