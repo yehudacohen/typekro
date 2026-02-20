@@ -13,6 +13,10 @@ import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ValidationError } from '../errors.js';
 import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 import { CelConversionEngine } from '../expressions/cel-conversion-engine.js';
+import {
+  analyzeCompositionBody,
+  applyAnalysisToResources,
+} from '../expressions/composition-analyzer.js';
 import { analyzeImperativeComposition } from '../expressions/imperative-analyzer.js';
 import { CelToJavaScriptMigrationHelper } from '../expressions/migration-helpers.js';
 import {
@@ -21,7 +25,7 @@ import {
   type StatusBuilderFunction,
 } from '../expressions/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
-import { createSchemaProxy, externalRef } from '../references/index.js';
+import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import type {
   DeploymentClosure,
   FactoryForMode,
@@ -72,6 +76,63 @@ function separateResourcesAndClosures<
   }
 
   return { resources, closures };
+}
+
+/**
+ * Map of factory names to Kubernetes apiVersion/kind for creating stub resources.
+ * Used when the AST analyzer detects factory calls that didn't execute at runtime
+ * (e.g. inside if-branches that weren't taken due to proxy evaluation).
+ */
+const FACTORY_KIND_MAP: Record<string, { apiVersion: string; kind: string }> = {
+  Deployment: { apiVersion: 'apps/v1', kind: 'Deployment' },
+  ConfigMap: { apiVersion: 'v1', kind: 'ConfigMap' },
+  Service: { apiVersion: 'v1', kind: 'Service' },
+  Ingress: { apiVersion: 'networking.k8s.io/v1', kind: 'Ingress' },
+  StatefulSet: { apiVersion: 'apps/v1', kind: 'StatefulSet' },
+  DaemonSet: { apiVersion: 'apps/v1', kind: 'DaemonSet' },
+  Job: { apiVersion: 'batch/v1', kind: 'Job' },
+  CronJob: { apiVersion: 'batch/v1', kind: 'CronJob' },
+  Secret: { apiVersion: 'v1', kind: 'Secret' },
+  PersistentVolumeClaim: { apiVersion: 'v1', kind: 'PersistentVolumeClaim' },
+  ServiceAccount: { apiVersion: 'v1', kind: 'ServiceAccount' },
+  Role: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role' },
+  RoleBinding: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'RoleBinding' },
+  ClusterRole: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole' },
+  ClusterRoleBinding: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRoleBinding' },
+  Namespace: { apiVersion: 'v1', kind: 'Namespace' },
+  HelmRelease: { apiVersion: 'helm.toolkit.fluxcd.io/v2beta1', kind: 'HelmRelease' },
+};
+
+/**
+ * Create a minimal stub resource object for factory calls that were detected
+ * by AST analysis but didn't execute at runtime.
+ *
+ * This happens when a factory call is inside an if-branch that wasn't taken
+ * because the schema proxy's `Symbol.toPrimitive` value didn't match the comparison.
+ * The stub contains just enough info for YAML serialization to produce a valid
+ * resource entry with includeWhen/forEach directives.
+ */
+function createStubResource(
+  factoryName: string,
+  resourceId: string
+): Record<string, unknown> | null {
+  const kindInfo = FACTORY_KIND_MAP[factoryName];
+  if (!kindInfo) return null;
+
+  const stub: Record<string, unknown> = {
+    apiVersion: kindInfo.apiVersion,
+    kind: kindInfo.kind,
+    metadata: { name: resourceId, labels: {} },
+  };
+
+  // Set __resourceId as non-enumerable
+  Object.defineProperty(stub, '__resourceId', {
+    value: resourceId,
+    enumerable: false,
+    configurable: true,
+  });
+
+  return stub;
 }
 
 /**
@@ -1117,6 +1178,60 @@ function createTypedResourceGraph<
     },
 
     toYaml(): string {
+      // Kro v0.8.x: Analyze composition function body for control flow patterns
+      // (if-statements → includeWhen, for-of loops → forEach, ternary → includeWhen)
+      // and attach them as non-enumerable properties on the Enhanced resources.
+      // Also detects ternary expressions in factory args and status returns.
+      const originalCompositionFn = (statusMappings as Record<string, unknown>)
+        ?.__originalCompositionFn as Function | undefined;
+
+      // Hoist status overrides so they can be applied after schema generation
+      let statusOverrides: Array<{ propertyPath: string; celExpression: string }> = [];
+
+      if (originalCompositionFn) {
+        try {
+          const resourceIds = new Set(Object.keys(resourcesWithKeys));
+          const analysis = analyzeCompositionBody(originalCompositionFn, resourceIds);
+
+          // Create stub resources for factory calls that weren't registered at runtime
+          // (e.g., inside if-branches where the condition evaluated to false because
+          // the schema proxy's value didn't match the comparison literal)
+          for (const unregistered of analysis.unregisteredFactories) {
+            if (!resourceIds.has(unregistered.resourceId)) {
+              const stub = createStubResource(unregistered.factoryName, unregistered.resourceId);
+              if (stub) {
+                resourcesWithKeys[unregistered.resourceId] = stub as Enhanced<unknown, unknown>;
+                resourceIds.add(unregistered.resourceId);
+                serializationLogger.debug('Created stub resource for unregistered factory', {
+                  resourceId: unregistered.resourceId,
+                  factoryName: unregistered.factoryName,
+                });
+              }
+            }
+          }
+
+          if (analysis.resources.size > 0 || analysis.templateOverrides.size > 0) {
+            applyAnalysisToResources(resourcesWithKeys, analysis);
+            serializationLogger.debug('Applied composition body analysis', {
+              analyzedResources: analysis.resources.size,
+              templateOverrides: analysis.templateOverrides.size,
+              errors: analysis.errors.length,
+            });
+          }
+
+          // Save status overrides for post-schema-generation injection.
+          // We can't inject them into optimizedStatusMappings because the
+          // separateStatusFields classifier treats schema-only CEL as "static"
+          // and filters it out. Instead we inject directly into kroSchema.status.
+          statusOverrides = analysis.statusOverrides;
+        } catch (analysisError) {
+          serializationLogger.debug(
+            'Composition body analysis failed (non-fatal), proceeding without control flow detection',
+            { error: (analysisError as Error).message }
+          );
+        }
+      }
+
       // Generate ResourceGraphDefinition YAML with user-defined status mappings
       const kroSchema = generateKroSchemaFromArktype(
         definition.name,
@@ -1124,6 +1239,29 @@ function createTypedResourceGraph<
         resourcesWithKeys,
         optimizedStatusMappings
       );
+
+      // Kro v0.8.x: set custom API group on schema if provided
+      if (definition.group) {
+        kroSchema.group = definition.group;
+      }
+
+      // Inject status overrides directly into the schema status section.
+      // These are ternary expressions that evaluated to literals at runtime
+      // but should be CEL conditionals in the Kro YAML output.
+      // Convert double quotes to single quotes in CEL string literals to avoid
+      // js-yaml double-quote escaping issues (quotingType: '"' causes inner
+      // double quotes to be backslash-escaped, breaking the CEL expression).
+      if (statusOverrides.length > 0) {
+        if (!kroSchema.status) {
+          kroSchema.status = {};
+        }
+        for (const override of statusOverrides) {
+          // Convert "..." to '...' in CEL string literals for YAML compatibility
+          const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
+          kroSchema.status[override.propertyPath] = yamlSafe;
+        }
+      }
+
       return serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
     },
   };
@@ -1139,7 +1277,7 @@ function createTypedResourceGraph<
       // For unknown properties, check if it's a resource key and create external ref
       const matchingResource = findResourceByKey(prop);
       if (matchingResource?.metadata.name) {
-        return externalRef(
+        return createExternalRefWithoutRegistration(
           matchingResource.apiVersion,
           matchingResource.kind,
           matchingResource.metadata.name,

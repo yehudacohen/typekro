@@ -24,7 +24,7 @@ export * from './cel.js';
 // CEL evaluation
 export { CelEvaluator } from './cel-evaluator.js';
 // External references
-export { externalRef } from './external-refs.js';
+export { createExternalRefWithoutRegistration, externalRef } from './external-refs.js';
 export type { DeploymentMode as DeploymentModeType } from './resolver.js';
 // Reference resolution
 export { DeploymentMode, ReferenceResolver } from './resolver.js';

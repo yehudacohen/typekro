@@ -38,7 +38,7 @@ export type InferType<T> = T extends Type<infer U> ? U : T;
 export interface KroResourceGraphDefinition {
   apiVersion: 'kro.run/v1alpha1';
   kind: 'ResourceGraphDefinition';
-  metadata: { name: string; namespace?: string };
+  metadata: { name: string; namespace?: string; annotations?: Record<string, string> };
   spec: {
     schema: KroSimpleSchema;
     resources: KroResourceTemplate[];
@@ -48,6 +48,8 @@ export interface KroResourceGraphDefinition {
 export interface KroSimpleSchema {
   apiVersion: string;
   kind: string;
+  /** Custom API group for the CRD (defaults to 'kro.run' in Kro) */
+  group?: string;
   spec: Record<string, string>;
   status?: Record<string, string>;
 }
@@ -57,9 +59,37 @@ export interface KroFieldDefinition {
   markers?: string;
 }
 
+/**
+ * Kro v0.8.x externalRef definition — references a pre-existing resource
+ * that is not managed by Kro but can be referenced in expressions.
+ */
+export interface KroExternalRef {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name: string;
+    namespace?: string;
+  };
+}
+
+/**
+ * Kro v0.8.x forEach dimension — one variable mapping per dimension.
+ * Each entry is `{ variableName: "CEL expression yielding a list" }`.
+ */
+export type KroForEachDimension = Record<string, string>;
+
 export interface KroResourceTemplate {
   id: string;
-  template: unknown;
+  /** The Kubernetes resource template. Mutually exclusive with externalRef. */
+  template?: unknown;
+  /** External reference to a pre-existing resource. Mutually exclusive with template. */
+  externalRef?: KroExternalRef;
+  /** CEL boolean expressions — all must be true for this resource to be created. */
+  includeWhen?: string[];
+  /** CEL boolean expressions — all must be true for this resource to be considered ready. */
+  readyWhen?: string[];
+  /** Collection dimensions — each dimension maps a variable to a CEL list expression. */
+  forEach?: KroForEachDimension[];
 }
 
 // =============================================================================
@@ -317,6 +347,8 @@ export interface SerializationOptions {
   indent?: number;
   lineWidth?: number;
   noRefs?: boolean;
+  /** When true, adds kro.run/allow-breaking-changes annotation to RGD metadata */
+  allowBreakingChanges?: boolean;
 }
 
 export interface SerializationContext {
@@ -383,6 +415,8 @@ export interface ResourceGraphDefinition<TSpec extends KroCompatibleType, TStatu
   name: string;
   apiVersion?: string; // Optional, defaults to 'kro.run/v1alpha1'
   kind: string;
+  /** Custom API group for the CRD (defaults to 'kro.run' in Kro v0.8.x) */
+  group?: string;
   spec: Type<TSpec>;
   status: Type<TStatus>;
 }
