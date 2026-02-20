@@ -3,46 +3,129 @@
  *
  * This module provides functionality to create external references to CRD instances
  * for composition between ResourceGraphDefinitions.
+ *
+ * Supports two calling conventions:
+ * 1. Positional: externalRef(apiVersion, kind, instanceName, namespace?)
+ * 2. Object-form: externalRef({ apiVersion, kind, metadata: { name, namespace? } })
  */
 
-import { createResource } from '../../factories/shared.js';
+import { createResource, getCurrentCompositionContext } from '../../factories/shared.js';
 import type { Enhanced, KubernetesResource } from '../types.js';
 
 /**
- * Create external reference to CRD instance for composition between ResourceGraphDefinitions
+ * Object-form configuration for creating an external reference.
+ * Mirrors the Kro v0.8.x externalRef spec structure.
+ */
+export interface ExternalRefConfig {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name: string;
+    namespace?: string;
+  };
+}
+
+/**
+ * Create external reference to a pre-existing resource that is not managed by Kro.
  *
- * @param apiVersion - API version of the external CRD
- * @param kind - Kind of the external CRD
- * @param instanceName - Name of the CRD instance to reference
- * @param namespace - Optional namespace of the CRD instance
- * @returns Enhanced proxy that can be used in resource templates
+ * When called inside a `kubernetesComposition` callback, the external reference is
+ * automatically registered with the composition context so it appears in the Kro YAML
+ * as an `externalRef` entry.
  *
- * @example
+ * @example Object form (Kro v0.8.x style):
  * ```typescript
- * // Reference an external database instance
- * const database = externalRef<DatabaseSpec, DatabaseStatus>(
- *   'v1alpha1',
- *   'Database',
- *   'production-db'
- * );
- *
- * // Use in resource template
- * const webapp = simple.Deployment({
- *   name: 'webapp',
- *   image: 'nginx',
- *   env: {
- *     DATABASE_URL: database.status.connectionString
- *   }
+ * const config = externalRef({
+ *   apiVersion: 'v1',
+ *   kind: 'ConfigMap',
+ *   metadata: { name: 'platform-config', namespace: 'platform-system' },
  * });
  * ```
+ *
+ * @example Positional form (legacy):
+ * ```typescript
+ * const database = externalRef('v1alpha1', 'Database', 'production-db');
+ * ```
  */
+export function externalRef<TSpec extends object, TStatus extends object>(
+  config: ExternalRefConfig
+): Enhanced<TSpec, TStatus>;
 export function externalRef<TSpec extends object, TStatus extends object>(
   apiVersion: string,
   kind: string,
   instanceName: string,
   namespace?: string
+): Enhanced<TSpec, TStatus>;
+export function externalRef<TSpec extends object, TStatus extends object>(
+  configOrApiVersion: ExternalRefConfig | string,
+  kind?: string,
+  instanceName?: string,
+  namespace?: string
 ): Enhanced<TSpec, TStatus> {
+  let apiVersion: string;
+  let resolvedKind: string;
+  let resolvedName: string;
+  let resolvedNamespace: string | undefined;
+
+  if (typeof configOrApiVersion === 'object') {
+    // Object-form: externalRef({ apiVersion, kind, metadata: { name, namespace } })
+    apiVersion = configOrApiVersion.apiVersion;
+    resolvedKind = configOrApiVersion.kind;
+    resolvedName = configOrApiVersion.metadata.name;
+    resolvedNamespace = configOrApiVersion.metadata.namespace;
+  } else {
+    // Positional form: externalRef(apiVersion, kind, instanceName, namespace?)
+    apiVersion = configOrApiVersion;
+    resolvedKind = kind!;
+    resolvedName = instanceName!;
+    resolvedNamespace = namespace;
+  }
+
   // Create a KubernetesResource marked as external reference
+  const resource: KubernetesResource<TSpec, TStatus> = {
+    apiVersion,
+    kind: resolvedKind,
+    metadata: {
+      name: resolvedName,
+      ...(resolvedNamespace && { namespace: resolvedNamespace }),
+    },
+    spec: {} as TSpec,
+    status: {} as TStatus,
+    // Mark this as an external reference for serialization
+    __externalRef: true,
+  };
+
+  // Use existing createResource function to get Enhanced proxy
+  // (createResource skips context registration for __externalRef resources)
+  const enhanced = createResource<TSpec, TStatus>(resource);
+
+  // Explicitly register with composition context so externalRef appears in Kro YAML.
+  // This only happens when called directly from user code inside kubernetesComposition.
+  // Cross-composition auto-refs (from core.ts Proxy get trap) go through
+  // createExternalRefWithoutRegistration() instead.
+  const context = getCurrentCompositionContext();
+  if (context) {
+    const resourceId = (enhanced as unknown as Record<string, string>).__resourceId;
+    if (resourceId) {
+      context.addResource(resourceId, enhanced as Enhanced<unknown, unknown>);
+    }
+  }
+
+  return enhanced;
+}
+
+/**
+ * Create an external reference WITHOUT registering in the composition context.
+ * Used by the cross-composition magic proxy to create references to resources
+ * in other compositions without polluting the current composition's resource list.
+ *
+ * @internal
+ */
+export function createExternalRefWithoutRegistration<TSpec extends object, TStatus extends object>(
+  apiVersion: string,
+  kind: string,
+  instanceName: string,
+  namespace?: string
+): Enhanced<TSpec, TStatus> {
   const resource: KubernetesResource<TSpec, TStatus> = {
     apiVersion,
     kind,
@@ -52,10 +135,9 @@ export function externalRef<TSpec extends object, TStatus extends object>(
     },
     spec: {} as TSpec,
     status: {} as TStatus,
-    // Mark this as an external reference for serialization
     __externalRef: true,
   };
 
-  // Use existing createResource function to get Enhanced proxy
+  // createResource skips context registration for __externalRef resources
   return createResource(resource);
 }

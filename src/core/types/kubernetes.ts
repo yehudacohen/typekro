@@ -4,6 +4,7 @@
 
 import type {
   KubernetesObject,
+  RbacV1Subject,
   V1CertificateSigningRequest,
   V1ConfigMap,
   V1CronJob,
@@ -38,7 +39,6 @@ import type {
   V1Secret,
   V1Service,
   V1StatefulSet,
-  RbacV1Subject,
   V1ValidatingWebhookConfiguration,
   V1VolumeAttachment,
   V2HorizontalPodAutoscaler,
@@ -144,6 +144,12 @@ export type Enhanced<TSpec, TStatus> = Omit<
 
   // Fluent builder method for setting readiness evaluator
   withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
+
+  // Kro v0.8.x conditional expression support (added at runtime by ConditionalExpressionIntegrator)
+  /** Set includeWhen condition — CEL expression or callback for conditional resource creation */
+  withIncludeWhen(condition: unknown): Enhanced<TSpec, TStatus>;
+  /** Set readyWhen condition — callback receiving self/each reference, or CEL expression */
+  withReadyWhen(condition: unknown): Enhanced<TSpec, TStatus>;
 };
 
 // =============================================================================

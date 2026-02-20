@@ -20,6 +20,17 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
   Object.defineProperty(proxyTarget, 'resourceId', { value: '__schema__', enumerable: false });
   Object.defineProperty(proxyTarget, 'fieldPath', { value: fieldPath, enumerable: false });
 
+  // Create a single "element" proxy for iteration support.
+  // When the schema ref is used as an iterable (for-of) or array-like (.map(), .filter(), etc.),
+  // we yield a single element proxy. This causes factory calls inside loops to execute once,
+  // registering the resource. The AST analyzer later detects the loop and attaches forEach.
+  //
+  // SENTINEL: We use `$item` (not `__element__`) because the ref marker regex
+  // /__KUBERNETES_REF_{id}_{fieldPath}__/ uses [a-zA-Z0-9.] for fieldPath, and
+  // underscores in `__element__` would break the delimiter detection.
+  // `$item` uses `$` which is included in [a-zA-Z0-9.$] after we update the regex.
+  const createElement = (): unknown => createSchemaRefFactory(`${fieldPath}.$item`);
+
   return new Proxy(proxyTarget, {
     get(target, prop) {
       // Check for our defined properties first
@@ -42,12 +53,51 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
         return () => `__KUBERNETES_REF___schema___${fieldPath}__`;
       }
 
+      // Support for-of iteration: yield a single element proxy so loop bodies execute once
+      if (prop === Symbol.iterator) {
+        return function* () {
+          yield createElement();
+        };
+      }
+
+      // Array iteration methods: .map(), .forEach(), .filter(), .some(), .every()
+      // Execute the callback once with a dummy element proxy so factory calls register.
+      if (prop === 'map') {
+        return (callback: Function) => {
+          const elem = createElement();
+          const result = callback(elem, 0, [elem]);
+          return [result];
+        };
+      }
+      if (prop === 'forEach') {
+        return (callback: Function) => {
+          callback(createElement(), 0, [createElement()]);
+        };
+      }
+      if (prop === 'filter') {
+        return (callback: Function) => {
+          const elem = createElement();
+          // Execute the predicate but always return the array with the element.
+          // The predicate's return value is only used for AST analysis.
+          callback(elem, 0, [elem]);
+          // Return a proxy that also supports chaining (.filter().map())
+          return createSchemaArrayProxy(fieldPath, callback);
+        };
+      }
+      if (prop === 'some' || prop === 'every') {
+        return (callback: Function) => {
+          const elem = createElement();
+          return callback(elem, 0, [elem]);
+        };
+      }
+
+      // .length — return 1 (single element for iteration)
+      if (prop === 'length') {
+        return 1;
+      }
+
       // Preserve essential function properties
-      if (
-        prop === 'call' ||
-        prop === 'apply' ||
-        prop === 'bind'
-      ) {
+      if (prop === 'call' || prop === 'apply' || prop === 'bind') {
         return target[prop as keyof typeof target];
       }
 
@@ -55,6 +105,42 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
       return createSchemaRefFactory(`${fieldPath}.${String(prop)}`);
     },
   }) as unknown as T;
+}
+
+/**
+ * Creates a proxy for the result of .filter() calls on schema array refs.
+ * This allows chaining like `spec.workers.filter(...).map(...)`.
+ */
+function createSchemaArrayProxy(baseFieldPath: string, _filterCallback: Function): unknown[] {
+  const createElement = (): unknown => createSchemaRefFactory(`${baseFieldPath}.__element__`);
+  const arr = [createElement()];
+
+  return new Proxy(arr, {
+    get(target, prop) {
+      if (prop === 'map') {
+        return (callback: Function) => {
+          const elem = createElement();
+          const result = callback(elem, 0, arr);
+          return [result];
+        };
+      }
+      if (prop === 'forEach') {
+        return (callback: Function) => {
+          callback(createElement(), 0, arr);
+        };
+      }
+      if (prop === 'length') {
+        return 1;
+      }
+      if (prop === Symbol.iterator) {
+        return function* () {
+          yield createElement();
+        };
+      }
+      // Default: delegate to the actual array
+      return Reflect.get(target, prop);
+    },
+  });
 }
 
 /**
@@ -193,11 +279,7 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
       }
 
       // Preserve essential function properties
-      if (
-        prop === 'call' ||
-        prop === 'apply' ||
-        prop === 'bind'
-      ) {
+      if (prop === 'call' || prop === 'apply' || prop === 'bind') {
         return target[prop as keyof typeof target];
       }
 

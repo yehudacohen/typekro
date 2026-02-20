@@ -7,7 +7,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
-import { KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
 import { conditionalExpressionIntegrator } from '../core/expressions/conditional-integration.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
@@ -197,8 +197,33 @@ function createRefFactory(resourceId: string, basePath: string): any {
       // Check for other properties that exist on the target
       if (prop in target) return target[prop as keyof typeof target];
 
+      // .orValue(defaultValue) — returns a CelExpression with orValue helper
+      // Used for externalRef optional field access with default values
+      if (prop === 'orValue') {
+        return (defaultValue: unknown) => {
+          const celExpr =
+            typeof defaultValue === 'string'
+              ? `${basePath}.orValue("${defaultValue}")`
+              : `${basePath}.orValue(${String(defaultValue)})`;
+          return {
+            [CEL_EXPRESSION_BRAND]: true,
+            expression: celExpr,
+            _type: undefined,
+          };
+        };
+      }
+
+      const propStr = String(prop);
+
+      // $ prefix — Kro optional access (.?field)
+      // `config.data?.$region` → field path uses `.?region` instead of `.region`
+      if (propStr.startsWith('$')) {
+        const actualField = propStr.substring(1);
+        return createRefFactory(resourceId, `${basePath}.?${actualField}`);
+      }
+
       // For unknown properties, create nested references
-      return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
+      return createRefFactory(resourceId, `${basePath}.${propStr}`);
     },
   }) as any; // Force TypeScript to see this as compatible with any type
 }
@@ -264,10 +289,10 @@ function createPropertyProxy<T extends object>(
       }
 
       // 2. Check if the user is explicitly requesting a reference with the '$' prefix.
+      //    $ prefix produces Kro optional access: .?field instead of .field
       if (prop.startsWith('$')) {
         const actualProp = prop.substring(1);
-        // Return the KubernetesRef for the underlying property.
-        return createRefFactory(resourceId, `${basePath}.${actualProp}`);
+        return createRefFactory(resourceId, `${basePath}.?${actualProp}`);
       }
 
       // 3. For any other access, default to the "eager value" or "implicit ref for unknown" logic.
@@ -438,6 +463,18 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
       if (typeof prop === 'string' && prop.startsWith('$')) {
         return createRefFactory(resourceId, prop.substring(1));
       }
+
+      // For external refs, unknown properties should return reference proxies
+      // since the resource shape is unstructured (we don't know its fields).
+      if (
+        typeof prop === 'string' &&
+        '__externalRef' in target &&
+        !(prop in target) &&
+        !prop.startsWith('__')
+      ) {
+        return createRefFactory(resourceId, prop);
+      }
+
       return Reflect.get(target, prop, receiver);
     },
     set(target, prop, value, receiver) {
@@ -510,7 +547,8 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
   const enhanced = createGenericProxyResource(resourceId, resource);
 
-  // Auto-register with composition context if active (but not for external references)
+  // Auto-register with composition context if active (but not for external references —
+  // those are registered explicitly by the externalRef() function when called from user code)
   const context = getCurrentCompositionContext();
   if (context && !resource.__externalRef) {
     context.addResource(resourceId, enhanced);

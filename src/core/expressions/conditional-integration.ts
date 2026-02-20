@@ -119,14 +119,12 @@ export class ConditionalExpressionIntegrator {
       configurable: true,
     });
 
-    // Add fluent builder methods
+    // Add fluent builder methods — accumulate conditions in arrays (AND semantics)
     Object.defineProperty(enhanced, 'withIncludeWhen', {
       value: (condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
-        const context = (enhanced as any).createFactoryContext();
-
         if (config.autoProcess) {
+          const context = (enhanced as any).createFactoryContext();
           const result = this.processor.processIncludeWhenExpression(condition, context, config);
-          enhanced.includeWhen = result.expression;
 
           if (result.validationErrors.length > 0) {
             logger.warn('includeWhen validation warnings', {
@@ -134,8 +132,26 @@ export class ConditionalExpressionIntegrator {
               errors: result.validationErrors,
             });
           }
+
+          // Accumulate: multiple calls produce multiple entries (AND semantics)
+          const existing = enhanced.includeWhen;
+          if (Array.isArray(existing)) {
+            existing.push(result.expression);
+          } else if (existing !== undefined) {
+            enhanced.includeWhen = [existing, result.expression];
+          } else {
+            enhanced.includeWhen = [result.expression];
+          }
         } else {
-          enhanced.includeWhen = condition;
+          // Accumulate raw values — the serialization layer will convert to CEL
+          const existing = enhanced.includeWhen;
+          if (Array.isArray(existing)) {
+            existing.push(condition);
+          } else if (existing !== undefined) {
+            enhanced.includeWhen = [existing, condition];
+          } else {
+            enhanced.includeWhen = [condition];
+          }
         }
 
         return enhanced;
@@ -146,11 +162,9 @@ export class ConditionalExpressionIntegrator {
 
     Object.defineProperty(enhanced, 'withReadyWhen', {
       value: (condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
-        const context = (enhanced as any).createFactoryContext();
-
         if (config.autoProcess) {
+          const context = (enhanced as any).createFactoryContext();
           const result = this.processor.processReadyWhenExpression(condition, context, config);
-          enhanced.readyWhen = result.expression;
 
           if (result.validationErrors.length > 0) {
             logger.warn('readyWhen validation warnings', {
@@ -158,8 +172,26 @@ export class ConditionalExpressionIntegrator {
               errors: result.validationErrors,
             });
           }
+
+          // Accumulate: multiple calls produce multiple entries
+          const existing = enhanced.readyWhen;
+          if (Array.isArray(existing)) {
+            existing.push(result.expression);
+          } else if (existing !== undefined) {
+            enhanced.readyWhen = [existing, result.expression];
+          } else {
+            enhanced.readyWhen = [result.expression];
+          }
         } else {
-          enhanced.readyWhen = condition;
+          // Accumulate raw values — the serialization layer will convert to CEL
+          const existing = enhanced.readyWhen;
+          if (Array.isArray(existing)) {
+            existing.push(condition);
+          } else if (existing !== undefined) {
+            enhanced.readyWhen = [existing, condition];
+          } else {
+            enhanced.readyWhen = [condition];
+          }
         }
 
         return enhanced;

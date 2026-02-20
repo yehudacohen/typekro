@@ -267,12 +267,13 @@ function convertKubernetesRefMarkersTocel(str: string): string {
   // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
   // For schema: __KUBERNETES_REF___schema___{fieldPath}__
   //
-  // The field path is matched with [a-zA-Z0-9.]+ which captures dot-separated identifiers
-  // like "spec.name" or "status.readyReplicas" without capturing trailing underscores
-  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.]+)__/g;
+  // The field path is matched with [a-zA-Z0-9.$]+ which captures dot-separated identifiers
+  // like "spec.name", "status.readyReplicas", or "spec.workers.$item.name" (collection element sentinel)
+  // The $ character is used for the $item collection element sentinel and $-prefixed explicit refs.
+  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
 
   // Check if the entire string is just a single reference (no surrounding text)
-  const singleRefMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.]+)__$/);
+  const singleRefMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
   if (singleRefMatch) {
     const [, resourceId, fieldPath] = singleRefMatch;
     const celPath =
