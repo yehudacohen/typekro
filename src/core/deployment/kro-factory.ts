@@ -828,6 +828,17 @@ ${Object.entries(spec as Record<string, any>)
       id: this.rgdName,
     } as DeployableK8sResource<Enhanced<unknown, unknown>>;
 
+    // Preserve the readiness evaluator (non-enumerable property lost during spread)
+    const readinessEvaluator = enhancedRGD.readinessEvaluator;
+    if (readinessEvaluator) {
+      Object.defineProperty(deployableRGD, 'readinessEvaluator', {
+        value: readinessEvaluator,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    }
+
     // Debug: Log the RGD being deployed
     this.logger.debug('Deploying RGD', {
       rgdName: this.rgdName,

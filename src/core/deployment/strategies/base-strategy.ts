@@ -291,6 +291,11 @@ export abstract class BaseDeploymentStrategy<
     // Track live resources by original key — queried once, reused for CEL resolution
     const liveResourcesByKey = new Map<string, unknown>();
 
+    // Create a SINGLE K8s API client for all cluster reads (shared across hydration and CEL resolution)
+    const k8sApi = this.factoryOptions.kubeConfig
+      ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
+      : undefined;
+
     if (deploymentResult && 'resources' in deploymentResult && this.resourceKeys) {
       // Create a mapping from resource ID to deployed resource
       const deployedResourcesById: Record<string, unknown> = {};
@@ -318,11 +323,6 @@ export abstract class BaseDeploymentStrategy<
           hasDeployedResource: !!(resource.id && deployedResourcesById[resource.id]),
         })),
       });
-
-      // Create a SINGLE K8s API client for all cluster reads
-      const k8sApi = this.factoryOptions.kubeConfig
-        ? createBunCompatibleKubernetesObjectApi(this.factoryOptions.kubeConfig)
-        : undefined;
 
       // Map original resource keys to deployed resources by matching kind and name.
       // Query each resource from the cluster ONCE to get live status.
@@ -445,12 +445,38 @@ export abstract class BaseDeploymentStrategy<
                 resourceKind: deployedResource.kind,
                 resourceName: deployedResource.name,
               });
+            } else if (k8sApi) {
+              // Query the cluster directly — the first loop may have missed this resource
+              // (e.g., imperative compositions where original resource names are KubernetesRef proxies)
+              try {
+                const actualResource = await k8sApi.read({
+                  apiVersion: deployedResource.manifest.apiVersion,
+                  kind: deployedResource.manifest.kind,
+                  metadata: {
+                    name: deployedResource.name,
+                    namespace: deployedResource.namespace || this.namespace || 'default',
+                  },
+                });
+                resourceKeyMapping.set(originalKey, actualResource);
+                this.logger.debug('Queried live resource for CEL mapping', {
+                  originalKey,
+                  resourceKind: deployedResource.kind,
+                  resourceName: deployedResource.name,
+                });
+              } catch (_error) {
+                // Fall back to manifest if cluster query fails
+                resourceKeyMapping.set(originalKey, deployedResource.manifest);
+                this.logger.debug('Fallback to manifest for CEL mapping', {
+                  originalKey,
+                  reason: 'cluster query failed',
+                });
+              }
             } else {
-              // Fall back to manifest if live resource wasn't fetched (shouldn't happen)
+              // No K8s client available — use manifest
               resourceKeyMapping.set(originalKey, deployedResource.manifest);
               this.logger.debug('Fallback to manifest for CEL mapping', {
                 originalKey,
-                reason: 'not in liveResourcesByKey',
+                reason: 'no k8sApi available',
               });
             }
           }
