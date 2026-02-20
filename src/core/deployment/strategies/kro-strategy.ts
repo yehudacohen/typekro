@@ -140,6 +140,17 @@ export class KroDeploymentStrategy<
       id: rgdName,
     };
 
+    // Preserve the readiness evaluator (non-enumerable property lost during spread)
+    const rgdReadinessEvaluator = enhancedRGD.readinessEvaluator;
+    if (rgdReadinessEvaluator) {
+      Object.defineProperty(deployableRGD, 'readinessEvaluator', {
+        value: rgdReadinessEvaluator,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    }
+
     // Deploy using DirectDeploymentEngine with KRO mode
     await this.directEngine.deployResource(deployableRGD, {
       mode: 'kro',
@@ -196,6 +207,17 @@ export class KroDeploymentStrategy<
         namespace: this.namespace,
       },
     } as DeployableK8sResource<Enhanced<TSpec, WithKroStatusFields<object>>>;
+
+    // Preserve the readiness evaluator (non-enumerable property lost during spread)
+    const crReadinessEvaluator = enhancedCustomResource.readinessEvaluator;
+    if (crReadinessEvaluator) {
+      Object.defineProperty(deployableCustomResource, 'readinessEvaluator', {
+        value: crReadinessEvaluator,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    }
 
     // Deploy using DirectDeploymentEngine with KRO mode
     // Don't wait for ready here - we'll handle Kro-specific readiness logic ourselves
