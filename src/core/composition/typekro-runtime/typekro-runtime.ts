@@ -145,7 +145,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       helmRepository({
         name: 'kro-helm-repo',
         namespace: 'flux-system',
-        url: 'oci://registry.k8s.io/kro/charts/kro',
+        url: 'oci://registry.k8s.io/kro/charts',
         interval: '5m',
         type: 'oci',
         id: 'kroHelmRepo',
@@ -159,7 +159,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
         namespace: 'kro-system',
         chart: {
           name: 'kro',
-          repository: `oci://registry.k8s.io/kro/charts/kro`,
+          repository: `oci://registry.k8s.io/kro/charts`,
           version: kroVersion,
         },
         interval: '5m',
