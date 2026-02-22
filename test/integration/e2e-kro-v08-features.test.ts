@@ -48,8 +48,11 @@ const generateTestNamespace = (testName: string): string => {
   return `${BASE_NAMESPACE}-${sanitized}-${timestamp}`;
 };
 
-// Generate unique RGD names per test run (RGDs are cluster-scoped)
+// Generate unique RGD names AND Kind names per test run.
+// RGDs are cluster-scoped and Kinds map to CRDs — if two RGDs define the same Kind,
+// the second will fail with "CRD is owned by another ResourceGraphDefinition".
 const testRunId = Date.now().toString().slice(-6);
+const kindSuffix = `R${testRunId}`; // e.g. "R486940" → valid PascalCase identifier suffix
 
 // Check if cluster is available
 const clusterAvailable = isClusterAvailable();
@@ -236,7 +239,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           {
             name: includeWhenRGDName,
             apiVersion: 'v1alpha1',
-            kind: 'IncludeWhenApp',
+            kind: `IncludeWhenApp${kindSuffix}`,
             spec: type({
               name: 'string',
               image: 'string',
@@ -326,7 +329,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           {
             name: readyWhenRGDName,
             apiVersion: 'v1alpha1',
-            kind: 'ReadyWhenApp',
+            kind: `ReadyWhenApp${kindSuffix}`,
             spec: type({
               name: 'string',
               image: 'string',
@@ -400,7 +403,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           {
             name: forEachRGDName,
             apiVersion: 'v1alpha1',
-            kind: 'ForEachApp',
+            kind: `ForEachApp${kindSuffix}`,
             spec: type({
               name: 'string',
               environments: 'string[]',
@@ -488,7 +491,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           {
             name: extRefRGDName,
             apiVersion: 'v1alpha1',
-            kind: 'ExtRefApp',
+            kind: `ExtRefApp${kindSuffix}`,
             spec: type({
               name: 'string',
               image: 'string',
@@ -565,7 +568,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           {
             name: combinedRGDName,
             apiVersion: 'v1alpha1',
-            kind: 'CombinedApp',
+            kind: `CombinedApp${kindSuffix}`,
             spec: type({
               name: 'string',
               image: 'string',
@@ -655,7 +658,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
           {
             name: declarativeRGDName,
             apiVersion: 'v1alpha1',
-            kind: 'DeclarativeApp',
+            kind: `DeclarativeApp${kindSuffix}`,
             spec: type({
               name: 'string',
               image: 'string',

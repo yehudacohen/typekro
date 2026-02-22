@@ -71,17 +71,35 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
       // 3. Check if RGD is in Active state with proper conditions
       const isStateReady = status.state === 'Active';
 
-      // Check for key readiness conditions (be defensive about conditions structure)
-      const reconcilerReady = conditions.find(
-        (c: any) => c && c.type === 'ReconcilerReady' && c.status === 'True'
+      // Check for key readiness conditions (be defensive about conditions structure).
+      // Support both Kro v0.3.x condition names (ReconcilerReady, GraphVerified,
+      // CustomResourceDefinitionSynced) and v0.8.x names (Ready, ControllerReady,
+      // KindReady, ResourceGraphAccepted).
+      const hasV08Conditions = conditions.some(
+        (c: Record<string, string>) => c?.type === 'Ready' || c?.type === 'ControllerReady'
       );
-      const graphVerified = conditions.find(
-        (c: any) => c && c.type === 'GraphVerified' && c.status === 'True'
-      );
-      const crdSynced = conditions.find(
-        (c: any) => c && c.type === 'CustomResourceDefinitionSynced' && c.status === 'True'
-      );
-      const allConditionsReady = reconcilerReady && graphVerified && crdSynced;
+
+      let allConditionsReady: boolean;
+      if (hasV08Conditions) {
+        // Kro v0.8.x: check Ready condition
+        const readyCondition = conditions.find(
+          (c: Record<string, string>) => c?.type === 'Ready' && c?.status === 'True'
+        );
+        allConditionsReady = !!readyCondition;
+      } else {
+        // Kro v0.3.x: check legacy conditions
+        const reconcilerReady = conditions.find(
+          (c: Record<string, string>) => c?.type === 'ReconcilerReady' && c?.status === 'True'
+        );
+        const graphVerified = conditions.find(
+          (c: Record<string, string>) => c?.type === 'GraphVerified' && c?.status === 'True'
+        );
+        const crdSynced = conditions.find(
+          (c: Record<string, string>) =>
+            c?.type === 'CustomResourceDefinitionSynced' && c?.status === 'True'
+        );
+        allConditionsReady = !!(reconcilerReady && graphVerified && crdSynced);
+      }
 
       if (isStateReady && allConditionsReady) {
         return {
