@@ -427,17 +427,26 @@ export class KroResourceFactoryImpl<
     preserveNonEnumerableProperties(enhancedCustomResource, deployableResource);
 
     // Deploy without waiting for readiness - we'll handle that ourselves
+    this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
     const _deployedResource = await deploymentEngine.deployResource(deployableResource, {
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: false, // We'll handle Kro-specific readiness ourselves
       timeout: this.factoryOptions.timeout || 300000,
     });
+    this.logger.info('Instance deployed, checking readiness', {
+      instanceName,
+      rgdName: this.rgdName,
+    });
 
     // Handle Kro-specific readiness checking if requested
     if (this.factoryOptions.waitForReady ?? true) {
       await this.waitForKroInstanceReady(instanceName, this.factoryOptions.timeout || 600000); // 10 minutes
     }
+    this.logger.info('Instance ready, creating enhanced proxy', {
+      instanceName,
+      rgdName: this.rgdName,
+    });
 
     // Create Enhanced proxy for the deployed instance
     return await this.createEnhancedProxy(spec, instanceName);
@@ -832,15 +841,18 @@ ${Object.entries(spec as Record<string, any>)
 
     try {
       // Deploy RGD using DirectDeploymentEngine with readiness checking
+      this.logger.info('Deploying RGD via engine', { rgdName: this.rgdName });
       await deploymentEngine.deployResource(deployableRGD, {
         mode: 'direct',
         namespace: this.namespace,
         waitForReady: true,
         timeout: this.factoryOptions.timeout || 60000,
       });
+      this.logger.info('RGD deployed, waiting for CRD', { rgdName: this.rgdName });
 
       // Wait for the CRD to be created by Kro using DirectDeploymentEngine
       await this.waitForCRDReadyWithEngine(deploymentEngine);
+      this.logger.info('CRD ready', { rgdName: this.rgdName });
     } catch (error) {
       // Debug: Check the actual RGD status when it fails
       try {
@@ -1219,7 +1231,9 @@ ${Object.entries(spec as Record<string, any>)
 
         const state = status.state;
         const conditions = status.conditions || [];
+        // Support both Kro v0.3.x (InstanceSynced) and v0.8.x (Ready) conditions
         const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
+        const readyCondition = conditions.find((c) => c.type === 'Ready');
 
         // Check if status has fields beyond the basic Kro fields (conditions, state)
         const statusKeys = Object.keys(status);
@@ -1227,7 +1241,7 @@ ${Object.entries(spec as Record<string, any>)
         const hasCustomStatusFields = statusKeys.some((key) => !basicKroFields.includes(key));
 
         const isActive = state === 'ACTIVE';
-        const isSynced = syncedCondition?.status === 'True';
+        const isSynced = syncedCondition?.status === 'True' || readyCondition?.status === 'True';
 
         // Check what status fields are expected by looking at the ResourceGraphDefinition
         let expectedCustomStatusFields = false;
@@ -1283,12 +1297,12 @@ ${Object.entries(spec as Record<string, any>)
           return;
         }
 
-        // Check for failure states
-        if (state === 'FAILED') {
+        // Check for failure states (Kro v0.8.x uses "ERROR", v0.3.x uses "FAILED")
+        if (state === 'FAILED' || state === 'ERROR') {
           const failedCondition = conditions.find((c) => c.status === 'False');
           const errorMessage = failedCondition?.message || 'Unknown error';
           throw new CRDInstanceError(
-            `Kro instance deployment failed: ${errorMessage}`,
+            `Kro instance deployment failed (state=${state}): ${errorMessage}`,
             this.schemaDefinition.apiVersion,
             this.schemaDefinition.kind,
             instanceName,

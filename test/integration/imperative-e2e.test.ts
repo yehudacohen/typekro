@@ -15,6 +15,7 @@ import {
   cleanupTestNamespaces,
   createAppsV1ApiClient,
   createCoreV1ApiClient,
+  createCustomObjectsApiClient,
   deleteNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
@@ -73,6 +74,25 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
     if (kc) {
       console.log('🧹 Cleaning up any leftover test namespaces...');
       await cleanupTestNamespaces(/^typekro-imperative-e2e-/, kc);
+
+      // Clean up RGDs created by this test run to avoid CRD ownership conflicts
+      const customApi = createCustomObjectsApiClient(kc);
+      for (const rgdName of [
+        `webapp-factory-test-${testRunId}`,
+        `webapp-factory-traditional-${testRunId}`,
+      ]) {
+        try {
+          await customApi.deleteClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name: rgdName,
+          });
+          console.log(`🗑️ Deleted RGD: ${rgdName}`);
+        } catch {
+          // RGD may not exist, ignore
+        }
+      }
     }
   });
 
@@ -113,13 +133,14 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
     readyReplicas: 'number',
   });
 
-  // Generate unique names for each test run to avoid RGD conflicts (RGDs are cluster-scoped)
+  // Generate unique names AND kinds for each test run to avoid RGD/CRD conflicts (RGDs are cluster-scoped)
   const testRunId = Date.now().toString().slice(-6);
+  const kindSuffix = `R${testRunId}`;
 
   const definition = {
     name: `webapp-factory-test-${testRunId}`,
     apiVersion: 'v1alpha1',
-    kind: 'WebappFactoryTest',
+    kind: `WebappFactoryTest${kindSuffix}`,
     spec: WebAppSpecSchema,
     status: WebAppStatusSchema,
   };
@@ -128,7 +149,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
   const traditionalDefinition = {
     name: `webapp-factory-traditional-${testRunId}`,
     apiVersion: 'v1alpha1',
-    kind: 'WebappFactoryTraditional',
+    kind: `WebappFactoryTrad${kindSuffix}`,
     spec: WebAppSpecSchema,
     status: WebAppStatusSchema,
   };
@@ -257,11 +278,11 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
       // Both should have schema definitions
       expect(imperativeYaml).toContain('schema:');
       expect(imperativeYaml).toContain('apiVersion: v1alpha1'); // Short form is used in YAML
-      expect(imperativeYaml).toContain('kind: WebappFactoryTest');
+      expect(imperativeYaml).toContain(`kind: WebappFactoryTest${kindSuffix}`);
 
       expect(traditionalYaml).toContain('schema:');
       expect(traditionalYaml).toContain('apiVersion: v1alpha1'); // Short form is used in YAML
-      expect(traditionalYaml).toContain('kind: WebappFactoryTraditional');
+      expect(traditionalYaml).toContain(`kind: WebappFactoryTrad${kindSuffix}`);
 
       // Both should have resource templates
       expect(imperativeYaml).toContain('resources:');
@@ -429,12 +450,12 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           };
         });
 
-        // Create equivalent traditional composition using the exact same pattern
+        // Create equivalent traditional composition with different resource names to avoid Kro ApplySet conflicts
         const traditionalComposition = toResourceGraph(
           traditionalDefinition,
           (_schema) => ({
             webapp: simple.Deployment({
-              name: 'webapp-factory',
+              name: 'webapp-trad',
               image: 'nginx:alpine',
               replicas: 2,
               env: {
@@ -446,8 +467,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             }),
 
             webappService: simple.Service({
-              name: 'webapp-factory-service',
-              selector: { app: 'webapp-factory' },
+              name: 'webapp-trad-service',
+              selector: { app: 'webapp-trad' },
               ports: [{ port: 80, targetPort: 80, name: 'http' }],
               id: 'webappService',
             }),
@@ -461,7 +482,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             ) as 'pending' | 'running' | 'failed',
 
             // Static field - hydrated directly by TypeKro
-            url: 'http://webapp-factory-service',
+            url: 'http://webapp-trad-service',
 
             // Dynamic field - resolved by Kro
             readyReplicas: Cel.expr(resources.webapp.status.readyReplicas) as number,
@@ -473,17 +494,20 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
         try {
           // Create Kro factories from both
+          console.log('📝 Creating imperative Kro factory...');
           const imperativeKroFactory = await imperativeComposition.factory('kro', {
             namespace: testNamespace,
             waitForReady: true,
             kubeConfig: kc,
           });
 
+          console.log('📝 Creating traditional Kro factory...');
           const traditionalKroFactory = await traditionalComposition.factory('kro', {
             namespace: testNamespace,
             waitForReady: true,
             kubeConfig: kc,
           });
+          console.log('✅ Both factories created');
 
           // Both factories should have identical properties (except name)
           expect(imperativeKroFactory.mode).toBe('kro');
@@ -492,6 +516,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(traditionalKroFactory.name).toBe(`webapp-factory-traditional-${testRunId}`);
 
           // Both should be able to deploy
+          console.log('🚀 Deploying imperative instance...');
           const imperativeResult = await imperativeKroFactory.deploy({
             name: 'imperative-test-app',
             environment: 'development',
@@ -500,6 +525,8 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
             hostname: 'imperative.example.com',
           });
 
+          console.log('✅ Imperative instance deployed');
+          console.log('🚀 Deploying traditional instance...');
           const traditionalResult = await traditionalKroFactory.deploy({
             name: 'traditional-test-app',
             environment: 'development',
@@ -552,7 +579,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           expect(traditionalComposition).toBeDefined();
         }
       });
-    }, 180000);
+    }, 300000);
 
     it('should create Direct factory identical to toResourceGraph', async () => {
       await withTestNamespace('direct-factory-test', async (testNamespace) => {
