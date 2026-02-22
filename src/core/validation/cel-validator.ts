@@ -221,11 +221,29 @@ export function validateStatusCelExpressions(
 
       // Check for direct resource references (resourceId.status.field, resourceId.spec.field, resourceId.metadata.field)
       // This is the most important validation - ensuring referenced resources actually exist
+      //
+      // Extract CEL lambda variable names to exclude them from resource ID checks.
+      // CEL macros like .all(v, body), .exists(v, body), .map(v, body), .filter(v, body)
+      // introduce lambda variables that should not be treated as resource IDs.
+      const lambdaVarPattern = /\.(?:all|exists|map|filter)\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*,/g;
+      const lambdaVars = new Set<string>();
+      let lambdaMatch: RegExpExecArray | null = lambdaVarPattern.exec(expression);
+      while (lambdaMatch !== null) {
+        if (lambdaMatch[1]) lambdaVars.add(lambdaMatch[1]);
+        lambdaMatch = lambdaVarPattern.exec(expression);
+      }
+      // Also add 'each' as it's a Kro readyWhen keyword for forEach collections
+      lambdaVars.add('each');
+
       const directResourceRefPattern = /\b([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./g;
       let directMatch: RegExpExecArray | null = directResourceRefPattern.exec(expression);
       while (directMatch !== null) {
-        const referencedId = directMatch[1];
-        if (referencedId !== 'schema' && !resourceIds.has(referencedId)) {
+        const referencedId = directMatch[1] ?? '';
+        if (
+          referencedId !== 'schema' &&
+          !resourceIds.has(referencedId) &&
+          !lambdaVars.has(referencedId)
+        ) {
           // Allow cross-composition references (callable composition status access)
           // These are valid even if the callable composition is not a registered resource
           const isCrossCompositionRef = expression.includes('.status.');

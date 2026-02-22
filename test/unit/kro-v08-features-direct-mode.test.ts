@@ -71,7 +71,7 @@ const ConditionalStatus = type({
 // forEach — Direct Mode (Collections)
 // =============================================================================
 
-describe.skip('Kro v0.8.x Direct Mode', () => {
+describe('Kro v0.8.x Direct Mode', () => {
   describe('forEach — Direct Mode', () => {
     it('for...of creates N concrete resources from actual array', () => {
       const comp = kubernetesComposition(
@@ -223,16 +223,18 @@ describe.skip('Kro v0.8.x Direct Mode', () => {
         },
         (spec) => {
           for (const region of spec.regions) {
+            // Resource IDs must be static (Kro uses a single entry with forEach).
+            // In direct mode re-execution, deduplication appends -1, -2, etc.
             Deployment({
               name: `${spec.name}-${region}`,
               image: spec.image,
-              id: `dep-${region}`,
+              id: 'regionDep',
             });
             Service({
               name: `${spec.name}-${region}-svc`,
               selector: { app: `${spec.name}-${region}` },
               ports: [{ port: 80 }],
-              id: `svc-${region}`,
+              id: 'regionSvc',
             });
           }
           return { total: spec.regions.length * 2 };
@@ -605,14 +607,14 @@ describe.skip('Kro v0.8.x Direct Mode', () => {
             Deployment({
               name: `${spec.name}-${region}`,
               image: spec.image,
-              id: `dep-${region}`,
+              id: 'regionDep',
             });
 
             if (spec.monitoring) {
               ConfigMap({
                 name: `${spec.name}-${region}-monitor`,
                 data: { region },
-                id: `mon-${region}`,
+                id: 'regionMonitor',
               });
             }
           }
@@ -779,7 +781,7 @@ describe.skip('Kro v0.8.x Direct Mode', () => {
             Deployment({
               name: `${spec.name}-${item}`,
               image: spec.image,
-              id: `dep-${item}`,
+              id: 'itemDep',
             });
             count++;
 
@@ -787,7 +789,7 @@ describe.skip('Kro v0.8.x Direct Mode', () => {
               ConfigMap({
                 name: `${spec.name}-${item}-config`,
                 data: { item },
-                id: `cfg-${item}`,
+                id: 'itemConfig',
               });
               count++;
             }
