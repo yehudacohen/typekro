@@ -244,10 +244,22 @@ export function validateStatusCelExpressions(
           !resourceIds.has(referencedId) &&
           !lambdaVars.has(referencedId)
         ) {
-          // Allow cross-composition references (callable composition status access)
-          // These are valid even if the callable composition is not a registered resource
-          const isCrossCompositionRef = expression.includes('.status.');
-          if (!isCrossCompositionRef) {
+          // Check if this specific reference is a cross-composition status access.
+          // Cross-composition references (e.g., `otherComposition.status.ready`) are valid
+          // even if the referenced composition is not a registered resource in THIS graph.
+          // We only suppress the error when the SPECIFIC unresolved reference accesses .status.,
+          // not when .status. appears anywhere in the expression.
+          const matchedRef = directMatch[0] ?? '';
+          const isCrossCompositionRef =
+            matchedRef.includes('.status.') && !matchedRef.includes('.spec.');
+          if (isCrossCompositionRef) {
+            warnings.push({
+              field: fieldName,
+              expression,
+              error: `Reference '${referencedId}' is not a registered resource — treating as cross-composition reference`,
+              suggestion: `If this is not a cross-composition reference, check that resource '${referencedId}' is created in the composition`,
+            });
+          } else {
             errors.push({
               field: fieldName,
               expression,

@@ -1,10 +1,10 @@
 /**
  * Unit tests for TypeKro runtime bootstrap CEL expression generation
- * 
+ *
  * These tests verify that the TypeKro runtime bootstrap correctly generates CEL expressions
  * for status fields instead of static values, and that no false warnings are generated
  * about static fields.
- * 
+ *
  * This test suite would have caught the bug where the bootstrap was generating warnings
  * about "static fields" even though the expressions contained dynamic KubernetesRef objects.
  */
@@ -19,7 +19,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       // Test that the bootstrap creates a valid factory
@@ -32,7 +32,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       expect(yaml).toContain('kroHelmRelease.status.phase');
       // fluxHelmRelease was removed - Flux is installed via YAML, not Helm
       expect(yaml).not.toContain('fluxHelmRelease.status.phase');
-      
+
       // Verify that the status section contains dynamic expressions
       expect(yaml).toContain('phase: "${');
       // Verify that components is now properly structured with individual CEL expressions
@@ -44,7 +44,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       const kroFactory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -55,13 +55,13 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       expect(rgdYaml).toContain('kroHelmRelease.status.phase');
       // fluxHelmRelease was removed - Flux is installed via YAML, not Helm
       expect(rgdYaml).not.toContain('fluxHelmRelease.status.phase');
-      
+
       // Should NOT contain static placeholder values
       expect(rgdYaml).not.toContain('phase: Ready');
       expect(rgdYaml).not.toContain('phase: Pending');
       expect(rgdYaml).not.toContain('phase: Installing');
       expect(rgdYaml).not.toContain('phase: Failed');
-      
+
       // Should contain proper CEL expressions for components unless they're yamlFile deployment closures
       expect(rgdYaml).not.toContain('fluxSystem:');
       expect(rgdYaml).toContain('kroSystem:');
@@ -79,18 +79,17 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
         const bootstrap = typeKroRuntimeBootstrap({
           namespace: 'flux-system',
           fluxVersion: 'v2.4.0',
-          kroVersion: '0.3.0'
+          kroVersion: '0.8.5',
         });
 
         const kroFactory = await bootstrap.factory('kro', { namespace: 'flux-system' });
         kroFactory.toYaml();
 
         // Should not have warnings about static fields since we fixed the bug
-        const staticFieldWarnings = warnings.filter(w => 
-          w.includes('Static fields') && 
-          (w.includes('phase') || w.includes('components'))
+        const staticFieldWarnings = warnings.filter(
+          (w) => w.includes('Static fields') && (w.includes('phase') || w.includes('components'))
         );
-        
+
         expect(staticFieldWarnings).toHaveLength(0);
       } finally {
         console.warn = originalWarn;
@@ -103,7 +102,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -112,7 +111,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       // Verify that kroHelmRelease status fields are referenced in CEL expressions
       expect(yaml).toContain('kroHelmRelease.status.phase');
       expect(yaml).toContain('kroSystem: ${kroHelmRelease.status.phase === "Ready"}');
-      
+
       // Ensure it's not a static value
       expect(yaml).not.toContain('phase: "Ready"');
       expect(yaml).not.toContain('phase: "Installing"');
@@ -122,7 +121,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -132,7 +131,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       expect(yaml).not.toContain('fluxHelmRelease.status.phase');
       // Only kroSystem component should remain
       expect(yaml).toContain('kroSystem: ${kroHelmRelease.status.phase === "Ready"}');
-      
+
       // Ensure it's not a static value
       expect(yaml).not.toContain('fluxSystem: true');
       expect(yaml).not.toContain('fluxSystem: false');
@@ -144,7 +143,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -153,7 +152,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       // Test that JavaScript expressions are converted to CEL expressions
       expect(yaml).toContain('kroHelmRelease.status.phase === \\"Ready\\"');
       expect(yaml).toContain('? \\"Ready\\" : \\"Installing\\"');
-      
+
       // Ensure it's not a static value
       expect(yaml).not.toContain('phase: Ready');
       expect(yaml).not.toContain('phase: Installing');
@@ -163,7 +162,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       const factory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -172,7 +171,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       // Test complex expressions in the components section (they're wrapped in CEL expressions) unless they're installed with deployment closures
       expect(yaml).not.toContain('fluxSystem: ${fluxHelmRelease.status.phase === "Ready"}');
       expect(yaml).toContain('kroSystem: ${kroHelmRelease.status.phase === "Ready"}');
-      
+
       // Ensure components are not static boolean values
       expect(yaml).not.toContain('fluxSystem: true');
       expect(yaml).not.toContain('kroSystem: false');
@@ -185,7 +184,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       const kroFactory = await bootstrap.factory('kro', { namespace: 'flux-system' });
@@ -197,7 +196,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       expect(rgdYaml).not.toContain('phase: "Installing"');
       expect(rgdYaml).not.toContain('components: true');
       expect(rgdYaml).not.toContain('components: false');
-      
+
       // Should contain CEL expressions instead
       expect(rgdYaml).toContain('${kroHelmRelease.status.phase');
       // flux is installed by yamlFile deployment closure
@@ -208,7 +207,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       const bootstrap = typeKroRuntimeBootstrap({
         namespace: 'flux-system',
         fluxVersion: 'v2.4.0',
-        kroVersion: '0.3.0'
+        kroVersion: '0.8.5',
       });
 
       // Test both factory types to ensure consistency
@@ -222,7 +221,7 @@ describe('TypeKro Runtime Bootstrap CEL Generation', () => {
       // Kro factory should generate CEL expressions
       const kroYaml = kroFactory.toYaml();
       expect(kroYaml).toContain('${kroHelmRelease.');
-      
+
       // Direct factory should be deployable (expressions will be evaluated at runtime)
       expect(typeof directFactory.deploy).toBe('function');
     });

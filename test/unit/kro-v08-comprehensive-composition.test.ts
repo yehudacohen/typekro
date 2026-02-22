@@ -13,7 +13,6 @@
  * - group: Custom API group for the CRD
  * - Collection aggregates: Status reflects aggregate readiness across regions
  *
- * All tests are .skip'd until the corresponding features are implemented.
  */
 
 import { describe, expect, it } from 'bun:test';

@@ -503,6 +503,41 @@ function _requiresKroResolution(value: any): boolean {
 }
 
 /**
+ * Preserve non-enumerable internal properties (readinessEvaluator, __resourceId) from a source
+ * object onto a target object. This is needed after object spread (`{...source, ...overrides}`)
+ * because spread only copies enumerable own properties.
+ *
+ * @param source The original object that may have non-enumerable properties
+ * @param target The new object (result of spread) that needs the properties restored
+ */
+export function preserveNonEnumerableProperties<T extends Record<string, unknown>>(
+  source: T,
+  target: T
+): void {
+  // Preserve readinessEvaluator
+  const readinessEvaluator = (source as Record<string, unknown>).readinessEvaluator;
+  if (typeof readinessEvaluator === 'function') {
+    Object.defineProperty(target, 'readinessEvaluator', {
+      value: readinessEvaluator,
+      enumerable: false,
+      configurable: true,
+      writable: false,
+    });
+  }
+
+  // Preserve __resourceId
+  const resourceId = (source as Record<string, unknown>).__resourceId;
+  if (resourceId !== undefined) {
+    Object.defineProperty(target, '__resourceId', {
+      value: resourceId,
+      enumerable: false,
+      configurable: true,
+      writable: false,
+    });
+  }
+}
+
+/**
  * Convert kebab-case or snake_case to camelCase and ensure a readiness evaluator by using the appropriate factory function
  * This leverages existing factory functions that already have readiness evaluators defined
  */

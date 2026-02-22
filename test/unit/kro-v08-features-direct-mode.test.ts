@@ -12,7 +12,6 @@
  * - externalRef resources are NOT deployed (they already exist in the cluster)
  * - Collection aggregates compute real values (not CEL expressions)
  *
- * All tests are .skip'd until the corresponding features are implemented.
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -434,7 +433,7 @@ describe('Kro v0.8.x Direct Mode', () => {
             name: spec.name,
             image: spec.image,
             id: 'web',
-          }).withReadyWhen((self) => self.status.readyReplicas > 0);
+          }).withReadyWhen((self: any) => self.status.readyReplicas > 0);
           return { ready: true };
         }
       );
@@ -468,7 +467,7 @@ describe('Kro v0.8.x Direct Mode', () => {
 
           // readyWhen is for Kro mode, readinessEvaluator for direct mode
 
-          dep.withReadyWhen((self) => self.status.readyReplicas > 0);
+          dep.withReadyWhen((self: any) => self.status.readyReplicas > 0);
 
           // Factory-provided readinessEvaluator should still exist
           expect(dep.readinessEvaluator).toBeDefined();
@@ -496,7 +495,7 @@ describe('Kro v0.8.x Direct Mode', () => {
             name: spec.name,
             image: spec.image,
             id: 'app',
-          }).withReadyWhen((self) => self.status.readyReplicas > 0);
+          }).withReadyWhen((self: any) => self.status.readyReplicas > 0);
           return { ready: true };
         }
       );

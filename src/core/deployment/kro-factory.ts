@@ -15,6 +15,7 @@ import {
 
 import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
+import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import {
   CRDInstanceError,
   DeploymentTimeoutError,
@@ -422,16 +423,8 @@ export class KroResourceFactoryImpl<
       spec: customResourceData.spec, // Use spec directly from customResourceData to ensure it's preserved
     } as DeployableK8sResource<typeof enhancedCustomResource>;
 
-    // Preserve the readiness evaluator (non-enumerable property)
-    const readinessEvaluator = enhancedCustomResource.readinessEvaluator;
-    if (readinessEvaluator) {
-      Object.defineProperty(deployableResource, 'readinessEvaluator', {
-        value: readinessEvaluator,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedCustomResource, deployableResource);
 
     // Deploy without waiting for readiness - we'll handle that ourselves
     const _deployedResource = await deploymentEngine.deployResource(deployableResource, {
@@ -828,16 +821,8 @@ ${Object.entries(spec as Record<string, any>)
       id: this.rgdName,
     } as DeployableK8sResource<Enhanced<unknown, unknown>>;
 
-    // Preserve the readiness evaluator (non-enumerable property lost during spread)
-    const readinessEvaluator = enhancedRGD.readinessEvaluator;
-    if (readinessEvaluator) {
-      Object.defineProperty(deployableRGD, 'readinessEvaluator', {
-        value: readinessEvaluator,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedRGD, deployableRGD);
 
     // Debug: Log the RGD being deployed
     this.logger.debug('Deploying RGD', {

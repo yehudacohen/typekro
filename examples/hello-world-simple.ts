@@ -3,22 +3,22 @@
 
 /**
  * Simple Hello World Example with TypeKro
- * 
+ *
  * This example demonstrates TypeKro basics without external dependencies:
  * 1. TypeKro runtime bootstrap (direct mode)
  * 2. Simple webapp deployment (Kro mode)
  * 3. Event monitoring integration
- * 
+ *
  * Prerequisites:
  * - kubectl connected to a cluster
- * 
+ *
  * Usage:
  *   bun run examples/hello-world-simple.ts
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition, simple } from '../src/index.js';
 import { typeKroRuntimeBootstrap } from '../src/core/composition/typekro-runtime/index.js';
+import { kubernetesComposition, simple } from '../src/index.js';
 
 // Schema for our simple webapp
 const SimpleWebappSpec = type({
@@ -52,7 +52,7 @@ const simpleWebapp = kubernetesComposition(
       image: spec.image || 'nginx:alpine',
       replicas: spec.replicas,
       ports: [{ containerPort: 80 }],
-      id: 'webapp'
+      id: 'webapp',
     });
 
     // Create service to expose the deployment
@@ -62,7 +62,7 @@ const simpleWebapp = kubernetesComposition(
       selector: { app: spec.name },
       ports: [{ port: 80, targetPort: 80 }],
       type: 'LoadBalancer',
-      id: 'service'
+      id: 'service',
     });
 
     // Return status expressions using actual resource status
@@ -90,17 +90,17 @@ async function deploySimpleStack() {
       eventMonitoring: {
         enabled: true,
         eventTypes: ['Warning', 'Error', 'Normal'],
-        includeChildResources: true
+        includeChildResources: true,
       },
       progressCallback: (event: any) => {
         console.log(`📡 Runtime: ${event.message}`);
-      }
+      },
     });
 
-    await runtimeFactory.deploy({ 
+    await runtimeFactory.deploy({
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.3.0'
+      kroVersion: '0.8.5',
     });
     console.log('✅ TypeKro Runtime deployed successfully!');
     console.log('');
@@ -115,17 +115,17 @@ async function deploySimpleStack() {
       eventMonitoring: {
         enabled: true,
         eventTypes: ['Warning', 'Error', 'Normal'],
-        includeChildResources: true
+        includeChildResources: true,
       },
       progressCallback: (event: any) => {
         console.log(`📡 Webapp: ${event.message}`);
-      }
+      },
     });
 
     const webappInstance = await webappFactory.deploy({
       name: 'hello-world',
       replicas: 2,
-      image: 'nginx:alpine'
+      image: 'nginx:alpine',
     });
 
     console.log('✅ Simple Webapp deployed successfully!');
@@ -134,31 +134,31 @@ async function deploySimpleStack() {
     // Step 3: Get service information
     console.log('🔍 Step 3: Getting service information...');
     console.log(`📋 Webapp Status:`, webappInstance.status);
-    
+
     // Get the LoadBalancer IP
     const { getKubeConfig } = await import('../src/core/kubernetes/client-provider.js');
     const kc = getKubeConfig({ skipTLSVerify: true });
     const { CoreV1Api } = await import('@kubernetes/client-node');
     const k8sApi = kc.makeApiClient(CoreV1Api);
-    
+
     try {
       const service = await k8sApi.readNamespacedService('hello-world-service', 'default');
       const loadBalancer = service.body.status?.loadBalancer;
       const ingress = loadBalancer?.ingress?.[0];
-      
+
       if (ingress) {
         const endpoint = ingress.ip || ingress.hostname;
         console.log(`🌐 Service endpoint: http://${endpoint}`);
-        
+
         // Test with curl
         console.log('🧪 Testing with curl...');
         try {
           const { execSync } = await import('node:child_process');
-          const curlResult = execSync(`curl -s -o /dev/null -w "%{http_code}" http://${endpoint}`, { 
+          const curlResult = execSync(`curl -s -o /dev/null -w "%{http_code}" http://${endpoint}`, {
             encoding: 'utf8',
-            timeout: 10000 
+            timeout: 10000,
           });
-          
+
           if (curlResult.trim() === '200') {
             console.log('✅ Webapp is accessible!');
           } else {
@@ -190,7 +190,6 @@ async function deploySimpleStack() {
     console.log('🧹 To clean up:');
     console.log('  kubectl delete resourcegraphdefinition --all');
     console.log('  kubectl delete namespace flux-system kro');
-
   } catch (error) {
     console.error('❌ Deployment failed:', error);
     process.exit(1);

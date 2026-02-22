@@ -8,6 +8,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
+import { preserveNonEnumerableProperties } from '../../../utils/helpers.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
 import { getComponentLogger } from '../../logging/index.js';
@@ -140,16 +141,8 @@ export class KroDeploymentStrategy<
       id: rgdName,
     };
 
-    // Preserve the readiness evaluator (non-enumerable property lost during spread)
-    const rgdReadinessEvaluator = enhancedRGD.readinessEvaluator;
-    if (rgdReadinessEvaluator) {
-      Object.defineProperty(deployableRGD, 'readinessEvaluator', {
-        value: rgdReadinessEvaluator,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedRGD, deployableRGD);
 
     // Deploy using DirectDeploymentEngine with KRO mode
     await this.directEngine.deployResource(deployableRGD, {
@@ -208,16 +201,8 @@ export class KroDeploymentStrategy<
       },
     } as DeployableK8sResource<Enhanced<TSpec, WithKroStatusFields<object>>>;
 
-    // Preserve the readiness evaluator (non-enumerable property lost during spread)
-    const crReadinessEvaluator = enhancedCustomResource.readinessEvaluator;
-    if (crReadinessEvaluator) {
-      Object.defineProperty(deployableCustomResource, 'readinessEvaluator', {
-        value: crReadinessEvaluator,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedCustomResource, deployableCustomResource);
 
     // Deploy using DirectDeploymentEngine with KRO mode
     // Don't wait for ready here - we'll handle Kro-specific readiness logic ourselves

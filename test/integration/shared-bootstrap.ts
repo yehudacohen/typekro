@@ -45,7 +45,7 @@ export const integrationTestBootstrap = kubernetesComposition(
     const kroRuntime = typeKroRuntimeBootstrap({
       namespace: config.namespace,
       fluxVersion: 'v2.7.5',
-      kroVersion: '0.3.0',
+      kroVersion: '0.8.5',
     });
 
     // 2. Cert-Manager (with CRDs) - Needed for certificate tests
