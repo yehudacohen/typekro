@@ -1590,7 +1590,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
       expect(yamlStr).toContain('size(workerDep.filter(');
     });
 
-    it.skip('.map().join() in status CEL', () => {
+    it('.map().join() in status CEL', () => {
       const graph = kubernetesComposition(
         {
           name: 'agg-map-join',

@@ -134,11 +134,29 @@ export function registerDeploymentClosure<T>(closureFactory: () => T, name?: str
 }
 
 /**
+ * Options for composition context creation
+ */
+export interface CompositionContextOptions {
+  /**
+   * When true, duplicate resource IDs get a numeric suffix instead of overwriting.
+   * Used during direct-mode re-execution where forEach loops create multiple
+   * resources with the same id (e.g., 'regionDep' → 'regionDep', 'regionDep-1', 'regionDep-2').
+   */
+  deduplicateIds?: boolean;
+}
+
+/**
  * Create a new composition context with default implementations
  * @param name Optional name for the composition (used in ID generation)
+ * @param contextOptions Options controlling context behavior
  * @returns A new composition context
  */
-export function createCompositionContext(name?: string): CompositionContext {
+export function createCompositionContext(
+  name?: string,
+  contextOptions?: CompositionContextOptions
+): CompositionContext {
+  const idCounts: Record<string, number> = {};
+
   return {
     resources: {},
     closures: {},
@@ -147,7 +165,14 @@ export function createCompositionContext(name?: string): CompositionContext {
     compositionInstanceCounter: 0,
     variableMappings: {},
     addResource(id: string, resource: Enhanced<any, any>) {
-      this.resources[id] = resource;
+      if (contextOptions?.deduplicateIds && id in this.resources) {
+        // Append numeric suffix to make the key unique
+        idCounts[id] = (idCounts[id] ?? 0) + 1;
+        const count = idCounts[id];
+        this.resources[`${id}-${count}`] = resource;
+      } else {
+        this.resources[id] = resource;
+      }
     },
     addClosure(id: string, closure: any) {
       this.closures[id] = closure;

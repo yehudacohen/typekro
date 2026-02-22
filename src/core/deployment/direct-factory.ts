@@ -859,8 +859,12 @@ metadata:
         runWithCompositionContext,
       } = require('../../factories/shared.js');
 
-      // Create a new composition context for re-execution
-      const reExecutionContext = createCompositionContext('re-execution');
+      // Create a new composition context for re-execution.
+      // Enable ID deduplication so forEach loops that create multiple resources
+      // with the same id (e.g., 'regionDep') get unique keys ('regionDep', 'regionDep-1', etc.)
+      const reExecutionContext = createCompositionContext('re-execution', {
+        deduplicateIds: true,
+      });
 
       // Execute the composition function within the new context and capture both resources and status
       const { resources, status } = runWithCompositionContext(reExecutionContext, () => {
@@ -878,9 +882,18 @@ metadata:
         statusFields: status ? Object.keys(status) : [],
       });
 
-      // Convert Enhanced resources back to KubernetesResource format
+      // Convert Enhanced resources back to KubernetesResource format.
+      // Filter out externalRef resources — they already exist in the cluster
+      // and should NOT be deployed in direct mode.
       const kubernetesResources: Record<string, KubernetesResource> = {};
       for (const [id, enhanced] of Object.entries(resources)) {
+        // Skip external references — they're not managed by us
+        const enhancedRecord = enhanced as unknown as Record<string, unknown>;
+        if (enhancedRecord.__externalRef === true) {
+          this.logger.debug('Skipping externalRef resource in direct mode', { id });
+          continue;
+        }
+
         // Extract the underlying Kubernetes resource from the Enhanced proxy
         const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
           enhanced as Enhanced<any, any>

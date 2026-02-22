@@ -16,6 +16,7 @@ import { CelConversionEngine } from '../expressions/cel-conversion-engine.js';
 import {
   analyzeCompositionBody,
   applyAnalysisToResources,
+  type CompositionAnalysisResult,
 } from '../expressions/composition-analyzer.js';
 import { analyzeImperativeComposition } from '../expressions/imperative-analyzer.js';
 import { CelToJavaScriptMigrationHelper } from '../expressions/migration-helpers.js';
@@ -943,6 +944,62 @@ function createTypedResourceGraph<
     };
   }
 
+  // Kro v0.8.x: Analyze composition function body for control flow patterns
+  // (if-statements → includeWhen, for-of loops → forEach, ternary → template overrides,
+  //  collection aggregates → status overrides)
+  // This MUST run before validation because:
+  // 1. Stub resources need to exist before resource ID validation
+  // 2. Status overrides (e.g. .map().join()) need to replace raw marker strings
+  //    before CEL expression validation
+  let compositionAnalysis: CompositionAnalysisResult | null = null;
+  const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
+    ?.__originalCompositionFn as Function | undefined;
+
+  if (originalCompositionFnForAnalysis) {
+    try {
+      const resourceIds = new Set(Object.keys(resourcesWithKeys));
+      compositionAnalysis = analyzeCompositionBody(originalCompositionFnForAnalysis, resourceIds);
+
+      // Create stub resources for factory calls that weren't registered at runtime
+      // (e.g., inside if-branches where the condition evaluated to false because
+      // the schema proxy's value didn't match the comparison literal)
+      for (const unregistered of compositionAnalysis.unregisteredFactories) {
+        if (!resourceIds.has(unregistered.resourceId)) {
+          const stub = createStubResource(unregistered.factoryName, unregistered.resourceId);
+          if (stub) {
+            resourcesWithKeys[unregistered.resourceId] = stub as Enhanced<unknown, unknown>;
+            resourceIds.add(unregistered.resourceId);
+            serializationLogger.debug('Created stub resource for unregistered factory', {
+              resourceId: unregistered.resourceId,
+              factoryName: unregistered.factoryName,
+            });
+          }
+        }
+      }
+
+      // Apply status overrides to analyzedStatusMappings BEFORE validation.
+      // These are collection aggregates (e.g. workers.map(w => w.metadata.name).join(', '))
+      // and ternary expressions in the return statement that evaluated to literals at runtime
+      // but should be CEL expressions in the Kro output.
+      // Without this, the validator sees raw marker strings and rejects lambda variables
+      // (like 'w') as non-existent resource references.
+      if (compositionAnalysis.statusOverrides.length > 0) {
+        for (const override of compositionAnalysis.statusOverrides) {
+          analyzedStatusMappings[override.propertyPath] = override.celExpression;
+          serializationLogger.debug('Applied status override before validation', {
+            propertyPath: override.propertyPath,
+            celExpression: override.celExpression,
+          });
+        }
+      }
+    } catch (analysisError) {
+      serializationLogger.debug(
+        'Composition body analysis failed (non-fatal), proceeding without control flow detection',
+        { error: (analysisError as Error).message }
+      );
+    }
+  }
+
   // Validate resource IDs and CEL expressions
   const validation = validateResourceGraphDefinition(resourcesWithKeys, analyzedStatusMappings);
   if (!validation.isValid) {
@@ -1178,57 +1235,22 @@ function createTypedResourceGraph<
     },
 
     toYaml(): string {
-      // Kro v0.8.x: Analyze composition function body for control flow patterns
-      // (if-statements → includeWhen, for-of loops → forEach, ternary → includeWhen)
-      // and attach them as non-enumerable properties on the Enhanced resources.
-      // Also detects ternary expressions in factory args and status returns.
-      const originalCompositionFn = (statusMappings as Record<string, unknown>)
-        ?.__originalCompositionFn as Function | undefined;
-
-      // Hoist status overrides so they can be applied after schema generation
-      let statusOverrides: Array<{ propertyPath: string; celExpression: string }> = [];
-
-      if (originalCompositionFn) {
-        try {
-          const resourceIds = new Set(Object.keys(resourcesWithKeys));
-          const analysis = analyzeCompositionBody(originalCompositionFn, resourceIds);
-
-          // Create stub resources for factory calls that weren't registered at runtime
-          // (e.g., inside if-branches where the condition evaluated to false because
-          // the schema proxy's value didn't match the comparison literal)
-          for (const unregistered of analysis.unregisteredFactories) {
-            if (!resourceIds.has(unregistered.resourceId)) {
-              const stub = createStubResource(unregistered.factoryName, unregistered.resourceId);
-              if (stub) {
-                resourcesWithKeys[unregistered.resourceId] = stub as Enhanced<unknown, unknown>;
-                resourceIds.add(unregistered.resourceId);
-                serializationLogger.debug('Created stub resource for unregistered factory', {
-                  resourceId: unregistered.resourceId,
-                  factoryName: unregistered.factoryName,
-                });
-              }
-            }
-          }
-
-          if (analysis.resources.size > 0 || analysis.templateOverrides.size > 0) {
-            applyAnalysisToResources(resourcesWithKeys, analysis);
-            serializationLogger.debug('Applied composition body analysis', {
-              analyzedResources: analysis.resources.size,
-              templateOverrides: analysis.templateOverrides.size,
-              errors: analysis.errors.length,
-            });
-          }
-
-          // Save status overrides for post-schema-generation injection.
-          // We can't inject them into optimizedStatusMappings because the
-          // separateStatusFields classifier treats schema-only CEL as "static"
-          // and filters it out. Instead we inject directly into kroSchema.status.
-          statusOverrides = analysis.statusOverrides;
-        } catch (analysisError) {
-          serializationLogger.debug(
-            'Composition body analysis failed (non-fatal), proceeding without control flow detection',
-            { error: (analysisError as Error).message }
-          );
+      // Kro v0.8.x: Use the pre-computed composition body analysis.
+      // The analysis was run in createTypedResourceGraph() BEFORE validation
+      // so that stub resources and status overrides are available for validation.
+      // Here we only need to apply resource directives (includeWhen, forEach, readyWhen)
+      // and template overrides to the resources before YAML serialization.
+      if (compositionAnalysis) {
+        if (
+          compositionAnalysis.resources.size > 0 ||
+          compositionAnalysis.templateOverrides.size > 0
+        ) {
+          applyAnalysisToResources(resourcesWithKeys, compositionAnalysis);
+          serializationLogger.debug('Applied composition body analysis', {
+            analyzedResources: compositionAnalysis.resources.size,
+            templateOverrides: compositionAnalysis.templateOverrides.size,
+            errors: compositionAnalysis.errors.length,
+          });
         }
       }
 
@@ -1248,9 +1270,13 @@ function createTypedResourceGraph<
       // Inject status overrides directly into the schema status section.
       // These are ternary expressions that evaluated to literals at runtime
       // but should be CEL conditionals in the Kro YAML output.
+      // We inject here (not into optimizedStatusMappings) because the
+      // separateStatusFields classifier treats schema-only CEL as "static"
+      // and filters it out.
       // Convert double quotes to single quotes in CEL string literals to avoid
       // js-yaml double-quote escaping issues (quotingType: '"' causes inner
       // double quotes to be backslash-escaped, breaking the CEL expression).
+      const statusOverrides = compositionAnalysis?.statusOverrides ?? [];
       if (statusOverrides.length > 0) {
         if (!kroSchema.status) {
           kroSchema.status = {};

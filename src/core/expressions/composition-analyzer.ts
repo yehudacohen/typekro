@@ -690,7 +690,12 @@ function analyzeReturnCollectionAggregates(
           : undefined;
     if (!keyName) continue;
 
-    const celExpr = convertCollectionExpressionToCel(prop.value, fullSource, specParamName);
+    const celExpr = convertCollectionExpressionToCel(
+      prop.value,
+      fullSource,
+      specParamName,
+      _collections
+    );
     if (celExpr) {
       result.statusOverrides.push({ propertyPath: keyName, celExpression: celExpr });
       logger.debug('Detected collection aggregate in return statement', {
@@ -713,7 +718,8 @@ function analyzeReturnCollectionAggregates(
 function convertCollectionExpressionToCel(
   node: ASTNode,
   fullSource: string,
-  specParamName: string
+  specParamName: string,
+  collections?: Map<string, CollectionVariable>
 ): string | undefined {
   // Pattern: expr.length → size(resourceId) or size(chainedExpr)
   if (node.type === 'MemberExpression') {
@@ -726,12 +732,21 @@ function convertCollectionExpressionToCel(
       const resourceId = findFactoryMapCall(member.object, specParamName);
       if (resourceId) return `\${size(${resourceId})}`;
 
+      // Variable-based: deployments.length → size(resourceId)
+      // where `const deployments = spec.arr.map(factoryCb)` was tracked
+      if (member.object.type === 'Identifier' && collections) {
+        const varName = (member.object as Identifier).name;
+        const tracked = collections.get(varName);
+        if (tracked) return `\${size(${tracked.resourceId})}`;
+      }
+
       // Chained: spec.arr.map(factoryCb).filter(...).length → size(filter expr)
       if (member.object.type === 'CallExpression') {
         const inner = convertCollectionCallToCel(
           member.object as CallExpression,
           fullSource,
-          specParamName
+          specParamName,
+          collections
         );
         if (inner) return `\${size(${inner})}`;
       }
@@ -741,7 +756,12 @@ function convertCollectionExpressionToCel(
 
   // Pattern: expr.every/some/filter/map/join(...)
   if (node.type === 'CallExpression') {
-    const celInner = convertCollectionCallToCel(node as CallExpression, fullSource, specParamName);
+    const celInner = convertCollectionCallToCel(
+      node as CallExpression,
+      fullSource,
+      specParamName,
+      collections
+    );
     if (celInner) return `\${${celInner}}`;
   }
 
@@ -759,7 +779,8 @@ function convertCollectionExpressionToCel(
 function convertCollectionCallToCel(
   call: CallExpression,
   fullSource: string,
-  specParamName: string
+  specParamName: string,
+  collections?: Map<string, CollectionVariable>
 ): string | undefined {
   if (call.callee.type !== 'MemberExpression') return undefined;
   const member = call.callee as MemberExpression;
@@ -775,13 +796,24 @@ function convertCollectionCallToCel(
   // Check if the object is directly a spec.arr.map(factoryCb) call
   resourceId = findFactoryMapCall(member.object, specParamName);
 
+  // Check if the object is a tracked collection variable (e.g., `deployments.every(...)`)
+  if (!resourceId && member.object.type === 'Identifier' && collections) {
+    const varName = (member.object as Identifier).name;
+    const tracked = collections.get(varName);
+    if (tracked) {
+      resourceId = tracked.resourceId;
+    }
+  }
+
   if (!resourceId && member.object.type === 'CallExpression') {
     // Chained: spec.arr.map(factoryCb).filter(...).length
+    // or: deployments.filter(...).length
     // The object is another call — recurse to get the inner CEL
     chainedPrefix = convertCollectionCallToCel(
       member.object as CallExpression,
       fullSource,
-      specParamName
+      specParamName,
+      collections
     );
   }
 
@@ -878,6 +910,17 @@ function walkStatement(
       for (const decl of declarations) {
         if (decl.init) {
           walkExpression(decl.init, fullSource, specParamName, ctx, result);
+
+          // Track collection variables: `const deployments = spec.regions.map(factoryCb)`
+          // This enables later resolution of `deployments.length` → `size(resourceId)`.
+          if (decl.id.type === 'Identifier') {
+            const varName = (decl.id as Identifier).name;
+            const resourceId = findFactoryMapCall(decl.init, specParamName);
+            if (resourceId) {
+              result._collectionVariables.set(varName, { varName, resourceId });
+              logger.debug('Tracked collection variable', { varName, resourceId });
+            }
+          }
         }
       }
       break;
@@ -1007,6 +1050,12 @@ function walkStatement(
         specParamName,
         result
       );
+      // Also walk the return argument to catch factory calls inside return statements
+      // (e.g., `return Deployment({...})` inside a .map() callback body)
+      const returnArg = (node as ASTNode & { argument: ASTNode | null }).argument;
+      if (returnArg) {
+        walkExpression(returnArg, fullSource, specParamName, ctx, result);
+      }
       break;
     }
 
@@ -1087,8 +1136,30 @@ function walkExpression(
             includeWhenStack: [...ctx.includeWhenStack],
           };
 
-          for (const fCall of factoryIds) {
-            registerResourceControlFlow(fCall.id, fCall.factoryName, newCtx, result);
+          // Walk the callback body recursively to detect nested control flow
+          // (e.g., if-statements inside .map() callbacks → includeWhen + forEach)
+          if (
+            callback.type === 'ArrowFunctionExpression' ||
+            callback.type === 'FunctionExpression'
+          ) {
+            const cbBody = (callback as ASTNode & { body: ASTNode }).body;
+            if (cbBody.type === 'BlockStatement') {
+              walkBody(
+                (cbBody as ASTNode & { body: ASTNode[] }).body,
+                fullSource,
+                specParamName,
+                newCtx,
+                result
+              );
+            } else {
+              // Expression body arrow function: (region) => Deployment({...})
+              walkExpression(cbBody, fullSource, specParamName, newCtx, result);
+            }
+          } else {
+            // Fallback: just register the found factories directly
+            for (const fCall of factoryIds) {
+              registerResourceControlFlow(fCall.id, fCall.factoryName, newCtx, result);
+            }
           }
           return;
         }

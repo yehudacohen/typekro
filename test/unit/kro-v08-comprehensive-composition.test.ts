@@ -196,7 +196,7 @@ function createPlatformStack() {
 // Tests
 // =============================================================================
 
-describe.skip('Kro v0.8.x Comprehensive Composition', () => {
+describe('Kro v0.8.x Comprehensive Composition', () => {
   // ===========================================================================
   // Kro Mode — YAML Serialization
   // ===========================================================================
