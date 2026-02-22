@@ -112,7 +112,9 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
  * This allows chaining like `spec.workers.filter(...).map(...)`.
  */
 function createSchemaArrayProxy(baseFieldPath: string, _filterCallback: Function): unknown[] {
-  const createElement = (): unknown => createSchemaRefFactory(`${baseFieldPath}.__element__`);
+  // Use $item sentinel (same as the primary array proxy) so that the marker regex
+  // and YAML serializer's $item substitution work correctly for chained calls.
+  const createElement = (): unknown => createSchemaRefFactory(`${baseFieldPath}.$item`);
   const arr = [createElement()];
 
   return new Proxy(arr, {

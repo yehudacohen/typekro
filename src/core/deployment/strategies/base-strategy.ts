@@ -197,8 +197,7 @@ export abstract class BaseDeploymentStrategy<
       // and deployment succeeded
       if (
         this.factoryOptions.waitForReady !== false &&
-        this.factoryOptions.hydrateStatus !== false &&
-        status !== null
+        this.factoryOptions.hydrateStatus !== false
       ) {
         // Cap status hydration at 60s — this is post-deployment enrichment, not the
         // deployment itself. If cluster reads are slow, gracefully degrade rather than
@@ -206,10 +205,11 @@ export abstract class BaseDeploymentStrategy<
         const hydrationTimeout = Math.min(this.factoryOptions.timeout || 60000, 60000);
 
         try {
+          let hydrationTimer: ReturnType<typeof setTimeout> | undefined;
           status = await Promise.race([
             this.hydrateStatusFromCluster(spec, instanceName, deploymentResult),
-            new Promise<never>((_, reject) =>
-              setTimeout(
+            new Promise<never>((_, reject) => {
+              hydrationTimer = setTimeout(
                 () =>
                   reject(
                     new Error(
@@ -219,9 +219,11 @@ export abstract class BaseDeploymentStrategy<
                     )
                   ),
                 hydrationTimeout
-              )
-            ),
+              );
+            }),
           ]);
+          // Clear the timeout timer on success to prevent unhandled rejection
+          if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
         } catch (error) {
           this.logger.warn(
             'Status hydration failed or timed out, falling back to resource extraction',

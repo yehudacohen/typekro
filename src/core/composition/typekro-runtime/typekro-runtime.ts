@@ -21,7 +21,7 @@ import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } f
  * const bootstrap = typeKroRuntimeBootstrap({
  *   namespace: 'flux-system',
  *   fluxVersion: 'v2.4.0',
- *   kroVersion: '0.3.0'
+ *   kroVersion: '0.8.5'
  * });
  *
  * const factory = await bootstrap.factory('direct', {
@@ -40,7 +40,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   // that can occur with 'latest' (e.g., 422 errors on CRD validation)
   // v2.7.5 is the latest stable version with fixes for schema validation issues
   const fluxVersion = config.fluxVersion || 'v2.7.5';
-  const kroVersion = config.kroVersion || '0.3.0';
+  const kroVersion = config.kroVersion || '0.8.5';
   const targetNamespace = config.namespace || 'flux-system';
 
   return kubernetesComposition(
@@ -145,7 +145,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       helmRepository({
         name: 'kro-helm-repo',
         namespace: 'flux-system',
-        url: 'oci://ghcr.io/kro-run/kro',
+        url: 'oci://registry.k8s.io/kro/charts/kro',
         interval: '5m',
         type: 'oci',
         id: 'kroHelmRepo',
@@ -159,7 +159,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
         namespace: 'kro-system',
         chart: {
           name: 'kro',
-          repository: `oci://ghcr.io/kro-run/kro`,
+          repository: `oci://registry.k8s.io/kro/charts/kro`,
           version: kroVersion,
         },
         interval: '5m',

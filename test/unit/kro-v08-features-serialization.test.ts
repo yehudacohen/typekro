@@ -5,7 +5,6 @@
  * with new v0.8.x fields: forEach, includeWhen, readyWhen, externalRef.
  *
  * These tests define the expected YAML output for each feature pattern.
- * All tests are .skip'd until the corresponding features are implemented.
  *
  * Kro spec references:
  * - Collections: https://kro.run/0.8.4/docs/concepts/rgd/resource-definitions/collections
@@ -165,12 +164,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
       });
 
       // TODO: collection() explicit API test — requires collection() to be exported
-      it('collection() explicit API produces forEach directive', () => {
-        // const { collection } = await import('../../src/index.js');
-        // collection(spec.regions, (region) => Deployment({...}))
-        // Assert: same forEach output
-        expect(true).toBe(true); // placeholder
-      });
+      it.todo('collection() explicit API produces forEach directive');
 
       it('uses callback parameter name as forEach dimension key', () => {
         const graph = kubernetesComposition(
@@ -473,7 +467,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
             for (const worker of spec.workers) {
               ConfigMap({
                 name: `${spec.name}-${worker.name}`,
-                data: { port: worker.port },
+                data: { port: String(worker.port) },
                 id: 'workerConfig',
               });
             }
@@ -797,6 +791,88 @@ describe('Kro v0.8.x Feature Serialization', () => {
         expect(allConditions).toContain('schema.spec.environment == "production"');
       });
 
+      it('if/else produces includeWhen on if-branch and negated includeWhen on else-branch', () => {
+        const graph = kubernetesComposition(
+          {
+            name: 'include-else',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeElseTest',
+            spec: ConditionalSpec,
+            status: ConditionalStatus,
+          },
+          (spec) => {
+            if (spec.monitoring) {
+              ConfigMap({
+                name: `${spec.name}-monitoring`,
+                data: { enabled: 'true' },
+                id: 'monitoringConfig',
+              });
+            } else {
+              ConfigMap({
+                name: `${spec.name}-no-monitoring`,
+                data: { enabled: 'false' },
+                id: 'noMonitoringConfig',
+              });
+            }
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const ifResource = findResource(parsed, 'monitoringConfig');
+        const elseResource = findResource(parsed, 'noMonitoringConfig');
+
+        // If-branch: includeWhen should be the condition
+        expect(ifResource.includeWhen).toBeDefined();
+        expect(ifResource.includeWhen[0]).toContain('schema.spec.monitoring');
+        expect(ifResource.includeWhen[0]).not.toContain('!');
+
+        // Else-branch: includeWhen should be the NEGATED condition
+        expect(elseResource.includeWhen).toBeDefined();
+        expect(elseResource.includeWhen[0]).toContain('!schema.spec.monitoring');
+      });
+
+      it('if/else with equality produces negated equality on else-branch', () => {
+        const graph = kubernetesComposition(
+          {
+            name: 'include-else-eq',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeElseEqTest',
+            spec: ConditionalSpec,
+            status: ConditionalStatus,
+          },
+          (spec) => {
+            if (spec.environment === 'production') {
+              ConfigMap({
+                name: `${spec.name}-prod`,
+                data: { env: 'production' },
+                id: 'prodConfig',
+              });
+            } else {
+              ConfigMap({
+                name: `${spec.name}-non-prod`,
+                data: { env: 'non-production' },
+                id: 'nonProdConfig',
+              });
+            }
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const prodResource = findResource(parsed, 'prodConfig');
+        const nonProdResource = findResource(parsed, 'nonProdConfig');
+
+        // If-branch: includeWhen should be the equality condition
+        expect(prodResource.includeWhen).toBeDefined();
+        expect(prodResource.includeWhen[0]).toContain('schema.spec.environment == "production"');
+
+        // Else-branch: includeWhen should be NEGATED
+        expect(nonProdResource.includeWhen).toBeDefined();
+        expect(nonProdResource.includeWhen[0]).toContain('!');
+        expect(nonProdResource.includeWhen[0]).toContain('schema.spec.environment == "production"');
+      });
+
       it('compile-time literal condition does NOT produce includeWhen', () => {
         const graph = kubernetesComposition(
           {
@@ -1039,7 +1115,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
               name: spec.name,
               image: spec.image,
               id: 'web',
-            }).withReadyWhen((self) => self.status.readyReplicas > 0);
+            }).withReadyWhen((self: any) => self.status.readyReplicas > 0);
             return { ready: true };
           }
         );
@@ -1067,7 +1143,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
               name: spec.name,
               image: spec.image,
               id: 'app',
-            }).withReadyWhen((self) => self.status.phase === 'Running');
+            }).withReadyWhen((self: any) => self.status.phase === 'Running');
             return { ready: true };
           }
         );
@@ -1094,7 +1170,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
               name: spec.name,
               image: spec.image,
               id: 'db',
-            }).withReadyWhen((self) =>
+            }).withReadyWhen((self: any) =>
               self.status.conditions.exists((c: any) => c.type === 'Ready' && c.status === 'True')
             );
             return { ready: true };
@@ -1125,8 +1201,8 @@ describe('Kro v0.8.x Feature Serialization', () => {
               id: 'svc',
             })
 
-              .withReadyWhen((self) => self.status.readyReplicas > 0)
-              .withReadyWhen((self) => self.status.availableReplicas > 0);
+              .withReadyWhen((self: any) => self.status.readyReplicas > 0)
+              .withReadyWhen((self: any) => self.status.availableReplicas > 0);
             return { ready: true };
           }
         );
@@ -1159,7 +1235,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
                 name: `${spec.name}-${worker}`,
                 image: spec.image,
                 id: 'workerDep',
-              }).withReadyWhen((each) => each.status.readyReplicas > 0);
+              }).withReadyWhen((each: any) => each.status.readyReplicas > 0);
             }
             return { ready: true };
           }
@@ -1225,7 +1301,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
             });
             // Both can be set
 
-            dep.withReadyWhen((self) => self.status.readyReplicas > 0);
+            dep.withReadyWhen((self: any) => self.status.readyReplicas > 0);
             // readinessEvaluator is for direct mode — should not appear in YAML
             expect(dep.readinessEvaluator).toBeDefined(); // factory-provided
             return { ready: true };

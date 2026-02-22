@@ -952,6 +952,9 @@ function createTypedResourceGraph<
   // 2. Status overrides (e.g. .map().join()) need to replace raw marker strings
   //    before CEL expression validation
   let compositionAnalysis: CompositionAnalysisResult | null = null;
+  // Mutable flag: track whether applyAnalysisToResources has been called.
+  // Wrapped in an object so Biome doesn't hoist it to `const`.
+  const analysisState = { appliedToResources: false };
   const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
     ?.__originalCompositionFn as Function | undefined;
 
@@ -1238,9 +1241,11 @@ function createTypedResourceGraph<
       // Kro v0.8.x: Use the pre-computed composition body analysis.
       // The analysis was run in createTypedResourceGraph() BEFORE validation
       // so that stub resources and status overrides are available for validation.
-      // Here we only need to apply resource directives (includeWhen, forEach, readyWhen)
+      // Here we apply resource directives (includeWhen, forEach, readyWhen)
       // and template overrides to the resources before YAML serialization.
-      if (compositionAnalysis) {
+      // Guard: only apply once even if toYaml() is called multiple times.
+      if (compositionAnalysis && !analysisState.appliedToResources) {
+        analysisState.appliedToResources = true;
         if (
           compositionAnalysis.resources.size > 0 ||
           compositionAnalysis.templateOverrides.size > 0

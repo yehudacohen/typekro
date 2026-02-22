@@ -1009,20 +1009,33 @@ function walkStatement(
         }
       }
 
-      // Walk alternate (else branch)
+      // Walk alternate (else branch).
+      // If the condition references spec, the else branch gets a NEGATED includeWhen
+      // so that resources created in the else are only included when the condition is false.
       if (ifStmt.alternate) {
+        let elseCtx = ctx;
+        if (!isCompileTimeLiteral(testNode) && referencesSpec(testNode, specParamName)) {
+          const negatedCondition: IncludeWhenCondition = {
+            expression: negateCondition(conditionToCel(testNode, fullSource, specParamName)),
+          };
+          elseCtx = {
+            forEachStack: [...ctx.forEachStack],
+            includeWhenStack: [...ctx.includeWhenStack, negatedCondition],
+          };
+        }
+
         if (ifStmt.alternate.type === 'IfStatement') {
-          walkStatement(ifStmt.alternate, fullSource, specParamName, ctx, result);
+          walkStatement(ifStmt.alternate, fullSource, specParamName, elseCtx, result);
         } else if (ifStmt.alternate.type === 'BlockStatement') {
           walkBody(
             (ifStmt.alternate as ASTNode & { body: ASTNode[] }).body,
             fullSource,
             specParamName,
-            ctx,
+            elseCtx,
             result
           );
         } else {
-          walkStatement(ifStmt.alternate, fullSource, specParamName, ctx, result);
+          walkStatement(ifStmt.alternate, fullSource, specParamName, elseCtx, result);
         }
       }
       break;
@@ -1363,16 +1376,19 @@ export function analyzeCompositionBody(
 
     walkBody(functionBody, fnSource, specParamName, ctx, result);
 
-    // Separate registered from unregistered resources
+    // Separate registered from unregistered resources.
+    // Only add entries that aren't already tracked by registerResourceControlFlow.
     for (const [id] of result.resources) {
-      if (!resourceIds.has(id)) {
+      if (!resourceIds.has(id) && !result.unregisteredFactories.some((f) => f.resourceId === id)) {
         // This factory call was found in the AST but wasn't registered at runtime.
         // This happens when the factory is inside an if-branch that wasn't taken
         // (e.g. `if (spec.env === 'production')` where spec is a proxy).
         // Track it so the integration layer can create stub resources.
+        // Note: the factoryName may already have been captured by registerResourceControlFlow;
+        // this fallback uses '' which causes createStubResource to return null (harmless).
         result.unregisteredFactories.push({
           resourceId: id,
-          factoryName: '', // Will be populated by enhanced findFactoryCallsInSubtree
+          factoryName: '', // registerResourceControlFlow already captured the better entry
           argSource: '',
         });
         logger.debug(`Resource ${id} found in AST but not registered at runtime`);

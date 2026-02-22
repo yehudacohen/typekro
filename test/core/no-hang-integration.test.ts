@@ -8,10 +8,10 @@
  * 4. The process should exit cleanly without hanging
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import type * as k8s from '@kubernetes/client-node';
 // @ts-ignore - vi from vitest used for mocking
 import { vi } from 'vitest';
-import type * as k8s from '@kubernetes/client-node';
 import { EventMonitor } from '../../src/core/deployment/event-monitor.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
 
@@ -130,7 +130,7 @@ describe('No Hang Integration Test', () => {
     expect((eventMonitor as any).isMonitoring).toBe(false);
     expect((eventMonitor as any).watchConnections.size).toBe(0);
     expect((eventMonitor as any).monitoredResources.size).toBe(0);
-    expect((eventMonitor as any).activeTimers.size).toBe(0);
+    expect((eventMonitor as any).childDiscoveryTimeouts.size).toBe(0);
   });
 
   it('should handle cleanup even when sockets are in various states', async () => {
