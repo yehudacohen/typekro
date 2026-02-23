@@ -1,10 +1,11 @@
-import { beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, secret, simple, toResourceGraph } from '../../src/index';
 import {
   createAppsV1ApiClient,
   createCoreV1ApiClient,
+  createCustomObjectsApiClient,
   deleteNamespaceAndWait,
   getIntegrationTestKubeConfig,
   isClusterAvailable,
@@ -48,6 +49,27 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
     // Note: Individual test namespaces will be created per test for better isolation
 
     console.log('✅ Test environment ready!');
+  });
+
+  afterAll(async () => {
+    if (!clusterAvailable || !kc) return;
+
+    // Clean up the RGD we created
+    try {
+      const customApi = createCustomObjectsApiClient(kc);
+      await customApi.deleteClusterCustomObject({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        plural: 'resourcegraphdefinitions',
+        name: 'webapp-factory-test',
+      });
+      console.log('🗑️ Deleted RGD: webapp-factory-test');
+    } catch (error: unknown) {
+      const err = error as { statusCode?: number; body?: { reason?: string } };
+      if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
+        console.warn('⚠️ Failed to delete RGD webapp-factory-test:', error);
+      }
+    }
   });
 
   // Helper function to create and cleanup test namespace
@@ -213,7 +235,10 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
         try {
           switch (resource.kind) {
             case 'ConfigMap': {
-              const configMap = await k8sApi.readNamespacedConfigMap({ name: resource.name, namespace: testNamespace });
+              const configMap = await k8sApi.readNamespacedConfigMap({
+                name: resource.name,
+                namespace: testNamespace,
+              });
               expect(configMap.data?.LOG_LEVEL).toBe('info');
               console.log(`✅ ${resource.kind}: ${resource.name}`);
               resourcesFound++;
@@ -227,7 +252,7 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
             case 'Deployment': {
               const deployment = await appsApi.readNamespacedDeployment({
                 name: resource.name,
-                namespace: testNamespace
+                namespace: testNamespace,
               });
               expect(deployment.spec?.replicas).toBe(2);
               console.log(`✅ ${resource.kind}: ${resource.name}`);
@@ -235,7 +260,10 @@ describeOrSkip('End-to-End Factory Pattern Test', () => {
               break;
             }
             case 'Service': {
-              const service = await k8sApi.readNamespacedService({ name: resource.name, namespace: testNamespace });
+              const service = await k8sApi.readNamespacedService({
+                name: resource.name,
+                namespace: testNamespace,
+              });
               expect(service.spec?.ports?.[0]?.port).toBe(80);
               console.log(`✅ ${resource.kind}: ${resource.name}`);
               resourcesFound++;
