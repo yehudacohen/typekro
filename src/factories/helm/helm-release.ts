@@ -12,6 +12,16 @@ export interface HelmReleaseConfig {
     name: string;
     version?: string;
   };
+  /**
+   * Override the auto-detected HelmRepository sourceRef.
+   * By default, the factory infers sourceRef.name from the chart repository URL.
+   * Use this to point at a specific HelmRepository resource.
+   */
+  sourceRef?: {
+    name: string;
+    namespace?: string;
+    kind?: 'HelmRepository';
+  };
   values?: Record<string, any>;
   id?: string;
 }
@@ -86,20 +96,28 @@ export interface HelmReleaseConfig {
 export function helmRelease(
   config: HelmReleaseConfig
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
-  // Extract repository name from URL for sourceRef
-  let repoName = 'helm-repo';
-  if (config.chart.repository.includes('bitnami')) {
-    repoName = 'bitnami';
-  } else if (config.chart.repository.startsWith('oci://')) {
-    // For OCI repositories, use a more descriptive name based on the chart name
-    repoName = `${config.name}-helm-repo`;
+  // Determine sourceRef — use explicit config or auto-detect from repository URL
+  let sourceRefName: string;
+  let sourceRefNamespace: string;
+
+  if (config.sourceRef) {
+    sourceRefName = config.sourceRef.name;
+    sourceRefNamespace = config.sourceRef.namespace || 'flux-system';
   } else {
-    repoName =
-      config.chart.repository
-        .split('/')
-        .pop()
-        ?.replace(/[^a-z0-9-]/gi, '-')
-        .toLowerCase() || 'helm-repo';
+    // Auto-detect repository name from URL
+    sourceRefNamespace = 'flux-system';
+    if (config.chart.repository.includes('bitnami')) {
+      sourceRefName = 'bitnami';
+    } else if (config.chart.repository.startsWith('oci://')) {
+      sourceRefName = `${config.name}-helm-repo`;
+    } else {
+      sourceRefName =
+        config.chart.repository
+          .split('/')
+          .pop()
+          ?.replace(/[^a-z0-9-]/gi, '-')
+          .toLowerCase() || 'helm-repo';
+    }
   }
 
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
@@ -118,8 +136,8 @@ export function helmRelease(
           ...(config.chart.version && { version: config.chart.version }),
           sourceRef: {
             kind: 'HelmRepository' as const,
-            name: repoName,
-            namespace: 'flux-system', // HelmRepositories are typically in flux-system
+            name: sourceRefName,
+            namespace: sourceRefNamespace,
           },
         },
       },

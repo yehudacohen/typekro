@@ -8,6 +8,7 @@
 import { toCamelCase } from '../../utils/helpers.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
+import { ValidationError } from '../errors.js';
 import {
   createKubernetesClientProvider,
   createKubernetesClientProviderWithKubeConfig,
@@ -619,11 +620,42 @@ export class DirectResourceFactoryImpl<
   }
 
   /**
-   * Generate YAML for instance deployment
+   * Generate YAML for instance deployment.
+   *
+   * In direct mode this produces plain Kubernetes manifests with all schema
+   * references resolved from the provided spec.  If any KubernetesRef or
+   * CelExpression objects remain after resolution (cross-resource references,
+   * explicit Cel.expr/Cel.template calls, $-prefixed optional access) a
+   * ValidationError is thrown — those constructs require the Kro controller
+   * or runtime deployment via deploy().
    */
   toYaml(spec: TSpec): string {
     // Resolve references with the actual spec values
     const resolvedResources = this.resolveResourcesForSpec(spec);
+
+    // Validate that all values are fully resolved — no KubernetesRef or
+    // CelExpression objects should remain in direct-mode YAML output.
+    const unresolvedRefs = findUnresolvedReferences(resolvedResources);
+    if (unresolvedRefs.length > 0) {
+      const details = unresolvedRefs.map((r) => `  - ${r.path}: ${r.description}`).join('\n');
+      throw new ValidationError(
+        `Cannot generate direct-mode YAML: ${unresolvedRefs.length} unresolved reference(s) found.\n` +
+          `Direct mode toYaml() produces plain Kubernetes manifests where all values must be resolved.\n\n` +
+          `Unresolved references:\n${details}\n\n` +
+          `To fix this, either:\n` +
+          `  1. Use factory('kro') to generate Kro-managed YAML with CEL expressions\n` +
+          `  2. Use deploy() which resolves all references at runtime against the live cluster\n` +
+          `  3. Remove Cel.expr() / Cel.template() / cross-resource references from your resource builder`,
+        'DirectResourceFactory',
+        this.name,
+        undefined,
+        [
+          'Use factory("kro") for resource graphs with CEL expressions or cross-resource references',
+          'Use deploy() for runtime resolution against the live cluster',
+          'Remove explicit Cel.expr() / Cel.template() calls if direct-mode YAML is needed',
+        ]
+      );
+    }
 
     // Generate individual Kubernetes resource YAML manifests (not RGD)
     const yamlParts = Object.values(resolvedResources).map((resource) => {
@@ -1017,6 +1049,19 @@ metadata:
       resource.id = enhanced.id;
     }
 
+    // Preserve the non-enumerable readinessEvaluator if it exists.
+    // This is critical for the deployment engine to know when a resource is ready.
+    const enhancedRecord = enhanced as Record<string, unknown>;
+    const readinessEvaluator = enhancedRecord.readinessEvaluator;
+    if (typeof readinessEvaluator === 'function') {
+      Object.defineProperty(resource, 'readinessEvaluator', {
+        value: readinessEvaluator,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
+
     return resource;
   }
 
@@ -1208,6 +1253,71 @@ metadata:
     // Use the imported shared utility
     return generateInstanceName(spec);
   }
+}
+
+/** Describes an unresolved reference found during direct-mode toYaml() validation. */
+interface UnresolvedReference {
+  /** Dot-separated path to the value, e.g. "spec.containers[0].env.DATABASE_HOST" */
+  path: string;
+  /** Human-readable description of the reference type */
+  description: string;
+}
+
+/**
+ * Recursively walk a resolved resource tree and collect any remaining
+ * KubernetesRef or CelExpression objects.  These cannot be serialized
+ * in direct-mode YAML and indicate the user should use Kro mode or deploy().
+ */
+function findUnresolvedReferences(
+  resources: Record<string, KubernetesResource>
+): UnresolvedReference[] {
+  const refs: UnresolvedReference[] = [];
+
+  function walk(value: unknown, path: string): void {
+    if (value == null || typeof value !== 'object') {
+      // Check for __KUBERNETES_REF_ marker strings left in resolved primitives
+      if (typeof value === 'string' && value.includes('__KUBERNETES_REF_')) {
+        refs.push({ path, description: `Unresolved reference marker: ${value}` });
+      }
+      return;
+    }
+
+    if (isKubernetesRef(value)) {
+      const ref = value as { resourceId?: string; fieldPath?: string };
+      refs.push({
+        path,
+        description: `KubernetesRef(${ref.resourceId ?? '?'}.${ref.fieldPath ?? '?'})`,
+      });
+      return;
+    }
+
+    if (isCelExpression(value)) {
+      const expr = value as { expression?: string };
+      refs.push({
+        path,
+        description: `CelExpression(${expr.expression ?? '?'})`,
+      });
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        walk(value[i], `${path}[${i}]`);
+      }
+      return;
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, path ? `${path}.${key}` : key);
+    }
+  }
+
+  for (const [resourceKey, resource] of Object.entries(resources)) {
+    const label = `${resource.kind ?? 'Resource'}/${resource.metadata?.name ?? resourceKey}`;
+    walk(resource, label);
+  }
+
+  return refs;
 }
 
 /**

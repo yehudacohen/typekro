@@ -1133,6 +1133,20 @@ function createTypedResourceGraph<
     return undefined;
   }
 
+  // Create a composition function that can re-execute with actual spec values.
+  // This enables the direct factory to re-run the resource builder with real values
+  // so that conditional branches (ternaries, if-statements, spread conditionals)
+  // evaluate correctly — e.g., `schema.spec.enableRedis ? { redis: ... } : {}`
+  // will actually skip the redis resource when enableRedis is false.
+  const declarativeCompositionFn = (spec: TSpec): TStatus | MagicAssignableShape<TStatus> => {
+    // Create a plain schema object with actual values (not a magic proxy).
+    // This means conditional checks like `schema.spec.enableRedis` will see
+    // the real boolean value instead of a truthy KubernetesRef proxy.
+    const actualSchema = { spec, status: {} } as SchemaProxy<TSpec, TStatus>;
+    const resources = resourceBuilder(actualSchema);
+    return statusBuilder(actualSchema, resources);
+  };
+
   // Create the base TypedResourceGraph object
   // Deduplicate resources by reference (same resource may have multiple keys)
   // This happens when resources are returned in status with variable names that differ from IDs
@@ -1144,6 +1158,9 @@ function createTypedResourceGraph<
     schema,
     // Store closures for access during factory creation
     closures,
+    // Store composition function for re-execution with actual values (direct factory)
+    _compositionFn: declarativeCompositionFn,
+    _definition: definition,
     // Store analysis results for factory-specific processing
     _analysisResults: {
       mappingAnalysis,
