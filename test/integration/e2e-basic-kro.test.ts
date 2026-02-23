@@ -75,6 +75,23 @@ describeOrSkip('Basic E2E Kro Test', () => {
   // Clean up any leftover test namespaces after all tests complete
   afterAll(async () => {
     if (kc) {
+      // Clean up the RGD we created
+      try {
+        const customApi = createCustomObjectsApiClient(kc);
+        await customApi.deleteClusterCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          plural: 'resourcegraphdefinitions',
+          name: 'basic-app',
+        });
+        console.log('🗑️ Deleted RGD: basic-app');
+      } catch (error: unknown) {
+        const err = error as { statusCode?: number; body?: { reason?: string } };
+        if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
+          console.warn('⚠️ Failed to delete RGD basic-app:', error);
+        }
+      }
+
       console.log('🧹 Cleaning up any leftover test namespaces...');
       await cleanupTestNamespaces(/^typekro-e2e-basic-/, kc);
     }
@@ -205,10 +222,16 @@ describeOrSkip('Basic E2E Kro Test', () => {
     checkTimeout();
 
     // Validate that the underlying Kubernetes resources were created
-    const deployment = await appsApi.readNamespacedDeployment({ name: 'test-app', namespace: testNamespace });
+    const deployment = await appsApi.readNamespacedDeployment({
+      name: 'test-app',
+      namespace: testNamespace,
+    });
     expect(deployment.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
 
-    const service = await k8sApi.readNamespacedService({ name: 'test-app-svc', namespace: testNamespace });
+    const service = await k8sApi.readNamespacedService({
+      name: 'test-app-svc',
+      namespace: testNamespace,
+    });
     expect(service.spec?.selector?.app).toBe('test-app');
 
     console.log('✅ Basic E2E test completed successfully');

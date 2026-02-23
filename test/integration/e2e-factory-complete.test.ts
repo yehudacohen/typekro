@@ -1,8 +1,15 @@
-import { beforeAll, afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCustomObjectsApiClient, ensureNamespaceExists, deleteNamespaceIfExists } from './shared-kubeconfig';
+import {
+  createCustomObjectsApiClient,
+  createKubernetesObjectApiClient,
+  deleteNamespaceIfExists,
+  ensureNamespaceExists,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
 const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
@@ -34,6 +41,24 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
   afterAll(async () => {
     if (!clusterAvailable) return;
     console.log('🧹 Cleaning up factory test environment...');
+
+    // Clean up the RGD we created
+    try {
+      const customApi = createCustomObjectsApiClient(kubeConfig);
+      await customApi.deleteClusterCustomObject({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        plural: 'resourcegraphdefinitions',
+        name: 'webapp-factory-e2e',
+      });
+      console.log('🗑️ Deleted RGD: webapp-factory-e2e');
+    } catch (error: unknown) {
+      const err = error as { statusCode?: number; body?: { reason?: string } };
+      if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
+        console.warn('⚠️ Failed to delete RGD webapp-factory-e2e:', error);
+      }
+    }
+
     await deleteNamespaceIfExists(NAMESPACE, kubeConfig);
     console.log('✅ Factory test cleanup completed');
   });
