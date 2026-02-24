@@ -264,8 +264,13 @@ export const certManagerBootstrap = kubernetesComposition(
         ...spec.prometheus,
       },
 
-      // Merge with original spec
-      ...spec,
+      // Note: We do NOT spread ...spec here. Each field above already handles
+      // spec values with proper fallbacks. A final ...spec would overwrite all
+      // carefully-constructed defaults (e.g., spec.controller = { extraArgs: ['--flag'] }
+      // would wipe out all default image/resources/serviceAccount config).
+      // Any additional spec fields not explicitly handled above are passed through
+      // via the nested ...spec.X spreads within each section.
+      name: spec.name || 'cert-manager',
     };
 
     // Map configuration to Helm values

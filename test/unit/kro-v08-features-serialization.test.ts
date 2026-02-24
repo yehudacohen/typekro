@@ -24,14 +24,59 @@ import { Cel, externalRef, kubernetesComposition } from '../../src/index.js';
 // Helpers
 // =============================================================================
 
-/** Parse YAML and return typed object */
-function parseRgdYaml(yamlStr: string): any {
-  return yaml.load(yamlStr);
+/**
+ * Shape of a resource entry in a parsed RGD YAML.
+ *
+ * Uses `any` for deeply nested YAML structures (template, forEach) that vary
+ * per Kubernetes resource kind. The typed wrapper still eliminates `any` from
+ * the top-level helper signatures and documents the expected shape.
+ */
+interface ParsedRgdResource {
+  id: string;
+  // biome-ignore lint/suspicious/noExplicitAny: parsed YAML template structure varies per K8s kind
+  template: Record<string, any>;
+  // biome-ignore lint/suspicious/noExplicitAny: forEach shape varies (array of key-value maps or string)
+  forEach?: any;
+  includeWhen?: string[];
+  readyWhen?: string[];
+  /** externalRef can be true (boolean) or an object with apiVersion/kind/metadata */
+  // biome-ignore lint/suspicious/noExplicitAny: externalRef shape varies between boolean and object
+  externalRef?: any;
 }
 
-/** Find a resource entry by id in parsed RGD */
-function findResource(parsed: any, id: string): any {
-  return parsed.spec.resources.find((r: any) => r.id === id);
+/** Shape of a parsed RGD YAML document */
+interface ParsedRgd {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name: string;
+    namespace?: string;
+    annotations?: Record<string, string>;
+  };
+  spec: {
+    schema: {
+      apiVersion: string;
+      kind: string;
+      group?: string;
+      spec: Record<string, unknown>;
+      status?: Record<string, unknown>;
+    };
+    resources: ParsedRgdResource[];
+  };
+}
+
+/** Parse YAML and return typed object */
+function parseRgdYaml(yamlStr: string): ParsedRgd {
+  return yaml.load(yamlStr) as ParsedRgd;
+}
+
+/** Find a resource entry by id in parsed RGD. Throws if not found. */
+function findResource(parsed: ParsedRgd, id: string): ParsedRgdResource {
+  const resource = parsed.spec.resources.find((r) => r.id === id);
+  if (!resource) {
+    throw new Error(`Resource with id '${id}' not found in parsed RGD`);
+  }
+  return resource;
 }
 
 // =============================================================================
@@ -663,8 +708,8 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         // CEL uses == not ===
         expect(resource.includeWhen).toBeDefined();
-        expect(resource.includeWhen[0]).toContain('schema.spec.environment == "production"');
-        expect(resource.includeWhen[0]).not.toContain('===');
+        expect(resource.includeWhen![0]).toContain('schema.spec.environment == "production"');
+        expect(resource.includeWhen![0]).not.toContain('===');
       });
 
       it('if (!spec.disabled) produces includeWhen with negation', () => {
@@ -692,7 +737,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const resource = findResource(parsed, 'activeConfig');
 
         expect(resource.includeWhen).toBeDefined();
-        expect(resource.includeWhen[0]).toContain('!schema.spec.disabled');
+        expect(resource.includeWhen![0]).toContain('!schema.spec.disabled');
       });
 
       it('compound && produces single includeWhen with AND', () => {
@@ -721,7 +766,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         expect(resource.includeWhen).toBeDefined();
         // Could be one combined expression or two separate entries (both are valid)
-        const allConditions = resource.includeWhen.join(' ');
+        const allConditions = resource.includeWhen!.join(' ');
         expect(allConditions).toContain('schema.spec.monitoring');
         expect(allConditions).toContain('schema.spec.environment == "production"');
       });
@@ -751,7 +796,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const resource = findResource(parsed, 'nonDevConfig');
 
         expect(resource.includeWhen).toBeDefined();
-        const expr = resource.includeWhen[0];
+        const expr = resource.includeWhen![0];
         expect(expr).toContain('schema.spec.environment == "staging"');
         expect(expr).toContain('||');
         expect(expr).toContain('schema.spec.environment == "production"');
@@ -785,8 +830,8 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         // Nested ifs → two separate includeWhen entries (AND semantics)
         expect(resource.includeWhen).toBeDefined();
-        expect(resource.includeWhen.length).toBeGreaterThanOrEqual(2);
-        const allConditions = resource.includeWhen.join(' | ');
+        expect(resource.includeWhen!.length).toBeGreaterThanOrEqual(2);
+        const allConditions = resource.includeWhen!.join(' | ');
         expect(allConditions).toContain('schema.spec.monitoring');
         expect(allConditions).toContain('schema.spec.environment == "production"');
       });
@@ -824,12 +869,12 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         // If-branch: includeWhen should be the condition
         expect(ifResource.includeWhen).toBeDefined();
-        expect(ifResource.includeWhen[0]).toContain('schema.spec.monitoring');
-        expect(ifResource.includeWhen[0]).not.toContain('!');
+        expect(ifResource.includeWhen![0]).toContain('schema.spec.monitoring');
+        expect(ifResource.includeWhen![0]).not.toContain('!');
 
         // Else-branch: includeWhen should be the NEGATED condition
         expect(elseResource.includeWhen).toBeDefined();
-        expect(elseResource.includeWhen[0]).toContain('!schema.spec.monitoring');
+        expect(elseResource.includeWhen![0]).toContain('!schema.spec.monitoring');
       });
 
       it('if/else with equality produces negated equality on else-branch', () => {
@@ -865,12 +910,14 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         // If-branch: includeWhen should be the equality condition
         expect(prodResource.includeWhen).toBeDefined();
-        expect(prodResource.includeWhen[0]).toContain('schema.spec.environment == "production"');
+        expect(prodResource.includeWhen![0]).toContain('schema.spec.environment == "production"');
 
         // Else-branch: includeWhen should be NEGATED
         expect(nonProdResource.includeWhen).toBeDefined();
-        expect(nonProdResource.includeWhen[0]).toContain('!');
-        expect(nonProdResource.includeWhen[0]).toContain('schema.spec.environment == "production"');
+        expect(nonProdResource.includeWhen![0]).toContain('!');
+        expect(nonProdResource.includeWhen![0]).toContain(
+          'schema.spec.environment == "production"'
+        );
       });
 
       it('compile-time literal condition does NOT produce includeWhen', () => {
@@ -992,12 +1039,12 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         // ResourceA: includeWhen = [${schema.spec.monitoring}]
         expect(fullMonitor.includeWhen).toBeDefined();
-        expect(fullMonitor.includeWhen[0]).toContain('schema.spec.monitoring');
-        expect(fullMonitor.includeWhen[0]).not.toContain('!');
+        expect(fullMonitor.includeWhen![0]).toContain('schema.spec.monitoring');
+        expect(fullMonitor.includeWhen![0]).not.toContain('!');
 
         // ResourceB: includeWhen = [${!schema.spec.monitoring}]
         expect(basicLogging.includeWhen).toBeDefined();
-        expect(basicLogging.includeWhen[0]).toContain('!schema.spec.monitoring');
+        expect(basicLogging.includeWhen![0]).toContain('!schema.spec.monitoring');
       });
 
       it('ternary VALUE in resource arg is NOT includeWhen', () => {
@@ -1090,7 +1137,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const resource = findResource(parsed, 'ingress');
 
         expect(resource.includeWhen).toBeDefined();
-        expect(resource.includeWhen.length).toBeGreaterThanOrEqual(2);
+        expect(resource.includeWhen!.length).toBeGreaterThanOrEqual(2);
       });
     });
   });
@@ -1115,7 +1162,9 @@ describe('Kro v0.8.x Feature Serialization', () => {
               name: spec.name,
               image: spec.image,
               id: 'web',
-            }).withReadyWhen((self: any) => self.status.readyReplicas > 0);
+            }).withReadyWhen(
+              (self: { status: { readyReplicas: number } }) => self.status.readyReplicas > 0
+            );
             return { ready: true };
           }
         );
@@ -1125,8 +1174,8 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         expect(resource.readyWhen).toBeDefined();
         // Must use resource id 'web', NOT 'self'
-        expect(resource.readyWhen[0]).toContain('web.status.readyReplicas > 0');
-        expect(resource.readyWhen[0]).not.toContain('self');
+        expect(resource.readyWhen![0]).toContain('web.status.readyReplicas > 0');
+        expect(resource.readyWhen![0]).not.toContain('self');
       });
 
       it('.withReadyWhen with equality uses == operator', () => {
@@ -1143,7 +1192,9 @@ describe('Kro v0.8.x Feature Serialization', () => {
               name: spec.name,
               image: spec.image,
               id: 'app',
-            }).withReadyWhen((self: any) => self.status.phase === 'Running');
+            }).withReadyWhen(
+              (self: { status: { phase: string } }) => self.status.phase === 'Running'
+            );
             return { ready: true };
           }
         );
@@ -1152,8 +1203,8 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const resource = findResource(parsed, 'app');
 
         // CEL uses == not ===
-        expect(resource.readyWhen[0]).toContain('app.status.phase == "Running"');
-        expect(resource.readyWhen[0]).not.toContain('===');
+        expect(resource.readyWhen![0]).toContain('app.status.phase == "Running"');
+        expect(resource.readyWhen![0]).not.toContain('===');
       });
 
       it('.withReadyWhen with exists() macro', () => {
@@ -1170,8 +1221,17 @@ describe('Kro v0.8.x Feature Serialization', () => {
               name: spec.name,
               image: spec.image,
               id: 'db',
-            }).withReadyWhen((self: any) =>
-              self.status.conditions.exists((c: any) => c.type === 'Ready' && c.status === 'True')
+            }).withReadyWhen(
+              (self: {
+                status: {
+                  conditions: {
+                    exists: (fn: (c: { type: string; status: string }) => boolean) => boolean;
+                  };
+                };
+              }) =>
+                self.status.conditions.exists(
+                  (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
+                )
             );
             return { ready: true };
           }
@@ -1180,7 +1240,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const parsed = parseRgdYaml(graph.toYaml());
         const resource = findResource(parsed, 'db');
 
-        expect(resource.readyWhen[0]).toContain(
+        expect(resource.readyWhen![0]).toContain(
           'db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
         );
       });
@@ -1201,8 +1261,13 @@ describe('Kro v0.8.x Feature Serialization', () => {
               id: 'svc',
             })
 
-              .withReadyWhen((self: any) => self.status.readyReplicas > 0)
-              .withReadyWhen((self: any) => self.status.availableReplicas > 0);
+              .withReadyWhen(
+                (self: { status: { readyReplicas: number } }) => self.status.readyReplicas > 0
+              )
+              .withReadyWhen(
+                (self: { status: { availableReplicas: number } }) =>
+                  self.status.availableReplicas > 0
+              );
             return { ready: true };
           }
         );
@@ -1211,7 +1276,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const resource = findResource(parsed, 'svc');
 
         expect(resource.readyWhen).toBeDefined();
-        expect(resource.readyWhen.length).toBe(2);
+        expect(resource.readyWhen!.length).toBe(2);
       });
     });
 
@@ -1235,7 +1300,9 @@ describe('Kro v0.8.x Feature Serialization', () => {
                 name: `${spec.name}-${worker}`,
                 image: spec.image,
                 id: 'workerDep',
-              }).withReadyWhen((each: any) => each.status.readyReplicas > 0);
+              }).withReadyWhen(
+                (each: { status: { readyReplicas: number } }) => each.status.readyReplicas > 0
+              );
             }
             return { ready: true };
           }
@@ -1246,7 +1313,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
         // Collections use 'each' keyword, not the resource id
         expect(resource.readyWhen).toBeDefined();
-        expect(resource.readyWhen[0]).toContain('each.status.readyReplicas > 0');
+        expect(resource.readyWhen![0]).toContain('each.status.readyReplicas > 0');
       });
     });
 
@@ -1277,7 +1344,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const parsed = parseRgdYaml(graph.toYaml());
         const resource = findResource(parsed, 'helm');
 
-        expect(resource.readyWhen[0]).toBe(
+        expect(resource.readyWhen![0]).toBe(
           '${helm.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
         );
       });
@@ -1301,7 +1368,9 @@ describe('Kro v0.8.x Feature Serialization', () => {
             });
             // Both can be set
 
-            dep.withReadyWhen((self: any) => self.status.readyReplicas > 0);
+            dep.withReadyWhen(
+              (self: { status: { readyReplicas: number } }) => self.status.readyReplicas > 0
+            );
             // readinessEvaluator is for direct mode — should not appear in YAML
             expect(dep.readinessEvaluator).toBeDefined(); // factory-provided
             return { ready: true };
@@ -1345,14 +1414,14 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
       const parsed = parseRgdYaml(graph.toYaml());
       // Find the external ref resource (auto-generated id)
-      const extRefResource = parsed.spec.resources.find((r: any) => r.externalRef !== undefined);
+      const extRefResource = parsed.spec.resources.find((r) => r.externalRef !== undefined);
 
       expect(extRefResource).toBeDefined();
-      expect(extRefResource.template).toBeUndefined();
-      expect(extRefResource.externalRef.apiVersion).toBe('v1');
-      expect(extRefResource.externalRef.kind).toBe('ConfigMap');
-      expect(extRefResource.externalRef.metadata.name).toBe('platform-config');
-      expect(extRefResource.externalRef.metadata.namespace).toBe('platform-system');
+      expect(extRefResource!.template).toBeUndefined();
+      expect(extRefResource!.externalRef.apiVersion).toBe('v1');
+      expect(extRefResource!.externalRef.kind).toBe('ConfigMap');
+      expect(extRefResource!.externalRef.metadata.name).toBe('platform-config');
+      expect(extRefResource!.externalRef.metadata.namespace).toBe('platform-system');
     });
 
     it('externalRef resource has NO template field in YAML', () => {
@@ -1544,7 +1613,7 @@ describe('Kro v0.8.x Feature Serialization', () => {
 
       const parsed = parseRgdYaml(graph.toYaml());
       expect(parsed.metadata.annotations).toBeDefined();
-      expect(parsed.metadata.annotations['kro.run/allow-breaking-changes']).toBe('true');
+      expect(parsed.metadata.annotations!['kro.run/allow-breaking-changes']).toBe('true');
     });
   });
 

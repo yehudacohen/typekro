@@ -85,20 +85,7 @@ export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (
       }
     }
 
-    // Case 5: Check for Released condition as fallback (when installation succeeds)
-    if (status.conditions && Array.isArray(status.conditions)) {
-      const releasedCondition = status.conditions.find((c: any) => c.type === 'Released');
-      if (releasedCondition && releasedCondition.status === 'True') {
-        return {
-          ready: true,
-          message:
-            releasedCondition.message ||
-            `HelmRelease is ready (revision ${status.revision || 'unknown'})`,
-        };
-      }
-    }
-
-    // Case 6: If status exists but no known phase or conditions, assume processing
+    // Case 5: If status exists but no known phase or conditions, assume processing
     return {
       ready: false,
       reason: 'Processing',

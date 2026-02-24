@@ -480,29 +480,6 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
 }
 
 /**
- * Determines if a status field value requires Kro resolution (contains Kubernetes references or CEL expressions)
- */
-function _requiresKroResolution(value: any): boolean {
-  if (isKubernetesRef(value)) {
-    return true;
-  }
-
-  if (isCelExpression(value)) {
-    // Check if the CEL expression contains resource references
-    const expression = value.expression;
-    const resourceRefPattern = /([a-zA-Z][a-zA-Z0-9]*)\.(status|spec|metadata)\./;
-    return resourceRefPattern.test(expression);
-  }
-
-  if (value && typeof value === 'object' && !Array.isArray(value) && !isCelExpression(value)) {
-    // Recursively check nested objects
-    return Object.values(value).some(_requiresKroResolution);
-  }
-
-  return false;
-}
-
-/**
  * Preserve non-enumerable internal properties (readinessEvaluator, __resourceId) from a source
  * object onto a target object. This is needed after object spread (`{...source, ...overrides}`)
  * because spread only copies enumerable own properties.

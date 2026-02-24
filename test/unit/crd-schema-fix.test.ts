@@ -15,6 +15,14 @@ import {
   smartFixCRDSchemaForK8s133,
 } from '../../src/core/utils/crd-schema-fix.js';
 
+/**
+ * Test helper type for accessing deeply nested CRD schema properties.
+ * The CRD fix functions return KubernetesResource (generic), but tests need to
+ * inspect version-specific schema fields like openAPIV3Schema.properties.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: test-only type for accessing deeply nested CRD YAML structures
+type CrdTestResult = Record<string, any>;
+
 describe('CRD Schema Fix Utilities', () => {
   describe('FIELDS_NEEDING_PRESERVE_UNKNOWN', () => {
     it('should contain known Helm-related fields', () => {
@@ -232,7 +240,7 @@ describe('CRD Schema Fix Utilities', () => {
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
         spec: {},
-      } as any);
+      });
       expect(result.needsFix).toBe(false);
     });
 
@@ -266,7 +274,7 @@ describe('CRD Schema Fix Utilities', () => {
         },
       };
 
-      const result = needsCRDSchemaFix(crd as any);
+      const result = needsCRDSchemaFix(crd);
       expect(result.needsFix).toBe(true);
       expect(result.issues.length).toBeGreaterThan(0);
       expect(result.crdName).toBe('helmreleases.helm.toolkit.fluxcd.io');
@@ -302,7 +310,7 @@ describe('CRD Schema Fix Utilities', () => {
         },
       };
 
-      const result = needsCRDSchemaFix(crd as any);
+      const result = needsCRDSchemaFix(crd);
       expect(result.needsFix).toBe(false);
     });
   });
@@ -347,7 +355,7 @@ describe('CRD Schema Fix Utilities', () => {
         },
       };
 
-      const fixed = fixCRDSchemaForK8s133(crd as any) as any;
+      const fixed = fixCRDSchemaForK8s133(crd) as CrdTestResult;
 
       // Should be a different object (deep clone)
       expect(fixed).not.toBe(crd);
@@ -359,8 +367,8 @@ describe('CRD Schema Fix Utilities', () => {
       expect(valuesSchema['x-kubernetes-preserve-unknown-fields']).toBe(true);
 
       // Original should be unchanged
-      const originalValues = (crd as any).spec.versions[0].schema.openAPIV3Schema.properties.spec
-        .properties.values;
+      const originalValues = (crd as CrdTestResult).spec.versions[0].schema.openAPIV3Schema
+        .properties.spec.properties.values;
       expect(originalValues.type).toBeUndefined();
     });
 
@@ -393,7 +401,7 @@ describe('CRD Schema Fix Utilities', () => {
         },
       };
 
-      const fixed = fixCRDSchemaForK8s133(crd as any) as any;
+      const fixed = fixCRDSchemaForK8s133(crd) as CrdTestResult;
       const valuesSchema =
         fixed.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
       expect(valuesSchema.type).toBe('object');
@@ -432,7 +440,7 @@ describe('CRD Schema Fix Utilities', () => {
         },
       };
 
-      const result = smartFixCRDSchemaForK8s133(crd as any);
+      const result = smartFixCRDSchemaForK8s133(crd);
       // Should be the same reference — no cloning needed
       expect(result).toBe(crd);
     });
@@ -467,7 +475,7 @@ describe('CRD Schema Fix Utilities', () => {
         },
       };
 
-      const result = smartFixCRDSchemaForK8s133(crd as any) as any;
+      const result = smartFixCRDSchemaForK8s133(crd) as CrdTestResult;
       // Should be a new reference (deep cloned and fixed)
       expect(result).not.toBe(crd);
       const valuesSchema =

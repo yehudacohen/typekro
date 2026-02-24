@@ -344,7 +344,9 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
               image: spec.image,
               replicas: 1,
               id: 'app',
-            }).withReadyWhen((self: any) => self.status.readyReplicas > 0);
+            }).withReadyWhen(
+              (self: { status: { readyReplicas: number } }) => self.status.readyReplicas > 0
+            );
 
             return { ready: true };
           }
@@ -585,7 +587,9 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
               image: spec.image,
               replicas: 1,
               id: 'app',
-            }).withReadyWhen((self: any) => self.status.readyReplicas > 0);
+            }).withReadyWhen(
+              (self: { status: { readyReplicas: number } }) => self.status.readyReplicas > 0
+            );
 
             // Conditional cache ConfigMap with includeWhen
             if (spec.enableCache) {
