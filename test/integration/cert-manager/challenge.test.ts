@@ -9,7 +9,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { certManager, toResourceGraph } from '../../../src/index.js';
+import { toResourceGraph } from '../../../src/index.js';
 import {
   createCustomObjectsApiClient,
   createKubernetesObjectApiClient,
