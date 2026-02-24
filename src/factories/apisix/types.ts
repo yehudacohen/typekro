@@ -59,6 +59,11 @@ export interface APISixBootstrapConfig {
         hosts?: string[];
       }>;
     };
+    /** Admin API credentials. Override the chart defaults for production deployments. */
+    adminCredentials?: {
+      admin?: string;
+      viewer?: string;
+    };
   };
 
   // Ingress Controller configuration

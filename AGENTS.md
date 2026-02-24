@@ -204,7 +204,7 @@ const myGraph = toResourceGraph(
   // Status builder function  
   (schema, resources) => ({
     phase: Cel.expr<string>('some_expression'),
-    readyReplicas: resources.resourceKey?.status.readyReplicas
+    readyReplicas: resources.resourceKey.status.readyReplicas
   })
 );
 ```

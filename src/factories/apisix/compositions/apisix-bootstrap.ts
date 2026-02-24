@@ -154,7 +154,10 @@ export const apisixBootstrap = kubernetesComposition(
     helmValues.service.tls.enabled = fullConfig.gateway?.https?.enabled !== false;
     helmValues.service.tls.servicePort = fullConfig.gateway?.https?.servicePort || 443;
 
-    // Configure admin API access - allow from all IPs for cluster-internal access
+    // Configure admin API access — allow from all IPs for cluster-internal access.
+    // These are APISIX's well-known default admin API keys from the chart defaults.
+    // For production deployments, override via spec.gateway.adminCredentials or
+    // provide custom Helm values with secure credentials.
     if (!helmValues.apisix) {
       helmValues.apisix = {};
     }
@@ -162,8 +165,8 @@ export const apisixBootstrap = kubernetesComposition(
       enabled: true,
       type: 'ClusterIP',
       credentials: {
-        admin: 'edd1c9f034335f136f87ad84b625c8f1',
-        viewer: '4054f7cf07e344346cd3f287985e76a2',
+        admin: fullConfig.gateway?.adminCredentials?.admin || 'edd1c9f034335f136f87ad84b625c8f1',
+        viewer: fullConfig.gateway?.adminCredentials?.viewer || '4054f7cf07e344346cd3f287985e76a2',
       },
     };
 
@@ -225,7 +228,9 @@ export const apisixBootstrap = kubernetesComposition(
       id: 'apisixHelmRelease',
     });
 
-    // Create IngressClass for APISix ingress controller
+    // Create IngressClass for APISix gateway (processes standard Kubernetes Ingress objects natively).
+    // The controller identifier matches APISIX's built-in ingress handling — the ingress controller
+    // subchart is disabled (to avoid ServiceAccount conflicts), but APISIX gateway handles Ingress directly.
     const _apisixIngressClass = createResource({
       apiVersion: 'networking.k8s.io/v1',
       kind: 'IngressClass',

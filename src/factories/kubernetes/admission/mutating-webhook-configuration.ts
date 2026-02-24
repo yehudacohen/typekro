@@ -10,7 +10,7 @@ export function mutatingWebhookConfiguration(resource: V1MutatingWebhookConfigur
   return createResource({
     ...resource,
     apiVersion: 'admissionregistration.k8s.io/v1',
-    kind: 'MutatingAdmissionWebhook',
+    kind: 'MutatingWebhookConfiguration',
     metadata: resource.metadata ?? { name: 'unnamed-mutatingwebhook' },
   }).withReadinessEvaluator(() => ({
     ready: true,

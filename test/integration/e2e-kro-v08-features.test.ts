@@ -63,6 +63,7 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
   let customApi: k8s.CustomObjectsApi;
+  let unhandledRejectionHandler: ((reason: unknown) => void) | undefined;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -83,16 +84,22 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
     console.log('Kro v0.8.x E2E test environment ready');
 
     // Suppress AbortError during test cleanup (known Bun issue with fetch abort)
-    process.on('unhandledRejection', (reason: unknown) => {
+    unhandledRejectionHandler = (reason: unknown) => {
       const error = reason as { name?: string };
       if (error?.name === 'AbortError' || error?.name === 'DOMException') {
         return;
       }
       throw reason;
-    });
+    };
+    process.on('unhandledRejection', unhandledRejectionHandler);
   });
 
   afterAll(async () => {
+    // Remove the unhandledRejection handler to prevent accumulation across test suites
+    if (unhandledRejectionHandler) {
+      process.removeListener('unhandledRejection', unhandledRejectionHandler);
+      unhandledRejectionHandler = undefined;
+    }
     if (kc) {
       console.log('Cleaning up Kro v0.8.x test namespaces...');
       await cleanupTestNamespaces(new RegExp(`^${BASE_NAMESPACE}-`), kc);

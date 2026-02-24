@@ -10,7 +10,7 @@ export function validatingWebhookConfiguration(resource: V1ValidatingWebhookConf
   return createResource({
     ...resource,
     apiVersion: 'admissionregistration.k8s.io/v1',
-    kind: 'ValidatingAdmissionWebhook',
+    kind: 'ValidatingWebhookConfiguration',
     metadata: resource.metadata ?? { name: 'unnamed-validatingwebhook' },
   }).withReadinessEvaluator(() => ({
     ready: true,

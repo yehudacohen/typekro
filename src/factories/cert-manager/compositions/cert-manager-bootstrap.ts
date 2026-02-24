@@ -91,7 +91,6 @@ export const certManagerBootstrap = kubernetesComposition(
           enabled: spec.global?.podSecurityPolicy?.enabled || false,
           useAppArmor: spec.global?.podSecurityPolicy?.useAppArmor || true,
         },
-        ...spec.global,
       },
 
       // Strategy defaults
@@ -101,10 +100,12 @@ export const certManagerBootstrap = kubernetesComposition(
           maxSurge: spec.strategy?.rollingUpdate?.maxSurge || '25%',
           maxUnavailable: spec.strategy?.rollingUpdate?.maxUnavailable || '25%',
         },
-        ...spec.strategy,
       },
 
       // Controller defaults
+      // NOTE: Each field is explicitly handled with a fallback default.
+      // Do NOT spread ...spec.controller at the end — it would overwrite
+      // the carefully-built nested objects (image, resources, serviceAccount).
       controller: {
         image: {
           repository:
@@ -121,7 +122,6 @@ export const certManagerBootstrap = kubernetesComposition(
             cpu: spec.controller?.resources?.limits?.cpu || '100m',
             memory: spec.controller?.resources?.limits?.memory || '128Mi',
           },
-          ...spec.controller?.resources,
         },
         serviceAccount: {
           create:
@@ -132,7 +132,6 @@ export const certManagerBootstrap = kubernetesComposition(
           annotations: spec.controller?.serviceAccount?.annotations || {},
         },
         nodeSelector: spec.controller?.nodeSelector || {},
-        ...spec.controller,
       },
 
       // Webhook defaults
@@ -156,7 +155,6 @@ export const certManagerBootstrap = kubernetesComposition(
             cpu: spec.webhook?.resources?.limits?.cpu || '100m',
             memory: spec.webhook?.resources?.limits?.memory || '128Mi',
           },
-          ...spec.webhook?.resources,
         },
         serviceAccount: {
           create:
@@ -167,7 +165,6 @@ export const certManagerBootstrap = kubernetesComposition(
           annotations: spec.webhook?.serviceAccount?.annotations || {},
         },
         nodeSelector: spec.webhook?.nodeSelector || {},
-        ...spec.webhook,
       },
 
       // CA Injector defaults
@@ -189,7 +186,6 @@ export const certManagerBootstrap = kubernetesComposition(
             cpu: spec.cainjector?.resources?.limits?.cpu || '100m',
             memory: spec.cainjector?.resources?.limits?.memory || '128Mi',
           },
-          ...spec.cainjector?.resources,
         },
         serviceAccount: {
           create:
@@ -200,7 +196,6 @@ export const certManagerBootstrap = kubernetesComposition(
           annotations: spec.cainjector?.serviceAccount?.annotations || {},
         },
         nodeSelector: spec.cainjector?.nodeSelector || {},
-        ...spec.cainjector,
       },
 
       // ACME solver defaults
@@ -241,7 +236,6 @@ export const certManagerBootstrap = kubernetesComposition(
               cpu: spec.startupapicheck?.resources?.limits?.cpu || '100m',
               memory: spec.startupapicheck?.resources?.limits?.memory || '128Mi',
             },
-            ...spec.startupapicheck?.resources,
           },
           nodeSelector: spec.startupapicheck?.nodeSelector || {},
           timeout: spec.startupapicheck?.timeout || '5m', // Increased from 1m to handle slower environments

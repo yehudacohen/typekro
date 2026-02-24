@@ -187,13 +187,12 @@ async function applyCRDWithSchemaFix(
     } else if (statusCode === 422) {
       // Validation error - this might happen if there are stored versions
       // that can't be updated. Log and continue.
-      logger.warn('CRD validation error during server-side apply', {
+      logger.warn('CRD validation error during server-side apply — falling back to existing CRD', {
         crdName,
         statusCode,
         message: error?.body?.message || error?.message,
-        note: 'This may happen if the CRD has stored versions that cannot be updated',
+        note: 'This may happen if the CRD has stored versions that cannot be updated. The existing CRD will be used as-is, which may cause field stripping if the schema is incomplete.',
       });
-      // Don't throw - the CRD exists and may still work
     } else {
       logger.error('Failed to apply CRD with schema fix', error as Error, {
         crdName,
@@ -260,11 +259,21 @@ async function applyCRDSchemaJsonPatch(
       body: patches,
     });
 
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(`JSON patch timed out after ${timeout}ms`)), timeout);
+      timeoutId = setTimeout(
+        () => reject(new Error(`JSON patch timed out after ${timeout}ms`)),
+        timeout
+      );
     });
 
-    await Promise.race([patchPromise, timeoutPromise]);
+    try {
+      await Promise.race([patchPromise, timeoutPromise]);
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    }
 
     logger.info('CRD schema patched successfully', { crdName, patchCount: patches.length });
   } catch (error: any) {

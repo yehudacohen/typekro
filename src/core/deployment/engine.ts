@@ -65,7 +65,7 @@ export class DirectDeploymentEngine {
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
   private readyResources: Set<string> = new Set(); // Track resources that are already ready
   private activeAbortControllers: Set<AbortController> = new Set(); // Track active abort controllers for cleanup
-  private fluxCRDsPatched = false; // Track if Flux CRDs have been patched (instance-level cache)
+  private fluxCRDsPatchPromise: Promise<void> | null = null; // Dedup concurrent ensureFluxCRDsPatched calls
   private logger = getComponentLogger('deployment-engine');
 
   constructor(
@@ -360,7 +360,7 @@ export class DirectDeploymentEngine {
 
     // Set up timeout-based abort if timeout is specified
     const timeout = options.timeout || 300000; // 5 minutes default
-    const timeoutId = setTimeout(async () => {
+    const timeoutId = setTimeout(() => {
       this.logger.debug('Deployment timeout reached, aborting operations', {
         deploymentId,
         timeout,
@@ -369,14 +369,11 @@ export class DirectDeploymentEngine {
       // Stop event monitoring immediately when timeout is reached
       // This prevents watch connections from continuing to run and throwing errors
       if (this.eventMonitor) {
-        try {
-          await this.eventMonitor.stopMonitoring();
-          this.logger.debug('Event monitoring stopped due to timeout');
-        } catch (error) {
+        this.eventMonitor.stopMonitoring().catch((error) => {
           this.logger.debug('Error stopping event monitoring on timeout', {
             error: (error as Error)?.message,
           });
-        }
+        });
       }
 
       deploymentAbortController.abort();
@@ -973,7 +970,7 @@ export class DirectDeploymentEngine {
 
     // Set up timeout-based abort if timeout is specified
     const timeout = options.timeout || 300000; // 5 minutes default
-    const timeoutId = setTimeout(async () => {
+    const timeoutId = setTimeout(() => {
       deploymentLogger.debug('Deployment timeout reached, aborting operations', {
         deploymentId,
         timeout,
@@ -982,14 +979,11 @@ export class DirectDeploymentEngine {
       // Stop event monitoring immediately when timeout is reached
       // This prevents watch connections from continuing to run and throwing errors
       if (this.eventMonitor) {
-        try {
-          await this.eventMonitor.stopMonitoring();
-          deploymentLogger.debug('Event monitoring stopped due to timeout');
-        } catch (error) {
+        this.eventMonitor.stopMonitoring().catch((error) => {
           deploymentLogger.debug('Error stopping event monitoring on timeout', {
             error: (error as Error)?.message,
           });
-        }
+        });
       }
 
       deploymentAbortController.abort();
@@ -2427,30 +2421,37 @@ export class DirectDeploymentEngine {
     options: DeploymentOptions,
     logger: ReturnType<typeof getComponentLogger>
   ): Promise<void> {
-    if (this.fluxCRDsPatched) {
-      return; // Already patched in this engine instance
+    // Use promise-based dedup to prevent concurrent patching attempts.
+    // The first caller creates the promise; subsequent concurrent callers await the same promise.
+    if (this.fluxCRDsPatchPromise) {
+      return this.fluxCRDsPatchPromise;
     }
 
-    const logLevel = options.autoFix?.logLevel || 'info';
-    logger[logLevel]('Checking Flux CRDs for Kubernetes 1.33+ compatibility...');
+    this.fluxCRDsPatchPromise = (async () => {
+      const logLevel = options.autoFix?.logLevel || 'info';
+      logger[logLevel]('Checking Flux CRDs for Kubernetes 1.33+ compatibility...');
 
-    try {
-      // Lazy import to avoid loading CRD patcher unless actually needed
-      const { patchFluxCRDSchemas } = await import('../utils/crd-patcher.js');
-      await patchFluxCRDSchemas(this.kubeClient);
-      logger[logLevel]('✅ Flux CRDs patched successfully');
-      this.fluxCRDsPatched = true;
-    } catch (error) {
-      logger.warn(
-        'Failed to auto-patch Flux CRDs - deployment may fail if CRDs lack proper schema',
-        {
-          error: error instanceof Error ? error.message : String(error),
-          suggestion: 'Ensure RBAC permissions to patch CRDs, or set autoFix.fluxCRDs: false',
-        }
-      );
-      // Don't throw - allow deployment to proceed and fail naturally if CRDs are broken
-      // This provides better error messages and allows users to diagnose the issue
-    }
+      try {
+        // Lazy import to avoid loading CRD patcher unless actually needed
+        const { patchFluxCRDSchemas } = await import('../utils/crd-patcher.js');
+        await patchFluxCRDSchemas(this.kubeClient);
+        logger[logLevel]('Flux CRDs patched successfully');
+      } catch (error) {
+        // Reset so next attempt can try again (e.g., if RBAC was fixed)
+        this.fluxCRDsPatchPromise = null;
+        logger.warn(
+          'Failed to auto-patch Flux CRDs - deployment may fail if CRDs lack proper schema',
+          {
+            error: error instanceof Error ? error.message : String(error),
+            suggestion: 'Ensure RBAC permissions to patch CRDs, or set autoFix.fluxCRDs: false',
+          }
+        );
+        // Don't throw - allow deployment to proceed and fail naturally if CRDs are broken
+        // This provides better error messages and allows users to diagnose the issue
+      }
+    })();
+
+    return this.fluxCRDsPatchPromise;
   }
 
   /**

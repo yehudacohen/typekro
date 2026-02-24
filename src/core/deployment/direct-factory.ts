@@ -285,10 +285,11 @@ export class DirectResourceFactoryImpl<
     timeout: number
   ): Promise<void> {
     const pollInterval = 1000;
-    const startTime = Date.now();
 
     for (const ns of namespaces) {
-      while (Date.now() - startTime < timeout) {
+      // Each namespace gets its own timeout budget
+      const nsStartTime = Date.now();
+      while (Date.now() - nsStartTime < timeout) {
         try {
           await k8sApi.read({
             apiVersion: 'v1',

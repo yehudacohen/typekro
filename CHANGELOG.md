@@ -9,16 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kro v0.8.x**: `forEach` directive for iterating over arrays in resource definitions
+- **Kro v0.8.x**: `includeWhen` directive for conditional resource inclusion based on `schema.spec` fields
+- **Kro v0.8.x**: `readyWhen` directive for custom readiness CEL expressions
+- **Kro v0.8.x**: `externalRef` for referencing pre-existing cluster resources without managing their lifecycle
 - **Security**: Replace `new Function()` calls with `angular-expressions` for safe expression evaluation
 - **Tests**: 37 compile-time type tests covering 13 type system areas
 - **Tests**: 29 unit tests for serialization pipeline (schema, validation, yaml)
 - **Tests**: 26 unit tests for safe expression evaluation
 - **Tests**: 30 unit tests for CRD schema fix logic
+- **Tests**: E2E integration tests for Kro v0.8.x features (forEach, includeWhen, readyWhen, externalRef)
 - Configurable HTTP request timeouts for Kubernetes API operations
 - APISIX chart upgraded to 2.13.0 with orphan cleanup support
+- `customResource()` factory now provides a default readiness evaluator (overridable via `.withReadinessEvaluator()`)
+- APISIX admin credentials now configurable via `gateway.adminCredentials` in bootstrap config
 
 ### Changed
 
+- **BREAKING**: Kro upgraded from v0.3.0 to v0.8.5 (OCI registry moved to `registry.k8s.io/kro/charts`)
 - **BREAKING**: All factories now require explicit readiness evaluators (no default provided by `createResource`)
 - Ingress readiness evaluator rewritten to require actual controller signals instead of accepting empty status
 - `autoFix.fluxCRDs` patching logs upgraded to warn level
@@ -27,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41 generic `throw new Error()` calls migrated to typed error classes
 - 38 `as any` casts eliminated across 4 core files
 - Cert-manager upgraded to 1.19.3
+- `MutatingAdmissionWebhook` kind corrected to `MutatingWebhookConfiguration`
+- `ValidatingAdmissionWebhook` kind corrected to `ValidatingWebhookConfiguration`
 
 ### Fixed
 
@@ -38,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Promise.allSettled` used in test cleanup to prevent cascading failures
 - `CelEvaluationError` now extends `TypeKroError` instead of `Error`
 - Missing exports for `ConversionError` and `StatusHydrationError` from barrel
+- Race condition in `ensureFluxCRDsPatched` with concurrent deployments
+- Timer leak in CRD JSON patch `Promise.race` (timeout never cleared)
+- Async `setTimeout` unhandled rejection in deployment timeout handlers
+- Incorrect `successCount` in partial deployment error (counted all resources, not just successful ones)
+- Shared timeout budget across sequential namespace deletions (each namespace now gets its own timeout)
+- Cert-manager Helm values spread overwriting carefully-built nested defaults
+- Integration test `unhandledRejection` handlers now properly cleaned up in `afterAll`
 
 ### Removed
 
