@@ -29,6 +29,7 @@ const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Nested Compositions Runtime Integration', () => {
   let kc: k8s.KubeConfig;
+  let unhandledRejectionHandler: ((reason: unknown) => void) | undefined;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -58,9 +59,10 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
     //
     // This layer catches these expected AbortErrors and suppresses them gracefully.
     // Reference: https://github.com/oven-sh/bun/issues/...
-    process.on('unhandledRejection', (reason: any) => {
-      const errorName = reason?.name;
-      const errorMessage = reason?.message || '';
+    unhandledRejectionHandler = (reason: unknown) => {
+      const error = reason as { name?: string; message?: string };
+      const errorName = error?.name;
+      const errorMessage = error?.message || '';
 
       // Suppress AbortError and DOMException during test cleanup - these are expected
       // when stopping event monitoring in Bun's runtime
@@ -75,12 +77,19 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
       // Re-throw other unhandled rejections - they indicate real problems
       throw reason;
-    });
+    };
+    process.on('unhandledRejection', unhandledRejectionHandler);
   });
 
   afterAll(async () => {
+    // Remove the unhandledRejection handler to prevent accumulation across test suites
+    if (unhandledRejectionHandler) {
+      process.removeListener('unhandledRejection', unhandledRejectionHandler);
+      unhandledRejectionHandler = undefined;
+    }
+
     // Cleanup test resources
-    console.log('🧹 Cleaning up nested compositions integration tests...');
+    console.log('Cleaning up nested compositions integration tests...');
 
     // Clean up the nested-test-cm namespace created by the nested compositions test.
     // We can't use factory.deleteInstance() because it would also delete the shared

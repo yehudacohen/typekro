@@ -20,10 +20,13 @@ export function customResource<TSpec extends object, TStatus extends object>(
     );
   }
 
-  return createResource({
+  return createResource<TSpec, TStatus>({
     apiVersion: schema.apiVersion,
     kind: schema.kind,
     metadata: definition.metadata,
     spec: result as TSpec,
-  });
+  }).withReadinessEvaluator(() => ({
+    ready: true,
+    message: `${schema.kind} is ready (custom resource default — override with .withReadinessEvaluator())`,
+  }));
 }

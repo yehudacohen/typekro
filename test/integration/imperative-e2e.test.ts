@@ -43,6 +43,7 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
+  let unhandledRejectionHandler: ((reason: unknown) => void) | undefined;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -59,20 +60,27 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
 
     // Suppress AbortError during test cleanup - this is a known issue with Bun's fetch implementation
     // where abort() throws a DOMException that can escape try-catch blocks during async cleanup
-    process.on('unhandledRejection', (reason: any) => {
-      if (reason?.name === 'AbortError' || reason?.name === 'DOMException') {
+    unhandledRejectionHandler = (reason: unknown) => {
+      const error = reason as { name?: string };
+      if (error?.name === 'AbortError' || error?.name === 'DOMException') {
         // Ignore abort errors during test cleanup
         return;
       }
       // Re-throw other unhandled rejections
       throw reason;
-    });
+    };
+    process.on('unhandledRejection', unhandledRejectionHandler);
   });
 
   // Clean up any leftover test namespaces after all tests complete
   afterAll(async () => {
+    // Remove the unhandledRejection handler to prevent accumulation across test suites
+    if (unhandledRejectionHandler) {
+      process.removeListener('unhandledRejection', unhandledRejectionHandler);
+      unhandledRejectionHandler = undefined;
+    }
     if (kc) {
-      console.log('🧹 Cleaning up any leftover test namespaces...');
+      console.log('Cleaning up any leftover test namespaces...');
       await cleanupTestNamespaces(/^typekro-imperative-e2e-/, kc);
 
       // Clean up RGDs created by this test run to avoid CRD ownership conflicts

@@ -183,7 +183,9 @@ export abstract class BaseDeploymentStrategy<
               error: err.error?.message || String(err.error),
             };
           });
-          const successCount = deploymentResult.resources?.length || 0;
+          const successCount = deploymentResult.resources
+            ? deploymentResult.resources.length - deploymentResult.errors.length
+            : 0;
 
           throw StatusHydrationError.forPartialDeployment(
             instanceName,

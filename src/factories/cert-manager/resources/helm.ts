@@ -192,31 +192,27 @@ export function certManagerHelmRelease(
   // The HelmRelease spec.values field is an arbitrary object without a defined schema,
   // so any KubernetesRef objects will serialize incorrectly (as empty objects or strings).
   //
-  // We ALWAYS set these critical values statically to ensure cert-manager installs correctly:
-  // 1. installCRDs: true - Required for cert-manager to function
-  // 2. startupapicheck.enabled: false - Prevents post-install hook timeouts
-  //
-  // Any other values from config.values are processed, but we deep-clone and sanitize
-  // to remove any potential KubernetesRef objects that might have leaked through.
+  // We set these critical values with sensible defaults to ensure cert-manager installs correctly:
+  // 1. installCRDs: true — required for cert-manager to function
+  // 2. startupapicheck.enabled: true — validates webhook readiness before marking ready
   //
   // NOTE: config.values may already be the result of mapCertManagerConfigToHelmValues()
   // from the bootstrap composition, so we DON'T call mapCertManagerConfigToHelmValues again.
   // We just sanitize the values to remove any proxy references.
+  // The bootstrap composition's startupapicheck settings take precedence via the spread.
   const baseValues = config.values ? sanitizeHelmValues(config.values) : {};
   const finalValues = {
-    ...baseValues,
-    // Always install CRDs - this is required for cert-manager to function
+    // Always install CRDs — required for cert-manager to function
     installCRDs: true,
-    // Enable startupapicheck by default with increased timeout to ensure webhook is ready
-    // This prevents "webhook not found" errors when deploying cert-manager CRDs
-    // Can be overridden by passing startupapicheck: { enabled: false } in config.values
+    // Enable startupapicheck by default with increased timeout to ensure webhook is ready.
+    // This prevents "webhook not found" errors when deploying cert-manager CRDs.
     startupapicheck: {
       enabled: true,
       timeout: '5m',
-      ...(typeof baseValues.startupapicheck === 'object' && baseValues.startupapicheck !== null
-        ? baseValues.startupapicheck
-        : {}), // Allow override from config.values
     },
+    // Spread baseValues LAST so caller-provided values (including from the bootstrap
+    // composition) take precedence over our defaults above
+    ...baseValues,
   };
 
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({

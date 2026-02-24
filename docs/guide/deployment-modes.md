@@ -24,8 +24,8 @@ The table below shows how each value type is handled across factory modes and op
 | **`schema.spec.*`** (magic proxy) | Resolve (from spec) | Embedded in CR instance |
 | **`$field`** (forced KubernetesRef) | Resolve (from spec) | Embedded in CR instance |
 | **`resources.X.status.Y`** (cross-resource ref) | Resolve (from live cluster, level-by-level) | Kro controller resolves at runtime |
-| **`Cel.expr()`** | Evaluate via cel-js at deploy time | Kro controller evaluates at runtime |
-| **`Cel.template()`** | Evaluate via cel-js at deploy time | Kro controller evaluates at runtime |
+| **`Cel.expr()`** | Evaluate via angular-expressions at deploy time | Kro controller evaluates at runtime |
+| **`Cel.template()`** | Evaluate via angular-expressions at deploy time | Kro controller evaluates at runtime |
 | **Template literal** (`` `${schema.spec.name}-app` ``) | Resolve (marker string → spec value) | Kro controller resolves `${schema.spec.name}` |
 | **`includeWhen` / `forEach` / `readyWhen`** | Evaluated by composition re-execution | Emitted as Kro directives |
 
