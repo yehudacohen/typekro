@@ -8,16 +8,17 @@
 
 import type { CompositionContext } from '../../factories/shared.js';
 import { getCurrentCompositionContext } from '../../factories/shared.js';
+import { isKubernetesRef } from '../../utils/type-guards.js';
+import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type {
-  MagicAssignableShape,
   KroCompatibleType,
+  MagicAssignableShape,
   SchemaProxy,
 } from '../types/serialization.js';
 import type { Enhanced } from '../types.js';
-import { isKubernetesRef } from '../../utils/type-guards.js';
-import { MagicAssignableAnalyzer } from './magic-assignable-analyzer.js';
 import { CelConversionEngine } from './cel-conversion-engine.js';
+import { MagicAssignableAnalyzer } from './magic-assignable-analyzer.js';
 
 /**
  * Analysis result for imperative composition functions
@@ -1043,6 +1044,7 @@ export class CompositionIntegrationHooks {
   private analyzer: CompositionExpressionAnalyzer;
   private contextTracker: CompositionContextTracker;
   private scopeManager: MagicProxyScopeManager;
+  private logger = getComponentLogger('composition-integration');
 
   constructor() {
     this.analyzer = new CompositionExpressionAnalyzer();
@@ -1067,15 +1069,16 @@ export class CompositionIntegrationHooks {
 
       // Store analysis result for later use during serialization
       if (analysisResult.requiresCelConversion) {
-        console.debug(
-          `Composition ${contextId} requires CEL conversion: ${analysisResult.conversionMetadata.kubernetesRefsDetected} KubernetesRef objects detected`
-        );
+        this.logger.debug(`Composition requires CEL conversion`, {
+          contextId,
+          kubernetesRefsDetected: analysisResult.conversionMetadata.kubernetesRefsDetected,
+        });
       }
     } catch (error) {
       // Non-fatal error - composition can continue without pre-analysis
-      console.warn(
-        `Composition pre-analysis failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      this.logger.warn('Composition pre-analysis failed (non-fatal)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -1093,9 +1096,9 @@ export class CompositionIntegrationHooks {
         const trackingResult = this.contextTracker.trackCompositionContext(context);
 
         if (trackingResult.crossResourceReferences.length > 0) {
-          console.debug(
-            `Composition has ${trackingResult.crossResourceReferences.length} cross-resource references that may require CEL conversion`
-          );
+          this.logger.debug('Cross-resource references detected', {
+            count: trackingResult.crossResourceReferences.length,
+          });
         }
       }
 
@@ -1126,17 +1129,19 @@ export class CompositionIntegrationHooks {
       this.contextTracker.extractKubernetesRefsFromResource(resource);
 
     if (refs.length > 0) {
-      console.debug(
-        `Resource ${resourceId} contains ${refs.length} KubernetesRef objects that may require CEL conversion`
-      );
+      this.logger.debug('Resource contains KubernetesRef objects', {
+        resourceId,
+        refCount: refs.length,
+      });
 
       // Validate scope for each KubernetesRef
       for (const ref of refs) {
         const validation = this.scopeManager.validateKubernetesRefScope(ref);
         if (!validation.isValid) {
-          console.warn(
-            `KubernetesRef validation failed for resource ${resourceId}: ${validation.error}`
-          );
+          this.logger.warn('KubernetesRef validation failed', {
+            resourceId,
+            error: validation.error,
+          });
         }
       }
     }
@@ -1176,9 +1181,10 @@ export class CompositionIntegrationHooks {
         const validation = this.scopeManager.validateKubernetesRefScope(ref);
 
         if (!validation.isValid) {
-          console.warn(
-            `Auto-registered resource '${resourceId}' contains invalid KubernetesRef: ${validation.error}`
-          );
+          this.logger.warn('Auto-registered resource contains invalid KubernetesRef', {
+            resourceId,
+            error: validation.error,
+          });
         }
       }
 
@@ -1254,9 +1260,10 @@ export class CompositionIntegrationHooks {
       proxyAccess.resourceId !== '__schema__' &&
       !this.scopeManager.isResourceAccessible(proxyAccess.resourceId)
     ) {
-      console.warn(
-        `Magic proxy access to out-of-scope resource: ${proxyAccess.resourceId}.${proxyAccess.fieldPath}`
-      );
+      this.logger.warn('Magic proxy access to out-of-scope resource', {
+        resourceId: proxyAccess.resourceId,
+        fieldPath: proxyAccess.fieldPath,
+      });
     }
 
     // Track KubernetesRef creation from magic proxy access
@@ -1266,7 +1273,7 @@ export class CompositionIntegrationHooks {
       );
 
       if (!validation.isValid) {
-        console.warn(`Magic proxy created invalid KubernetesRef: ${validation.error}`);
+        this.logger.warn('Magic proxy created invalid KubernetesRef', { error: validation.error });
       }
     }
   }
@@ -1289,8 +1296,10 @@ export class CompositionIntegrationHooks {
       // Execute factory with side-effect tracking
       return this.handleSideEffectCreation(factoryFn, undefined, getCurrentCompositionContext());
     } catch (error) {
-      console.error(
-        `Factory function '${factoryName}' failed in composition context: ${error instanceof Error ? error.message : String(error)}`
+      this.logger.error(
+        'Factory function failed in composition context',
+        error instanceof Error ? error : undefined,
+        { factoryName }
       );
       throw error;
     }

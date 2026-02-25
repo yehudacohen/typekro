@@ -457,7 +457,7 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
             const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
 
             if (strategy === 'skipIfExists') {
-              console.log(`⚠️ Skipping existing resource: ${resourceName}`);
+              logger.info('Skipping existing resource (409 conflict)', { resourceName, strategy });
               results.push({
                 kind: manifest.kind || 'Unknown',
                 name: manifest.metadata?.name || 'unknown',
@@ -465,7 +465,7 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                 apiVersion: manifest.apiVersion || 'v1',
               });
             } else if (strategy === 'replace') {
-              console.log(`🔄 Replacing existing resource: ${resourceName}`);
+              logger.info('Replacing existing resource (409 conflict)', { resourceName, strategy });
               // Try to update/replace the resource
               try {
                 if (deploymentContext.kubernetesApi) {
@@ -503,7 +503,11 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                   apiVersion: manifest.apiVersion || 'v1',
                 });
               } catch (replaceError) {
-                console.error(`❌ Failed to replace resource ${resourceName}:`, replaceError);
+                logger.error(
+                  'Failed to replace resource',
+                  replaceError instanceof Error ? replaceError : undefined,
+                  { resourceName }
+                );
                 throw replaceError;
               }
             } else {

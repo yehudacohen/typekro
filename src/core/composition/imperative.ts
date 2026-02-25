@@ -20,6 +20,7 @@ import {
   NESTED_COMPOSITION_BRAND,
 } from '../constants/brands.js';
 import { CompositionDebugger, CompositionExecutionError } from '../errors.js';
+import { getComponentLogger } from '../logging/index.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type { CallableComposition, TypedResourceGraph } from '../types/deployment.js';
 
@@ -36,6 +37,8 @@ import type { Enhanced } from '../types.js';
  * Enable debug mode for composition execution
  * This will log detailed information about resource registration, status building, and performance
  */
+const logger = getComponentLogger('imperative-composition');
+
 export function enableCompositionDebugging(): void {
   CompositionDebugger.enableDebugMode();
 }
@@ -611,7 +614,9 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
       });
     } catch (error) {
       // If we can't add properties to the result object, log a warning but continue
-      console.warn('Could not store composition function for re-execution:', error);
+      logger.warn('Could not store composition function for re-execution', {
+        error: String(error),
+      });
     }
 
     return result;

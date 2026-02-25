@@ -3,6 +3,10 @@
  * Provides detailed, actionable error messages with context
  */
 
+import { getComponentLogger } from './logging/index.js';
+
+const compositionLogger = getComponentLogger('composition-debugger');
+
 export class TypeKroError extends Error {
   constructor(
     message: string,
@@ -259,10 +263,8 @@ export class CompositionDebugger {
 
     CompositionDebugger.debugLog.push(logEntry);
 
-    // Also log to console if in development
-    if (process.env.NODE_ENV === 'development') {
-      console.debug(`[TypeKro Composition] ${logEntry}`);
-    }
+    // Also log via structured logger at debug level
+    compositionLogger.debug(logEntry, { phase, ...(context ?? {}) });
   }
 
   /**

@@ -6,6 +6,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { TypeKroError } from '../errors.js';
+import { getComponentLogger } from '../logging/index.js';
+
+const logger = getComponentLogger('yaml-path-resolver');
 
 /**
  * Information parsed from a git: URL
@@ -580,7 +583,10 @@ export class PathResolver {
             });
           } catch (error) {
             // Log warning but continue processing other files
-            console.warn(`Warning: Could not read file ${fullPath}: ${error}`);
+            logger.warn('Could not read file during YAML discovery', {
+              fullPath,
+              error: String(error),
+            });
           }
         }
       }
@@ -684,7 +690,10 @@ export class PathResolver {
               });
             } catch (error) {
               // Log warning but continue processing other files
-              console.warn(`Warning: Could not fetch file ${item.path}: ${error}`);
+              logger.warn('Could not fetch Git file during YAML discovery', {
+                path: item.path,
+                error: String(error),
+              });
             }
           }
         } else if (item.type === 'dir' && options.recursive) {

@@ -1,5 +1,6 @@
 import * as yaml from 'js-yaml';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
+import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
   AppliedResource,
@@ -9,6 +10,8 @@ import type {
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { registerDeploymentClosure } from '../../shared.js';
+
+const logger = getComponentLogger('yaml-directory');
 
 /**
  * Parse YAML content into Kubernetes manifests
@@ -130,7 +133,10 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
               const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
 
               if (strategy === 'skipIfExists') {
-                console.log(`⚠️ Skipping existing resource: ${resourceName}`);
+                logger.info('Skipping existing resource (409 conflict)', {
+                  resourceName,
+                  strategy,
+                });
                 allResults.push({
                   kind: manifest.kind || 'Unknown',
                   name: manifest.metadata?.name || 'unknown',
@@ -138,7 +144,10 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                   apiVersion: manifest.apiVersion || 'v1',
                 });
               } else if (strategy === 'replace') {
-                console.log(`🔄 Replacing existing resource: ${resourceName}`);
+                logger.info('Replacing existing resource (409 conflict)', {
+                  resourceName,
+                  strategy,
+                });
                 // Try to update/replace the resource
                 try {
                   if (deploymentContext.kubernetesApi) {
@@ -176,7 +185,11 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                     apiVersion: manifest.apiVersion || 'v1',
                   });
                 } catch (replaceError) {
-                  console.error(`❌ Failed to replace resource ${resourceName}:`, replaceError);
+                  logger.error(
+                    'Failed to replace resource',
+                    replaceError instanceof Error ? replaceError : undefined,
+                    { resourceName }
+                  );
                   throw replaceError;
                 }
               } else {

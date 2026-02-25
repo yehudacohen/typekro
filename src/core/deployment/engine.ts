@@ -2580,7 +2580,9 @@ export class DirectDeploymentEngine {
       }
     } catch (error) {
       // If we can't query CRDs, fall back to heuristic
-      console.warn('Failed to query CRDs, using heuristic for CRD name generation:', error);
+      this.logger.warn('Failed to query CRDs, using heuristic for CRD name generation', {
+        error: String(error),
+      });
     }
 
     // Fallback: Convert Kind to plural lowercase (simple heuristic)
