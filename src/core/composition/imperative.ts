@@ -641,13 +641,43 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 }
 
 /**
- * Create an imperative composition that automatically captures resources
- * and returns status objects using MagicAssignableShape
+ * Create an imperative Kubernetes composition using natural TypeScript.
  *
- * @param definition - The resource graph definition with schemas
- * @param compositionFn - Synchronous function that takes spec and returns MagicAssignableShape<TStatus>
+ * Unlike {@link toResourceGraph} which uses separate resource/status builders,
+ * `kubernetesComposition` lets you write a single function that creates resources
+ * inline. Resources are automatically captured via the magic proxy system.
+ * The returned callable composition can be deployed directly or nested inside
+ * other compositions.
+ *
+ * @typeParam TSpec - The arktype schema for the custom resource's spec
+ * @typeParam TStatus - The arktype schema for the custom resource's status
+ *
+ * @param definition - The RGD metadata: name, apiVersion, kind, spec/status schemas
+ * @param compositionFn - Imperative function receiving the spec, creates resources
+ *   inline, and returns a status shape. Resources created with factory functions
+ *   (e.g., `Deployment()`, `Service()`) are automatically registered.
  * @param options - Optional serialization options
- * @returns TypedResourceGraph directly (not a factory)
+ * @returns A `CallableComposition` that can be deployed or nested inside other compositions
+ *
+ * @example
+ * ```typescript
+ * const webapp = kubernetesComposition(
+ *   {
+ *     name: 'webapp',
+ *     apiVersion: 'apps.example.com/v1alpha1',
+ *     kind: 'WebApp',
+ *     spec: type({ name: 'string', replicas: 'number' }),
+ *     status: type({ ready: 'boolean' }),
+ *   },
+ *   (spec) => {
+ *     const deploy = Deployment({ name: spec.name, replicas: spec.replicas });
+ *     const svc = Service({ name: spec.name });
+ *     return {
+ *       ready: Cel.expr<boolean>(deploy.status.readyReplicas, ' > 0'),
+ *     };
+ *   },
+ * );
+ * ```
  */
 export function kubernetesComposition<
   TSpec extends KroCompatibleType,
