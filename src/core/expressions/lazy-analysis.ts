@@ -2696,13 +2696,14 @@ export class OptimizedKubernetesRefDetector {
   }
 
   /**
-   * Fast KubernetesRef check
+   * Fast KubernetesRef check.
+   * Uses Reflect.get for proxy-safe brand detection (proxies may not have 'has' trap).
    */
   public isKubernetesRef(value: unknown): boolean {
     return (
       (typeof value === 'object' || typeof value === 'function') &&
       value !== null &&
-      KUBERNETES_REF_BRAND in value
+      Reflect.get(value, KUBERNETES_REF_BRAND) === true
     );
   }
 }

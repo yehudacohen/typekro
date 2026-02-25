@@ -12,7 +12,7 @@
 
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode, Identifier, MemberExpression } from 'estree';
-import { BrandChecks, CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { ConversionError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
@@ -689,13 +689,19 @@ export class MagicProxyAnalyzer {
   }
 
   /**
-   * Check if a value is a KubernetesRef object
+   * Check if a value is a KubernetesRef object.
+   * Uses Reflect.get for proxy-safe brand detection.
    */
-  private isKubernetesRef(value: any): value is KubernetesRef<any> {
+  private isKubernetesRef(value: unknown): value is KubernetesRef<unknown> {
+    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+      return false;
+    }
     return (
-      BrandChecks.isKubernetesRef(value) &&
-      typeof (value as any).resourceId === 'string' &&
-      typeof (value as any).fieldPath === 'string'
+      Reflect.get(value, KUBERNETES_REF_BRAND) === true &&
+      'resourceId' in value &&
+      'fieldPath' in value &&
+      typeof (value as Record<string, unknown>).resourceId === 'string' &&
+      typeof (value as Record<string, unknown>).fieldPath === 'string'
     );
   }
 
@@ -823,13 +829,19 @@ export class MagicProxyUtils {
   }
 
   /**
-   * Check if a value is a KubernetesRef object
+   * Check if a value is a KubernetesRef object.
+   * Uses Reflect.get for proxy-safe brand detection.
    */
-  static isKubernetesRef(value: any): value is KubernetesRef<any> {
+  static isKubernetesRef(value: unknown): value is KubernetesRef<unknown> {
+    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+      return false;
+    }
     return (
-      BrandChecks.isKubernetesRef(value) &&
-      typeof (value as any).resourceId === 'string' &&
-      typeof (value as any).fieldPath === 'string'
+      Reflect.get(value, KUBERNETES_REF_BRAND) === true &&
+      'resourceId' in value &&
+      'fieldPath' in value &&
+      typeof (value as Record<string, unknown>).resourceId === 'string' &&
+      typeof (value as Record<string, unknown>).fieldPath === 'string'
     );
   }
 
