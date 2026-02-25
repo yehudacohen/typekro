@@ -226,14 +226,36 @@ export class PathResolver {
   }
 
   /**
-   * Resolve content from a local file
+   * Resolve content from a local file.
+   * For relative paths, prevents path traversal outside the working directory.
    */
   async resolveLocalContent(localPath: string, resourceName: string = 'unknown'): Promise<string> {
     try {
       // Resolve relative paths
+      const baseDir = process.cwd();
       const resolvedPath = path.isAbsolute(localPath)
         ? localPath
-        : path.resolve(process.cwd(), localPath);
+        : path.resolve(baseDir, localPath);
+
+      // Prevent path traversal for relative paths: resolved path must stay under baseDir
+      if (!path.isAbsolute(localPath)) {
+        const normalizedResolved = path.normalize(resolvedPath);
+        const normalizedBase = path.normalize(baseDir);
+        if (
+          !normalizedResolved.startsWith(normalizedBase + path.sep) &&
+          normalizedResolved !== normalizedBase
+        ) {
+          throw new YamlPathResolutionError(
+            `Path traversal detected for resource '${resourceName}': '${localPath}' resolves outside the working directory`,
+            resourceName,
+            localPath,
+            [
+              'Use an absolute path if you need to access files outside the working directory',
+              'Remove "../" segments that escape the project root',
+            ]
+          );
+        }
+      }
 
       // Check if file exists
       if (!fs.existsSync(resolvedPath)) {
@@ -704,20 +726,25 @@ export class PathResolver {
   }
 
   /**
-   * Check if a file path matches any of the given glob patterns
-   * Simple implementation - could be enhanced with a proper glob library
+   * Check if a file path matches any of the given glob patterns.
+   * Uses a safe glob-to-regex conversion with pattern length limits to prevent ReDoS.
    */
   private matchesPatterns(filePath: string, patterns: string[]): boolean {
     if (patterns.length === 0) {
       return false;
     }
 
-    return patterns.some((pattern) => {
-      // Convert simple glob patterns to regex
-      // This is a basic implementation - could use a proper glob library like minimatch
+    // Maximum pattern length to prevent ReDoS via extremely long patterns
+    const MAX_PATTERN_LENGTH = 1024;
 
+    return patterns.some((pattern) => {
       try {
-        // Simple cases first
+        // Reject overly long patterns that could cause ReDoS
+        if (pattern.length > MAX_PATTERN_LENGTH) {
+          return false;
+        }
+
+        // Simple cases first (no regex needed)
         if (pattern === '*') {
           return true;
         }
@@ -727,17 +754,23 @@ export class PathResolver {
           return filePath === pattern;
         }
 
+        // Common extension pattern: *.ext or *.{ext1,ext2}
+        if (pattern.startsWith('*.') && !pattern.includes('/')) {
+          const extension = pattern.substring(1); // includes the dot
+          return filePath.endsWith(extension);
+        }
+
         // Handle ** first (before escaping)
         let regexPattern = pattern.replace(/\*\*/g, '__DOUBLESTAR__');
 
         // Escape special regex characters except * and ?
         regexPattern = regexPattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
-        // Convert glob patterns to regex
+        // Convert glob patterns to regex using non-greedy quantifiers where possible
         regexPattern = regexPattern
-          .replace(/__DOUBLESTAR__/g, '.*') // ** matches any number of directories (including /)
+          .replace(/__DOUBLESTAR__/g, '.*?') // ** matches any path (non-greedy to limit backtracking)
           .replace(/\\\*/g, '[^/]*') // * matches any characters except /
-          .replace(/\\\?/g, '.'); // ? matches any single character
+          .replace(/\\\?/g, '[^/]'); // ? matches any single non-separator character
 
         const regex = new RegExp(`^${regexPattern}$`);
         return regex.test(filePath);

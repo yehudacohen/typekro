@@ -32,6 +32,8 @@ describe('Secret Factory Base64 Encoding', () => {
   });
 
   it('should handle AWS credentials encoding', () => {
+    // These are AWS's official example keys from documentation — not real credentials
+    // See: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html
     const secretResource = Secret({
       name: 'aws-credentials',
       namespace: 'external-dns',

@@ -150,14 +150,18 @@ async function deploySimpleStack() {
         const endpoint = ingress.ip || ingress.hostname;
         console.log(`🌐 Service endpoint: http://${endpoint}`);
 
-        // Test with curl
+        // Test with curl (using execFileSync to prevent shell injection)
         console.log('🧪 Testing with curl...');
         try {
-          const { execSync } = await import('node:child_process');
-          const curlResult = execSync(`curl -s -o /dev/null -w "%{http_code}" http://${endpoint}`, {
-            encoding: 'utf8',
-            timeout: 10000,
-          });
+          const { execFileSync } = await import('node:child_process');
+          const curlResult = execFileSync(
+            'curl',
+            ['-s', '-o', '/dev/null', '-w', '%{http_code}', `http://${endpoint}`],
+            {
+              encoding: 'utf8',
+              timeout: 10000,
+            }
+          );
 
           if (curlResult.trim() === '200') {
             console.log('✅ Webapp is accessible!');
