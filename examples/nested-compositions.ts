@@ -1,19 +1,18 @@
 #!/usr/bin/env bun
-// @ts-nocheck
 
 /**
  * Nested Compositions Example with TypeKro
- * 
+ *
  * This example demonstrates TypeKro's powerful nested composition capabilities:
  * 1. Database composition (reusable component)
  * 2. Application composition that uses the database
  * 3. Full-stack composition that combines both
  * 4. Beautiful callable API with natural status references
- * 
+ *
  * Prerequisites:
  * - kubectl connected to a cluster
  * - TypeKro runtime deployed (run hello-world-simple.ts first)
- * 
+ *
  * Usage:
  *   bun run examples/nested-compositions.ts
  */
@@ -36,7 +35,7 @@ const DatabaseStatus = type({
   host: 'string',
   port: 'number',
   connectionString: 'string',
-  storageReady: 'boolean'
+  storageReady: 'boolean',
 });
 
 // Reusable database composition
@@ -59,8 +58,8 @@ const databaseComposition = kubernetesComposition(
       env: {
         POSTGRES_DB: spec.name,
         POSTGRES_USER: 'user',
-        POSTGRES_PASSWORD: 'password'
-      }
+        POSTGRES_PASSWORD: 'password',
+      },
     });
 
     // Database service
@@ -68,14 +67,14 @@ const databaseComposition = kubernetesComposition(
       name: `${spec.name}-db`,
       ports: [{ port: 5432, targetPort: 5432 }],
       selector: { app: `${spec.name}-db` },
-      id: 'dbService'
+      id: 'dbService',
     });
 
     // Storage for the database
     const storage = simple.Pvc({
       name: `${spec.name}-storage`,
       size: spec.storage,
-      accessModes: ['ReadWriteOnce']
+      accessModes: ['ReadWriteOnce'],
     });
 
     return {
@@ -83,7 +82,7 @@ const databaseComposition = kubernetesComposition(
       host: dbService.status.clusterIP || 'localhost',
       port: 5432,
       connectionString: `postgres://user:password@${dbService.status.clusterIP}:5432/${spec.name}`,
-      storageReady: storage.status.phase === 'Bound'
+      storageReady: storage.status.phase === 'Bound',
     };
   }
 );
@@ -105,14 +104,14 @@ const AppWithDatabaseStatus = type({
   database: {
     ready: 'boolean',
     host: 'string',
-    storageReady: 'boolean'
+    storageReady: 'boolean',
   },
   health: {
     app: 'boolean',
     database: 'boolean',
     service: 'boolean',
-    overall: 'boolean'
-  }
+    overall: 'boolean',
+  },
 });
 
 // Application composition that uses the database composition
@@ -130,7 +129,7 @@ const appWithDatabase = kubernetesComposition(
     // ✨ Beautiful nested composition call - this is the magic!
     const database = databaseComposition({
       name: spec.name,
-      storage: spec.dbStorage
+      storage: spec.dbStorage,
     });
 
     // Application deployment that uses the database
@@ -143,8 +142,8 @@ const appWithDatabase = kubernetesComposition(
         // ✨ Natural status references - TypeScript autocomplete works!
         DATABASE_URL: database.status.connectionString,
         DATABASE_HOST: database.status.host,
-        DATABASE_READY: database.status.ready ? 'true' : 'false'
-      }
+        DATABASE_READY: database.status.ready ? 'true' : 'false',
+      },
     });
 
     // Application service
@@ -153,7 +152,7 @@ const appWithDatabase = kubernetesComposition(
       ports: [{ port: 80, targetPort: 3000 }],
       selector: { app: spec.name },
       type: 'LoadBalancer',
-      id: 'appService'
+      id: 'appService',
     });
 
     return {
@@ -162,14 +161,17 @@ const appWithDatabase = kubernetesComposition(
       database: {
         ready: database.status.ready,
         host: database.status.host,
-        storageReady: database.status.storageReady
+        storageReady: database.status.storageReady,
       },
       health: {
         app: app.status.readyReplicas >= spec.replicas,
         database: database.status.ready,
         service: appService.status.ready,
-        overall: app.status.readyReplicas >= spec.replicas && database.status.ready && appService.status.ready
-      }
+        overall:
+          app.status.readyReplicas >= spec.replicas &&
+          database.status.ready &&
+          appService.status.ready,
+      },
     };
   }
 );
@@ -190,12 +192,12 @@ const FullStackStatus = type({
   environment: 'string',
   components: {
     app: 'boolean',
-    database: 'boolean'
+    database: 'boolean',
   },
   endpoints: {
     app: 'string',
-    database: 'string'
-  }
+    database: 'string',
+  },
 });
 
 // Full-stack composition that uses the app-with-database composition
@@ -215,7 +217,7 @@ const fullStackApp = kubernetesComposition(
       name: `${spec.name}-${spec.environment}`,
       replicas: spec.appReplicas,
       dbStorage: spec.dbStorage,
-      image: spec.environment === 'production' ? 'node:18-alpine' : 'node:16'
+      image: spec.environment === 'production' ? 'node:18-alpine' : 'node:16',
     });
 
     // Environment-specific configuration
@@ -225,9 +227,9 @@ const fullStackApp = kubernetesComposition(
         ENVIRONMENT: spec.environment,
         LOG_LEVEL: spec.environment === 'production' ? 'warn' : 'debug',
         // ✨ Reference nested composition status in config
-        DATABASE_HOST: appStack.status.database.host
+        DATABASE_HOST: appStack.status.database.host,
       },
-      id: 'config'
+      id: 'config',
     });
 
     return {
@@ -235,12 +237,12 @@ const fullStackApp = kubernetesComposition(
       environment: spec.environment,
       components: {
         app: appStack.status.health.app,
-        database: appStack.status.health.database
+        database: appStack.status.health.database,
       },
       endpoints: {
         app: appStack.status.url,
-        database: appStack.status.database.host
-      }
+        database: appStack.status.database.host,
+      },
     };
   }
 );
@@ -257,7 +259,7 @@ async function deployNestedCompositionsDemo() {
   try {
     // Deploy the full-stack application (which includes nested compositions)
     console.log('🚀 Deploying Full-Stack Application with Nested Compositions...');
-    
+
     const fullStackFactory = await fullStackApp.factory('kro', {
       namespace: 'default',
       skipTLSVerify: true,
@@ -266,18 +268,18 @@ async function deployNestedCompositionsDemo() {
       eventMonitoring: {
         enabled: true,
         eventTypes: ['Warning', 'Error', 'Normal'],
-        includeChildResources: true
+        includeChildResources: true,
       },
       progressCallback: (event) => {
         console.log(`📡 FullStack: ${event.message}`);
-      }
+      },
     });
 
     const instance = await fullStackFactory.deploy({
       name: 'demo-app',
       environment: 'development',
       dbStorage: '5Gi',
-      appReplicas: 2
+      appReplicas: 2,
     });
 
     console.log('✅ Full-Stack Application deployed successfully!');
@@ -297,13 +299,13 @@ async function deployNestedCompositionsDemo() {
 
     // Demonstrate standalone composition usage (with warning)
     console.log('🔧 Demonstrating Standalone Composition Usage...');
-    console.log('(This will show a warning since it\'s called outside composition context)');
-    
+    console.log("(This will show a warning since it's called outside composition context)");
+
     const standaloneDb = databaseComposition({
       name: 'standalone-db',
-      storage: '1Gi'
+      storage: '1Gi',
     });
-    
+
     console.log(`✅ Standalone database created: ${standaloneDb.__compositionId}`);
     console.log('');
 
@@ -327,7 +329,6 @@ async function deployNestedCompositionsDemo() {
     console.log('');
     console.log('🧹 To clean up:');
     console.log('  kubectl delete resourcegraphdefinition fullstack-app');
-
   } catch (error) {
     console.error('❌ Deployment failed:', error);
     process.exit(1);
@@ -342,9 +343,4 @@ if (import.meta.main) {
   });
 }
 
-export { 
-  deployNestedCompositionsDemo, 
-  databaseComposition, 
-  appWithDatabase, 
-  fullStackApp 
-};
+export { deployNestedCompositionsDemo, databaseComposition, appWithDatabase, fullStackApp };
