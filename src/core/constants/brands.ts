@@ -35,22 +35,28 @@ export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableCompositio
  */
 export const BrandChecks = {
   /**
-   * Check if an object has the KubernetesRef brand
+   * Check if an object has the KubernetesRef brand.
+   * Uses Reflect.get for proxy-safe brand detection.
    */
   isKubernetesRef(obj: unknown): obj is { [KUBERNETES_REF_BRAND]: true } {
-    return Boolean(
-      obj &&
-        (typeof obj === 'object' || typeof obj === 'function') &&
-        obj !== null &&
-        KUBERNETES_REF_BRAND in obj
+    return (
+      (typeof obj === 'object' || typeof obj === 'function') &&
+      obj !== null &&
+      Reflect.get(obj, KUBERNETES_REF_BRAND) === true
     );
   },
 
   /**
-   * Check if an object has the CelExpression brand
+   * Check if an object has the CelExpression brand.
+   * Verifies both brand presence and value.
    */
   isCelExpression(obj: unknown): obj is { [CEL_EXPRESSION_BRAND]: true } {
-    return Boolean(obj && typeof obj === 'object' && obj !== null && CEL_EXPRESSION_BRAND in obj);
+    return (
+      typeof obj === 'object' &&
+      obj !== null &&
+      CEL_EXPRESSION_BRAND in obj &&
+      (obj as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true
+    );
   },
 
   /**

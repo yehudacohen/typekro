@@ -3,6 +3,7 @@
  * Provides detailed, actionable error messages with context
  */
 
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from './constants/brands.js';
 import { getComponentLogger } from './logging/index.js';
 
 const compositionLogger = getComponentLogger('composition-debugger');
@@ -442,36 +443,43 @@ export class UnsupportedPatternDetector {
   }
 
   /**
-   * Check if a value is a CEL expression
+   * Check if a value is a CEL expression (using symbol-based brand)
    */
-  private static isCelExpression(value: any): boolean {
-    return value && typeof value === 'object' && value.__brand === 'CelExpression';
+  private static isCelExpression(value: unknown): boolean {
+    return (
+      typeof value === 'object' &&
+      value !== null &&
+      CEL_EXPRESSION_BRAND in value &&
+      (value as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true
+    );
   }
 
   /**
    * Check if a value is a resource reference
    */
-  private static isResourceReference(value: any): boolean {
-    // Check for KubernetesRef brand
-    if (value && typeof value === 'object' && value.__brand === 'KubernetesRef') {
+  private static isResourceReference(value: unknown): boolean {
+    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+      return false;
+    }
+
+    // Check for KubernetesRef using symbol-based brand (proxy-safe via Reflect.get)
+    if (Reflect.get(value, KUBERNETES_REF_BRAND) === true) {
       return true;
     }
 
     // Check for proxy objects that might be resource references
-    if (
-      value &&
-      typeof value === 'object' &&
-      value.constructor &&
-      value.constructor.name === 'Object'
-    ) {
-      // Check if it has resource reference properties
-      if (value.resourceId || value.fieldPath || value.__isProxy) {
+    if (typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      if (obj.resourceId || obj.fieldPath || obj.__isProxy) {
         return true;
       }
     }
 
     // Check for function proxies that represent resource references
-    if (typeof value === 'function' && value.__isResourceProxy) {
+    if (
+      typeof value === 'function' &&
+      (value as unknown as Record<string, unknown>).__isResourceProxy
+    ) {
       return true;
     }
 

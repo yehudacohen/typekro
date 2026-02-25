@@ -12,10 +12,10 @@ import {
   ensureResourceTypeRegistered,
   KroTypeKroDeployer,
 } from '../../alchemy/deployment.js';
-
 import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
 import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
+import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import {
   CRDInstanceError,
   DeploymentTimeoutError,
@@ -1048,14 +1048,17 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
-   * Check if a value is a CEL expression
+   * Check if a value is a CEL expression (using canonical brand symbol)
    */
   private isCelExpression(value: unknown): value is CelExpression {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
     return (
-      value !== null &&
-      typeof value === 'object' &&
-      (value as Record<symbol, unknown>)[Symbol.for('TypeKro.CelExpression')] === true &&
-      typeof (value as { expression?: unknown }).expression === 'string'
+      CEL_EXPRESSION_BRAND in value &&
+      (value as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true &&
+      'expression' in value &&
+      typeof (value as Record<string, unknown>).expression === 'string'
     );
   }
 

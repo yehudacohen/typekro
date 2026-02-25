@@ -17,21 +17,20 @@ import type { CelExpression, KubernetesRef, ResourceReference } from '../core/ty
 /**
  * Type guard to check if a value is a compile-time KubernetesRef.
  * Note: At runtime, these are the objects created by the proxy.
+ *
+ * Uses `Reflect.get` to reliably trigger the proxy's 'get' trap instead of
+ * the `in` operator, which requires a 'has' trap that proxies may not implement.
  */
 export function isKubernetesRef(obj: unknown): obj is KubernetesRef<unknown> {
-  // A KubernetesRef is an object that has our specific brand property set to true
-  // and has the required resourceId and fieldPath properties.
-  // We check for the function type as well, since our ref factory is a proxy around a function.
-  // Note: We access the property directly since it's defined as non-enumerable
+  if ((typeof obj !== 'object' && typeof obj !== 'function') || obj === null) {
+    return false;
+  }
   return (
-    (typeof obj === 'object' || typeof obj === 'function') &&
-    obj !== null &&
-    KUBERNETES_REF_BRAND in obj &&
-    (obj as any)[KUBERNETES_REF_BRAND] === true &&
+    Reflect.get(obj, KUBERNETES_REF_BRAND) === true &&
     'resourceId' in obj &&
     'fieldPath' in obj &&
-    typeof (obj as any).resourceId === 'string' &&
-    typeof (obj as any).fieldPath === 'string'
+    typeof (obj as Record<string, unknown>).resourceId === 'string' &&
+    typeof (obj as Record<string, unknown>).fieldPath === 'string'
   );
 }
 
@@ -46,11 +45,20 @@ export function isResourceReference(obj: unknown): obj is ResourceReference<unkn
 }
 
 /**
- * Type guard to check if a value is a CEL expression
+ * Type guard to check if a value is a CEL expression.
+ *
+ * Verifies both the brand symbol and that the `expression` property is a string,
+ * ensuring only properly constructed CEL expressions pass the check.
  */
 export function isCelExpression<T = unknown>(value: unknown): value is CelExpression<T> {
-  return Boolean(
-    value && typeof value === 'object' && value !== null && CEL_EXPRESSION_BRAND in value
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  return (
+    CEL_EXPRESSION_BRAND in value &&
+    (value as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true &&
+    'expression' in value &&
+    typeof (value as Record<string, unknown>).expression === 'string'
   );
 }
 
