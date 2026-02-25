@@ -2,6 +2,31 @@ import { getInnerCelPath, isCelExpression, isKubernetesRef } from '../../utils/i
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
 
+/**
+ * Build a CEL expression from parts. Accepts resource references (`schema.spec.*`,
+ * `resources.*.status.*`), other CEL expressions, and literal strings/numbers/booleans.
+ * Parts are concatenated directly (no spaces). Use `Cel.join` for spaced joining.
+ *
+ * The type parameter `T` constrains what the expression evaluates to at runtime,
+ * ensuring type safety through the serialization pipeline.
+ *
+ * @typeParam T - The CEL expression's result type (e.g., `boolean`, `string`, `number`)
+ *
+ * @example Status readiness check
+ * ```typescript
+ * ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')
+ * ```
+ *
+ * @example Conditional phase
+ * ```typescript
+ * phase: Cel.expr<string>(resources.helm.status.phase, ' == "Ready" ? "Ready" : "Installing"')
+ * ```
+ *
+ * @example Static value (backtick + quotes)
+ * ```typescript
+ * phase: Cel.expr<string>`'running'`
+ * ```
+ */
 function expr<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T;
 function expr<T = unknown>(
   context: SerializationContext,
@@ -311,7 +336,7 @@ function concat(
 /**
  * Template literal tag function for creating CEL expressions from template literals
  * This allows natural template literal syntax while preserving KubernetesRef objects
- * 
+ *
  * @example
  * ```typescript
  * const url = cel`https://${schema.spec.hostname}/api`;
@@ -323,17 +348,17 @@ function cel<T = string>(
   ...values: RefOrValue<unknown>[]
 ): CelExpression<T> & T {
   const parts: string[] = [];
-  
+
   for (let i = 0; i < strings.length; i++) {
     // Add the string literal part
     if (strings[i]) {
       parts.push(`"${strings[i]?.replace(/"/g, '\\"')}"`);
     }
-    
+
     // Add the interpolated value if it exists
     if (i < values.length) {
       const value = values[i];
-      
+
       if (isKubernetesRef(value)) {
         // Convert KubernetesRef to CEL path
         if (value.resourceId === '__schema__') {
@@ -350,7 +375,7 @@ function cel<T = string>(
       }
     }
   }
-  
+
   const expression = parts.join(' + ');
 
   return {
@@ -361,7 +386,32 @@ function cel<T = string>(
 }
 
 /**
- * CEL utility functions
+ * CEL (Common Expression Language) utilities for building type-safe expressions
+ * in resource graph status builders.
+ *
+ * In Kro mode, CEL expressions are serialized into the RGD YAML and evaluated
+ * by the Kro operator at runtime. In Direct mode, they are evaluated locally
+ * using the `cel-js` library.
+ *
+ * @example Basic usage
+ * ```typescript
+ * import { Cel } from 'typekro';
+ *
+ * // Boolean expression
+ * ready: Cel.expr<boolean>(resources.deploy.status.readyReplicas, ' > 0')
+ *
+ * // String template with %s placeholders
+ * url: Cel.template('https://%s/api', schema.spec.hostname)
+ *
+ * // Tagged template literal
+ * greeting: Cel.cel`Hello ${schema.spec.name}`
+ *
+ * // Conditional
+ * phase: Cel.conditional(resources.deploy.status.readyReplicas, '"Ready"', '"Pending"')
+ *
+ * // CEL built-in functions
+ * count: Cel.size(resources.deploy.status.readyReplicas)
+ * ```
  */
 export const Cel = {
   expr,

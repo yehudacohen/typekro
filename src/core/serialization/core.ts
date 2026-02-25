@@ -514,8 +514,43 @@ function _createResourceGraph(
 // NEW FACTORY PATTERN API
 // =============================================================================
 /**
- * Create a new typed resource graph with factory pattern support
- * This is the new API with definition-first parameter and separate builder functions
+ * Create a typed ResourceGraphDefinition (RGD) from a declarative definition,
+ * a resource builder, and a status builder.
+ *
+ * This is the primary API for defining Kubernetes compositions in TypeKro.
+ * The returned object contains the serialized YAML for the RGD and can be
+ * deployed via `deploy()` in both Direct and Kro modes.
+ *
+ * @typeParam TSpec - The arktype schema for the custom resource's spec
+ * @typeParam TStatus - The arktype schema for the custom resource's status
+ * @typeParam TResources - The shape of resources returned by the resource builder
+ *
+ * @param definition - The RGD metadata: name, apiVersion, kind, spec schema, status schema
+ * @param resourceBuilder - Function receiving a schema proxy, returns Kubernetes resources
+ * @param statusBuilder - Function receiving schema proxy + resources, returns status shape
+ * @param options - Optional serialization options (e.g., custom CEL prefix)
+ * @returns A `TypedResourceGraph` containing the serialized RGD and deploy/toYaml methods
+ *
+ * @example
+ * ```typescript
+ * const webapp = toResourceGraph(
+ *   {
+ *     name: 'webapp',
+ *     apiVersion: 'apps.example.com/v1alpha1',
+ *     kind: 'WebApp',
+ *     spec: type({ name: 'string', replicas: 'number' }),
+ *     status: type({ ready: 'boolean', url: 'string' }),
+ *   },
+ *   (schema) => ({
+ *     deploy: Deployment({ name: schema.spec.name, replicas: schema.spec.replicas }),
+ *     svc: Service({ name: schema.spec.name }),
+ *   }),
+ *   (schema, resources) => ({
+ *     ready: Cel.expr<boolean>(resources.deploy.status.readyReplicas, ' > 0'),
+ *     url: Cel.template('https://%s', schema.spec.name),
+ *   }),
+ * );
+ * ```
  */
 export function toResourceGraph<
   TSpec extends KroCompatibleType,
