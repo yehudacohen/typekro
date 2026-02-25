@@ -646,7 +646,11 @@ export class JavaScriptToCelAnalyzer {
       case 'UnaryExpression':
         return this.convertUnaryExpression(node, context);
       default:
-        throw new Error(`Unsupported expression type: ${node.type}`);
+        throw new ConversionError(
+          `Unsupported expression type: ${node.type}`,
+          String(node.type),
+          'unknown'
+        );
     }
   }
 
@@ -706,7 +710,11 @@ export class JavaScriptToCelAnalyzer {
       // Find return statement
       const returnStatement = this.findReturnStatement(ast);
       if (!returnStatement) {
-        throw new Error('Function must have a return statement for analysis');
+        throw new ConversionError(
+          'Function must have a return statement for analysis',
+          fn.toString(),
+          'function-call'
+        );
       }
 
       // For now, return a placeholder result
@@ -908,7 +916,11 @@ export class JavaScriptToCelAnalyzer {
   private generateCelFromKubernetesRef(ref: KubernetesRef<any>, context: AnalysisContext): string {
     // Validate the KubernetesRef
     if (!ref.resourceId || !ref.fieldPath) {
-      throw new Error(`Invalid KubernetesRef: missing resourceId or fieldPath`);
+      throw new ConversionError(
+        `Invalid KubernetesRef: missing resourceId or fieldPath`,
+        `${ref.resourceId || ''}.${ref.fieldPath || ''}`,
+        'member-access'
+      );
     }
 
     // Generate appropriate CEL expression based on factory type and resource type
@@ -1305,7 +1317,7 @@ export class JavaScriptToCelAnalyzer {
       const parts = expression.split('??').map((part) => part.trim());
 
       if (parts.length < 2) {
-        throw new Error('Invalid mixed expression');
+        throw new ConversionError('Invalid mixed expression', expression, 'nullish-coalescing');
       }
 
       // Build nested conditional expression from right to left
@@ -1382,7 +1394,11 @@ export class JavaScriptToCelAnalyzer {
       // deployment.status.readyReplicas ?? 0 -> deployment.status.readyReplicas != null ? deployment.status.readyReplicas : 0
       const parts = expression.split('??').map((part) => part.trim());
       if (parts.length !== 2) {
-        throw new Error('Invalid nullish coalescing expression');
+        throw new ConversionError(
+          'Invalid nullish coalescing expression',
+          expression,
+          'nullish-coalescing'
+        );
       }
 
       const [left, right] = parts;
@@ -1682,7 +1698,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CompileTimeValidationResult {
     if (!context.compileTimeContext) {
-      throw new Error('Compile-time context required for KubernetesRef validation');
+      throw new ConversionError(
+        'Compile-time context required for KubernetesRef validation',
+        `${ref.resourceId}.${ref.fieldPath}`,
+        'member-access'
+      );
     }
 
     const usageContext = {
@@ -2154,7 +2174,11 @@ export class JavaScriptToCelAnalyzer {
       } as CelExpression;
     }
 
-    throw new Error(`Unable to resolve member expression: ${path}`);
+    throw new ConversionError(
+      `Unable to resolve member expression: ${path}`,
+      path,
+      'member-access'
+    );
   }
 
   /**
@@ -2673,11 +2697,15 @@ export class JavaScriptToCelAnalyzer {
         case 'lastIndexOf':
           return this.convertStringLastIndexOf(object, node.arguments, context);
         default:
-          throw new Error(`Unsupported method call: ${methodName}`);
+          throw new ConversionError(
+            `Unsupported method call: ${methodName}`,
+            methodName,
+            'function-call'
+          );
       }
     }
 
-    throw new Error(`Unsupported call expression`);
+    throw new ConversionError(`Unsupported call expression`, 'call expression', 'function-call');
   }
 
   /**
@@ -2738,7 +2766,11 @@ export class JavaScriptToCelAnalyzer {
         break;
     }
 
-    throw new Error(`Unsupported global function: ${functionName}`);
+    throw new ConversionError(
+      `Unsupported global function: ${functionName}`,
+      functionName,
+      'function-call'
+    );
   }
 
   /**
@@ -2835,7 +2867,11 @@ export class JavaScriptToCelAnalyzer {
         break;
     }
 
-    throw new Error(`Unsupported Math function: ${mathMethod}`);
+    throw new ConversionError(
+      `Unsupported Math function: ${mathMethod}`,
+      `Math.${mathMethod}`,
+      'function-call'
+    );
   }
 
   /**
@@ -2870,7 +2906,11 @@ export class JavaScriptToCelAnalyzer {
           _type: 'string',
         } as CelExpression;
       default:
-        throw new Error(`Unsupported unary operator: ${node.operator}`);
+        throw new ConversionError(
+          `Unsupported unary operator: ${node.operator}`,
+          String(node.operator),
+          'javascript'
+        );
     }
   }
 
@@ -2976,7 +3016,11 @@ export class JavaScriptToCelAnalyzer {
       return this.extractMemberPath(node.expression);
     }
 
-    throw new Error(`Cannot extract path from node type: ${node.type}`);
+    throw new ConversionError(
+      `Cannot extract path from node type: ${node.type}`,
+      String(node.type),
+      'member-access'
+    );
   }
 
   /**
@@ -3074,7 +3118,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('Array.find() requires exactly one argument');
+      throw new ConversionError(
+        'Array.find() requires exactly one argument',
+        'Array.find()',
+        'function-call'
+      );
     }
 
     // For simple property comparisons like c => c.type === "Available", we can convert to CEL
@@ -3136,7 +3184,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('Array.filter() requires exactly one argument');
+      throw new ConversionError(
+        'Array.filter() requires exactly one argument',
+        'Array.filter()',
+        'function-call'
+      );
     }
 
     // For simple property access like i => i.ip, we can convert to CEL
@@ -3193,7 +3245,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('String.includes() requires exactly one argument');
+      throw new ConversionError(
+        'String.includes() requires exactly one argument',
+        'String.includes()',
+        'function-call'
+      );
     }
 
     const searchValue = this.convertASTNode(args[0], context);
@@ -3215,7 +3271,11 @@ export class JavaScriptToCelAnalyzer {
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('Array.map() requires exactly one argument');
+      throw new ConversionError(
+        'Array.map() requires exactly one argument',
+        'Array.map()',
+        'function-call'
+      );
     }
 
     // For simple property access like c => c.name, we can convert to CEL
@@ -3251,7 +3311,11 @@ export class JavaScriptToCelAnalyzer {
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('Array.some() requires exactly one argument');
+      throw new ConversionError(
+        'Array.some() requires exactly one argument',
+        'Array.some()',
+        'function-call'
+      );
     }
 
     // For now, create a placeholder - full implementation would need lambda support
@@ -3273,7 +3337,11 @@ export class JavaScriptToCelAnalyzer {
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('Array.every() requires exactly one argument');
+      throw new ConversionError(
+        'Array.every() requires exactly one argument',
+        'Array.every()',
+        'function-call'
+      );
     }
 
     // For now, create a placeholder - full implementation would need lambda support
@@ -3295,7 +3363,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('String.startsWith() requires exactly one argument');
+      throw new ConversionError(
+        'String.startsWith() requires exactly one argument',
+        'String.startsWith()',
+        'function-call'
+      );
     }
 
     const searchValue = this.convertASTNode(args[0], context);
@@ -3317,7 +3389,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('String.endsWith() requires exactly one argument');
+      throw new ConversionError(
+        'String.endsWith() requires exactly one argument',
+        'String.endsWith()',
+        'function-call'
+      );
     }
 
     const searchValue = this.convertASTNode(args[0], context);
@@ -3339,7 +3415,11 @@ export class JavaScriptToCelAnalyzer {
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 0) {
-      throw new Error('String.toLowerCase() requires no arguments');
+      throw new ConversionError(
+        'String.toLowerCase() requires no arguments',
+        'String.toLowerCase()',
+        'function-call'
+      );
     }
 
     const expression = `${object.expression}.lowerAscii()`;
@@ -3360,7 +3440,11 @@ export class JavaScriptToCelAnalyzer {
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 0) {
-      throw new Error('String.toUpperCase() requires no arguments');
+      throw new ConversionError(
+        'String.toUpperCase() requires no arguments',
+        'String.toUpperCase()',
+        'function-call'
+      );
     }
 
     const expression = `${object.expression}.upperAscii()`;
@@ -3381,7 +3465,11 @@ export class JavaScriptToCelAnalyzer {
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 0) {
-      throw new Error('String.trim() requires no arguments');
+      throw new ConversionError(
+        'String.trim() requires no arguments',
+        'String.trim()',
+        'function-call'
+      );
     }
 
     // CEL doesn't have a direct trim function, so we'll use a placeholder
@@ -3403,7 +3491,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
-      throw new Error('String.substring() requires 1 or 2 arguments');
+      throw new ConversionError(
+        'String.substring() requires 1 or 2 arguments',
+        'String.substring()',
+        'function-call'
+      );
     }
 
     const startIndex = this.convertASTNode(args[0], context);
@@ -3434,7 +3526,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
-      throw new Error('String.slice() requires 1 or 2 arguments');
+      throw new ConversionError(
+        'String.slice() requires 1 or 2 arguments',
+        'String.slice()',
+        'function-call'
+      );
     }
 
     const startIndex = this.convertASTNode(args[0], context);
@@ -3465,7 +3561,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('String.split() requires exactly one argument');
+      throw new ConversionError(
+        'String.split() requires exactly one argument',
+        'String.split()',
+        'function-call'
+      );
     }
 
     const separator = this.convertASTNode(args[0], context);
@@ -3487,7 +3587,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('Array.join() requires exactly one argument');
+      throw new ConversionError(
+        'Array.join() requires exactly one argument',
+        'Array.join()',
+        'function-call'
+      );
     }
 
     const separator = this.convertASTNode(args[0], context);
@@ -3509,7 +3613,11 @@ export class JavaScriptToCelAnalyzer {
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('Array.flatMap() requires exactly one argument');
+      throw new ConversionError(
+        'Array.flatMap() requires exactly one argument',
+        'Array.flatMap()',
+        'function-call'
+      );
     }
 
     const arg = args[0];
@@ -3531,7 +3639,7 @@ export class JavaScriptToCelAnalyzer {
       }
     }
 
-    throw new Error('Unsupported flatMap expression');
+    throw new ConversionError('Unsupported flatMap expression', 'Array.flatMap()', 'function-call');
   }
 
   /**
@@ -3556,7 +3664,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
-      throw new Error('String.padStart() requires 1 or 2 arguments');
+      throw new ConversionError(
+        'String.padStart() requires 1 or 2 arguments',
+        'String.padStart()',
+        'function-call'
+      );
     }
 
     const targetLength = this.convertASTNode(args[0], context);
@@ -3582,7 +3694,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
-      throw new Error('String.padEnd() requires 1 or 2 arguments');
+      throw new ConversionError(
+        'String.padEnd() requires 1 or 2 arguments',
+        'String.padEnd()',
+        'function-call'
+      );
     }
 
     const targetLength = this.convertASTNode(args[0], context);
@@ -3608,7 +3724,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('String.repeat() requires exactly one argument');
+      throw new ConversionError(
+        'String.repeat() requires exactly one argument',
+        'String.repeat()',
+        'function-call'
+      );
     }
 
     const count = this.convertASTNode(args[0], context);
@@ -3632,7 +3752,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 2) {
-      throw new Error('String.replace() requires exactly two arguments');
+      throw new ConversionError(
+        'String.replace() requires exactly two arguments',
+        'String.replace()',
+        'function-call'
+      );
     }
 
     const searchValue = this.convertASTNode(args[0], context);
@@ -3657,7 +3781,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('String.indexOf() requires exactly one argument');
+      throw new ConversionError(
+        'String.indexOf() requires exactly one argument',
+        'String.indexOf()',
+        'function-call'
+      );
     }
 
     const searchValue = this.convertASTNode(args[0], context);
@@ -3681,7 +3809,11 @@ export class JavaScriptToCelAnalyzer {
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
-      throw new Error('String.lastIndexOf() requires exactly one argument');
+      throw new ConversionError(
+        'String.lastIndexOf() requires exactly one argument',
+        'String.lastIndexOf()',
+        'function-call'
+      );
     }
 
     const searchValue = this.convertASTNode(args[0], context);
@@ -3759,7 +3891,11 @@ export class JavaScriptToCelAnalyzer {
 
     const celOperator = operatorMap[operator];
     if (!celOperator) {
-      throw new Error(`Unsupported binary operator: ${operator}`);
+      throw new ConversionError(
+        `Unsupported binary operator: ${operator}`,
+        String(operator),
+        'binary-operation'
+      );
     }
     return celOperator;
   }

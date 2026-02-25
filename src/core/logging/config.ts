@@ -1,3 +1,4 @@
+import { TypeKroError } from '../errors.js';
 import type { LoggerConfig } from './types.js';
 
 /**
@@ -59,12 +60,16 @@ export function getLoggerConfigFromEnv(): LoggerConfig {
 export function validateLoggerConfig(config: LoggerConfig): void {
   const validLevels = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
   if (!validLevels.includes(config.level)) {
-    throw new Error(
-      `Invalid log level: ${config.level}. Must be one of: ${validLevels.join(', ')}`
+    throw new TypeKroError(
+      `Invalid log level: ${config.level}. Must be one of: ${validLevels.join(', ')}`,
+      'INVALID_CONFIG',
+      { level: config.level, validLevels }
     );
   }
 
   if (config.destination && typeof config.destination !== 'string') {
-    throw new Error('Log destination must be a string');
+    throw new TypeKroError('Log destination must be a string', 'INVALID_CONFIG', {
+      destination: config.destination,
+    });
   }
 }

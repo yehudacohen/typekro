@@ -8,7 +8,7 @@
 import { toCamelCase } from '../../utils/helpers.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
-import { ValidationError } from '../errors.js';
+import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
 import {
   createKubernetesClientProvider,
   createKubernetesClientProviderWithKubeConfig,
@@ -175,7 +175,7 @@ export class DirectResourceFactoryImpl<
       const errorMessage =
         instance.metadata?.annotations?.['typekro.io/deployment-error'] ||
         'Deployment failed - check logs for details';
-      throw new Error(errorMessage);
+      throw new ResourceGraphFactoryError(errorMessage, this.name, 'deployment');
     }
 
     // Track the deployed instance
@@ -231,7 +231,10 @@ export class DirectResourceFactoryImpl<
   async deleteInstance(name: string): Promise<void> {
     const instance = this.deployedInstances.get(name);
     if (!instance) {
-      throw new Error(`Instance not found: ${name}`);
+      throw new TypeKroError(`Instance not found: ${name}`, 'INSTANCE_NOT_FOUND', {
+        instanceName: name,
+        factoryName: this.name,
+      });
     }
 
     try {
@@ -239,8 +242,10 @@ export class DirectResourceFactoryImpl<
       const engine = this.getDeploymentEngine();
       const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
       if (!deploymentId) {
-        throw new Error(
-          `Instance ${name} does not have a deployment ID annotation. Cannot perform cleanup.`
+        throw new TypeKroError(
+          `Instance ${name} does not have a deployment ID annotation. Cannot perform cleanup.`,
+          'MISSING_DEPLOYMENT_ID',
+          { instanceName: name, factoryName: this.name }
         );
       }
       const rollbackResult = await engine.rollback(deploymentId);
@@ -269,7 +274,11 @@ export class DirectResourceFactoryImpl<
         // Don't throw - the instance is already gone
         return;
       }
-      throw new Error(`Failed to delete instance ${name}: ${errorMessage}`);
+      throw new ResourceGraphFactoryError(
+        `Failed to delete instance ${name}: ${errorMessage}`,
+        this.name,
+        'cleanup'
+      );
     }
   }
 

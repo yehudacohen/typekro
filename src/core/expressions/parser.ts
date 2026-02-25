@@ -14,7 +14,7 @@
  * @module parser
  */
 
-import { Parser, type Options } from 'acorn';
+import { type Options, Parser } from 'acorn';
 import type { Node as ESTreeNode } from 'estree';
 
 /**
@@ -95,7 +95,6 @@ export class ParserError extends Error {
     return lines.join('\n');
   }
 }
-
 
 /**
  * Options for parsing expressions
@@ -198,7 +197,7 @@ export function parseExpression(expression: string, options?: ParseOptions): EST
       return firstBody as unknown as ESTreeNode;
     }
 
-    throw new Error('Failed to extract expression from parsed AST');
+    throw new ParserError('Failed to extract expression from parsed AST', 1, 0, expression);
   } catch (error) {
     // Try parsing without wrapping (for statements or complex expressions)
     try {
@@ -214,7 +213,7 @@ export function parseExpression(expression: string, options?: ParseOptions): EST
         return firstStatement as unknown as ESTreeNode;
       }
 
-      throw new Error('Empty AST body');
+      throw new ParserError('Empty AST body', 1, 0, expression);
     } catch {
       // Use the original error for better error messages
       if (error instanceof SyntaxError) {

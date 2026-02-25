@@ -5,6 +5,7 @@
  * alchemy resource types from TypeKro resources with proper validation.
  */
 
+import { ValidationError } from '../core/errors.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
 
 /**
@@ -34,23 +35,39 @@ const RESOURCE_TYPE_VALIDATION = {
  */
 function validateResourceTypeName(kind: string): void {
   if (!kind) {
-    throw new Error('Resource kind is required for type inference');
+    throw new ValidationError(
+      'Resource kind is required for type inference',
+      'Unknown',
+      'unknown',
+      'kind'
+    );
   }
 
   if (kind.length > RESOURCE_TYPE_VALIDATION.maxLength) {
-    throw new Error(
-      `Resource kind '${kind}' exceeds maximum length of ${RESOURCE_TYPE_VALIDATION.maxLength} characters`
+    throw new ValidationError(
+      `Resource kind '${kind}' exceeds maximum length of ${RESOURCE_TYPE_VALIDATION.maxLength} characters`,
+      kind,
+      'unknown',
+      'kind'
     );
   }
 
   if (!RESOURCE_TYPE_VALIDATION.allowedCharacters.test(kind)) {
-    throw new Error(
-      `Resource kind '${kind}' contains invalid characters. Only alphanumeric characters are allowed, starting with a letter.`
+    throw new ValidationError(
+      `Resource kind '${kind}' contains invalid characters. Only alphanumeric characters are allowed, starting with a letter.`,
+      kind,
+      'unknown',
+      'kind'
     );
   }
 
   if (RESOURCE_TYPE_VALIDATION.reservedNames.has(kind)) {
-    throw new Error(`Resource kind '${kind}' is a reserved name and cannot be used`);
+    throw new ValidationError(
+      `Resource kind '${kind}' is a reserved name and cannot be used`,
+      kind,
+      'unknown',
+      'kind'
+    );
   }
 }
 
@@ -63,7 +80,12 @@ export function inferAlchemyTypeFromTypeKroResource<T extends Enhanced<any, any>
 ): string {
   // Validate that the resource has a kind
   if (!resource.kind) {
-    throw new Error('Resource must have a kind field for Alchemy type inference');
+    throw new ValidationError(
+      'Resource must have a kind field for Alchemy type inference',
+      'Unknown',
+      'unknown',
+      'kind'
+    );
   }
 
   // Validate the resource kind naming patterns

@@ -5,6 +5,7 @@
  * to eliminate code duplication and ensure consistent behavior.
  */
 
+import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
 import type { DeploymentOptions, FactoryOptions } from '../types/deployment.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../types/serialization.js';
@@ -18,7 +19,12 @@ export function validateSpec<TSpec extends KroCompatibleType, TStatus extends Kr
 ): void {
   const validationResult = schemaDefinition.spec(spec);
   if (validationResult instanceof Error) {
-    throw new Error(`Invalid spec: ${validationResult.message}`);
+    throw new ValidationError(
+      `Invalid spec: ${validationResult.message}`,
+      'Unknown',
+      'unknown',
+      'spec'
+    );
   }
 }
 
@@ -91,15 +97,14 @@ export function createEnhancedMetadata(
  */
 export function handleDeploymentError(error: unknown, context: string): never {
   if (error instanceof Error) {
-    // Use proper error chaining with cause property
-    const enhancedError = new Error(`${context}: ${error.message}`);
-    enhancedError.cause = error;
-    if (error.stack) {
-      enhancedError.stack = error.stack;
-    }
-    throw enhancedError;
+    throw new ResourceGraphFactoryError(
+      `${context}: ${error.message}`,
+      context,
+      'deployment',
+      error
+    );
   }
-  throw new Error(`${context}: ${String(error)}`);
+  throw new ResourceGraphFactoryError(`${context}: ${String(error)}`, context, 'deployment');
 }
 
 /**
@@ -107,12 +112,20 @@ export function handleDeploymentError(error: unknown, context: string): never {
  */
 export function validateAlchemyScope(alchemyScope: unknown, context: string): void {
   if (!alchemyScope) {
-    throw new Error(`${context}: Alchemy scope is required for alchemy deployment`);
+    throw new TypeKroError(
+      `${context}: Alchemy scope is required for alchemy deployment`,
+      'MISSING_ALCHEMY_SCOPE',
+      { context }
+    );
   }
   // Ensure the provided scope looks like a valid Alchemy scope (has a run function)
   const hasRunFunction = typeof (alchemyScope as { run?: unknown })?.run === 'function';
   if (!hasRunFunction) {
-    throw new Error(`${context}: Alchemy scope is invalid (missing run function)`);
+    throw new TypeKroError(
+      `${context}: Alchemy scope is invalid (missing run function)`,
+      'INVALID_ALCHEMY_SCOPE',
+      { context }
+    );
   }
 }
 

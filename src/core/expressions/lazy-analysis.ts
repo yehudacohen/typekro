@@ -8,7 +8,7 @@
 
 import { containsKubernetesRefs, extractResourceReferences } from '../../utils/type-guards.js';
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
-import { ConversionError } from '../errors.js';
+import { ConversionError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type { AnalysisContext, CelConversionResult } from './analyzer.js';
@@ -1864,7 +1864,11 @@ export class ParallelExpressionAnalyzer {
     const visit = (key: string): void => {
       if (visited.has(key)) return;
       if (visiting.has(key)) {
-        throw new Error(`Circular dependency detected involving ${key}`);
+        throw new TypeKroError(
+          `Circular dependency detected involving ${key}`,
+          'CIRCULAR_EXPRESSION_DEPENDENCY',
+          { key }
+        );
       }
 
       visiting.add(key);

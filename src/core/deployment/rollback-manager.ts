@@ -6,6 +6,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import { DeploymentTimeoutError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentError, DeploymentEvent, RollbackResult } from '../types/deployment.js';
@@ -118,8 +119,10 @@ export class ResourceRollbackManager {
     const namespace = this.extractStringValue(resource.metadata?.namespace);
 
     if (!name) {
-      throw new Error(
-        `Resource name is required for deletion: ${this.getResourceIdentifier(resource)}`
+      throw new TypeKroError(
+        `Resource name is required for deletion: ${this.getResourceIdentifier(resource)}`,
+        'MISSING_RESOURCE_NAME',
+        { resourceIdentifier: this.getResourceIdentifier(resource), operation: 'deletion' }
       );
     }
 
@@ -176,8 +179,10 @@ export class ResourceRollbackManager {
     const namespace = this.extractStringValue(resource.metadata?.namespace);
 
     if (!name) {
-      throw new Error(
-        `Resource name is required for force deletion: ${this.getResourceIdentifier(resource)}`
+      throw new TypeKroError(
+        `Resource name is required for force deletion: ${this.getResourceIdentifier(resource)}`,
+        'MISSING_RESOURCE_NAME',
+        { resourceIdentifier: this.getResourceIdentifier(resource), operation: 'force-deletion' }
       );
     }
 
@@ -215,13 +220,23 @@ export class ResourceRollbackManager {
         const namespace = this.extractStringValue(resource.metadata?.namespace);
 
         if (!name) {
-          throw new Error(
-            `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`
+          throw new TypeKroError(
+            `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`,
+            'MISSING_RESOURCE_NAME',
+            {
+              resourceIdentifier: this.getResourceIdentifier(resource),
+              operation: 'deletion-check',
+            }
           );
         }
         if (!namespace) {
-          throw new Error(
-            `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`
+          throw new TypeKroError(
+            `Resource namespace is required for deletion check: ${this.getResourceIdentifier(resource)}`,
+            'MISSING_RESOURCE_NAMESPACE',
+            {
+              resourceIdentifier: this.getResourceIdentifier(resource),
+              operation: 'deletion-check',
+            }
           );
         }
 
@@ -250,8 +265,12 @@ export class ResourceRollbackManager {
       }
     }
 
-    throw new Error(
-      `Timeout waiting for resource deletion: ${this.getResourceIdentifier(resource)}`
+    throw new DeploymentTimeoutError(
+      `Timeout waiting for resource deletion: ${this.getResourceIdentifier(resource)}`,
+      resource.kind,
+      this.extractStringValue(resource.metadata?.name) || 'unknown',
+      timeout,
+      'deletion'
     );
   }
 

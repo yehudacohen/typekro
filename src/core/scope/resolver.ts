@@ -5,7 +5,8 @@
  * factory declarations and deployment context.
  */
 
-import type { FactoryScopeConfig, EmbeddedScope } from '../types/factory-scope.js';
+import { TypeKroError } from '../errors.js';
+import type { EmbeddedScope, FactoryScopeConfig } from '../types/factory-scope.js';
 
 /**
  * Resolve the scope for a resource based on factory config and deployment context
@@ -25,7 +26,11 @@ export function resolveScope(factoryConfig: FactoryScopeConfig, namespace?: stri
       resolvedScope = namespace ? 'namespaced' : 'cluster';
       break;
     default:
-      throw new Error(`Invalid factory scope: ${factoryConfig.scope}`);
+      throw new TypeKroError(
+        `Invalid factory scope: ${factoryConfig.scope}`,
+        'INVALID_FACTORY_SCOPE',
+        { scope: factoryConfig.scope, kind: factoryConfig.kind }
+      );
   }
 
   return {

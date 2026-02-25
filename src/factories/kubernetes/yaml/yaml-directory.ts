@@ -1,5 +1,6 @@
 import * as yaml from 'js-yaml';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
+import { ResourceGraphFactoryError } from '../../../core/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
@@ -111,13 +112,19 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
               if (deploymentContext.kubernetesApi) {
                 await deploymentContext.kubernetesApi.create(manifest);
               } else {
-                throw new Error('No Kubernetes API available for YAML deployment');
+                throw new ResourceGraphFactoryError(
+                  'No Kubernetes API available for YAML deployment',
+                  config.name,
+                  'deployment'
+                );
               }
             } else if (deploymentContext.kubernetesApi) {
               await deploymentContext.kubernetesApi.create(manifest);
             } else {
-              throw new Error(
-                'No deployment method available: neither alchemyScope nor kubernetesApi provided'
+              throw new ResourceGraphFactoryError(
+                'No deployment method available: neither alchemyScope nor kubernetesApi provided',
+                config.name,
+                'deployment'
               );
             }
 

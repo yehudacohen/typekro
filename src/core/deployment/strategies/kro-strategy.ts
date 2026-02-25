@@ -10,6 +10,7 @@ import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js
 import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
 import { preserveNonEnumerableProperties } from '../../../utils/helpers.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
+import { DeploymentTimeoutError, ResourceGraphFactoryError, TypeKroError } from '../../errors.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { generateKroSchemaFromArktype } from '../../serialization/schema.js';
@@ -240,14 +241,20 @@ export class KroDeploymentStrategy<
   private convertToKubernetesName(name: string): string {
     // Validate input name
     if (!name || typeof name !== 'string') {
-      throw new Error(
-        `Invalid factory name: ${JSON.stringify(name)}. Factory name must be a non-empty string.`
+      throw new TypeKroError(
+        `Invalid factory name: ${JSON.stringify(name)}. Factory name must be a non-empty string.`,
+        'INVALID_FACTORY_NAME',
+        { factoryName: name }
       );
     }
 
     const trimmedName = name.trim();
     if (trimmedName.length === 0) {
-      throw new Error(`Invalid factory name: Factory name cannot be empty or whitespace-only.`);
+      throw new TypeKroError(
+        `Invalid factory name: Factory name cannot be empty or whitespace-only.`,
+        'INVALID_FACTORY_NAME',
+        { factoryName: name }
+      );
     }
 
     // Convert to kebab-case and validate result
@@ -257,14 +264,18 @@ export class KroDeploymentStrategy<
 
     // Validate Kubernetes naming conventions
     if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-      throw new Error(
-        `Invalid factory name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
+      throw new TypeKroError(
+        `Invalid factory name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`,
+        'INVALID_KUBERNETES_NAME',
+        { factoryName: name, kubernetesName }
       );
     }
 
     if (kubernetesName.length > 253) {
-      throw new Error(
-        `Invalid factory name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
+      throw new TypeKroError(
+        `Invalid factory name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`,
+        'KUBERNETES_NAME_TOO_LONG',
+        { factoryName: name, kubernetesName, length: kubernetesName.length }
       );
     }
 
@@ -385,7 +396,11 @@ export class KroDeploymentStrategy<
             (c: { type: string; status: string; message?: string }) => c.status === 'False'
           );
           const errorMessage = failedCondition?.message || 'Unknown error';
-          throw new Error(`Kro resource deployment failed: ${errorMessage}`);
+          throw new ResourceGraphFactoryError(
+            `Kro resource deployment failed: ${errorMessage}`,
+            this.factoryName,
+            'deployment'
+          );
         }
 
         logger.debug('Kro resource not ready yet, continuing to wait', {
@@ -407,8 +422,12 @@ export class KroDeploymentStrategy<
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
-    throw new Error(
-      `Timeout waiting for Kro resource ${instanceName} to be ready after ${timeout}ms`
+    throw new DeploymentTimeoutError(
+      `Timeout waiting for Kro resource ${instanceName} to be ready after ${timeout}ms`,
+      this.schemaDefinition.kind,
+      instanceName,
+      timeout,
+      'readiness'
     );
   }
 }

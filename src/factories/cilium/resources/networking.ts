@@ -9,18 +9,19 @@
  * lifecycle management and status monitoring.
  */
 
-import { createResource } from '../../shared.js';
+import { ValidationError } from '../../../core/errors.js';
 import type { Enhanced, ReadinessEvaluator, ResourceStatus } from '../../../core/types/index.js';
+import { createResource } from '../../shared.js';
 
 import type {
-  CiliumNetworkPolicy,
   CiliumClusterwideNetworkPolicy,
-  CiliumNetworkPolicyConfig,
   CiliumClusterwideNetworkPolicyConfig,
-  CiliumNetworkPolicySpec,
-  CiliumNetworkPolicyStatus,
   CiliumClusterwideNetworkPolicySpec,
   CiliumClusterwideNetworkPolicyStatus,
+  CiliumNetworkPolicy,
+  CiliumNetworkPolicyConfig,
+  CiliumNetworkPolicySpec,
+  CiliumNetworkPolicyStatus,
   CiliumResourceStatus,
 } from '../types.js';
 
@@ -264,11 +265,21 @@ export function ciliumNetworkPolicy(
   // Validate required fields - allow CEL expressions, KubernetesRef objects, and JavaScript expression results
   const name = resource.metadata?.name;
   if (name === undefined || name === null) {
-    throw new Error('CiliumNetworkPolicy name is required');
+    throw new ValidationError(
+      'CiliumNetworkPolicy name is required',
+      'CiliumNetworkPolicy',
+      'unknown',
+      'metadata.name'
+    );
   }
 
   if (!resource.spec) {
-    throw new Error('CiliumNetworkPolicy spec is required');
+    throw new ValidationError(
+      'CiliumNetworkPolicy spec is required',
+      'CiliumNetworkPolicy',
+      String(name),
+      'spec'
+    );
   }
 
   // Validate endpoint selector if provided (empty object {} is valid for selecting all endpoints)
@@ -277,8 +288,11 @@ export function ciliumNetworkPolicy(
       !resource.spec.endpointSelector.matchLabels &&
       !resource.spec.endpointSelector.matchExpressions
     ) {
-      throw new Error(
-        'CiliumNetworkPolicy endpointSelector must have matchLabels or matchExpressions'
+      throw new ValidationError(
+        'CiliumNetworkPolicy endpointSelector must have matchLabels or matchExpressions',
+        'CiliumNetworkPolicy',
+        String(name),
+        'spec.endpointSelector'
       );
     }
   }
@@ -293,8 +307,11 @@ export function ciliumNetworkPolicy(
         !rule.fromEntities &&
         !rule.fromGroups
       ) {
-        throw new Error(
-          `CiliumNetworkPolicy ingress rule ${index} must specify at least one source`
+        throw new ValidationError(
+          `CiliumNetworkPolicy ingress rule ${index} must specify at least one source`,
+          'CiliumNetworkPolicy',
+          String(name),
+          `spec.ingress[${index}]`
         );
       }
     });
@@ -311,8 +328,11 @@ export function ciliumNetworkPolicy(
         !rule.toGroups &&
         !rule.toFQDNs
       ) {
-        throw new Error(
-          `CiliumNetworkPolicy egress rule ${index} must specify at least one destination`
+        throw new ValidationError(
+          `CiliumNetworkPolicy egress rule ${index} must specify at least one destination`,
+          'CiliumNetworkPolicy',
+          String(name),
+          `spec.egress[${index}]`
         );
       }
     });
@@ -521,11 +541,21 @@ export function ciliumClusterwideNetworkPolicy(
   // Validate required fields - allow CEL expressions, KubernetesRef objects, and JavaScript expression results
   const name = resource.metadata?.name;
   if (name === undefined || name === null) {
-    throw new Error('CiliumClusterwideNetworkPolicy name is required');
+    throw new ValidationError(
+      'CiliumClusterwideNetworkPolicy name is required',
+      'CiliumClusterwideNetworkPolicy',
+      'unknown',
+      'metadata.name'
+    );
   }
 
   if (!resource.spec) {
-    throw new Error('CiliumClusterwideNetworkPolicy spec is required');
+    throw new ValidationError(
+      'CiliumClusterwideNetworkPolicy spec is required',
+      'CiliumClusterwideNetworkPolicy',
+      String(name),
+      'spec'
+    );
   }
 
   // Validate endpoint selector if provided (empty object {} is valid for selecting all endpoints)
@@ -534,8 +564,11 @@ export function ciliumClusterwideNetworkPolicy(
       !resource.spec.endpointSelector.matchLabels &&
       !resource.spec.endpointSelector.matchExpressions
     ) {
-      throw new Error(
-        'CiliumClusterwideNetworkPolicy endpointSelector must have matchLabels or matchExpressions'
+      throw new ValidationError(
+        'CiliumClusterwideNetworkPolicy endpointSelector must have matchLabels or matchExpressions',
+        'CiliumClusterwideNetworkPolicy',
+        String(name),
+        'spec.endpointSelector'
       );
     }
   }
@@ -543,8 +576,11 @@ export function ciliumClusterwideNetworkPolicy(
   // Validate node selector if provided
   if (resource.spec.nodeSelector) {
     if (!resource.spec.nodeSelector.matchLabels && !resource.spec.nodeSelector.matchExpressions) {
-      throw new Error(
-        'CiliumClusterwideNetworkPolicy nodeSelector must have matchLabels or matchExpressions'
+      throw new ValidationError(
+        'CiliumClusterwideNetworkPolicy nodeSelector must have matchLabels or matchExpressions',
+        'CiliumClusterwideNetworkPolicy',
+        String(name),
+        'spec.nodeSelector'
       );
     }
   }
@@ -559,8 +595,11 @@ export function ciliumClusterwideNetworkPolicy(
         !rule.fromEntities &&
         !rule.fromGroups
       ) {
-        throw new Error(
-          `CiliumClusterwideNetworkPolicy ingress rule ${index} must specify at least one source`
+        throw new ValidationError(
+          `CiliumClusterwideNetworkPolicy ingress rule ${index} must specify at least one source`,
+          'CiliumClusterwideNetworkPolicy',
+          String(name),
+          `spec.ingress[${index}]`
         );
       }
     });
@@ -577,8 +616,11 @@ export function ciliumClusterwideNetworkPolicy(
         !rule.toGroups &&
         !rule.toFQDNs
       ) {
-        throw new Error(
-          `CiliumClusterwideNetworkPolicy egress rule ${index} must specify at least one destination`
+        throw new ValidationError(
+          `CiliumClusterwideNetworkPolicy egress rule ${index} must specify at least one destination`,
+          'CiliumClusterwideNetworkPolicy',
+          String(name),
+          `spec.egress[${index}]`
         );
       }
     });

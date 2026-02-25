@@ -1,16 +1,17 @@
 /**
  * Expression Proxy System for JavaScript-to-CEL Conversion
- * 
+ *
  * This module provides a proxy system that intercepts JavaScript operations on KubernetesRef objects
  * and creates expression KubernetesRef objects instead of evaluating them immediately.
- * 
+ *
  * The key insight is that we need to capture expressions BEFORE they're evaluated,
  * not try to detect KubernetesRef objects after evaluation has already happened.
  */
 
-import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
-import type { KubernetesRef } from '../types/index.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
+import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
+import { ConversionError } from '../errors.js';
+import type { KubernetesRef } from '../types/index.js';
 
 /**
  * Expression KubernetesRef - represents a JavaScript expression that should be converted to CEL
@@ -38,7 +39,11 @@ function createBinaryExpressionRef<T>(
   fieldPath: string = `${left.fieldPath || 'unknown'} ${operator} ${right}`
 ): ExpressionKubernetesRef<T> {
   const expressionRef = (() => {
-    throw new Error('Expression KubernetesRef should not be called as a function');
+    throw new ConversionError(
+      'Expression KubernetesRef should not be called as a function',
+      fieldPath,
+      'binary-operation'
+    );
   }) as any;
 
   Object.defineProperties(expressionRef, {
@@ -48,7 +53,7 @@ function createBinaryExpressionRef<T>(
     __expressionType: { value: 'binary', enumerable: false },
     __operator: { value: operator, enumerable: false },
     __left: { value: left, enumerable: false },
-    __right: { value: right, enumerable: false }
+    __right: { value: right, enumerable: false },
   });
 
   return expressionRef as ExpressionKubernetesRef<T>;
@@ -64,7 +69,11 @@ function createTemplateExpressionRef<T>(
   fieldPath: string = `template(${template})`
 ): ExpressionKubernetesRef<T> {
   const expressionRef = (() => {
-    throw new Error('Expression KubernetesRef should not be called as a function');
+    throw new ConversionError(
+      'Expression KubernetesRef should not be called as a function',
+      fieldPath,
+      'template-literal'
+    );
   }) as any;
 
   Object.defineProperties(expressionRef, {
@@ -73,7 +82,7 @@ function createTemplateExpressionRef<T>(
     fieldPath: { value: fieldPath, enumerable: false },
     __expressionType: { value: 'template', enumerable: false },
     __template: { value: template, enumerable: false },
-    __templateParts: { value: parts, enumerable: false }
+    __templateParts: { value: parts, enumerable: false },
   });
 
   return expressionRef as ExpressionKubernetesRef<T>;
@@ -90,7 +99,11 @@ function createConditionalExpressionRef<T>(
   fieldPath: string = `${condition.fieldPath || 'unknown'} ? ${consequent} : ${alternate}`
 ): ExpressionKubernetesRef<T> {
   const expressionRef = (() => {
-    throw new Error('Expression KubernetesRef should not be called as a function');
+    throw new ConversionError(
+      'Expression KubernetesRef should not be called as a function',
+      fieldPath,
+      'conditional'
+    );
   }) as any;
 
   Object.defineProperties(expressionRef, {
@@ -100,7 +113,7 @@ function createConditionalExpressionRef<T>(
     __expressionType: { value: 'conditional', enumerable: false },
     __condition: { value: condition, enumerable: false },
     __consequent: { value: consequent, enumerable: false },
-    __alternate: { value: alternate, enumerable: false }
+    __alternate: { value: alternate, enumerable: false },
   });
 
   return expressionRef as ExpressionKubernetesRef<T>;
@@ -108,7 +121,7 @@ function createConditionalExpressionRef<T>(
 
 /**
  * Enhanced KubernetesRef that supports expression operations
- * 
+ *
  * This proxy intercepts operations on KubernetesRef objects and creates
  * expression KubernetesRef objects instead of evaluating them immediately.
  */
@@ -133,13 +146,13 @@ function createExpressionProxy<T>(ref: KubernetesRef<T>): KubernetesRef<T> {
 
       // Return the original property
       return Reflect.get(target, prop, receiver);
-    }
+    },
   }) as KubernetesRef<T>;
 }
 
 /**
  * Expression capture system that overrides global operators
- * 
+ *
  * This is a more advanced approach that tries to capture expressions
  * by overriding comparison and logical operators.
  */
@@ -169,15 +182,18 @@ export class ExpressionCaptureSystem {
    * Create a KubernetesRef that captures expressions when used in operations
    */
   createCapturingRef<T>(resourceId: string, fieldPath: string): KubernetesRef<T> {
-    
     const ref = (() => {
-      throw new Error('KubernetesRef should not be called as a function');
+      throw new ConversionError(
+        'KubernetesRef should not be called as a function',
+        fieldPath,
+        'member-access'
+      );
     }) as any;
 
     Object.defineProperties(ref, {
       [KUBERNETES_REF_BRAND]: { value: true, enumerable: false },
       resourceId: { value: resourceId, enumerable: false },
-      fieldPath: { value: fieldPath, enumerable: false }
+      fieldPath: { value: fieldPath, enumerable: false },
     });
 
     // Create a proxy that intercepts operations
@@ -191,14 +207,17 @@ export class ExpressionCaptureSystem {
               return `__KUBERNETES_REF_${resourceId}_${fieldPath}__`;
             }
             // For numeric comparisons, return a special object
-            return new Proxy({}, {
-              get(_, op) {
-                if (op === Symbol.toPrimitive) {
-                  return () => receiver;
-                }
-                return receiver;
+            return new Proxy(
+              {},
+              {
+                get(_, op) {
+                  if (op === Symbol.toPrimitive) {
+                    return () => receiver;
+                  }
+                  return receiver;
+                },
               }
-            });
+            );
           };
         }
 
@@ -208,7 +227,7 @@ export class ExpressionCaptureSystem {
 
         // Return the original property
         return Reflect.get(target, prop, receiver);
-      }
+      },
     }) as KubernetesRef<T>;
   }
 }
@@ -231,13 +250,13 @@ export function isExpressionKubernetesRef(value: any): value is ExpressionKubern
 export function expressionRefToCel(expr: ExpressionKubernetesRef): string {
   switch (expr.__expressionType) {
     case 'binary': {
-      const left = isKubernetesRef(expr.__left) 
+      const left = isKubernetesRef(expr.__left)
         ? `\${${expr.__left.resourceId}.${expr.__left.fieldPath}}`
         : JSON.stringify(expr.__left);
       const right = isKubernetesRef(expr.__right)
         ? `\${${expr.__right.resourceId}.${expr.__right.fieldPath}}`
         : JSON.stringify(expr.__right);
-      
+
       // Map JavaScript operators to CEL operators
       const celOperator = mapJavaScriptOperatorToCel(expr.__operator || '');
       return `\${${left} ${celOperator} ${right}}`;
@@ -257,7 +276,7 @@ export function expressionRefToCel(expr: ExpressionKubernetesRef): string {
       const alternate = isKubernetesRef(expr.__alternate)
         ? `\${${expr.__alternate.resourceId}.${expr.__alternate.fieldPath}}`
         : JSON.stringify(expr.__alternate);
-      
+
       return `\${${condition} ? ${consequent} : ${alternate}}`;
     }
 
@@ -283,7 +302,7 @@ function mapJavaScriptOperatorToCel(jsOperator: string): string {
     '-': '-',
     '*': '*',
     '/': '/',
-    '%': '%'
+    '%': '%',
   };
 
   return operatorMap[jsOperator] || jsOperator;
@@ -293,6 +312,6 @@ export {
   createBinaryExpressionRef,
   createTemplateExpressionRef,
   createConditionalExpressionRef,
-  createExpressionProxy
+  createExpressionProxy,
 };
 export type { ExpressionKubernetesRef };
