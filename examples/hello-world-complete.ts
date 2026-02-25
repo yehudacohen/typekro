@@ -364,11 +364,15 @@ async function deployCompleteStack() {
     await new Promise((resolve) => setTimeout(resolve, 120000));
 
     try {
-      const { execSync } = await import('node:child_process');
-      const curlResult = execSync(`curl -s -o /dev/null -w "%{http_code}" https://${FULL_DOMAIN}`, {
-        encoding: 'utf8',
-        timeout: 30000,
-      });
+      const { execFileSync } = await import('node:child_process');
+      const curlResult = execFileSync(
+        'curl',
+        ['-s', '-o', '/dev/null', '-w', '%{http_code}', `https://${FULL_DOMAIN}`],
+        {
+          encoding: 'utf8',
+          timeout: 30000,
+        }
+      );
 
       if (curlResult.trim() === '200') {
         console.log('✅ Webapp is accessible via HTTPS!');
