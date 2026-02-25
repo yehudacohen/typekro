@@ -9,6 +9,7 @@ import type * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/index';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
+import { TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
@@ -466,7 +467,11 @@ export class ReferenceResolver {
         return value as T;
       }
       // If schema not in context, this is an error
-      throw new Error(`Schema reference found but schema not provided in context`);
+      throw new TypeKroError(
+        `Schema reference found but schema not provided in context`,
+        'SCHEMA_NOT_PROVIDED',
+        { resourceId: ref.resourceId, fieldPath: ref.fieldPath }
+      );
     }
 
     // First check if resource is in our deployment context

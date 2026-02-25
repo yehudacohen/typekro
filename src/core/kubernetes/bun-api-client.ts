@@ -39,6 +39,7 @@ import type { AuthMethodsConfiguration } from '@kubernetes/client-node/dist/gen/
 import type { Configuration } from '@kubernetes/client-node/dist/gen/configuration.js';
 import { createConfiguration } from '@kubernetes/client-node/dist/gen/configuration.js';
 import { ServerConfiguration } from '@kubernetes/client-node/dist/gen/servers.js';
+import { KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
   BunCompatibleHttpLibrary,
@@ -80,7 +81,7 @@ export function createBunCompatibleApiClient<T>(
 
   const cluster = kubeConfig.getCurrentCluster();
   if (!cluster) {
-    throw new Error('No active cluster in KubeConfig');
+    throw new KubernetesClientError('No active cluster in KubeConfig', 'configuration');
   }
 
   // Create configuration with Bun-compatible HTTP library
@@ -227,7 +228,7 @@ export function createBunCompatibleKubernetesObjectApi(
 
   const cluster = kubeConfig.getCurrentCluster();
   if (!cluster) {
-    throw new Error('No active cluster in KubeConfig');
+    throw new KubernetesClientError('No active cluster in KubeConfig', 'configuration');
   }
 
   // Create configuration with Bun-compatible HTTP library

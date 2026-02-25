@@ -9,6 +9,7 @@
 import type { CompositionContext } from '../../factories/shared.js';
 import { getCurrentCompositionContext } from '../../factories/shared.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
+import { CompositionExecutionError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type {
@@ -353,8 +354,12 @@ export class CompositionExpressionAnalyzer {
         conversionMetadata,
       };
     } catch (error) {
-      throw new Error(
-        `Failed to analyze composition function: ${error instanceof Error ? error.message : String(error)}`
+      throw new CompositionExecutionError(
+        `Failed to analyze composition function: ${error instanceof Error ? error.message : String(error)}`,
+        'unknown',
+        'validation',
+        undefined,
+        error instanceof Error ? error : undefined
       );
     }
   }
@@ -409,8 +414,12 @@ export class CompositionExpressionAnalyzer {
         requiresCelConversion: kubernetesRefsInResources.length > 0,
       };
     } catch (error) {
-      throw new Error(
-        `Failed to analyze resource creation: ${error instanceof Error ? error.message : String(error)}`
+      throw new CompositionExecutionError(
+        `Failed to analyze resource creation: ${error instanceof Error ? error.message : String(error)}`,
+        'unknown',
+        'resource-creation',
+        undefined,
+        error instanceof Error ? error : undefined
       );
     }
   }

@@ -5,7 +5,7 @@
  * efficient traversal and topological sorting capabilities.
  */
 
-import { CircularDependencyError } from '../errors.js';
+import { CircularDependencyError, TypeKroError } from '../errors.js';
 import type { DependencyNode } from '../types/dependencies.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 
@@ -17,7 +17,11 @@ export class DependencyGraph {
    */
   addNode(id: string, resource: DeployableK8sResource<Enhanced<unknown, unknown>>): void {
     if (this.nodes.has(id)) {
-      throw new Error(`Node with id '${id}' already exists in dependency graph`);
+      throw new TypeKroError(
+        `Node with id '${id}' already exists in dependency graph`,
+        'DUPLICATE_GRAPH_NODE',
+        { nodeId: id }
+      );
     }
 
     this.nodes.set(id, {
@@ -38,10 +42,18 @@ export class DependencyGraph {
     const dependency = this.nodes.get(dependencyId);
 
     if (!dependent) {
-      throw new Error(`Dependent node '${dependentId}' not found in graph`);
+      throw new TypeKroError(
+        `Dependent node '${dependentId}' not found in graph`,
+        'GRAPH_NODE_NOT_FOUND',
+        { nodeId: dependentId, role: 'dependent' }
+      );
     }
     if (!dependency) {
-      throw new Error(`Dependency node '${dependencyId}' not found in graph`);
+      throw new TypeKroError(
+        `Dependency node '${dependencyId}' not found in graph`,
+        'GRAPH_NODE_NOT_FOUND',
+        { nodeId: dependencyId, role: 'dependency' }
+      );
     }
 
     dependent.dependencies.add(dependencyId);

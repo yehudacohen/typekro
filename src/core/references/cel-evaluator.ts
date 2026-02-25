@@ -76,7 +76,9 @@ export class CelEvaluator {
       const parseResult = parse(expression.expression);
 
       if (!parseResult.isSuccess) {
-        throw new Error('Failed to parse CEL expression');
+        throw new TypeKroError('Failed to parse CEL expression', 'CEL_PARSE_FAILED', {
+          expression: expression.expression,
+        });
       }
 
       return async (context: CelEvaluationContext) => {
@@ -163,7 +165,11 @@ export class CelEvaluator {
       }
 
       if (!resource) {
-        throw new Error(`Resource '${ref.resourceId}' not found in context`);
+        throw new TypeKroError(
+          `Resource '${ref.resourceId}' not found in context`,
+          'RESOURCE_NOT_FOUND',
+          { resourceId: ref.resourceId }
+        );
       }
 
       // Add the entire resource to context using its ID (use the original case from CEL expression)

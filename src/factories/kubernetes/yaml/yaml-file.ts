@@ -2,6 +2,7 @@ import type * as k8s from '@kubernetes/client-node';
 import { PatchStrategy } from '@kubernetes/client-node';
 import * as yaml from 'js-yaml';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
+import { ResourceGraphFactoryError } from '../../../core/errors.js';
 import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
@@ -413,7 +414,11 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                 await deploymentContext.kubernetesApi.create(manifest);
               }
             } else {
-              throw new Error('No Kubernetes API available for YAML deployment');
+              throw new ResourceGraphFactoryError(
+                'No Kubernetes API available for YAML deployment',
+                config.name,
+                'deployment'
+              );
             }
           } else if (deploymentContext.kubernetesApi) {
             if (strategy === 'serverSideApply') {
@@ -429,8 +434,10 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
               await deploymentContext.kubernetesApi.create(manifest);
             }
           } else {
-            throw new Error(
-              'No deployment method available: neither alchemyScope nor kubernetesApi provided'
+            throw new ResourceGraphFactoryError(
+              'No deployment method available: neither alchemyScope nor kubernetesApi provided',
+              config.name,
+              'deployment'
             );
           }
 

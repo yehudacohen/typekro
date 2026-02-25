@@ -534,7 +534,11 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           // Return the status captured during resource building
           // This avoids double execution and ensures resources are available
           if (!capturedStatus) {
-            throw new Error('Status was not captured during resource building phase');
+            throw new CompositionExecutionError(
+              'Status was not captured during resource building phase',
+              compositionName,
+              'status-building'
+            );
           }
           return capturedStatus;
         } catch (error) {

@@ -7,6 +7,7 @@
  */
 
 import type { Type } from 'arktype';
+import { TypeKroError, ValidationError } from '../core/errors.js';
 import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
 import type { CelExpression, KubernetesRef } from '../core/types/common.js';
 import type { Enhanced, KubernetesResource } from '../core/types/kubernetes.js';
@@ -73,10 +74,13 @@ export function generateDeterministicResourceId(
   if (isKubernetesRef(name)) {
     // For schema references, we can't generate a deterministic ID without evaluation
     // Throw an error suggesting the user provide an explicit ID
-    throw new Error(
+    throw new ValidationError(
       `Cannot generate deterministic resource ID for ${kind} with KubernetesRef name. ` +
         `Please provide an explicit 'id' field in the resource config, e.g.: ` +
-        `simple.Deployment({ name: schema.spec.name, image: 'nginx', id: 'my-deployment' })`
+        `simple.Deployment({ name: schema.spec.name, image: 'nginx', id: 'my-deployment' })`,
+      kind,
+      'unknown',
+      'name'
     );
   }
 
@@ -84,10 +88,13 @@ export function generateDeterministicResourceId(
   if (isCelExpression(name)) {
     // For CEL expressions, we can't generate a deterministic ID without evaluation
     // Throw an error suggesting the user provide an explicit ID
-    throw new Error(
+    throw new ValidationError(
       `Cannot generate deterministic resource ID for ${kind} with CEL expression name. ` +
         `Please provide an explicit 'id' field in the resource config, e.g.: ` +
-        `simple.Deployment({ name: Cel.expr('my-', schema.spec.name), image: 'nginx', id: 'my-deployment' })`
+        `simple.Deployment({ name: Cel.expr('my-', schema.spec.name), image: 'nginx', id: 'my-deployment' })`,
+      kind,
+      'unknown',
+      'name'
     );
   }
 
@@ -96,9 +103,12 @@ export function generateDeterministicResourceId(
 
   // Check if the name contains template expressions (legacy string templates)
   if (nameStr.includes('${') || nameStr.includes('{{')) {
-    throw new Error(
+    throw new ValidationError(
       `Cannot generate deterministic resource ID for ${kind} with template expression in name: "${nameStr}". ` +
-        `Please either use static names or provide an explicit 'id' in the resource factory options.`
+        `Please either use static names or provide an explicit 'id' in the resource factory options.`,
+      kind,
+      nameStr,
+      'name'
     );
   }
 
@@ -540,9 +550,11 @@ export function ensureReadinessEvaluator<T extends Enhanced<any, any>>(resource:
   }
 
   // Third: No evaluator found anywhere
-  throw new Error(
+  throw new TypeKroError(
     `No readiness evaluator found for ${resource.kind}/${resource.metadata?.name}. ` +
-      `Use a factory function like deployment(), configMap(), etc., or call .withReadinessEvaluator().`
+      `Use a factory function like deployment(), configMap(), etc., or call .withReadinessEvaluator().`,
+    'MISSING_READINESS_EVALUATOR',
+    { kind: resource.kind, name: resource.metadata?.name }
   );
 }
 

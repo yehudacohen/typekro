@@ -8,6 +8,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
+import { TypeKroError } from '../core/errors.js';
 import { conditionalExpressionIntegrator } from '../core/expressions/conditional-integration.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import { ReadinessEvaluatorRegistry } from '../core/readiness/index.js';
@@ -531,9 +532,11 @@ export function createResource<TSpec extends object, TStatus extends object>(
     const hasNamespace = !!resource.metadata?.namespace;
 
     if (options.scope === 'cluster' && hasNamespace) {
-      throw new Error(
+      throw new TypeKroError(
         `${resource.kind} is cluster-scoped and cannot have a namespace. ` +
-          `Remove the 'namespace' field from metadata.`
+          `Remove the 'namespace' field from metadata.`,
+        'INVALID_RESOURCE_SCOPE',
+        { kind: resource.kind, namespace: resource.metadata?.namespace }
       );
     }
 
@@ -557,7 +560,10 @@ export function createResource<TSpec extends object, TStatus extends object>(
     // Validate that the ID follows camelCase convention
     const validation = validateResourceId(resourceId);
     if (!validation.isValid) {
-      throw new Error(`Invalid resource ID: ${validation.error}`);
+      throw new TypeKroError(`Invalid resource ID: ${validation.error}`, 'INVALID_RESOURCE_ID', {
+        resourceId,
+        error: validation.error,
+      });
     }
 
     // Remove the id field from the resource to prevent it from being sent to Kubernetes
