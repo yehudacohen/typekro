@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
 
 /**
  * Complete Hello World Example with TypeKro
@@ -183,10 +182,12 @@ async function deployCompleteStack() {
   try {
     // Step 1: Bootstrap TypeKro Runtime (Direct Mode)
     console.log('🚀 Step 1: Bootstrapping TypeKro Runtime...');
-    const runtime = await typeKroRuntimeBootstrap({
-      namespace: 'default',
-    }).deploy({
-      namespace: 'default',
+    const runtimeFactory = typeKroRuntimeBootstrap({
+      namespace: 'flux-system',
+      fluxVersion: 'v2.4.0',
+      kroVersion: '0.8.5',
+    }).factory('direct', {
+      namespace: 'flux-system',
       skipTLSVerify: true,
       timeout: 300000,
       waitForReady: true,
@@ -195,9 +196,13 @@ async function deployCompleteStack() {
         eventTypes: ['Warning', 'Error', 'Normal'],
         includeChildResources: true,
       },
-      progressCallback: (event: any) => {
+      progressCallback: (event) => {
         console.log(`📡 Runtime: ${event.message}`);
       },
+    });
+
+    const runtime = await runtimeFactory.deploy({
+      namespace: 'flux-system',
     });
 
     console.log('✅ TypeKro Runtime deployed successfully!');
@@ -233,7 +238,6 @@ async function deployCompleteStack() {
         },
       },
       webhook: {
-        enabled: true,
         replicaCount: 1,
       },
       cainjector: {

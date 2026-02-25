@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
 
 /**
  * Simple Hello World Example with TypeKro
@@ -82,8 +81,12 @@ async function deploySimpleStack() {
   try {
     // Step 1: Bootstrap TypeKro Runtime (Direct Mode)
     console.log('🚀 Step 1: Bootstrapping TypeKro Runtime...');
-    const runtimeFactory = typeKroRuntimeBootstrap.factory('direct', {
-      namespace: 'default',
+    const runtimeFactory = typeKroRuntimeBootstrap({
+      namespace: 'flux-system',
+      fluxVersion: 'v2.4.0',
+      kroVersion: '0.8.5',
+    }).factory('direct', {
+      namespace: 'flux-system',
       skipTLSVerify: true,
       timeout: 300000,
       waitForReady: true,
@@ -92,15 +95,13 @@ async function deploySimpleStack() {
         eventTypes: ['Warning', 'Error', 'Normal'],
         includeChildResources: true,
       },
-      progressCallback: (event: any) => {
+      progressCallback: (event) => {
         console.log(`📡 Runtime: ${event.message}`);
       },
     });
 
     await runtimeFactory.deploy({
       namespace: 'flux-system',
-      fluxVersion: 'v2.4.0',
-      kroVersion: '0.8.5',
     });
     console.log('✅ TypeKro Runtime deployed successfully!');
     console.log('');
@@ -142,8 +143,11 @@ async function deploySimpleStack() {
     const k8sApi = kc.makeApiClient(CoreV1Api);
 
     try {
-      const service = await k8sApi.readNamespacedService('hello-world-service', 'default');
-      const loadBalancer = service.body.status?.loadBalancer;
+      const service = await k8sApi.readNamespacedService({
+        name: 'hello-world-service',
+        namespace: 'default',
+      });
+      const loadBalancer = service.status?.loadBalancer;
       const ingress = loadBalancer?.ingress?.[0];
 
       if (ingress) {
