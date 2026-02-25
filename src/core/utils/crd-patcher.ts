@@ -10,6 +10,7 @@
 
 import type * as k8s from '@kubernetes/client-node';
 import { createBunCompatibleApiextensionsV1Api } from '../kubernetes/bun-api-client.js';
+import { getErrorStatusCode } from '../kubernetes/errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { generateSchemaFixPatches, schemaFieldNeedsFix } from './crd-schema-fix.js';
 
@@ -85,9 +86,9 @@ export async function patchCRDSchema(
 
     logger.warn(`CRD ${crdName} schema patched successfully`);
     return true;
-  } catch (error: any) {
+  } catch (error: unknown) {
     // If CRD doesn't exist, that's fine
-    if (error.statusCode === 404) {
+    if (getErrorStatusCode(error) === 404) {
       logger.debug(`CRD ${crdName} does not exist, skipping patch`);
       return false;
     }
@@ -120,8 +121,10 @@ export async function patchFluxCRDSchemas(kubeConfig: k8s.KubeConfig): Promise<n
       if (patched) {
         patchedCount++;
       }
-    } catch (error: any) {
-      logger.warn(`Failed to patch CRD ${crdName}: ${error.message}, continuing...`);
+    } catch (error: unknown) {
+      logger.warn(
+        `Failed to patch CRD ${crdName}: ${error instanceof Error ? error.message : String(error)}, continuing...`
+      );
     }
   }
 

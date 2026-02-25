@@ -32,7 +32,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     };
 
     // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-    const originalResource = resource as any;
+    const originalResource = resource as unknown as Record<string, unknown>;
     if (
       originalResource.readinessEvaluator &&
       typeof originalResource.readinessEvaluator === 'function'
@@ -58,14 +58,17 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
 
     // Create a proper DependencyGraph instance
     const dependencyGraph = new DependencyGraph();
-    dependencyGraph.addNode(resourceWithId.id, resourceWithId as any);
+    dependencyGraph.addNode(
+      resourceWithId.id,
+      resourceWithId as DeployableK8sResource<Enhanced<unknown, unknown>>
+    );
 
     return {
       name: `${resource.kind?.toLowerCase()}-${resource.metadata?.name || 'unnamed'}`,
       resources: [
         {
           id: resourceWithId.id,
-          manifest: resourceWithId as any,
+          manifest: resourceWithId as DeployableK8sResource<Enhanced<unknown, unknown>>,
         },
       ],
       dependencyGraph,
@@ -83,7 +86,9 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     logger.debug('Ensured readiness evaluator for resource', {
       kind: resource.kind,
       name: resource.metadata?.name,
-      hasEvaluator: typeof (resourceWithEvaluator as any).readinessEvaluator === 'function',
+      hasEvaluator:
+        typeof (resourceWithEvaluator as unknown as Record<string, unknown>).readinessEvaluator ===
+        'function',
     });
 
     const resourceGraph = this.createResourceGraph(resourceWithEvaluator);

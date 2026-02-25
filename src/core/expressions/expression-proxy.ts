@@ -38,13 +38,14 @@ function createBinaryExpressionRef<T>(
   resourceId: string = '__expression__',
   fieldPath: string = `${left.fieldPath || 'unknown'} ${operator} ${right}`
 ): ExpressionKubernetesRef<T> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Function used as proxy target with branded KubernetesRef properties; TypeScript cannot represent this pattern
   const expressionRef = (() => {
     throw new ConversionError(
       'Expression KubernetesRef should not be called as a function',
       fieldPath,
       'binary-operation'
     );
-  }) as any;
+  }) as unknown as Record<symbol | string, unknown>;
 
   Object.defineProperties(expressionRef, {
     [KUBERNETES_REF_BRAND]: { value: true, enumerable: false },
@@ -56,7 +57,7 @@ function createBinaryExpressionRef<T>(
     __right: { value: right, enumerable: false },
   });
 
-  return expressionRef as ExpressionKubernetesRef<T>;
+  return expressionRef as unknown as ExpressionKubernetesRef<T>;
 }
 
 /**
@@ -68,13 +69,14 @@ function createTemplateExpressionRef<T>(
   resourceId: string = '__expression__',
   fieldPath: string = `template(${template})`
 ): ExpressionKubernetesRef<T> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Function used as proxy target with branded KubernetesRef properties
   const expressionRef = (() => {
     throw new ConversionError(
       'Expression KubernetesRef should not be called as a function',
       fieldPath,
       'template-literal'
     );
-  }) as any;
+  }) as unknown as Record<symbol | string, unknown>;
 
   Object.defineProperties(expressionRef, {
     [KUBERNETES_REF_BRAND]: { value: true, enumerable: false },
@@ -85,7 +87,7 @@ function createTemplateExpressionRef<T>(
     __templateParts: { value: parts, enumerable: false },
   });
 
-  return expressionRef as ExpressionKubernetesRef<T>;
+  return expressionRef as unknown as ExpressionKubernetesRef<T>;
 }
 
 /**
@@ -98,13 +100,14 @@ function createConditionalExpressionRef<T>(
   resourceId: string = '__expression__',
   fieldPath: string = `${condition.fieldPath || 'unknown'} ? ${consequent} : ${alternate}`
 ): ExpressionKubernetesRef<T> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Function used as proxy target with branded KubernetesRef properties
   const expressionRef = (() => {
     throw new ConversionError(
       'Expression KubernetesRef should not be called as a function',
       fieldPath,
       'conditional'
     );
-  }) as any;
+  }) as unknown as Record<symbol | string, unknown>;
 
   Object.defineProperties(expressionRef, {
     [KUBERNETES_REF_BRAND]: { value: true, enumerable: false },
@@ -116,7 +119,7 @@ function createConditionalExpressionRef<T>(
     __alternate: { value: alternate, enumerable: false },
   });
 
-  return expressionRef as ExpressionKubernetesRef<T>;
+  return expressionRef as unknown as ExpressionKubernetesRef<T>;
 }
 
 /**
@@ -182,13 +185,14 @@ export class ExpressionCaptureSystem {
    * Create a KubernetesRef that captures expressions when used in operations
    */
   createCapturingRef<T>(resourceId: string, fieldPath: string): KubernetesRef<T> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Function used as proxy target with branded KubernetesRef properties
     const ref = (() => {
       throw new ConversionError(
         'KubernetesRef should not be called as a function',
         fieldPath,
         'member-access'
       );
-    }) as any;
+    }) as unknown as Record<symbol | string, unknown>;
 
     Object.defineProperties(ref, {
       [KUBERNETES_REF_BRAND]: { value: true, enumerable: false },
@@ -228,7 +232,7 @@ export class ExpressionCaptureSystem {
         // Return the original property
         return Reflect.get(target, prop, receiver);
       },
-    }) as KubernetesRef<T>;
+    }) as unknown as KubernetesRef<T>;
   }
 }
 

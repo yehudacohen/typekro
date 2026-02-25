@@ -66,7 +66,7 @@ export function isAlchemyPromise(value: unknown): value is AlchemyPromise {
       (('__alchemyPromise' in value && (value as AlchemyPromise).__alchemyPromise === true) ||
         // Check for promise-like interface with alchemy symbols
         ('then' in value &&
-          typeof (value as any).then === 'function' &&
+          typeof (value as Record<string, unknown>).then === 'function' &&
           (ALCHEMY_PROMISE_SYMBOL in value ||
             RESOURCE_ID_SYMBOL in value ||
             RESOURCE_TYPE_SYMBOL in value ||
@@ -262,11 +262,11 @@ export async function resolveAlchemyPromise(
 function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): string {
   // Try to get the resource ID from alchemy symbols
   if (RESOURCE_ID_SYMBOL in resource) {
-    return (resource as any)[RESOURCE_ID_SYMBOL];
+    return String((resource as unknown as Record<symbol, unknown>)[RESOURCE_ID_SYMBOL]);
   }
 
   if (RESOURCE_FQN_SYMBOL in resource) {
-    return (resource as any)[RESOURCE_FQN_SYMBOL];
+    return String((resource as unknown as Record<symbol, unknown>)[RESOURCE_FQN_SYMBOL]);
   }
 
   // For alchemy promises, try to get the resourceId property
@@ -277,7 +277,7 @@ function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): strin
   // Try to extract kind and name from the resource for deterministic ID
   const kind =
     RESOURCE_TYPE_SYMBOL in resource
-      ? (resource as any)[RESOURCE_TYPE_SYMBOL]
+      ? String((resource as unknown as Record<symbol, unknown>)[RESOURCE_TYPE_SYMBOL])
       : 'resourceType' in resource && typeof resource.resourceType === 'string'
         ? resource.resourceType
         : 'Resource';

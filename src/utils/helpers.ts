@@ -207,7 +207,7 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
 
   if (isCelExpression(obj)) {
     // Check if this is a template expression (mixed string with embedded CEL)
-    if ((obj as any).__isTemplate) {
+    if ((obj as unknown as Record<string, unknown>).__isTemplate) {
       // Convert template expressions to proper CEL concatenation
       // Transform "https://${schema.spec.hostname}" to ${"https://" + schema.spec.hostname}
       const templateExpr = obj.expression;
@@ -446,7 +446,7 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
     // Handle CelExpression objects
     if (isCelExpression(value)) {
       // Check if this is a template expression (mixed string with embedded CEL)
-      if ((value as any).__isTemplate) {
+      if ((value as unknown as Record<string, unknown>).__isTemplate) {
         // Convert template expressions to proper CEL concatenation
         // Transform "https://${schema.spec.hostname}" to ${"https://" + schema.spec.hostname}
         const templateExpr = value.expression;
@@ -460,11 +460,11 @@ function serializeStatusMappingsToCel(statusMappings: any): Record<string, strin
 
     // Handle nested objects recursively
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const nestedExpressions: Record<string, any> = {};
+      const nestedExpressions: Record<string, string> = {};
       for (const [key, nestedValue] of Object.entries(value)) {
         nestedExpressions[key] = serializeValue(nestedValue);
       }
-      return nestedExpressions as any; // Return as any for nested objects
+      return nestedExpressions as unknown as string; // Nested objects are returned as Record but typed as string for recursive compatibility
     }
 
     // Handle primitive values
@@ -578,18 +578,18 @@ export function toPlainObject<T>(obj: T, visited = new Set<any>()): T {
 
   // Handle arrays by converting each item
   if (Array.isArray(obj)) {
-    const plainArray = obj.map((item) => toPlainObject(item, visited)) as any;
+    const plainArray = obj.map((item) => toPlainObject(item, visited)) as unknown as T;
     visited.delete(obj);
     return plainArray;
   }
 
   // Use getOwnPropertyNames and getOwnPropertySymbols to capture all keys,
   // including non-enumerable ones (like our brand symbols) if needed.
-  const plainObj: Record<string | symbol, any> = {};
+  const plainObj: Record<string | symbol, unknown> = {};
   const keys = Reflect.ownKeys(obj);
 
   for (const key of keys) {
-    const value = (obj as any)[key];
+    const value = (obj as Record<string | symbol, unknown>)[key];
 
     // Preserve readinessEvaluator function as-is
     if (key === 'readinessEvaluator') {

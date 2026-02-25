@@ -251,7 +251,8 @@ function createRefFactory(resourceId: string, basePath: string): any {
       // For unknown properties, create nested references
       return createRefFactory(resourceId, `${basePath}.${propStr}`);
     },
-  }) as any; // Force TypeScript to see this as compatible with any type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Proxy-based KubernetesRef factory: returns a dynamically-typed proxy that must be assignable to any property type in the magic proxy system
+  }) as any;
 }
 
 function createPropertyProxy<T extends object>(
@@ -629,11 +630,13 @@ export function processPodSpec(podSpec?: V1PodSpec): V1PodSpec | undefined {
     if (!container.env) return container;
     const processedEnv: V1EnvVar[] = container.env.map((envVar) => {
       if (isKubernetesRef(envVar.value)) {
-        return { name: envVar.name, value: envVar.value as any };
+        // KubernetesRef will be resolved to string during serialization
+        return { name: envVar.name, value: envVar.value as unknown as string };
       }
       // Check if it's a CelExpression - preserve it as-is
       if (isCelExpression(envVar.value)) {
-        return { name: envVar.name, value: envVar.value as any };
+        // CelExpression will be resolved to string during serialization
+        return { name: envVar.name, value: envVar.value as unknown as string };
       }
       if (envVar.value !== undefined) {
         return { name: envVar.name, value: String(envVar.value) };

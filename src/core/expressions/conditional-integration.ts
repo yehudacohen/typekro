@@ -123,12 +123,14 @@ export class ConditionalExpressionIntegrator {
     Object.defineProperty(enhanced, 'withIncludeWhen', {
       value: (condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
         if (config.autoProcess) {
-          const context = (enhanced as any).createFactoryContext();
+          const context = (
+            enhanced as unknown as { createFactoryContext(): FactoryExpressionContext }
+          ).createFactoryContext();
           const result = this.processor.processIncludeWhenExpression(condition, context, config);
 
           if (result.validationErrors.length > 0) {
             logger.warn('includeWhen validation warnings', {
-              resourceId: (enhanced as any).__resourceId,
+              resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
               errors: result.validationErrors,
             });
           }
@@ -163,12 +165,14 @@ export class ConditionalExpressionIntegrator {
     Object.defineProperty(enhanced, 'withReadyWhen', {
       value: (condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
         if (config.autoProcess) {
-          const context = (enhanced as any).createFactoryContext();
+          const context = (
+            enhanced as unknown as { createFactoryContext(): FactoryExpressionContext }
+          ).createFactoryContext();
           const result = this.processor.processReadyWhenExpression(condition, context, config);
 
           if (result.validationErrors.length > 0) {
             logger.warn('readyWhen validation warnings', {
-              resourceId: (enhanced as any).__resourceId,
+              resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
               errors: result.validationErrors,
             });
           }
@@ -202,7 +206,9 @@ export class ConditionalExpressionIntegrator {
 
     Object.defineProperty(enhanced, 'withConditional', {
       value: (name: string, condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
-        const context = (enhanced as any).createFactoryContext();
+        const context = (
+          enhanced as unknown as { createFactoryContext(): FactoryExpressionContext }
+        ).createFactoryContext();
 
         if (config.autoProcess) {
           const result = this.processor.processCustomConditionalExpression(
@@ -217,7 +223,7 @@ export class ConditionalExpressionIntegrator {
 
           if (result.validationErrors.length > 0) {
             logger.warn('Custom conditional validation warnings', {
-              resourceId: (enhanced as any).__resourceId,
+              resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
               conditionalName: name,
               errors: result.validationErrors,
             });
@@ -245,7 +251,7 @@ export class ConditionalExpressionIntegrator {
           analysisEnabled: true,
           availableResources: compositionContext?.resources || {},
           schemaProxy: undefined, // Will be set by toResourceGraph if available
-          resourceId: (enhanced as any).__resourceId || 'unknown',
+          resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId || 'unknown',
         };
       },
       enumerable: false,
