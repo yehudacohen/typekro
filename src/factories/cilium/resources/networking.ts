@@ -83,7 +83,7 @@ export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (
           ready: true,
           message: 'CiliumNetworkPolicy is ready and applied',
           details: {
-            lastTransition: (readyCondition as any).lastTransitionTime,
+            lastTransition: readyCondition.lastTransitionTime,
           },
         };
       } else {
@@ -133,19 +133,21 @@ export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (
         details: {
           condition: validCondition,
           state: status.state,
-          lastTransition: (validCondition as any).lastTransitionTime,
+          lastTransition: validCondition.lastTransitionTime,
         },
       };
     }
 
+    // Note: This block is unreachable (readyCondition is handled above) but preserved for defensive coding
     if (readyCondition) {
+      const cond = readyCondition as unknown as import('../types.js').Condition;
       return {
         ready: true,
         message: 'CiliumNetworkPolicy is ready and applied',
         details: {
-          condition: readyCondition,
+          condition: cond,
           state: status.state,
-          lastTransition: (readyCondition as any).lastTransitionTime,
+          lastTransition: cond.lastTransitionTime,
         },
       };
     }
@@ -424,7 +426,7 @@ export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluato
         details: {
           condition: validCondition,
           state: status.state,
-          lastTransition: (validCondition as any).lastTransitionTime,
+          lastTransition: validCondition.lastTransitionTime,
         },
       };
     }
@@ -439,7 +441,7 @@ export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluato
         details: {
           condition: readyCondition,
           state: status.state,
-          lastTransition: (readyCondition as any).lastTransitionTime,
+          lastTransition: readyCondition.lastTransitionTime,
         },
       };
     }

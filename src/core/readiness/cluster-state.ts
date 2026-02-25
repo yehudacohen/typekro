@@ -292,8 +292,13 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         exists: true,
         statusCode: 200,
       };
-    } catch (error: any) {
-      if (error.statusCode === 404) {
+    } catch (error: unknown) {
+      const statusCode =
+        typeof error === 'object' && error !== null && 'statusCode' in error
+          ? (error as { statusCode: number }).statusCode
+          : undefined;
+
+      if (statusCode === 404) {
         return {
           exists: false,
           error: `Resource not found: ${identifier.kind}/${identifier.name}`,
@@ -301,11 +306,14 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         };
       }
 
-      return {
+      const result: ClusterStateResult<T> = {
         exists: false,
-        error: error.message || 'Unknown error occurred',
-        statusCode: error.statusCode,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
       };
+      if (statusCode !== undefined) {
+        result.statusCode = statusCode;
+      }
+      return result;
     }
   }
 
@@ -347,13 +355,21 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
         totalItems: items.length,
         statusCode: 200,
       };
-    } catch (error: any) {
-      return {
+    } catch (error: unknown) {
+      const statusCode =
+        typeof error === 'object' && error !== null && 'statusCode' in error
+          ? (error as { statusCode: number }).statusCode
+          : undefined;
+
+      const result: ClusterStateListResult = {
         items: [],
         totalItems: 0,
-        error: error.message || 'Unknown error occurred',
-        statusCode: error.statusCode,
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
       };
+      if (statusCode !== undefined) {
+        result.statusCode = statusCode;
+      }
+      return result;
     }
   }
 
@@ -406,10 +422,10 @@ export class KubernetesClusterStateAccessor implements ClusterStateAccessor {
           lastTransitionTime: condition.lastTransitionTime,
         },
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         satisfied: false,
-        error: error.message || 'Unknown error occurred',
+        error: error instanceof Error ? error.message : 'Unknown error occurred',
       };
     }
   }

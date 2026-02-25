@@ -1,20 +1,25 @@
 /**
  * Readiness Integration for Conditional Expressions
- * 
+ *
  * This module provides integration between readyWhen expressions containing
  * KubernetesRef objects and TypeKro's readiness evaluation system.
  */
 
-import { getComponentLogger } from '../logging/index.js';
-import type { Enhanced, ReadinessEvaluator, ResourceStatus, KubernetesRef } from '../types/index.js';
-import { 
-  ConditionalExpressionProcessor,
-  type ConditionalExpressionConfig,
-  type ConditionalExpressionResult 
-} from './conditional-expression-processor.js';
-import type { FactoryExpressionContext } from './types.js';
 import { getCurrentCompositionContext } from '../../factories/shared.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
+import { getComponentLogger } from '../logging/index.js';
+import type {
+  Enhanced,
+  KubernetesRef,
+  ReadinessEvaluator,
+  ResourceStatus,
+} from '../types/index.js';
+import {
+  type ConditionalExpressionConfig,
+  ConditionalExpressionProcessor,
+  type ConditionalExpressionResult,
+} from './conditional-expression-processor.js';
+import type { FactoryExpressionContext } from './types.js';
 
 const logger = getComponentLogger('readiness-integration');
 
@@ -51,7 +56,7 @@ export interface ReadinessIntegrationResult {
 
 /**
  * Readiness Integrator
- * 
+ *
  * Integrates readyWhen expressions with TypeKro's readiness evaluation system,
  * converting expressions containing KubernetesRef objects to readiness evaluators.
  */
@@ -64,7 +69,7 @@ export class ReadinessIntegrator {
 
   /**
    * Create a readiness evaluator from a readyWhen expression
-   * 
+   *
    * @param readyWhenExpression - The readyWhen expression to convert
    * @param context - Factory context
    * @param config - Integration configuration
@@ -76,11 +81,11 @@ export class ReadinessIntegrator {
     config: ReadinessIntegrationConfig = {}
   ): ReadinessIntegrationResult {
     const startTime = performance.now();
-    
+
     logger.debug('Creating readiness evaluator from readyWhen expression', {
       factoryType: context.factoryType,
       factoryName: context.factoryName,
-      expressionType: typeof readyWhenExpression
+      expressionType: typeof readyWhenExpression,
     });
 
     const result: ReadinessIntegrationResult = {
@@ -88,8 +93,8 @@ export class ReadinessIntegrator {
       warnings: [],
       metrics: {
         integrationTimeMs: 0,
-        expressionsProcessed: 0
-      }
+        expressionsProcessed: 0,
+      },
     };
 
     try {
@@ -121,14 +126,13 @@ export class ReadinessIntegrator {
       logger.debug('Readiness evaluator creation completed', {
         wasProcessed: result.wasProcessed,
         warningsCount: result.warnings.length,
-        integrationTimeMs: result.metrics.integrationTimeMs
+        integrationTimeMs: result.metrics.integrationTimeMs,
       });
 
       return result;
-
     } catch (error) {
       logger.error('Error creating readiness evaluator', error as Error, {
-        factoryType: context.factoryType
+        factoryType: context.factoryType,
       });
 
       result.warnings.push(`Failed to create readiness evaluator: ${error}`);
@@ -146,7 +150,7 @@ export class ReadinessIntegrator {
 
   /**
    * Add readyWhen support to an Enhanced resource
-   * 
+   *
    * @param resource - Enhanced resource to augment
    * @param config - Integration configuration
    * @returns Enhanced resource with readyWhen support
@@ -155,7 +159,7 @@ export class ReadinessIntegrator {
     resource: Enhanced<TSpec, TStatus>,
     config: ReadinessIntegrationConfig = {}
   ): Enhanced<TSpec, TStatus> & { withReadyWhen(expression: any): Enhanced<TSpec, TStatus> } {
-    const enhanced = resource as Enhanced<TSpec, TStatus> & { 
+    const enhanced = resource as Enhanced<TSpec, TStatus> & {
       withReadyWhen(expression: any): Enhanced<TSpec, TStatus>;
       __readyWhenExpression?: any;
     };
@@ -165,52 +169,54 @@ export class ReadinessIntegrator {
       value: undefined,
       writable: true,
       enumerable: false,
-      configurable: true
+      configurable: true,
     });
 
     // Add fluent builder method
     Object.defineProperty(enhanced, 'withReadyWhen', {
       value: (expression: any): Enhanced<TSpec, TStatus> => {
-        (enhanced as any).__readyWhenExpression = expression;
-        
+        (enhanced as unknown as Record<string, unknown>).__readyWhenExpression = expression;
+
         // Create factory context
-        const context = (enhanced as any).createFactoryContext();
-        
+        const context = (
+          enhanced as unknown as { createFactoryContext(): FactoryExpressionContext }
+        ).createFactoryContext();
+
         // Create readiness evaluator from expression
         const integrationResult = this.createReadinessEvaluator(expression, context, config);
-        
+
         if (integrationResult.evaluator) {
           // Use the generated evaluator
           return enhanced.withReadinessEvaluator(integrationResult.evaluator);
         } else {
           // Log warning and return without readiness evaluator
           logger.warn('Failed to create readiness evaluator from readyWhen expression', {
-            resourceId: (enhanced as any).__resourceId,
-            warnings: integrationResult.warnings
+            resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
+            warnings: integrationResult.warnings,
           });
           return enhanced;
         }
       },
       enumerable: false,
-      configurable: true
+      configurable: true,
     });
 
     // Add helper method to create factory context
     Object.defineProperty(enhanced, 'createFactoryContext', {
       value: (): FactoryExpressionContext => {
         const compositionContext = getCurrentCompositionContext();
-        
+
         return {
           factoryType: 'kro', // Default to Kro, can be overridden
-          factoryName: (enhanced as any).kind || 'unknown',
+          factoryName: (enhanced as unknown as { kind?: string }).kind || 'unknown',
           analysisEnabled: true,
-          resourceId: (enhanced as any).__resourceId || 'unknown',
+          resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId || 'unknown',
           availableResources: compositionContext?.resources || {},
-          schemaProxy: undefined // Will be set by toResourceGraph if available
+          schemaProxy: undefined, // Will be set by toResourceGraph if available
         };
       },
       enumerable: false,
-      configurable: true
+      configurable: true,
     });
 
     return enhanced;
@@ -247,23 +253,26 @@ export class ReadinessIntegrator {
         }
 
         // For Kro factory, check if it's a CEL expression
-        if (processedExpression && typeof processedExpression === 'object' && processedExpression.expression) {
+        if (
+          processedExpression &&
+          typeof processedExpression === 'object' &&
+          processedExpression.expression
+        ) {
           return this.evaluateKroExpression(processedExpression, liveResource, config);
         }
 
         // Fallback to raw expression evaluation
         return this.evaluateRawExpression(processedExpression, liveResource, config);
-
       } catch (error) {
         logger.error('Error evaluating readyWhen expression', error as Error, {
-          resourceKind: liveResource?.kind
+          resourceKind: liveResource?.kind,
         });
 
         return {
           ready: false,
           reason: 'EvaluationError',
           message: `Failed to evaluate readyWhen expression: ${error}`,
-          details: { originalExpression: processingResult.original }
+          details: { originalExpression: processingResult.original },
         };
       }
     };
@@ -279,21 +288,21 @@ export class ReadinessIntegrator {
         return {
           ready: false,
           reason: 'ResourceNotFound',
-          message: 'Resource not found'
+          message: 'Resource not found',
         };
       }
 
       // Check for common error conditions
       const conditions = liveResource.status?.conditions || [];
-      const errorCondition = conditions.find((c: any) => 
-        c.type === 'Failed' && c.status === 'True'
+      const errorCondition = conditions.find(
+        (c: any) => c.type === 'Failed' && c.status === 'True'
       );
 
       if (errorCondition) {
         return {
           ready: false,
           reason: 'ResourceFailed',
-          message: errorCondition.message || 'Resource has failed condition'
+          message: errorCondition.message || 'Resource has failed condition',
         };
       }
 
@@ -302,7 +311,7 @@ export class ReadinessIntegrator {
         ready: true,
         reason: 'FallbackEvaluator',
         message: 'Using fallback readiness evaluation',
-        details: { originalExpression: expression }
+        details: { originalExpression: expression },
       };
     };
   }
@@ -320,7 +329,7 @@ export class ReadinessIntegrator {
       return {
         ready: expression,
         reason: expression ? 'ExpressionTrue' : 'ExpressionFalse',
-        message: `Static readyWhen expression evaluated to ${expression}`
+        message: `Static readyWhen expression evaluated to ${expression}`,
       };
     }
 
@@ -332,7 +341,7 @@ export class ReadinessIntegrator {
     // Handle function expressions
     if (typeof expression === 'function') {
       const result = expression(liveResource);
-      return typeof result === 'boolean' 
+      return typeof result === 'boolean'
         ? { ready: result, reason: result ? 'FunctionTrue' : 'FunctionFalse' }
         : result;
     }
@@ -342,7 +351,7 @@ export class ReadinessIntegrator {
     return {
       ready,
       reason: ready ? 'ExpressionTruthy' : 'ExpressionFalsy',
-      message: `readyWhen expression evaluated to ${ready}`
+      message: `readyWhen expression evaluated to ${ready}`,
     };
   }
 
@@ -357,12 +366,12 @@ export class ReadinessIntegrator {
     // In direct factory mode, KubernetesRef objects should be resolved to actual values
     // This is a simplified implementation - in reality, the direct factory would
     // resolve all references before calling the evaluator
-    
+
     if (typeof expression === 'boolean') {
       return {
         ready: expression,
         reason: expression ? 'DirectTrue' : 'DirectFalse',
-        message: `Direct evaluation result: ${expression}`
+        message: `Direct evaluation result: ${expression}`,
       };
     }
 
@@ -376,7 +385,7 @@ export class ReadinessIntegrator {
     return {
       ready,
       reason: ready ? 'DirectTruthy' : 'DirectFalsy',
-      message: `Direct evaluation result: ${ready}`
+      message: `Direct evaluation result: ${ready}`,
     };
   }
 
@@ -390,14 +399,14 @@ export class ReadinessIntegrator {
   ): ResourceStatus {
     // In Kro factory mode, CEL expressions would be evaluated by the Kro controller
     // This is a placeholder implementation for testing purposes
-    
+
     if (expression && typeof expression === 'object' && expression.expression) {
       // This is a CEL expression - in reality, it would be evaluated by Kro
       return {
         ready: false,
         reason: 'CelExpressionPending',
         message: `CEL expression pending evaluation: ${expression.expression}`,
-        details: { celExpression: expression.expression }
+        details: { celExpression: expression.expression },
       };
     }
 
@@ -406,7 +415,7 @@ export class ReadinessIntegrator {
     return {
       ready,
       reason: ready ? 'KroTruthy' : 'KroFalsy',
-      message: `Kro evaluation result: ${ready}`
+      message: `Kro evaluation result: ${ready}`,
     };
   }
 
@@ -428,7 +437,7 @@ export class ReadinessIntegrator {
           ready: false,
           reason: 'FieldNotFound',
           message: `Field ${fieldPath} not found or null`,
-          details: { fieldPath, resourceId: ref.resourceId }
+          details: { fieldPath, resourceId: ref.resourceId },
         };
       }
 
@@ -438,15 +447,14 @@ export class ReadinessIntegrator {
         ready,
         reason: ready ? 'FieldTruthy' : 'FieldFalsy',
         message: `Field ${fieldPath} evaluated to ${ready}`,
-        details: { fieldPath, value, resourceId: ref.resourceId }
+        details: { fieldPath, value, resourceId: ref.resourceId },
       };
-
     } catch (error) {
       return {
         ready: false,
         reason: 'FieldEvaluationError',
         message: `Failed to evaluate field ${ref.fieldPath}: ${error}`,
-        details: { fieldPath: ref.fieldPath, resourceId: ref.resourceId }
+        details: { fieldPath: ref.fieldPath, resourceId: ref.resourceId },
       };
     }
   }
@@ -470,11 +478,11 @@ export class ReadinessIntegrator {
           return undefined;
         }
         const index = parseInt(indexPart.replace(']', ''), 10);
-        
+
         if (!fieldName) {
           return undefined;
         }
-        
+
         current = current[fieldName];
         if (Array.isArray(current) && !Number.isNaN(index)) {
           current = current[index];
@@ -497,7 +505,7 @@ export const readinessIntegrator = new ReadinessIntegrator();
 
 /**
  * Utility function to create readiness evaluator from readyWhen expression
- * 
+ *
  * @param readyWhenExpression - The readyWhen expression to convert
  * @param context - Factory context
  * @param config - Integration configuration
@@ -513,7 +521,7 @@ export function createReadinessEvaluator(
 
 /**
  * Utility function to add readyWhen support to an Enhanced resource
- * 
+ *
  * @param resource - Enhanced resource to augment
  * @param config - Integration configuration
  * @returns Enhanced resource with readyWhen support

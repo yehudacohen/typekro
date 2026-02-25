@@ -1,6 +1,7 @@
 import * as yaml from 'js-yaml';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
 import { ResourceGraphFactoryError } from '../../../core/errors.js';
+import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
@@ -134,9 +135,9 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
               namespace: manifest.metadata?.namespace || undefined,
               apiVersion: manifest.apiVersion || 'v1',
             });
-          } catch (error: any) {
+          } catch (error: unknown) {
             // Handle conflicts based on deployment strategy
-            if (error?.response?.statusCode === 409 || error?.statusCode === 409) {
+            if (getErrorStatusCode(error) === 409) {
               const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
 
               if (strategy === 'skipIfExists') {
@@ -170,9 +171,9 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                           namespace: manifest.metadata?.namespace || 'default',
                         },
                       });
-                    } catch (error: any) {
+                    } catch (error: unknown) {
                       // If it's a 404, the resource doesn't exist
-                      if (error.statusCode !== 404) {
+                      if (getErrorStatusCode(error) !== 404) {
                         throw error;
                       }
                     }

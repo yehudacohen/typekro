@@ -4,6 +4,8 @@ import * as yaml from 'js-yaml';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
 import { ResourceGraphFactoryError } from '../../../core/errors.js';
 import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
+import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
+import { isKubernetesError } from '../../../core/kubernetes/type-guards.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
@@ -94,9 +96,9 @@ async function applyWithServerSideApply(
       fieldManager,
       forceConflicts,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     // If the resource doesn't exist, create it
-    const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code;
+    const statusCode = getErrorStatusCode(error);
 
     if (statusCode === 404) {
       logger.debug('Resource not found, creating with server-side apply', {
@@ -177,8 +179,9 @@ async function applyCRDWithSchemaFix(
     if (kubeConfig && crdsNeedingPatch.includes(crdName)) {
       await applyCRDSchemaJsonPatch(kubeConfig, crd, crdPatchTimeout);
     }
-  } catch (error: any) {
-    const statusCode = error?.response?.statusCode || error?.statusCode || error?.body?.code;
+  } catch (error: unknown) {
+    const statusCode = getErrorStatusCode(error);
+    const errDetails = isKubernetesError(error) ? error : undefined;
 
     if (statusCode === 404) {
       // CRD doesn't exist, create it
@@ -191,14 +194,19 @@ async function applyCRDWithSchemaFix(
       logger.warn('CRD validation error during server-side apply — falling back to existing CRD', {
         crdName,
         statusCode,
-        message: error?.body?.message || error?.message,
+        message:
+          errDetails?.body?.message ?? (error instanceof Error ? error.message : String(error)),
         note: 'This may happen if the CRD has stored versions that cannot be updated. The existing CRD will be used as-is, which may cause field stripping if the schema is incomplete.',
       });
     } else {
-      logger.error('Failed to apply CRD with schema fix', error as Error, {
-        crdName,
-        statusCode,
-      });
+      logger.error(
+        'Failed to apply CRD with schema fix',
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          crdName,
+          statusCode,
+        }
+      );
       throw error;
     }
   }
@@ -277,11 +285,11 @@ async function applyCRDSchemaJsonPatch(
     }
 
     logger.info('CRD schema patched successfully', { crdName, patchCount: patches.length });
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Log but don't fail - the CRD may still work
     logger.warn('Failed to apply JSON patch to CRD schema', {
       crdName,
-      error: error?.message || String(error),
+      error: error instanceof Error ? error.message : String(error),
       note: 'The CRD may still work, but values might be stripped',
     });
   }
@@ -447,15 +455,12 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
             namespace: manifest.metadata?.namespace || undefined,
             apiVersion: manifest.apiVersion || 'v1',
           });
-        } catch (error: any) {
+        } catch (error: unknown) {
           // Extract status code from various error formats
+          const errorMessage = error instanceof Error ? error.message : String(error);
           const statusCode =
-            error?.response?.statusCode ||
-            error?.statusCode ||
-            error?.body?.code ||
-            (typeof error?.message === 'string' && error.message.includes('HTTP-Code: 409')
-              ? 409
-              : undefined);
+            getErrorStatusCode(error) ||
+            (errorMessage.includes('HTTP-Code: 409') ? 409 : undefined);
 
           // Handle conflicts (409) based on deployment strategy
           // Note: 422 validation errors are NOT handled here - they should fail hard
@@ -488,9 +493,9 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                         namespace: manifest.metadata?.namespace || 'default',
                       },
                     });
-                  } catch (error: any) {
+                  } catch (error: unknown) {
                     // If it's a 404, the resource doesn't exist
-                    if (error.statusCode !== 404) {
+                    if (getErrorStatusCode(error) !== 404) {
                       throw error;
                     }
                   }

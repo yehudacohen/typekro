@@ -405,7 +405,10 @@ function _createHybridSpec<TSpec extends KroCompatibleType>(
         actualValue !== null &&
         typeof proxyValue === 'object'
       ) {
-        return _createHybridSpec(actualValue as any, proxyValue);
+        return _createHybridSpec(
+          actualValue as unknown as KroCompatibleType,
+          proxyValue as unknown as KroCompatibleType
+        );
       }
 
       // Return actual values for JavaScript operations
@@ -476,8 +479,9 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 
           // Store the original composition function for later analysis
           // This allows the serialization system to analyze the original JavaScript expressions
-          (capturedStatus as any).__originalCompositionFn = compositionFn;
-          (capturedStatus as any).__originalSchema = schema.spec;
+          (capturedStatus as unknown as Record<string, unknown>).__originalCompositionFn =
+            compositionFn;
+          (capturedStatus as unknown as Record<string, unknown>).__originalSchema = schema.spec;
 
           const resourceBuildEnd = Date.now();
           CompositionDebugger.logPerformanceMetrics(
@@ -821,7 +825,7 @@ export function kubernetesComposition<
       __compositionId: callCompositionName,
       __resources: callResult.resources,
     };
-  }) as any; // Type assertion to avoid complex typing
+  }) as unknown as CallableComposition<TSpec, TStatus>; // Double cast needed: function shape doesn't overlap with CallableComposition
 
   // Create a set to track explicitly deleted properties
   const deletedProperties = new Set<string | symbol>();
