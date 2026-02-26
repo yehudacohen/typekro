@@ -691,12 +691,25 @@ export class KubernetesClientProvider {
         // Apply configuration modifications if provided
         this.applyConfigModifications(kc, config);
       } catch (error) {
-        // If loading from default fails (e.g., in test environments), create a minimal mock config
+        /**
+         * @security Mock credentials are only used in test environments.
+         * In production, kubeconfig loading failures are fatal to prevent
+         * accidentally connecting with mock/insecure credentials.
+         */
+        const isTestEnv = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+
+        if (!isTestEnv) {
+          this.logger.error(
+            'Failed to load kubeconfig in non-test environment, re-throwing',
+            error as Error
+          );
+          throw error;
+        }
+
         this.logger.warn(
           'Failed to load kubeconfig, creating minimal mock configuration for testing',
           {
             error: (error as Error).message,
-            isTestEnvironment: process.env.NODE_ENV === 'test' || process.env.VITEST === 'true',
           }
         );
 

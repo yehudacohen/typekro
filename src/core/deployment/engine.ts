@@ -46,6 +46,7 @@ import type {
   Enhanced,
   KubernetesApiError,
   KubernetesCondition,
+  KubernetesObjectWithStatus,
   KubernetesResource,
   ResourceWithConditions,
 } from '../types.js';
@@ -627,7 +628,7 @@ export class DirectDeploymentEngine {
                     originalResourceId,
                     kind: deployedRes.kind,
                     name: deployedRes.name,
-                    hasStatus: !!(liveResource as any).status,
+                    hasStatus: !!(liveResource as KubernetesObjectWithStatus).status,
                   });
                 } catch (error) {
                   deploymentLogger.warn('Failed to update resourceKeyMapping with live resource', {
@@ -1269,7 +1270,7 @@ export class DirectDeploymentEngine {
                       originalResourceId,
                       kind: deployedRes.kind,
                       name: deployedRes.name,
-                      hasStatus: !!(liveResource as any).status,
+                      hasStatus: !!(liveResource as KubernetesObjectWithStatus).status,
                     });
                   } catch (error) {
                     deploymentLogger.warn(

@@ -24,6 +24,10 @@ export type { WebServiceComponent } from './core/composition/index.js';
 // Composition Functions
 // =============================================================================
 export { createWebService } from './core/composition/index.js';
+// =============================================================================
+// Error Classes and Utilities
+// =============================================================================
+export { CompositionDebugger } from './core/composition-debugger.js';
 export type { DependencyNode } from './core/dependencies/index.js';
 // =============================================================================
 // Dependencies Module
@@ -45,12 +49,8 @@ export {
   ResourceReadinessChecker,
   ResourceReadinessTimeoutError,
 } from './core/deployment/index.js';
-// =============================================================================
-// Error Classes and Utilities
-// =============================================================================
 export {
   CircularDependencyError,
-  CompositionDebugger,
   CompositionExecutionError,
   ContextRegistrationError,
   ConversionError,
@@ -66,7 +66,6 @@ export {
   StatusHydrationError,
   TypeKroError,
   TypeKroReferenceError,
-  UnsupportedPatternDetector,
   ValidationError,
 } from './core/errors.js';
 export type {
@@ -129,6 +128,7 @@ export {
 // Core Types and Interfaces
 // =============================================================================
 export type * from './core/types/index.js';
+export { UnsupportedPatternDetector } from './core/unsupported-pattern-detector.js';
 export type {
   DiscoveredFile,
   GitPathInfo,

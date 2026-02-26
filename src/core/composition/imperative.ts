@@ -7,12 +7,13 @@
  * as the existing toResourceGraph API.
  */
 
+import { CompositionDebugger } from '../composition-debugger.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
   KUBERNETES_REF_BRAND,
   NESTED_COMPOSITION_BRAND,
 } from '../constants/brands.js';
-import { CompositionDebugger, CompositionExecutionError } from '../errors.js';
+import { CompositionExecutionError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type { CallableComposition, TypedResourceGraph } from '../types/deployment.js';
