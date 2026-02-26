@@ -30,6 +30,14 @@ export {
   getCompositionDebugLogs,
   kubernetesComposition,
 } from './core/composition/imperative.js';
+// =============================================================================
+// BOOTSTRAP COMPOSITIONS
+// =============================================================================
+// Pre-built compositions for infrastructure bootstrap
+export {
+  type TypeKroRuntimeConfig,
+  typeKroRuntimeBootstrap,
+} from './core/composition/typekro-runtime/index.js';
 export type { CompositionFactory } from './core/types/serialization.js';
 // =============================================================================
 // CORE FUNCTIONALITY
@@ -43,6 +51,7 @@ export {
   CompositionDebugger,
   CompositionExecutionError,
   ContextRegistrationError,
+  containsKubernetesRefs,
   // Logging functionality
   createContextLogger,
   createLogger,
@@ -65,7 +74,6 @@ export {
   isCelExpression,
   // Utility functions
   isKubernetesRef,
-  containsKubernetesRefs,
   isSchemaReference,
   type KroCompatibleType,
   type KubernetesRef,
@@ -92,31 +100,6 @@ export {
   UnsupportedPatternDetector,
   validateResourceGraph,
 } from './core.js';
-
-// Alchemy state inspection utilities removed - use alchemy's built-in state store instead
-// Access via: alchemyScope.state.all(), alchemyScope.state.get(id), etc.
-
-export {} from // createTypedKubernetesResource, - REMOVED (causes registration conflicts)
-// KroRGD, - REMOVED (causes registration conflicts)
-// createTypedKroCRDInstance, - REMOVED (causes registration conflicts)
-// wrapDirectResources, - REMOVED (non-compliant with spec)
-// wrapKroDeployment, - REMOVED (non-compliant with spec)
-// wrapDeployment, - REMOVED (non-compliant with spec)
-// DirectResourceProvider, - REMOVED (non-compliant with spec)
-// KroResourceProvider, - REMOVED (non-compliant with spec)
-// KroInstanceProvider, - REMOVED (non-compliant with spec)
-// createDirectResourceProvider, - REMOVED (non-compliant with spec)
-// createKroResourceProvider, - REMOVED (non-compliant with spec)
-// createKroInstanceProvider, - REMOVED (non-compliant with spec)
-'./alchemy/index.js';
-// =============================================================================
-// BOOTSTRAP COMPOSITIONS
-// =============================================================================
-// Pre-built compositions for infrastructure bootstrap
-export {
-  type TypeKroRuntimeConfig,
-  typeKroRuntimeBootstrap,
-} from './core/composition/typekro-runtime/index.js';
 // =============================================================================
 // FACTORY FUNCTIONS
 // =============================================================================

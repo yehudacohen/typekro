@@ -4,7 +4,7 @@ import { namespace } from '../../../factories/kubernetes/core/namespace.js';
 import { clusterRoleBinding } from '../../../factories/kubernetes/rbac/index.js';
 import { yamlFile } from '../../../factories/kubernetes/yaml/yaml-file.js';
 import { fixCRDSchemaForK8s133 } from '../../utils/crd-schema-fix.js';
-import { kubernetesComposition } from '../index.js';
+import { kubernetesComposition } from '../imperative.js';
 import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } from './types.js';
 
 /**

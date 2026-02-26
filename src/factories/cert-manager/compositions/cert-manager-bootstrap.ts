@@ -1,4 +1,5 @@
-import { Cel, kubernetesComposition } from '../../../index.js';
+import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { certManagerHelmRelease, certManagerHelmRepository } from '../resources/helm.js';
 import {

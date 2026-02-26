@@ -1,4 +1,4 @@
-import { kubernetesComposition } from '../../../index.js';
+import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { createResource } from '../../shared.js';
 import { apisixHelmRelease, apisixHelmRepository } from '../resources/helm.js';
