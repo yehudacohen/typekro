@@ -565,5 +565,6 @@ export function serializeResourceGraphToYaml(
     sortKeys: false,
     quotingType: '"',
     forceQuotes: false,
+    schema: yaml.JSON_SCHEMA,
   });
 }

@@ -25,7 +25,7 @@ const logger = getComponentLogger('yaml-file');
  * Parse YAML content into Kubernetes manifests
  */
 function parseYamlManifests(yamlContent: string): KubernetesResource[] {
-  const documents = yaml.loadAll(yamlContent);
+  const documents = yaml.loadAll(yamlContent, undefined, { schema: yaml.JSON_SCHEMA });
   const manifests: KubernetesResource[] = [];
 
   for (const doc of documents) {
