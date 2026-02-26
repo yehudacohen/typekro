@@ -13,6 +13,11 @@ import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } f
  * Deploys Flux CD controllers and Kro using HelmRelease.
  * This replaces kubectl commands in bootstrap scripts with TypeKro-native deployments.
  *
+ * @security This function creates a ClusterRoleBinding with `cluster-admin` privileges for
+ * Flux controllers (kustomize-controller, helm-controller, source-controller, etc.).
+ * This grants unrestricted cluster access to those service accounts. Ensure the target
+ * namespace is trusted and review RBAC policies before deploying to production.
+ *
  * @param config - Configuration for the runtime bootstrap
  *
  * @example

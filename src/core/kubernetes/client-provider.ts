@@ -85,6 +85,7 @@ export interface KubernetesClientConfig {
   cluster?: {
     name: string;
     server: string;
+    /** @security Disables TLS verification for this cluster. Only use in development/testing. */
     skipTLSVerify?: boolean;
     caData?: string;
     caFile?: string;
