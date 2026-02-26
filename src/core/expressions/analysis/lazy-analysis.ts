@@ -6,8 +6,11 @@
  * the results are actually needed.
  */
 
-import { containsKubernetesRefs, extractResourceReferences } from '../../../utils/type-guards.js';
-import { KUBERNETES_REF_BRAND } from '../../constants/brands.js';
+import {
+  containsKubernetesRefs,
+  extractResourceReferences,
+  isKubernetesRef as isKubernetesRefGuard,
+} from '../../../utils/type-guards.js';
 import { ConversionError, TypeKroError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
@@ -2701,15 +2704,11 @@ export class OptimizedKubernetesRefDetector {
   }
 
   /**
-   * Fast KubernetesRef check.
-   * Uses Reflect.get for proxy-safe brand detection (proxies may not have 'has' trap).
+   * Check if a value is a KubernetesRef.
+   * Delegates to the canonical implementation in `src/utils/type-guards.ts`.
    */
   public isKubernetesRef(value: unknown): boolean {
-    return (
-      (typeof value === 'object' || typeof value === 'function') &&
-      value !== null &&
-      Reflect.get(value, KUBERNETES_REF_BRAND) === true
-    );
+    return isKubernetesRefGuard(value);
   }
 }
 
