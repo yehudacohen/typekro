@@ -1524,21 +1524,30 @@ export class DirectDeploymentEngine {
             // The 'id' field is used internally for resource mapping but is not a valid K8s field
             delete cleanPayload.id;
 
-            resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
+            // Redact sensitive fields from Secret resources before logging
+            if (cleanPayload.kind === 'Secret') {
+              const { data: _data, stringData: _stringData, ...safePayload } = cleanPayload;
+              resourceLogger.debug('Resource exists, patching', {
+                patchPayload: safePayload,
+                redacted: ['data', 'stringData'],
+              });
+            } else {
+              resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
+            }
             // In the new API, methods return objects directly (no .body wrapper)
             appliedResource = await patchResourceWithCorrectContentType(this.k8sApi, cleanPayload);
           } else {
             // Resource does not exist, create it
             resourceLogger.debug('Resource does not exist, creating');
 
-            // DEBUG: Log the resource being created for Secrets
+            // Log Secret resource metadata (sensitive fields redacted)
             if (resolvedResource.kind === 'Secret') {
               resourceLogger.debug('Creating Secret resource', {
                 name: resolvedResource.metadata?.name,
+                namespace: resolvedResource.metadata?.namespace,
                 hasData: 'data' in resolvedResource,
-                hasSpec: 'spec' in resolvedResource,
-                dataKeys: resolvedResource.data ? Object.keys(resolvedResource.data) : [],
-                specValue: resolvedResource.spec,
+                hasStringData: 'stringData' in resolvedResource,
+                dataKeyCount: resolvedResource.data ? Object.keys(resolvedResource.data).length : 0,
               });
             }
 

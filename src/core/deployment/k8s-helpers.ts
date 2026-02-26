@@ -70,18 +70,16 @@ export async function patchResourceWithCorrectContentType(
   k8sApi: k8s.KubernetesObjectApi,
   resource: k8s.KubernetesObject
 ): Promise<k8s.KubernetesObject> {
-  // DEBUG: Log the resource being sent to K8s API for Secrets
+  // Log Secret resource metadata (sensitive fields redacted)
   if (resource.kind === 'Secret') {
-    const secretResource = resource as k8s.KubernetesObject & {
-      data?: Record<string, string>;
-      spec?: unknown;
-    };
     logger.debug('Patching Secret resource', {
       name: resource.metadata?.name,
+      namespace: resource.metadata?.namespace,
       hasData: 'data' in resource,
-      hasSpec: 'spec' in resource,
-      dataKeys: secretResource.data ? Object.keys(secretResource.data) : [],
-      specValue: secretResource.spec,
+      hasStringData: 'stringData' in resource,
+      dataKeyCount: (resource as { data?: Record<string, string> }).data
+        ? Object.keys((resource as { data: Record<string, string> }).data).length
+        : 0,
     });
   }
 
