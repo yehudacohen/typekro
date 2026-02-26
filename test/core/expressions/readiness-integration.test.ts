@@ -11,8 +11,8 @@ import type { KubernetesRef, ResourceStatus } from '../../../src/core/types/inde
 import { 
   ReadinessIntegrator,
   type ReadinessIntegrationConfig 
-} from '../../../src/core/expressions/readiness-integration.js';
-import type { FactoryExpressionContext } from '../../../src/core/expressions/types.js';
+} from '../../../src/core/expressions/conditional/readiness-integration.js';
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
 
 describe('ReadinessIntegrator', () => {
   let integrator: ReadinessIntegrator;

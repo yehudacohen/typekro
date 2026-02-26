@@ -10,8 +10,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { ExpressionCache, globalExpressionCache, } from '../../../src/core/expressions/cache.js';
-import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analyzer.js';
+import { ExpressionCache, globalExpressionCache, } from '../../../src/core/expressions/analysis/cache.js';
+import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analysis/analyzer.js';
 
 describe('Performance Optimization and Caching', () => {
   let cache: ExpressionCache;

@@ -12,8 +12,8 @@ import {
   ConditionalExpressionValidator,
   type ValidationRule,
   type ValidationConfig 
-} from '../../../src/core/expressions/conditional-validation.js';
-import type { FactoryExpressionContext } from '../../../src/core/expressions/types.js';
+} from '../../../src/core/expressions/conditional/conditional-validation.js';
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
 
 describe('ConditionalExpressionValidator', () => {
   let validator: ConditionalExpressionValidator;

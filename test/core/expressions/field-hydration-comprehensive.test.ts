@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { FieldHydrationExpressionProcessor } from '../../../src/core/expressions/field-hydration-processor.js';
+import { FieldHydrationExpressionProcessor } from '../../../src/core/expressions/factory/field-hydration-processor.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';

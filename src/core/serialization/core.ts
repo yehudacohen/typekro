@@ -13,19 +13,19 @@ import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ValidationError } from '../errors.js';
 import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
-import { CelConversionEngine } from '../expressions/cel-conversion-engine.js';
+import { CelConversionEngine } from '../expressions/factory/cel-conversion-engine.js';
 import {
   analyzeCompositionBody,
   applyAnalysisToResources,
   type CompositionAnalysisResult,
-} from '../expressions/composition-analyzer.js';
-import { analyzeImperativeComposition } from '../expressions/imperative-analyzer.js';
-import { CelToJavaScriptMigrationHelper } from '../expressions/migration-helpers.js';
+} from '../expressions/composition/composition-analyzer.js';
+import { analyzeImperativeComposition } from '../expressions/composition/imperative-analyzer.js';
+import { CelToJavaScriptMigrationHelper } from '../expressions/factory/migration-helpers.js';
 import {
   analyzeStatusBuilderForToResourceGraph,
   StatusBuilderAnalyzer,
   type StatusBuilderFunction,
-} from '../expressions/status-builder-analyzer.js';
+} from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import type {

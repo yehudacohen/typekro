@@ -17,7 +17,7 @@ import {
 } from '../../../src/core/expressions/index.js';
 import type {
   FactoryExpressionContext
-} from '../../../src/core/expressions/types.js';
+} from '../../../src/core/expressions/analysis/types.js';
 import type {
   MagicAssignable
 } from '../../../src/core/types/index.js';

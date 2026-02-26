@@ -7,14 +7,14 @@
 
 import { describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
-import type { AnalysisContext } from '../../../src/core/expressions/analyzer.js';
+import type { AnalysisContext } from '../../../src/core/expressions/analysis/analyzer.js';
 import {
   DirectFactoryExpressionHandler,
   FactoryPatternHandlerFactory,
   type FactoryPatternType,
   handleExpressionWithFactoryPattern,
   KroFactoryExpressionHandler,
-} from '../../../src/core/expressions/factory-pattern-handler.js';
+} from '../../../src/core/expressions/factory/factory-pattern-handler.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 
 describe('Factory Pattern Handler', () => {

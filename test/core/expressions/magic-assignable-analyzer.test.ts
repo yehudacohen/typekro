@@ -12,8 +12,8 @@ import {
   analyzeMagicAssignable,
   analyzeMagicAssignableShape,
   type MagicAssignableAnalysisOptions
-} from '../../../src/core/expressions/magic-assignable-analyzer.js';
-import type { AnalysisContext } from '../../../src/core/expressions/analyzer.js';
+} from '../../../src/core/expressions/magic-proxy/magic-assignable-analyzer.js';
+import type { AnalysisContext } from '../../../src/core/expressions/analysis/analyzer.js';
 import type { MagicAssignable, KubernetesRef, CelExpression } from '../../../src/core/types/common.js';
 import type { MagicAssignableShape } from '../../../src/core/types/serialization.js';
 import { KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND } from '../../../src/core/constants/brands.js';

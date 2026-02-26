@@ -9,8 +9,8 @@ import { beforeEach, describe, expect, it } from 'bun:test';
 import {
   type AnalysisContext,
   JavaScriptToCelAnalyzer,
-} from '../../../src/core/expressions/analyzer.js';
-import { SourceMapBuilder } from '../../../src/core/expressions/source-map.js';
+} from '../../../src/core/expressions/analysis/analyzer.js';
+import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
 
 describe('Complex Expressions and Edge Cases', () => {
   let analyzer: JavaScriptToCelAnalyzer;

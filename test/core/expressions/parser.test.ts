@@ -19,7 +19,7 @@ import {
   canParse,
   ParserError,
   DEFAULT_PARSER_OPTIONS,
-} from '../../../src/core/expressions/parser.js';
+} from '../../../src/core/expressions/analysis/parser.js';
 
 describe('Parser Utility', () => {
   describe('parseExpression', () => {

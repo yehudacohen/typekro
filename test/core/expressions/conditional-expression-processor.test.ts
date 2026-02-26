@@ -11,8 +11,8 @@ import type { KubernetesRef } from '../../../src/core/types/index.js';
 import { 
   ConditionalExpressionProcessor,
   type ConditionalExpressionConfig 
-} from '../../../src/core/expressions/conditional-expression-processor.js';
-import type { FactoryExpressionContext } from '../../../src/core/expressions/types.js';
+} from '../../../src/core/expressions/conditional/conditional-expression-processor.js';
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
 
 describe('ConditionalExpressionProcessor', () => {
   let processor: ConditionalExpressionProcessor;

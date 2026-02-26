@@ -11,10 +11,10 @@ import {
   convertToCel,
   kubernetesRefToCel,
   needsCelConversion
-} from '../../../src/core/expressions/cel-conversion-engine.js';
+} from '../../../src/core/expressions/factory/cel-conversion-engine.js';
 import { KUBERNETES_REF_BRAND, BrandChecks } from '../../../src/core/constants/brands.js';
 import type { KubernetesRef, CelExpression } from '../../../src/core/types/index.js';
-import type { FactoryExpressionContext } from '../../../src/core/expressions/types.js';
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
 
 describe('CEL Conversion Engine', () => {
   let engine: CelConversionEngine;

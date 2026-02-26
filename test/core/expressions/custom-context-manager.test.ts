@@ -12,8 +12,8 @@ import {
   CustomContextManager,
   type CustomContextConfig,
   type CustomContextValidationRule 
-} from '../../../src/core/expressions/custom-context-manager.js';
-import type { FactoryExpressionContext } from '../../../src/core/expressions/types.js';
+} from '../../../src/core/expressions/conditional/custom-context-manager.js';
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
 
 describe('CustomContextManager', () => {
   let manager: CustomContextManager;

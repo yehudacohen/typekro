@@ -9,12 +9,12 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import {
   JavaScriptToCelAnalyzer,
   type AnalysisContext,
-} from '../../../src/core/expressions/analyzer.js';
-import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-assignable-analyzer.js';
-import { ResourceAnalyzer } from '../../../src/core/expressions/resource-analyzer.js';
+} from '../../../src/core/expressions/analysis/analyzer.js';
+import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-proxy/magic-assignable-analyzer.js';
+import { ResourceAnalyzer } from '../../../src/core/expressions/factory/resource-analyzer.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
-import { SourceMapBuilder } from '../../../src/core/expressions/source-map.js';
+import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
 
 describe('Performance Analysis - KubernetesRef Detection', () => {
   let analyzer: JavaScriptToCelAnalyzer;
