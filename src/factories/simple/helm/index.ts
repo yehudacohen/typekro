@@ -14,6 +14,16 @@ import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
  * @param chart - Chart name
  * @param values - Helm values to override
  * @returns Enhanced HelmRelease resource
+ *
+ * @example
+ * ```typescript
+ * const redis = HelmChart(
+ *   'redis',
+ *   'https://charts.bitnami.com/bitnami',
+ *   'redis',
+ *   { architecture: 'standalone', auth: { enabled: false } },
+ * );
+ * ```
  */
 export function HelmChart(
   name: string,

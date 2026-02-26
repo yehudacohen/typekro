@@ -15,6 +15,18 @@ import type { IngressConfig } from '../types.js';
  *
  * @param config - Configuration for the ingress
  * @returns Enhanced Ingress resource
+ *
+ * @example
+ * ```typescript
+ * const ing = Ingress({
+ *   name: 'web-ingress',
+ *   ingressClassName: 'nginx',
+ *   rules: [{
+ *     host: 'app.example.com',
+ *     http: { paths: [{ path: '/', pathType: 'Prefix', backend: { service: { name: 'web-service', port: { number: 80 } } } }] },
+ *   }],
+ * });
+ * ```
  */
 export function Ingress(config: IngressConfig): Enhanced<V1IngressSpec, V1IngressStatus> {
   return ingress({

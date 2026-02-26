@@ -11,6 +11,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { isTestEnvironment } from '../config/index.js';
 import { KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
@@ -212,9 +213,9 @@ export class KubernetesClientProvider {
       this.k8sApi = createBunCompatibleKubernetesObjectApi(this.kubeConfig, config?.httpTimeouts);
       this.initialized = true;
 
-      const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+      const isTest = isTestEnvironment();
       // Use debug level in test environments to reduce noise, info level in production
-      const logLevel = isTestEnvironment ? 'debug' : 'info';
+      const logLevel = isTest ? 'debug' : 'info';
       this.logger[logLevel]('Kubernetes client provider initialized successfully', {
         currentContext: this.kubeConfig.getCurrentContext(),
         server: this.kubeConfig.getCurrentCluster()?.server,
@@ -696,7 +697,7 @@ export class KubernetesClientProvider {
          * In production, kubeconfig loading failures are fatal to prevent
          * accidentally connecting with mock/insecure credentials.
          */
-        const isTestEnv = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+        const isTestEnv = isTestEnvironment();
 
         if (!isTestEnv) {
           this.logger.error(

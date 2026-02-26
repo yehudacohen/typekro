@@ -43,10 +43,6 @@ export type * from './yaml.js';
 export * from './yaml.js';
 
 // =============================================================================
-// Expression Analysis Types
-// =============================================================================
-export type * from '../expressions/index.js';
-// =============================================================================
 // Backward Compatibility - Re-export serialization types
 // =============================================================================
 // These types are already exported from serialization.ts above
