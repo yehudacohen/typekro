@@ -633,6 +633,7 @@ export type V1LimitRangeSpec = NonNullable<V1LimitRange['spec']>;
 
 // Networking resource types
 export type V1IngressSpec = NonNullable<V1Ingress['spec']>;
+export type V1IngressStatus = NonNullable<V1Ingress['status']>;
 export type V1NetworkPolicySpec = NonNullable<V1NetworkPolicy['spec']>;
 
 // Autoscaling resource types

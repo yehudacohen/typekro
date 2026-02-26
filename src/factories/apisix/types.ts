@@ -59,7 +59,17 @@ export interface APISixBootstrapConfig {
         hosts?: string[];
       }>;
     };
-    /** Admin API credentials. Override the chart defaults for production deployments. */
+    /**
+     * Admin API credentials for the APISIX Admin API.
+     *
+     * Override the chart defaults for production deployments. When omitted,
+     * credentials are resolved from `APISIX_ADMIN_KEY` / `APISIX_VIEWER_KEY`
+     * environment variables, falling back to well-known chart defaults (with a
+     * warning) for local development only.
+     *
+     * @security These values are sensitive. Do not commit them to source control.
+     * Prefer environment variables or a secrets manager.
+     */
     adminCredentials?: {
       admin?: string;
       viewer?: string;
@@ -487,11 +497,17 @@ export interface APISixHelmValues {
   [key: string]: any;
 }
 
-// Extended APISix configuration for admin access
+/**
+ * Extended APISix configuration for admin access.
+ *
+ * @security The `credentials` field contains sensitive admin API keys.
+ * Never log or persist these values in plain text.
+ */
 export interface APISixAdminConfig {
   allow?: {
     ipList?: string[];
   };
+  /** @security Admin and viewer API keys — treat as secrets. */
   credentials?: {
     admin?: string;
     viewer?: string;

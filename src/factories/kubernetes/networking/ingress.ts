@@ -1,10 +1,10 @@
-import type { V1Ingress } from '@kubernetes/client-node';
+import type { V1Ingress, V1IngressStatus } from '@kubernetes/client-node';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1IngressSpec = NonNullable<V1Ingress['spec']>;
 
-export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, any> {
+export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, V1IngressStatus> {
   return createResource({
     ...resource,
     apiVersion: 'networking.k8s.io/v1',

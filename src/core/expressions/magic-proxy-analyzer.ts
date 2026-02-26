@@ -491,8 +491,11 @@ export class MagicProxyAnalyzer {
               if (shouldExpandFully || this.mightContainKubernetesRef(propertyValue)) {
                 queue.push({ value: propertyValue, depth: depth + 1 });
               }
-            } catch (_error) {
+            } catch (error) {
               // Ignore errors when accessing properties during analysis
+              this.logger.debug('Ignored error when accessing property during analysis', {
+                err: error,
+              });
             }
           }
         }

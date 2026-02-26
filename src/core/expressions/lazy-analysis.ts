@@ -2667,7 +2667,8 @@ export class OptimizedKubernetesRefDetector {
     try {
       const json = JSON.stringify(value);
       return `obj:${json.length}:${this._simpleHash(json)}`;
-    } catch {
+    } catch (error) {
+      logger.debug('Value is not JSON-stringifiable, using fallback cache key', { err: error });
       return `obj:unstringifiable:${Date.now()}`;
     }
   }

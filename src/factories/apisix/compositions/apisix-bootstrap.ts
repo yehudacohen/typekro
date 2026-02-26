@@ -7,6 +7,7 @@ import {
   APISixBootstrapConfigSchema,
   APISixBootstrapStatusSchema,
 } from '../types.js';
+import { resolveAdminCredentials } from '../utils/admin-credentials.js';
 import { mapAPISixConfigToHelmValues } from '../utils/helm-values-mapper.js';
 
 /**
@@ -155,18 +156,25 @@ export const apisixBootstrap = kubernetesComposition(
     helmValues.service.tls.servicePort = fullConfig.gateway?.https?.servicePort || 443;
 
     // Configure admin API access — allow from all IPs for cluster-internal access.
-    // These are APISIX's well-known default admin API keys from the chart defaults.
-    // For production deployments, override via spec.gateway.adminCredentials or
-    // provide custom Helm values with secure credentials.
+    //
+    // @security Credentials are resolved in priority order:
+    //   1. Explicit spec values (gateway.adminCredentials)
+    //   2. APISIX_ADMIN_KEY / APISIX_VIEWER_KEY environment variables
+    //   3. Development-only chart defaults (a warning is logged)
+    //
+    // For production deployments, always provide credentials via the spec or
+    // environment variables.
     if (!helmValues.apisix) {
       helmValues.apisix = {};
     }
+    /** @security Resolved admin credentials — never log these values. */
+    const adminCredentials = resolveAdminCredentials(fullConfig.gateway?.adminCredentials);
     (helmValues.apisix as Record<string, any>).admin = {
       enabled: true,
       type: 'ClusterIP',
       credentials: {
-        admin: fullConfig.gateway?.adminCredentials?.admin || 'edd1c9f034335f136f87ad84b625c8f1',
-        viewer: fullConfig.gateway?.adminCredentials?.viewer || '4054f7cf07e344346cd3f287985e76a2',
+        admin: adminCredentials.admin,
+        viewer: adminCredentials.viewer,
       },
     };
 

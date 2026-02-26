@@ -17,6 +17,7 @@ import {
 } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { ConversionError } from '../errors.js';
+import { getComponentLogger } from '../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { SchemaProxy } from '../types/serialization.js';
@@ -703,19 +704,19 @@ export class JavaScriptToCelAnalyzer {
         );
       }
 
-      // For now, return a placeholder result
-      return {
-        valid: false,
-        celExpression: {
-          expression: '/* TODO: Analyze function body */',
-          _type: undefined,
-        } as CelExpression,
-        dependencies: [],
-        sourceMap: [],
-        errors: [],
-        warnings: [],
-        requiresConversion: true,
-      };
+      // Function body analysis is not yet supported
+      throw new ConversionError(
+        'Converting function bodies to CEL expressions is not yet supported. Use Cel.expr() or Cel.template() directly instead of passing functions.',
+        fn.toString(),
+        'function-call',
+        undefined,
+        undefined,
+        [
+          'Use Cel.expr() to write CEL expressions directly',
+          'Use Cel.template() for string interpolation',
+          'Break complex functions into simple expressions that can be converted',
+        ]
+      );
     } catch (error) {
       const errorMessage =
         error instanceof ParserError
@@ -827,49 +828,22 @@ export class JavaScriptToCelAnalyzer {
         };
       }
 
-      // For complex values, we'll need to analyze the structure
-      // This is a placeholder implementation - will be expanded in later tasks
+      // Complex values with multiple KubernetesRef objects cannot be automatically converted
       const originalExpression = JSON.stringify(value, null, 2);
-      const celExpression: CelExpression = {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression: `/* TODO: Convert complex value with ${dependencies.length} references */`,
-        _type: undefined,
-      };
+      const refPaths = dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`);
 
-      // Create source location for the complex value
-      const sourceLocation = {
-        line: 1,
-        column: 1,
-        length: originalExpression.length,
-      };
-
-      // Add source mapping
-      const sourceMapEntries: SourceMapEntry[] = [];
-      if (context.sourceMap) {
-        context.sourceMap.addMapping(
-          originalExpression,
-          celExpression.expression,
-          sourceLocation,
-          context.type,
-          {
-            expressionType: 'javascript',
-            kubernetesRefs: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
-            dependencies: dependencies.map((dep) => `${dep.resourceId}.${dep.fieldPath}`),
-            conversionNotes: [`Complex value with ${dependencies.length} KubernetesRef objects`],
-          }
-        );
-        sourceMapEntries.push(...context.sourceMap.getEntries());
-      }
-
-      return {
-        valid: true,
-        celExpression,
-        dependencies,
-        sourceMap: sourceMapEntries,
-        errors,
-        warnings: [],
-        requiresConversion: true,
-      };
+      throw new ConversionError(
+        `Converting complex values with ${dependencies.length} KubernetesRef references to CEL is not yet supported. References: ${refPaths.join(', ')}`,
+        originalExpression,
+        'javascript',
+        { line: 1, column: 1, length: originalExpression.length },
+        { analysisContext: context.type, availableReferences: refPaths },
+        [
+          'Use Cel.expr() to write the CEL expression directly',
+          'Use Cel.template() if you need string interpolation with multiple references',
+          'Break the complex value into simpler individual expressions',
+        ]
+      );
     } catch (error) {
       const originalExpression = JSON.stringify(value);
       const sourceLocation = { line: 1, column: 1, length: originalExpression.length };
@@ -1198,8 +1172,10 @@ export class JavaScriptToCelAnalyzer {
           requiresConversion: true,
           resourceValidation,
         };
-      } catch (_error) {
+      } catch (error) {
         // Fall through to return null
+        const logger = getComponentLogger('expression-analyzer');
+        logger.debug('Expression analysis failed, falling through to return null', { err: error });
       }
     }
 
@@ -3127,7 +3103,9 @@ export class JavaScriptToCelAnalyzer {
         try {
           const leftResult = this.convertASTNode(binaryExpr.left, context);
           leftExpr = leftResult.expression.replace(new RegExp(`\\b${param}\\b`, 'g'), param);
-        } catch {
+        } catch (error) {
+          const logger = getComponentLogger('expression-analyzer');
+          logger.debug('Failed to convert left side of filter binary expression', { err: error });
           leftExpr = `${param}.property`;
         }
       }
@@ -3137,7 +3115,9 @@ export class JavaScriptToCelAnalyzer {
       try {
         const rightResult = this.convertASTNode(binaryExpr.right, context);
         rightExpr = rightResult.expression;
-      } catch {
+      } catch (error) {
+        const logger = getComponentLogger('expression-analyzer');
+        logger.debug('Failed to convert right side of filter binary expression', { err: error });
         rightExpr = 'value';
       }
 
@@ -3151,14 +3131,19 @@ export class JavaScriptToCelAnalyzer {
       } as CelExpression;
     }
 
-    // For now, create a placeholder for complex find operations
-    const expression = `${object.expression}.filter(/* TODO: convert find predicate */)[0]`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
+    // Complex find predicates are not yet supported
+    throw new ConversionError(
+      'Complex Array.find() predicates cannot be automatically converted to CEL. Only simple binary comparisons (e.g., c => c.type === "Available") are supported.',
+      `${object.expression}.find(...)`,
+      'function-call',
+      undefined,
+      undefined,
+      [
+        'Simplify the predicate to a binary comparison like: c => c.field === "value"',
+        'Use Cel.expr() to write the CEL filter expression directly',
+        'Example CEL: Cel.expr(array, \'.filter(x, x.field == "value")[0]\')',
+      ]
+    );
   }
 
   /**
@@ -3212,14 +3197,19 @@ export class JavaScriptToCelAnalyzer {
       }
     }
 
-    // For now, create a placeholder for complex filter operations
-    const expression = `${object.expression}.filter(/* TODO: convert filter predicate */)`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
+    // Complex filter predicates are not yet supported
+    throw new ConversionError(
+      'Complex Array.filter() predicates cannot be automatically converted to CEL. Only simple property access (e.g., i => i.ip) and binary comparisons (e.g., i => i.type === "Available") are supported.',
+      `${object.expression}.filter(...)`,
+      'function-call',
+      undefined,
+      undefined,
+      [
+        'Simplify the predicate to a property access or binary comparison',
+        'Use Cel.expr() to write the CEL filter expression directly',
+        'Example CEL: Cel.expr(array, \'.filter(x, x.field == "value")\')',
+      ]
+    );
   }
 
   /**
@@ -3278,14 +3268,19 @@ export class JavaScriptToCelAnalyzer {
       } as CelExpression;
     }
 
-    // For now, create a placeholder for complex map operations
-    const expression = `${object.expression}.map(/* TODO: convert map predicate */)`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
+    // Complex map predicates are not yet supported
+    throw new ConversionError(
+      'Complex Array.map() predicates cannot be automatically converted to CEL. Only simple property access (e.g., c => c.name) is supported.',
+      `${object.expression}.map(...)`,
+      'function-call',
+      undefined,
+      undefined,
+      [
+        'Simplify the predicate to a property access like: c => c.name',
+        'Use Cel.expr() to write the CEL map expression directly',
+        "Example CEL: Cel.expr(array, '.map(x, x.field)')",
+      ]
+    );
   }
 
   /**
@@ -3304,14 +3299,19 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    // For now, create a placeholder - full implementation would need lambda support
-    const expression = `${object.expression}.exists(/* TODO: convert predicate */)`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
+    // Array.some() lambda conversion is not yet supported
+    throw new ConversionError(
+      'Array.some() predicates cannot be automatically converted to CEL. Lambda support for CEL .exists() macro is not yet implemented.',
+      `${object.expression}.some(...)`,
+      'function-call',
+      undefined,
+      undefined,
+      [
+        'Use Cel.expr() to write the CEL exists expression directly',
+        'Example CEL: Cel.expr(array, \'.exists(x, x.field == "value")\')',
+        'For simple existence checks, consider using .size() > 0',
+      ]
+    );
   }
 
   /**
@@ -3330,14 +3330,19 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    // For now, create a placeholder - full implementation would need lambda support
-    const expression = `${object.expression}.all(/* TODO: convert predicate */)`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
+    // Array.every() lambda conversion is not yet supported
+    throw new ConversionError(
+      'Array.every() predicates cannot be automatically converted to CEL. Lambda support for CEL .all() macro is not yet implemented.',
+      `${object.expression}.every(...)`,
+      'function-call',
+      undefined,
+      undefined,
+      [
+        'Use Cel.expr() to write the CEL all expression directly',
+        'Example CEL: Cel.expr(array, \'.all(x, x.field == "value")\')',
+        'For checking all elements match, consider alternative CEL patterns',
+      ]
+    );
   }
 
   /**

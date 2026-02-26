@@ -894,8 +894,9 @@ export class EventMonitor {
             });
           });
         }
-      } catch {
+      } catch (error) {
         // Ignore errors from attemptReconnection
+        this.logger.debug('Ignored error from attemptReconnection', { err: error });
       }
       return;
     }
@@ -1052,8 +1053,9 @@ export class EventMonitor {
       if (connection.request && typeof connection.request.abort === 'function') {
         try {
           connection.request.abort();
-        } catch {
+        } catch (error) {
           // Ignore abort errors - expected during cleanup
+          this.logger.debug('Ignored abort error during watch connection cleanup', { err: error });
         }
       }
       this.watchConnections.delete(connectionKey);
@@ -1084,8 +1086,9 @@ export class EventMonitor {
       if (connection.request && typeof connection.request.abort === 'function') {
         try {
           connection.request.abort();
-        } catch {
+        } catch (error) {
           // Ignore abort errors - expected during cleanup
+          this.logger.debug('Ignored abort error during field selector update', { err: error });
         }
       }
 

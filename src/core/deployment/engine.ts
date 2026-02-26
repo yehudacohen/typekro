@@ -780,8 +780,9 @@ export class DirectDeploymentEngine {
       if (this.eventMonitor) {
         try {
           await this.eventMonitor.stopMonitoring();
-        } catch (_cleanupError) {
+        } catch (cleanupError) {
           // Ignore cleanup errors in error path
+          this.logger.debug('Ignored cleanup error stopping event monitor', { err: cleanupError });
         }
       }
 
@@ -2738,8 +2739,9 @@ export class DirectDeploymentEngine {
       if (match && match[1]) {
         return match[1].split(', ').map((type: string) => type.trim());
       }
-    } catch (_e) {
+    } catch (error) {
       // Fallback to default types
+      this.logger.debug('Failed to extract media types from error, using defaults', { err: error });
     }
 
     return defaultTypes;

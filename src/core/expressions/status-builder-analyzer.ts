@@ -1178,7 +1178,10 @@ export class StatusBuilderAnalyzer {
           let valueSource: string;
           try {
             valueSource = this.getNodeSource(prop.value, originalSource);
-          } catch (_error) {
+          } catch (error) {
+            this.logger.debug('Failed to get node source for status builder property', {
+              err: error,
+            });
             return {
               valid: false,
               processedObject: null,

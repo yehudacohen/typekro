@@ -403,7 +403,10 @@ export class DebugLogger {
     const truncated = statusString.substring(0, this.options.maxStatusObjectSize - 20);
     try {
       return JSON.parse(`${truncated}...[truncated]"}`);
-    } catch {
+    } catch (error) {
+      this.logger.debug('Failed to parse truncated status JSON, returning raw string', {
+        err: error,
+      });
       return `${truncated}...[truncated]`;
     }
   }

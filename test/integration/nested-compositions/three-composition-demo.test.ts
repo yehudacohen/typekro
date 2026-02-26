@@ -206,7 +206,7 @@ describe('Three-Composition Demo Integration', () => {
             certificate.status.conditions?.some(
               (c: any) => c.type === 'Ready' && c.status === 'True'
             ) || false,
-          ingressReady: ingress.status.loadBalancer?.ingress?.length > 0 || false,
+          ingressReady: (ingress.status.loadBalancer?.ingress?.length ?? 0) > 0 || false,
           url: `https://${spec.domain}`,
           ready:
             deployment.status.readyReplicas >= (spec.replicas || 1) &&
@@ -214,7 +214,7 @@ describe('Three-Composition Demo Integration', () => {
               (c: any) => c.type === 'Ready' && c.status === 'True'
             ) ||
               false) &&
-            (ingress.status.loadBalancer?.ingress?.length > 0 || false),
+            ((ingress.status.loadBalancer?.ingress?.length ?? 0) > 0 || false),
         };
       }
     );

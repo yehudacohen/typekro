@@ -1319,8 +1319,10 @@ export function compositionUsesKubernetesRefs<
   try {
     const result = analyzer.analyzeCompositionFunction(compositionFn, schemaProxy);
     return result.requiresCelConversion;
-  } catch {
+  } catch (error) {
     // If analysis fails, assume it might use KubernetesRef objects to be safe
+    const logger = getComponentLogger('composition-integration');
+    logger.debug('Composition analysis failed, assuming KubernetesRef usage', { err: error });
     return true;
   }
 }

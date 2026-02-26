@@ -6,6 +6,7 @@
  */
 
 import { containsKubernetesRefs, extractResourceReferences } from '../../utils/type-guards.js';
+import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { SchemaProxy } from '../types/serialization.js';
@@ -729,7 +730,9 @@ export class ExpressionContextDetector {
           complexity += 0.2;
         }
       }
-    } catch {
+    } catch (error) {
+      const logger = getComponentLogger('context-detector');
+      logger.debug('Failed to calculate object complexity, using default', { err: error });
       complexity = 0.5; // Default complexity for non-enumerable objects
     }
 
