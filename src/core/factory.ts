@@ -9,7 +9,7 @@
 
 // Re-export all factory functions from the organized structure
 export * from '../factories/index.js';
-// Re-export the shared utilities from the new location
-export { createResource } from '../factories/shared.js';
+// Re-export the core proxy engine
+export { createResource } from './proxy/create-resource.js';
 // Re-export types from the centralized location
 export type * from './types/kubernetes.js';

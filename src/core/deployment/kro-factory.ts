@@ -7,13 +7,12 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
-import {
-  createAlchemyResourceId,
-  ensureResourceTypeRegistered,
-  KroTypeKroDeployer,
-} from '../../alchemy/deployment.js';
-import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
-import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
+// NOTE: alchemy/deployment.js is loaded via dynamic import() at point of use
+// to avoid a core/ → alchemy/ static dependency.
+// See deployViaAlchemy() and deployRGDViaAlchemy().
+// NOTE: kroCustomResource and resourceGraphDefinition are loaded via dynamic
+// import() at point of use to avoid a core/ → factories/ static dependency.
+// See deployViaAlchemy(), deployRGDViaAlchemy(), and deployWithDirectEngine().
 import { getResourceId, preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import {
@@ -406,6 +405,7 @@ export class KroResourceFactoryImpl<
     const customResourceData = this.createCustomResourceInstance(instanceName, spec);
 
     // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
+    const { kroCustomResource } = await import('../../factories/kro/kro-custom-resource.js');
     const enhancedCustomResource = kroCustomResource({
       apiVersion: customResourceData.apiVersion,
       kind: customResourceData.kind,
@@ -480,6 +480,7 @@ export class KroResourceFactoryImpl<
       undefined,
       DeploymentMode.KRO
     );
+    const { KroTypeKroDeployer } = await import('../../alchemy/deployment.js');
     const deployer = new KroTypeKroDeployer(kroEngine);
 
     // 1. Ensure RGD is deployed via alchemy (once per factory)
@@ -506,7 +507,13 @@ export class KroResourceFactoryImpl<
     };
 
     // Register RGD type dynamically
+    const { resourceGraphDefinition } = await import(
+      '../../factories/kro/resource-graph-definition.js'
+    );
     const rgdEnhanced = resourceGraphDefinition(rgdManifest);
+    const { ensureResourceTypeRegistered, createAlchemyResourceId } = await import(
+      '../../alchemy/deployment.js'
+    );
     const RGDProvider = ensureResourceTypeRegistered(rgdEnhanced);
     const rgdId = createAlchemyResourceId(rgdEnhanced, this.namespace);
 
@@ -830,7 +837,10 @@ ${Object.entries(spec as Record<string, any>)
     };
 
     // Create Enhanced RGD with readiness evaluator
-    const enhancedRGD = resourceGraphDefinition(rgdWithMetadata);
+    const { resourceGraphDefinition: rgdFactory } = await import(
+      '../../factories/kro/resource-graph-definition.js'
+    );
+    const enhancedRGD = rgdFactory(rgdWithMetadata);
 
     // Create a deployable resource with the required 'id' field
     const deployableRGD = {
