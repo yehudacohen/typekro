@@ -301,7 +301,7 @@ export function fixCRDSchemaForK8s133(manifest: KubernetesResource): KubernetesR
   }
 
   // Deep clone to avoid mutating the original
-  const fixedCrd = JSON.parse(JSON.stringify(crd));
+  const fixedCrd = structuredClone(crd);
   const crdName = crd.metadata?.name || 'unknown';
 
   // Track what changes were made for logging
