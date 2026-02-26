@@ -5,6 +5,7 @@
  * with common template method pattern implementation.
  */
 
+import { DEFAULT_HYDRATION_TIMEOUT_CAP, DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { StatusHydrationError } from '../../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../../logging/index.js';
@@ -204,7 +205,10 @@ export abstract class BaseDeploymentStrategy<
         // Cap status hydration at 60s — this is post-deployment enrichment, not the
         // deployment itself. If cluster reads are slow, gracefully degrade rather than
         // blocking indefinitely.
-        const hydrationTimeout = Math.min(this.factoryOptions.timeout || 60000, 60000);
+        const hydrationTimeout = Math.min(
+          this.factoryOptions.timeout || DEFAULT_HYDRATION_TIMEOUT_CAP,
+          DEFAULT_HYDRATION_TIMEOUT_CAP
+        );
 
         try {
           let hydrationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -499,7 +503,7 @@ export abstract class BaseDeploymentStrategy<
           deployedResources,
           kubeClient: this.factoryOptions.kubeConfig,
           namespace: this.namespace,
-          timeout: this.factoryOptions.timeout || 30000,
+          timeout: this.factoryOptions.timeout || DEFAULT_READINESS_TIMEOUT,
           resourceKeyMapping,
           schema: { spec, status: {} },
         };

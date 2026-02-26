@@ -7,6 +7,7 @@
 
 import { toCamelCase } from '../../utils/string.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { DEFAULT_DELETE_TIMEOUT } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
 import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
@@ -260,7 +261,7 @@ export class DirectResourceFactoryImpl<
 
       if (deletedNamespaces.length > 0) {
         const k8sApi = engine.getKubernetesApi();
-        const deleteTimeout = this.factoryOptions.timeout ?? 30000;
+        const deleteTimeout = this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
         await this.waitForNamespaceDeletion(k8sApi, deletedNamespaces, deleteTimeout);
       }
 

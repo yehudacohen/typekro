@@ -9,6 +9,7 @@ import type * as k8s from '@kubernetes/client-node';
 import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
 import { getResourceId, preserveNonEnumerableProperties } from '../../../utils/helpers.js';
+import { DEFAULT_DEPLOYMENT_TIMEOUT, DEFAULT_RGD_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { DeploymentTimeoutError, ResourceGraphFactoryError, TypeKroError } from '../../errors.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
@@ -151,7 +152,7 @@ export class KroDeploymentStrategy<
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: true,
-      timeout: this.factoryOptions.timeout || 60000,
+      timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
     });
 
     logger.debug('ResourceGraphDefinition deployed successfully', {
@@ -212,12 +213,15 @@ export class KroDeploymentStrategy<
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: false, // We'll handle readiness ourselves
-      timeout: this.factoryOptions.timeout || 300000,
+      timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
     });
 
     // Handle Kro-specific readiness checking if requested
     if (this.factoryOptions.waitForReady ?? true) {
-      await this.waitForKroResourceReady(instanceName, this.factoryOptions.timeout || 300000);
+      await this.waitForKroResourceReady(
+        instanceName,
+        this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT
+      );
     }
 
     logger.debug('Custom Resource instance deployed successfully', {

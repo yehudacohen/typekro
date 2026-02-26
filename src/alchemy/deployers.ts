@@ -5,6 +5,7 @@
  * for different deployment strategies (direct and Kro).
  */
 
+import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { DependencyGraph } from '../core/dependencies/index.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import type { DeploymentOptions, ResourceGraph } from '../core/types/deployment.js';
@@ -101,7 +102,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
       mode: 'direct' as const,
       namespace: options.namespace || 'default',
       waitForReady: options.waitForReady ?? true,
-      timeout: options.timeout ?? 300000,
+      timeout: options.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
     };
 
     const result = await this.engine.deploy(resourceGraph, deploymentOptions);

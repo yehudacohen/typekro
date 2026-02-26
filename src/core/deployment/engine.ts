@@ -7,6 +7,13 @@
 
 import type * as k8s from '@kubernetes/client-node';
 import { ensureReadinessEvaluator, getResourceId } from '../../utils/helpers.js';
+import {
+  DEFAULT_CRD_READY_TIMEOUT,
+  DEFAULT_DELETE_TIMEOUT,
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_MAX_RETRY_DELAY,
+  DEFAULT_READINESS_TIMEOUT,
+} from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import {
   CircularDependencyError,
@@ -322,7 +329,7 @@ export class DirectDeploymentEngine {
     const abortSignal = deploymentAbortController.signal;
 
     // Set up timeout-based abort if timeout is specified
-    const timeout = options.timeout || 300000; // 5 minutes default
+    const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
     const timeoutId = setTimeout(() => {
       this.logger.debug('Deployment timeout reached, aborting operations', {
         deploymentId,
@@ -427,7 +434,7 @@ export class DirectDeploymentEngine {
         kubeClient: this.kubeClient,
         resourceKeyMapping,
         ...(options.namespace && { namespace: options.namespace }),
-        timeout: options.timeout || 30000,
+        timeout: options.timeout || DEFAULT_READINESS_TIMEOUT,
       };
 
       // 5. Deploy resources in parallel stages
@@ -803,7 +810,7 @@ export class DirectDeploymentEngine {
     const abortSignal = deploymentAbortController.signal;
 
     // Set up timeout-based abort if timeout is specified
-    const timeout = options.timeout || 300000; // 5 minutes default
+    const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
     const timeoutId = setTimeout(() => {
       deploymentLogger.debug('Deployment timeout reached, aborting operations', {
         deploymentId,
@@ -893,7 +900,7 @@ export class DirectDeploymentEngine {
         kubeClient: this.kubeClient,
         resourceKeyMapping,
         ...(options.namespace && { namespace: options.namespace }),
-        timeout: options.timeout || 30000,
+        timeout: options.timeout || DEFAULT_READINESS_TIMEOUT,
       };
 
       // 5. Deploy resources and closures level by level with proper dependency handling
@@ -1301,7 +1308,7 @@ export class DirectDeploymentEngine {
       resourceLogger.debug('Resolving resource references', {
         originalMetadata: resource.metadata,
       });
-      const resolveTimeout = options.timeout || 30000;
+      const resolveTimeout = options.timeout || DEFAULT_READINESS_TIMEOUT;
       resolvedResource = (await Promise.race([
         this.referenceResolver.resolveReferences(resource, context),
         new Promise((_, reject) =>
@@ -1406,7 +1413,7 @@ export class DirectDeploymentEngine {
         maxRetries: 3,
         backoffMultiplier: 2,
         initialDelay: 1000,
-        maxDelay: 30000,
+        maxDelay: DEFAULT_MAX_RETRY_DELAY,
       };
 
       let lastError: Error | undefined;
@@ -1813,7 +1820,7 @@ export class DirectDeploymentEngine {
     }
 
     const startTime = Date.now();
-    const timeout = options.timeout || 300000; // 5 minutes default
+    const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
     let lastStatus: ResourceStatusResult | null = null;
 
     while (Date.now() - startTime < timeout) {
@@ -2026,7 +2033,7 @@ export class DirectDeploymentEngine {
       deployedResources: [],
       kubeClient: this.kubeClient,
       ...(options.namespace && { namespace: options.namespace }),
-      timeout: options.timeout || 30000,
+      timeout: options.timeout || DEFAULT_READINESS_TIMEOUT,
     };
 
     // Legacy method - no abort signal support
@@ -2054,7 +2061,7 @@ export class DirectDeploymentEngine {
       } as k8s.KubernetesObject);
 
       // Wait for resource to be deleted
-      const timeout = 30000; // 30 seconds
+      const timeout = DEFAULT_DELETE_TIMEOUT;
       const startTime = Date.now();
 
       while (Date.now() - startTime < timeout) {
@@ -2194,7 +2201,7 @@ export class DirectDeploymentEngine {
    */
   async waitForCRDReady(
     crdName: string,
-    timeout: number = 300000,
+    timeout: number = DEFAULT_CRD_READY_TIMEOUT,
     abortSignal?: AbortSignal
   ): Promise<void> {
     await this.crdManager.waitForCRDReady(crdName, this.deploymentMode, timeout, abortSignal);

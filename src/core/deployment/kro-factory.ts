@@ -14,6 +14,11 @@ import { compile as compileExpression } from 'angular-expressions';
 // import() at point of use to avoid a core/ → factories/ static dependency.
 // See deployViaAlchemy(), deployRGDViaAlchemy(), and deployWithDirectEngine().
 import { getResourceId, preserveNonEnumerableProperties } from '../../utils/helpers.js';
+import {
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_KRO_INSTANCE_TIMEOUT,
+  DEFAULT_RGD_TIMEOUT,
+} from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import {
   CRDInstanceError,
@@ -437,7 +442,7 @@ export class KroResourceFactoryImpl<
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: false, // We'll handle Kro-specific readiness ourselves
-      timeout: this.factoryOptions.timeout || 300000,
+      timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
     });
     this.logger.info('Instance deployed, checking readiness', {
       instanceName,
@@ -446,7 +451,10 @@ export class KroResourceFactoryImpl<
 
     // Handle Kro-specific readiness checking if requested
     if (this.factoryOptions.waitForReady ?? true) {
-      await this.waitForKroInstanceReady(instanceName, this.factoryOptions.timeout || 600000); // 10 minutes
+      await this.waitForKroInstanceReady(
+        instanceName,
+        this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
+      ); // 10 minutes
     }
     this.logger.info('Instance ready, creating enhanced proxy', {
       instanceName,
@@ -523,7 +531,7 @@ export class KroResourceFactoryImpl<
       deployer: deployer,
       options: {
         waitForReady: true,
-        timeout: 60000, // RGD should be ready quickly
+        timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
       },
     });
 
@@ -544,7 +552,7 @@ export class KroResourceFactoryImpl<
       deployer: deployer,
       options: {
         waitForReady: this.factoryOptions.waitForReady ?? true,
-        timeout: this.factoryOptions.timeout ?? 300000,
+        timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
       },
     });
 
@@ -864,7 +872,7 @@ ${Object.entries(spec as Record<string, any>)
         mode: 'direct',
         namespace: this.namespace,
         waitForReady: true,
-        timeout: this.factoryOptions.timeout || 60000,
+        timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
       });
       this.logger.info('RGD deployed, waiting for CRD', { rgdName: this.rgdName });
 
@@ -958,7 +966,10 @@ ${Object.entries(spec as Record<string, any>)
 
     // Use the deployment engine's built-in CRD readiness checking
     // This will wait for the CRD to be created by Kro and become ready
-    await deploymentEngine.waitForCRDReady(crdName, this.factoryOptions.timeout || 60000);
+    await deploymentEngine.waitForCRDReady(
+      crdName,
+      this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT
+    );
   }
 
   /**

@@ -20,6 +20,7 @@ import type {
 import { from, type Observable } from '@kubernetes/client-node/dist/gen/rxjsStub.js';
 import * as http from 'http';
 import * as https from 'https';
+import { DEFAULT_HTTP_READ_TIMEOUT } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 
 /**
@@ -77,7 +78,7 @@ export interface HttpTimeoutConfig {
  * Based on kubectl defaults and operation characteristics
  */
 const DEFAULT_TIMEOUTS: Required<HttpTimeoutConfig> = {
-  default: 30000, // 30 seconds - read operations (matches kubectl default)
+  default: DEFAULT_HTTP_READ_TIMEOUT,
   watch: 3600000, // 1 hour - effectively disabled (API server controls watch timeouts)
   create: 120000, // 2 minutes - write operations with webhooks
   update: 120000, // 2 minutes - write operations with webhooks
