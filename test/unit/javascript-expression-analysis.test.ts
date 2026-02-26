@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
-import { analyzeStatusBuilderForToResourceGraph } from '../../src/core/expressions/status-builder-analyzer.js';
+import { analyzeStatusBuilderForToResourceGraph } from '../../src/core/expressions/factory/status-builder-analyzer.js';
 import { simple } from '../../src/index.js';
 
 describe('JavaScript Expression Analysis', () => {

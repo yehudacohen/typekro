@@ -13,8 +13,8 @@ import {
   createLazyExpression,
   createLazyCollection,
   shouldUseLazyAnalysis
-} from '../../../src/core/expressions/lazy-analysis.js';
-import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analyzer.js';
+} from '../../../src/core/expressions/analysis/lazy-analysis.js';
+import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analysis/analyzer.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
 import { containsKubernetesRefs } from '../../../src/utils/type-guards.js';

@@ -19,7 +19,7 @@ import { getCurrentCompositionContext, isInStatusBuilderContext } from '../compo
 import { isDebugMode } from '../config/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
-import { conditionalExpressionIntegrator } from '../expressions/conditional-integration.js';
+import { conditionalExpressionIntegrator } from '../expressions/conditional/conditional-integration.js';
 import { getComponentLogger } from '../logging/index.js';
 import { ReadinessEvaluatorRegistry } from '../readiness/index.js';
 import { generateDeterministicResourceId } from '../resources/id.js';

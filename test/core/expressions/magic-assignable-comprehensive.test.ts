@@ -6,12 +6,12 @@
  */
 
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-assignable-analyzer.js';
+import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-proxy/magic-assignable-analyzer.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import { containsKubernetesRefs } from '../../../src/utils/type-guards.js';
 import type { KubernetesRef, MagicAssignable } from '../../../src/core/types/common.js';
 import type { MagicAssignableShape } from '../../../src/core/types/serialization.js';
-import { SourceMapBuilder } from '../../../src/core/expressions/source-map.js';
+import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
 
 describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
   let analyzer: MagicAssignableAnalyzer;

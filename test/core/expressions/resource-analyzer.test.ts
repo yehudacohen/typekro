@@ -10,7 +10,7 @@ import {
   analyzeResourceConfig,
   type ResourceAnalysisContext,
   type DependencyTrackingOptions
-} from '../../../src/core/expressions/resource-analyzer.js';
+} from '../../../src/core/expressions/factory/resource-analyzer.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
 

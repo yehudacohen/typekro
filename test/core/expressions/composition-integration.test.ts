@@ -9,7 +9,7 @@ import {
   CompositionIntegrationHooks,
   compositionUsesKubernetesRefs,
   MagicProxyScopeManager,
-} from '../../../src/core/expressions/composition-integration.js';
+} from '../../../src/core/expressions/composition/composition-integration.js';
 import type { SchemaProxy } from '../../../src/core/types/serialization.js';
 
 describe('CompositionIntegrationHooks', () => {

@@ -15,16 +15,16 @@ export {
   canParse,
   ParserError,
   DEFAULT_PARSER_OPTIONS,
-} from './parser.js';
-export type { ParseOptions, ParseResult } from './parser.js';
+} from './analysis/parser.js';
+export type { ParseOptions, ParseResult } from './analysis/parser.js';
 
 // Core analyzer
-export { JavaScriptToCelAnalyzer } from './analyzer.js';
+export { JavaScriptToCelAnalyzer } from './analysis/analyzer.js';
 export type { 
   AnalysisContext, 
   ExpressionValidationReport,
   ValidationSummary 
-} from './analyzer.js';
+} from './analysis/analyzer.js';
 
 // Type safety integration
 export { 
@@ -33,48 +33,48 @@ export {
   TypeSafetyUtils,
   TypeValidationError,
   TypeValidationWarning 
-} from './type-safety.js';
+} from './validation/type-safety.js';
 export type { 
   TypeInfo, 
   TypeValidationResult 
-} from './type-safety.js';
+} from './validation/type-safety.js';
 
 // Type inference
 export { 
   CelTypeInferenceEngine,
   TypeInferenceError,
   TypeInferenceWarning 
-} from './type-inference.js';
+} from './validation/type-inference.js';
 export type { 
   CelTypeInferenceResult,
   TypeInferenceContext,
   TypeInferenceMetadata 
-} from './type-inference.js';
+} from './validation/type-inference.js';
 
 // Resource validation
 export { 
   ResourceReferenceValidator,
   ResourceValidationError,
   ResourceValidationWarning 
-} from './resource-validation.js';
+} from './validation/resource-validation.js';
 export type { 
   ResourceValidationResult,
   ResourceValidationMetadata,
   ValidationContext 
-} from './resource-validation.js';
+} from './validation/resource-validation.js';
 
 // Compile-time validation
 export { 
   CompileTimeTypeChecker,
   CompileTimeError,
   CompileTimeWarning 
-} from './compile-time-validation.js';
+} from './validation/compile-time-validation.js';
 export type { 
   CompileTimeValidationResult,
   CompileTimeTypeInfo,
   CompileTimeValidationContext,
   TypeCompatibilityIssue 
-} from './compile-time-validation.js';
+} from './validation/compile-time-validation.js';
 
 // Factory pattern integration
 export { 
@@ -82,40 +82,40 @@ export {
   KroFactoryExpressionHandler,
   FactoryPatternHandlerFactory,
   handleExpressionWithFactoryPattern 
-} from './factory-pattern-handler.js';
+} from './factory/factory-pattern-handler.js';
 export type { 
   FactoryPatternType,
   FactoryExpressionHandler 
-} from './factory-pattern-handler.js';
+} from './factory/factory-pattern-handler.js';
 
 // Source mapping and error handling
-export { SourceMapBuilder, SourceMapUtils } from './source-map.js';
-export type { SourceMapEntry } from './source-map.js';
+export { SourceMapBuilder, SourceMapUtils } from './analysis/source-map.js';
+export type { SourceMapEntry } from './analysis/source-map.js';
 
-export { CelRuntimeErrorMapper, CelRuntimeErrorUtils } from './runtime-error-mapper.js';
+export { CelRuntimeErrorMapper, CelRuntimeErrorUtils } from './analysis/runtime-error-mapper.js';
 export type { 
   CelRuntimeError, 
   MappedRuntimeError 
-} from './runtime-error-mapper.js';
+} from './analysis/runtime-error-mapper.js';
 
 // MagicAssignable type integration
 export { 
   MagicAssignableAnalyzer,
   analyzeMagicAssignable,
   analyzeMagicAssignableShape 
-} from './magic-assignable-analyzer.js';
+} from './magic-proxy/magic-assignable-analyzer.js';
 export type { 
   ProcessedMagicAssignable,
   ProcessedMagicAssignableShape,
   MagicAssignableAnalysisOptions 
-} from './magic-assignable-analyzer.js';
+} from './magic-proxy/magic-assignable-analyzer.js';
 
 // Performance optimization and caching
-export { ExpressionCache, globalExpressionCache } from './cache.js';
+export { ExpressionCache, globalExpressionCache } from './analysis/cache.js';
 export type { 
   CacheStats, 
   CacheOptions 
-} from './cache.js';
+} from './analysis/cache.js';
 
 // Enhanced Type Optionality Support
 export { 
@@ -127,7 +127,7 @@ export {
   detectNullSafetyRequirements,
   integrateWithFieldHydrationTiming,
   handleUndefinedToDefinedTransitions
-} from './optionality-handler.js';
+} from './magic-proxy/optionality-handler.js';
 export type { 
   OptionalityAnalysisResult,
   FieldHydrationState,
@@ -141,7 +141,7 @@ export type {
   HydrationTransitionHandler,
   HydrationState,
   UndefinedToDefinedTransitionResult
-} from './optionality-handler.js';
+} from './magic-proxy/optionality-handler.js';
 
 // Status Builder Analysis
 export { 
@@ -150,7 +150,7 @@ export {
   analyzeStatusBuilderForToResourceGraph,
   analyzeReturnObjectWithMagicProxy,
   generateStatusContextCel
-} from './status-builder-analyzer.js';
+} from './factory/status-builder-analyzer.js';
 export type { 
   StatusBuilderFunction,
   StatusFieldAnalysisResult,
@@ -162,7 +162,7 @@ export type {
   StatusHandlingStrategy,
   StatusFieldCategory,
   FieldAvailabilityEstimate
-} from './status-builder-analyzer.js';
+} from './factory/status-builder-analyzer.js';
 
 // Resource Builder Integration
 export { 
@@ -171,7 +171,7 @@ export {
   ResourceTypeValidator,
   analyzeResourceConfig,
   analyzeFactoryResourceConfig
-} from './resource-analyzer.js';
+} from './factory/resource-analyzer.js';
 export type { 
   ResourceAnalysisContext,
   ResourceAnalysisResult,
@@ -188,20 +188,20 @@ export type {
   SchemaFieldValidationResult,
   FieldPathValidationResult,
   TypeCompatibilityValidationResult
-} from './resource-analyzer.js';
+} from './factory/resource-analyzer.js';
 
 // Context-Aware Conversion
 export { 
   ExpressionContextDetector,
   contextDetector
-} from './context-detector.js';
+} from './context/context-detector.js';
 export type { 
   ExpressionContext,
   ContextDetectionResult,
   CelGenerationStrategy,
   ContextMetadata,
   ContextDetectionConfig
-} from './context-detector.js';
+} from './context/context-detector.js';
 
 // Lazy Analysis Support
 export {
@@ -231,7 +231,7 @@ export {
   globalOptimizedDetector,
   globalOptimizedTraverser,
   globalComplexityAnalyzer
-} from './lazy-analysis.js';
+} from './analysis/lazy-analysis.js';
 export type {
   LazyCollectionStats,
   ExpressionTreeResult,
@@ -257,56 +257,56 @@ export type {
   ComplexityWarning,
   ComplexityAnalysisResult,
   ComplexityStats
-} from './lazy-analysis.js';
+} from './analysis/lazy-analysis.js';
 
 export { 
   ContextAwareCelGenerator,
   CelGenerationUtils,
   contextAwareCelGenerator
-} from './context-aware-generator.js';
+} from './context/context-aware-generator.js';
 export type { 
   CelGenerationConfig,
   CelGenerationResult,
   CelGenerationDebugInfo
-} from './context-aware-generator.js';
+} from './context/context-aware-generator.js';
 
 export { 
   ContextExpressionValidator,
   ContextValidationUtils,
   contextValidator
-} from './context-validator.js';
+} from './context/context-validator.js';
 export type { 
   ValidationSeverity,
   ContextValidationRule,
   ContextValidationConfig,
   ContextValidationReport,
   ValidationIssue
-} from './context-validator.js';
+} from './context/context-validator.js';
 
 export { 
   ExpressionContextSwitcher,
   ContextSwitchingUtils,
   createContextSwitcher
-} from './context-switcher.js';
+} from './context/context-switcher.js';
 export type { 
   ContextSwitchingConfig,
   ContextSwitchingRule,
   ContextSwitchPoint,
   ContextSwitchingResult,
   ContextSwitchingMetrics
-} from './context-switcher.js';
+} from './context/context-switcher.js';
 
 // Migration helpers
 export { 
   CelToJavaScriptMigrationHelper,
   analyzeCelMigrationOpportunities,
   generateCelMigrationGuide
-} from './migration-helpers.js';
+} from './factory/migration-helpers.js';
 export type {
   MigrationSuggestion,
   MigrationCategory,
   MigrationAnalysisResult
-} from './migration-helpers.js';
+} from './factory/migration-helpers.js';
 
 // Factory integration
 export {
@@ -315,14 +315,14 @@ export {
   withExpressionAnalysis,
   analyzeFactoryConfig,
   processFactoryValue
-} from './factory-integration.js';
+} from './factory/factory-integration.js';
 export type {
   FactoryAnalysisConfig,
   FactoryConfigAnalysisResult,
   FactoryExpressionContext,
   ExpressionAnalysisResult,
   FactoryAnalysisResult
-} from './factory-integration.js';
+} from './factory/factory-integration.js';
 
 // Magic proxy detection
 export {
@@ -332,12 +332,12 @@ export {
   containsMagicProxyRefs,
   extractMagicProxyRefs,
   analyzeMagicProxyRefSource
-} from './magic-proxy-detector.js';
+} from './magic-proxy/magic-proxy-detector.js';
 export type {
   MagicProxyRefInfo,
   MagicProxyDetectionResult,
   MagicProxyDetectionConfig
-} from './magic-proxy-detector.js';
+} from './magic-proxy/magic-proxy-detector.js';
 
 // CEL conversion engine
 export {
@@ -346,11 +346,11 @@ export {
   convertToCel,
   kubernetesRefToCel,
   needsCelConversion
-} from './cel-conversion-engine.js';
+} from './factory/cel-conversion-engine.js';
 export type {
   CelConversionConfig,
   CelConversionResult
-} from './cel-conversion-engine.js';
+} from './factory/cel-conversion-engine.js';
 
 // Composition integration
 export {
@@ -361,10 +361,10 @@ export {
   compositionIntegration,
   compositionUsesKubernetesRefs,
   getCompositionAnalysis
-} from './composition-integration.js';
+} from './composition/composition-integration.js';
 export type {
   CompositionAnalysisResult,
   CompositionPattern,
   PatternAnalysisConfig,
   NestedCompositionScope
-} from './composition-integration.js';
+} from './composition/composition-integration.js';

@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analyzer.js';
+import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analysis/analyzer.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 
 describe('Factory Pattern Integration', () => {

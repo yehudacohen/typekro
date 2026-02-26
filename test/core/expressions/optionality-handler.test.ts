@@ -14,7 +14,7 @@ import {
   detectNullSafetyRequirements,
   type OptionalityContext,
   type FieldHydrationState
-} from '../../../src/core/expressions/optionality-handler.js';
+} from '../../../src/core/expressions/magic-proxy/optionality-handler.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';

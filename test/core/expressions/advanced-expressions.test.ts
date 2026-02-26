@@ -10,8 +10,8 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analyzer.js';
-import { SourceMapBuilder } from '../../../src/core/expressions/source-map.js';
+import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analysis/analyzer.js';
+import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 
 describe('Advanced JavaScript Expression Conversion', () => {
