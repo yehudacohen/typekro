@@ -4,9 +4,28 @@
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, DependencyGraph, type DeployableK8sResource, type DeployedResource, type DeploymentOptions, DirectDeploymentEngine, type Enhanced, toResourceGraph } from '../../src/core.js';
-import { simple } from '../../src/index.js';
-import { configMap, daemonSet, deployment, job, persistentVolumeClaim, pod, secret, service, statefulSet,  } from '../../src/factories/index.js';
+import {
+  configMap,
+  daemonSet,
+  deployment,
+  job,
+  persistentVolumeClaim,
+  pod,
+  secret,
+  service,
+  statefulSet,
+} from '../../src/factories/index.js';
+import {
+  Cel,
+  DependencyGraph,
+  type DeployableK8sResource,
+  type DeployedResource,
+  type DeploymentOptions,
+  DirectDeploymentEngine,
+  type Enhanced,
+  simple,
+  toResourceGraph,
+} from '../../src/index.js';
 
 // Helper function to create properly typed test resources
 function createMockResource(

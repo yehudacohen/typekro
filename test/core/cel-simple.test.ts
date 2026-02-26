@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { CelEvaluator } from '../../src/core.js';
+import { CelEvaluator } from '../../src/index.js';
 
 describe('CelEvaluator Simple', () => {
   it('should create an instance', () => {

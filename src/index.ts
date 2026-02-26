@@ -1,28 +1,24 @@
 /**
  * typekro - Define Kro resource graphs with full TypeScript safety.
+ *
+ * This is the single public entry point for the typekro package.
+ * All symbols that consumers need should be exported from here.
  */
 
 // =============================================================================
 // ALCHEMY INTEGRATION
 // =============================================================================
-// Alchemy resource conversion and wrapper utilities
 export {
   createAlchemyResourceId,
   DirectTypeKroDeployer,
-  // Resource conversion utilities
-  // Alchemy conversion utilities removed - using dynamic registration approach
-
-  // Utility functions (non-conflicting)
-  // generateDeterministicResourceId is exported from utils
-
-  // Alchemy dynamic registration exports
   ensureResourceTypeRegistered,
   KroTypeKroDeployer,
 } from './alchemy/deployment.js';
+export { getCurrentCompositionContext } from './core/composition/context.js';
+
 // =============================================================================
-// IMPERATIVE COMPOSITION PATTERN
+// IMPERATIVE COMPOSITION
 // =============================================================================
-// New imperative composition API
 export {
   clearCompositionDebugLogs,
   disableCompositionDebugging,
@@ -30,78 +26,159 @@ export {
   getCompositionDebugLogs,
   kubernetesComposition,
 } from './core/composition/imperative.js';
-// =============================================================================
-// BOOTSTRAP COMPOSITIONS
-// =============================================================================
-// Pre-built compositions for infrastructure bootstrap
 export {
   type TypeKroRuntimeConfig,
   typeKroRuntimeBootstrap,
 } from './core/composition/typekro-runtime/index.js';
-export type { CompositionFactory } from './core/types/serialization.js';
+export { CompositionDebugger } from './core/composition-debugger.js';
+export type { DependencyNode } from './core/dependencies/index.js';
 // =============================================================================
-// CORE FUNCTIONALITY
+// DEPENDENCIES
 // =============================================================================
-// Export all core functionality (excluding createResource to avoid conflicts with factories)
+export { DependencyGraph, DependencyResolver } from './core/dependencies/index.js';
+export type { DeploymentOptions, ResourceGraph } from './core/deployment/index.js';
+// =============================================================================
+// DEPLOYMENT
+// =============================================================================
 export {
-  Cel,
-  type CelExpression,
-  // Error types
+  DirectDeploymentEngine,
+  ResourceDeploymentError,
+  ResourceReadinessChecker,
+  ResourceReadinessTimeoutError,
+} from './core/deployment/index.js';
+// =============================================================================
+// ERROR CLASSES
+// =============================================================================
+export {
   CircularDependencyError,
-  CompositionDebugger,
   CompositionExecutionError,
   ContextRegistrationError,
-  containsKubernetesRefs,
-  // Logging functionality
+  ConversionError,
+  CRDInstanceError,
+  DeploymentTimeoutError,
+  formatArktypeError,
+  formatCircularDependencyError,
+  formatReferenceError,
+  KroSchemaValidationError,
+  KubernetesApiOperationError,
+  KubernetesClientError,
+  ResourceGraphFactoryError,
+  StatusHydrationError,
+  TypeKroError,
+  TypeKroReferenceError,
+  ValidationError,
+} from './core/errors.js';
+export type {
+  KubeConfigConsumer,
+  KubernetesApiConsumer,
+  KubernetesClientConfig,
+} from './core/kubernetes/client-provider.js';
+// =============================================================================
+// KUBERNETES CLIENT
+// =============================================================================
+export {
+  createKubernetesClientProvider,
+  createKubernetesClientProviderWithKubeConfig,
+  getKubeConfig,
+  getKubernetesApi,
+  getKubernetesClientProvider,
+  KubernetesClientProvider,
+} from './core/kubernetes/client-provider.js';
+export type { LoggerConfig, LoggerContext, TypeKroLogger } from './core/logging/index.js';
+// =============================================================================
+// LOGGING
+// =============================================================================
+export {
   createContextLogger,
   createLogger,
-  // Alchemy integration - dynamic registration approach (exported below)
-
-  // Schema proxy functions
-  createSchemaProxy,
-  DependencyGraph,
-  // Dependency resolution
-  DependencyResolver,
-  // Direct deployment functionality
-  DirectDeploymentEngine,
-  // Type definitions and utilities
-  type Enhanced,
-  externalRef,
-  generateKroSchema,
   getComponentLogger,
   getDeploymentLogger,
   getResourceLogger,
-  isCelExpression,
-  // Utility functions
-  isKubernetesRef,
-  isSchemaReference,
-  type KroCompatibleType,
-  type KubernetesRef,
-  type KubernetesResource,
-  type LoggerConfig,
-  type LoggerContext,
   logger,
-  type MagicAssignableShape,
-  type MagicProxy,
-  // Reference resolution and CEL
+} from './core/logging/index.js';
+// =============================================================================
+// RESOURCE FACTORY
+// =============================================================================
+export { createResource } from './core/proxy/create-resource.js';
+// =============================================================================
+// REFERENCES (CEL, Schema Proxy, External Refs)
+// =============================================================================
+export {
+  Cel,
+  CelEvaluator,
+  cel,
+  createExternalRefWithoutRegistration,
+  createResourcesProxy,
+  createSchemaProxy,
+  DeploymentMode,
+  externalRef,
+  isSchemaReference,
+  optimizeCelExpression,
+  optimizeStatusMappings,
   ReferenceResolver,
-  type RefOrValue,
-  type ResourceBuilder,
-  type ResourceGraphDefinition,
-  type SchemaProxy,
-  type StatusBuilder,
-  // Serialization and YAML generation
+} from './core/references/index.js';
+export type { DeploymentMode as DeploymentModeType } from './core/references/resolver.js';
+export type {
+  ResourceBuilder,
+  ResourceDependency,
+  SchemaDefinition,
+  SerializationContext,
+  SerializationOptions,
+  ValidationResult,
+} from './core/serialization/index.js';
+// =============================================================================
+// SERIALIZATION (YAML Generation, Validation)
+// =============================================================================
+export {
+  generateKroSchema,
+  generateKroSchemaFromArktype,
+  getDependencyOrder,
   serializeResourceGraphToYaml,
-  type TypedKroResourceGraphDefinition,
-  type TypedResourceGraphFactory,
-  TypeKroError,
-  type TypeKroLogger,
   toResourceGraph,
-  UnsupportedPatternDetector,
   validateResourceGraph,
-} from './core.js';
+  visualizeDependencies,
+} from './core/serialization/index.js';
+export type { ResolutionContext } from './core/types/deployment.js';
 // =============================================================================
-// FACTORY FUNCTIONS
+// CORE TYPES (all type-only exports from core/types)
 // =============================================================================
-// Factory functions organized by ecosystem and resource type
+export type * from './core/types/index.js';
+export type { CelEvaluationContext } from './core/types/references.js';
+export { CelEvaluationError } from './core/types/references.js';
+export { UnsupportedPatternDetector } from './core/unsupported-pattern-detector.js';
+export type { DiscoveredFile, GitPathInfo, ResolvedContent } from './core/yaml/index.js';
+// =============================================================================
+// YAML PROCESSING
+// =============================================================================
+export {
+  GitContentError,
+  PathResolver,
+  pathResolver,
+  YamlPathResolutionError,
+  YamlProcessingError,
+} from './core/yaml/index.js';
+// =============================================================================
+// FACTORY FUNCTIONS (all ecosystems)
+// =============================================================================
 export * from './factories/index.js';
+// =============================================================================
+// KUBERNETES TYPES (factory-specific types)
+// =============================================================================
+export type * from './factories/kubernetes/types.js';
+// =============================================================================
+// UTILITIES
+// =============================================================================
+export {
+  arktypeToKroSchema,
+  containsKubernetesRefs,
+  extractResourceReferences,
+  generateCelReference,
+  generateDeterministicResourceId,
+  generateResourceId,
+  getInnerCelPath,
+  isCelExpression,
+  isKubernetesRef,
+  isResourceReference,
+  pascalCase,
+  processResourceReferences,
+} from './utils/index.js';

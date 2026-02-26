@@ -6,7 +6,13 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { DependencyGraph, type DeployableK8sResource, DirectDeploymentEngine, type Enhanced, type ResourceGraph,  } from '../../src/core.js';
+import {
+  DependencyGraph,
+  type DeployableK8sResource,
+  DirectDeploymentEngine,
+  type Enhanced,
+  type ResourceGraph,
+} from '../../src/index.js';
 
 // Mock the Kubernetes client (new API returns objects directly, no .body wrapper)
 const mockK8sApi = {
@@ -304,7 +310,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     // - "Timeout waiting for CRD...to be established" (if CRD timeout is reached first)
     // - "Delay aborted" or "Operation aborted" (if deployment timeout triggers abort signal)
     const errorMessage = result.errors?.[0]?.error.message || '';
-    const isExpectedError = 
+    const isExpectedError =
       /Timeout waiting for CRD.*to be established/.test(errorMessage) ||
       /aborted/i.test(errorMessage);
     expect(isExpectedError).toBe(true);
