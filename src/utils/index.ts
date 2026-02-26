@@ -29,7 +29,7 @@ export {
   toPlainObject,
 } from './helpers';
 // String utilities (canonical location: utils/string.ts)
-export { pascalCase, toCamelCase } from './string';
+export { calculateSimilarity, levenshteinDistance, pascalCase, toCamelCase } from './string';
 
 // Type guard functions
 export {

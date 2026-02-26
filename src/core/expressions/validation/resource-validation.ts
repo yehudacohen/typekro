@@ -1,11 +1,12 @@
 /**
  * Resource Reference Type Validation
- * 
+ *
  * This module provides validation for resource references during JavaScript
  * to CEL expression conversion. It ensures that resource references are
  * type-safe and that field paths are valid.
  */
 
+import { calculateSimilarity } from '../../../utils/string.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -17,19 +18,19 @@ import type { TypeInfo } from './type-safety.js';
 export interface ResourceValidationResult {
   /** Whether the resource reference is valid */
   valid: boolean;
-  
+
   /** Resolved type of the resource reference */
   resolvedType?: TypeInfo;
-  
+
   /** Validation errors */
   errors: ResourceValidationError[];
-  
+
   /** Validation warnings */
   warnings: ResourceValidationWarning[];
-  
+
   /** Suggested fixes */
   suggestions: string[];
-  
+
   /** Additional metadata about the reference */
   metadata: ResourceValidationMetadata;
 }
@@ -47,7 +48,7 @@ export class ResourceValidationError extends Error {
     super(message);
     this.name = 'ResourceValidationError';
   }
-  
+
   static forResourceNotFound(
     resourceRef: string,
     resourceId: string,
@@ -61,7 +62,7 @@ export class ResourceValidationError extends Error {
       location
     );
   }
-  
+
   static forInvalidFieldPath(
     resourceRef: string,
     fieldPath: string,
@@ -75,7 +76,7 @@ export class ResourceValidationError extends Error {
       location
     );
   }
-  
+
   static forTypeIncompatibility(
     resourceRef: string,
     expectedType: string,
@@ -89,7 +90,7 @@ export class ResourceValidationError extends Error {
       location
     );
   }
-  
+
   static forCircularReference(
     resourceRef: string,
     dependencyChain: string[],
@@ -102,7 +103,7 @@ export class ResourceValidationError extends Error {
       location
     );
   }
-  
+
   static forSchemaFieldNotFound(
     resourceRef: string,
     fieldPath: string,
@@ -128,7 +129,7 @@ export class ResourceValidationWarning {
     public readonly warningType: ResourceValidationWarningType,
     public readonly location?: { line: number; column: number }
   ) {}
-  
+
   static forPotentialNullAccess(
     resourceRef: string,
     fieldPath: string,
@@ -141,25 +142,20 @@ export class ResourceValidationWarning {
       location
     );
   }
-  
+
   static forDeprecatedField(
     resourceRef: string,
     fieldPath: string,
     replacement?: string,
     location?: { line: number; column: number }
   ): ResourceValidationWarning {
-    const message = replacement 
+    const message = replacement
       ? `Field '${fieldPath}' is deprecated, use '${replacement}' instead`
       : `Field '${fieldPath}' is deprecated`;
-    
-    return new ResourceValidationWarning(
-      message,
-      resourceRef,
-      'DEPRECATED_FIELD',
-      location
-    );
+
+    return new ResourceValidationWarning(message, resourceRef, 'DEPRECATED_FIELD', location);
   }
-  
+
   static forPerformanceImpact(
     resourceRef: string,
     reason: string,
@@ -180,28 +176,28 @@ export class ResourceValidationWarning {
 export interface ResourceValidationMetadata {
   /** Type of resource being referenced */
   resourceType: string;
-  
+
   /** Whether the field is optional */
   fieldOptional: boolean;
-  
+
   /** Whether the field can be null */
   fieldNullable: boolean;
-  
+
   /** Dependency depth (how many levels deep the reference goes) */
   dependencyDepth: number;
-  
+
   /** Whether this is a status field reference */
   isStatusField: boolean;
-  
+
   /** Whether this is a spec field reference */
   isSpecField: boolean;
-  
+
   /** Whether this is a metadata field reference */
   isMetadataField: boolean;
-  
+
   /** API version of the resource */
   apiVersion?: string;
-  
+
   /** Kind of the resource */
   kind?: string;
 }
@@ -209,14 +205,14 @@ export interface ResourceValidationMetadata {
 /**
  * Error and warning types
  */
-export type ResourceValidationErrorType = 
+export type ResourceValidationErrorType =
   | 'RESOURCE_NOT_FOUND'
   | 'INVALID_FIELD_PATH'
   | 'TYPE_INCOMPATIBILITY'
   | 'CIRCULAR_REFERENCE'
   | 'SCHEMA_FIELD_NOT_FOUND';
 
-export type ResourceValidationWarningType = 
+export type ResourceValidationWarningType =
   | 'POTENTIAL_NULL_ACCESS'
   | 'DEPRECATED_FIELD'
   | 'PERFORMANCE_IMPACT'
@@ -229,7 +225,7 @@ export type ResourceValidationWarningType =
 export class ResourceReferenceValidator {
   private validationCache = new Map<string, ResourceValidationResult>();
   private dependencyGraph = new Map<string, Set<string>>();
-  
+
   /**
    * Validate a KubernetesRef object
    */
@@ -240,20 +236,20 @@ export class ResourceReferenceValidator {
     context?: ValidationContext
   ): ResourceValidationResult {
     const refKey = `${ref.resourceId}.${ref.fieldPath}`;
-    
+
     // Check cache first
     const cached = this.validationCache.get(refKey);
     if (cached && !context?.skipCache) {
       return cached;
     }
-    
+
     const errors: ResourceValidationError[] = [];
     const warnings: ResourceValidationWarning[] = [];
     const suggestions: string[] = [];
-    
+
     let resolvedType: TypeInfo | undefined;
     let metadata: ResourceValidationMetadata;
-    
+
     try {
       if (ref.resourceId === '__schema__') {
         // Validate schema reference
@@ -272,7 +268,7 @@ export class ResourceReferenceValidator {
         warnings.push(...result.warnings);
         suggestions.push(...result.suggestions);
       }
-      
+
       // Check for circular dependencies
       if (context?.checkCircularDependencies) {
         const circularCheck = this.checkCircularDependencies(ref, context.dependencyChain || []);
@@ -280,16 +276,16 @@ export class ResourceReferenceValidator {
           errors.push(...circularCheck.errors);
         }
       }
-      
+
       const result: ResourceValidationResult = {
         valid: errors.length === 0,
         ...(resolvedType && { resolvedType }),
         errors,
         warnings,
         suggestions,
-        metadata
+        metadata,
       };
-      
+
       // Cache the result
       this.validationCache.set(refKey, result);
       return result;
@@ -299,20 +295,20 @@ export class ResourceReferenceValidator {
         refKey,
         'INVALID_FIELD_PATH'
       );
-      
+
       const result: ResourceValidationResult = {
         valid: false,
         errors: [validationError],
         warnings,
         suggestions,
-        metadata: this.createDefaultMetadata()
+        metadata: this.createDefaultMetadata(),
       };
-      
+
       this.validationCache.set(refKey, result);
       return result;
     }
   }
-  
+
   /**
    * Validate multiple KubernetesRef objects
    */
@@ -322,9 +318,11 @@ export class ResourceReferenceValidator {
     schemaProxy?: SchemaProxy<any, any>,
     context?: ValidationContext
   ): ResourceValidationResult[] {
-    return refs.map(ref => this.validateKubernetesRef(ref, availableResources, schemaProxy, context));
+    return refs.map((ref) =>
+      this.validateKubernetesRef(ref, availableResources, schemaProxy, context)
+    );
   }
-  
+
   /**
    * Validate that a resource reference chain is type-safe
    */
@@ -336,10 +334,10 @@ export class ResourceReferenceValidator {
     const errors: ResourceValidationError[] = [];
     const warnings: ResourceValidationWarning[] = [];
     const suggestions: string[] = [];
-    
+
     // Build dependency chain
-    const dependencyChain = refs.map(ref => `${ref.resourceId}.${ref.fieldPath}`);
-    
+    const dependencyChain = refs.map((ref) => `${ref.resourceId}.${ref.fieldPath}`);
+
     // Check for circular dependencies by looking for duplicates
     const seen = new Set<string>();
     for (const refKey of dependencyChain) {
@@ -347,37 +345,34 @@ export class ResourceReferenceValidator {
         // Found a circular dependency
         const circularIndex = dependencyChain.indexOf(refKey);
         const circularChain = dependencyChain.slice(circularIndex);
-        errors.push(ResourceValidationError.forCircularReference(
-          refKey,
-          circularChain
-        ));
+        errors.push(ResourceValidationError.forCircularReference(refKey, circularChain));
         break;
       }
       seen.add(refKey);
     }
-    
+
     // Validate each reference in the chain
     for (let i = 0; i < refs.length; i++) {
       const ref = refs[i];
       if (!ref) continue;
-      
+
       const context: ValidationContext = {
         checkCircularDependencies: true,
         dependencyChain: dependencyChain.slice(0, i),
-        skipCache: false
+        skipCache: false,
       };
-      
+
       const result = this.validateKubernetesRef(ref, availableResources, schemaProxy, context);
       errors.push(...result.errors);
       warnings.push(...result.warnings);
       suggestions.push(...result.suggestions);
-      
+
       // If this reference is invalid, stop validation
       if (!result.valid) {
         break;
       }
     }
-    
+
     const resolvedType = refs.length > 0 ? this.getChainResultType(refs) : undefined;
     return {
       valid: errors.length === 0,
@@ -385,10 +380,10 @@ export class ResourceReferenceValidator {
       errors,
       warnings,
       suggestions,
-      metadata: this.createDefaultMetadata()
+      metadata: this.createDefaultMetadata(),
     };
   }
-  
+
   /**
    * Validate schema reference
    */
@@ -400,49 +395,55 @@ export class ResourceReferenceValidator {
     const errors: ResourceValidationError[] = [];
     const warnings: ResourceValidationWarning[] = [];
     const suggestions: string[] = [];
-    
+
     if (!schemaProxy) {
-      errors.push(new ResourceValidationError(
-        'Schema reference used but no schema proxy available',
-        `${ref.resourceId}.${ref.fieldPath}`,
-        'SCHEMA_FIELD_NOT_FOUND'
-      ));
-      
+      errors.push(
+        new ResourceValidationError(
+          'Schema reference used but no schema proxy available',
+          `${ref.resourceId}.${ref.fieldPath}`,
+          'SCHEMA_FIELD_NOT_FOUND'
+        )
+      );
+
       return {
         valid: false,
         errors,
         warnings,
         suggestions,
-        metadata: this.createDefaultMetadata()
+        metadata: this.createDefaultMetadata(),
       };
     }
-    
+
     // Validate field path exists in schema
     const fieldType = this.getSchemaFieldType(schemaProxy, ref.fieldPath);
     if (!fieldType) {
       const availableFields = this.getAvailableSchemaFields(schemaProxy);
-      errors.push(ResourceValidationError.forSchemaFieldNotFound(
-        `${ref.resourceId}.${ref.fieldPath}`,
-        ref.fieldPath,
-        availableFields
-      ));
-      
+      errors.push(
+        ResourceValidationError.forSchemaFieldNotFound(
+          `${ref.resourceId}.${ref.fieldPath}`,
+          ref.fieldPath,
+          availableFields
+        )
+      );
+
       // Suggest similar field names
       const similarFields = this.findSimilarFieldNames(ref.fieldPath, availableFields);
       if (similarFields.length > 0) {
         suggestions.push(`Did you mean: ${similarFields.join(', ')}?`);
       }
     }
-    
+
     // Check for potential null access
     if (fieldType && (fieldType.optional || fieldType.nullable)) {
-      warnings.push(ResourceValidationWarning.forPotentialNullAccess(
-        `${ref.resourceId}.${ref.fieldPath}`,
-        ref.fieldPath
-      ));
+      warnings.push(
+        ResourceValidationWarning.forPotentialNullAccess(
+          `${ref.resourceId}.${ref.fieldPath}`,
+          ref.fieldPath
+        )
+      );
       suggestions.push('Consider using optional chaining (?.) for safer access');
     }
-    
+
     const metadata: ResourceValidationMetadata = {
       resourceType: 'Schema',
       fieldOptional: fieldType?.optional || false,
@@ -450,19 +451,19 @@ export class ResourceReferenceValidator {
       dependencyDepth: ref.fieldPath.split('.').length,
       isStatusField: ref.fieldPath.startsWith('status.'),
       isSpecField: ref.fieldPath.startsWith('spec.'),
-      isMetadataField: ref.fieldPath.startsWith('metadata.')
+      isMetadataField: ref.fieldPath.startsWith('metadata.'),
     };
-    
+
     return {
       valid: errors.length === 0,
       ...(fieldType && { resolvedType: fieldType }),
       errors,
       warnings,
       suggestions,
-      metadata
+      metadata,
     };
   }
-  
+
   /**
    * Validate resource reference
    */
@@ -474,81 +475,91 @@ export class ResourceReferenceValidator {
     const errors: ResourceValidationError[] = [];
     const warnings: ResourceValidationWarning[] = [];
     const suggestions: string[] = [];
-    
+
     // Check if resource exists
     const resource = availableResources[ref.resourceId];
     if (!resource) {
       const availableResourceIds = Object.keys(availableResources);
-      
+
       // Missing resources are errors by default
-      errors.push(new ResourceValidationError(
-        `Resource '${ref.resourceId}' not found. Available resources: ${availableResourceIds.join(', ')}`,
-        `${ref.resourceId}.${ref.fieldPath}`,
-        'RESOURCE_NOT_FOUND' as ResourceValidationErrorType
-      ));
-      
+      errors.push(
+        new ResourceValidationError(
+          `Resource '${ref.resourceId}' not found. Available resources: ${availableResourceIds.join(', ')}`,
+          `${ref.resourceId}.${ref.fieldPath}`,
+          'RESOURCE_NOT_FOUND' as ResourceValidationErrorType
+        )
+      );
+
       // Suggest similar resource names
       const similarResources = this.findSimilarResourceNames(ref.resourceId, availableResourceIds);
       if (similarResources.length > 0) {
         suggestions.push(`Did you mean: ${similarResources.join(', ')}?`);
       }
-      
+
       return {
         valid: false, // Invalid when resource not found
         errors,
         warnings,
         suggestions,
-        metadata: this.createDefaultMetadata()
+        metadata: this.createDefaultMetadata(),
       };
     }
-    
+
     // Validate field path on resource
     const fieldType = this.getResourceFieldType(resource, ref.fieldPath);
     const availableFields = this.getAvailableResourceFields(resource);
-    
+
     // Check if field path is potentially invalid (but be lenient for common patterns)
     const isCommonField = this.isCommonKubernetesField(ref.fieldPath);
     if (!fieldType && !isCommonField) {
       // Unknown fields are errors by default
-      errors.push(new ResourceValidationError(
-        `Field path '${ref.fieldPath}' is not valid for resource type '${resource.constructor.name}'`,
-        `${ref.resourceId}.${ref.fieldPath}`,
-        'INVALID_FIELD_PATH' as ResourceValidationErrorType
-      ));
-      
+      errors.push(
+        new ResourceValidationError(
+          `Field path '${ref.fieldPath}' is not valid for resource type '${resource.constructor.name}'`,
+          `${ref.resourceId}.${ref.fieldPath}`,
+          'INVALID_FIELD_PATH' as ResourceValidationErrorType
+        )
+      );
+
       // Suggest similar field names
       const similarFields = this.findSimilarFieldNames(ref.fieldPath, availableFields);
       if (similarFields.length > 0) {
         suggestions.push(`Did you mean: ${similarFields.join(', ')}?`);
       }
     }
-    
+
     // Check for potential null access
     if (fieldType && (fieldType.optional || fieldType.nullable)) {
-      warnings.push(ResourceValidationWarning.forPotentialNullAccess(
-        `${ref.resourceId}.${ref.fieldPath}`,
-        ref.fieldPath
-      ));
+      warnings.push(
+        ResourceValidationWarning.forPotentialNullAccess(
+          `${ref.resourceId}.${ref.fieldPath}`,
+          ref.fieldPath
+        )
+      );
     }
-    
+
     // Check for deprecated fields
     if (this.isDeprecatedField(resource, ref.fieldPath)) {
       const replacement = this.getFieldReplacement(resource, ref.fieldPath);
-      warnings.push(ResourceValidationWarning.forDeprecatedField(
-        `${ref.resourceId}.${ref.fieldPath}`,
-        ref.fieldPath,
-        replacement
-      ));
+      warnings.push(
+        ResourceValidationWarning.forDeprecatedField(
+          `${ref.resourceId}.${ref.fieldPath}`,
+          ref.fieldPath,
+          replacement
+        )
+      );
     }
-    
+
     // Check for performance implications
     if (this.hasPerformanceImplications(resource, ref.fieldPath)) {
-      warnings.push(ResourceValidationWarning.forPerformanceImpact(
-        `${ref.resourceId}.${ref.fieldPath}`,
-        'Accessing this field may require additional API calls'
-      ));
+      warnings.push(
+        ResourceValidationWarning.forPerformanceImpact(
+          `${ref.resourceId}.${ref.fieldPath}`,
+          'Accessing this field may require additional API calls'
+        )
+      );
     }
-    
+
     const apiVersion = this.getResourceApiVersion(resource);
     const kind = this.getResourceKind(resource);
     const metadata: ResourceValidationMetadata = {
@@ -560,19 +571,19 @@ export class ResourceReferenceValidator {
       isSpecField: ref.fieldPath.startsWith('spec.'),
       isMetadataField: ref.fieldPath.startsWith('metadata.'),
       ...(apiVersion && { apiVersion }),
-      ...(kind && { kind })
+      ...(kind && { kind }),
     };
-    
+
     return {
       valid: errors.length === 0,
       ...(fieldType && { resolvedType: fieldType }),
       errors,
       warnings,
       suggestions,
-      metadata
+      metadata,
     };
   }
-  
+
   /**
    * Check for circular dependencies
    */
@@ -581,33 +592,36 @@ export class ResourceReferenceValidator {
     dependencyChain: string[]
   ): { valid: boolean; errors: ResourceValidationError[] } {
     const refKey = `${ref.resourceId}.${ref.fieldPath}`;
-    
+
     if (dependencyChain.includes(refKey)) {
       return {
         valid: false,
-        errors: [ResourceValidationError.forCircularReference(
-          refKey,
-          dependencyChain
-        )]
+        errors: [ResourceValidationError.forCircularReference(refKey, dependencyChain)],
       };
     }
-    
+
     return { valid: true, errors: [] };
   }
-  
+
   /**
    * Utility methods for type resolution
    */
-  private getSchemaFieldType(_schemaProxy: SchemaProxy<any, any>, _fieldPath: string): TypeInfo | undefined {
+  private getSchemaFieldType(
+    _schemaProxy: SchemaProxy<any, any>,
+    _fieldPath: string
+  ): TypeInfo | undefined {
     // This would integrate with the actual schema type system
     // For now, return a placeholder
     return { typeName: 'unknown', optional: false, nullable: false };
   }
-  
-  private getResourceFieldType(_resource: Enhanced<any, any>, fieldPath: string): TypeInfo | undefined {
+
+  private getResourceFieldType(
+    _resource: Enhanced<any, any>,
+    fieldPath: string
+  ): TypeInfo | undefined {
     // This would integrate with the Enhanced type system
     // For now, return a placeholder based on common Kubernetes field patterns
-    
+
     // Define known valid field patterns - be very specific
     const validFieldPatterns = [
       'metadata.name',
@@ -624,85 +638,124 @@ export class ResourceReferenceValidator {
       'status.phase',
       'status.podIP',
       'status.clusterIP',
-      'status.loadBalancer'
+      'status.loadBalancer',
     ];
-    
+
     // Check if the field path exactly matches a known pattern
     const isExactMatch = validFieldPatterns.includes(fieldPath);
-    
+
     // Check if it starts with a valid prefix and has additional nested fields
-    const hasValidPrefix = validFieldPatterns.some(pattern => {
+    const hasValidPrefix = validFieldPatterns.some((pattern) => {
       if (fieldPath.startsWith(`${pattern}.`)) return true;
-      
+
       // Handle array indexing like loadBalancer.ingress[0].ip
       const fieldWithArrayPattern = fieldPath.replace(/\[\d+\]/g, '');
       if (fieldWithArrayPattern.startsWith(`${pattern}.`)) return true;
-      
+
       return false;
     });
-    
+
     const isValidField = isExactMatch || hasValidPrefix;
-    
+
     // Return type info only for valid fields
     if (fieldPath.startsWith('metadata.') && isValidField) {
       return { typeName: 'string', optional: true, nullable: false };
     }
-    
+
     if (fieldPath.startsWith('spec.') && isValidField) {
       return { typeName: 'unknown', optional: false, nullable: false };
     }
-    
+
     if (fieldPath.startsWith('status.') && isValidField) {
       return { typeName: 'unknown', optional: true, nullable: true };
     }
-    
+
     // Return undefined for invalid fields (including typos like 'status.readyReplica')
     return undefined;
   }
-  
+
   private getAvailableSchemaFields(_schemaProxy: SchemaProxy<any, any>): string[] {
     // This would extract available fields from the schema
     return ['spec.name', 'spec.replicas', 'status.ready', 'metadata.name'];
   }
-  
+
   private getAvailableResourceFields(resource: Enhanced<any, any>): string[] {
     const resourceKind = resource.constructor.name;
-    
+
     // Common fields for different resource types
     const fieldsByKind: Record<string, string[]> = {
-      'Deployment': [
-        'metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations',
-        'spec.replicas', 'spec.selector', 'spec.template', 'spec.strategy',
-        'status.replicas', 'status.readyReplicas', 'status.availableReplicas', 
-        'status.unavailableReplicas', 'status.conditions'
+      Deployment: [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+        'spec.replicas',
+        'spec.selector',
+        'spec.template',
+        'spec.strategy',
+        'status.replicas',
+        'status.readyReplicas',
+        'status.availableReplicas',
+        'status.unavailableReplicas',
+        'status.conditions',
       ],
-      'Service': [
-        'metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations',
-        'spec.type', 'spec.ports', 'spec.selector', 'spec.clusterIP',
-        'status.loadBalancer', 'status.conditions'
+      Service: [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+        'spec.type',
+        'spec.ports',
+        'spec.selector',
+        'spec.clusterIP',
+        'status.loadBalancer',
+        'status.conditions',
       ],
-      'Pod': [
-        'metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations',
-        'spec.containers', 'spec.volumes', 'spec.nodeSelector',
-        'status.phase', 'status.conditions', 'status.hostIP', 'status.podIP', 
-        'status.containerStatuses'
+      Pod: [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+        'spec.containers',
+        'spec.volumes',
+        'spec.nodeSelector',
+        'status.phase',
+        'status.conditions',
+        'status.hostIP',
+        'status.podIP',
+        'status.containerStatuses',
       ],
-      'ConfigMap': [
-        'metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations',
-        'data', 'binaryData'
+      ConfigMap: [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+        'data',
+        'binaryData',
       ],
-      'Secret': [
-        'metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations',
-        'type', 'data', 'stringData'
-      ]
+      Secret: [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+        'type',
+        'data',
+        'stringData',
+      ],
     };
-    
-    return fieldsByKind[resourceKind] || [
-      'metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations',
-      'spec', 'status'
-    ];
+
+    return (
+      fieldsByKind[resourceKind] || [
+        'metadata.name',
+        'metadata.namespace',
+        'metadata.labels',
+        'metadata.annotations',
+        'spec',
+        'status',
+      ]
+    );
   }
-  
+
   private isCommonKubernetesField(fieldPath: string): boolean {
     // Only consider very specific common fields as valid
     // This is more strict to catch typos like 'status.readyReplica'
@@ -726,108 +779,87 @@ export class ResourceReferenceValidator {
       'status.loadBalancer.ingress',
       'data',
       'stringData',
-      'binaryData'
+      'binaryData',
     ];
-    
+
     // Check for exact matches or valid nested paths
-    return exactCommonFields.some(field => {
+    return exactCommonFields.some((field) => {
       if (fieldPath === field) return true;
       if (fieldPath.startsWith(`${field}.`)) return true;
-      
+
       // Handle array indexing like loadBalancer.ingress[0].ip
       const fieldWithArrayPattern = fieldPath.replace(/\[\d+\]/g, '');
-      if (fieldWithArrayPattern === field || fieldWithArrayPattern.startsWith(`${field}.`)) return true;
-      
+      if (fieldWithArrayPattern === field || fieldWithArrayPattern.startsWith(`${field}.`))
+        return true;
+
       return false;
     });
   }
-  
+
   private findSimilarFieldNames(target: string, available: string[]): string[] {
     // Simple similarity matching - could be improved with better algorithms
-    return available.filter(field => {
-      const similarity = this.calculateSimilarity(target, field);
-      return similarity > 0.6;
-    }).slice(0, 3);
+    return available
+      .filter((field) => {
+        const similarity = calculateSimilarity(target, field);
+        return similarity > 0.6;
+      })
+      .slice(0, 3);
   }
-  
+
   private findSimilarResourceNames(target: string, available: string[]): string[] {
-    return available.filter(resource => {
-      const similarity = this.calculateSimilarity(target, resource);
-      return similarity > 0.6;
-    }).slice(0, 3);
+    return available
+      .filter((resource) => {
+        const similarity = calculateSimilarity(target, resource);
+        return similarity > 0.6;
+      })
+      .slice(0, 3);
   }
-  
-  private calculateSimilarity(str1: string, str2: string): number {
-    // Simple Levenshtein distance-based similarity
-    const longer = str1.length > str2.length ? str1 : str2;
-    const shorter = str1.length > str2.length ? str2 : str1;
-    
-    if (longer.length === 0) return 1.0;
-    
-    const distance = this.levenshteinDistance(longer, shorter);
-    return (longer.length - distance) / longer.length;
-  }
-  
-  private levenshteinDistance(str1: string, str2: string): number {
-    const matrix: number[][] = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(0));
-    
-    for (let i = 0; i <= str1.length; i++) matrix[0]![i] = i;
-    for (let j = 0; j <= str2.length; j++) matrix[j]![0] = j;
-    
-    for (let j = 1; j <= str2.length; j++) {
-      for (let i = 1; i <= str1.length; i++) {
-        const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
-        matrix[j]![i] = Math.min(
-          matrix[j]?.[i - 1]! + 1,
-          matrix[j - 1]?.[i]! + 1,
-          matrix[j - 1]?.[i - 1]! + indicator
-        );
-      }
-    }
-    
-    return matrix[str2.length]?.[str1.length]!;
-  }
-  
+
   private isDeprecatedField(_resource: Enhanced<any, any>, fieldPath: string): boolean {
     // This would check against a registry of deprecated fields
     const deprecatedFields = ['spec.serviceAccount', 'spec.securityContext.runAsUser'];
-    return deprecatedFields.some(deprecated => fieldPath.startsWith(deprecated));
+    return deprecatedFields.some((deprecated) => fieldPath.startsWith(deprecated));
   }
-  
-  private getFieldReplacement(_resource: Enhanced<any, any>, fieldPath: string): string | undefined {
+
+  private getFieldReplacement(
+    _resource: Enhanced<any, any>,
+    fieldPath: string
+  ): string | undefined {
     // This would provide replacement suggestions for deprecated fields
     const replacements: Record<string, string> = {
       'spec.serviceAccount': 'spec.serviceAccountName',
-      'spec.securityContext.runAsUser': 'spec.securityContext.runAsNonRoot'
+      'spec.securityContext.runAsUser': 'spec.securityContext.runAsNonRoot',
     };
-    
+
     return replacements[fieldPath];
   }
-  
+
   private hasPerformanceImplications(_resource: Enhanced<any, any>, fieldPath: string): boolean {
     // This would identify fields that might have performance implications
     const performanceFields = ['status.conditions', 'status.events'];
-    return performanceFields.some(field => fieldPath.startsWith(field));
+    return performanceFields.some((field) => fieldPath.startsWith(field));
   }
-  
+
   private getResourceApiVersion(_resource: Enhanced<any, any>): string | undefined {
     // Extract API version from resource
     return 'v1'; // Placeholder
   }
-  
+
   private getResourceKind(resource: Enhanced<any, any>): string | undefined {
     // Extract kind from resource
     return resource.constructor.name;
   }
-  
+
   private getChainResultType(refs: KubernetesRef<any>[]): TypeInfo | undefined {
     // Get the type of the final reference in the chain
     if (refs.length === 0) return undefined;
-    
+
     const lastRef = refs[refs.length - 1];
-    return lastRef?._type ? { typeName: String(lastRef._type), optional: false, nullable: false } : undefined;
+    return lastRef?._type
+      ? { typeName: String(lastRef._type), optional: false, nullable: false }
+      : undefined;
   }
-  
+
   private createDefaultMetadata(): ResourceValidationMetadata {
     return {
       resourceType: 'unknown',
@@ -836,10 +868,10 @@ export class ResourceReferenceValidator {
       dependencyDepth: 0,
       isStatusField: false,
       isSpecField: false,
-      isMetadataField: false
+      isMetadataField: false,
     };
   }
-  
+
   /**
    * Clear validation cache
    */
@@ -855,13 +887,13 @@ export class ResourceReferenceValidator {
 export interface ValidationContext {
   /** Whether to check for circular dependencies */
   checkCircularDependencies?: boolean;
-  
+
   /** Current dependency chain for circular reference detection */
   dependencyChain?: string[];
-  
+
   /** Whether to skip cache lookup */
   skipCache?: boolean;
-  
+
   /** Strict mode enables additional validations */
   strictMode?: boolean;
 }
