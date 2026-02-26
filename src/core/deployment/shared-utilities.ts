@@ -128,19 +128,3 @@ export function validateAlchemyScope(alchemyScope: unknown, context: string): vo
     );
   }
 }
-
-/**
- * Create alchemy deployment options
- */
-export function createAlchemyDeploymentOptions(
-  factoryOptions: FactoryOptions,
-  _namespace: string
-): {
-  waitForReady: boolean;
-  timeout: number;
-} {
-  return {
-    waitForReady: factoryOptions.waitForReady ?? true,
-    timeout: factoryOptions.timeout ?? 300000,
-  };
-}

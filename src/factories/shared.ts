@@ -6,7 +6,6 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { V1EnvVar, V1PodSpec } from '@kubernetes/client-node';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
 import { TypeKroError } from '../core/errors.js';
 import { conditionalExpressionIntegrator } from '../core/expressions/conditional-integration.js';
@@ -19,8 +18,7 @@ import type {
   ReadinessEvaluator,
 } from '../core/types.js';
 import { validateResourceId } from '../core/validation/cel-validator.js';
-import { generateDeterministicResourceId, isKubernetesRef } from '../utils/index';
-import { isCelExpression } from '../utils/type-guards.js';
+import { generateDeterministicResourceId } from '../utils/index';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
@@ -82,7 +80,7 @@ const STATUS_BUILDER_CONTEXT = new AsyncLocalStorage<boolean>();
 /**
  * Check if the current execution is within a status builder context.
  */
-export function isInStatusBuilderContext(): boolean {
+function isInStatusBuilderContext(): boolean {
   return STATUS_BUILDER_CONTEXT.getStore() === true;
 }
 
@@ -622,28 +620,4 @@ export function createResource<TSpec extends object, TStatus extends object>(
   });
 
   return enhancedWithConditionals as Enhanced<TSpec, TStatus>;
-}
-
-export function processPodSpec(podSpec?: V1PodSpec): V1PodSpec | undefined {
-  if (!podSpec?.containers) return podSpec;
-  podSpec.containers = podSpec.containers.map((container) => {
-    if (!container.env) return container;
-    const processedEnv: V1EnvVar[] = container.env.map((envVar) => {
-      if (isKubernetesRef(envVar.value)) {
-        // KubernetesRef will be resolved to string during serialization
-        return { name: envVar.name, value: envVar.value as unknown as string };
-      }
-      // Check if it's a CelExpression - preserve it as-is
-      if (isCelExpression(envVar.value)) {
-        // CelExpression will be resolved to string during serialization
-        return { name: envVar.name, value: envVar.value as unknown as string };
-      }
-      if (envVar.value !== undefined) {
-        return { name: envVar.name, value: String(envVar.value) };
-      }
-      return envVar;
-    });
-    return { ...container, env: processedEnv };
-  });
-  return podSpec;
 }

@@ -539,30 +539,3 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
     return closure;
   }, config.name);
 }
-
-/**
- * Simplified YAML file factory for quick usage
- * @example
- * ```typescript
- * simple.YamlFile('./manifests/configmap.yaml')
- * simple.YamlFile('git:github.com/fluxcd/flux2/manifests/install/flux-system.yaml@main', 'flux-system')
- * ```
- */
-/**
- * @deprecated Use simple.YamlFile() instead - import { simple } from 'typekro'; simple.YamlFile(...)
- */
-export function simpleYamlFile(
-  path: string,
-  namespace?: string
-): DeploymentClosure<AppliedResource[]> {
-  const name =
-    path
-      .split('/')
-      .pop()
-      ?.replace(/\.(yaml|yml)$/, '') || 'yaml-file';
-  return yamlFile({
-    name,
-    path,
-    ...(namespace && { namespace }),
-  });
-}
