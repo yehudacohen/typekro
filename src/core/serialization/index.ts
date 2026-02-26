@@ -11,10 +11,17 @@ export type {
   SerializationOptions,
   ValidationResult,
 } from '../types/serialization.js';
+// CEL reference serialization
+export {
+  generateCelReference,
+  getInnerCelPath,
+  processResourceReferences,
+  serializeStatusMappingsToCel,
+} from './cel-references.js';
 // Core serialization functions
 export { toResourceGraph } from './core.js';
 // Schema generation
-export { generateKroSchema, generateKroSchemaFromArktype } from './schema.js';
+export { arktypeToKroSchema, generateKroSchema, generateKroSchemaFromArktype } from './schema.js';
 
 // Validation and dependency analysis
 export {
