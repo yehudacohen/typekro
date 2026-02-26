@@ -12,6 +12,7 @@
 
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode, Identifier, MemberExpression } from 'estree';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
 import { ConversionError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
@@ -693,19 +694,10 @@ export class MagicProxyAnalyzer {
 
   /**
    * Check if a value is a KubernetesRef object.
-   * Uses Reflect.get for proxy-safe brand detection.
+   * Delegates to the canonical implementation in `src/utils/type-guards.ts`.
    */
   private isKubernetesRef(value: unknown): value is KubernetesRef<unknown> {
-    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-      return false;
-    }
-    return (
-      Reflect.get(value, KUBERNETES_REF_BRAND) === true &&
-      'resourceId' in value &&
-      'fieldPath' in value &&
-      typeof (value as Record<string, unknown>).resourceId === 'string' &&
-      typeof (value as Record<string, unknown>).fieldPath === 'string'
-    );
+    return isKubernetesRef(value);
   }
 
   /**
@@ -833,19 +825,10 @@ export class MagicProxyUtils {
 
   /**
    * Check if a value is a KubernetesRef object.
-   * Uses Reflect.get for proxy-safe brand detection.
+   * Delegates to the canonical implementation in `src/utils/type-guards.ts`.
    */
   static isKubernetesRef(value: unknown): value is KubernetesRef<unknown> {
-    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
-      return false;
-    }
-    return (
-      Reflect.get(value, KUBERNETES_REF_BRAND) === true &&
-      'resourceId' in value &&
-      'fieldPath' in value &&
-      typeof (value as Record<string, unknown>).resourceId === 'string' &&
-      typeof (value as Record<string, unknown>).fieldPath === 'string'
-    );
+    return isKubernetesRef(value);
   }
 
   /**
