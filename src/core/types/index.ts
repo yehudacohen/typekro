@@ -32,6 +32,11 @@ export * from './references.js';
 // =============================================================================
 export type { ResourceGraph } from './resource-graph.js';
 // =============================================================================
+// Schema Types (extracted to break deployment↔serialization cycle)
+// =============================================================================
+export type * from './schema.js';
+export * from './schema.js';
+// =============================================================================
 // Serialization Types
 // =============================================================================
 export type * from './serialization.js';

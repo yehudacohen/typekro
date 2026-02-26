@@ -9,7 +9,7 @@ import { TypeKroError } from '../errors.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
-import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
+import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './schema.js';
 
 /**
  * Represents a deployed Kubernetes resource with metadata about its deployment status.

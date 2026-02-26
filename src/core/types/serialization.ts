@@ -4,32 +4,24 @@
 
 import type { Type } from 'arktype';
 import type { MagicAssignable } from './common.js';
-import type { Enhanced } from './kubernetes.js';
-import type { SchemaMagicProxy } from './references.js';
 import type {
   AlchemyDeploymentOptions,
   DeploymentOperationStatus,
   DeploymentOptions,
   DeploymentResult,
   RollbackResult,
-} from './resource-graph.js';
+} from './deployment.js';
+import type { Enhanced } from './kubernetes.js';
+import type { KroCompatibleType, Prev, SchemaProxy } from './schema.js';
 
-// Re-export alchemy Scope type for compatibility
-export type { Scope } from 'alchemy';
-
-// =============================================================================
-// ARKTYPE TYPE EXTRACTION
-// =============================================================================
-
-/**
- * Extracts the inferred TypeScript type from an ArkType Type<T>.
- * This is critical for proper type inference in kubernetesComposition.
- *
- * @example
- * const MySchema = type({ name: 'string', age: 'number' });
- * type Extracted = InferType<typeof MySchema>; // { name: string; age: number }
- */
-export type InferType<T> = T extends Type<infer U> ? U : T;
+// Re-export schema types for backward compatibility (originally defined here)
+export type {
+  InferType,
+  KroCompatibleType,
+  KroCompatibleValue,
+  SchemaProxy,
+  Scope,
+} from './schema.js';
 
 // =============================================================================
 // KRO SERIALIZATION & DEPENDENCY TYPES
@@ -119,31 +111,6 @@ type KroNestedType<Depth extends number = 10> = Depth extends 0
     };
 
 /**
- * Helper type to decrement depth counter
- */
-type Prev<T extends number> = T extends 10
-  ? 9
-  : T extends 9
-    ? 8
-    : T extends 8
-      ? 7
-      : T extends 7
-        ? 6
-        : T extends 6
-          ? 5
-          : T extends 5
-            ? 4
-            : T extends 4
-              ? 3
-              : T extends 3
-                ? 2
-                : T extends 2
-                  ? 1
-                  : T extends 1
-                    ? 0
-                    : never;
-
-/**
  * Valid Kro Simple Schema field types with proper nesting support
  * This accurately models Kro's type system including nested objects
  */
@@ -188,60 +155,9 @@ export interface KroSchemaField {
   maximum?: number;
 }
 
-/**
- * Base type for values that are compatible with Kro schemas
- */
-export type KroCompatibleValue<Depth extends number = 10> = Depth extends 0
-  ? never
-  :
-      | string
-      | number
-      | boolean
-      | string[]
-      | number[]
-      | boolean[]
-      | string[][] // Nested arrays
-      | number[][]
-      | boolean[][]
-      | Record<string, string> // Maps of basic types
-      | Record<string, number>
-      | Record<string, boolean>
-      | Record<string, string[]> // Maps of arrays
-      | Record<string, number[]>
-      | Record<string, boolean[]>
-      | Record<string, string>[] // Arrays of maps
-      | Record<string, number>[]
-      | Record<string, boolean>[]
-      | Record<string, Record<string, string>> // Nested maps
-      | Record<string, Record<string, number>>
-      | Record<string, Record<string, boolean>>
-      | KroCompatibleType<Prev<Depth>>; // Nested objects (with depth limit)
-
-/**
- * Constraint type for TypeScript types that can be used with Kro schemas
- * This ensures only compatible types are used for spec and status, with proper nesting support up to 10 levels deep
- *
- * This is more flexible than a strict index signature to allow for specific interface definitions in tests
- */
-export type KroCompatibleType<Depth extends number = 10> = Depth extends 0
-  ? never
-  : Record<string, KroCompatibleValue<Depth>> | object;
-
 // =============================================================================
 // SCHEMA PROXY & BUILDER FUNCTION TYPES
 // =============================================================================
-
-/**
- * The user-facing type for a schema proxy. It enables type-safe
- * access to the spec and status fields of the CRD being defined.
- *
- * TSpec and TStatus should be compatible with Kro's Simple Schema format.
- * We use a looser constraint to preserve specific field types from ArkType schemas.
- */
-export type SchemaProxy<TSpec extends Record<string, any>, TStatus extends Record<string, any>> = {
-  spec: SchemaMagicProxy<TSpec>;
-  status: SchemaMagicProxy<TStatus>;
-};
 
 /**
  * A typed version of KroResourceGraphDefinition that includes type information
