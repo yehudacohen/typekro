@@ -3,19 +3,19 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { 
+import { createCompositionContext } from '../../../src/core/composition/context.js';
+import {
   CompositionExpressionAnalyzer,
   CompositionIntegrationHooks,
-  MagicProxyScopeManager,
   compositionUsesKubernetesRefs,
+  MagicProxyScopeManager,
 } from '../../../src/core/expressions/composition-integration.js';
-import { createCompositionContext } from '../../../src/factories/shared.js';
 import type { SchemaProxy } from '../../../src/core/types/serialization.js';
 
 describe('CompositionIntegrationHooks', () => {
   it('should detect KubernetesRef usage in composition functions', () => {
     const _hooks = new CompositionIntegrationHooks();
-    
+
     // Mock schema proxy
     const mockSchemaProxy = {
       spec: {
@@ -38,19 +38,19 @@ describe('CompositionIntegrationHooks', () => {
 
   it('should handle composition scope management', () => {
     const scopeManager = new MagicProxyScopeManager();
-    
+
     // Enter a composition scope
     scopeManager.enterScope('test-composition');
-    
+
     // Register some resources
     scopeManager.registerResource('deployment-1');
     scopeManager.registerResource('service-1');
-    
+
     // Check scope state
     expect(scopeManager.getCurrentScopeResources()).toEqual(['deployment-1', 'service-1']);
     expect(scopeManager.isResourceInCurrentScope('deployment-1')).toBe(true);
     expect(scopeManager.isResourceInCurrentScope('unknown-resource')).toBe(false);
-    
+
     // Exit scope
     scopeManager.exitScope();
     expect(scopeManager.getCurrentScope()).toBeUndefined();
@@ -58,31 +58,31 @@ describe('CompositionIntegrationHooks', () => {
 
   it('should handle nested composition scopes', () => {
     const scopeManager = new MagicProxyScopeManager();
-    
+
     // Enter parent scope
     scopeManager.enterScope('parent-composition');
     scopeManager.registerResource('parent-resource');
-    
+
     // Enter child scope
     scopeManager.enterScope('child-composition');
     scopeManager.registerResource('child-resource');
-    
+
     // Child should have access to both resources
     expect(scopeManager.isResourceAccessible('parent-resource')).toBe(true);
     expect(scopeManager.isResourceAccessible('child-resource')).toBe(true);
-    
+
     // Check hierarchy
     const hierarchy = scopeManager.getScopeHierarchy();
     expect(hierarchy).toContain('parent-composition');
     expect(hierarchy).toContain('child-composition');
-    
+
     // Exit child scope
     scopeManager.exitScope();
-    
+
     // Parent should only have access to parent resource
     expect(scopeManager.isResourceAccessible('parent-resource')).toBe(true);
     expect(scopeManager.isResourceAccessible('child-resource')).toBe(false);
-    
+
     // Exit parent scope
     scopeManager.exitScope();
     expect(scopeManager.getCurrentScope()).toBeUndefined();
@@ -90,7 +90,7 @@ describe('CompositionIntegrationHooks', () => {
 
   it('should analyze composition functions with pattern detection', () => {
     const analyzer = new CompositionExpressionAnalyzer();
-    
+
     // Mock schema proxy
     const mockSchemaProxy = {
       spec: {
@@ -112,7 +112,7 @@ describe('CompositionIntegrationHooks', () => {
 
     // Analyze the composition
     const analysis = analyzer.analyzeCompositionFunction(compositionFn, mockSchemaProxy, context);
-    
+
     expect(analysis).toBeDefined();
     expect(analysis.statusShape).toBeDefined();
     expect(analysis.conversionMetadata).toBeDefined();
@@ -121,15 +121,18 @@ describe('CompositionIntegrationHooks', () => {
 
   it('should validate composition pattern compatibility', () => {
     const analyzer = new CompositionExpressionAnalyzer();
-    
+
     // Test imperative pattern with direct factory
-    const imperativeDirectValidation = analyzer.validatePatternCompatibility('imperative', 'direct');
+    const imperativeDirectValidation = analyzer.validatePatternCompatibility(
+      'imperative',
+      'direct'
+    );
     expect(imperativeDirectValidation.isCompatible).toBe(true);
-    
+
     // Test imperative pattern with kro factory
     const imperativeKroValidation = analyzer.validatePatternCompatibility('imperative', 'kro');
     expect(imperativeKroValidation.isCompatible).toBe(true);
-    
+
     // Test declarative pattern with kro factory
     const declarativeKroValidation = analyzer.validatePatternCompatibility('declarative', 'kro');
     expect(declarativeKroValidation.isCompatible).toBe(true);
@@ -137,7 +140,7 @@ describe('CompositionIntegrationHooks', () => {
 
   it('should provide pattern-specific recommendations', () => {
     const analyzer = new CompositionExpressionAnalyzer();
-    
+
     // Mock analysis result with no KubernetesRef objects
     const mockAnalysisResult = {
       statusShape: {},
@@ -159,19 +162,19 @@ describe('CompositionIntegrationHooks', () => {
 describe('CompositionExpressionAnalyzer', () => {
   it('should detect composition patterns correctly', () => {
     const analyzer = new CompositionExpressionAnalyzer();
-    
+
     // Function that looks imperative
     const imperativeFunction = (_spec: any) => {
       // This would typically call simpleDeployment, etc.
       return { ready: true };
     };
-    
+
     // Function that looks declarative
     const declarativeFunction = (spec: any) => ({ ready: spec.enabled });
-    
+
     const imperativePattern = analyzer.detectCompositionPattern(imperativeFunction);
     const declarativePattern = analyzer.detectCompositionPattern(declarativeFunction);
-    
+
     // Note: Without actual composition context, both might be detected as declarative
     // This is expected behavior for the pattern detection logic
     expect(['imperative', 'declarative']).toContain(imperativePattern);
@@ -180,7 +183,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
   it('should process composition status based on pattern', () => {
     const analyzer = new CompositionExpressionAnalyzer();
-    
+
     const statusShape = {
       ready: true,
       url: 'http://example.com',

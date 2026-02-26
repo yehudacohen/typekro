@@ -12,11 +12,16 @@ import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kube
 import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './serialization.js';
 
 /**
- * Represents a deployed Kubernetes resource with metadata about its deployment status
+ * Represents a deployed Kubernetes resource with metadata about its deployment status.
  */
 export interface DeployedResource {
+  /**
+   * Resource graph identifier (camelCase). This is the internal tracking ID,
+   * not the Kubernetes `metadata.name`. Resolved via {@link getResourceId}.
+   */
   id: string;
   kind: string;
+  /** The Kubernetes `metadata.name` of the deployed resource. */
   name: string;
   namespace: string;
   manifest: KubernetesResource;

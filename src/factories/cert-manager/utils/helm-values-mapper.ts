@@ -1,3 +1,4 @@
+import { removeUndefinedValues } from '../../../utils/helpers.js';
 import type { CertManagerBootstrapConfig, CertManagerHelmValues } from '../types.js';
 
 /**
@@ -143,33 +144,4 @@ export function validateCertManagerHelmValues(values: CertManagerHelmValues): st
   }
 
   return warnings;
-}
-
-/**
- * Recursively removes undefined values from an object
- *
- * @param obj - The object to clean
- * @returns The object with undefined values removed
- */
-function removeUndefinedValues(obj: any): any {
-  if (obj === null || obj === undefined) {
-    return obj;
-  }
-
-  if (Array.isArray(obj)) {
-    return obj.map(removeUndefinedValues).filter((item) => item !== undefined);
-  }
-
-  if (typeof obj === 'object') {
-    const cleaned: any = {};
-    for (const [key, value] of Object.entries(obj)) {
-      const cleanedValue = removeUndefinedValues(value);
-      if (cleanedValue !== undefined) {
-        cleaned[key] = cleanedValue;
-      }
-    }
-    return cleaned;
-  }
-
-  return obj;
 }

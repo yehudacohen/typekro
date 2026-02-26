@@ -14,7 +14,7 @@ import {
 } from '../../alchemy/deployment.js';
 import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
-import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
+import { getResourceId, preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import {
   CRDInstanceError,
@@ -494,7 +494,7 @@ export class KroResourceFactoryImpl<
       spec: {
         schema: kroSchema,
         resources: Object.values(this.resources).map((resource) => ({
-          id: resource.id || resource.metadata?.name || 'unknown',
+          id: getResourceId(resource),
           template: resource,
         })),
       },

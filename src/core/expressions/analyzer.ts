@@ -532,27 +532,13 @@ export class JavaScriptToCelAnalyzer {
     };
   }
 
-  /**
-   * Extract KubernetesRef objects from object structure
-   */
+  /** Delegate to canonical implementation in type-guards.ts */
   private extractKubernetesRefsFromObject(
-    obj: any,
-    refs: KubernetesRef<any>[],
-    path: string
+    obj: unknown,
+    refs: KubernetesRef<unknown>[],
+    _path: string
   ): void {
-    if (!obj || typeof obj !== 'object') return;
-
-    // Check if this object is a KubernetesRef
-    if (obj[KUBERNETES_REF_BRAND]) {
-      refs.push(obj as KubernetesRef<any>);
-      return;
-    }
-
-    // Recursively check properties
-    for (const [key, value] of Object.entries(obj)) {
-      const newPath = path ? `${path}.${key}` : key;
-      this.extractKubernetesRefsFromObject(value, refs, newPath);
-    }
+    refs.push(...extractResourceReferences(obj));
   }
 
   /**

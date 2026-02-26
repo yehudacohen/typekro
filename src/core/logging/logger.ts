@@ -29,25 +29,22 @@ class PinoLogger implements TypeKroLogger {
   }
 
   error(msg: string, error?: Error, meta?: Record<string, any>): void {
-    const logData = { ...meta };
-    if (error) {
-      const k8sError = error as any;
-      logData.error = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-        statusCode: k8sError.statusCode,
-        body: k8sError.body,
-        response: k8sError.response?.body,
-      };
-    }
-    this.pinoLogger.error(logData, msg);
+    this.pinoLogger.error(this.buildLogData(meta, error), msg);
   }
 
   fatal(msg: string, error?: Error, meta?: Record<string, any>): void {
-    const logData = { ...meta };
+    this.pinoLogger.fatal(this.buildLogData(meta, error), msg);
+  }
+
+  /** Build log payload, extracting K8s-specific error fields when present. */
+  private buildLogData(meta?: Record<string, any>, error?: Error): Record<string, unknown> {
+    const logData: Record<string, unknown> = { ...meta };
     if (error) {
-      const k8sError = error as any;
+      const k8sError = error as Error & {
+        statusCode?: number;
+        body?: unknown;
+        response?: { body?: unknown };
+      };
       logData.error = {
         name: error.name,
         message: error.message,
@@ -57,7 +54,7 @@ class PinoLogger implements TypeKroLogger {
         response: k8sError.response?.body,
       };
     }
-    this.pinoLogger.fatal(logData, msg);
+    return logData;
   }
 
   child(bindings: Record<string, any>): TypeKroLogger {

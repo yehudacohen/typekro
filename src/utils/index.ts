@@ -12,8 +12,10 @@ export {
   generateDeterministicResourceId,
   generateResourceId,
   getInnerCelPath,
+  getResourceId,
   pascalCase,
   processResourceReferences,
+  removeUndefinedValues,
 } from './helpers';
 
 // Export type guard functions

@@ -60,8 +60,41 @@ function convertTemplateToCelConcat(templateStr: string): string {
 }
 
 /**
- * Generate deterministic resource ID based on resource metadata
- * This ensures stable IDs across multiple applications for GitOps workflows
+ * Resolve the resource graph identifier for a resource, using the standard fallback chain:
+ *
+ * 1. `resource.id` — explicit graph ID set by the user or by {@link createResource}
+ * 2. `resource.metadata?.name` — Kubernetes name (used as fallback for ad-hoc resources)
+ * 3. `fallback` — caller-provided default (defaults to `'unknown'`)
+ *
+ * This centralises a pattern that was previously duplicated across 6+ call sites.
+ * The returned value is suitable for use as a deployment tracking key but may **not** be
+ * valid camelCase when it falls back to `metadata.name` (kebab-case).
+ *
+ * @see {@link KubernetesResource.id} for full documentation of the `id` field semantics.
+ */
+export function getResourceId(
+  resource: Pick<KubernetesResource, 'id' | 'metadata'>,
+  fallback = 'unknown'
+): string {
+  return resource.id || resource.metadata?.name || fallback;
+}
+
+/**
+ * Generate a deterministic resource graph identifier from resource metadata.
+ *
+ * Produces a camelCase ID suitable for use as a Kro resource entry identifier
+ * and CEL expression target. The result is stable across invocations for the
+ * same inputs, enabling GitOps workflows.
+ *
+ * @throws {ValidationError} If `name` is a {@link KubernetesRef} or {@link CelExpression}
+ *   (dynamic names cannot produce static identifiers — provide an explicit `id` instead).
+ * @throws {ValidationError} If `name` contains template expressions (`${...}` or `{{...}}`).
+ *
+ * @example
+ * ```ts
+ * generateDeterministicResourceId('Deployment', 'my-app')       // → 'deploymentMyApp'
+ * generateDeterministicResourceId('Service', 'my-deployment-svc') // → 'myDeploymentSvc' (kind already in name)
+ * ```
  */
 export function generateDeterministicResourceId(
   kind: string,
@@ -120,6 +153,36 @@ export function generateDeterministicResourceId(
 
   // Otherwise, prefix with kind for clarity
   return toCamelCase(`${cleanKind}-${nameStr}`);
+}
+
+/**
+ * Recursively removes `undefined` values from an object tree.
+ *
+ * - `null` is preserved (only `undefined` is stripped).
+ * - Array items that are `undefined` are filtered out.
+ * - Useful for cleaning Helm values objects before serialization.
+ */
+export function removeUndefinedValues<T>(obj: T): T {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(removeUndefinedValues).filter((item) => item !== undefined) as T;
+  }
+
+  if (typeof obj === 'object') {
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      const cleanedValue = removeUndefinedValues(value);
+      if (cleanedValue !== undefined) {
+        cleaned[key] = cleanedValue;
+      }
+    }
+    return cleaned as T;
+  }
+
+  return obj;
 }
 
 /**

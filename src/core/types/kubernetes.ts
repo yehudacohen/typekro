@@ -51,7 +51,29 @@ export interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
   metadata: V1ObjectMeta;
   spec?: TSpec;
   status?: TStatus;
-  // Resource ID for dependency tracking and deployment
+  /**
+   * Resource graph identifier used for dependency tracking and Kro resource references.
+   *
+   * In Kro mode, this becomes the resource entry `id` in the ResourceGraphDefinition YAML,
+   * and is used in CEL expressions to reference this resource (e.g., `myDeployment.status.readyReplicas`).
+   * Must be camelCase (Kro requirement). When omitted, auto-generated from `kind` + `metadata.name`
+   * via {@link generateDeterministicResourceId}.
+   *
+   * **Not the same as `metadata.name`** — this is an internal graph identifier, not a Kubernetes name.
+   * It is stripped from all Kubernetes API payloads before submission.
+   *
+   * Required when `metadata.name` is dynamic (e.g., `schema.spec.name`), because a static
+   * camelCase identifier cannot be derived from a runtime value.
+   *
+   * @example
+   * ```ts
+   * // Auto-generated: kind=Deployment, name="my-app" → id="deploymentMyApp"
+   * Deployment({ name: 'my-app', image: 'nginx' })
+   *
+   * // Explicit (required for dynamic names):
+   * Deployment({ name: schema.spec.name, image: 'nginx', id: 'webDeployment' })
+   * ```
+   */
   id?: string;
   // Secret/ConfigMap data fields
   data?: { [key: string]: string };
@@ -88,7 +110,11 @@ export type KubernetesResourceHeader<T extends KubernetesResource> = Pick<
 };
 
 /**
- * A Kubernetes resource with required ID for deployment tracking
+ * A Kubernetes resource with a required resource graph identifier.
+ * Used in deployment pipelines where every resource must have an `id` for
+ * dependency ordering and status tracking.
+ *
+ * @see {@link KubernetesResource.id} for full documentation of the `id` field semantics.
  */
 export interface DeployableKubernetesResource<TSpec = unknown, TStatus = unknown>
   extends KubernetesResource<TSpec, TStatus> {
@@ -128,7 +154,8 @@ export type Enhanced<TSpec, TStatus> = Omit<
   readonly status: MagicProxy<NonOptional<TStatus>>; // Required for better type safety, no undefined
   readonly spec: MagicProxy<NonOptional<TSpec>>; // No undefined fields
   readonly metadata: MagicProxy<V1ObjectMeta>; // Keep metadata fields optional as they should be
-  readonly id?: string; // Optional resource ID for deployment tracking
+  /** @see {@link KubernetesResource.id} for full documentation of the `id` field semantics. */
+  readonly id?: string;
   // Common Kubernetes resource fields that appear at root level
   readonly data?: MagicProxy<{ [key: string]: string }>; // ConfigMap, Secret
   readonly stringData?: MagicProxy<{ [key: string]: string }>; // Secret (write-only)
@@ -478,7 +505,8 @@ export type K8sCompatible<T extends Enhanced<any, any>> = T & {
  * Type modifier for resources that need to be deployable (with required ID)
  */
 export type DeployableResource<T extends Enhanced<any, any>> = K8sCompatible<T> & {
-  readonly id: string; // Make id required for deployment
+  /** Required resource graph identifier. @see {@link KubernetesResource.id} */
+  readonly id: string;
 };
 
 /**
@@ -491,14 +519,16 @@ export type K8sClientCompatible<T extends Enhanced<any, any>> = T &
     readonly spec: T extends Enhanced<infer TSpec, any> ? TSpec : unknown;
     readonly status: T extends Enhanced<any, infer TStatus> ? TStatus : unknown;
     readonly metadata: V1ObjectMeta;
-    readonly id?: string; // Optional ID for deployment tracking
+    /** @see {@link KubernetesResource.id} */
+    readonly id?: string;
   };
 
 /**
  * Deployable version of K8sClientCompatible with required ID
  */
 export type DeployableK8sResource<T extends Enhanced<any, any>> = K8sClientCompatible<T> & {
-  readonly id: string; // Required ID for deployment operations
+  /** Required resource graph identifier. @see {@link KubernetesResource.id} */
+  readonly id: string;
 };
 
 /**

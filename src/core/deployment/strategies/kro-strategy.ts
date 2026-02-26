@@ -8,7 +8,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
-import { preserveNonEnumerableProperties } from '../../../utils/helpers.js';
+import { getResourceId, preserveNonEnumerableProperties } from '../../../utils/helpers.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { DeploymentTimeoutError, ResourceGraphFactoryError, TypeKroError } from '../../errors.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
@@ -127,7 +127,7 @@ export class KroDeploymentStrategy<
       spec: {
         schema: kroSchema,
         resources: Object.values(this.resources || {}).map((resource) => ({
-          id: resource.id || resource.metadata?.name || 'unknown',
+          id: getResourceId(resource),
           template: resource,
         })),
       },

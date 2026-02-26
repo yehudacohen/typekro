@@ -6,9 +6,9 @@
  * and conversion within imperative composition patterns.
  */
 
-import type { CompositionContext } from '../../factories/shared.js';
-import { getCurrentCompositionContext } from '../../factories/shared.js';
-import { isKubernetesRef } from '../../utils/type-guards.js';
+import { extractResourceReferences, isKubernetesRef } from '../../utils/type-guards.js';
+import type { CompositionContext } from '../composition/context.js';
+import { getCurrentCompositionContext } from '../composition/context.js';
 import { CompositionExecutionError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesRef } from '../types/common.js';
@@ -644,29 +644,11 @@ export class CompositionExpressionAnalyzer {
     return Object.keys(context.resources);
   }
 
-  /**
-   * Extract KubernetesRef objects from a resource
-   */
+  /** Delegate to canonical implementation in type-guards.ts */
   public extractKubernetesRefsFromResource(
     resource: Enhanced<unknown, unknown>
   ): KubernetesRef<unknown>[] {
-    const refs: KubernetesRef<unknown>[] = [];
-
-    const traverse = (obj: unknown): void => {
-      if (isKubernetesRef(obj)) {
-        refs.push(obj as KubernetesRef<unknown>);
-        return;
-      }
-
-      if (Array.isArray(obj)) {
-        obj.forEach(traverse);
-      } else if (obj && typeof obj === 'object') {
-        Object.values(obj).forEach(traverse);
-      }
-    };
-
-    traverse(resource);
-    return refs;
+    return extractResourceReferences(resource);
   }
 }
 
@@ -742,32 +724,11 @@ export class CompositionContextTracker {
     this.contextAnalysisCache.delete(contextId);
   }
 
-  /**
-   * Extract KubernetesRef objects from a resource
-   */
+  /** Delegate to canonical implementation in type-guards.ts */
   public extractKubernetesRefsFromResource(
     resource: Enhanced<unknown, unknown>
   ): KubernetesRef<unknown>[] {
-    const refs: KubernetesRef<unknown>[] = [];
-
-    const traverse = (obj: unknown, path: string = ''): void => {
-      if (isKubernetesRef(obj)) {
-        refs.push(obj as KubernetesRef<unknown>);
-        return;
-      }
-
-      if (Array.isArray(obj)) {
-        obj.forEach((item, index) => traverse(item, `${path}[${index}]`));
-      } else if (obj && typeof obj === 'object') {
-        Object.entries(obj).forEach(([key, value]) => {
-          const newPath = path ? `${path}.${key}` : key;
-          traverse(value, newPath);
-        });
-      }
-    };
-
-    traverse(resource);
-    return refs;
+    return extractResourceReferences(resource);
   }
 }
 

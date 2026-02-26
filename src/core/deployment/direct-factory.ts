@@ -6,6 +6,7 @@
  */
 
 import { toCamelCase } from '../../utils/helpers.js';
+import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
 import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
@@ -895,11 +896,7 @@ metadata:
     try {
       this.logger.debug('Re-executing composition with actual spec values');
 
-      // Import the composition context utilities
-      const {
-        createCompositionContext,
-        runWithCompositionContext,
-      } = require('../../factories/shared.js');
+      // Composition context utilities are now statically imported from core
 
       // Create a new composition context for re-execution.
       // Enable ID deduplication so forEach loops that create multiple resources
