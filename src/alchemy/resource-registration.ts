@@ -187,8 +187,8 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
 
   // Create clean, serializable versions for Alchemy storage
   // Only serialize the data that Alchemy needs to store, not the functional parts
-  const cleanResource = JSON.parse(JSON.stringify(props.resource));
-  const cleanDeployedResource = JSON.parse(JSON.stringify(deployedResource));
+  const cleanResource = structuredClone(props.resource);
+  const cleanDeployedResource = structuredClone(deployedResource);
 
   // Create the resource properties for Alchemy
   const resourceProperties = {

@@ -1511,7 +1511,7 @@ export class DirectDeploymentEngine {
             }
 
             // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
-            // Then use JSON.parse(JSON.stringify()) to ensure we have a plain object without proxies
+            // Then use JSON.parse(JSON.stringify()) to strip proxy wrappers that structuredClone cannot handle
             const jsonPayload =
               typeof resolvedResource.toJSON === 'function'
                 ? resolvedResource.toJSON()
@@ -1552,7 +1552,7 @@ export class DirectDeploymentEngine {
             }
 
             // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
-            // Then use JSON.parse(JSON.stringify()) to ensure we have a plain object without proxies
+            // Then use JSON.parse(JSON.stringify()) to strip proxy wrappers that structuredClone cannot handle
             const jsonResource =
               typeof resolvedResource.toJSON === 'function'
                 ? resolvedResource.toJSON()
