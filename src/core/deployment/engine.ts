@@ -2019,7 +2019,7 @@ export class DirectDeploymentEngine {
    * Generate a unique deployment ID
    */
   private generateDeploymentId(): string {
-    return `deployment-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return `deployment-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
   }
 
   /**
