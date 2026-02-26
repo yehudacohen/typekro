@@ -5,7 +5,7 @@
  * internal dependency resolution engine, without requiring the Kro controller.
  */
 
-import { toCamelCase } from '../../utils/helpers.js';
+import { toCamelCase } from '../../utils/string.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
