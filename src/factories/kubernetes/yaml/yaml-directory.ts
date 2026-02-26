@@ -218,18 +218,3 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
     return closure;
   }, config.name);
 }
-
-/**
- * Common Git repository paths for popular controllers
- */
-export const GitPaths = {
-  fluxHelm: (version = 'main') => `git:github.com/fluxcd/helm-controller/config/default@${version}`,
-  fluxKustomize: (version = 'main') =>
-    `git:github.com/fluxcd/kustomize-controller/config/default@${version}`,
-  fluxSource: (version = 'main') =>
-    `git:github.com/fluxcd/source-controller/config/default@${version}`,
-  kro: (version = 'main') => `git:github.com/Azure/kro/config/default@${version}`,
-  argoCD: (version = 'stable') =>
-    `git:github.com/argoproj/argo-cd/manifests/install.yaml@${version}`,
-  istio: (version = 'master') => `git:github.com/istio/istio/manifests/charts/base@${version}`,
-} as const;

@@ -65,7 +65,7 @@ function resolveResourceReference(
         return String(current);
       }
     }
-    
+
     // Fallback to CEL reference if we can't resolve
     return `schema.${fieldPath}`;
   }
@@ -136,10 +136,6 @@ export function optimizeCelExpression(
   // NOTE: We should NOT optimize resource references in CEL expressions because they need to be
   // resolved at runtime by Kro, not at compile time. Resource references like deployment.metadata.name
   // should remain as CEL expressions for Kro to evaluate against live Kubernetes resources.
-  
-  // Skip this optimization for now - resource references should be resolved by Kro at runtime
-  // const concatPattern = /"([^"]*)" \+ ([a-zA-Z][a-zA-Z0-9]*\.metadata\.name)/g;
-  // ... optimization code removed ...
 
   // Pattern 2: Conditional expressions with known boolean values
   // Example: condition ? "value1" : "value2" where condition can be evaluated
