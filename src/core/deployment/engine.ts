@@ -18,7 +18,6 @@ import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentModeType } from '../references/index.js';
 import { DeploymentMode, ReferenceResolver } from '../references/index.js';
 import type {
-  ClosureDependencyInfo,
   DeploymentClosure,
   DeploymentContext,
   DeploymentError,
@@ -27,7 +26,6 @@ import type {
   DeploymentOptions,
   DeploymentResult,
   DeploymentStateRecord,
-  EnhancedDeploymentPlan,
   ResolutionContext,
   ResourceGraph,
   RollbackResult,
@@ -39,19 +37,24 @@ import {
 } from '../types/deployment.js';
 import type { Scope } from '../types/serialization.js';
 import type {
-  CustomResourceDefinitionItem,
-  CustomResourceDefinitionList,
   DeployableK8sResource,
   DeployedResource,
   Enhanced,
   KubernetesApiError,
-  KubernetesCondition,
   KubernetesObjectWithStatus,
   KubernetesResource,
-  ResourceWithConditions,
 } from '../types.js';
+import { analyzeClosureDependencies, integrateClosuresIntoPlan } from './closure-planner.js';
+import { CRDManager } from './crd-manager.js';
 import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
+import {
+  enhanceResourceForEvaluation,
+  extractAcceptedMediaTypes,
+  isNotFoundError,
+  isUnsupportedMediaTypeError,
+  patchResourceWithCorrectContentType,
+} from './k8s-helpers.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { StatusHydrator } from './status-hydrator.js';
 
@@ -64,9 +67,9 @@ export class DirectDeploymentEngine {
   private debugLogger?: DebugLogger;
   private eventMonitor?: EventMonitor;
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
+  private crdManager: CRDManager;
   private readyResources: Set<string> = new Set(); // Track resources that are already ready
   private activeAbortControllers: Set<AbortController> = new Set(); // Track active abort controllers for cleanup
-  private fluxCRDsPatchPromise: Promise<void> | null = null; // Dedup concurrent ensureFluxCRDsPatched calls
   private logger = getComponentLogger('deployment-engine');
 
   constructor(
@@ -85,7 +88,12 @@ export class DirectDeploymentEngine {
     this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient, httpTimeouts);
     this.readinessChecker = new ResourceReadinessChecker(this.k8sApi);
     this.statusHydrator = new StatusHydrator(this.k8sApi);
-    // this.eventFilter = createEventFilter();
+    this.crdManager = new CRDManager(
+      this.k8sApi,
+      kubeClient,
+      this.abortableDelay.bind(this),
+      this.withAbortSignal.bind(this)
+    );
 
     // Set up callback to track ready resources
     this.readinessChecker.setOnResourceReady((resource) => {
@@ -209,49 +217,6 @@ export class DirectDeploymentEngine {
   }
 
   /**
-   * Enhance a resource for evaluation by applying kind-specific logic
-   * This allows generic evaluators to work correctly without needing special cases
-   */
-  private enhanceResourceForEvaluation(
-    resource: ResourceWithConditions,
-    kind: string
-  ): ResourceWithConditions {
-    // For HelmRepository resources, handle OCI special case
-    if (kind === 'HelmRepository') {
-      const spec = resource.spec as { type?: string } | undefined;
-      const isOciRepository = spec?.type === 'oci';
-      const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
-
-      // If it's an OCI repo without Ready condition, synthesize one
-      // OCI repositories don't get status conditions from Flux, but they are functional
-      // once they've been processed (have generation and resourceVersion)
-      if (
-        isOciRepository &&
-        hasBeenProcessed &&
-        !resource.status?.conditions?.some((c: KubernetesCondition) => c.type === 'Ready')
-      ) {
-        return {
-          ...resource,
-          status: {
-            ...resource.status,
-            conditions: [
-              ...(resource.status?.conditions || []),
-              {
-                type: 'Ready',
-                status: 'True',
-                message: 'OCI repository is functional',
-                reason: 'OciRepositoryProcessed',
-              },
-            ],
-          },
-        };
-      }
-    }
-
-    return resource;
-  }
-
-  /**
    * Check if a deployed resource is ready using the factory-provided readiness evaluator
    */
   public async isDeployedResourceReady(deployedResource: DeployedResource): Promise<boolean> {
@@ -277,10 +242,7 @@ export class DirectDeploymentEngine {
         const liveResource = await this.k8sApi.read(resourceRef);
 
         // Apply kind-specific enhancements before calling custom evaluator
-        const enhancedResource = this.enhanceResourceForEvaluation(
-          liveResource,
-          deployedResource.kind
-        );
+        const enhancedResource = enhanceResourceForEvaluation(liveResource, deployedResource.kind);
 
         // Use the factory-provided readiness evaluator
         const result = readinessEvaluator(enhancedResource);
@@ -517,7 +479,7 @@ export class DirectDeploymentEngine {
             resourceLogger.debug('Calling deploySingleResource');
 
             // Wait for CRD establishment if this is a custom resource
-            await this.waitForCRDIfCustomResource(
+            await this.crdManager.waitForCRDIfCustomResource(
               resource.manifest,
               options,
               resourceLogger,
@@ -817,136 +779,6 @@ export class DirectDeploymentEngine {
   }
 
   /**
-   * Analyze closure dependencies to determine execution levels
-   */
-  private analyzeClosureDependencies<TSpec>(
-    closures: Record<string, DeploymentClosure>,
-    spec: TSpec,
-    dependencyGraph: import('../dependencies/index.js').DependencyGraph
-  ): ClosureDependencyInfo[] {
-    const closureDependencies: ClosureDependencyInfo[] = [];
-
-    for (const [name, closure] of Object.entries(closures)) {
-      // For now, analyze dependencies by examining the closure's configuration
-      // This is a simplified implementation - in practice, we would need to analyze
-      // the closure's arguments to detect resource references
-      const dependencies = this.extractClosureDependencies(closure, spec);
-
-      // Determine execution level based on dependencies
-      // For now, assign all closures to level -1 to ensure they run before all resources
-      // This is especially important for closures that install CRDs (like fluxSystem)
-      let level = -1;
-      if (dependencies.length > 0) {
-        // Find the maximum level of any dependency + 1
-        for (const depId of dependencies) {
-          const depLevel = this.getResourceLevel(depId, dependencyGraph);
-          level = Math.max(level, depLevel + 1);
-        }
-      }
-
-      closureDependencies.push({
-        name,
-        closure,
-        dependencies,
-        level,
-      });
-    }
-
-    return closureDependencies;
-  }
-
-  /**
-   * Extract dependencies from a closure by analyzing its configuration
-   * This is a simplified implementation - in practice, we would need more sophisticated analysis
-   */
-  private extractClosureDependencies<TSpec>(_closure: DeploymentClosure, _spec: TSpec): string[] {
-    // For now, return empty dependencies since closures typically don't depend on Enhanced<> resources
-    // In the future, this could analyze closure arguments for resource references
-    return [];
-  }
-
-  /**
-   * Get the execution level of a resource in the dependency graph
-   */
-  private getResourceLevel(
-    resourceId: string,
-    dependencyGraph: import('../dependencies/index.js').DependencyGraph
-  ): number {
-    // Find the level where this resource appears in the deployment plan
-    const deploymentPlan = this.dependencyResolver.analyzeDeploymentOrder(dependencyGraph);
-
-    for (let levelIndex = 0; levelIndex < deploymentPlan.levels.length; levelIndex++) {
-      const level = deploymentPlan.levels[levelIndex];
-      if (level?.includes(resourceId)) {
-        return levelIndex;
-      }
-    }
-
-    return 0; // Default to level 0 if not found
-  }
-
-  /**
-   * Integrate closures into the deployment plan based on their dependencies
-   */
-  private integrateClosuresIntoPlan(
-    deploymentPlan: { levels: string[][]; totalResources: number; maxParallelism: number },
-    closureDependencies: ClosureDependencyInfo[]
-  ): EnhancedDeploymentPlan {
-    // Create enhanced levels with both resources and closures
-    const enhancedLevels: Array<{ resources: string[]; closures: ClosureDependencyInfo[] }> = [];
-
-    // Check if we have any closures at level -1 (pre-resource level)
-    const preResourceClosures = closureDependencies.filter((c) => c.level === -1);
-
-    // If we have pre-resource closures, add them as level 0 and shift everything else
-    if (preResourceClosures.length > 0) {
-      enhancedLevels.push({
-        resources: [],
-        closures: preResourceClosures,
-      });
-    }
-
-    // Initialize levels with existing resources (shifted if we added a pre-resource level)
-    for (let i = 0; i < deploymentPlan.levels.length; i++) {
-      enhancedLevels.push({
-        resources: deploymentPlan.levels[i] || [],
-        closures: [],
-      });
-    }
-
-    // Add closures to their appropriate levels (excluding level -1 which we already handled)
-    for (const closureInfo of closureDependencies) {
-      if (closureInfo.level === -1) {
-        continue; // Already handled above
-      }
-
-      // Adjust level index if we added a pre-resource level
-      const adjustedLevel =
-        preResourceClosures.length > 0 ? closureInfo.level + 1 : closureInfo.level;
-
-      // Ensure we have enough levels
-      while (enhancedLevels.length <= adjustedLevel) {
-        enhancedLevels.push({ resources: [], closures: [] });
-      }
-
-      const targetLevel = enhancedLevels[adjustedLevel];
-      if (targetLevel) {
-        targetLevel.closures.push(closureInfo);
-      }
-    }
-
-    return {
-      levels: enhancedLevels,
-      totalResources: deploymentPlan.totalResources,
-      totalClosures: closureDependencies.length,
-      maxParallelism: Math.max(
-        deploymentPlan.maxParallelism,
-        Math.max(...enhancedLevels.map((level) => level.closures.length))
-      ),
-    };
-  }
-
-  /**
    * Deploy a resource graph with deployment closures integrated into level-based execution
    */
   async deployWithClosures<TSpec>(
@@ -1019,12 +851,13 @@ export class DirectDeploymentEngine {
       });
 
       // 3. Analyze closure dependencies and integrate into deployment plan
-      const closureDependencies = this.analyzeClosureDependencies(
+      const closureDependencies = analyzeClosureDependencies(
         closures,
         spec,
-        graph.dependencyGraph
+        graph.dependencyGraph,
+        this.dependencyResolver
       );
-      const enhancedPlan = this.integrateClosuresIntoPlan(deploymentPlan, closureDependencies);
+      const enhancedPlan = integrateClosuresIntoPlan(deploymentPlan, closureDependencies);
 
       deploymentLogger.debug('Enhanced deployment plan with closures', {
         levels: enhancedPlan.levels.length,
@@ -1134,7 +967,7 @@ export class DirectDeploymentEngine {
             resourceLogger.debug('Calling deploySingleResource');
 
             // Wait for CRD establishment if this is a custom resource
-            await this.waitForCRDIfCustomResource(
+            await this.crdManager.waitForCRDIfCustomResource(
               resource.manifest,
               options,
               resourceLogger,
@@ -1686,7 +1519,7 @@ export class DirectDeploymentEngine {
 
             resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
             // In the new API, methods return objects directly (no .body wrapper)
-            appliedResource = await this.patchResourceWithCorrectContentType(cleanPayload);
+            appliedResource = await patchResourceWithCorrectContentType(this.k8sApi, cleanPayload);
           } else {
             // Resource does not exist, create it
             resourceLogger.debug('Resource does not exist, creating');
@@ -1791,7 +1624,10 @@ export class DirectDeploymentEngine {
                     const cleanResource = JSON.parse(JSON.stringify(jsonResource));
                     delete cleanResource.id;
 
-                    appliedResource = await this.patchResourceWithCorrectContentType(cleanResource);
+                    appliedResource = await patchResourceWithCorrectContentType(
+                      this.k8sApi,
+                      cleanResource
+                    );
                     resourceLogger.debug(
                       'Resource patched successfully after 409 conflict (warn fallback)'
                     );
@@ -1815,7 +1651,10 @@ export class DirectDeploymentEngine {
                   const cleanResource = JSON.parse(JSON.stringify(jsonResource));
                   delete cleanResource.id;
 
-                  appliedResource = await this.patchResourceWithCorrectContentType(cleanResource);
+                  appliedResource = await patchResourceWithCorrectContentType(
+                    this.k8sApi,
+                    cleanResource
+                  );
                   resourceLogger.debug('Resource patched successfully after 409 conflict');
                   conflictHandled = true;
                 } catch (patchError) {
@@ -1871,8 +1710,8 @@ export class DirectDeploymentEngine {
           resourceLogger.error('Failed to apply resource to cluster', lastError, { attempt });
 
           // Check for HTTP 415 Unsupported Media Type errors
-          if (this.isUnsupportedMediaTypeError(error)) {
-            const acceptedTypes = this.extractAcceptedMediaTypes(error);
+          if (isUnsupportedMediaTypeError(error)) {
+            const acceptedTypes = extractAcceptedMediaTypes(error);
             throw new UnsupportedMediaTypeError(
               resolvedResource.metadata?.name || 'unknown',
               resolvedResource.kind || 'Unknown',
@@ -2000,10 +1839,7 @@ export class DirectDeploymentEngine {
         );
 
         // Apply kind-specific enhancements before calling custom evaluator
-        const enhancedResource = this.enhanceResourceForEvaluation(
-          liveResource,
-          deployedResource.kind
-        );
+        const enhancedResource = enhanceResourceForEvaluation(liveResource, deployedResource.kind);
 
         const result = readinessEvaluator(enhancedResource);
 
@@ -2236,7 +2072,7 @@ export class DirectDeploymentEngine {
           await new Promise((resolve) => setTimeout(resolve, 1000));
         } catch (error) {
           // Resource not found, deletion successful
-          if (this.isNotFoundError(error)) {
+          if (isNotFoundError(error)) {
             deleteLogger.debug('Resource successfully deleted');
             return;
           }
@@ -2354,246 +2190,6 @@ export class DirectDeploymentEngine {
   }
 
   /**
-   * Patch a resource with the correct Content-Type header for merge patch operations
-   * This fixes HTTP 415 "Unsupported Media Type" errors that occur when using the generic patch method
-   * In the new API, methods return objects directly (no .body wrapper)
-   */
-  private async patchResourceWithCorrectContentType(
-    resource: k8s.KubernetesObject
-  ): Promise<k8s.KubernetesObject> {
-    // DEBUG: Log the resource being sent to K8s API for Secrets
-    if (resource.kind === 'Secret') {
-      const secretResource = resource as k8s.KubernetesObject & {
-        data?: Record<string, string>;
-        spec?: unknown;
-      };
-      this.logger.debug('Patching Secret resource', {
-        name: resource.metadata?.name,
-        hasData: 'data' in resource,
-        hasSpec: 'spec' in resource,
-        dataKeys: secretResource.data ? Object.keys(secretResource.data) : [],
-        specValue: secretResource.spec,
-      });
-    }
-
-    // The k8sApi.patch method requires the full content-type string for the patchStrategy parameter
-    // Use 'application/merge-patch+json' for merge patch operations
-    // See: https://kubernetes.io/docs/tasks/manage-kubernetes-objects/update-api-object-kubectl-patch/
-    return await this.k8sApi.patch(
-      resource,
-      undefined, // pretty
-      undefined, // dryRun
-      undefined, // fieldManager
-      undefined, // force
-      'application/merge-patch+json' // patchStrategy - must be the full content-type string
-    );
-  }
-
-  /**
-   * Check if an error is a "not found" error
-   */
-  private isNotFoundError(error: unknown): boolean {
-    if (error && typeof error === 'object') {
-      const k8sError = error as KubernetesApiError;
-      return k8sError.statusCode === 404 || k8sError.body?.code === 404;
-    }
-    return false;
-  }
-
-  /**
-   * Determine if auto-fix should run for Flux CRDs
-   */
-  private shouldAutoFixFluxCRDs(resource: KubernetesResource, options: DeploymentOptions): boolean {
-    // Only for Flux resources (HelmRelease, Kustomization, etc.)
-    if (!resource.apiVersion?.includes('toolkit.fluxcd.io')) {
-      return false;
-    }
-
-    // Check if auto-fix is enabled (default: true)
-    const autoFixEnabled = options.autoFix?.fluxCRDs !== false;
-    return autoFixEnabled;
-  }
-
-  /**
-   * Ensure Flux CRDs are patched for Kubernetes 1.33+ compatibility
-   * Uses lazy import and instance-level caching to only patch once per engine instance
-   */
-  private async ensureFluxCRDsPatched(
-    options: DeploymentOptions,
-    logger: ReturnType<typeof getComponentLogger>
-  ): Promise<void> {
-    // Use promise-based dedup to prevent concurrent patching attempts.
-    // The first caller creates the promise; subsequent concurrent callers await the same promise.
-    if (this.fluxCRDsPatchPromise) {
-      return this.fluxCRDsPatchPromise;
-    }
-
-    this.fluxCRDsPatchPromise = (async () => {
-      const logLevel = options.autoFix?.logLevel || 'info';
-      logger[logLevel]('Checking Flux CRDs for Kubernetes 1.33+ compatibility...');
-
-      try {
-        // Lazy import to avoid loading CRD patcher unless actually needed
-        const { patchFluxCRDSchemas } = await import('../utils/crd-patcher.js');
-        await patchFluxCRDSchemas(this.kubeClient);
-        logger[logLevel]('Flux CRDs patched successfully');
-      } catch (error) {
-        // Reset so next attempt can try again (e.g., if RBAC was fixed)
-        this.fluxCRDsPatchPromise = null;
-        logger.warn(
-          'Failed to auto-patch Flux CRDs - deployment may fail if CRDs lack proper schema',
-          {
-            error: error instanceof Error ? error.message : String(error),
-            suggestion: 'Ensure RBAC permissions to patch CRDs, or set autoFix.fluxCRDs: false',
-          }
-        );
-        // Don't throw - allow deployment to proceed and fail naturally if CRDs are broken
-        // This provides better error messages and allows users to diagnose the issue
-      }
-    })();
-
-    return this.fluxCRDsPatchPromise;
-  }
-
-  /**
-   * Wait for CRD establishment if the resource is a custom resource
-   */
-  private async waitForCRDIfCustomResource(
-    resource: KubernetesResource,
-    options: DeploymentOptions,
-    logger: ReturnType<typeof getComponentLogger>,
-    abortSignal?: AbortSignal
-  ): Promise<void> {
-    // Check if already aborted
-    if (abortSignal?.aborted) {
-      throw new DOMException('Operation aborted', 'AbortError');
-    }
-
-    // Skip if this is not a custom resource
-    if (!this.isCustomResource(resource)) {
-      return;
-    }
-
-    const crdName = await this.getCRDNameForResource(resource);
-    if (!crdName) {
-      logger.warn('Could not determine CRD name for custom resource', {
-        kind: resource.kind,
-        apiVersion: resource.apiVersion,
-      });
-      return;
-    }
-
-    // Auto-patch Flux CRDs if this is a Flux resource and auto-fix is enabled
-    if (this.shouldAutoFixFluxCRDs(resource, options)) {
-      await this.ensureFluxCRDsPatched(options, logger);
-    }
-
-    logger.debug('Custom resource detected, waiting for CRD establishment', {
-      resourceKind: resource.kind,
-      crdName,
-    });
-
-    await this.waitForCRDEstablishment(
-      { metadata: { name: crdName } },
-      options,
-      logger,
-      abortSignal
-    );
-
-    logger.debug('CRD established, proceeding with custom resource deployment', {
-      resourceKind: resource.kind,
-      crdName,
-    });
-  }
-
-  /**
-   * Check if a resource is a custom resource (not a built-in Kubernetes resource)
-   */
-  private isCustomResource(resource: KubernetesResource): boolean {
-    if (!resource.apiVersion || !resource.kind) {
-      return false;
-    }
-
-    // Built-in Kubernetes API groups that are NOT custom resources
-    const builtInApiGroups = [
-      'v1', // Core API group
-      'apps/v1',
-      'extensions/v1beta1',
-      'networking.k8s.io/v1',
-      'policy/v1',
-      'rbac.authorization.k8s.io/v1',
-      'storage.k8s.io/v1',
-      'apiextensions.k8s.io/v1', // CRDs themselves
-      'admissionregistration.k8s.io/v1',
-      'apiregistration.k8s.io/v1',
-      'authentication.k8s.io/v1',
-      'authorization.k8s.io/v1',
-      'autoscaling/v1',
-      'autoscaling/v2',
-      'batch/v1',
-      'certificates.k8s.io/v1',
-      'coordination.k8s.io/v1',
-      'discovery.k8s.io/v1',
-      'events.k8s.io/v1',
-      'flowcontrol.apiserver.k8s.io/v1beta3',
-      'node.k8s.io/v1',
-      'scheduling.k8s.io/v1',
-    ];
-
-    return !builtInApiGroups.includes(resource.apiVersion);
-  }
-
-  /**
-   * Get the CRD name for a custom resource
-   */
-  private async getCRDNameForResource(resource: KubernetesResource): Promise<string | null> {
-    if (!resource.apiVersion || !resource.kind) {
-      return null;
-    }
-
-    // Only return CRD name for custom resources
-    if (!this.isCustomResource(resource)) {
-      return null;
-    }
-
-    // Extract group from apiVersion (e.g., "example.com/v1" -> "example.com")
-    const apiVersionParts = resource.apiVersion.split('/');
-    const group = apiVersionParts.length > 1 ? apiVersionParts[0] : '';
-
-    if (!group) {
-      return null; // Core API resources don't have CRDs
-    }
-
-    try {
-      // Try to find the CRD by querying the API
-      const crds = await this.k8sApi.list('apiextensions.k8s.io/v1', 'CustomResourceDefinition');
-
-      // Look for a CRD that matches our group and kind
-      // In the new API, methods return objects directly (no .body wrapper)
-      const crdList = crds as unknown as CustomResourceDefinitionList;
-      const matchingCrd = crdList?.items?.find((crd: CustomResourceDefinitionItem) => {
-        const crdSpec = crd.spec;
-        return crdSpec?.group === group && crdSpec?.names?.kind === resource.kind;
-      });
-
-      if (matchingCrd) {
-        return matchingCrd.metadata?.name ?? null;
-      }
-    } catch (error) {
-      // If we can't query CRDs, fall back to heuristic
-      this.logger.warn('Failed to query CRDs, using heuristic for CRD name generation', {
-        error: String(error),
-      });
-    }
-
-    // Fallback: Convert Kind to plural lowercase (simple heuristic)
-    const kind = resource.kind.toLowerCase();
-    const plural = kind.endsWith('s') ? kind : `${kind}s`;
-
-    return `${plural}.${group}`;
-  }
-
-  /**
    * Public method to wait for CRD readiness by name
    */
   async waitForCRDReady(
@@ -2601,150 +2197,6 @@ export class DirectDeploymentEngine {
     timeout: number = 300000,
     abortSignal?: AbortSignal
   ): Promise<void> {
-    const logger = this.logger.child({ crdName, timeout });
-    const options: DeploymentOptions = {
-      mode: this.deploymentMode as 'direct' | 'kro' | 'alchemy' | 'auto',
-      timeout,
-    };
-
-    await this.waitForCRDEstablishment(
-      { metadata: { name: crdName } },
-      options,
-      logger,
-      abortSignal
-    );
-  }
-
-  /**
-   * Wait for a CRD to be established in the cluster
-   */
-  private async waitForCRDEstablishment(
-    crd: { metadata?: { name?: string } },
-    options: DeploymentOptions,
-    logger: ReturnType<typeof getComponentLogger>,
-    abortSignal?: AbortSignal
-  ): Promise<void> {
-    const crdName = crd.metadata?.name;
-    const timeout = options.timeout || 300000; // 5 minutes default
-    const startTime = Date.now();
-    const pollInterval = 2000; // 2 seconds
-
-    logger.debug('Waiting for CRD to exist and be established', { crdName, timeout });
-
-    while (Date.now() - startTime < timeout) {
-      // Check if aborted before each iteration
-      if (abortSignal?.aborted) {
-        throw new DOMException('Operation aborted', 'AbortError');
-      }
-
-      try {
-        // Check if CRD is established by reading its status
-        // Wrap with abort signal handling
-        const crdStatus = await this.withAbortSignal(
-          this.k8sApi.read({
-            apiVersion: 'apiextensions.k8s.io/v1',
-            kind: 'CustomResourceDefinition',
-            metadata: { name: crdName }, // CRDs are cluster-scoped, no namespace needed
-          } as { metadata: { name: string } }),
-          abortSignal
-        );
-
-        // In the new API, methods return objects directly (no .body wrapper)
-        const crdItem = crdStatus as unknown as CustomResourceDefinitionItem;
-        const conditions = crdItem?.status?.conditions || [];
-        const establishedCondition = conditions.find(
-          (c: KubernetesCondition) => c.type === 'Established'
-        );
-
-        if (establishedCondition?.status === 'True') {
-          logger.debug('CRD exists and is established', { crdName });
-          return;
-        }
-
-        logger.debug('CRD exists but not yet established, waiting...', {
-          crdName,
-          establishedStatus: establishedCondition?.status || 'unknown',
-        });
-      } catch (error) {
-        // Re-throw abort/timeout errors immediately
-        if (
-          error instanceof DOMException &&
-          (error.name === 'AbortError' || error.name === 'TimeoutError')
-        ) {
-          throw error;
-        }
-
-        // CRD might not exist yet (e.g., being installed by a closure)
-        // This is expected in scenarios where closures install CRDs
-        logger.debug('CRD not found yet, waiting for it to be created...', {
-          crdName,
-          error: (error as Error).message,
-        });
-      }
-
-      // Wait before next poll - use abortable delay
-      try {
-        await this.abortableDelay(pollInterval, abortSignal);
-      } catch (error) {
-        if (
-          error instanceof DOMException &&
-          (error.name === 'AbortError' || error.name === 'TimeoutError')
-        ) {
-          throw error; // Re-throw abort/timeout errors
-        }
-        // Ignore other errors from delay
-      }
-    }
-
-    // Timeout reached
-    throw new DeploymentTimeoutError(
-      `Timeout waiting for CRD ${crdName} to be established after ${timeout}ms`,
-      'CustomResourceDefinition',
-      crdName || 'unknown',
-      timeout,
-      'crd-establishment'
-    );
-  }
-
-  /**
-   * Check if an error is an HTTP 415 Unsupported Media Type error
-   */
-  private isUnsupportedMediaTypeError(error: unknown): boolean {
-    if (!error || typeof error !== 'object') {
-      return false;
-    }
-    const apiError = error as KubernetesApiError;
-    return (
-      apiError.statusCode === 415 ||
-      apiError.response?.statusCode === 415 ||
-      apiError.body?.code === 415
-    );
-  }
-
-  /**
-   * Extract accepted media types from HTTP 415 error message
-   */
-  private extractAcceptedMediaTypes(error: unknown): string[] {
-    const defaultTypes = [
-      'application/json-patch+json',
-      'application/merge-patch+json',
-      'application/apply-patch+yaml',
-    ];
-
-    try {
-      // Try to extract from error message
-      const apiError = error as KubernetesApiError;
-      const message = apiError.message || apiError.body?.message || '';
-      const match = message.match(/accepted media types include: ([^"]+)/);
-
-      if (match && match[1]) {
-        return match[1].split(', ').map((type: string) => type.trim());
-      }
-    } catch (error) {
-      // Fallback to default types
-      this.logger.debug('Failed to extract media types from error, using defaults', { err: error });
-    }
-
-    return defaultTypes;
+    await this.crdManager.waitForCRDReady(crdName, this.deploymentMode, timeout, abortSignal);
   }
 }
