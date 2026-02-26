@@ -1,7 +1,10 @@
 import { getInnerCelPath, isCelExpression, isKubernetesRef } from '../../utils/index';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
+import { getComponentLogger } from '../logging/index.js';
 import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
+
+const logger = getComponentLogger('cel');
 
 /** Patterns that indicate raw JavaScript operators were used instead of CEL operators.
  * Note: && and || are valid CEL operators, so only === and !== are flagged. */
@@ -34,11 +37,13 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
 
       for (const pattern of SUSPICIOUS_JS_PATTERNS) {
         if (pattern.test(part)) {
-          console.warn(
-            `[TypeKro] Cel.expr() argument at index ${i} contains a JavaScript operator ` +
-              `(${pattern.source}) which is not valid in CEL. ` +
-              `Use CEL equivalents instead: === -> ==, !== -> !=. ` +
-              `Input: "${part}"`
+          logger.warn(
+            'Cel.expr() argument contains a JavaScript operator which is not valid in CEL. Use CEL equivalents instead: === -> ==, !== -> !=.',
+            {
+              argumentIndex: i,
+              pattern: pattern.source,
+              input: part,
+            }
           );
           break;
         }

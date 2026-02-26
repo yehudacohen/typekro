@@ -4,7 +4,7 @@
  * Resolves APISIX admin API credentials from (in order of priority):
  * 1. Explicit configuration via `gateway.adminCredentials`
  * 2. Environment variables (`APISIX_ADMIN_KEY`, `APISIX_VIEWER_KEY`)
- * 3. Development-only defaults (with a warning logged to stderr)
+ * 3. Test-environment-only defaults (throws in production if no credentials provided)
  *
  * @security This module handles sensitive admin API keys. Never log resolved
  * credential values. In production, always provide credentials via the spec
@@ -12,6 +12,12 @@
  *
  * @module
  */
+
+import { isTestEnvironment } from '../../../core/config/index.js';
+import { TypeKroError } from '../../../core/errors.js';
+import { getComponentLogger } from '../../../core/logging/index.js';
+
+const logger = getComponentLogger('apisix-admin-credentials');
 
 /**
  * Well-known APISIX chart default keys — used ONLY as a development fallback.
@@ -79,14 +85,24 @@ function resolveKey(specValue: string | undefined, envVarName: string, devDefaul
     return envValue;
   }
 
-  // 3. Development-only default — warn once per process
+  // 3. Default credentials — only allowed in test environments
+  if (!isTestEnvironment()) {
+    throw new TypeKroError(
+      `APISIX admin credentials not configured. ` +
+        `Set the ${envVarName} environment variable or pass gateway.adminCredentials in the spec. ` +
+        `Default credentials are only permitted in test environments (NODE_ENV=test or VITEST=true).`,
+      'APISIX_CREDENTIALS_MISSING'
+    );
+  }
+
   if (!devDefaultWarningEmitted) {
     devDefaultWarningEmitted = true;
-    console.warn(
-      '[typekro/apisix] WARNING: Using default APISIX admin API keys. ' +
-        'These are the well-known chart defaults and are NOT secure. ' +
-        'Set APISIX_ADMIN_KEY and APISIX_VIEWER_KEY environment variables, ' +
-        'or pass gateway.adminCredentials in the spec for production deployments.'
+    logger.warn(
+      'Using default APISIX admin API keys for test environment. These are the well-known chart defaults and are NOT secure.',
+      {
+        envVar: envVarName,
+        hint: 'Set APISIX_ADMIN_KEY and APISIX_VIEWER_KEY environment variables, or pass gateway.adminCredentials in the spec for production deployments.',
+      }
     );
   }
 
