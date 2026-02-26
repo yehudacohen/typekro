@@ -1,23 +1,24 @@
 /**
  * Conditional Expression Validation
- * 
+ *
  * This module provides comprehensive validation for conditional expressions
  * containing KubernetesRef objects, ensuring they are well-formed and
  * appropriate for their intended contexts.
  */
 
+import { levenshteinDistance } from '../../../utils/string.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { Enhanced } from '../../types/index.js';
-import { isKubernetesRef } from '../../../utils/type-guards.js';
-import { 
-  MagicProxyDetector,
-  type MagicProxyDetectionResult 
-} from '../magic-proxy/magic-proxy-detector.js';
 import type { FactoryExpressionContext } from '../analysis/types.js';
-import { 
+import {
+  type ContextDetectionResult,
   ExpressionContextDetector,
-  type ContextDetectionResult 
 } from '../context/context-detector.js';
+import {
+  type MagicProxyDetectionResult,
+  MagicProxyDetector,
+} from '../magic-proxy/magic-proxy-detector.js';
 
 const logger = getComponentLogger('conditional-validation');
 
@@ -125,7 +126,7 @@ export interface ValidationConfig {
 
 /**
  * Conditional Expression Validator
- * 
+ *
  * Provides comprehensive validation for conditional expressions containing
  * KubernetesRef objects, ensuring they are well-formed and contextually appropriate.
  */
@@ -137,14 +138,14 @@ export class ConditionalExpressionValidator {
   constructor() {
     this.magicProxyDetector = new MagicProxyDetector();
     this.contextDetector = new ExpressionContextDetector();
-    
+
     // Register built-in validation rules
     this.registerBuiltInRules();
   }
 
   /**
    * Validate a conditional expression
-   * 
+   *
    * @param expression - Expression to validate
    * @param context - Factory context
    * @param config - Validation configuration
@@ -156,25 +157,27 @@ export class ConditionalExpressionValidator {
     config: ValidationConfig = {}
   ): ConditionalValidationResult {
     const startTime = performance.now();
-    
+
     logger.debug('Starting conditional expression validation', {
       factoryType: context.factoryType,
       expressionType: typeof expression,
-      strictMode: config.strictMode
+      strictMode: config.strictMode,
     });
 
     // Detect KubernetesRef objects
     const detectionResult = this.magicProxyDetector.detectKubernetesRefs(expression, {
       maxDepth: 10,
       includeDetailedPaths: true,
-      analyzeReferenceSources: true
+      analyzeReferenceSources: true,
     });
 
     // Detect expression context
     const contextResult = this.contextDetector.detectContext(expression, {
       factoryType: context.factoryType,
-      ...(context.availableResources && { availableResources: context.availableResources as Record<string, Enhanced<any, any>> }),
-      ...(context.schemaProxy && { schemaProxy: context.schemaProxy })
+      ...(context.availableResources && {
+        availableResources: context.availableResources as Record<string, Enhanced<any, any>>,
+      }),
+      ...(context.schemaProxy && { schemaProxy: context.schemaProxy }),
     });
 
     // Initialize result
@@ -187,7 +190,7 @@ export class ConditionalExpressionValidator {
       metrics: {
         validationTimeMs: 0,
         rulesEvaluated: 0,
-        referencesValidated: detectionResult.references.length
+        referencesValidated: detectionResult.references.length,
       },
       summary: {
         totalRules: 0,
@@ -195,8 +198,8 @@ export class ConditionalExpressionValidator {
         failedRules: 0,
         errorCount: 0,
         warningCount: 0,
-        infoCount: 0
-      }
+        infoCount: 0,
+      },
     };
 
     // Get applicable rules
@@ -214,7 +217,7 @@ export class ConditionalExpressionValidator {
           result.summary.passedRules++;
         } else {
           result.summary.failedRules++;
-          
+
           // Add message to appropriate severity category
           const message = `${rule.name}: ${ruleResult.message || 'Validation failed'}`;
           switch (rule.severity) {
@@ -239,15 +242,15 @@ export class ConditionalExpressionValidator {
       } catch (error) {
         logger.warn('Validation rule failed with error', {
           ruleId: rule.id,
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
-        
+
         result.ruleResults.set(rule.id, {
           valid: false,
           message: `Rule execution failed: ${error}`,
-          details: { error: String(error) }
+          details: { error: String(error) },
         });
-        
+
         result.summary.failedRules++;
         result.messages.errors.push(`${rule.name}: Rule execution failed`);
         result.summary.errorCount++;
@@ -262,7 +265,7 @@ export class ConditionalExpressionValidator {
       totalRules: result.summary.totalRules,
       errorCount: result.summary.errorCount,
       warningCount: result.summary.warningCount,
-      validationTimeMs: result.metrics.validationTimeMs
+      validationTimeMs: result.metrics.validationTimeMs,
     });
 
     return result;
@@ -270,39 +273,39 @@ export class ConditionalExpressionValidator {
 
   /**
    * Register a custom validation rule
-   * 
+   *
    * @param rule - Validation rule to register
    */
   registerRule(rule: ValidationRule): void {
     this.rules.set(rule.id, rule);
-    
+
     logger.debug('Validation rule registered', {
       ruleId: rule.id,
       ruleName: rule.name,
-      severity: rule.severity
+      severity: rule.severity,
     });
   }
 
   /**
    * Unregister a validation rule
-   * 
+   *
    * @param ruleId - ID of the rule to unregister
    * @returns Whether the rule was successfully unregistered
    */
   unregisterRule(ruleId: string): boolean {
     const existed = this.rules.has(ruleId);
     this.rules.delete(ruleId);
-    
+
     if (existed) {
       logger.debug('Validation rule unregistered', { ruleId });
     }
-    
+
     return existed;
   }
 
   /**
    * Get all registered validation rules
-   * 
+   *
    * @returns Array of validation rules
    */
   getRules(): ValidationRule[] {
@@ -312,26 +315,25 @@ export class ConditionalExpressionValidator {
   /**
    * Get applicable rules for a specific context
    */
-  private getApplicableRules(
-    context: string,
-    config: ValidationConfig
-  ): ValidationRule[] {
+  private getApplicableRules(context: string, config: ValidationConfig): ValidationRule[] {
     const rules = Array.from(this.rules.values());
-    
-    return rules.filter(rule => {
+
+    return rules.filter((rule) => {
       // Check if rule is enabled
       if (!rule.enabled) return false;
-      
+
       // Check if rule is disabled in config
       if (config.disabledRules?.includes(rule.id)) return false;
-      
+
       // Check if rule applies to this context
-      if (rule.applicableContexts.length > 0 && 
-          !rule.applicableContexts.includes(context) &&
-          !rule.applicableContexts.includes('*')) {
+      if (
+        rule.applicableContexts.length > 0 &&
+        !rule.applicableContexts.includes(context) &&
+        !rule.applicableContexts.includes('*')
+      ) {
         return false;
       }
-      
+
       return true;
     });
   }
@@ -351,36 +353,39 @@ export class ConditionalExpressionValidator {
       validate: (_expression, _context, detection) => {
         for (const refInfo of detection.references) {
           const ref = refInfo.ref;
-          
+
           if (!ref.resourceId || typeof ref.resourceId !== 'string') {
             return {
               valid: false,
               message: 'KubernetesRef must have a valid resourceId',
-              details: { ref, path: refInfo.path }
+              details: { ref, path: refInfo.path },
             };
           }
-          
+
           if (!ref.fieldPath || typeof ref.fieldPath !== 'string') {
             return {
               valid: false,
               message: 'KubernetesRef must have a valid fieldPath',
-              details: { ref, path: refInfo.path }
+              details: { ref, path: refInfo.path },
             };
           }
-          
+
           // Validate field path format
           if (!/^[a-zA-Z][a-zA-Z0-9]*(\.[a-zA-Z][a-zA-Z0-9]*|\[\d+\])*$/.test(ref.fieldPath)) {
             return {
               valid: false,
               message: 'KubernetesRef fieldPath has invalid format',
-              suggestions: ['Use dot notation for nested fields', 'Use bracket notation for array access'],
-              details: { fieldPath: ref.fieldPath, path: refInfo.path }
+              suggestions: [
+                'Use dot notation for nested fields',
+                'Use bracket notation for array access',
+              ],
+              details: { fieldPath: ref.fieldPath, path: refInfo.path },
             };
           }
         }
-        
+
         return { valid: true };
-      }
+      },
     });
 
     // Rule: Conditional expressions should evaluate to boolean
@@ -396,31 +401,32 @@ export class ConditionalExpressionValidator {
         if (typeof expression === 'boolean') {
           return { valid: true };
         }
-        
+
         // Check for boolean-like string expressions
         if (typeof expression === 'string') {
-          const hasBooleanOperators = /[><=!]=?|&&|\|\||true|false|ready|available|enabled|disabled/i.test(expression);
+          const hasBooleanOperators =
+            /[><=!]=?|&&|\|\||true|false|ready|available|enabled|disabled/i.test(expression);
           if (hasBooleanOperators) {
             return { valid: true };
           }
         }
-        
+
         // Check for KubernetesRef that might resolve to boolean
         if (isKubernetesRef(expression)) {
           // Allow KubernetesRef objects - they might resolve to boolean values
           return { valid: true };
         }
-        
+
         return {
           valid: false,
           message: 'Conditional expressions should evaluate to boolean values',
           suggestions: [
             'Add comparison operators (>, <, ==, !=)',
             'Add logical operators (&&, ||)',
-            'Use boolean literals (true, false)'
-          ]
+            'Use boolean literals (true, false)',
+          ],
         };
-      }
+      },
     });
 
     // Rule: Resource references should exist in context
@@ -433,13 +439,13 @@ export class ConditionalExpressionValidator {
       enabled: true,
       validate: (_expression, context, detection) => {
         const availableResources = context.availableResources || {};
-        
+
         for (const refInfo of detection.references) {
           const ref = refInfo.ref;
-          
+
           // Skip schema references
           if (ref.resourceId === '__schema__') continue;
-          
+
           // Check if resource exists in context
           if (!(ref.resourceId in availableResources)) {
             return {
@@ -448,15 +454,15 @@ export class ConditionalExpressionValidator {
               suggestions: [
                 'Check resource name spelling',
                 'Ensure resource is created before referencing',
-                'Verify resource is in the same composition context'
+                'Verify resource is in the same composition context',
               ],
-              details: { resourceId: ref.resourceId, path: refInfo.path }
+              details: { resourceId: ref.resourceId, path: refInfo.path },
             };
           }
         }
-        
+
         return { valid: true };
-      }
+      },
     });
 
     // Rule: Field paths should be reasonable
@@ -471,43 +477,46 @@ export class ConditionalExpressionValidator {
         for (const refInfo of detection.references) {
           const ref = refInfo.ref;
           const fieldPath = ref.fieldPath;
-          
+
           // Check for overly deep nesting
           const depth = fieldPath.split('.').length;
           if (depth > 6) {
             return {
               valid: false,
               message: `Field path '${fieldPath}' is very deeply nested (${depth} levels)`,
-              suggestions: ['Consider using intermediate references', 'Verify the field path is correct'],
-              details: { fieldPath, depth, path: refInfo.path }
+              suggestions: [
+                'Consider using intermediate references',
+                'Verify the field path is correct',
+              ],
+              details: { fieldPath, depth, path: refInfo.path },
             };
           }
-          
+
           // Check for common typos in Kubernetes field names
           const commonFields = ['metadata', 'spec', 'status', 'data', 'stringData'];
           const pathParts = fieldPath.split('.');
-          
+
           for (const part of pathParts) {
             if (part.includes('[') && part.includes(']')) continue; // Skip array access
-            
+
             // Check for common typos
-            const similarFields = commonFields.filter(field => 
-              this.levenshteinDistance(part.toLowerCase(), field.toLowerCase()) === 1
+            const similarFields = commonFields.filter(
+              (field) => levenshteinDistance(part.toLowerCase(), field.toLowerCase()) === 1
             );
-            
+
             if (similarFields.length > 0) {
               return {
                 valid: false,
                 message: `Field '${part}' might be a typo, did you mean '${similarFields[0]}'?`,
                 suggestions: [`Use '${similarFields[0]}' instead of '${part}'`],
-                details: { fieldPath, suspiciousPart: part, suggestions: similarFields }
+                details: { fieldPath, suspiciousPart: part, suggestions: similarFields },
               };
             }
           }
         }
-        
+
         return { valid: true };
-      }
+      },
     });
 
     // Rule: readyWhen expressions should reference status fields
@@ -522,11 +531,11 @@ export class ConditionalExpressionValidator {
         if (detection.references.length === 0) {
           return { valid: true }; // No references to validate
         }
-        
-        const hasStatusReferences = detection.references.some(refInfo => 
+
+        const hasStatusReferences = detection.references.some((refInfo) =>
           refInfo.ref.fieldPath.includes('status')
         );
-        
+
         if (!hasStatusReferences) {
           return {
             valid: false,
@@ -534,13 +543,13 @@ export class ConditionalExpressionValidator {
             suggestions: [
               'Reference .status fields for resource readiness',
               'Use status.conditions for detailed readiness checks',
-              'Consider status.readyReplicas, status.phase, etc.'
-            ]
+              'Consider status.readyReplicas, status.phase, etc.',
+            ],
           };
         }
-        
+
         return { valid: true };
-      }
+      },
     });
 
     // Rule: Circular reference detection
@@ -553,11 +562,11 @@ export class ConditionalExpressionValidator {
       enabled: true,
       validate: (_expression, context, detection) => {
         const currentResourceId = context.resourceId;
-        
+
         // Check if any reference points back to the current resource
         for (const refInfo of detection.references) {
           const ref = refInfo.ref;
-          
+
           if (ref.resourceId === currentResourceId) {
             return {
               valid: false,
@@ -565,43 +574,20 @@ export class ConditionalExpressionValidator {
               suggestions: [
                 'Remove self-references',
                 'Use different resource for the reference',
-                'Consider using schema references instead'
+                'Consider using schema references instead',
               ],
-              details: { resourceId: currentResourceId, fieldPath: ref.fieldPath }
+              details: { resourceId: currentResourceId, fieldPath: ref.fieldPath },
             };
           }
         }
-        
+
         return { valid: true };
-      }
+      },
     });
 
     logger.info('Built-in validation rules registered', {
-      ruleCount: this.rules.size
+      ruleCount: this.rules.size,
     });
-  }
-
-  /**
-   * Calculate Levenshtein distance between two strings
-   */
-  private levenshteinDistance(str1: string, str2: string): number {
-    const matrix: number[][] = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(0));
-    
-    for (let i = 0; i <= str1.length; i++) matrix[0]![i] = i;
-    for (let j = 0; j <= str2.length; j++) matrix[j]![0] = j;
-    
-    for (let j = 1; j <= str2.length; j++) {
-      for (let i = 1; i <= str1.length; i++) {
-        const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
-        matrix[j]![i] = Math.min(
-          matrix[j]?.[i - 1]! + 1,     // deletion
-          matrix[j - 1]?.[i]! + 1,     // insertion
-          matrix[j - 1]?.[i - 1]! + indicator // substitution
-        );
-      }
-    }
-    
-    return matrix[str2.length]?.[str1.length]!;
   }
 }
 
@@ -612,7 +598,7 @@ export const conditionalExpressionValidator = new ConditionalExpressionValidator
 
 /**
  * Utility function to validate a conditional expression
- * 
+ *
  * @param expression - Expression to validate
  * @param context - Factory context
  * @param config - Validation configuration
@@ -628,7 +614,7 @@ export function validateConditionalExpression(
 
 /**
  * Utility function to register a custom validation rule
- * 
+ *
  * @param rule - Validation rule to register
  */
 export function registerValidationRule(rule: ValidationRule): void {
@@ -637,7 +623,7 @@ export function registerValidationRule(rule: ValidationRule): void {
 
 /**
  * Utility function to get all validation rules
- * 
+ *
  * @returns Array of validation rules
  */
 export function getValidationRules(): ValidationRule[] {
