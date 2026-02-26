@@ -6,7 +6,7 @@
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition } from '../../../index.js';
+import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import {
   ciliumHelmRelease,
   ciliumHelmRepository,
