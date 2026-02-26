@@ -228,6 +228,112 @@ export interface KroStatusFields {
 export type WithKroStatusFields<TStatus> = TStatus & KroStatusFields;
 
 // =============================================================================
+// CRD AND CUSTOM RESOURCE MANIFEST TYPES
+// =============================================================================
+
+/**
+ * Typed interface for CustomResourceDefinition manifests.
+ *
+ * Replaces `as any` casts when working with CRD objects that come from
+ * YAML parsing, API responses, or manual construction. This provides
+ * type-safe access to deeply nested CRD schema fields (e.g.,
+ * `spec.versions[0].schema.openAPIV3Schema`).
+ *
+ * For CRDs returned by the `@kubernetes/client-node` API, prefer
+ * `V1CustomResourceDefinition` from the client library. Use this interface
+ * for CRD manifests parsed from YAML or constructed as plain objects.
+ */
+export interface CRDManifest {
+  apiVersion: string;
+  kind: string;
+  metadata: { name: string; namespace?: string; [key: string]: unknown };
+  spec: {
+    group?: string;
+    names?: {
+      kind?: string;
+      plural?: string;
+      singular?: string;
+      shortNames?: string[];
+      [key: string]: unknown;
+    };
+    scope?: string;
+    versions?: Array<{
+      name: string;
+      served?: boolean;
+      storage?: boolean;
+      schema?: {
+        openAPIV3Schema?: Record<string, unknown>;
+      };
+      additionalPrinterColumns?: unknown[];
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  status?: Record<string, unknown>;
+}
+
+/**
+ * Typed interface for Kro ResourceGraphDefinition (RGD) custom objects.
+ *
+ * Replaces `as any` casts when accessing RGD objects returned by the
+ * CustomObjectsApi (which returns untyped `any`). Provides type-safe access
+ * to the RGD schema structure used for status field validation.
+ */
+export interface RGDManifest {
+  apiVersion?: string;
+  kind?: string;
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    [key: string]: unknown;
+  };
+  spec?: {
+    schema?: {
+      apiVersion?: string;
+      kind?: string;
+      spec?: Record<string, unknown>;
+      status?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
+    resources?: Array<{
+      id?: string;
+      template?: unknown;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  status?: {
+    state?: string;
+    conditions?: Array<{
+      type: string;
+      status: string;
+      reason?: string;
+      message?: string;
+      lastTransitionTime?: string;
+    }>;
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * A Kubernetes object with an optional status field.
+ *
+ * The base `KubernetesObject` from `@kubernetes/client-node` only defines
+ * `apiVersion`, `kind`, and `metadata`. Many API responses include a `status`
+ * field that is not reflected in the base type. This interface extends
+ * `KubernetesObject` to provide type-safe access to `status` without
+ * requiring `as any` casts.
+ */
+export interface KubernetesObjectWithStatus {
+  apiVersion?: string;
+  kind?: string;
+  metadata?: V1ObjectMeta;
+  spec?: unknown;
+  status?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+// =============================================================================
 // KUBERNETES RESOURCE STATUS TYPES FOR DEPLOYMENT ENGINE
 // =============================================================================
 

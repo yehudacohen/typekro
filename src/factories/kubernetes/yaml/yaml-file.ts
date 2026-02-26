@@ -13,7 +13,7 @@ import type {
   DeploymentClosure,
   DeploymentContext,
 } from '../../../core/types/deployment.js';
-import type { KubernetesResource } from '../../../core/types/kubernetes.js';
+import type { CRDManifest, KubernetesResource } from '../../../core/types/kubernetes.js';
 import { generateSchemaFixPatches } from '../../../core/utils/crd-schema-fix.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { registerDeploymentClosure } from '../../shared.js';
@@ -138,17 +138,24 @@ async function applyCRDWithSchemaFix(
   crdPatchTimeout?: number
 ): Promise<void> {
   const crdName = manifest.metadata?.name || 'unknown';
-  const crd = manifest as any;
+  // Cast to CRDManifest for type-safe access to deeply nested CRD schema fields
+  const crd = manifest as unknown as CRDManifest;
 
   // Log what we're applying for debugging
-  const valuesField =
-    crd.spec?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec?.properties?.values;
+  // Navigate deeply nested OpenAPI schema — typed as Record<string, unknown> so intermediate casts are needed
+  const openAPISchema = crd.spec?.versions?.[0]?.schema?.openAPIV3Schema;
+  const specProps = (openAPISchema?.['properties'] as Record<string, unknown> | undefined)?.[
+    'spec'
+  ] as Record<string, unknown> | undefined;
+  const valuesField = (specProps?.['properties'] as Record<string, unknown> | undefined)?.[
+    'values'
+  ] as Record<string, unknown> | undefined;
   logger.debug('Applying CRD with schema fix', {
     crdName,
     fieldManager,
     forceConflicts,
     valuesFieldHasPreserveUnknown: valuesField?.['x-kubernetes-preserve-unknown-fields'] === true,
-    valuesFieldType: valuesField?.type,
+    valuesFieldType: valuesField?.['type'],
   });
 
   try {
@@ -223,7 +230,7 @@ async function applyCRDWithSchemaFix(
  */
 async function applyCRDSchemaJsonPatch(
   kubeConfig: k8s.KubeConfig,
-  crd: any,
+  crd: CRDManifest,
   timeout: number = 30000
 ): Promise<void> {
   const crdName = crd.metadata?.name || 'unknown';
@@ -240,11 +247,12 @@ async function applyCRDSchemaJsonPatch(
 
     // Generate patches based on what the current CRD is missing
     const patches: any[] = [];
-    const versions = (currentCrd as any).spec?.versions || [];
+    // V1CustomResourceDefinition has spec.versions properly typed — no cast needed
+    const versions = currentCrd.spec?.versions || [];
 
     for (let i = 0; i < versions.length; i++) {
       const version = versions[i];
-      if (version.schema?.openAPIV3Schema) {
+      if (version?.schema?.openAPIV3Schema) {
         const basePath = `/spec/versions/${i}/schema/openAPIV3Schema`;
         patches.push(...generateSchemaFixPatches(version.schema.openAPIV3Schema, basePath));
       }

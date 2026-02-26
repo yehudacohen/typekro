@@ -19,6 +19,7 @@ import type {
   DeployableK8sResource,
   Enhanced,
   KubernetesResource,
+  RGDManifest,
   WithKroStatusFields,
 } from '../../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
@@ -346,7 +347,8 @@ export class KroDeploymentStrategy<
             plural: 'resourcegraphdefinitions',
             name: rgdName,
           });
-          const rgd = rgdResponse as any;
+          // CustomObjectsApi returns untyped objects — cast to RGDManifest for type-safe access
+          const rgd = rgdResponse as RGDManifest;
           const rgdStatusSchema = rgd.spec?.schema?.status || {};
           const rgdStatusKeys = Object.keys(rgdStatusSchema);
           expectedCustomStatusFields = rgdStatusKeys.length > 0;

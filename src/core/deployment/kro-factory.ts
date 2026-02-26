@@ -43,7 +43,12 @@ import type {
   KroResourceFactory,
   RGDStatus,
 } from '../types/deployment.js';
-import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
+import type {
+  DeployableK8sResource,
+  Enhanced,
+  KubernetesResource,
+  RGDManifest,
+} from '../types/kubernetes.js';
 // Alchemy integration
 import type {
   KroCompatibleType,
@@ -520,11 +525,14 @@ export class KroResourceFactoryImpl<
     const crdInstanceManifest = this.createCustomResourceInstance(instanceName, spec);
 
     // Register CRD instance type dynamically
-    const CRDInstanceProvider = ensureResourceTypeRegistered(crdInstanceManifest as any);
-    const instanceId = createAlchemyResourceId(crdInstanceManifest as any, this.namespace);
+    // Cast required: crdInstanceManifest is a plain KubernetesResource, but alchemy functions
+    // expect Enhanced<unknown, unknown>. They only access kind/metadata.name for type inference.
+    const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
+    const CRDInstanceProvider = ensureResourceTypeRegistered(crdAsEnhanced);
+    const instanceId = createAlchemyResourceId(crdAsEnhanced, this.namespace);
 
     await CRDInstanceProvider(instanceId, {
-      resource: crdInstanceManifest as any,
+      resource: crdAsEnhanced,
       namespace: this.namespace,
       deployer: deployer,
       options: {
@@ -1256,7 +1264,8 @@ ${Object.entries(spec as Record<string, any>)
             plural: 'resourcegraphdefinitions',
             name: this.name,
           });
-          const rgd = rgdResponse as { spec?: { schema?: { status?: Record<string, unknown> } } };
+          // CustomObjectsApi returns untyped objects — cast to RGDManifest for type-safe access
+          const rgd = rgdResponse as RGDManifest;
           const rgdStatusSchema = rgd.spec?.schema?.status ?? {};
           const rgdStatusKeys = Object.keys(rgdStatusSchema);
           expectedCustomStatusFields = rgdStatusKeys.length > 0;

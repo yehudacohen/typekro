@@ -5,6 +5,7 @@
  * individual Kubernetes resources directly to the cluster.
  */
 
+import { isCelExpression } from '../../../utils/type-guards.js';
 import type {
   DeployedResource,
   DeploymentContext,
@@ -137,9 +138,6 @@ export class DirectDeploymentStrategy<
           status: reExecutedStatus as TStatus,
         } as Enhanced<TSpec, TStatus>;
       }
-
-      // Import the CEL expression utility
-      const { isCelExpression } = require('../../../utils/type-guards.js');
 
       // Merge re-executed status with base status
       // Priority: resolved spec-based values from re-execution > evaluated CEL expressions from base

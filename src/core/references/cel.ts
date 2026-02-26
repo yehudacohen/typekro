@@ -1,6 +1,50 @@
 import { getInnerCelPath, isCelExpression, isKubernetesRef } from '../../utils/index';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { TypeKroError } from '../errors.js';
 import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
+
+/** Patterns that indicate raw JavaScript operators were used instead of CEL operators */
+const SUSPICIOUS_JS_PATTERNS = [/===/, /!==/, /\|\|/, /&&/];
+
+/**
+ * Validates inputs to Cel.expr() and warns about suspicious patterns.
+ * @throws {TypeKroError} if inputs are null, undefined, or empty strings
+ */
+function validateExprParts(parts: RefOrValue<unknown>[]): void {
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+
+    if (part === null || part === undefined) {
+      throw new TypeKroError(
+        `Cel.expr() received ${part === null ? 'null' : 'undefined'} at argument index ${i}. ` +
+          'All parts must be valid values (string, number, boolean, KubernetesRef, or CelExpression).',
+        'CEL_INVALID_INPUT'
+      );
+    }
+
+    if (typeof part === 'string') {
+      if (part.length === 0) {
+        throw new TypeKroError(
+          `Cel.expr() received an empty string at argument index ${i}. ` +
+            'Use a non-empty CEL expression or literal value.',
+          'CEL_INVALID_INPUT'
+        );
+      }
+
+      for (const pattern of SUSPICIOUS_JS_PATTERNS) {
+        if (pattern.test(part)) {
+          console.warn(
+            `[TypeKro] Cel.expr() argument at index ${i} contains a JavaScript operator ` +
+              `(${pattern.source}) which is not valid in CEL. ` +
+              `Use CEL equivalents instead: === -> ==, !== -> !=, || -> ||, && -> &&. ` +
+              `Input: "${part}"`
+          );
+          break;
+        }
+      }
+    }
+  }
+}
 
 /**
  * Build a CEL expression from parts. Accepts resource references (`schema.spec.*`,
@@ -50,6 +94,8 @@ function expr<T = unknown>(
   } else {
     actualParts = [contextOrFirstPart as RefOrValue<unknown>, ...parts];
   }
+
+  validateExprParts(actualParts);
 
   const celParts = actualParts.map((part) => {
     if (isKubernetesRef(part)) {
