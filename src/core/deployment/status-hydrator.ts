@@ -1,4 +1,5 @@
 import type * as k8s from '@kubernetes/client-node';
+import { DEFAULT_STATUS_CACHE_TTL } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, Enhanced, KubernetesResource } from '../types.js';
 
@@ -33,7 +34,7 @@ export class StatusHydrator {
   private statusCache = new Map<string, StatusCacheEntry<unknown>>();
   private readonly defaultOptions: Required<StatusHydrationOptions> = {
     enableCaching: true,
-    cacheTtl: 30000, // 30 seconds
+    cacheTtl: DEFAULT_STATUS_CACHE_TTL,
     maxRetries: 3,
     queryTimeout: 10000, // 10 seconds
   };

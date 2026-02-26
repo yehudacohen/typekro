@@ -10,6 +10,7 @@
 
 import type { KubeConfig } from '@kubernetes/client-node';
 import { type Context, PROVIDERS, Resource } from 'alchemy';
+import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
@@ -181,7 +182,7 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
     mode: 'alchemy' as const,
     namespace: props.namespace,
     waitForReady: props.options?.waitForReady ?? true,
-    timeout: props.options?.timeout ?? 300000,
+    timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
   });
 
   // Create clean, serializable versions for Alchemy storage

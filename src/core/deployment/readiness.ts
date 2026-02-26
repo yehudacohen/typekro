@@ -5,6 +5,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../config/defaults.js';
 import type { DeploymentEvent, DeploymentOptions, ReadinessConfig } from '../types/deployment.js';
 import { ResourceReadinessTimeoutError } from '../types/deployment.js';
 import type {
@@ -199,7 +200,7 @@ export class ResourceReadinessChecker {
    */
   private getReadinessConfig(options: DeploymentOptions): ReadinessConfig {
     return {
-      timeout: options.timeout || 300000, // 5 minutes default
+      timeout: options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
       initialDelay: 1000, // 1 second
       maxDelay: 10000, // 10 seconds max
       backoffMultiplier: 1.5,

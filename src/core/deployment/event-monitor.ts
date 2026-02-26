@@ -6,6 +6,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { DEFAULT_RECONNECT_MAX_DELAY } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, DeploymentEvent } from '../types/deployment.js';
 
@@ -167,7 +168,7 @@ export class EventMonitor {
       watchTimeoutSeconds: options.watchTimeoutSeconds ?? 5,
       maxReconnectAttempts: options.maxReconnectAttempts ?? 10,
       reconnectBaseDelay: options.reconnectBaseDelay ?? 1000,
-      reconnectMaxDelay: options.reconnectMaxDelay ?? 30000,
+      reconnectMaxDelay: options.reconnectMaxDelay ?? DEFAULT_RECONNECT_MAX_DELAY,
       reconnectJitter: options.reconnectJitter ?? 0.2,
     };
   }

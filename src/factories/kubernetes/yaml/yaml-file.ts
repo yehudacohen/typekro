@@ -1,6 +1,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { PatchStrategy } from '@kubernetes/client-node';
 import * as yaml from 'js-yaml';
+import { DEFAULT_CRD_PATCH_TIMEOUT } from '../../../core/config/defaults.js';
 import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
 import { ResourceGraphFactoryError } from '../../../core/errors.js';
 import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
@@ -231,7 +232,7 @@ async function applyCRDWithSchemaFix(
 async function applyCRDSchemaJsonPatch(
   kubeConfig: k8s.KubeConfig,
   crd: CRDManifest,
-  timeout: number = 30000
+  timeout: number = DEFAULT_CRD_PATCH_TIMEOUT
 ): Promise<void> {
   const crdName = crd.metadata?.name || 'unknown';
 

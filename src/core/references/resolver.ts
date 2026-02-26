@@ -7,6 +7,7 @@
 
 import type * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/index';
+import { DEFAULT_RESOURCE_READY_TIMEOUT } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { TypeKroError } from '../errors.js';
@@ -990,7 +991,7 @@ export class ReferenceResolver {
    */
   async waitForResourceReady<T = unknown>(
     resourceRef: KubernetesRef<T>,
-    timeout: number = 30000
+    timeout: number = DEFAULT_RESOURCE_READY_TIMEOUT
   ): Promise<boolean> {
     const readinessLogger = this.logger.child({ resourceId: resourceRef.resourceId });
 

@@ -6,6 +6,7 @@
  */
 
 import { ensureReadinessEvaluator } from '../../../utils/helpers.js';
+import { DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { DeploymentResult, FactoryOptions, ResourceGraph } from '../../types/deployment.js';
@@ -209,7 +210,7 @@ export class AlchemyDeploymentStrategy<
                 kubeConfigOptions,
                 options: {
                   waitForReady: this.factoryOptions.waitForReady ?? false, // Default to false for faster tests
-                  timeout: this.factoryOptions.timeout ?? 30000, // Default to 30 seconds instead of 5 minutes
+                  timeout: this.factoryOptions.timeout ?? DEFAULT_READINESS_TIMEOUT,
                 },
               });
 

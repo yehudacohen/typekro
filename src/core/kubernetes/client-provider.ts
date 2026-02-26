@@ -11,6 +11,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { DEFAULT_CLUSTER_READY_TIMEOUT } from '../config/defaults.js';
 import { isTestEnvironment } from '../config/index.js';
 import { KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -439,7 +440,10 @@ export class KubernetesClientProvider {
    * @param retryInterval - Interval between retry attempts in milliseconds (default: 1000ms)
    * @throws Error if cluster doesn't become available within timeout
    */
-  async waitForClusterReady(timeout: number = 30000, retryInterval: number = 1000): Promise<void> {
+  async waitForClusterReady(
+    timeout: number = DEFAULT_CLUSTER_READY_TIMEOUT,
+    retryInterval: number = 1000
+  ): Promise<void> {
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {

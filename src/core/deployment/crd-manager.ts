@@ -5,6 +5,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import { DEFAULT_CRD_READY_TIMEOUT, DEFAULT_DEPLOYMENT_TIMEOUT } from '../config/defaults.js';
 import { DeploymentTimeoutError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentOptions } from '../types/deployment.js';
@@ -208,7 +209,7 @@ export class CRDManager {
   async waitForCRDReady(
     crdName: string,
     deploymentMode: string,
-    timeout: number = 300000,
+    timeout: number = DEFAULT_CRD_READY_TIMEOUT,
     abortSignal?: AbortSignal
   ): Promise<void> {
     const logger = this.logger.child({ crdName, timeout });
@@ -235,7 +236,7 @@ export class CRDManager {
     abortSignal?: AbortSignal
   ): Promise<void> {
     const crdName = crd.metadata?.name;
-    const timeout = options.timeout || 300000;
+    const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
     const startTime = Date.now();
     const pollInterval = 2000;
 
