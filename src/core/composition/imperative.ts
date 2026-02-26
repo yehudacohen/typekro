@@ -7,13 +7,6 @@
  * as the existing toResourceGraph API.
  */
 
-import type { CompositionContext } from '../../factories/shared.js';
-import {
-  createCompositionContext,
-  getCurrentCompositionContext,
-  runInStatusBuilderContext,
-  runWithCompositionContext,
-} from '../../factories/shared.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
   KUBERNETES_REF_BRAND,
@@ -23,7 +16,6 @@ import { CompositionDebugger, CompositionExecutionError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type { CallableComposition, TypedResourceGraph } from '../types/deployment.js';
-
 import type {
   KroCompatibleType,
   MagicAssignableShape,
@@ -32,6 +24,13 @@ import type {
   SerializationOptions,
 } from '../types/serialization.js';
 import type { Enhanced } from '../types.js';
+import type { CompositionContext } from './context.js';
+import {
+  createCompositionContext,
+  getCurrentCompositionContext,
+  runInStatusBuilderContext,
+  runWithCompositionContext,
+} from './context.js';
 
 /**
  * Enable debug mode for composition execution

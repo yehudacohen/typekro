@@ -10,7 +10,11 @@ import { getComponentLogger } from '../core/logging/index.js';
 import type { DeploymentOptions, ResourceGraph } from '../core/types/deployment.js';
 import { ResourceDeploymentError } from '../core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.js';
-import { ensureReadinessEvaluator, generateDeterministicResourceId } from '../utils/helpers.js';
+import {
+  ensureReadinessEvaluator,
+  generateDeterministicResourceId,
+  getResourceId,
+} from '../utils/helpers.js';
 import type { TypeKroDeployer } from './types.js';
 
 const logger = getComponentLogger('deployers');
@@ -28,7 +32,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
   private createResourceGraph<T extends Enhanced<any, any>>(resource: T): ResourceGraph {
     const resourceWithId = {
       ...resource,
-      id: resource.id || resource.metadata?.name || 'unnamed',
+      id: getResourceId(resource, 'unnamed'),
     };
 
     // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
@@ -126,7 +130,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
   ): Promise<void> {
     // Create a DeployedResource for the deleteResource method
     const deployedResource = {
-      id: resource.id || resource.metadata?.name || 'unnamed',
+      id: getResourceId(resource, 'unnamed'),
       kind: resource.kind || 'Unknown',
       name: resource.metadata?.name || 'unnamed',
       namespace: options.namespace || resource.metadata?.namespace || 'default',
@@ -178,7 +182,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
   ): Promise<void> {
     // Create a DeployedResource for the deleteResource method
     const deployedResource = {
-      id: resource.id || resource.metadata?.name || 'unnamed',
+      id: getResourceId(resource, 'unnamed'),
       kind: resource.kind || 'Unknown',
       name: resource.metadata?.name || 'unnamed',
       namespace: options.namespace || resource.metadata?.namespace || 'default',

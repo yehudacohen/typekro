@@ -9,6 +9,7 @@
  * are processed and converted.
  */
 
+import { extractResourceReferences, isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ConversionError, TypeKroError } from '../errors.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
@@ -61,7 +62,7 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
         return this.handleStringExpression(expression, context);
       }
 
-      if (this.isKubernetesRef(expression)) {
+      if (isKubernetesRef(expression)) {
         // Direct KubernetesRef object
         const celExpression = this.convertKubernetesRef(expression, context);
         return {
@@ -178,33 +179,9 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
     };
   }
 
-  private isKubernetesRef(value: any): value is KubernetesRef<any> {
-    return (
-      value &&
-      typeof value === 'object' &&
-      typeof value.resourceId === 'string' &&
-      typeof value.fieldPath === 'string'
-    );
-  }
-
-  private extractKubernetesRefs(value: any): KubernetesRef<any>[] {
-    const refs: KubernetesRef<any>[] = [];
-
-    if (this.isKubernetesRef(value)) {
-      refs.push(value);
-    } else if (Array.isArray(value)) {
-      for (const item of value) {
-        refs.push(...this.extractKubernetesRefs(item));
-      }
-    } else if (value && typeof value === 'object') {
-      for (const key in value) {
-        if (Object.hasOwn(value, key)) {
-          refs.push(...this.extractKubernetesRefs(value[key]));
-        }
-      }
-    }
-
-    return refs;
+  /** Delegate to canonical brand-safe implementation in type-guards.ts */
+  private extractKubernetesRefs(value: unknown): KubernetesRef<unknown>[] {
+    return extractResourceReferences(value);
   }
 }
 
@@ -229,7 +206,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
         return this.handleStringExpression(expression, context);
       }
 
-      if (this.isKubernetesRef(expression)) {
+      if (isKubernetesRef(expression)) {
         // Direct KubernetesRef object
         const celExpression = this.convertKubernetesRef(expression, context);
         return {
@@ -345,33 +322,9 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
     };
   }
 
-  private isKubernetesRef(value: any): value is KubernetesRef<any> {
-    return (
-      value &&
-      typeof value === 'object' &&
-      typeof value.resourceId === 'string' &&
-      typeof value.fieldPath === 'string'
-    );
-  }
-
-  private extractKubernetesRefs(value: any): KubernetesRef<any>[] {
-    const refs: KubernetesRef<any>[] = [];
-
-    if (this.isKubernetesRef(value)) {
-      refs.push(value);
-    } else if (Array.isArray(value)) {
-      for (const item of value) {
-        refs.push(...this.extractKubernetesRefs(item));
-      }
-    } else if (value && typeof value === 'object') {
-      for (const key in value) {
-        if (Object.hasOwn(value, key)) {
-          refs.push(...this.extractKubernetesRefs(value[key]));
-        }
-      }
-    }
-
-    return refs;
+  /** Delegate to canonical brand-safe implementation in type-guards.ts */
+  private extractKubernetesRefs(value: unknown): KubernetesRef<unknown>[] {
+    return extractResourceReferences(value);
   }
 }
 

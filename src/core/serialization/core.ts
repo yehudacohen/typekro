@@ -5,8 +5,9 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-import { runInStatusBuilderContext } from '../../factories/shared.js';
+import { getResourceId } from '../../utils/helpers.js';
 import { containsKubernetesRefs, isCelExpression } from '../../utils/type-guards.js';
+import { runInStatusBuilderContext } from '../composition/context.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
@@ -489,7 +490,7 @@ function _createResourceGraph(
 
   const resourceArray = Array.from(uniqueResourcesSet).map((resource) => ({
     ...resource,
-    id: resource.id || resource.metadata?.name || 'unknown',
+    id: getResourceId(resource),
   }));
 
   // Type assertion needed because we're converting KubernetesResource to DeployableK8sResource

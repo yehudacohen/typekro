@@ -6,17 +6,17 @@
  * strategies.
  */
 
-import { getComponentLogger } from '../logging/index.js';
-import type { KubernetesRef, CelExpression } from '../types/index.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
+import { getCurrentCompositionContext } from '../composition/context.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { getComponentLogger } from '../logging/index.js';
+import type { CelExpression, KubernetesRef } from '../types/index.js';
 import {
-  MagicProxyDetector,
   type MagicProxyDetectionResult,
+  MagicProxyDetector,
   type MagicProxyRefInfo,
 } from './magic-proxy-detector.js';
 import type { FactoryExpressionContext } from './types.js';
-import { getCurrentCompositionContext } from '../../factories/shared.js';
 
 const logger = getComponentLogger('cel-conversion-engine');
 

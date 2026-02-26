@@ -6,7 +6,7 @@
  * KubernetesRef detection and CEL conversion.
  */
 
-import { getCurrentCompositionContext } from '../../factories/shared.js';
+import { getCurrentCompositionContext } from '../composition/context.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { Enhanced } from '../types/index.js';
 import {

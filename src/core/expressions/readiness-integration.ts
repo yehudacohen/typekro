@@ -5,8 +5,8 @@
  * KubernetesRef objects and TypeKro's readiness evaluation system.
  */
 
-import { getCurrentCompositionContext } from '../../factories/shared.js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
+import { getCurrentCompositionContext } from '../composition/context.js';
 import { getComponentLogger } from '../logging/index.js';
 import type {
   Enhanced,

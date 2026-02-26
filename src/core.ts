@@ -17,6 +17,7 @@ export {
   ensureResourceTypeRegistered,
   KroTypeKroDeployer,
 } from './alchemy/deployment.js';
+export { getCurrentCompositionContext } from './core/composition/context.js';
 // Alchemy conversion utilities removed - using dynamic registration approach
 export type { WebServiceComponent } from './core/composition/index.js';
 // =============================================================================
@@ -149,7 +150,7 @@ export type * from './factories/kubernetes/types.js';
 // =============================================================================
 // Resource Factory and Composition Context
 // =============================================================================
-export { createResource, getCurrentCompositionContext } from './factories/shared.js';
+export { createResource } from './factories/shared.js';
 // =============================================================================
 // Core Utilities
 // =============================================================================

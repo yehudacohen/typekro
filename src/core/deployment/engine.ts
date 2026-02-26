@@ -6,7 +6,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { ensureReadinessEvaluator } from '../../utils/helpers.js';
+import { ensureReadinessEvaluator, getResourceId } from '../../utils/helpers.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import {
   CircularDependencyError,
@@ -1443,10 +1443,9 @@ export class DirectDeploymentEngine {
       throw new DOMException('Operation aborted', 'AbortError');
     }
 
-    // __resourceId is an internal field that may be set during resource processing
-    const resourceWithInternalId = resource as KubernetesResource & { __resourceId?: string };
-    const resourceId =
-      resource.id || resourceWithInternalId.__resourceId || resource.metadata?.name || 'unknown';
+    // __resourceId is an internal non-enumerable field set by createGenericProxyResource
+    const internalId = (resource as KubernetesResource & { __resourceId?: string }).__resourceId;
+    const resourceId = internalId || getResourceId(resource);
     const resourceLogger = this.logger.child({
       resourceId,
       kind: resource.kind,
