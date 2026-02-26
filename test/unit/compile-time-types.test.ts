@@ -30,7 +30,7 @@ import type {
   MagicValue,
   RefOrValue,
   SchemaProxy,
-} from '../../src/core.js';
+} from '../../src/index.js';
 import {
   Cel,
   type CircularDependencyError,
@@ -48,7 +48,7 @@ import {
   type TypeKroReferenceError,
   toResourceGraph,
   type ValidationError,
-} from '../../src/core.js';
+} from '../../src/index.js';
 
 // =============================================================================
 // Test helpers — these functions exist only for type-level assertions.

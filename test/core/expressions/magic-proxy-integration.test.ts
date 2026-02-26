@@ -1,16 +1,16 @@
 /**
  * Integration tests for JavaScript to CEL conversion with magic proxy system
- * 
+ *
  * Tests the integration between toResourceGraph, kubernetesComposition, factory functions
  * and the JavaScript to CEL conversion system using the magic proxy system.
  */
 
-import { describe, it, expect } from 'bun:test';
-import { toResourceGraph } from '../../../src/core.js';
-import { simple } from '../../../src/factories/index.js';
-import { kubernetesComposition } from '../../../src/core/composition/index.js';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { kubernetesComposition } from '../../../src/core/composition/index.js';
 import type { SchemaProxy } from '../../../src/core/types/serialization.js';
+import { simple } from '../../../src/factories/index.js';
+import { toResourceGraph } from '../../../src/index.js';
 
 describe('Magic Proxy Integration Tests', () => {
   describe('toResourceGraph with JavaScript Expressions', () => {
@@ -19,13 +19,13 @@ describe('Magic Proxy Integration Tests', () => {
       const WebAppSpec = type({
         name: 'string',
         replicas: 'number',
-        image: 'string'
+        image: 'string',
       });
 
       const WebAppStatus = type({
         ready: 'boolean',
         url: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       // Create resource graph with JavaScript expressions in status builder
@@ -34,7 +34,7 @@ describe('Magic Proxy Integration Tests', () => {
         apiVersion: 'example.com/v1',
         kind: 'WebApp',
         spec: WebAppSpec,
-        status: WebAppStatus
+        status: WebAppStatus,
       };
 
       const graph = toResourceGraph(
@@ -44,20 +44,20 @@ describe('Magic Proxy Integration Tests', () => {
             name: schema.spec.name,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
-            id: 'deployment'
+            id: 'deployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             id: 'service',
-            selector: { app: schema.spec.name }
-          })
+            selector: { app: schema.spec.name },
+          }),
         }),
         (_schema, resources) => ({
           // These JavaScript expressions should be converted to CEL
           ready: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
           url: `http://${resources.service!.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
-          replicas: resources.deployment!.status.readyReplicas || 0
+          replicas: resources.deployment!.status.readyReplicas || 0,
         })
       );
 
@@ -77,11 +77,11 @@ describe('Magic Proxy Integration Tests', () => {
       const AppSpec = type({
         name: 'string',
         environment: 'string',
-        debug: 'boolean'
+        debug: 'boolean',
       });
 
       const AppStatus = type({
-        phase: 'string'
+        phase: 'string',
       });
 
       const definition = {
@@ -89,7 +89,7 @@ describe('Magic Proxy Integration Tests', () => {
         apiVersion: 'example.com/v1',
         kind: 'App',
         spec: AppSpec,
-        status: AppStatus
+        status: AppStatus,
       };
 
       const graph = toResourceGraph(
@@ -103,12 +103,12 @@ describe('Magic Proxy Integration Tests', () => {
               // These should be converted based on schema references
               NODE_ENV: schema.spec.environment,
               DEBUG: schema.spec.debug ? 'true' : 'false',
-              APP_NAME: `${schema.spec.name}-${schema.spec.environment}`
-            }
-          })
+              APP_NAME: `${schema.spec.name}-${schema.spec.environment}`,
+            },
+          }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment!.status.phase || 'Unknown'
+          phase: resources.deployment!.status.phase || 'Unknown',
         })
       );
 
@@ -121,7 +121,7 @@ describe('Magic Proxy Integration Tests', () => {
     it('should handle complex cross-resource references', async () => {
       const _StackSpec = type({
         name: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       const _StackStatus = type({
@@ -129,8 +129,8 @@ describe('Magic Proxy Integration Tests', () => {
         endpoint: 'string',
         health: {
           deployment: 'boolean',
-          service: 'boolean'
-        }
+          service: 'boolean',
+        },
       });
 
       const stackDefinition = {
@@ -146,9 +146,9 @@ describe('Magic Proxy Integration Tests', () => {
           endpoint: 'string',
           health: type({
             deployment: 'boolean',
-            service: 'boolean'
-          })
-        })
+            service: 'boolean',
+          }),
+        }),
       };
 
       const graph = toResourceGraph(
@@ -158,26 +158,30 @@ describe('Magic Proxy Integration Tests', () => {
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: schema.spec.replicas,
-            id: 'deployment'
+            id: 'deployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'service'
-          })
+            id: 'service',
+          }),
         }),
         (schema, resources) => ({
           // Complex JavaScript expressions with multiple resource references
-          ready: (resources.deployment! as any).status?.readyReplicas === schema.spec.replicas && 
-                 (resources.service! as any).status?.ready,
-          endpoint: (resources.service! as any).status?.loadBalancer?.ingress?.[0]?.ip 
-                   ? `http://${(resources.service! as any).status.loadBalancer.ingress[0].ip}`
-                   : 'http://localhost',
+          ready:
+            (resources.deployment! as any).status?.readyReplicas === schema.spec.replicas &&
+            (resources.service! as any).status?.ready,
+          endpoint: (resources.service! as any).status?.loadBalancer?.ingress?.[0]?.ip
+            ? `http://${(resources.service! as any).status.loadBalancer.ingress[0].ip}`
+            : 'http://localhost',
           health: {
-            deployment: (resources.deployment! as any).status?.conditions?.find((c: any) => c.type === 'Available')?.status === 'True',
-            service: (resources.service! as any).status?.ready ?? false
-          }
+            deployment:
+              (resources.deployment! as any).status?.conditions?.find(
+                (c: any) => c.type === 'Available'
+              )?.status === 'True',
+            service: (resources.service! as any).status?.ready ?? false,
+          },
         })
       );
 
@@ -193,7 +197,7 @@ describe('Magic Proxy Integration Tests', () => {
       const mockSpec = {
         name: 'test-app',
         replicas: 3,
-        environment: 'production'
+        environment: 'production',
       };
 
       const definition = {
@@ -203,13 +207,13 @@ describe('Magic Proxy Integration Tests', () => {
         spec: type({
           name: 'string',
           replicas: 'number',
-          environment: 'string'
+          environment: 'string',
         }),
         status: type({
           ready: 'boolean',
           url: 'string',
-          phase: 'string'
-        })
+          phase: 'string',
+        }),
       };
 
       const result = kubernetesComposition(definition as any, (spec: typeof mockSpec) => {
@@ -222,22 +226,22 @@ describe('Magic Proxy Integration Tests', () => {
           env: {
             NODE_ENV: spec.environment,
             REPLICAS: `${spec.replicas}`,
-            IS_PRODUCTION: spec.environment === 'production' ? 'true' : 'false'
-          }
+            IS_PRODUCTION: spec.environment === 'production' ? 'true' : 'false',
+          },
         });
 
         const service = simple.Service({
           name: spec.name,
           ports: [{ port: 80, targetPort: 8080 }],
           selector: { app: spec.name },
-          id: 'service'
+          id: 'service',
         });
 
         // Return status with JavaScript expressions
         return {
           ready: deployment.status.readyReplicas === spec.replicas && service.status.ready,
           url: service.status?.loadBalancer?.ingress?.[0]?.ip || 'pending',
-          phase: deployment.status.phase || 'Unknown'
+          phase: deployment.status.phase || 'Unknown',
         };
       });
 
@@ -256,39 +260,42 @@ describe('Magic Proxy Integration Tests', () => {
         kind: 'Database',
         spec: type({
           name: 'string',
-          storage: 'string'
+          storage: 'string',
         }),
         status: type({
           ready: 'boolean',
           host: 'string',
-          port: 'number'
-        })
+          port: 'number',
+        }),
       };
 
-      const databaseComposition = kubernetesComposition(databaseDefinition as any, (spec: { name: string; storage: string }) => {
-        const deployment = simple.Deployment({
-          name: `${spec.name}-db`,
-          image: 'postgres:13',
-          id: 'database',
-          env: {
-            POSTGRES_DB: spec.name,
-            POSTGRES_USER: 'user',
-            POSTGRES_PASSWORD: 'password'
-          }
-        });
+      const databaseComposition = kubernetesComposition(
+        databaseDefinition as any,
+        (spec: { name: string; storage: string }) => {
+          const deployment = simple.Deployment({
+            name: `${spec.name}-db`,
+            image: 'postgres:13',
+            id: 'database',
+            env: {
+              POSTGRES_DB: spec.name,
+              POSTGRES_USER: 'user',
+              POSTGRES_PASSWORD: 'password',
+            },
+          });
 
-        const service = simple.Service({
-          name: `${spec.name}-db`,
-          ports: [{ port: 5432, targetPort: 5432 }],
-          selector: { app: `${spec.name}-db` }
-        });
+          const service = simple.Service({
+            name: `${spec.name}-db`,
+            ports: [{ port: 5432, targetPort: 5432 }],
+            selector: { app: `${spec.name}-db` },
+          });
 
-        return {
-          ready: deployment.status.readyReplicas > 0 && service.status.ready,
-          host: service.status.clusterIP || 'localhost',
-          port: 5432
-        };
-      });
+          return {
+            ready: deployment.status.readyReplicas > 0 && service.status.ready,
+            host: service.status.clusterIP || 'localhost',
+            port: 5432,
+          };
+        }
+      );
 
       // Simplified test - nested compositions are complex and not the focus here
       expect(databaseComposition).toBeDefined();
@@ -302,9 +309,9 @@ describe('Magic Proxy Integration Tests', () => {
         spec: {
           name: 'test-app',
           replicas: 3,
-          image: 'nginx:latest'
+          image: 'nginx:latest',
         },
-        status: {}
+        status: {},
       } as any;
 
       // Test simple.Deployment with JavaScript expressions
@@ -316,8 +323,8 @@ describe('Magic Proxy Integration Tests', () => {
         env: {
           NODE_ENV: 'production',
           APP_NAME: `${mockSchemaProxy.spec.name}-app`,
-          MAX_REPLICAS: `${mockSchemaProxy.spec.replicas}`
-        }
+          MAX_REPLICAS: `${mockSchemaProxy.spec.replicas}`,
+        },
       });
 
       expect(deployment).toBeDefined();
@@ -329,15 +336,15 @@ describe('Magic Proxy Integration Tests', () => {
       const mockDatabase = {
         status: {
           podIP: '10.0.0.1',
-          ready: true
-        }
+          ready: true,
+        },
       } as any;
 
       const mockService = {
         status: {
           clusterIP: '10.0.0.2',
-          ready: true
-        }
+          ready: true,
+        },
       } as any;
 
       // Test deployment with references to other resources
@@ -349,8 +356,8 @@ describe('Magic Proxy Integration Tests', () => {
           DATABASE_HOST: mockDatabase.status.podIP,
           SERVICE_HOST: mockService.status.clusterIP,
           READY_CHECK: mockDatabase.status.ready && mockService.status.ready ? 'true' : 'false',
-          CONNECTION_STRING: `postgres://user:pass@${mockDatabase.status.podIP}:5432/db`
-        }
+          CONNECTION_STRING: `postgres://user:pass@${mockDatabase.status.podIP}:5432/db`,
+        },
       });
 
       expect(deployment).toBeDefined();
@@ -361,11 +368,11 @@ describe('Magic Proxy Integration Tests', () => {
   describe('Error Handling and Edge Cases', () => {
     it('should handle invalid JavaScript expressions gracefully', async () => {
       const _InvalidSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const _InvalidStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // This should handle the invalid expression gracefully
@@ -374,7 +381,7 @@ describe('Magic Proxy Integration Tests', () => {
         apiVersion: 'example.com/v1',
         kind: 'InvalidTest',
         spec: type({ name: 'string' }),
-        status: type({ ready: 'boolean' })
+        status: type({ ready: 'boolean' }),
       };
 
       const graph = toResourceGraph(
@@ -383,12 +390,12 @@ describe('Magic Proxy Integration Tests', () => {
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
         (_schema, _resources) => ({
           // Invalid JavaScript expression - should be handled gracefully
-          ready: true // Fallback to static value
+          ready: true, // Fallback to static value
         })
       );
 
@@ -401,11 +408,11 @@ describe('Magic Proxy Integration Tests', () => {
 
     it('should handle missing resource references', async () => {
       const _TestSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const _TestStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       const missingRefDefinition = {
@@ -413,7 +420,7 @@ describe('Magic Proxy Integration Tests', () => {
         apiVersion: 'example.com/v1',
         kind: 'MissingRefTest',
         spec: type({ name: 'string' }),
-        status: type({ ready: 'boolean' })
+        status: type({ ready: 'boolean' }),
       };
 
       const graph = toResourceGraph(
@@ -422,12 +429,12 @@ describe('Magic Proxy Integration Tests', () => {
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
         (_schema, resources) => ({
           // Reference to non-existent resource - should be handled gracefully
-          ready: resources.deployment!.status.readyReplicas > 0
+          ready: resources.deployment!.status.readyReplicas > 0,
         })
       );
 
@@ -442,12 +449,12 @@ describe('Magic Proxy Integration Tests', () => {
     it('should handle large numbers of JavaScript expressions efficiently', async () => {
       const _LargeSpec = type({
         name: 'string',
-        count: 'number'
+        count: 'number',
       });
 
       const _LargeStatus = type({
         items: 'unknown[]',
-        summary: 'string'
+        summary: 'string',
       });
 
       const largeDefinition = {
@@ -455,42 +462,42 @@ describe('Magic Proxy Integration Tests', () => {
         apiVersion: 'example.com/v1',
         kind: 'LargeTest',
         spec: type({ name: 'string', count: 'number' }),
-        status: type({ 
+        status: type({
           ready: 'boolean',
           items: 'string[]',
-          summary: 'string'
-        })
+          summary: 'string',
+        }),
       };
 
       const graph = toResourceGraph(
         largeDefinition,
         (schema) => {
           const resources: Record<string, any> = {};
-          
+
           // Create multiple resources with JavaScript expressions
           for (let i = 0; i < 10; i++) {
             resources[`deployment-${i}`] = simple.Deployment({
               name: `${schema.spec.name}-${i}`,
               image: 'nginx:latest',
               replicas: schema.spec.count > i ? 1 : 0,
-              id: `deployment${i}`
+              id: `deployment${i}`,
             });
           }
-          
+
           return resources;
         },
         (schema, _resources) => {
           const items = [];
-          
+
           // Create status with many JavaScript expressions
           for (let i = 0; i < 10; i++) {
             items.push(`${schema.spec.name}-${i}`);
           }
-          
+
           return {
             ready: items.length > 0,
             items,
-            summary: `${items.length} items created for ${schema.spec.name}`
+            summary: `${items.length} items created for ${schema.spec.name}`,
           };
         }
       );
@@ -508,11 +515,11 @@ describe('Magic Proxy Integration Tests', () => {
 
     it('should cache expression analysis results', async () => {
       const CacheSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const CacheStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // Create multiple graphs with the same expressions
@@ -521,23 +528,24 @@ describe('Magic Proxy Integration Tests', () => {
         apiVersion: 'example.com/v1',
         kind: 'CacheTest',
         spec: CacheSpec,
-        status: CacheStatus
+        status: CacheStatus,
       };
 
-      const createGraph = () => toResourceGraph(
-        cacheDefinition,
-        (schema) => ({
-          deployment: simple.Deployment({
-            name: schema.spec.name,
-            image: 'nginx:latest',
-            id: 'deployment'
+      const createGraph = () =>
+        toResourceGraph(
+          cacheDefinition,
+          (schema) => ({
+            deployment: simple.Deployment({
+              name: schema.spec.name,
+              image: 'nginx:latest',
+              id: 'deployment',
+            }),
+          }),
+          (_schema, resources) => ({
+            // Same expression - should be cached
+            ready: resources.deployment!.status.readyReplicas > 0,
           })
-        }),
-        (_schema, resources) => ({
-          // Same expression - should be cached
-          ready: resources.deployment!.status.readyReplicas > 0
-        })
-      );
+        );
 
       const graph1 = createGraph();
       const graph2 = createGraph();
