@@ -17,6 +17,17 @@ export {
   ensureResourceTypeRegistered,
   KroTypeKroDeployer,
 } from './alchemy/deployment.js';
+// Alchemy-aware reference resolution (canonical home: alchemy/resolver.ts)
+export {
+  buildResourceGraphWithDeferredResolution,
+  containsAlchemyPromises,
+  createAlchemyReferenceResolver,
+  extractAlchemyPromises,
+  hasMixedDependencies,
+  isAlchemyPromise,
+  resolveAllReferencesInAlchemyContext,
+  resolveReferencesWithAlchemy,
+} from './alchemy/resolver.js';
 export { getCurrentCompositionContext } from './core/composition/context.js';
 // Alchemy conversion utilities removed - using dynamic registration approach
 export type { WebServiceComponent } from './core/composition/index.js';
@@ -101,6 +112,10 @@ export {
   logger,
 } from './core/logging/index.js';
 // =============================================================================
+// Resource Factory and Composition Context
+// =============================================================================
+export { createResource } from './core/proxy/create-resource.js';
+// =============================================================================
 // References Module (CEL, Schema Proxy, External Refs)
 // =============================================================================
 export * from './core/references/index.js';
@@ -147,10 +162,6 @@ export {
 export { customResource } from './factories/kubernetes/extensions/custom-resource.js';
 // Factory types are now exported from the organized factories structure
 export type * from './factories/kubernetes/types.js';
-// =============================================================================
-// Resource Factory and Composition Context
-// =============================================================================
-export { createResource } from './factories/shared.js';
 // =============================================================================
 // Core Utilities
 // =============================================================================

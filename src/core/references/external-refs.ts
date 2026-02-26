@@ -9,8 +9,8 @@
  * 2. Object-form: externalRef({ apiVersion, kind, metadata: { name, namespace? } })
  */
 
-import { createResource } from '../../factories/shared.js';
 import { getCurrentCompositionContext } from '../composition/context.js';
+import { createResource } from '../proxy/create-resource.js';
 import type { Enhanced, KubernetesResource } from '../types.js';
 
 /**

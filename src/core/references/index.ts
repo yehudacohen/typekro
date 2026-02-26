@@ -1,18 +1,11 @@
 /**
  * References module exports
+ *
+ * NOTE: Alchemy-aware reference resolution functions have been moved to
+ * `src/alchemy/resolver.js` (their canonical home).  Import them from
+ * `src/core.ts` or `src/alchemy/resolver.js` directly.
  */
 
-// Alchemy-aware reference resolution
-export {
-  buildResourceGraphWithDeferredResolution,
-  containsAlchemyPromises,
-  createAlchemyReferenceResolver,
-  extractAlchemyPromises,
-  hasMixedDependencies,
-  isAlchemyPromise,
-  resolveAllReferencesInAlchemyContext,
-  resolveReferencesWithAlchemy,
-} from '../../alchemy/resolver.js';
 // Compile-time CEL optimization
 export { optimizeCelExpression, optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 export type { ResolutionContext } from '../types/deployment.js';
