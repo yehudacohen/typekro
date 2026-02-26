@@ -103,11 +103,73 @@ export interface EnhancedDeploymentPlan {
  */
 export type ConflictStrategy = 'warn' | 'fail' | 'patch' | 'replace';
 
-export interface DeploymentOptions {
-  mode: 'direct' | 'kro' | 'alchemy' | 'auto';
+// =============================================================================
+// SHARED CONFIG SUB-TYPES
+// =============================================================================
+
+/** Event monitoring configuration for Kubernetes deployments */
+export interface EventMonitoringConfig {
+  /** Enable event monitoring (default: false) */
+  enabled?: boolean;
+  /** Event types to monitor (default: ['Warning', 'Error']) */
+  eventTypes?: ('Normal' | 'Warning' | 'Error')[];
+  /** Include child resources in monitoring (default: true) */
+  includeChildResources?: boolean;
+  /** Deduplication window in seconds (default: 60) */
+  deduplicationWindow?: number;
+  /** Maximum events per resource per minute (default: 100) */
+  maxEventsPerSecond?: number;
+}
+
+/** Debug logging configuration for deployment diagnostics */
+export interface DebugLoggingConfig {
+  /** Enable debug logging (default: false) */
+  enabled?: boolean;
+  /** Enable status polling debug logs (default: true when enabled) */
+  statusPolling?: boolean;
+  /** Enable readiness evaluation debug logs (default: true when enabled) */
+  readinessEvaluation?: boolean;
+  /** Maximum status object size to log in bytes (default: 1024) */
+  maxStatusObjectSize?: number;
+  /** Enable verbose mode with additional diagnostic information (default: false) */
+  verboseMode?: boolean;
+}
+
+/** Automatic environment fixes configuration */
+export interface AutoFixConfig {
+  /** Automatically patch Flux CRDs for Kubernetes 1.33+ compatibility (default: true) */
+  fluxCRDs?: boolean;
+  /** Log level for auto-fix operations (default: 'info') */
+  logLevel?: 'error' | 'warn' | 'info' | 'debug';
+}
+
+// =============================================================================
+// BASE DEPLOYMENT CONFIG
+// =============================================================================
+
+/**
+ * Common deployment configuration shared by DeploymentOptions,
+ * FactoryOptions, and AlchemyDeploymentOptions.
+ */
+export interface BaseDeploymentConfig {
+  /** Kubernetes namespace for deployment */
   namespace?: string;
+  /** Timeout in milliseconds for readiness waits */
   timeout?: number;
+  /** Wait for resources to become ready after deployment */
   waitForReady?: boolean;
+  /** Retry policy for transient failures */
+  retryPolicy?: RetryPolicy;
+  /** Callback for deployment progress events */
+  progressCallback?: (event: DeploymentEvent) => void;
+}
+
+// =============================================================================
+// DEPLOYMENT OPTIONS
+// =============================================================================
+
+export interface DeploymentOptions extends BaseDeploymentConfig {
+  mode: 'direct' | 'kro' | 'alchemy' | 'auto';
   dryRun?: boolean;
   rollbackOnFailure?: boolean;
 
@@ -117,9 +179,6 @@ export interface DeploymentOptions {
    * @default true
    */
   abortOnFailure?: boolean;
-
-  retryPolicy?: RetryPolicy;
-  progressCallback?: (event: DeploymentEvent) => void;
 
   /**
    * Hydrate Enhanced proxy status fields with live cluster data
@@ -140,40 +199,13 @@ export interface DeploymentOptions {
   conflictStrategy?: ConflictStrategy;
 
   /** Event monitoring configuration */
-  eventMonitoring?: {
-    /** Enable event monitoring (default: false) */
-    enabled?: boolean;
-    /** Event types to monitor (default: ['Warning', 'Error']) */
-    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
-    /** Include child resources in monitoring (default: true) */
-    includeChildResources?: boolean;
-    /** Deduplication window in seconds (default: 60) */
-    deduplicationWindow?: number;
-    /** Maximum events per resource per minute (default: 100) */
-    maxEventsPerSecond?: number;
-  };
+  eventMonitoring?: EventMonitoringConfig;
 
   /** Debug logging configuration */
-  debugLogging?: {
-    /** Enable debug logging (default: false) */
-    enabled?: boolean;
-    /** Enable status polling debug logs (default: true when enabled) */
-    statusPolling?: boolean;
-    /** Enable readiness evaluation debug logs (default: true when enabled) */
-    readinessEvaluation?: boolean;
-    /** Maximum status object size to log in bytes (default: 1024) */
-    maxStatusObjectSize?: number;
-    /** Enable verbose mode with additional diagnostic information (default: false) */
-    verboseMode?: boolean;
-  };
+  debugLogging?: DebugLoggingConfig;
 
   /** Automatic environment fixes configuration */
-  autoFix?: {
-    /** Automatically patch Flux CRDs for Kubernetes 1.33+ compatibility (default: true) */
-    fluxCRDs?: boolean;
-    /** Log level for auto-fix operations (default: 'info') */
-    logLevel?: 'error' | 'warn' | 'info' | 'debug';
-  };
+  autoFix?: AutoFixConfig;
 
   /** Output configuration */
   outputOptions?: {
@@ -202,14 +234,9 @@ export interface DeploymentOptions {
   httpTimeouts?: HttpTimeoutConfig;
 }
 
-export interface AlchemyDeploymentOptions {
-  namespace?: string;
-  timeout?: number;
-  waitForReady?: boolean;
+export interface AlchemyDeploymentOptions extends BaseDeploymentConfig {
   dryRun?: boolean;
   rollbackOnFailure?: boolean;
-  retryPolicy?: RetryPolicy;
-  progressCallback?: (event: DeploymentEvent) => void;
 
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
@@ -399,13 +426,7 @@ export type CallableComposition<
 } & TypedResourceGraph<TSpec, TStatus>;
 
 // Factory options determine deployment strategy
-export interface FactoryOptions {
-  namespace?: string;
-  timeout?: number;
-  waitForReady?: boolean;
-  retryPolicy?: RetryPolicy;
-  progressCallback?: (event: DeploymentEvent) => void;
-
+export interface FactoryOptions extends BaseDeploymentConfig {
   // Status hydration - if false, Enhanced proxy status fields won't be populated with live data
   hydrateStatus?: boolean;
 
@@ -431,40 +452,13 @@ export interface FactoryOptions {
   skipTLSVerify?: boolean;
 
   /** Event monitoring configuration */
-  eventMonitoring?: {
-    /** Enable event monitoring (default: false) */
-    enabled?: boolean;
-    /** Event types to monitor (default: ['Warning', 'Error']) */
-    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
-    /** Include child resources in monitoring (default: true) */
-    includeChildResources?: boolean;
-    /** Deduplication window in seconds (default: 60) */
-    deduplicationWindow?: number;
-    /** Maximum events per resource per minute (default: 100) */
-    maxEventsPerSecond?: number;
-  };
+  eventMonitoring?: EventMonitoringConfig;
 
   /** Debug logging configuration */
-  debugLogging?: {
-    /** Enable debug logging (default: false) */
-    enabled?: boolean;
-    /** Enable status polling debug logs (default: true when enabled) */
-    statusPolling?: boolean;
-    /** Enable readiness evaluation debug logs (default: true when enabled) */
-    readinessEvaluation?: boolean;
-    /** Maximum status object size to log in bytes (default: 1024) */
-    maxStatusObjectSize?: number;
-    /** Enable verbose mode with additional diagnostic information (default: false) */
-    verboseMode?: boolean;
-  };
+  debugLogging?: DebugLoggingConfig;
 
   /** Automatic environment fixes configuration */
-  autoFix?: {
-    /** Automatically patch Flux CRDs for Kubernetes 1.33+ compatibility (default: true) */
-    fluxCRDs?: boolean;
-    /** Log level for auto-fix operations (default: 'info') */
-    logLevel?: 'error' | 'warn' | 'info' | 'debug';
-  };
+  autoFix?: AutoFixConfig;
 
   // Factory pattern integration for expression handling
   /** Factory type for expression analysis and conversion */
