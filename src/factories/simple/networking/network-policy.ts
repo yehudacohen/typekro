@@ -15,6 +15,16 @@ import type { NetworkPolicyConfig } from '../types.js';
  *
  * @param config - Configuration for the network policy
  * @returns Enhanced NetworkPolicy resource
+ *
+ * @example
+ * ```typescript
+ * const policy = NetworkPolicy({
+ *   name: 'allow-web-traffic',
+ *   podSelector: { matchLabels: { app: 'web-server' } },
+ *   policyTypes: ['Ingress'],
+ *   ingress: [{ ports: [{ port: 80 }] }],
+ * });
+ * ```
  */
 export function NetworkPolicy(config: NetworkPolicyConfig): Enhanced<V1NetworkPolicySpec, object> {
   return networkPolicy({

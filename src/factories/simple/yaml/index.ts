@@ -11,6 +11,14 @@ import { yamlFile } from '../../kubernetes/yaml/yaml-file.js';
  * @param path - Path to YAML file (local or git URL)
  * @param namespace - Optional namespace override
  * @returns DeploymentClosure with applied resources
+ *
+ * @example
+ * ```typescript
+ * const crds = YamlFile(
+ *   'https://raw.githubusercontent.com/cert-manager/cert-manager/main/deploy/crds.yaml',
+ *   'cert-manager',
+ * );
+ * ```
  */
 export function YamlFile(path: string, namespace?: string): DeploymentClosure<AppliedResource[]> {
   const name =

@@ -15,6 +15,16 @@ import type { JobConfig } from '../types.js';
  *
  * @param config - Configuration for the job
  * @returns Enhanced Job resource
+ *
+ * @example
+ * ```typescript
+ * const migration = Job({
+ *   name: 'db-migrate',
+ *   image: 'app:latest',
+ *   command: ['node', 'migrate.js'],
+ *   backoffLimit: 3,
+ * });
+ * ```
  */
 export function Job(config: JobConfig): Enhanced<V1JobSpec, V1JobStatus> {
   return job({

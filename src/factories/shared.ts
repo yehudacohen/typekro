@@ -17,6 +17,7 @@ import {
   runInStatusBuilderContext,
   runWithCompositionContext,
 } from '../core/composition/context.js';
+import { isDebugMode } from '../core/config/index.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../core/constants/brands.js';
 import { TypeKroError } from '../core/errors.js';
 import { conditionalExpressionIntegrator } from '../core/expressions/conditional-integration.js';
@@ -42,7 +43,7 @@ export {
 };
 
 // Check for the debug environment variable
-const IS_DEBUG_MODE = process.env.TYPEKRO_DEBUG === 'true';
+const IS_DEBUG_MODE = isDebugMode();
 
 // Logger for debug mode
 const debugLogger = getComponentLogger('factory-proxy');
