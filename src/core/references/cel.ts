@@ -3,8 +3,9 @@ import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
 import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
 
-/** Patterns that indicate raw JavaScript operators were used instead of CEL operators */
-const SUSPICIOUS_JS_PATTERNS = [/===/, /!==/, /\|\|/, /&&/];
+/** Patterns that indicate raw JavaScript operators were used instead of CEL operators.
+ * Note: && and || are valid CEL operators, so only === and !== are flagged. */
+const SUSPICIOUS_JS_PATTERNS = [/===/, /!==/];
 
 /**
  * Validates inputs to Cel.expr() and warns about suspicious patterns.
@@ -36,7 +37,7 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
           console.warn(
             `[TypeKro] Cel.expr() argument at index ${i} contains a JavaScript operator ` +
               `(${pattern.source}) which is not valid in CEL. ` +
-              `Use CEL equivalents instead: === -> ==, !== -> !=, || -> ||, && -> &&. ` +
+              `Use CEL equivalents instead: === -> ==, !== -> !=. ` +
               `Input: "${part}"`
           );
           break;
