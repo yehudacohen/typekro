@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -188,6 +189,179 @@ export class YamlProcessingError extends TypeKroError {
         'Validate YAML using a linter or online validator',
         'Check for tabs vs spaces consistency',
       ]
+    );
+  }
+}
+
+/**
+ * Error thrown when a URL is blocked by SSRF protection.
+ */
+export class SsrfProtectionError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly resourceName: string,
+    public readonly blockedUrl: string,
+    public readonly reason: string
+  ) {
+    super(message, 'SSRF_PROTECTION_ERROR', {
+      resourceName,
+      blockedUrl,
+      reason,
+    });
+    this.name = 'SsrfProtectionError';
+  }
+}
+
+/** Allowed URL schemes for user-provided URLs */
+const ALLOWED_SCHEMES = new Set(['http:', 'https:']);
+
+/**
+ * Cloud metadata endpoint IP addresses that must always be blocked.
+ */
+const BLOCKED_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal']);
+
+/**
+ * Parse an IPv4 address string into a 32-bit integer.
+ * Returns `null` for non-IPv4 strings.
+ */
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let result = 0;
+  for (const part of parts) {
+    const octet = Number(part);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
+    result = (result << 8) | octet;
+  }
+  // Convert to unsigned 32-bit
+  return result >>> 0;
+}
+
+/**
+ * Check whether an IPv4 address (as a 32-bit integer) falls inside a CIDR.
+ */
+function isInCidr(ip: number, network: number, prefixLen: number): boolean {
+  const mask = prefixLen === 0 ? 0 : (~0 << (32 - prefixLen)) >>> 0;
+  return (ip & mask) === (network & mask);
+}
+
+/** Private/reserved IPv4 CIDR ranges that are blocked. */
+const BLOCKED_IPV4_CIDRS: Array<{ network: number; prefix: number }> = [
+  { network: ipv4ToInt('10.0.0.0')!, prefix: 8 }, // RFC 1918
+  { network: ipv4ToInt('172.16.0.0')!, prefix: 12 }, // RFC 1918
+  { network: ipv4ToInt('192.168.0.0')!, prefix: 16 }, // RFC 1918
+  { network: ipv4ToInt('127.0.0.0')!, prefix: 8 }, // Loopback
+  { network: ipv4ToInt('169.254.0.0')!, prefix: 16 }, // Link-local
+  { network: ipv4ToInt('0.0.0.0')!, prefix: 8 }, // "This" network
+];
+
+/** Blocked IPv6 addresses / prefixes. */
+const BLOCKED_IPV6_EXACT = new Set(['::1', '::']);
+const BLOCKED_IPV6_PREFIXES = ['fe80:', 'fc00:', 'fd00:'];
+
+/**
+ * Determine whether an IP address string targets a private / reserved range.
+ */
+function isPrivateIp(ip: string): boolean {
+  // IPv4
+  if (net.isIPv4(ip)) {
+    const int = ipv4ToInt(ip);
+    if (int === null) return false;
+    return BLOCKED_IPV4_CIDRS.some((cidr) => isInCidr(int, cidr.network, cidr.prefix));
+  }
+
+  // IPv6
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase();
+    if (BLOCKED_IPV6_EXACT.has(lower)) return true;
+    if (BLOCKED_IPV6_PREFIXES.some((prefix) => lower.startsWith(prefix))) return true;
+    // IPv4-mapped IPv6 (::ffff:a.b.c.d)
+    const v4Mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(lower);
+    if (v4Mapped && v4Mapped[1]) {
+      return isPrivateIp(v4Mapped[1]);
+    }
+    return false;
+  }
+
+  return false;
+}
+
+/**
+ * Validate that a user-provided URL is safe to fetch (SSRF protection).
+ *
+ * Checks:
+ * - Only `http:` and `https:` schemes are allowed.
+ * - Hostname must not resolve to a private/reserved IP range.
+ * - Hostname must not be a known cloud metadata endpoint.
+ * - Bare IPv4/IPv6 addresses are checked directly.
+ *
+ * @throws {SsrfProtectionError} if the URL is blocked.
+ */
+function validateUrlSafety(url: string, resourceName: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new SsrfProtectionError(
+      `Invalid URL for resource '${resourceName}': ${url}`,
+      resourceName,
+      url,
+      'URL could not be parsed'
+    );
+  }
+
+  // 1. Scheme check
+  if (!ALLOWED_SCHEMES.has(parsed.protocol)) {
+    throw new SsrfProtectionError(
+      `Blocked URL scheme '${parsed.protocol}' for resource '${resourceName}'. Only http: and https: are allowed.`,
+      resourceName,
+      url,
+      `Disallowed scheme: ${parsed.protocol}`
+    );
+  }
+
+  // 2. Hostname extraction (strip brackets from IPv6 literals)
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+
+  if (!hostname) {
+    throw new SsrfProtectionError(
+      `URL has no hostname for resource '${resourceName}': ${url}`,
+      resourceName,
+      url,
+      'Missing hostname'
+    );
+  }
+
+  // 3. Block known metadata endpoints
+  if (BLOCKED_HOSTS.has(hostname.toLowerCase())) {
+    throw new SsrfProtectionError(
+      `Blocked cloud metadata endpoint for resource '${resourceName}': ${hostname}`,
+      resourceName,
+      url,
+      `Cloud metadata endpoint: ${hostname}`
+    );
+  }
+
+  // 4. If hostname is an IP literal, validate directly
+  if (net.isIP(hostname)) {
+    if (isPrivateIp(hostname)) {
+      throw new SsrfProtectionError(
+        `Blocked private/reserved IP address for resource '${resourceName}': ${hostname}`,
+        resourceName,
+        url,
+        `Private/reserved IP: ${hostname}`
+      );
+    }
+  }
+
+  // 5. Block suspicious hostnames that could bypass DNS (e.g. "0x7f000001", octal IPs)
+  //    Also block numeric-only hostnames that may be interpreted as IPs
+  if (/^(0x[\da-f]+|0\d+|\d+)$/i.test(hostname)) {
+    throw new SsrfProtectionError(
+      `Blocked suspicious numeric hostname for resource '${resourceName}': ${hostname}. Use a standard domain name or dotted-decimal IP.`,
+      resourceName,
+      url,
+      `Suspicious numeric hostname: ${hostname}`
     );
   }
 }
@@ -795,9 +969,13 @@ export class PathResolver {
   }
 
   /**
-   * Resolve content from an HTTP/HTTPS URL
+   * Resolve content from an HTTP/HTTPS URL.
+   * Validates the URL against SSRF attacks before fetching.
    */
   private async resolveHttpContent(url: string, resourceName: string = 'unknown'): Promise<string> {
+    // SSRF protection: validate URL before fetching
+    validateUrlSafety(url, resourceName);
+
     try {
       const response = await fetch(url);
 
