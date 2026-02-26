@@ -353,9 +353,12 @@ export abstract class BaseDeploymentStrategy<
                     deployedResource.manifest.metadata?.namespace || this.namespace || 'default',
                 },
               })) as KubernetesResource<unknown, unknown>;
-            } catch (_error) {
+            } catch (error) {
               // Cluster read failed — fall back to the deployment manifest.
               // This is expected for resources that don't support GET (e.g., events).
+              this.logger.debug('Cluster read failed, falling back to deployment manifest', {
+                err: error,
+              });
             }
           }
 

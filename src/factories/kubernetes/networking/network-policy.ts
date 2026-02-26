@@ -4,7 +4,7 @@ import { createResource } from '../../shared.js';
 
 export type V1NetworkPolicySpec = NonNullable<V1NetworkPolicy['spec']>;
 
-export function networkPolicy(resource: V1NetworkPolicy): Enhanced<V1NetworkPolicySpec, any> {
+export function networkPolicy(resource: V1NetworkPolicy): Enhanced<V1NetworkPolicySpec, object> {
   return createResource({
     ...resource,
     apiVersion: 'networking.k8s.io/v1',

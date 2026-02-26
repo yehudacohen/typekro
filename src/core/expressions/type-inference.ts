@@ -1,12 +1,13 @@
 /**
  * Type Inference for CEL Expressions
- * 
+ *
  * This module provides type inference capabilities for CEL expressions
  * generated from JavaScript expressions. It analyzes CEL expressions
  * to determine their result types and validates type compatibility.
  */
 
-import type { CelExpression, } from '../types/common.js';
+import { getComponentLogger } from '../logging/index.js';
+import type { CelExpression } from '../types/common.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import type { SchemaProxy } from '../types/serialization.js';
 import type { TypeInfo, TypeValidationResult } from './type-safety.js';
@@ -52,11 +53,7 @@ export class TypeInferenceError extends Error {
     functionName: string,
     location?: { start: number; end: number }
   ): TypeInferenceError {
-    return new TypeInferenceError(
-      `Unknown CEL function: ${functionName}`,
-      celExpression,
-      location
-    );
+    return new TypeInferenceError(`Unknown CEL function: ${functionName}`, celExpression, location);
   }
 
   static forIncompatibleOperands(
@@ -94,7 +91,7 @@ export class TypeInferenceWarning {
     public readonly message: string,
     public readonly celExpression: string,
     public readonly location?: { start: number; end: number }
-  ) { }
+  ) {}
 
   static forPotentialNullDereference(
     celExpression: string,
@@ -159,10 +156,7 @@ export class CelTypeInferenceEngine {
   /**
    * Infer the type of a CEL expression
    */
-  inferType(
-    celExpression: CelExpression,
-    context: TypeInferenceContext
-  ): CelTypeInferenceResult {
+  inferType(celExpression: CelExpression, context: TypeInferenceContext): CelTypeInferenceResult {
     try {
       const expression = celExpression.expression;
       const result = this.analyzeExpression(expression, context);
@@ -173,19 +167,21 @@ export class CelTypeInferenceEngine {
         errors: result.errors,
         warnings: result.warnings,
         confidence: result.confidence,
-        metadata: result.metadata
+        metadata: result.metadata,
       };
     } catch (error) {
       return {
         resultType: { typeName: 'unknown', optional: false, nullable: false },
         success: false,
-        errors: [new TypeInferenceError(
-          `Type inference failed: ${error instanceof Error ? error.message : String(error)}`,
-          celExpression.expression
-        )],
+        errors: [
+          new TypeInferenceError(
+            `Type inference failed: ${error instanceof Error ? error.message : String(error)}`,
+            celExpression.expression
+          ),
+        ],
         warnings: [],
         confidence: 0,
-        metadata: this.createEmptyMetadata()
+        metadata: this.createEmptyMetadata(),
       };
     }
   }
@@ -197,16 +193,13 @@ export class CelTypeInferenceEngine {
     celExpressions: CelExpression[],
     context: TypeInferenceContext
   ): CelTypeInferenceResult[] {
-    return celExpressions.map(expr => this.inferType(expr, context));
+    return celExpressions.map((expr) => this.inferType(expr, context));
   }
 
   /**
    * Validate type compatibility between expressions
    */
-  validateTypeCompatibility(
-    sourceType: TypeInfo,
-    targetType: TypeInfo
-  ): TypeValidationResult {
+  validateTypeCompatibility(sourceType: TypeInfo, targetType: TypeInfo): TypeValidationResult {
     const errors: TypeInferenceError[] = [];
     const warnings: TypeInferenceWarning[] = [];
 
@@ -217,49 +210,49 @@ export class CelTypeInferenceEngine {
         resultType: targetType,
         errors: [],
         warnings: [],
-        suggestions: []
+        suggestions: [],
       };
     }
 
     // Check assignability
     if (this.isAssignable(sourceType, targetType)) {
       if (this.requiresImplicitConversion(sourceType, targetType)) {
-        warnings.push(TypeInferenceWarning.forImplicitTypeConversion(
-          '',
-          sourceType.typeName,
-          targetType.typeName
-        ));
+        warnings.push(
+          TypeInferenceWarning.forImplicitTypeConversion(
+            '',
+            sourceType.typeName,
+            targetType.typeName
+          )
+        );
       }
 
       return {
         valid: true,
         resultType: targetType,
         errors: [],
-        warnings: warnings.map(w => ({ message: w.message, expression: w.celExpression })),
-        suggestions: []
+        warnings: warnings.map((w) => ({ message: w.message, expression: w.celExpression })),
+        suggestions: [],
       };
     }
 
     // Type mismatch
-    errors.push(TypeInferenceError.forIncompatibleOperands(
-      '',
-      '=',
-      sourceType,
-      targetType
-    ));
+    errors.push(TypeInferenceError.forIncompatibleOperands('', '=', sourceType, targetType));
 
     return {
       valid: false,
       resultType: targetType,
-      errors: errors.map(e => ({
-        message: e.message,
-        expression: e.celExpression,
-        expectedType: targetType,
-        actualType: sourceType,
-        name: 'TypeValidationError'
-      } as any)),
+      errors: errors.map(
+        (e) =>
+          ({
+            message: e.message,
+            expression: e.celExpression,
+            expectedType: targetType,
+            actualType: sourceType,
+            name: 'TypeValidationError',
+          }) as any
+      ),
       warnings: [],
-      suggestions: [`Convert ${sourceType.typeName} to ${targetType.typeName}`]
+      suggestions: [`Convert ${sourceType.typeName} to ${targetType.typeName}`],
     };
   }
 
@@ -311,7 +304,7 @@ export class CelTypeInferenceEngine {
       errors,
       warnings,
       confidence: 0.1,
-      metadata
+      metadata,
     };
   }
 
@@ -335,7 +328,7 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -347,10 +340,10 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
-    
+
     const leftTokens = tokens.slice(0, operatorIndex);
     const rightTokens = tokens.slice(operatorIndex + 1);
 
@@ -367,30 +360,23 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
     // Validate operand types
-    const resultType = this.getOperatorResultType(
-      operator,
-      leftResult.type,
-      rightResult.type
-    );
+    const resultType = this.getOperatorResultType(operator, leftResult.type, rightResult.type);
 
     if (!resultType) {
-      errors.push(TypeInferenceError.forIncompatibleOperands(
-        '',
-        operator,
-        leftResult.type,
-        rightResult.type
-      ));
+      errors.push(
+        TypeInferenceError.forIncompatibleOperands('', operator, leftResult.type, rightResult.type)
+      );
       return {
         type: { typeName: 'unknown', optional: false, nullable: false },
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -403,7 +389,7 @@ export class CelTypeInferenceEngine {
       errors: [...errors, ...leftResult.errors, ...rightResult.errors],
       warnings: [...warnings, ...leftResult.warnings, ...rightResult.warnings],
       confidence: Math.min(leftResult.confidence, rightResult.confidence) * 0.9,
-      metadata
+      metadata,
     };
   }
 
@@ -429,7 +415,7 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -441,10 +427,10 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
-    
+
     const functionSignature = this.functionTypes.get(functionName);
 
     if (!functionSignature) {
@@ -454,7 +440,7 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -466,7 +452,7 @@ export class CelTypeInferenceEngine {
       errors,
       warnings,
       confidence: 0.8,
-      metadata
+      metadata,
     };
   }
 
@@ -493,12 +479,12 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
     const [, resourceId, fieldPath] = match;
-    
+
     if (!resourceId || !fieldPath) {
       errors.push(TypeInferenceError.forUnresolvableReference('', reference));
       return {
@@ -506,7 +492,7 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -519,7 +505,7 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -537,7 +523,7 @@ export class CelTypeInferenceEngine {
       errors,
       warnings,
       confidence: 0.9,
-      metadata
+      metadata,
     };
   }
 
@@ -564,12 +550,12 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
     const [, fieldPath] = match;
-    
+
     if (!fieldPath) {
       errors.push(TypeInferenceError.forUnresolvableReference('', reference));
       return {
@@ -577,7 +563,7 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -589,7 +575,7 @@ export class CelTypeInferenceEngine {
       errors,
       warnings,
       confidence: 0.9,
-      metadata
+      metadata,
     };
   }
 
@@ -610,7 +596,7 @@ export class CelTypeInferenceEngine {
         errors: [],
         warnings: [],
         confidence: 1.0,
-        metadata
+        metadata,
       };
     }
 
@@ -621,7 +607,7 @@ export class CelTypeInferenceEngine {
         errors: [],
         warnings: [],
         confidence: 1.0,
-        metadata
+        metadata,
       };
     }
 
@@ -632,7 +618,7 @@ export class CelTypeInferenceEngine {
         errors: [],
         warnings: [],
         confidence: 1.0,
-        metadata
+        metadata,
       };
     }
 
@@ -643,7 +629,7 @@ export class CelTypeInferenceEngine {
         errors: [],
         warnings: [],
         confidence: 1.0,
-        metadata
+        metadata,
       };
     }
 
@@ -653,7 +639,7 @@ export class CelTypeInferenceEngine {
       errors: [],
       warnings: [],
       confidence: 0.5,
-      metadata
+      metadata,
     };
   }
 
@@ -679,7 +665,7 @@ export class CelTypeInferenceEngine {
         errors,
         warnings,
         confidence: 0,
-        metadata
+        metadata,
       };
     }
 
@@ -701,9 +687,15 @@ export class CelTypeInferenceEngine {
     return {
       type: resultType,
       errors: [...errors, ...conditionResult.errors, ...trueResult.errors, ...falseResult.errors],
-      warnings: [...warnings, ...conditionResult.warnings, ...trueResult.warnings, ...falseResult.warnings],
-      confidence: Math.min(conditionResult.confidence, trueResult.confidence, falseResult.confidence) * 0.9,
-      metadata
+      warnings: [
+        ...warnings,
+        ...conditionResult.warnings,
+        ...trueResult.warnings,
+        ...falseResult.warnings,
+      ],
+      confidence:
+        Math.min(conditionResult.confidence, trueResult.confidence, falseResult.confidence) * 0.9,
+      metadata,
     };
   }
 
@@ -715,56 +707,56 @@ export class CelTypeInferenceEngine {
     this.operatorTypes.set('>', {
       leftType: { typeName: 'number', optional: false, nullable: false },
       rightType: { typeName: 'number', optional: false, nullable: false },
-      returnType: { typeName: 'boolean', optional: false, nullable: false }
+      returnType: { typeName: 'boolean', optional: false, nullable: false },
     });
 
     this.operatorTypes.set('<', {
       leftType: { typeName: 'number', optional: false, nullable: false },
       rightType: { typeName: 'number', optional: false, nullable: false },
-      returnType: { typeName: 'boolean', optional: false, nullable: false }
+      returnType: { typeName: 'boolean', optional: false, nullable: false },
     });
 
     this.operatorTypes.set('==', {
       leftType: { typeName: 'any', optional: false, nullable: false },
       rightType: { typeName: 'any', optional: false, nullable: false },
-      returnType: { typeName: 'boolean', optional: false, nullable: false }
+      returnType: { typeName: 'boolean', optional: false, nullable: false },
     });
 
     this.operatorTypes.set('!=', {
       leftType: { typeName: 'any', optional: false, nullable: false },
       rightType: { typeName: 'any', optional: false, nullable: false },
-      returnType: { typeName: 'boolean', optional: false, nullable: false }
+      returnType: { typeName: 'boolean', optional: false, nullable: false },
     });
 
     // Logical operators
     this.operatorTypes.set('&&', {
       leftType: { typeName: 'boolean', optional: false, nullable: false },
       rightType: { typeName: 'boolean', optional: false, nullable: false },
-      returnType: { typeName: 'boolean', optional: false, nullable: false }
+      returnType: { typeName: 'boolean', optional: false, nullable: false },
     });
 
     this.operatorTypes.set('||', {
       leftType: { typeName: 'boolean', optional: false, nullable: false },
       rightType: { typeName: 'boolean', optional: false, nullable: false },
-      returnType: { typeName: 'boolean', optional: false, nullable: false }
+      returnType: { typeName: 'boolean', optional: false, nullable: false },
     });
 
     // Arithmetic operators
     this.operatorTypes.set('+', {
       leftType: { typeName: 'number', optional: false, nullable: false },
       rightType: { typeName: 'number', optional: false, nullable: false },
-      returnType: { typeName: 'number', optional: false, nullable: false }
+      returnType: { typeName: 'number', optional: false, nullable: false },
     });
 
     // CEL functions
     this.functionTypes.set('has', {
       parameters: [{ typeName: 'string', optional: false, nullable: false }],
-      returnType: { typeName: 'boolean', optional: false, nullable: false }
+      returnType: { typeName: 'boolean', optional: false, nullable: false },
     });
 
     this.functionTypes.set('size', {
       parameters: [{ typeName: 'any', optional: false, nullable: false }],
-      returnType: { typeName: 'number', optional: false, nullable: false }
+      returnType: { typeName: 'number', optional: false, nullable: false },
     });
   }
 
@@ -773,11 +765,13 @@ export class CelTypeInferenceEngine {
    */
   private tokenizeExpression(expression: string): string[] {
     // Simple tokenization - would need more sophisticated parsing for production
-    return expression.split(/\s+/).filter(token => token.length > 0);
+    return expression.split(/\s+/).filter((token) => token.length > 0);
   }
 
   private isBinaryOperation(tokens: string[]): boolean {
-    return tokens.some(token => ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '+', '-', '*', '/'].includes(token));
+    return tokens.some((token) =>
+      ['>', '<', '>=', '<=', '==', '!=', '&&', '||', '+', '-', '*', '/'].includes(token)
+    );
   }
 
   private isFunctionCall(tokens: string[]): boolean {
@@ -834,8 +828,7 @@ export class CelTypeInferenceEngine {
   }
 
   private requiresImplicitConversion(sourceType: TypeInfo, targetType: TypeInfo): boolean {
-    return sourceType.typeName !== targetType.typeName &&
-      targetType.typeName !== 'any';
+    return sourceType.typeName !== targetType.typeName && targetType.typeName !== 'any';
   }
 
   private inferResourceFieldType(resource: Enhanced<any, any>, fieldPath: string): TypeInfo {
@@ -856,28 +849,30 @@ export class CelTypeInferenceEngine {
       }
 
       return { typeName: 'unknown', optional: true, nullable: false };
-    } catch (_error) {
+    } catch (error) {
+      const logger = getComponentLogger('type-inference');
+      logger.debug('Failed to infer resource field type, returning unknown', { err: error });
       return { typeName: 'unknown', optional: true, nullable: false };
     }
   }
 
   private getMetadataFieldType(fieldParts: string[]): TypeInfo {
     const fieldName = fieldParts[0];
-    
+
     if (!fieldName) {
       return { typeName: 'unknown', optional: true, nullable: false };
     }
 
     // Common metadata fields
     const metadataTypes: Record<string, TypeInfo> = {
-      'name': { typeName: 'string', optional: false, nullable: false },
-      'namespace': { typeName: 'string', optional: true, nullable: false },
-      'labels': { typeName: 'Record<string, string>', optional: true, nullable: false },
-      'annotations': { typeName: 'Record<string, string>', optional: true, nullable: false },
-      'uid': { typeName: 'string', optional: true, nullable: false },
-      'resourceVersion': { typeName: 'string', optional: true, nullable: false },
-      'generation': { typeName: 'number', optional: true, nullable: false },
-      'creationTimestamp': { typeName: 'string', optional: true, nullable: false }
+      name: { typeName: 'string', optional: false, nullable: false },
+      namespace: { typeName: 'string', optional: true, nullable: false },
+      labels: { typeName: 'Record<string, string>', optional: true, nullable: false },
+      annotations: { typeName: 'Record<string, string>', optional: true, nullable: false },
+      uid: { typeName: 'string', optional: true, nullable: false },
+      resourceVersion: { typeName: 'string', optional: true, nullable: false },
+      generation: { typeName: 'number', optional: true, nullable: false },
+      creationTimestamp: { typeName: 'string', optional: true, nullable: false },
     };
 
     if (fieldName in metadataTypes) {
@@ -902,29 +897,29 @@ export class CelTypeInferenceEngine {
   private getSpecFieldType(resource: Enhanced<any, any>, fieldParts: string[]): TypeInfo {
     const resourceKind = resource.constructor.name;
     const fieldName = fieldParts[0];
-    
+
     if (!fieldName) {
       return { typeName: 'unknown', optional: true, nullable: false };
     }
 
     // Common spec fields by resource type
     const specFieldTypes: Record<string, Record<string, TypeInfo>> = {
-      'Deployment': {
-        'replicas': { typeName: 'number', optional: true, nullable: false },
-        'selector': { typeName: 'object', optional: false, nullable: false },
-        'template': { typeName: 'object', optional: false, nullable: false },
-        'strategy': { typeName: 'object', optional: true, nullable: false }
+      Deployment: {
+        replicas: { typeName: 'number', optional: true, nullable: false },
+        selector: { typeName: 'object', optional: false, nullable: false },
+        template: { typeName: 'object', optional: false, nullable: false },
+        strategy: { typeName: 'object', optional: true, nullable: false },
       },
-      'Service': {
-        'type': { typeName: 'string', optional: true, nullable: false },
-        'ports': { typeName: 'array', optional: false, nullable: false },
-        'selector': { typeName: 'Record<string, string>', optional: true, nullable: false },
-        'clusterIP': { typeName: 'string', optional: true, nullable: false }
+      Service: {
+        type: { typeName: 'string', optional: true, nullable: false },
+        ports: { typeName: 'array', optional: false, nullable: false },
+        selector: { typeName: 'Record<string, string>', optional: true, nullable: false },
+        clusterIP: { typeName: 'string', optional: true, nullable: false },
       },
-      'ConfigMap': {
-        'data': { typeName: 'Record<string, string>', optional: true, nullable: false },
-        'binaryData': { typeName: 'Record<string, string>', optional: true, nullable: false }
-      }
+      ConfigMap: {
+        data: { typeName: 'Record<string, string>', optional: true, nullable: false },
+        binaryData: { typeName: 'Record<string, string>', optional: true, nullable: false },
+      },
     };
 
     const resourceFields = specFieldTypes[resourceKind];
@@ -953,34 +948,34 @@ export class CelTypeInferenceEngine {
   private getStatusFieldType(resource: Enhanced<any, any>, fieldParts: string[]): TypeInfo {
     const resourceKind = resource.constructor.name;
     const fieldName = fieldParts[0];
-    
+
     if (!fieldName) {
       return { typeName: 'unknown', optional: true, nullable: false };
     }
 
     // Common status fields by resource type
     const statusFieldTypes: Record<string, Record<string, TypeInfo>> = {
-      'Deployment': {
-        'replicas': { typeName: 'number', optional: true, nullable: false },
-        'readyReplicas': { typeName: 'number', optional: true, nullable: false },
-        'availableReplicas': { typeName: 'number', optional: true, nullable: false },
-        'unavailableReplicas': { typeName: 'number', optional: true, nullable: false },
-        'updatedReplicas': { typeName: 'number', optional: true, nullable: false },
-        'conditions': { typeName: 'array', optional: true, nullable: false },
-        'observedGeneration': { typeName: 'number', optional: true, nullable: false }
+      Deployment: {
+        replicas: { typeName: 'number', optional: true, nullable: false },
+        readyReplicas: { typeName: 'number', optional: true, nullable: false },
+        availableReplicas: { typeName: 'number', optional: true, nullable: false },
+        unavailableReplicas: { typeName: 'number', optional: true, nullable: false },
+        updatedReplicas: { typeName: 'number', optional: true, nullable: false },
+        conditions: { typeName: 'array', optional: true, nullable: false },
+        observedGeneration: { typeName: 'number', optional: true, nullable: false },
       },
-      'Service': {
-        'loadBalancer': { typeName: 'object', optional: true, nullable: false },
-        'conditions': { typeName: 'array', optional: true, nullable: false }
+      Service: {
+        loadBalancer: { typeName: 'object', optional: true, nullable: false },
+        conditions: { typeName: 'array', optional: true, nullable: false },
       },
-      'Pod': {
-        'phase': { typeName: 'string', optional: true, nullable: false },
-        'conditions': { typeName: 'array', optional: true, nullable: false },
-        'hostIP': { typeName: 'string', optional: true, nullable: false },
-        'podIP': { typeName: 'string', optional: true, nullable: false },
-        'startTime': { typeName: 'string', optional: true, nullable: false },
-        'containerStatuses': { typeName: 'array', optional: true, nullable: false }
-      }
+      Pod: {
+        phase: { typeName: 'string', optional: true, nullable: false },
+        conditions: { typeName: 'array', optional: true, nullable: false },
+        hostIP: { typeName: 'string', optional: true, nullable: false },
+        podIP: { typeName: 'string', optional: true, nullable: false },
+        startTime: { typeName: 'string', optional: true, nullable: false },
+        containerStatuses: { typeName: 'array', optional: true, nullable: false },
+      },
     };
 
     const resourceFields = statusFieldTypes[resourceKind];
@@ -1012,7 +1007,10 @@ export class CelTypeInferenceEngine {
     return { typeName: 'unknown', optional: true, nullable: true };
   }
 
-  private inferSchemaFieldType(schemaProxy: SchemaProxy<any, any> | undefined, fieldPath: string): TypeInfo {
+  private inferSchemaFieldType(
+    schemaProxy: SchemaProxy<any, any> | undefined,
+    fieldPath: string
+  ): TypeInfo {
     if (!schemaProxy) {
       return { typeName: 'unknown', optional: false, nullable: false };
     }
@@ -1036,7 +1034,9 @@ export class CelTypeInferenceEngine {
       }
 
       return { typeName: 'unknown', optional: true, nullable: false };
-    } catch (_error) {
+    } catch (error) {
+      const logger = getComponentLogger('type-inference');
+      logger.debug('Failed to infer schema field type, returning unknown', { err: error });
       return { typeName: 'unknown', optional: true, nullable: false };
     }
   }
@@ -1077,7 +1077,7 @@ export class CelTypeInferenceEngine {
       typeName: `${type1.typeName} | ${type2.typeName}`,
       optional: type1.optional || type2.optional,
       nullable: type1.nullable || type2.nullable,
-      unionTypes: [type1, type2]
+      unionTypes: [type1, type2],
     };
   }
 
@@ -1088,7 +1088,7 @@ export class CelTypeInferenceEngine {
       schemaReferences: [],
       usesOptionalChaining: false,
       canReturnNull: false,
-      complexityScore: 0
+      complexityScore: 0,
     };
   }
 
