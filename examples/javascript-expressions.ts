@@ -1,14 +1,16 @@
 /**
  * JavaScript Expressions Example
- * 
+ *
  * This example demonstrates TypeKro's automatic JavaScript-to-CEL conversion.
  * You can write natural JavaScript expressions and TypeKro automatically
  * converts them to CEL expressions when they contain resource or schema references.
  */
 
 import { type } from 'arktype';
-import { toResourceGraph, Cel } from '../src/index.js';
+// In production: import * as simple from 'typekro/simple';
 import * as simple from '../src/factories/simple/index.js';
+// In production: import { toResourceGraph, Cel } from 'typekro';
+import { Cel, toResourceGraph } from '../src/index.js';
 
 // Define comprehensive schemas
 const FullStackAppSpec = type({
@@ -19,49 +21,49 @@ const FullStackAppSpec = type({
   features: {
     database: 'boolean',
     redis: 'boolean',
-    monitoring: 'boolean'
+    monitoring: 'boolean',
   },
   scaling: {
     minReplicas: 'number',
     maxReplicas: 'number',
-    targetCPU: 'number'
-  }
+    targetCPU: 'number',
+  },
 });
 
 const FullStackAppStatus = type({
   // Simple boolean expressions
   ready: 'boolean',
   healthy: 'boolean',
-  
+
   // String expressions with templates
   url: 'string',
   phase: 'string',
-  
+
   // Numeric expressions
   replicas: 'number',
   utilizationPercent: 'number',
-  
+
   // Complex nested objects
   components: {
     webapp: 'boolean',
     database: 'boolean',
     redis: 'boolean',
-    loadBalancer: 'boolean'
+    loadBalancer: 'boolean',
   },
-  
+
   // Arrays and computed values
   endpoints: 'string[]',
-  
+
   // Environment-specific values
   environment: 'string',
-  
+
   // Health metrics
   health: {
     overall: 'string',
     database: 'string',
     redis: 'string',
-    uptime: 'string'
-  }
+    uptime: 'string',
+  },
 });
 
 // Create the resource graph with comprehensive JavaScript expressions
@@ -73,7 +75,7 @@ export const fullStackApp = toResourceGraph(
     spec: FullStackAppSpec,
     status: FullStackAppStatus,
   },
-  
+
   // Resource builder with JavaScript expressions
   (schema) => {
     const resources: any = {};
@@ -88,27 +90,27 @@ export const fullStackApp = toResourceGraph(
         // Static values (no conversion needed)
         NODE_ENV: schema.spec.environment,
         PORT: '3000',
-        
+
         // JavaScript template literals (automatically converted to CEL)
         APP_NAME: `${schema.spec.name}-${schema.spec.environment}`,
-        
+
         // Conditional expressions (automatically converted to CEL)
         LOG_LEVEL: schema.spec.environment === 'production' ? 'warn' : 'debug',
-        
+
         // Complex template with multiple references
-        DATABASE_URL: schema.spec.features.database 
+        DATABASE_URL: schema.spec.features.database
           ? `postgres://user:pass@${resources.database?.status.podIP}:5432/${schema.spec.name}`
           : 'sqlite:///tmp/app.db',
-          
+
         // Conditional with fallback
-        REDIS_URL: schema.spec.features.redis 
+        REDIS_URL: schema.spec.features.redis
           ? `redis://${resources.redis?.status.podIP || 'localhost'}:6379`
           : '',
-          
+
         // Arithmetic expressions (converted to strings for env vars)
         MAX_CONNECTIONS: `${schema.spec.scaling.maxReplicas * 10}`,
-        WORKER_THREADS: `${schema.spec.replicas > 4 ? 4 : schema.spec.replicas}`
-      }
+        WORKER_THREADS: `${schema.spec.replicas > 4 ? 4 : schema.spec.replicas}`,
+      },
     });
 
     // Service for the webapp
@@ -116,7 +118,7 @@ export const fullStackApp = toResourceGraph(
       name: `${schema.spec.name}-service`,
       selector: { app: schema.spec.name },
       ports: [{ port: 80, targetPort: 3000 }],
-      type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP'
+      type: schema.spec.environment === 'production' ? 'LoadBalancer' : 'ClusterIP',
     });
 
     // Conditional database
@@ -127,15 +129,15 @@ export const fullStackApp = toResourceGraph(
         env: {
           POSTGRES_DB: schema.spec.name,
           POSTGRES_USER: 'user',
-          POSTGRES_PASSWORD: 'password'
+          POSTGRES_PASSWORD: 'password',
         },
-        ports: [{ containerPort: 5432 }]
+        ports: [{ containerPort: 5432 }],
       });
 
       resources.databaseService = simple.Service({
         name: `${schema.spec.name}-db-service`,
         selector: { app: `${schema.spec.name}-db` },
-        ports: [{ port: 5432, targetPort: 5432 }]
+        ports: [{ port: 5432, targetPort: 5432 }],
       });
     }
 
@@ -144,27 +146,28 @@ export const fullStackApp = toResourceGraph(
       resources.redis = simple.Deployment({
         name: `${schema.spec.name}-redis`,
         image: 'redis:7',
-        ports: [{ containerPort: 6379 }]
+        ports: [{ containerPort: 6379 }],
       });
 
       resources.redisService = simple.Service({
         name: `${schema.spec.name}-redis-service`,
         selector: { app: `${schema.spec.name}-redis` },
-        ports: [{ port: 6379, targetPort: 6379 }]
+        ports: [{ port: 6379, targetPort: 6379 }],
       });
     }
 
     return resources;
   },
-  
+
   // Status builder with comprehensive JavaScript expressions
   // All of these are automatically converted to CEL expressions
   (schema, resources) => ({
     // ✅ Simple boolean expressions
-    ready: resources.webapp.status.readyReplicas > 0 && 
-           (!schema.spec.features.database || resources.database?.status.readyReplicas > 0) &&
-           (!schema.spec.features.redis || resources.redis?.status.readyReplicas > 0),
-           
+    ready:
+      resources.webapp.status.readyReplicas > 0 &&
+      (!schema.spec.features.database || resources.database?.status.readyReplicas > 0) &&
+      (!schema.spec.features.redis || resources.redis?.status.readyReplicas > 0),
+
     healthy: resources.webapp.status.readyReplicas === schema.spec.replicas,
 
     // ✅ Template literals with interpolation
@@ -175,13 +178,14 @@ export const fullStackApp = toResourceGraph(
         : 'pending',
 
     // ✅ Complex conditional expressions
-    phase: resources.webapp.status.readyReplicas === 0 
-      ? 'stopped'
-      : resources.webapp.status.readyReplicas < schema.spec.replicas
-        ? 'scaling'
-        : resources.webapp.status.readyReplicas === schema.spec.replicas
-          ? 'ready'
-          : 'overscaled',
+    phase:
+      resources.webapp.status.readyReplicas === 0
+        ? 'stopped'
+        : resources.webapp.status.readyReplicas < schema.spec.replicas
+          ? 'scaling'
+          : resources.webapp.status.readyReplicas === schema.spec.replicas
+            ? 'ready'
+            : 'overscaled',
 
     // ✅ Direct resource references
     replicas: resources.webapp.status.readyReplicas,
@@ -192,13 +196,9 @@ export const fullStackApp = toResourceGraph(
     // ✅ Complex nested objects with JavaScript expressions
     components: {
       webapp: resources.webapp.status.readyReplicas > 0,
-      database: schema.spec.features.database 
-        ? resources.database?.status.readyReplicas > 0 
-        : true,
-      redis: schema.spec.features.redis 
-        ? resources.redis?.status.readyReplicas > 0 
-        : true,
-      loadBalancer: resources.webappService.status?.loadBalancer?.ingress?.length > 0
+      database: schema.spec.features.database ? resources.database?.status.readyReplicas > 0 : true,
+      redis: schema.spec.features.redis ? resources.redis?.status.readyReplicas > 0 : true,
+      loadBalancer: resources.webappService.status?.loadBalancer?.ingress?.length > 0,
     },
 
     // ✅ Array expressions (for simple cases)
@@ -214,28 +214,32 @@ export const fullStackApp = toResourceGraph(
     // ✅ Complex health object with nested expressions
     health: {
       // Conditional string expressions
-      overall: resources.webapp.status.readyReplicas > 0 && 
-               (!schema.spec.features.database || resources.database?.status.readyReplicas > 0) &&
-               (!schema.spec.features.redis || resources.redis?.status.readyReplicas > 0)
-        ? 'healthy' 
-        : 'unhealthy',
+      overall:
+        resources.webapp.status.readyReplicas > 0 &&
+        (!schema.spec.features.database || resources.database?.status.readyReplicas > 0) &&
+        (!schema.spec.features.redis || resources.redis?.status.readyReplicas > 0)
+          ? 'healthy'
+          : 'unhealthy',
 
       // Optional chaining with fallbacks
       database: schema.spec.features.database
-        ? resources.database?.status.conditions?.find((c: any) => c.type === 'Available')?.status === 'True'
+        ? resources.database?.status.conditions?.find((c: any) => c.type === 'Available')
+            ?.status === 'True'
           ? 'connected'
           : 'disconnected'
         : 'disabled',
 
       redis: schema.spec.features.redis
-        ? resources.redis?.status.readyReplicas > 0 ? 'connected' : 'disconnected'
+        ? resources.redis?.status.readyReplicas > 0
+          ? 'connected'
+          : 'disconnected'
         : 'disabled',
 
       // Template with complex logic
       uptime: resources.webapp.metadata?.creationTimestamp
         ? `Running since ${resources.webapp.metadata.creationTimestamp}`
-        : 'Not started'
-    }
+        : 'Not started',
+    },
   })
 );
 
@@ -249,13 +253,13 @@ export async function demonstrateJavaScriptExpressions() {
     features: {
       database: true,
       redis: true,
-      monitoring: false
+      monitoring: false,
     },
     scaling: {
       minReplicas: 1,
       maxReplicas: 10,
-      targetCPU: 70
-    }
+      targetCPU: 70,
+    },
   };
 
   // Direct factory - JavaScript expressions evaluated with resolved dependencies
@@ -283,11 +287,11 @@ export const advancedExample = toResourceGraph(
     apiVersion: 'example.com/v1alpha1',
     kind: 'AdvancedApp',
     spec: type({ name: 'string', replicas: 'number' }),
-    status: type({ 
-      ready: 'boolean', 
+    status: type({
+      ready: 'boolean',
       podNames: 'string[]',
       healthyPods: 'number',
-      summary: 'string'
+      summary: 'string',
     }),
   },
   (schema) => ({
@@ -295,8 +299,8 @@ export const advancedExample = toResourceGraph(
       name: schema.spec.name,
       image: 'nginx:latest',
       replicas: schema.spec.replicas,
-      ports: [{ containerPort: 80 }]
-    })
+      ports: [{ containerPort: 80 }],
+    }),
   }),
   (schema, resources) => ({
     // ✅ JavaScript expressions for simple cases
@@ -311,64 +315,61 @@ export const advancedExample = toResourceGraph(
     ),
 
     // ✅ Mix JavaScript and CEL as needed
-    summary: `${schema.spec.name} has ${resources.deployment.status.readyReplicas} ready pods`
+    summary: `${schema.spec.name} has ${resources.deployment.status.readyReplicas} ready pods`,
   })
 );
 
 // Performance comparison example
 export function performanceComparison() {
   console.log('=== Performance Comparison ===');
-  
+
   // Static values - no conversion overhead
   const _staticStatus = {
     environment: 'production',
     version: '1.0.0',
-    enabled: true
+    enabled: true,
   };
-  
+
   // JavaScript expressions - converted to CEL only when containing references
   const _dynamicStatus = (schema: any, resources: any) => ({
     // No conversion - static values
     staticField: 'unchanged',
-    
+
     // Converted to CEL - contains resource reference
     ready: resources.deployment.status.readyReplicas > 0,
-    
+
     // Converted to CEL - contains schema reference
     name: schema.spec.name,
-    
+
     // No conversion - pure JavaScript computation
     timestamp: Date.now(),
-    
+
     // Converted to CEL - mixed static and dynamic
-    url: `https://${resources.service.status.clusterIP}/api/v1`
+    url: `https://${resources.service.status.clusterIP}/api/v1`,
   });
-  
+
   console.log('TypeKro optimizes by only converting expressions with resource/schema references');
 }
 
 // Migration example from manual CEL to JavaScript
 export function migrationExample() {
   console.log('=== Migration from Manual CEL ===');
-  
+
   // Before: Manual CEL expressions (legacy approach - DON'T DO THIS)
   const _beforeStatus = (_schema: any, resources: any) => ({
     ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
     url: Cel.template('https://%s', resources.service.status.clusterIP),
-    phase: Cel.expr(
-      resources.deployment.status.readyReplicas, 
-      ' > 0 ? "running" : "pending"'
-    )
+    phase: Cel.expr(resources.deployment.status.readyReplicas, ' > 0 ? "running" : "pending"'),
   });
-  
+
   // After: Natural JavaScript expressions (modern approach)
   const _afterStatus = (_schema: any, resources: any) => ({
     // ✨ Natural JavaScript - automatically converted to CEL
     ready: resources.deployment.status.readyReplicas > 0,
     url: `https://${resources.service.status.clusterIP}`,
-    phase: resources.deployment.status.readyReplicas > 0 ? 'running' : 'pending'
+    phase: resources.deployment.status.readyReplicas > 0 ? 'running' : 'pending',
   });
-  
+
   console.log('Migration is straightforward - replace CEL with natural JavaScript');
 }
 

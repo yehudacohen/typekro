@@ -18,6 +18,7 @@
  */
 
 import { type } from 'arktype';
+// In production: import { kubernetesComposition, simple } from 'typekro';
 import { kubernetesComposition, simple } from '../src/index.js';
 
 // =============================================================================
