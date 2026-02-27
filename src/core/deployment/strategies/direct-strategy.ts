@@ -141,15 +141,15 @@ export class DirectDeploymentStrategy<
 
       // Merge re-executed status with base status
       // Priority: resolved spec-based values from re-execution > evaluated CEL expressions from base
-      const hybridStatus = { ...baseProxy.status };
+      const hybridStatus: Record<string, unknown> = { ...baseProxy.status };
 
       for (const [key, value] of Object.entries(reExecutedStatus)) {
-        const baseValue = (baseProxy.status as any)[key];
+        const baseValue = (baseProxy.status as Record<string, unknown>)[key];
         const reExecutedValue = value;
 
         // If the re-executed value is not a CEL expression, it's a resolved spec-based value - use it
         if (!isCelExpression(reExecutedValue)) {
-          (hybridStatus as any)[key] = reExecutedValue;
+          hybridStatus[key] = reExecutedValue;
           this.logger.debug('Using re-executed value for spec-based field', {
             field: key,
             value: reExecutedValue,
@@ -158,7 +158,7 @@ export class DirectDeploymentStrategy<
         } else {
           // Re-executed value is a CEL expression - let the base strategy handle it
           // The base strategy will have already evaluated it if possible
-          (hybridStatus as any)[key] = baseValue;
+          hybridStatus[key] = baseValue;
           this.logger.debug('Using base strategy value for CEL expression field', {
             field: key,
             baseValue,
@@ -170,7 +170,7 @@ export class DirectDeploymentStrategy<
 
       return {
         ...baseProxy,
-        status: hybridStatus,
+        status: hybridStatus as TStatus,
       } as Enhanced<TSpec, TStatus>;
     }
 
