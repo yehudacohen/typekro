@@ -1,9 +1,9 @@
 /**
  * References module exports
  *
- * NOTE: Alchemy-aware reference resolution functions have been moved to
- * `src/alchemy/resolver.js` (their canonical home).  Import them from
- * `src/core.ts` or `src/alchemy/resolver.js` directly.
+ * NOTE: Alchemy-aware reference resolution functions live in
+ * `src/alchemy/resolver.js` (their canonical home) and are re-exported
+ * from the main entry point (`src/index.ts`).
  */
 
 // Compile-time CEL optimization
