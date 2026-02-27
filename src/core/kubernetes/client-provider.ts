@@ -539,7 +539,10 @@ export class KubernetesClientProvider {
    * @param clientClass - The API client class constructor
    * @returns Cached or new API client instance
    */
-  private getCachedClient<T>(clientType: string, clientClass: new (...args: any[]) => T): T {
+  private getCachedClient<T extends k8s.ApiType>(
+    clientType: string,
+    clientClass: new (config: k8s.Configuration) => T
+  ): T {
     // Check if we have a cached client
     if (this.clientCache.has(clientType)) {
       this.logger.debug('Using cached API client', { clientType });
@@ -554,9 +557,9 @@ export class KubernetesClientProvider {
       if (isBunRuntime() && this.kubeConfig) {
         client = createBunCompatibleApiClient(
           this.kubeConfig,
-          clientClass as any,
+          clientClass,
           this.config?.httpTimeouts
-        ) as T;
+        );
         this.logger.debug('Created API client using Bun-compatible HTTP library', {
           clientType,
           runtime: 'bun',
@@ -564,7 +567,7 @@ export class KubernetesClientProvider {
         });
       } else {
         // Use the standard makeApiClient approach for Node.js
-        client = this.kubeConfig?.makeApiClient(clientClass as any) as T;
+        client = this.kubeConfig?.makeApiClient(clientClass) as T;
         this.logger.debug('Created API client using makeApiClient', {
           clientType,
           runtime: 'node',
