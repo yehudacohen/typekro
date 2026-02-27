@@ -6,7 +6,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { isCelExpression, isKubernetesRef } from '../../utils/index';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { DEFAULT_RESOURCE_READY_TIMEOUT } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ResourceReadinessTimeoutError } from '../deployment/errors.js';

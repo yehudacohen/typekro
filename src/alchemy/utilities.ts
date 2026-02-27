@@ -5,8 +5,8 @@
  * with TypeKro resources.
  */
 
+import { generateDeterministicResourceId } from '../core/resources/id.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
-import { generateDeterministicResourceId } from '../utils/helpers.js';
 
 /**
  * Utility function to create deterministic resource IDs for alchemy resources

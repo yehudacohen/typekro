@@ -6,7 +6,6 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { ensureReadinessEvaluator, getResourceId } from '../../utils/helpers.js';
 import {
   DEFAULT_CRD_READY_TIMEOUT,
   DEFAULT_DELETE_TIMEOUT,
@@ -22,8 +21,10 @@ import {
 } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
 import type { DeploymentModeType } from '../references/index.js';
 import { DeploymentMode, ReferenceResolver } from '../references/index.js';
+import { getResourceId } from '../resources/id.js';
 import type {
   DeploymentClosure,
   DeploymentContext,

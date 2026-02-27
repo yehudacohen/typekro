@@ -8,9 +8,9 @@
 // Phase 4 alchemy integration
 import type * as k8s from '@kubernetes/client-node';
 import { TypeKroError } from '../core/errors.js';
+import { generateDeterministicResourceId } from '../core/resources/id.js';
 import type { ResolutionContext } from '../core/types/deployment.js';
 import type { KubernetesResource } from '../core/types/kubernetes.js';
-import { generateDeterministicResourceId } from '../utils/helpers.js';
 import { isCelExpression, isKubernetesRef } from '../utils/type-guards.js';
 
 // Define alchemy-compatible types based on the actual alchemy domain model

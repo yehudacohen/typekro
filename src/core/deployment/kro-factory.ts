@@ -7,13 +7,7 @@
 
 import * as k8s from '@kubernetes/client-node';
 import { compile as compileExpression } from 'angular-expressions';
-// NOTE: alchemy/deployment.js is loaded via dynamic import() at point of use
-// to avoid a core/ → alchemy/ static dependency.
-// See deployViaAlchemy() and deployRGDViaAlchemy().
-// NOTE: kroCustomResource and resourceGraphDefinition are loaded via dynamic
-// import() at point of use to avoid a core/ → factories/ static dependency.
-// See deployViaAlchemy(), deployRGDViaAlchemy(), and deployWithDirectEngine().
-import { getResourceId, preserveNonEnumerableProperties } from '../../utils/helpers.js';
+import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_KRO_INSTANCE_TIMEOUT,
@@ -35,6 +29,13 @@ import {
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
+// NOTE: alchemy/deployment.js is loaded via dynamic import() at point of use
+// to avoid a core/ → alchemy/ static dependency.
+// See deployViaAlchemy() and deployRGDViaAlchemy().
+// NOTE: kroCustomResource and resourceGraphDefinition are loaded via dynamic
+// import() at point of use to avoid a core/ → factories/ static dependency.
+// See deployViaAlchemy(), deployRGDViaAlchemy(), and deployWithDirectEngine().
+import { getResourceId } from '../resources/id.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';

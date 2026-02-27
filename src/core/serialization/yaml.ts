@@ -8,11 +8,10 @@
 import * as yaml from 'js-yaml';
 import {
   extractResourceReferences,
-  generateDeterministicResourceId,
-  getInnerCelPath,
-  processResourceReferences,
-} from '../../utils/index';
-import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+  isCelExpression,
+  isKubernetesRef,
+} from '../../utils/type-guards.js';
+import { generateDeterministicResourceId } from '../resources/id.js';
 import type {
   KroExternalRef,
   KroResourceGraphDefinition,
@@ -23,6 +22,7 @@ import type {
   SerializationOptions,
 } from '../types/serialization.js';
 import type { KubernetesResource } from '../types.js';
+import { getInnerCelPath, processResourceReferences } from './cel-references.js';
 import { generateKroSchema } from './schema.js';
 
 /**
