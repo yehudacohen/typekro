@@ -14,8 +14,17 @@ export {
   ensureResourceTypeRegistered,
   KroTypeKroDeployer,
 } from './alchemy/deployment.js';
+export {
+  buildResourceGraphWithDeferredResolution,
+  containsAlchemyPromises,
+  createAlchemyReferenceResolver,
+  extractAlchemyPromises,
+  hasMixedDependencies,
+  isAlchemyPromise,
+  resolveAllReferencesInAlchemyContext,
+  resolveReferencesWithAlchemy,
+} from './alchemy/resolver.js';
 export { getCurrentCompositionContext } from './core/composition/context.js';
-
 // =============================================================================
 // IMPERATIVE COMPOSITION
 // =============================================================================
@@ -26,6 +35,11 @@ export {
   getCompositionDebugLogs,
   kubernetesComposition,
 } from './core/composition/imperative.js';
+// =============================================================================
+// COMPOSITION FUNCTIONS
+// =============================================================================
+export type { WebServiceComponent } from './core/composition/index.js';
+export { createWebService } from './core/composition/index.js';
 export {
   type TypeKroRuntimeConfig,
   typeKroRuntimeBootstrap,
