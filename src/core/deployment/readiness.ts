@@ -7,13 +7,13 @@
 import type * as k8s from '@kubernetes/client-node';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../config/defaults.js';
 import type { DeploymentEvent, DeploymentOptions, ReadinessConfig } from '../types/deployment.js';
-import { ResourceReadinessTimeoutError } from '../types/deployment.js';
 import type {
   DeployedResource,
   DeploymentResource,
   GenericResourceStatus as K8sGenericResourceStatus,
 } from '../types.js';
 import type { DebugLogger } from './debug-logger.js';
+import { ResourceReadinessTimeoutError } from './errors.js';
 
 export class ResourceReadinessChecker {
   private onResourceReady?: (resource: DeployedResource) => void;

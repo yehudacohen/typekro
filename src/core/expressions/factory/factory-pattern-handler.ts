@@ -13,7 +13,7 @@ import { extractResourceReferences, isKubernetesRef } from '../../../utils/type-
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { ConversionError, TypeKroError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
-import type { AnalysisContext, CelConversionResult } from '../analysis/analyzer.js';
+import type { AnalysisContext, CelConversionResult } from '../analysis/shared-types.js';
 
 /**
  * Factory pattern types supported by TypeKro

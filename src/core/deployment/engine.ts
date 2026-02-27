@@ -37,11 +37,6 @@ import type {
   ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
-import {
-  ResourceConflictError,
-  ResourceDeploymentError,
-  UnsupportedMediaTypeError,
-} from '../types/deployment.js';
 import type { Scope } from '../types/serialization.js';
 import type {
   DeployableK8sResource,
@@ -54,6 +49,11 @@ import type {
 import { analyzeClosureDependencies, integrateClosuresIntoPlan } from './closure-planner.js';
 import { CRDManager } from './crd-manager.js';
 import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
+import {
+  ResourceConflictError,
+  ResourceDeploymentError,
+  UnsupportedMediaTypeError,
+} from './errors.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
 import {
   enhanceResourceForEvaluation,

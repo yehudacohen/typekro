@@ -9,12 +9,12 @@ import type * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/index';
 import { DEFAULT_RESOURCE_READY_TIMEOUT } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { ResourceReadinessTimeoutError } from '../deployment/errors.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
-import { ResourceReadinessTimeoutError } from '../types/deployment.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import type {
   CelExpression,

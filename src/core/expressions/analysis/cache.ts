@@ -3,7 +3,7 @@
  * Provides multi-level caching with performance monitoring and memory management
  */
 
-import type { CelConversionResult, AnalysisContext } from './analyzer.js';
+import type { AnalysisContext, CelConversionResult } from './shared-types.js';
 
 /**
  * Cache entry with metadata for performance monitoring and TTL
@@ -93,7 +93,7 @@ export class ExpressionCache {
     astEntryCount: 0,
     astMemoryUsage: 0,
     totalEvictions: 0,
-    lastCleanupTime: Date.now()
+    lastCleanupTime: Date.now(),
   };
 
   constructor(options: CacheOptions = {}) {
@@ -103,7 +103,7 @@ export class ExpressionCache {
       ttlMs: options.ttlMs ?? 5 * 60 * 1000, // 5 minutes
       cleanupIntervalMs: options.cleanupIntervalMs ?? 0, // Disable by default to prevent hanging
       enableASTCache: options.enableASTCache ?? true,
-      enableMetrics: options.enableMetrics ?? true
+      enableMetrics: options.enableMetrics ?? true,
     };
 
     if (this.options.cleanupIntervalMs > 0) {
@@ -165,7 +165,7 @@ export class ExpressionCache {
       timestamp: Date.now(),
       accessCount: 1,
       lastAccessed: Date.now(),
-      size
+      size,
     };
 
     // Check if we need to evict entries before adding
@@ -222,7 +222,7 @@ export class ExpressionCache {
       timestamp: Date.now(),
       accessCount: 1,
       lastAccessed: Date.now(),
-      size
+      size,
     };
 
     this.astCache.set(expression, entry);
@@ -306,7 +306,7 @@ export class ExpressionCache {
     const contextData = {
       type: context.type,
       availableReferences: Object.keys(context.availableReferences || {}).sort(),
-      factoryType: context.factoryType || 'direct'
+      factoryType: context.factoryType || 'direct',
     };
 
     return this.simpleHash(JSON.stringify(contextData));
@@ -319,7 +319,7 @@ export class ExpressionCache {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
       const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
+      hash = (hash << 5) - hash + char;
       hash = hash & hash; // Convert to 32-bit integer
     }
     return hash.toString(36);
@@ -343,7 +343,10 @@ export class ExpressionCache {
       size += result.celExpression.expression.length * 2; // UTF-16
     }
 
-    size += result.dependencies.reduce((acc, dep) => acc + (dep.resourceId?.length || 0) * 2 + (dep.fieldPath?.length || 0) * 2 + 50, 0);
+    size += result.dependencies.reduce(
+      (acc, dep) => acc + (dep.resourceId?.length || 0) * 2 + (dep.fieldPath?.length || 0) * 2 + 50,
+      0
+    );
     size += result.sourceMap.length * 100; // Rough estimate for source map entries
     size += result.errors.length * 200; // Rough estimate for error objects
 
@@ -423,9 +426,8 @@ export class ExpressionCache {
    * Update hit ratio statistics
    */
   private updateHitRatio(): void {
-    this.stats.hitRatio = this.stats.totalRequests > 0
-      ? this.stats.cacheHits / this.stats.totalRequests
-      : 0;
+    this.stats.hitRatio =
+      this.stats.totalRequests > 0 ? this.stats.cacheHits / this.stats.totalRequests : 0;
   }
 
   /**
@@ -447,7 +449,7 @@ export class ExpressionCache {
       astEntryCount: 0,
       astMemoryUsage: 0,
       totalEvictions: 0,
-      lastCleanupTime: Date.now()
+      lastCleanupTime: Date.now(),
     };
   }
 

@@ -11,8 +11,8 @@ import {
   KUBERNETES_REF_BRAND,
   MIXED_TEMPLATE_BRAND,
 } from '../core/constants/brands.js';
-import type { NestedCompositionResource } from '../core/types/deployment.js';
-import type { CelExpression, KubernetesRef, ResourceReference } from '../core/types.js';
+import type { CelExpression, KubernetesRef } from '../core/types/common.js';
+import type { ResourceReference } from '../core/types/references.js';
 
 /**
  * Type guard to check if a value is a compile-time KubernetesRef.
@@ -120,9 +120,12 @@ export function extractResourceReferences(obj: unknown): KubernetesRef<unknown>[
 
 /**
  * Type guard for NestedCompositionResource
+ *
+ * Uses a structural return type to avoid importing from deployment.ts,
+ * which would create a circular dependency through the dependency resolver chain.
  */
 export function isNestedCompositionResource(
   obj: unknown
-): obj is NestedCompositionResource<any, any> {
+): obj is { readonly __compositionId: string; readonly spec: unknown; readonly status: unknown } {
   return BrandChecks.isNestedComposition(obj);
 }
