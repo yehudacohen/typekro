@@ -9,13 +9,10 @@ import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { DependencyGraph } from '../core/dependencies/index.js';
 import { ResourceDeploymentError } from '../core/deployment/errors.js';
 import { getComponentLogger } from '../core/logging/index.js';
+import { ensureReadinessEvaluator } from '../core/readiness/evaluator.js';
+import { generateDeterministicResourceId, getResourceId } from '../core/resources/id.js';
 import type { DeploymentOptions, ResourceGraph } from '../core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.js';
-import {
-  ensureReadinessEvaluator,
-  generateDeterministicResourceId,
-  getResourceId,
-} from '../utils/helpers.js';
 import type { TypeKroDeployer } from './types.js';
 
 const logger = getComponentLogger('deployers');

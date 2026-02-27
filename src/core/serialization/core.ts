@@ -5,7 +5,6 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-import { getResourceId } from '../../utils/helpers.js';
 import { containsKubernetesRefs, isCelExpression } from '../../utils/type-guards.js';
 import { runInStatusBuilderContext } from '../composition/context.js';
 import { DependencyResolver } from '../dependencies/index.js';
@@ -28,6 +27,7 @@ import {
 } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
+import { getResourceId } from '../resources/id.js';
 import type {
   DeploymentClosure,
   FactoryForMode,

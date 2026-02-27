@@ -1,7 +1,8 @@
-import { getInnerCelPath, isCelExpression, isKubernetesRef } from '../../utils/index';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
+import { getInnerCelPath } from '../serialization/cel-references.js';
 import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
 
 const logger = getComponentLogger('cel');

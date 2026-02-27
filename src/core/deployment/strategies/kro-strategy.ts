@@ -8,12 +8,13 @@
 import type * as k8s from '@kubernetes/client-node';
 import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
-import { getResourceId, preserveNonEnumerableProperties } from '../../../utils/helpers.js';
+import { preserveNonEnumerableProperties } from '../../../utils/helpers.js';
 import { DEFAULT_DEPLOYMENT_TIMEOUT, DEFAULT_RGD_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { DeploymentTimeoutError, ResourceGraphFactoryError, TypeKroError } from '../../errors.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { getResourceId } from '../../resources/id.js';
 import { generateKroSchemaFromArktype } from '../../serialization/schema.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
 import type {

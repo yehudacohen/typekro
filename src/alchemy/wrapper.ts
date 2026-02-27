@@ -5,7 +5,7 @@
  * Static resource registration functions have been removed to avoid conflicts.
  */
 
-import { generateDeterministicResourceId as _generateDeterministicResourceId } from '../utils/helpers.js';
+import { generateDeterministicResourceId as _generateDeterministicResourceId } from '../core/resources/id.js';
 
 /**
  * Utility to check if a factory is alchemy-managed

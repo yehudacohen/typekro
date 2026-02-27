@@ -119,6 +119,18 @@ export { createResource } from './core/proxy/create-resource.js';
 // References Module (CEL, Schema Proxy, External Refs)
 // =============================================================================
 export * from './core/references/index.js';
+// =============================================================================
+// Core Utilities
+// =============================================================================
+export {
+  generateDeterministicResourceId,
+  generateResourceId,
+} from './core/resources/id';
+export {
+  generateCelReference,
+  getInnerCelPath,
+  processResourceReferences,
+} from './core/serialization/cel-references';
 export type {
   ResourceBuilder,
   ResourceDependency,
@@ -139,6 +151,7 @@ export {
   validateResourceGraph,
   visualizeDependencies,
 } from './core/serialization/index.js';
+export { arktypeToKroSchema } from './core/serialization/schema';
 // =============================================================================
 // Core Types and Interfaces
 // =============================================================================
@@ -162,20 +175,11 @@ export {
 export { customResource } from './factories/kubernetes/extensions/custom-resource.js';
 // Factory types are now exported from the organized factories structure
 export type * from './factories/kubernetes/types.js';
-// =============================================================================
-// Core Utilities
-// =============================================================================
 export {
-  arktypeToKroSchema,
   containsKubernetesRefs,
   extractResourceReferences,
-  generateCelReference,
-  generateDeterministicResourceId,
-  generateResourceId,
-  getInnerCelPath,
   isCelExpression,
   isKubernetesRef,
   isResourceReference,
   pascalCase,
-  processResourceReferences,
 } from './utils/index';

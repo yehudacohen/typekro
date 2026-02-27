@@ -118,6 +118,18 @@ export {
   ReferenceResolver,
 } from './core/references/index.js';
 export type { DeploymentMode as DeploymentModeType } from './core/references/resolver.js';
+// =============================================================================
+// UTILITIES
+// =============================================================================
+export {
+  generateDeterministicResourceId,
+  generateResourceId,
+} from './core/resources/id.js';
+export {
+  generateCelReference,
+  getInnerCelPath,
+  processResourceReferences,
+} from './core/serialization/cel-references.js';
 export type {
   ResourceBuilder,
   ResourceDependency,
@@ -138,6 +150,7 @@ export {
   validateResourceGraph,
   visualizeDependencies,
 } from './core/serialization/index.js';
+export { arktypeToKroSchema } from './core/serialization/schema.js';
 export type { ResolutionContext } from './core/types/deployment.js';
 // =============================================================================
 // CORE TYPES (all type-only exports from core/types)
@@ -165,20 +178,11 @@ export * from './factories/index.js';
 // KUBERNETES TYPES (factory-specific types)
 // =============================================================================
 export type * from './factories/kubernetes/types.js';
-// =============================================================================
-// UTILITIES
-// =============================================================================
 export {
-  arktypeToKroSchema,
   containsKubernetesRefs,
   extractResourceReferences,
-  generateCelReference,
-  generateDeterministicResourceId,
-  generateResourceId,
-  getInnerCelPath,
   isCelExpression,
   isKubernetesRef,
   isResourceReference,
   pascalCase,
-  processResourceReferences,
 } from './utils/index.js';

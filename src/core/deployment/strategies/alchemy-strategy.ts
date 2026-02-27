@@ -5,10 +5,10 @@
  * in alchemy resources with individual resource registration.
  */
 
-import { ensureReadinessEvaluator } from '../../../utils/helpers.js';
 import { DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { ensureReadinessEvaluator } from '../../readiness/evaluator.js';
 import type { DeploymentResult, FactoryOptions, ResourceGraph } from '../../types/deployment.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
 import type {

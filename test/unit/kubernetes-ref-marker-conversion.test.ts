@@ -1,12 +1,12 @@
 /**
  * Unit tests for __KUBERNETES_REF__ marker to CEL expression conversion
- * 
+ *
  * These tests validate the conversion of template literal markers to proper CEL expressions
  * for Kro ResourceGraphDefinitions.
  */
 
-import { describe, it, expect } from 'bun:test';
-import { processResourceReferences } from '../../src/utils/helpers.js';
+import { describe, expect, it } from 'bun:test';
+import { processResourceReferences } from '../../src/core/serialization/cel-references.js';
 
 describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
   describe('Single Reference Conversion', () => {
@@ -49,13 +49,15 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
     });
 
     it('should convert multiple markers in a string to CEL concatenation', () => {
-      const input = '__KUBERNETES_REF___schema___spec.name__-__KUBERNETES_REF___schema___spec.tier__';
+      const input =
+        '__KUBERNETES_REF___schema___spec.name__-__KUBERNETES_REF___schema___spec.tier__';
       const result = processResourceReferences(input);
       expect(result).toBe('${schema.spec.name + "-" + schema.spec.tier}');
     });
 
     it('should handle complex template with multiple markers and text', () => {
-      const input = 'https://__KUBERNETES_REF___schema___spec.hostname__:__KUBERNETES_REF___schema___spec.port__/api';
+      const input =
+        'https://__KUBERNETES_REF___schema___spec.hostname__:__KUBERNETES_REF___schema___spec.port__/api';
       const result = processResourceReferences(input);
       expect(result).toBe('${"https://" + schema.spec.hostname + ":" + schema.spec.port + "/api"}');
     });
@@ -196,9 +198,9 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
           },
         },
       };
-      
+
       const result = processResourceReferences(input) as any;
-      
+
       expect(result.metadata.name).toBe('${schema.spec.name + "-namespace-policy"}');
       expect(result.metadata.namespace).toBe('typekro-test-cross-resource');
       expect(result.spec.endpointSelector.matchLabels.app).toBe('${schema.spec.name}');
@@ -222,9 +224,9 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
           },
         },
       };
-      
+
       const result = processResourceReferences(input) as any;
-      
+
       expect(result.metadata.name).toBe('${schema.spec.releaseName}');
       expect(result.metadata.namespace).toBe('${schema.spec.namespace}');
       expect(result.spec.chart.spec.chart).toBe('${schema.spec.chartName}');
@@ -250,9 +252,9 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
           ],
         },
       };
-      
+
       const result = processResourceReferences(input) as any;
-      
+
       expect(result.metadata.name).toBe('${schema.spec.name + "-svc"}');
       expect(result.spec.selector.app).toBe('${schema.spec.name}');
       expect(result.spec.ports[0].port).toBe(80);

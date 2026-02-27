@@ -2,40 +2,15 @@
  * General utility functions for TypeKro
  *
  * This module contains **pure utility** functions used across the codebase
- * for common operations like string manipulation, object cleaning, and
- * property preservation.
+ * for common operations like object cleaning and property preservation.
  *
- * Domain-specific logic has been moved to its canonical location:
+ * Domain-specific logic lives in its canonical location:
  * - CEL serialization → `src/core/serialization/cel-references.ts`
  * - Arktype → Kro schema → `src/core/serialization/schema.ts`
  * - Readiness evaluator → `src/core/readiness/evaluator.ts`
  * - Resource IDs → `src/core/resources/id.ts`
- *
- * For backward compatibility, this module re-exports the moved symbols.
+ * - String utilities → `src/utils/string.ts`
  */
-
-// ---------------------------------------------------------------------------
-// Re-exports for backward compatibility
-// ---------------------------------------------------------------------------
-
-export { ensureReadinessEvaluator } from '../core/readiness/evaluator.js';
-export {
-  generateDeterministicResourceId,
-  generateResourceId,
-  getResourceId,
-} from '../core/resources/id.js';
-export {
-  generateCelReference,
-  getInnerCelPath,
-  processResourceReferences,
-} from '../core/serialization/cel-references.js';
-export { arktypeToKroSchema } from '../core/serialization/schema.js';
-
-// ---------------------------------------------------------------------------
-// Pure utilities (canonical location for string helpers is utils/string.ts)
-// ---------------------------------------------------------------------------
-
-export { pascalCase, toCamelCase } from './string.js';
 
 /**
  * Recursively removes `undefined` values from an object tree.
