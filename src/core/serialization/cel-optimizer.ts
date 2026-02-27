@@ -19,8 +19,8 @@
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
-import { getInnerCelPath } from '../serialization/cel-references.js';
 import type { CelExpression, KubernetesRef, KubernetesResource } from '../types.js';
+import { getInnerCelPath } from './cel-references.js';
 
 export interface EvaluationContext {
   resources: Record<string, KubernetesResource>;
