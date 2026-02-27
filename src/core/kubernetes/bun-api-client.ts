@@ -53,9 +53,10 @@ const logger = getComponentLogger('bun-api-client');
 export { isBunRuntime, type HttpTimeoutConfig };
 
 /**
- * Type for API client constructors
+ * Type for API client constructors — constrained to ApiType for
+ * compatibility with KubeConfig.makeApiClient()
  */
-type ApiClientConstructor<T> = new (configuration: Configuration) => T;
+type ApiClientConstructor<T extends k8s.ApiType> = new (configuration: Configuration) => T;
 
 /**
  * Create a Kubernetes API client that works in Bun runtime.
@@ -69,14 +70,14 @@ type ApiClientConstructor<T> = new (configuration: Configuration) => T;
  * @param timeoutConfig - Optional HTTP timeout configuration for Bun runtime
  * @returns An instance of the API client
  */
-export function createBunCompatibleApiClient<T>(
+export function createBunCompatibleApiClient<T extends k8s.ApiType>(
   kubeConfig: k8s.KubeConfig,
   apiClientClass: ApiClientConstructor<T>,
   timeoutConfig?: HttpTimeoutConfig
 ): T {
   // If not running in Bun, use standard makeApiClient
   if (!isBunRuntime()) {
-    return kubeConfig.makeApiClient(apiClientClass as any) as T;
+    return kubeConfig.makeApiClient(apiClientClass);
   }
 
   const cluster = kubeConfig.getCurrentCluster();
