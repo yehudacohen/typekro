@@ -1187,7 +1187,7 @@ export class EnhancedTypeOptionalityHandler {
 
         phaseExpressions.set(phase.name, phaseExpression);
       } catch (error) {
-        this.logger.warn(`Failed to generate expression for phase ${phase.name}`, error as Error);
+        this.logger.error(`Failed to generate expression for phase ${phase.name}`, error as Error);
       }
     }
 

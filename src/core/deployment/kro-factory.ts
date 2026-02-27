@@ -1195,7 +1195,7 @@ ${Object.entries(spec as Record<string, any>)
         // Update the status using object assignment to avoid type issues
         Object.assign(enhancedProxy.status, mergedStatus);
       } catch (error) {
-        hydrationLogger.warn('Dynamic status hydration failed', error as Error);
+        hydrationLogger.error('Dynamic status hydration failed', error as Error);
         // Continue with static fields only if dynamic hydration fails
       }
     }

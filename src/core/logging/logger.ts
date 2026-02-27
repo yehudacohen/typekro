@@ -1,6 +1,6 @@
 import pino from 'pino';
 import { getLoggerConfigFromEnv, validateLoggerConfig } from './config.js';
-import type { LoggerConfig, LoggerContext, TypeKroLogger } from './types.js';
+import type { LoggerConfig, LoggerContext, LogMetadata, TypeKroLogger } from './types.js';
 
 /**
  * Pino-based implementation of TypeKroLogger
@@ -12,32 +12,32 @@ class PinoLogger implements TypeKroLogger {
     this.pinoLogger = pinoLogger;
   }
 
-  trace(msg: string, meta?: Record<string, any>): void {
+  trace(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.trace(meta, msg);
   }
 
-  debug(msg: string, meta?: Record<string, any>): void {
+  debug(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.debug(meta, msg);
   }
 
-  info(msg: string, meta?: Record<string, any>): void {
+  info(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.info(meta, msg);
   }
 
-  warn(msg: string, meta?: Record<string, any>): void {
+  warn(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.warn(meta, msg);
   }
 
-  error(msg: string, error?: Error, meta?: Record<string, any>): void {
+  error(msg: string, error?: Error, meta?: LogMetadata): void {
     this.pinoLogger.error(this.buildLogData(meta, error), msg);
   }
 
-  fatal(msg: string, error?: Error, meta?: Record<string, any>): void {
+  fatal(msg: string, error?: Error, meta?: LogMetadata): void {
     this.pinoLogger.fatal(this.buildLogData(meta, error), msg);
   }
 
   /** Build log payload, extracting K8s-specific error fields when present. */
-  private buildLogData(meta?: Record<string, any>, error?: Error): Record<string, unknown> {
+  private buildLogData(meta?: LogMetadata, error?: Error): Record<string, unknown> {
     const logData: Record<string, unknown> = { ...meta };
     if (error) {
       const k8sError = error as Error & {
@@ -57,7 +57,7 @@ class PinoLogger implements TypeKroLogger {
     return logData;
   }
 
-  child(bindings: Record<string, any>): TypeKroLogger {
+  child(bindings: LogMetadata): TypeKroLogger {
     return new PinoLogger(this.pinoLogger.child(bindings));
   }
 }

@@ -1214,7 +1214,7 @@ export class EventMonitor {
 
       return eventList.metadata?.resourceVersion || '0';
     } catch (error) {
-      this.logger.warn('Failed to get resource version for time filtering', error as Error);
+      this.logger.error('Failed to get resource version for time filtering', error as Error);
       // Don't throw - continue with default resource version
       return '0';
     }

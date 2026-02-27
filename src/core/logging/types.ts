@@ -1,41 +1,47 @@
 /**
+ * Structured metadata for log entries.
+ * Values should be JSON-serializable primitives or nested records.
+ */
+export type LogMetadata = Record<string, unknown>;
+
+/**
  * TypeKro logger interface providing structured logging capabilities
  */
 export interface TypeKroLogger {
   /**
    * Log trace level messages (most verbose)
    */
-  trace(msg: string, meta?: Record<string, any>): void;
+  trace(msg: string, meta?: LogMetadata): void;
 
   /**
    * Log debug level messages
    */
-  debug(msg: string, meta?: Record<string, any>): void;
+  debug(msg: string, meta?: LogMetadata): void;
 
   /**
    * Log informational messages
    */
-  info(msg: string, meta?: Record<string, any>): void;
+  info(msg: string, meta?: LogMetadata): void;
 
   /**
    * Log warning messages
    */
-  warn(msg: string, meta?: Record<string, any>): void;
+  warn(msg: string, meta?: LogMetadata): void;
 
   /**
    * Log error messages
    */
-  error(msg: string, error?: Error, meta?: Record<string, any>): void;
+  error(msg: string, error?: Error, meta?: LogMetadata): void;
 
   /**
    * Log fatal error messages (most severe)
    */
-  fatal(msg: string, error?: Error, meta?: Record<string, any>): void;
+  fatal(msg: string, error?: Error, meta?: LogMetadata): void;
 
   /**
    * Create a child logger with additional context bindings
    */
-  child(bindings: Record<string, any>): TypeKroLogger;
+  child(bindings: LogMetadata): TypeKroLogger;
 }
 
 /**
@@ -105,5 +111,5 @@ export interface LoggerContext {
   /**
    * Additional context metadata
    */
-  [key: string]: any;
+  [key: string]: unknown;
 }

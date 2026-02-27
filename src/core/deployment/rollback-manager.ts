@@ -84,7 +84,7 @@ export class ResourceRollbackManager {
         });
 
         // Continue with remaining resources even if one fails
-        this.logger.warn('Rollback error', error as Error);
+        this.logger.error('Rollback error', error as Error);
       }
     }
 
