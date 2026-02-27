@@ -601,15 +601,12 @@ export interface DeploymentStateRecord {
 }
 
 // =============================================================================
-// DEPLOYMENT ERROR CLASSES (re-exported from ../deployment/errors.js)
+// DEPLOYMENT ERROR CLASSES
 // =============================================================================
-
-export {
-  ResourceConflictError,
-  ResourceDeploymentError,
-  ResourceReadinessTimeoutError,
-  UnsupportedMediaTypeError,
-} from '../deployment/errors.js';
+// Error classes are exported from '../deployment/errors.js' directly.
+// They were previously re-exported here, but that created a circular dependency:
+// deployment.ts → deployment/errors.ts → deployment.ts
+// Import errors from '../deployment/errors.js' or '../deployment/index.js' instead.
 
 // =============================================================================
 // REFERENCE RESOLUTION CONTEXT

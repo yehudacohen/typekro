@@ -21,20 +21,17 @@ import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
-import { type CacheOptions, type CacheStats, ExpressionCache } from './cache.js';
+import { handleExpressionWithFactoryPattern } from '../factory/factory-pattern-handler.js';
 import {
   CompileTimeTypeChecker,
   type CompileTimeValidationContext,
   type CompileTimeValidationResult,
 } from '../validation/compile-time-validation.js';
-import { handleExpressionWithFactoryPattern } from '../factory/factory-pattern-handler.js';
-import { ParserError, parseExpression, parseScript } from './parser.js';
 import {
   ResourceReferenceValidator,
   type ResourceValidationResult,
   type ValidationContext,
 } from '../validation/resource-validation.js';
-import { type SourceMapBuilder, type SourceMapEntry, SourceMapUtils } from './source-map.js';
 import {
   CelTypeInferenceEngine,
   type CelTypeInferenceResult,
@@ -47,105 +44,14 @@ import {
   TypeSafetyUtils,
   type TypeValidationResult,
 } from '../validation/type-safety.js';
+import { type CacheOptions, type CacheStats, ExpressionCache } from './cache.js';
+import { ParserError, parseExpression, parseScript } from './parser.js';
+// Shared types — extracted from this file to break circular deps with cache.ts / factory-pattern-handler.ts
+import type { AnalysisContext, CelConversionResult, ValidationWarning } from './shared-types.js';
+import { type SourceMapBuilder, type SourceMapEntry, SourceMapUtils } from './source-map.js';
 
-/**
- * Context information for analyzing JavaScript expressions
- */
-export interface AnalysisContext {
-  /** Type of context where the expression is being analyzed */
-  type: 'status' | 'resource' | 'condition' | 'readiness';
-
-  /** Available resource references from magic proxy system */
-  availableReferences: Record<string, Enhanced<any, any>>;
-
-  /** Schema proxy for schema field references */
-  schemaProxy?: SchemaProxy<any, any>;
-
-  /** Factory pattern being used (affects CEL generation strategy) */
-  factoryType: 'direct' | 'kro';
-
-  /** Source mapping builder for debugging */
-  sourceMap?: SourceMapBuilder;
-
-  /** Additional dependencies detected during analysis */
-  dependencies?: KubernetesRef<any>[];
-
-  /** Original source text for accurate source location tracking */
-  sourceText?: string;
-
-  /** Type registry for type validation */
-  typeRegistry?: TypeRegistry;
-
-  /** Expected result type for validation */
-  expectedType?: TypeInfo;
-
-  /** Whether to perform strict type checking */
-  strictTypeChecking?: boolean;
-
-  /** Whether to validate resource references */
-  validateResourceReferences?: boolean;
-
-  /** Validation context for resource references */
-  validationContext?: ValidationContext;
-
-  /** Whether to perform compile-time type checking */
-  compileTimeTypeChecking?: boolean;
-
-  /** Compile-time validation context */
-  compileTimeContext?: CompileTimeValidationContext;
-}
-
-/**
- * Generic validation warning
- */
-export interface ValidationWarning {
-  /** Warning message */
-  message: string;
-
-  /** Warning type/category */
-  type: string;
-
-  /** Optional suggestion for fixing the warning */
-  suggestion?: string;
-}
-
-/**
- * Result of CEL conversion analysis
- */
-export interface CelConversionResult {
-  /** Whether the conversion was successful */
-  valid: boolean;
-
-  /** Generated CEL expression (null if conversion failed) */
-  celExpression: CelExpression | null;
-
-  /** KubernetesRef dependencies detected in the expression */
-  dependencies: KubernetesRef<any>[];
-
-  /** Source mapping entries for debugging */
-  sourceMap: SourceMapEntry[];
-
-  /** Conversion errors encountered */
-  errors: ConversionError[];
-
-  /** Whether the expression actually requires conversion (contains KubernetesRef objects) */
-  requiresConversion: boolean;
-
-  /** Type validation result */
-  typeValidation?: TypeValidationResult | undefined;
-
-  /** Inferred result type of the expression */
-  inferredType?: TypeInfo | undefined;
-
-  /** Resource validation results */
-  resourceValidation?: ResourceValidationResult[] | undefined;
-
-  /** Compile-time validation result */
-  compileTimeValidation?: CompileTimeValidationResult | undefined;
-
-  /** Aggregated warnings from all validation results */
-  warnings: ValidationWarning[];
-}
+// Re-export shared types for backward compatibility
+export type { AnalysisContext, CelConversionResult, ValidationWarning } from './shared-types.js';
 
 /**
  * Comprehensive expression validation report

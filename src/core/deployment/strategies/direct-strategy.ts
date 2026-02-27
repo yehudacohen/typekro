@@ -13,7 +13,6 @@ import type {
   FactoryOptions,
   ResourceGraph,
 } from '../../types/deployment.js';
-import { ResourceDeploymentError } from '../../types/deployment.js';
 import type { Enhanced } from '../../types/index.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
 import type {
@@ -22,6 +21,7 @@ import type {
   StatusBuilder,
 } from '../../types/serialization.js';
 import type { DirectDeploymentEngine } from '../engine.js';
+import { ResourceDeploymentError } from '../errors.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';
 

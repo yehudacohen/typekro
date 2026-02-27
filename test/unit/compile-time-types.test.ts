@@ -17,7 +17,7 @@ import type {
   ResourceDeploymentError,
   ResourceReadinessTimeoutError,
   UnsupportedMediaTypeError,
-} from '../../src/core/types/deployment.js';
+} from '../../src/core/deployment/errors.js';
 import type { CelEvaluationError } from '../../src/core/types/references.js';
 import type {
   CelExpression,
