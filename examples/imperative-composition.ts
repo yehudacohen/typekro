@@ -6,7 +6,9 @@
  */
 
 import { type } from 'arktype';
-import { Deployment, Service, ConfigMap, Ingress } from '../src/factories/simple/index.js';
+// In production: import { Deployment, Service, ConfigMap, Ingress } from 'typekro/simple';
+import { ConfigMap, Deployment, Ingress, Service } from '../src/factories/simple/index.js';
+// In production: import { kubernetesComposition } from 'typekro';
 import { kubernetesComposition } from '../src/index.js';
 
 // =============================================================================
@@ -154,9 +156,8 @@ const fullStackApp = kubernetesComposition(
     // Return status
     // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
-      phase: postgres.status.readyReplicas > 0 && app.status.readyReplicas > 0 
-        ? 'Ready' 
-        : 'Pending',
+      phase:
+        postgres.status.readyReplicas > 0 && app.status.readyReplicas > 0 ? 'Ready' : 'Pending',
       databaseReady: postgres.status.readyReplicas > 0,
       applicationReady: app.status.readyReplicas === spec.replicas,
       url: `https://${spec.hostname}`,
