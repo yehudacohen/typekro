@@ -247,14 +247,31 @@ export interface AlchemyDeploymentOptions extends BaseDeploymentConfig {
   skipTLSVerify?: boolean;
 }
 
+/**
+ * Configuration for exponential-backoff retry behaviour during resource deployment.
+ *
+ * The engine waits `initialDelay * backoffMultiplier^attempt` milliseconds between
+ * retries, capped at `maxDelay`.
+ */
 export interface RetryPolicy {
+  /** Maximum number of retry attempts before giving up */
   maxRetries: number;
+  /** Multiplier applied to the delay after each failed attempt */
   backoffMultiplier: number;
+  /** Delay (ms) before the first retry */
   initialDelay: number;
+  /** Upper bound (ms) on the computed backoff delay */
   maxDelay: number;
 }
 
+/**
+ * Event emitted during a deployment lifecycle.
+ *
+ * Subscribe via `DeploymentOptions.onProgress` to receive real-time
+ * updates about each resource's progress through the deployment pipeline.
+ */
 export interface DeploymentEvent {
+  /** Discriminator indicating the stage/nature of the event */
   type:
     | 'started'
     | 'progress'
@@ -268,11 +285,16 @@ export interface DeploymentEvent {
     | 'kubernetes-event'
     | 'status-debug'
     | 'child-resource-discovered';
+  /** Identifier of the resource this event relates to (if applicable) */
   resourceId?: string;
+  /** Human-readable description of the event */
   message: string;
+  /** When the event occurred (defaults to now) */
   timestamp?: Date;
+  /** Error object when `type` is `'failed'` */
   error?: Error;
-  details?: any;
+  /** Arbitrary payload with event-specific context */
+  details?: unknown;
 }
 
 /**
@@ -424,21 +446,33 @@ export type CallableComposition<
   readonly status: InferType<TStatus>;
 } & TypedResourceGraph<TSpec, TStatus>;
 
-// Factory options determine deployment strategy
+/**
+ * Options passed to `deploy()` on a `TypedResourceGraph`.
+ *
+ * Extends {@link BaseDeploymentConfig} with factory-specific settings for
+ * status hydration, Alchemy scope binding, deployment closures, and
+ * Kubernetes API configuration.
+ */
 export interface FactoryOptions extends BaseDeploymentConfig {
-  // Status hydration - if false, Enhanced proxy status fields won't be populated with live data
+  /** When false, Enhanced proxy status fields won't be populated with live cluster data */
   hydrateStatus?: boolean;
 
-  // Alchemy integration - if provided, factory will use alchemy for deployment
+  /** Alchemy scope — when provided the factory will deploy via Alchemy */
   alchemyScope?: Scope;
+  /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
 
-  // Deployment closures - for direct mode factories
+  /** Deployment closures for direct-mode factories */
   closures?: Record<string, DeploymentClosure>;
 
-  // Composition re-execution - for providing actual values to composition functions
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition re-execution accepts arbitrary schemas
+  /** Re-execution function for the composition (internal use) */
   compositionFn?: (spec: any) => any;
+  // biome-ignore lint/suspicious/noExplicitAny: holds the original definition shape which varies by composition
+  /** Original composition definition (internal use) */
   compositionDefinition?: any;
+  // biome-ignore lint/suspicious/noExplicitAny: holds the original options shape which varies by composition
+  /** Original composition options (internal use) */
   compositionOptions?: any;
 
   /**
