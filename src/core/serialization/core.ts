@@ -13,13 +13,13 @@ import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ValidationError } from '../errors.js';
 import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
-import { CelConversionEngine } from '../expressions/factory/cel-conversion-engine.js';
 import {
   analyzeCompositionBody,
   applyAnalysisToResources,
   type CompositionAnalysisResult,
 } from '../expressions/composition/composition-analyzer.js';
 import { analyzeImperativeComposition } from '../expressions/composition/imperative-analyzer.js';
+import { CelConversionEngine } from '../expressions/factory/cel-conversion-engine.js';
 import { CelToJavaScriptMigrationHelper } from '../expressions/factory/migration-helpers.js';
 import {
   analyzeStatusBuilderForToResourceGraph,
@@ -1258,9 +1258,9 @@ function createTypedResourceGraph<
             // Pass the factory-specific status mappings
             statusMappings: directStatusMappings,
             // Pass composition function for re-execution with actual values
-            compositionFn: (this as any)._compositionFn,
-            compositionDefinition: (this as any)._definition,
-            compositionOptions: (this as any)._options,
+            // Use closure-captured variables directly instead of (this as any) to maintain type safety
+            compositionFn: declarativeCompositionFn,
+            compositionDefinition: definition,
           }
         );
         return directFactory as FactoryForMode<TMode, TSpec, TStatus>;
