@@ -11,7 +11,6 @@ import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ValidationError } from '../errors.js';
-import { optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
 import {
   analyzeCompositionBody,
   applyAnalysisToResources,
@@ -50,6 +49,7 @@ import type {
   KubernetesResource,
 } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
+import { optimizeStatusMappings } from './cel-optimizer.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 

@@ -7,7 +7,7 @@
  */
 
 // Compile-time CEL optimization
-export { optimizeCelExpression, optimizeStatusMappings } from '../evaluation/cel-optimizer.js';
+export { optimizeCelExpression, optimizeStatusMappings } from '../serialization/cel-optimizer.js';
 export type { ResolutionContext } from '../types/deployment.js';
 // Types
 export type { CelEvaluationContext } from '../types/references.js';
