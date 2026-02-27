@@ -873,7 +873,7 @@ function createTypedResourceGraph<
           }
         }
       } catch (migrationError) {
-        serializationLogger.warn(
+        serializationLogger.error(
           'Failed to analyze migration opportunities',
           migrationError as Error
         );
@@ -1240,7 +1240,7 @@ function createTypedResourceGraph<
               );
             }
           } catch (error) {
-            serializationLogger.warn(
+            serializationLogger.error(
               'Failed to re-analyze status mappings for direct factory, using default analysis',
               error as Error
             );

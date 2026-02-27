@@ -392,10 +392,9 @@ export class DirectDeploymentEngine {
           await this.eventMonitor.startMonitoring([]);
           deploymentLogger.debug('Event monitoring started for deployment');
         } catch (error) {
-          deploymentLogger.warn(
-            'Failed to initialize event monitoring, continuing without it',
-            error as Error
-          );
+          deploymentLogger.warn('Failed to initialize event monitoring, continuing without it', {
+            error: (error as Error).message,
+          });
         }
       }
 
@@ -518,7 +517,7 @@ export class DirectDeploymentEngine {
                 (error: unknown) => {
                   resourceLogger.warn(
                     'Failed to add resource to event monitoring, continuing deployment',
-                    error as Error
+                    { error: (error as Error).message }
                   );
                 }
               );
@@ -698,7 +697,9 @@ export class DirectDeploymentEngine {
           await this.eventMonitor.stopMonitoring();
           deploymentLogger.debug('Event monitoring stopped');
         } catch (error) {
-          deploymentLogger.warn('Failed to stop event monitoring cleanly', error as Error);
+          deploymentLogger.warn('Failed to stop event monitoring cleanly', {
+            error: (error as Error).message,
+          });
         }
       }
 
@@ -1329,7 +1330,9 @@ export class DirectDeploymentEngine {
       const hasResourceKeyMapping =
         context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
       if (hasResourceKeyMapping) {
-        resourceLogger.warn('Reference resolution failed, using original resource', error as Error);
+        resourceLogger.warn('Reference resolution failed, using original resource', {
+          error: (error as Error).message,
+        });
       } else {
         resourceLogger.debug(
           'Reference resolution skipped (no resourceKeyMapping), using original resource',
@@ -1455,10 +1458,9 @@ export class DirectDeploymentEngine {
                 apiError.message.includes('Unrecognized API version and kind');
 
               if (isUnrecognizedApiError) {
-                resourceLogger.debug(
-                  'CRD not yet registered, will retry after CRD establishment',
-                  error as Error
-                );
+                resourceLogger.debug('CRD not yet registered, will retry after CRD establishment', {
+                  error: (error as Error).message,
+                });
               } else {
                 resourceLogger.error('Error checking resource existence', error as Error);
               }
@@ -1629,7 +1631,7 @@ export class DirectDeploymentEngine {
                 } catch (readError) {
                   resourceLogger.warn(
                     'Failed to read existing resource after 409, falling back to patch',
-                    readError as Error
+                    { error: (readError as Error).message }
                   );
                   // Fall back to patch strategy
                   try {
@@ -1649,10 +1651,9 @@ export class DirectDeploymentEngine {
                     );
                     conflictHandled = true;
                   } catch (patchError) {
-                    resourceLogger.warn(
-                      'Failed to patch resource after 409 conflict',
-                      patchError as Error
-                    );
+                    resourceLogger.warn('Failed to patch resource after 409 conflict', {
+                      error: (patchError as Error).message,
+                    });
                   }
                 }
                 break;
@@ -1674,10 +1675,9 @@ export class DirectDeploymentEngine {
                   resourceLogger.debug('Resource patched successfully after 409 conflict');
                   conflictHandled = true;
                 } catch (patchError) {
-                  resourceLogger.warn(
-                    'Failed to patch resource after 409 conflict',
-                    patchError as Error
-                  );
+                  resourceLogger.warn('Failed to patch resource after 409 conflict', {
+                    error: (patchError as Error).message,
+                  });
                 }
                 break;
 
@@ -1709,10 +1709,9 @@ export class DirectDeploymentEngine {
                   resourceLogger.debug('Resource replaced successfully after 409 conflict');
                   conflictHandled = true;
                 } catch (replaceError) {
-                  resourceLogger.warn(
-                    'Failed to replace resource after 409 conflict',
-                    replaceError as Error
-                  );
+                  resourceLogger.warn('Failed to replace resource after 409 conflict', {
+                    error: (replaceError as Error).message,
+                  });
                 }
                 break;
             }

@@ -855,7 +855,7 @@ metadata:
           return reExecutionResult.resources;
         }
       } catch (error) {
-        this.logger.warn(
+        this.logger.error(
           'Failed to re-execute composition, falling back to reference resolution',
           error as Error
         );
@@ -875,7 +875,7 @@ metadata:
         resolvedResources[key] = resolvedResource as KubernetesResource;
       } catch (error) {
         // If resolution fails, use the original resource
-        this.logger.warn('Failed to resolve references for resource', error as Error);
+        this.logger.error('Failed to resolve references for resource', error as Error);
         resolvedResources[key] = resource;
       }
     }

@@ -405,7 +405,7 @@ export class EventFilter {
         childCount: childResources.length,
       });
     } catch (error) {
-      this.logger.warn('Failed to discover child resources', error as Error);
+      this.logger.error('Failed to discover child resources', error as Error);
     }
 
     return childResources;
@@ -559,7 +559,7 @@ export class EventFilter {
           uid: pod.metadata?.uid!,
         }));
     } catch (error) {
-      this.logger.warn('Failed to find pods for ReplicaSet', error as Error);
+      this.logger.error('Failed to find pods for ReplicaSet', error as Error);
       return [];
     }
   }
