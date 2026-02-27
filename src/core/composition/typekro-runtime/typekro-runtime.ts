@@ -3,7 +3,7 @@ import { helmRepository } from '../../../factories/helm/helm-repository.js';
 import { namespace } from '../../../factories/kubernetes/core/namespace.js';
 import { clusterRoleBinding } from '../../../factories/kubernetes/rbac/index.js';
 import { yamlFile } from '../../../factories/kubernetes/yaml/yaml-file.js';
-import { fixCRDSchemaForK8s133 } from '../../utils/crd-schema-fix.js';
+import { fixCRDSchemaForK8s133 } from '../../runtime-patches/crd-schema-fix.js';
 import { kubernetesComposition } from '../imperative.js';
 import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } from './types.js';
 

@@ -137,7 +137,7 @@ export class CRDManager {
       logger[logLevel]('Checking Flux CRDs for Kubernetes 1.33+ compatibility...');
 
       try {
-        const { patchFluxCRDSchemas } = await import('../utils/crd-patcher.js');
+        const { patchFluxCRDSchemas } = await import('../runtime-patches/crd-patcher.js');
         await patchFluxCRDSchemas(this.kubeClient);
         logger[logLevel]('Flux CRDs patched successfully');
       } catch (error) {

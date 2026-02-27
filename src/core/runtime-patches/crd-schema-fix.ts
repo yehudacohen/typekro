@@ -19,7 +19,7 @@
  *
  * @example
  * ```typescript
- * import { fixCRDSchemaForK8s133 } from '../../../core/utils/crd-schema-fix.js';
+ * import { fixCRDSchemaForK8s133 } from '../../../core/runtime-patches/crd-schema-fix.js';
  *
  * // In a yamlFile transform or custom deployment logic:
  * const fixedManifests = manifests.map(m => fixCRDSchemaForK8s133(m));
@@ -33,7 +33,7 @@
  *
  * @example
  * ```typescript
- * import { needsCRDSchemaFix, fixCRDSchemaForK8s133 } from '../../../core/utils/crd-schema-fix.js';
+ * import { needsCRDSchemaFix, fixCRDSchemaForK8s133 } from '../../../core/runtime-patches/crd-schema-fix.js';
  *
  * // Only apply fix if needed
  * const transform = (manifest) => {
