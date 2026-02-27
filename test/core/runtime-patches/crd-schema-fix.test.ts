@@ -15,7 +15,7 @@ import {
   needsCRDSchemaFix,
   smartFixCRDSchemaForK8s133,
   smartFixCRDSchemasForK8s133,
-} from '../../../src/core/utils/crd-schema-fix.js';
+} from '../../../src/core/runtime-patches/crd-schema-fix.js';
 import type { KubernetesResource } from '../../../src/core/types/kubernetes.js';
 
 describe('CRD Schema Fix Utilities', () => {
@@ -101,7 +101,9 @@ describe('CRD Schema Fix Utilities', () => {
 
       expect(result.needsFix).toBe(true);
       expect(result.issues.length).toBeGreaterThan(0);
-      expect(result.issues.some((i) => i.includes('x-kubernetes-preserve-unknown-fields without type'))).toBe(true);
+      expect(
+        result.issues.some((i) => i.includes('x-kubernetes-preserve-unknown-fields without type'))
+      ).toBe(true);
     });
 
     it('should detect known fields missing x-kubernetes-preserve-unknown-fields', () => {
@@ -137,7 +139,9 @@ describe('CRD Schema Fix Utilities', () => {
       const result = needsCRDSchemaFix(crd);
 
       expect(result.needsFix).toBe(true);
-      expect(result.issues.some((i) => i.includes('missing x-kubernetes-preserve-unknown-fields'))).toBe(true);
+      expect(
+        result.issues.some((i) => i.includes('missing x-kubernetes-preserve-unknown-fields'))
+      ).toBe(true);
     });
 
     it('should check nested properties recursively', () => {
@@ -227,7 +231,8 @@ describe('CRD Schema Fix Utilities', () => {
 
       const result = fixCRDSchemaForK8s133(crd) as any;
 
-      const dataField = result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.data;
+      const dataField =
+        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.data;
       expect(dataField.type).toBe('object');
       expect(dataField['x-kubernetes-preserve-unknown-fields']).toBe(true);
     });
@@ -263,7 +268,8 @@ describe('CRD Schema Fix Utilities', () => {
 
       const result = fixCRDSchemaForK8s133(crd) as any;
 
-      const valuesField = result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
+      const valuesField =
+        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
       expect(valuesField.type).toBe('object');
       expect(valuesField['x-kubernetes-preserve-unknown-fields']).toBe(true);
     });
@@ -303,7 +309,8 @@ describe('CRD Schema Fix Utilities', () => {
       expect(result).not.toBe(crd);
 
       // Original should not be modified
-      const originalValues = (crd as any).spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
+      const originalValues = (crd as any).spec.versions[0].schema.openAPIV3Schema.properties.spec
+        .properties.values;
       expect(originalValues.type).toBeUndefined();
     });
 
@@ -372,8 +379,12 @@ describe('CRD Schema Fix Utilities', () => {
       const result = fixCRDSchemaForK8s133(crd) as any;
 
       // Both versions should be fixed
-      expect(result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type).toBe('object');
-      expect(result.spec.versions[1].schema.openAPIV3Schema.properties.spec.properties.values.type).toBe('object');
+      expect(
+        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
+      ).toBe('object');
+      expect(
+        result.spec.versions[1].schema.openAPIV3Schema.properties.spec.properties.values.type
+      ).toBe('object');
     });
   });
 
@@ -445,7 +456,9 @@ describe('CRD Schema Fix Utilities', () => {
 
       // Should return a fixed copy
       expect(result).not.toBe(crd);
-      expect(result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type).toBe('object');
+      expect(
+        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
+      ).toBe('object');
     });
   });
 
@@ -500,7 +513,9 @@ describe('CRD Schema Fix Utilities', () => {
 
       // CRD should be fixed
       const fixedCrd = results[1] as any;
-      expect(fixedCrd.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type).toBe('object');
+      expect(
+        fixedCrd.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
+      ).toBe('object');
 
       // Service should be unchanged
       expect(results[2]).toBe(manifests[2]!);
@@ -574,7 +589,9 @@ describe('CRD Schema Fix Utilities', () => {
       // Bad CRD should be fixed (different reference)
       expect(results[1]).not.toBe(manifests[1]);
       const fixedCrd = results[1] as any;
-      expect(fixedCrd.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type).toBe('object');
+      expect(
+        fixedCrd.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
+      ).toBe('object');
     });
   });
 
@@ -638,7 +655,8 @@ describe('CRD Schema Fix Utilities', () => {
       const result = fixCRDSchemaForK8s133(helmReleaseCrd) as any;
 
       // values field should have type: object added
-      const valuesField = result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
+      const valuesField =
+        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
       expect(valuesField.type).toBe('object');
       expect(valuesField['x-kubernetes-preserve-unknown-fields']).toBe(true);
     });
@@ -673,7 +691,8 @@ describe('CRD Schema Fix Utilities', () => {
 
       const result = fixCRDSchemaForK8s133(crd) as any;
 
-      const additionalProps = result.spec.versions[0].schema.openAPIV3Schema.properties.spec.additionalProperties;
+      const additionalProps =
+        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.additionalProperties;
       expect(additionalProps.type).toBe('object');
     });
 
@@ -712,7 +731,8 @@ describe('CRD Schema Fix Utilities', () => {
 
       const result = fixCRDSchemaForK8s133(crd) as any;
 
-      const itemsSchema = result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.items.items;
+      const itemsSchema =
+        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.items.items;
       expect(itemsSchema.type).toBe('object');
     });
   });

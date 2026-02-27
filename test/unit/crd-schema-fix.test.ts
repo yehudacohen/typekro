@@ -13,7 +13,7 @@ import {
   needsCRDSchemaFix,
   schemaFieldNeedsFix,
   smartFixCRDSchemaForK8s133,
-} from '../../src/core/utils/crd-schema-fix.js';
+} from '../../src/core/runtime-patches/crd-schema-fix.js';
 
 /**
  * Test helper type for accessing deeply nested CRD schema properties.

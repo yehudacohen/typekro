@@ -8,6 +8,7 @@ import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/
 import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
 import { isKubernetesError } from '../../../core/kubernetes/type-guards.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
+import { generateSchemaFixPatches } from '../../../core/runtime-patches/crd-schema-fix.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
   AppliedResource,
@@ -15,7 +16,6 @@ import type {
   DeploymentContext,
 } from '../../../core/types/deployment.js';
 import type { CRDManifest, KubernetesResource } from '../../../core/types/kubernetes.js';
-import { generateSchemaFixPatches } from '../../../core/utils/crd-schema-fix.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { registerDeploymentClosure } from '../../shared.js';
 
@@ -315,7 +315,7 @@ export interface YamlFileConfig {
    *
    * @example
    * ```typescript
-   * import { fixCRDSchemaForK8s133 } from '../../../core/utils/crd-schema-fix.js';
+   * import { fixCRDSchemaForK8s133 } from '../../../core/runtime-patches/crd-schema-fix.js';
    *
    * yamlFile({
    *   name: 'flux-install',
