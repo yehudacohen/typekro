@@ -19,14 +19,33 @@ const logger = getComponentLogger('crd-patcher');
 /**
  * Check if a CRD needs the schema fix
  */
-export function crdNeedsSchemaFix(crd: any): boolean {
-  if (!crd?.spec?.versions) {
+export function crdNeedsSchemaFix(crd: unknown): boolean {
+  if (!crd || typeof crd !== 'object') {
     return false;
   }
 
-  for (const version of crd.spec.versions) {
-    if (version.schema?.openAPIV3Schema) {
-      if (schemaFieldNeedsFix(version.schema.openAPIV3Schema)) {
+  const spec = (crd as Record<string, unknown>).spec;
+  if (!spec || typeof spec !== 'object') {
+    return false;
+  }
+
+  const versions = (spec as Record<string, unknown>).versions;
+  if (!Array.isArray(versions)) {
+    return false;
+  }
+
+  for (const version of versions) {
+    if (
+      version &&
+      typeof version === 'object' &&
+      (version as Record<string, unknown>).schema &&
+      typeof (version as Record<string, unknown>).schema === 'object'
+    ) {
+      const schema = (version as Record<string, unknown>).schema as Record<string, unknown>;
+      if (
+        schema.openAPIV3Schema &&
+        schemaFieldNeedsFix(schema.openAPIV3Schema as Record<string, unknown>)
+      ) {
         return true;
       }
     }
@@ -58,14 +77,22 @@ export async function patchCRDSchema(
     }
 
     // Generate patches for each version
-    const patches: any[] = [];
-    const versions = (crd as any).spec?.versions || [];
+    const patches: { op: string; path: string; value: unknown }[] = [];
+    const crdObj = crd as unknown as Record<string, unknown>;
+    const crdSpec = crdObj.spec as Record<string, unknown> | undefined;
+    const versions = (Array.isArray(crdSpec?.versions) ? crdSpec.versions : []) as Record<
+      string,
+      unknown
+    >[];
 
     for (let i = 0; i < versions.length; i++) {
-      const version = versions[i];
-      if (version.schema?.openAPIV3Schema) {
+      const version = versions[i] as Record<string, unknown> | undefined;
+      const schema = version?.schema as Record<string, unknown> | undefined;
+      if (schema?.openAPIV3Schema) {
         const basePath = `/spec/versions/${i}/schema/openAPIV3Schema`;
-        patches.push(...generateSchemaFixPatches(version.schema.openAPIV3Schema, basePath));
+        patches.push(
+          ...generateSchemaFixPatches(schema.openAPIV3Schema as Record<string, unknown>, basePath)
+        );
       }
     }
 

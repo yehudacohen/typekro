@@ -46,7 +46,7 @@
  */
 
 import { getComponentLogger } from '../logging/index.js';
-import type { KubernetesResource } from '../types/kubernetes.js';
+import type { CRDManifest, KubernetesResource } from '../types/kubernetes.js';
 
 const logger = getComponentLogger('crd-schema-fix');
 
@@ -213,7 +213,7 @@ export function needsCRDSchemaFix(manifest: KubernetesResource): CRDSchemaCheckR
     return { needsFix: false, issues: [] };
   }
 
-  const crd = manifest as any;
+  const crd = manifest as KubernetesResource & CRDManifest;
   if (!crd.spec?.versions) {
     return { needsFix: false, issues: [], crdName: crd.metadata?.name };
   }
@@ -222,22 +222,24 @@ export function needsCRDSchemaFix(manifest: KubernetesResource): CRDSchemaCheckR
   const crdName = crd.metadata?.name || 'unknown';
 
   // Recursively check schema properties for issues
-  function checkSchemaProperties(obj: any, fieldPath: string, fieldName?: string): void {
+  function checkSchemaProperties(obj: unknown, fieldPath: string, fieldName?: string): void {
     if (!obj || typeof obj !== 'object') {
       return;
     }
 
+    const schema = obj as Record<string, unknown>;
+
     // Check if this object has x-kubernetes-preserve-unknown-fields but no type
-    if (obj['x-kubernetes-preserve-unknown-fields'] === true && !obj.type) {
+    if (schema['x-kubernetes-preserve-unknown-fields'] === true && !schema.type) {
       issues.push(`${fieldPath}: has x-kubernetes-preserve-unknown-fields without type`);
     }
 
     // Check if this is a known field that needs x-kubernetes-preserve-unknown-fields
     if (fieldName && FIELDS_NEEDING_PRESERVE_UNKNOWN.has(fieldName)) {
-      if (!obj.type) {
+      if (!schema.type) {
         issues.push(`${fieldPath}: known field '${fieldName}' missing type`);
       }
-      if (!obj['x-kubernetes-preserve-unknown-fields']) {
+      if (!schema['x-kubernetes-preserve-unknown-fields']) {
         issues.push(
           `${fieldPath}: known field '${fieldName}' missing x-kubernetes-preserve-unknown-fields`
         );
@@ -245,20 +247,20 @@ export function needsCRDSchemaFix(manifest: KubernetesResource): CRDSchemaCheckR
     }
 
     // Recursively check all properties
-    if (obj.properties) {
-      for (const [propName, prop] of Object.entries(obj.properties)) {
+    if (schema.properties && typeof schema.properties === 'object') {
+      for (const [propName, prop] of Object.entries(schema.properties as Record<string, unknown>)) {
         checkSchemaProperties(prop, `${fieldPath}.properties.${propName}`, propName);
       }
     }
 
     // Check additionalProperties
-    if (obj.additionalProperties && typeof obj.additionalProperties === 'object') {
-      checkSchemaProperties(obj.additionalProperties, `${fieldPath}.additionalProperties`);
+    if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+      checkSchemaProperties(schema.additionalProperties, `${fieldPath}.additionalProperties`);
     }
 
     // Check items (for arrays)
-    if (obj.items) {
-      checkSchemaProperties(obj.items, `${fieldPath}.items`);
+    if (schema.items) {
+      checkSchemaProperties(schema.items, `${fieldPath}.items`);
     }
   }
 
@@ -295,7 +297,7 @@ export function fixCRDSchemaForK8s133(manifest: KubernetesResource): KubernetesR
     return manifest;
   }
 
-  const crd = manifest as any;
+  const crd = manifest as KubernetesResource & CRDManifest;
   if (!crd.spec?.versions) {
     return manifest;
   }
@@ -308,14 +310,16 @@ export function fixCRDSchemaForK8s133(manifest: KubernetesResource): KubernetesR
   const changes: string[] = [];
 
   // Recursively fix schema properties
-  function fixSchemaProperties(obj: any, fieldPath: string, fieldName?: string): void {
+  function fixSchemaProperties(obj: unknown, fieldPath: string, fieldName?: string): void {
     if (!obj || typeof obj !== 'object') {
       return;
     }
 
+    const schema = obj as Record<string, unknown>;
+
     // If this object has x-kubernetes-preserve-unknown-fields but no type, add type: object
-    if (obj['x-kubernetes-preserve-unknown-fields'] === true && !obj.type) {
-      obj.type = 'object';
+    if (schema['x-kubernetes-preserve-unknown-fields'] === true && !schema.type) {
+      schema.type = 'object';
       changes.push(
         `Added type: object to ${fieldPath} (had x-kubernetes-preserve-unknown-fields without type)`
       );
@@ -326,39 +330,39 @@ export function fixCRDSchemaForK8s133(manifest: KubernetesResource): KubernetesR
     // The field may or may not have type: object already set
     if (fieldName && FIELDS_NEEDING_PRESERVE_UNKNOWN.has(fieldName)) {
       // Ensure type is set (required by K8s 1.33+)
-      if (!obj.type) {
-        obj.type = 'object';
+      if (!schema.type) {
+        schema.type = 'object';
         changes.push(
           `Added type: object to ${fieldPath} (known field needing preserve-unknown-fields)`
         );
       }
       // Ensure x-kubernetes-preserve-unknown-fields is set
-      if (!obj['x-kubernetes-preserve-unknown-fields']) {
-        obj['x-kubernetes-preserve-unknown-fields'] = true;
+      if (!schema['x-kubernetes-preserve-unknown-fields']) {
+        schema['x-kubernetes-preserve-unknown-fields'] = true;
         changes.push(`Added x-kubernetes-preserve-unknown-fields: true to ${fieldPath}`);
       }
     }
 
     // Recursively process all properties
-    if (obj.properties) {
-      for (const [propName, prop] of Object.entries(obj.properties)) {
+    if (schema.properties && typeof schema.properties === 'object') {
+      for (const [propName, prop] of Object.entries(schema.properties as Record<string, unknown>)) {
         fixSchemaProperties(prop, `${fieldPath}.properties.${propName}`, propName);
       }
     }
 
     // Process additionalProperties
-    if (obj.additionalProperties && typeof obj.additionalProperties === 'object') {
-      fixSchemaProperties(obj.additionalProperties, `${fieldPath}.additionalProperties`);
+    if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+      fixSchemaProperties(schema.additionalProperties, `${fieldPath}.additionalProperties`);
     }
 
     // Process items (for arrays)
-    if (obj.items) {
-      fixSchemaProperties(obj.items, `${fieldPath}.items`);
+    if (schema.items) {
+      fixSchemaProperties(schema.items, `${fieldPath}.items`);
     }
   }
 
   // Fix each version's schema
-  for (const version of fixedCrd.spec.versions) {
+  for (const version of fixedCrd.spec.versions ?? []) {
     if (version.schema?.openAPIV3Schema) {
       fixSchemaProperties(
         version.schema.openAPIV3Schema,
