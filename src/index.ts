@@ -101,7 +101,9 @@ export {
   optimizeStatusMappings,
   ReferenceResolver,
 } from './core/references/index.js';
-export type { DeploymentMode as DeploymentModeType } from './core/references/resolver.js';
+// DeploymentMode is already exported as a value from './core/references/index.js' above.
+// TypeScript's value/type namespace separation allows consumers to use it as both:
+//   const mode: DeploymentMode = DeploymentMode.KRO;
 
 export {
   generateCelReference,
