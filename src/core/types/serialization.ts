@@ -317,6 +317,14 @@ export type StatusBuilder<
   resources: TResources // Use that generic here
 ) => TStatus | MagicAssignableShape<TStatus>;
 
+/**
+ * Internal schema definition used for schema proxy creation and Kro schema generation.
+ *
+ * Most users should use {@link ResourceGraphDefinition} instead, which is the
+ * public-facing configuration object for `toResourceGraph()`.
+ *
+ * @internal
+ */
 export interface SchemaDefinition<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
@@ -327,12 +335,50 @@ export interface SchemaDefinition<
   status: Type<TStatus>;
 }
 
+/**
+ * Configuration for defining a typed Kro ResourceGraphDefinition.
+ *
+ * This is the primary configuration object passed to `toResourceGraph()`.
+ * It describes the custom resource's identity, spec schema, and status schema.
+ *
+ * @example
+ * ```ts
+ * const myApp = toResourceGraph(
+ *   {
+ *     name: 'my-webapp',
+ *     kind: 'WebApp',
+ *     apiVersion: 'v1alpha1',
+ *     group: 'apps.example.com',
+ *     spec: type({ name: 'string', replicas: 'number' }),
+ *     status: type({ ready: 'boolean', url: 'string' }),
+ *   },
+ *   (schema) => ({ ... }),
+ *   (schema, resources) => ({ ... }),
+ * );
+ * ```
+ */
 export interface ResourceGraphDefinition<TSpec extends KroCompatibleType, TStatus> {
+  /** Kubernetes-compatible name for this RGD. Must follow DNS subdomain rules (lowercase, hyphens). */
   name: string;
-  apiVersion?: string; // Optional, defaults to 'kro.run/v1alpha1'
+  /**
+   * Version string for the generated CRD.
+   * This is the version suffix only (e.g. `'v1alpha1'`), not the full apiVersion.
+   * The full apiVersion for instances will be `{group}/{apiVersion}`.
+   *
+   * @default 'v1alpha1'
+   */
+  apiVersion?: string;
+  /** The Kind for the generated CRD. Must be PascalCase (e.g. `'WebApp'`). */
   kind: string;
-  /** Custom API group for the CRD (defaults to 'kro.run' in Kro v0.8.x) */
+  /**
+   * Custom API group for the CRD.
+   *
+   * @default 'kro.run' (in Kro v0.8.x)
+   * @example 'apps.example.com'
+   */
   group?: string;
+  /** ArkType schema defining the spec fields that users provide when creating an instance. */
   spec: Type<TSpec>;
+  /** ArkType schema defining the status fields that the composition populates. */
   status: Type<TStatus>;
 }
