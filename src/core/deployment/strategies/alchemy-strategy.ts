@@ -445,7 +445,10 @@ export class AlchemyDeploymentStrategy<
       };
 
       this.logger.debug('Extracted kubeconfig options', {
-        kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2),
+        server: cluster?.server ?? '(default)',
+        hasToken: !!user?.token,
+        hasCertData: !!user?.certData,
+        hasKeyData: !!user?.keyData,
       });
     } else {
       // Try extracting from the base strategy's factory options (common in tests)
@@ -520,7 +523,8 @@ export class AlchemyDeploymentStrategy<
             };
 
             this.logger.debug('Extracted kubeconfig options from base strategy', {
-              kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2),
+              hasCluster: !!kubeConfigOptions.cluster,
+              hasUser: !!kubeConfigOptions.user,
             });
           }
         }
