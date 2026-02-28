@@ -10,7 +10,9 @@ import { compile as compileExpression } from 'angular-expressions';
 import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
   DEFAULT_KRO_INSTANCE_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
   DEFAULT_RGD_TIMEOUT,
 } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
@@ -1258,7 +1260,7 @@ ${Object.entries(spec as Record<string, any>)
         const status = instance.status;
         if (!status) {
           readinessLogger.debug('No status found yet, continuing to wait', { instanceName });
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_INTERVAL));
           continue;
         }
 
@@ -1360,7 +1362,7 @@ ${Object.entries(spec as Record<string, any>)
       }
 
       // Wait before checking again - use shorter intervals for faster response
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, DEFAULT_FAST_POLL_INTERVAL));
     }
 
     const elapsed = Date.now() - startTime;
