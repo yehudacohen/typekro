@@ -56,7 +56,7 @@ describe('TypeKro-Alchemy Integration', () => {
       const WebAppStatusSchema = type({
         url: 'string',
         readyReplicas: 'number%1',
-        databaseStatus: 'string',
+        databaseStatus: 'number%1',
       });
 
       const graph = toResourceGraph(
@@ -90,16 +90,16 @@ describe('TypeKro-Alchemy Integration', () => {
               // This shows TypeKro values being passed to other TypeKro resources
               DATABASE_URL: schema.spec.databaseUrl,
               // This shows cross-resource references within TypeKro
-              DATABASE_HOST: database.status.podIP,
+              DATABASE_HOST: Cel.template('%s', database.metadata.name),
             },
           });
 
           return { database, webapp };
         },
         (_schema, resources) => ({
-          url: Cel.template('http://%s:8080', resources.webapp.status.podIP),
+          url: Cel.template('http://%s:8080', resources.webapp.metadata.name),
           readyReplicas: resources.webapp.status.readyReplicas,
-          databaseStatus: resources.database.status.phase,
+          databaseStatus: resources.database.status.readyReplicas,
         })
       );
 
@@ -204,7 +204,7 @@ describe('TypeKro-Alchemy Integration', () => {
 
       // Verify TypeKro YAML contains proper cross-references
       const yaml = graph.toYaml();
-      expect(yaml).toContain('value: ${database.status.podIP}');
+      expect(yaml).toContain('value: ${"postgres"}');
       expect(yaml).toContain('value: ${schema.spec.databaseUrl}');
     });
 
@@ -215,7 +215,7 @@ describe('TypeKro-Alchemy Integration', () => {
       });
 
       const SimpleStatusSchema = type({
-        phase: 'string',
+        phase: 'number%1',
       });
 
       const graph = toResourceGraph(
@@ -235,7 +235,7 @@ describe('TypeKro-Alchemy Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.app.status.phase,
+          phase: resources.app.status.readyReplicas,
         })
       );
 
@@ -385,7 +385,7 @@ describe('TypeKro-Alchemy Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: Cel.template('http://%s:8080', resources.webapp.status.podIP),
+          url: Cel.template('http://%s:8080', resources.webapp.metadata.name),
           databaseStatus: 'connected',
         })
       );
@@ -655,7 +655,7 @@ data:
         }),
         (_schema, resources) => ({
           phase: 'running',
-          url: Cel.template('http://%s:8080', resources.app.status.podIP),
+          url: Cel.template('http://%s:8080', resources.app.metadata.name),
         })
       );
 

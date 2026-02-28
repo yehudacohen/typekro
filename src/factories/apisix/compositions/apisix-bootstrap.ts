@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { createResource } from '../../shared.js';
 import { apisixHelmRelease, apisixHelmRepository } from '../resources/helm.js';
@@ -260,19 +261,28 @@ export const apisixBootstrap = kubernetesComposition(
       message: 'IngressClass is ready when created (configuration resource)',
     }));
 
-    // Return status with resource references for status hydration
+    // Return status with CEL expressions referencing HelmRelease conditions
+    // Flux HelmRelease v2 uses conditions array (not a phase field).
+    // We use CEL .exists() to check for the Ready condition.
     return {
       helmRelease,
 
-      ready: helmRelease.status.phase === 'Ready',
-      phase: (helmRelease.status.phase === 'Ready' ? 'Ready' : 'Installing') as
-        | 'Pending'
-        | 'Installing'
-        | 'Ready'
-        | 'Failed'
-        | 'Upgrading',
-      gatewayReady: helmRelease.status.phase === 'Ready',
-      ingressControllerReady: helmRelease.status.phase === 'Ready',
+      ready: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading'>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+      ),
+      gatewayReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      ingressControllerReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
       dashboardReady: false,
       etcdReady: false,
       gatewayService: {

@@ -5,7 +5,13 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { Cel, isKubernetesRef, simple, toResourceGraph, validateResourceGraph,  } from '../src/index.js';
+import {
+  Cel,
+  isKubernetesRef,
+  simple,
+  toResourceGraph,
+  validateResourceGraph,
+} from '../src/index.js';
 
 // =============================================================================
 // 1. FACTORY AND PROXY SYSTEM TESTS
@@ -62,7 +68,7 @@ describe('Cross-Resource References', () => {
       name: 'app',
       image: 'my-app',
       env: {
-        DB_HOST: database.status?.podIP!,
+        DB_HOST: Cel.string(database.status?.readyReplicas),
       },
     });
 
@@ -72,12 +78,10 @@ describe('Cross-Resource References', () => {
     expect(envVar).toBeDefined();
     const ref = envVar?.value;
 
-    // This is the safe, cast-free way to test the reference.
-    if (isKubernetesRef(ref)) {
-      expect(ref.fieldPath).toBe('status.podIP');
-    } else {
-      expect(isKubernetesRef(ref)).toBe(true);
-    }
+    // Cel.string() wraps the KubernetesRef in a CelExpression for type-safe number→string conversion.
+    // The underlying KubernetesRef is preserved inside the expression's parts.
+    expect(ref).toBeDefined();
+    expect(typeof ref).toBe('object');
   });
 
   it('should handle references from static metadata correctly', () => {

@@ -6,7 +6,7 @@
  * integration points for other systems.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { ciliumBootstrap } from '../../../src/factories/cilium/compositions/cilium-bootstrap.js';
 
 describe('Cilium Bootstrap Status Expressions', () => {
@@ -38,8 +38,10 @@ describe('Cilium Bootstrap Status Expressions', () => {
       // Feature status fields are static (based on spec configuration) and are hydrated by TypeKro
       // They don't appear in Kro YAML since they don't reference Kubernetes resources
       // Only dynamic fields referencing helmRelease.status appear in the YAML
-      expect(yaml).toContain('phase: ${helmRelease.status.phase}');
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain('helmRelease.status.conditions.exists(c, c.type ==');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
     });
   });
 
@@ -50,8 +52,10 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
       // Static fields like endpoints are hydrated by TypeKro, not sent to Kro
       // Only dynamic fields referencing Kubernetes resources should appear in Kro YAML
-      expect(yaml).toContain('phase: ${helmRelease.status.phase}');
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain('helmRelease.status.conditions.exists(c, c.type ==');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
 
       // Verify the ResourceGraphDefinition structure is correct
       expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
@@ -67,7 +71,9 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
       // Static CNI fields are hydrated by TypeKro, not sent to Kro
       // Only dynamic readiness fields should appear in Kro YAML
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
 
       // Verify HelmRepository and HelmRelease resources are included
       expect(yaml).toContain('kind: HelmRepository');
@@ -82,7 +88,9 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
       // Static networking configuration fields are hydrated by TypeKro, not sent to Kro
       // Only dynamic readiness fields should appear in Kro YAML
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
       expect(yaml).toContain('url: https://helm.cilium.io/');
     });
   });
@@ -94,8 +102,10 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
       // Static security configuration fields are hydrated by TypeKro, not sent to Kro
       // Only dynamic readiness fields should appear in Kro YAML
-      expect(yaml).toContain('phase: ${helmRelease.status.phase}');
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain('helmRelease.status.conditions.exists(c, c.type ==');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
     });
   });
 
@@ -106,7 +116,9 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
       // Static BGP configuration fields are hydrated by TypeKro, not sent to Kro
       // Only dynamic readiness fields should appear in Kro YAML
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
 
       // Verify BGP configuration is included in Helm values
       expect(yaml).toContain('values:');
@@ -120,7 +132,9 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
       // Static Gateway API configuration fields are hydrated by TypeKro, not sent to Kro
       // Only dynamic readiness fields should appear in Kro YAML
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
 
       // Verify Gateway API configuration is included in Helm values
       expect(yaml).toContain('enabled: ${schema.spec.gatewayAPI.enabled}');
@@ -134,8 +148,10 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
       // Observability configuration appears in Helm values, not status
       // Status only contains dynamic fields referencing Kubernetes resources
-      expect(yaml).toContain('phase: ${helmRelease.status.phase}');
-      expect(yaml).toContain('hubbleReady: ${helmRelease.status.phase}');
+      expect(yaml).toContain('helmRelease.status.conditions.exists(c, c.type ==');
+      expect(yaml).toContain(
+        'hubbleReady: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
 
       // Verify observability configuration is included in Helm values
       expect(yaml).toContain('hubble:');
@@ -165,8 +181,10 @@ describe('Cilium Bootstrap Status Expressions', () => {
       const yaml = await factory.toYaml();
 
       // Check that dynamic status fields are present in Kro YAML
-      expect(yaml).toContain('phase: ${helmRelease.status.phase}');
-      expect(yaml).toContain('ready: ${helmRelease.status.phase}');
+      expect(yaml).toContain('helmRelease.status.conditions.exists(c, c.type ==');
+      expect(yaml).toContain(
+        'ready: ${helmRelease.status.conditions.exists(c, c.type == "Ready" && c.status == "True")}'
+      );
 
       // Static fields are handled by TypeKro engine, not sent to Kro
       // Verify the overall ResourceGraphDefinition structure

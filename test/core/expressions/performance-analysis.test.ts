@@ -5,16 +5,16 @@
  * KubernetesRef detection and doesn't introduce significant overhead.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
-import {
-  JavaScriptToCelAnalyzer,
-  type AnalysisContext,
-} from '../../../src/core/expressions/analysis/analyzer.js';
-import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-proxy/magic-assignable-analyzer.js';
-import { ResourceAnalyzer } from '../../../src/core/expressions/factory/resource-analyzer.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
-import type { KubernetesRef } from '../../../src/core/types/common.js';
+import {
+  type AnalysisContext,
+  JavaScriptToCelAnalyzer,
+} from '../../../src/core/expressions/analysis/analyzer.js';
 import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
+import { ResourceAnalyzer } from '../../../src/core/expressions/factory/resource-analyzer.js';
+import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-proxy/magic-assignable-analyzer.js';
+import type { KubernetesRef } from '../../../src/core/types/common.js';
 
 describe('Performance Analysis - KubernetesRef Detection', () => {
   let analyzer: JavaScriptToCelAnalyzer;
@@ -39,7 +39,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       service: {
         __resourceId: 'service',
         status: {
-          ready: true,
+          conditions: [{ type: 'Ready', status: 'True' }],
           loadBalancer: { ingress: [{ ip: '192.168.1.1' }] },
         },
         spec: {
@@ -77,7 +77,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
     it('should analyze simple expressions quickly', () => {
       const expressions = [
         'deployment.status.readyReplicas > 0',
-        'service.status.ready',
+        'deployment.status.availableReplicas > 0',
         'schema.spec.name',
         'true',
         '42',
@@ -101,7 +101,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
     it('should handle large numbers of expressions efficiently', () => {
       const baseExpressions = [
         'deployment.status.readyReplicas > 0',
-        'service.status.ready && deployment.status.readyReplicas > 0',
+        'deployment.status.availableReplicas > 0 && deployment.status.readyReplicas > 0',
         '`http://${service.status.loadBalancer.ingress[0].ip}`',
         'deployment.status.conditions.find(c => c.type === "Available").status === "True"',
         'schema.spec.replicas > 1 ? "ha" : "single"',
@@ -134,7 +134,8 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
     });
 
     it('should cache repeated expressions effectively', () => {
-      const expression = 'deployment.status.readyReplicas > 0 && service.status.ready';
+      const expression =
+        'deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0';
       const iterations = 1000;
 
       // First run - should populate cache
@@ -285,7 +286,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       const mockRef: KubernetesRef<string> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'database',
-        fieldPath: 'status.podIP',
+        fieldPath: 'metadata.name',
         _type: 'string',
       };
 
@@ -353,7 +354,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
         // Each resource depends on 2-3 others
         for (let j = 0; j < 3 && j < i; j++) {
           const depId = `resource-${i - j - 1}`;
-          dependencies.push(createMockRef(depId, 'status.ready'));
+          dependencies.push(createMockRef(depId, 'status.readyReplicas'));
           fieldPaths.push(`env.DEP_${j}`);
         }
 
@@ -512,10 +513,10 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
         'deployment.status.readyReplicas > 0',
 
         // Medium
-        'deployment.status.readyReplicas > 0 && service.status.ready',
+        'deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0',
 
         // Complex
-        'deployment.status.readyReplicas > 0 && service.status.ready && schema.spec.replicas > 1',
+        'deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0 && schema.spec.replicas > 1',
 
         // Very complex
         '`http://${service.status.loadBalancer.ingress[0].ip}:${service.spec.ports[0].port}/${schema.spec.path}?ready=${deployment.status.readyReplicas === schema.spec.replicas}`',

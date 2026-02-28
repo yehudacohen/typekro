@@ -201,7 +201,7 @@ describe('Three-Composition Demo Integration', () => {
 
         return {
           deploymentReady: deployment.status.readyReplicas >= (spec.replicas || 1),
-          serviceReady: service.status.clusterIP !== undefined,
+          serviceReady: service.metadata.name !== undefined,
           certificateReady:
             certificate.status.conditions?.some(
               (c: any) => c.type === 'Ready' && c.status === 'True'

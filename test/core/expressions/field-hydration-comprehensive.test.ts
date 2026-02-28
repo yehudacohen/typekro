@@ -1,13 +1,13 @@
 /**
  * Comprehensive tests for field hydration integration with magic proxy system
- * 
+ *
  * Tests that JavaScript expressions integrate properly with TypeKro's field hydration
  * strategy by tracking KubernetesRef dependencies for proper status field population order.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
-import { FieldHydrationExpressionProcessor } from '../../../src/core/expressions/factory/field-hydration-processor.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import { FieldHydrationExpressionProcessor } from '../../../src/core/expressions/factory/field-hydration-processor.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 
@@ -18,12 +18,12 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
 
   beforeEach(() => {
     processor = new FieldHydrationExpressionProcessor();
-    
+
     mockSchemaProxy = {
       spec: {},
-      status: {}
+      status: {},
     };
-    
+
     // Mock Enhanced resources
     mockResources = {
       deployment: {
@@ -31,28 +31,27 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
         spec: { replicas: 3 },
         status: {
           readyReplicas: createMockRef('deployment', 'status.readyReplicas'),
-          phase: createMockRef('deployment', 'status.phase'),
-          conditions: createMockRef('deployment', 'status.conditions')
-        }
+          availableReplicas: createMockRef('deployment', 'status.availableReplicas'),
+          conditions: createMockRef('deployment', 'status.conditions'),
+        },
       } as any,
-      
+
       service: {
-        metadata: { name: 'test-service' },
+        metadata: { name: createMockRef('service', 'metadata.name') },
         spec: { type: 'ClusterIP' },
         status: {
-          ready: createMockRef('service', 'status.ready'),
-          clusterIP: createMockRef('service', 'status.clusterIP'),
-          loadBalancer: createMockRef('service', 'status.loadBalancer')
-        }
+          conditions: createMockRef('service', 'status.conditions'),
+          loadBalancer: createMockRef('service', 'status.loadBalancer'),
+        },
       } as any,
-      
+
       ingress: {
         metadata: { name: 'test-ingress' },
         spec: { rules: [] },
         status: {
-          loadBalancer: createMockRef('ingress', 'status.loadBalancer')
-        }
-      } as any
+          loadBalancer: createMockRef('ingress', 'status.loadBalancer'),
+        },
+      } as any,
     };
   });
 
@@ -61,7 +60,7 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       [KUBERNETES_REF_BRAND]: true,
       resourceId,
       fieldPath,
-      _type: 'unknown'
+      _type: 'unknown',
     };
   }
 
@@ -70,19 +69,21 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       const statusBuilder = (_schema: any, resources: typeof mockResources) => ({
         // Simple dependency on deployment
         ready: resources.deployment!.status.readyReplicas > 0,
-        
+
         // Multiple dependencies
-        healthy: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
-        
+        healthy:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined,
+
         // Complex dependency chain
         url: resources.service!.status?.loadBalancer?.ingress?.[0]?.ip || 'pending',
-        
+
         // Nested dependency
         status: {
-          deployment: resources.deployment?.status.phase,
-          service: resources.service!.status.ready,
-          ingress: resources.ingress!.status?.loadBalancer?.ingress?.length > 0
-        }
+          deployment: resources.deployment?.status.readyReplicas,
+          service: resources.deployment!.status.availableReplicas > 0,
+          ingress: resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
+        },
       });
 
       const result = processor.processStatusExpressions(
@@ -105,28 +106,31 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       // Dependencies should include the correct resources
       const readyDeps = result.dependencies.get('ready') || [];
 
-      expect(readyDeps.some(dep => dep.resourceId === 'deployment')).toBe(true);
+      expect(readyDeps.some((dep) => dep.resourceId === 'deployment')).toBe(true);
 
       const healthyDeps = result.dependencies.get('healthy') || [];
-      expect(healthyDeps.some(dep => dep.resourceId === 'deployment')).toBe(true);
-      expect(healthyDeps.some(dep => dep.resourceId === 'service')).toBe(true);
+      expect(healthyDeps.some((dep) => dep.resourceId === 'deployment')).toBe(true);
+      expect(healthyDeps.some((dep) => dep.resourceId === 'service')).toBe(true);
     });
 
     it('should calculate proper hydration order based on dependencies', () => {
       const statusBuilder = (_schema: any, resources: typeof mockResources) => ({
         // Field that depends on deployment only
         deploymentReady: resources.deployment!.status.readyReplicas > 0,
-        
+
         // Field that depends on service only
-        serviceReady: resources.service!.status.ready,
-        
+        serviceReady: resources.service!.status?.loadBalancer !== undefined,
+
         // Field that depends on both (should come after both are hydrated)
-        overallReady: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
-        
+        overallReady:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined,
+
         // Field that depends on all three
-        fullyReady: resources.deployment!.status.readyReplicas > 0 && 
-                   resources.service!.status.ready && 
-                   resources.ingress!.status?.loadBalancer?.ingress?.length > 0
+        fullyReady:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined &&
+          resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
       });
 
       const result = processor.processStatusExpressions(
@@ -154,17 +158,20 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       const statusBuilder = (_schema: any, resources: typeof mockResources) => ({
         // Optional chaining should still track dependencies
         ingressIP: resources.ingress!.status?.loadBalancer?.ingress?.[0]?.ip,
-        
+
         // Complex optional chaining
-        serviceEndpoint: resources.service!.status?.loadBalancer?.ingress?.[0]?.ip || 
-                        resources.service!.status?.clusterIP,
-        
+        serviceEndpoint:
+          resources.service!.status?.loadBalancer?.ingress?.[0]?.ip ||
+          resources.service!.metadata.name,
+
         // Conditional with optional chaining
         hasIngress: resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
-        
+
         // Mixed optional and required access
-        endpoint: resources.service!.metadata.name + ':' + 
-                 (resources.service!.status?.loadBalancer?.ingress?.[0]?.port || 80)
+        endpoint:
+          resources.service!.metadata.name +
+          ':' +
+          (resources.service!.status?.loadBalancer?.ingress?.[0]?.port || 80),
       });
 
       const result = processor.processStatusExpressions(
@@ -177,13 +184,13 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
 
       // Should track dependencies even with optional chaining
       const ingressIPDeps = result.dependencies.get('ingressIP') || [];
-      expect(ingressIPDeps.some(dep => dep.resourceId === 'ingress')).toBe(true);
+      expect(ingressIPDeps.some((dep) => dep.resourceId === 'ingress')).toBe(true);
 
       const serviceEndpointDeps = result.dependencies.get('serviceEndpoint') || [];
-      expect(serviceEndpointDeps.some(dep => dep.resourceId === 'service')).toBe(true);
+      expect(serviceEndpointDeps.some((dep) => dep.resourceId === 'service')).toBe(true);
 
       const endpointDeps = result.dependencies.get('endpoint') || [];
-      expect(endpointDeps.some(dep => dep.resourceId === 'service')).toBe(true);
+      expect(endpointDeps.some((dep) => dep.resourceId === 'service')).toBe(true);
     });
   });
 
@@ -191,7 +198,7 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
     it('should integrate with field hydration strategy for ordering', () => {
       let calculateHydrationOrderCalled = false;
       let calculateHydrationOrderArgs: any = null;
-      
+
       const mockStrategy = {
         calculateHydrationOrder: (dependencies: Map<string, any>) => {
           calculateHydrationOrderCalled = true;
@@ -199,17 +206,19 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
           return ['level1', 'level2', 'level3'];
         },
         canHydrateInParallel: () => false,
-        getFieldPriority: () => 1
+        getFieldPriority: () => 1,
       };
-      
+
       const customProcessor = new FieldHydrationExpressionProcessor(undefined, {
-        hydrationStrategy: mockStrategy
+        hydrationStrategy: mockStrategy,
       });
-      
+
       const statusBuilder = (_schema: any, resources: typeof mockResources) => ({
         level1: resources.deployment!.status.readyReplicas > 0,
-        level2: resources.service!.status.ready,
-        level3: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready
+        level2: resources.service!.status?.loadBalancer !== undefined,
+        level3:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined,
       });
 
       const result = customProcessor.processStatusExpressions(
@@ -230,18 +239,25 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       const statusBuilder = (_schema: any, resources: typeof mockResources) => ({
         // Create a complex dependency graph
         a: resources.deployment!.status.readyReplicas > 0,
-        b: resources.service!.status.ready,
+        b: resources.service!.status?.loadBalancer !== undefined,
         c: resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
-        
+
         // Fields that depend on previous fields (simulated)
-        ab: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
-        bc: resources.service!.status.ready && resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
-        ac: resources.deployment!.status.readyReplicas > 0 && resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
-        
+        ab:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined,
+        bc:
+          resources.service!.status?.loadBalancer !== undefined &&
+          resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
+        ac:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
+
         // Field that depends on everything
-        abc: resources.deployment!.status.readyReplicas > 0 && 
-             resources.service!.status.ready && 
-             resources.ingress!.status?.loadBalancer?.ingress?.length > 0
+        abc:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined &&
+          resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
       });
 
       const result = processor.processStatusExpressions(
@@ -261,13 +277,13 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       for (const field of basicFields) {
         const index = result.hydrationOrder.indexOf(field);
         expect(index).toBeGreaterThanOrEqual(0);
-        
+
         // Should come before combined fields
         for (const combinedField of combinedFields) {
           const combinedIndex = result.hydrationOrder.indexOf(combinedField);
           expect(index).toBeLessThan(combinedIndex);
         }
-        
+
         // Should come before final field
         const finalIndex = result.hydrationOrder.indexOf(finalField);
         expect(index).toBeLessThan(finalIndex);
@@ -279,33 +295,33 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
     it('should handle large numbers of status fields efficiently', () => {
       // Create a status builder with many static fields (reduced from 100 to 10 for static analysis)
       const largeStatusBuilder = (_schema: any, resources: typeof mockResources) => ({
-        field0: resources.deployment!.status.ready,
-        field1: resources.service!.status.ready,
+        field0: resources.deployment!.status.readyReplicas > 0,
+        field1: resources.service!.status?.loadBalancer !== undefined,
         field2: resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
         field3: resources.deployment!.status.readyReplicas > 0,
-        field4: resources.service!.status.ready,
+        field4: resources.service!.status?.loadBalancer !== undefined,
         field5: resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
         field6: resources.deployment!.status.readyReplicas > 0,
-        field7: resources.service!.status.ready,
+        field7: resources.service!.status?.loadBalancer !== undefined,
         field8: resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
-        field9: resources.deployment!.status.readyReplicas > 0
+        field9: resources.deployment!.status.readyReplicas > 0,
       });
 
       const startTime = performance.now();
-      
+
       const result = processor.processStatusExpressions(
         largeStatusBuilder,
         mockResources,
         mockSchemaProxy
       );
-      
+
       const endTime = performance.now();
       const duration = endTime - startTime;
 
       expect(result).toBeDefined();
       expect(result.statusMappings).toBeDefined();
       expect(Object.keys(result.statusMappings)).toHaveLength(10);
-      
+
       // Should complete in reasonable time
       expect(duration).toBeLessThan(1000); // Less than 1 second
     });
@@ -314,23 +330,37 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       // Test with different levels of complexity using static fields
       const simpleStatusBuilder = (_schema: any, resources: typeof mockResources) => ({
         simple1: resources.deployment!.status.readyReplicas > 0,
-        simple2: resources.service!.status.ready
+        simple2: resources.service!.status?.loadBalancer !== undefined,
       });
 
       const mediumStatusBuilder = (_schema: any, resources: typeof mockResources) => ({
         simple1: resources.deployment!.status.readyReplicas > 0,
-        simple2: resources.service!.status.ready,
-        medium1: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
-        medium2: resources.service!.status.ready && resources.ingress!.status?.loadBalancer?.ingress?.length > 0
+        simple2: resources.service!.status?.loadBalancer !== undefined,
+        medium1:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined,
+        medium2:
+          resources.service!.status?.loadBalancer !== undefined &&
+          resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
       });
 
       const complexStatusBuilder = (_schema: any, resources: typeof mockResources) => ({
         simple1: resources.deployment!.status.readyReplicas > 0,
-        simple2: resources.service!.status.ready,
-        medium1: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
-        medium2: resources.service!.status.ready && resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
-        complex1: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready && resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
-        complex2: resources.deployment!.status.readyReplicas > 0 || (resources.service!.status.ready && resources.ingress!.status?.loadBalancer?.ingress?.length > 0)
+        simple2: resources.service!.status?.loadBalancer !== undefined,
+        medium1:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined,
+        medium2:
+          resources.service!.status?.loadBalancer !== undefined &&
+          resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
+        complex1:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined &&
+          resources.ingress!.status?.loadBalancer?.ingress?.length > 0,
+        complex2:
+          resources.deployment!.status.readyReplicas > 0 ||
+          (resources.service!.status?.loadBalancer !== undefined &&
+            resources.ingress!.status?.loadBalancer?.ingress?.length > 0),
       });
 
       const builders = [simpleStatusBuilder, mediumStatusBuilder, complexStatusBuilder];
@@ -339,13 +369,13 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
 
       for (let i = 0; i < builders.length; i++) {
         const startTime = performance.now();
-        
+
         const result = processor.processStatusExpressions(
           builders[i]!,
           mockResources,
           mockSchemaProxy
         );
-        
+
         const endTime = performance.now();
         durations.push(endTime - startTime);
 
@@ -365,12 +395,14 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       const statusBuilder = (_schema: any, resources: typeof mockResources) => ({
         // Valid expression that should work
         validReady: resources.deployment!.status.readyReplicas > 0,
-        
+
         // Another valid expression
-        serviceReady: resources.service!.status.ready,
-        
+        serviceReady: resources.service!.status?.loadBalancer !== undefined,
+
         // Complex but valid expression
-        bothReady: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready
+        bothReady:
+          resources.deployment!.status.readyReplicas > 0 &&
+          resources.service!.status?.loadBalancer !== undefined,
       });
 
       const result = processor.processStatusExpressions(
@@ -381,13 +413,13 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
 
       expect(result).toBeDefined();
       expect(result.statusMappings).toBeDefined();
-      
+
       // Should handle gracefully without throwing
       // All valid expressions should work
       expect(result.statusMappings.validReady).toBeDefined();
       expect(result.statusMappings.serviceReady).toBeDefined();
       expect(result.statusMappings.bothReady).toBeDefined();
-      
+
       // Should have processed all valid fields
       expect(Object.keys(result.statusMappings)).toHaveLength(3);
     });
@@ -395,7 +427,7 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
     it('should provide meaningful errors for invalid expressions', () => {
       const invalidStatusBuilder = (_schema: any, _resources: typeof mockResources) => ({
         // This might cause parsing errors
-        invalid: 'resources.deployment!.status.readyReplicas >' // Incomplete expression
+        invalid: 'resources.deployment!.status.readyReplicas >', // Incomplete expression
       });
 
       const result = processor.processStatusExpressions(
@@ -405,7 +437,7 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       );
 
       expect(result).toBeDefined();
-      
+
       // Should handle errors gracefully
       if (result.statusMappings.invalid === undefined) {
         // If the invalid expression was rejected, that's acceptable
@@ -427,17 +459,17 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
           status: {
             // These might be undefined during field hydration despite appearing non-optional
             readyReplicas: undefined,
-            phase: undefined,
-            conditions: undefined
-          }
-        }
+            availableReplicas: undefined,
+            conditions: undefined,
+          },
+        },
       };
 
       const statusBuilder = (_schema: any, resources: typeof enhancedResources) => ({
         // These expressions should handle undefined values gracefully
         ready: (resources.deployment!.status?.readyReplicas || 0) > 0,
-        phase: resources.deployment!.status?.phase || 'Unknown',
-        hasConditions: (resources.deployment!.status?.conditions as any)?.length > 0
+        phase: (resources.deployment!.status?.availableReplicas || 0) > 0 ? 'Ready' : 'Unknown',
+        hasConditions: (resources.deployment!.status?.conditions as any)?.length > 0,
       });
 
       const result = processor.processStatusExpressions(
@@ -448,7 +480,7 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
 
       expect(result).toBeDefined();
       expect(result.statusMappings).toBeDefined();
-      
+
       // Should handle undefined Enhanced fields
       expect(result.statusMappings.ready).toBeDefined();
       expect(result.statusMappings.phase).toBeDefined();
@@ -459,8 +491,8 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       const statusBuilder = (_schema: any, resources: typeof mockResources) => ({
         // These should generate null-safe CEL expressions
         ready: resources.deployment!.status.readyReplicas > 0,
-        phase: resources.deployment!.status.phase,
-        conditions: resources.deployment!.status.conditions?.length > 0
+        phase: resources.deployment!.status.availableReplicas,
+        conditions: resources.deployment!.status.conditions?.length > 0,
       });
 
       const result = processor.processStatusExpressions(
@@ -475,12 +507,10 @@ describe('Field Hydration Integration - Comprehensive Tests', () => {
       // The generated CEL expressions should include null-safety
       for (const [_fieldName, celExpression] of Object.entries(result.statusMappings)) {
         expect(celExpression).toBeDefined();
-        
+
         // Should be a proper CEL expression (this would be validated by the actual CEL system)
         expect(typeof celExpression.toString).toBe('function');
       }
     });
   });
-
-
 });
