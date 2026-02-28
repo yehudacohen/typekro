@@ -22,6 +22,10 @@ export * from './cilium/index.js';
 // EXTERNAL-DNS ECOSYSTEM
 // =============================================================================
 export * as externalDns from './external-dns/index.js';
+// =============================================================================
+// FLUX CD ECOSYSTEM
+// =============================================================================
+export * from './flux/index.js';
 export type {
   HelmReleaseConfig,
   HelmReleaseSpec,

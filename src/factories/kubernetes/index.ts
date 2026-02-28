@@ -5,14 +5,9 @@
  * Functions are organized by resource type and ecosystem for better maintainability.
  */
 
-// =============================================================================
-// FLUX CD RESOURCES
-// =============================================================================
-export * from '../flux/index.js';
-// =============================================================================
-// HELM RESOURCES
-// =============================================================================
-export * from '../helm/index.js';
+// NOTE: Flux CD and Helm are separate ecosystems with their own top-level
+// directories (factories/flux/, factories/helm/) and are exported directly
+// from factories/index.ts — NOT re-exported through the Kubernetes namespace.
 // =============================================================================
 // ADMISSION RESOURCES
 // =============================================================================
