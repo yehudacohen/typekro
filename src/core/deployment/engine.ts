@@ -22,7 +22,6 @@ import {
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { ensureReadinessEvaluator } from '../readiness/evaluator.js';
-import type { DeploymentModeType } from '../references/index.js';
 import { DeploymentMode, ReferenceResolver } from '../references/index.js';
 import { getResourceId } from '../resources/id.js';
 import type {
@@ -84,7 +83,7 @@ export class DirectDeploymentEngine {
     private kubeClient: k8s.KubeConfig,
     k8sApi?: k8s.KubernetesObjectApi,
     referenceResolver?: ReferenceResolver,
-    private deploymentMode: DeploymentModeType = DeploymentMode.DIRECT,
+    private deploymentMode: DeploymentMode = DeploymentMode.DIRECT,
     httpTimeouts?: DeploymentOptions['httpTimeouts']
   ) {
     this.dependencyResolver = new DependencyResolver();
