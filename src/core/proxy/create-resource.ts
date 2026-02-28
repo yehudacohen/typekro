@@ -29,6 +29,27 @@ import { validateResourceId } from '../validation/cel-validator.js';
 // Check for the debug environment variable
 const IS_DEBUG_MODE = isDebugMode();
 
+/**
+ * Deep clone a value, stripping functions (which are non-serializable proxies).
+ * Used by toJSON handlers on proxy objects to produce clean JSON output.
+ */
+function deepCloneValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+  if (value instanceof Date) return new Date(value);
+  if (value instanceof RegExp) return new RegExp(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => deepCloneValue(item));
+  }
+  const cloned: Record<string, unknown> = {};
+  for (const k of Object.keys(value)) {
+    if (typeof (value as Record<string, unknown>)[k] !== 'function') {
+      cloned[k] = deepCloneValue((value as Record<string, unknown>)[k]);
+    }
+  }
+  return cloned;
+}
+
 // Logger for debug mode
 const debugLogger = getComponentLogger('factory-proxy');
 
@@ -121,26 +142,9 @@ function createPropertyProxy<T extends object>(
       // Handle toJSON specially to ensure proper serialization
       if (prop === 'toJSON') {
         return () => {
-          const deepClone = (value: unknown): unknown => {
-            if (value === null || value === undefined) return value;
-            if (typeof value !== 'object') return value;
-            if (value instanceof Date) return new Date(value);
-            if (value instanceof RegExp) return new RegExp(value);
-            if (Array.isArray(value)) {
-              return value.map((item) => deepClone(item));
-            }
-            const cloned: Record<string, unknown> = {};
-            for (const k of Object.keys(value)) {
-              if (typeof (value as Record<string, unknown>)[k] !== 'function') {
-                cloned[k] = deepClone((value as Record<string, unknown>)[k]);
-              }
-            }
-            return cloned;
-          };
-
           const result: Record<string, unknown> = {};
           for (const key of Object.keys(obj)) {
-            result[key] = deepClone((obj as Record<string, unknown>)[key]);
+            result[key] = deepCloneValue((obj as Record<string, unknown>)[key]);
           }
           return result;
         };
@@ -199,23 +203,6 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
       // Handle toJSON specially to ensure proper serialization
       if (prop === 'toJSON') {
         return () => {
-          const deepClone = (value: unknown): unknown => {
-            if (value === null || value === undefined) return value;
-            if (typeof value !== 'object') return value;
-            if (value instanceof Date) return new Date(value);
-            if (value instanceof RegExp) return new RegExp(value);
-            if (Array.isArray(value)) {
-              return value.map((item) => deepClone(item));
-            }
-            const result: Record<string, unknown> = {};
-            for (const key of Object.keys(value)) {
-              if (typeof (value as Record<string, unknown>)[key] !== 'function') {
-                result[key] = deepClone((value as Record<string, unknown>)[key]);
-              }
-            }
-            return result;
-          };
-
           // Clone and filter out internal fields
           const result: Record<string, unknown> = {};
           for (const key of Object.keys(target)) {
@@ -225,7 +212,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
               key !== 'readinessEvaluator' &&
               key !== 'id'
             ) {
-              result[key] = deepClone((target as unknown as Record<string, unknown>)[key]);
+              result[key] = deepCloneValue((target as unknown as Record<string, unknown>)[key]);
             }
           }
           return result;
