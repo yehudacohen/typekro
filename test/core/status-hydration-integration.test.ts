@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { toResourceGraph, simple } from '../../src/index.js';
+import { simple, toResourceGraph } from '../../src/index.js';
 
 describe('Status Hydration Integration', () => {
   it('should demonstrate Enhanced proxy status hydration after deployment', async () => {
@@ -19,7 +19,7 @@ describe('Status Hydration Integration', () => {
     const WebAppStatusSchema = type({
       url: 'string',
       readyReplicas: 'number%1',
-      phase: 'string',
+      availableReplicas: 'number%1',
     });
 
     const graph = toResourceGraph(
@@ -41,7 +41,7 @@ describe('Status Hydration Integration', () => {
       (_schema, resources) => ({
         url: `http://${resources.deployment?.metadata?.name || 'pending'}`,
         readyReplicas: resources.deployment?.status.readyReplicas,
-        phase: resources.deployment?.status.phase || 'pending',
+        availableReplicas: resources.deployment?.status?.availableReplicas || 0,
       })
     );
 

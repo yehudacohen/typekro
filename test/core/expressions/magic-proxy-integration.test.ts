@@ -55,9 +55,11 @@ describe('Magic Proxy Integration Tests', () => {
         }),
         (_schema, resources) => ({
           // These JavaScript expressions should be converted to CEL
-          ready: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
-          url: `http://${resources.service!.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
-          replicas: resources.deployment!.status.readyReplicas || 0,
+          ready:
+            resources.deployment.status.readyReplicas > 0 &&
+            resources.deployment.status.availableReplicas > 0,
+          url: `http://${resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
+          replicas: resources.deployment.status.readyReplicas || 0,
         })
       );
 
@@ -108,7 +110,7 @@ describe('Magic Proxy Integration Tests', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment!.status.phase || 'Unknown',
+          phase: resources.deployment.status.readyReplicas > 0 ? 'Ready' : 'Unknown',
         })
       );
 
@@ -171,7 +173,7 @@ describe('Magic Proxy Integration Tests', () => {
           // Complex JavaScript expressions with multiple resource references
           ready:
             (resources.deployment! as any).status?.readyReplicas === schema.spec.replicas &&
-            (resources.service! as any).status?.ready,
+            (resources.deployment! as any).status?.availableReplicas > 0,
           endpoint: (resources.service! as any).status?.loadBalancer?.ingress?.[0]?.ip
             ? `http://${(resources.service! as any).status.loadBalancer.ingress[0].ip}`
             : 'http://localhost',
@@ -180,7 +182,7 @@ describe('Magic Proxy Integration Tests', () => {
               (resources.deployment! as any).status?.conditions?.find(
                 (c: any) => c.type === 'Available'
               )?.status === 'True',
-            service: (resources.service! as any).status?.ready ?? false,
+            service: (resources.deployment! as any).status?.availableReplicas > 0,
           },
         })
       );
@@ -239,9 +241,11 @@ describe('Magic Proxy Integration Tests', () => {
 
         // Return status with JavaScript expressions
         return {
-          ready: deployment.status.readyReplicas === spec.replicas && service.status.ready,
+          ready:
+            deployment.status.readyReplicas === spec.replicas &&
+            deployment.status.availableReplicas > 0,
           url: service.status?.loadBalancer?.ingress?.[0]?.ip || 'pending',
-          phase: deployment.status.phase || 'Unknown',
+          phase: deployment.status.readyReplicas > 0 ? 'Ready' : 'Unknown',
         };
       });
 
@@ -290,8 +294,8 @@ describe('Magic Proxy Integration Tests', () => {
           });
 
           return {
-            ready: deployment.status.readyReplicas > 0 && service.status.ready,
-            host: service.status.clusterIP || 'localhost',
+            ready: deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0,
+            host: service.metadata.name || 'localhost',
             port: 5432,
           };
         }
@@ -334,16 +338,20 @@ describe('Magic Proxy Integration Tests', () => {
 
     it('should handle cross-resource references in factory functions', () => {
       const mockDatabase = {
+        metadata: {
+          name: 'db-10-0-0-1',
+        },
         status: {
-          podIP: '10.0.0.1',
-          ready: true,
+          readyReplicas: 1,
         },
       } as any;
 
       const mockService = {
+        metadata: {
+          name: 'svc-10-0-0-2',
+        },
         status: {
-          clusterIP: '10.0.0.2',
-          ready: true,
+          readyReplicas: 1,
         },
       } as any;
 
@@ -353,10 +361,13 @@ describe('Magic Proxy Integration Tests', () => {
         image: 'api:latest',
         env: {
           // JavaScript expressions with resource references
-          DATABASE_HOST: mockDatabase.status.podIP,
-          SERVICE_HOST: mockService.status.clusterIP,
-          READY_CHECK: mockDatabase.status.ready && mockService.status.ready ? 'true' : 'false',
-          CONNECTION_STRING: `postgres://user:pass@${mockDatabase.status.podIP}:5432/db`,
+          DATABASE_HOST: mockDatabase.metadata.name,
+          SERVICE_HOST: mockService.metadata.name,
+          READY_CHECK:
+            mockDatabase.status.readyReplicas > 0 && mockService.status.readyReplicas > 0
+              ? 'true'
+              : 'false',
+          CONNECTION_STRING: `postgres://user:pass@${mockDatabase.metadata.name}:5432/db`,
         },
       });
 
@@ -434,7 +445,7 @@ describe('Magic Proxy Integration Tests', () => {
         }),
         (_schema, resources) => ({
           // Reference to non-existent resource - should be handled gracefully
-          ready: resources.deployment!.status.readyReplicas > 0,
+          ready: resources.deployment.status.readyReplicas > 0,
         })
       );
 
@@ -543,7 +554,7 @@ describe('Magic Proxy Integration Tests', () => {
           }),
           (_schema, resources) => ({
             // Same expression - should be cached
-            ready: resources.deployment!.status.readyReplicas > 0,
+            ready: resources.deployment.status.readyReplicas > 0,
           })
         );
 

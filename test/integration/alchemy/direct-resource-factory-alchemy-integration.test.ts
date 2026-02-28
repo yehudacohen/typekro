@@ -105,7 +105,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
         const WebAppStatusSchema = type({
           url: 'string',
           readyReplicas: 'number%1',
-          phase: 'string',
+          phase: 'number%1',
         });
 
         // Create resource graph with individual resources
@@ -148,9 +148,9 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             return { deployment, service, config };
           },
           (_schema, resources) => ({
-            url: Cel.template('http://%s:80', resources.service.status.clusterIP),
+            url: Cel.template('http://%s:80', resources.service.metadata.name),
             readyReplicas: resources.deployment.status.readyReplicas,
-            phase: resources.deployment.status.phase,
+            phase: resources.deployment.status.readyReplicas,
           })
         );
 
@@ -298,7 +298,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
           }),
           (_schema, resources) => ({
             status: 'running',
-            endpoint: Cel.template('http://%s', resources.service.status.clusterIP),
+            endpoint: Cel.template('http://%s', resources.service.metadata.name),
           })
         );
 

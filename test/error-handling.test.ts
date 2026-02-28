@@ -80,9 +80,7 @@ describe('Error Handling', () => {
       const webapp = simple.Deployment({
         name: 'web-app',
         image: 'nginx:latest',
-        env: {
-          DB_HOST: database.status?.podIP!, // Direct KubernetesRef that validation can detect
-        },
+        replicas: database.status?.readyReplicas!, // KubernetesRef that validation can detect
       });
 
       // Only include webapp, not database - this should cause a reference error

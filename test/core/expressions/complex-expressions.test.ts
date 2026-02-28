@@ -85,9 +85,9 @@ describe('Complex Expressions and Edge Cases', () => {
 
     it('should handle nested conditional expressions', () => {
       const nestedConditionals = [
-        'deployment.status.readyReplicas > 0 ? (service.status.ready ? "fully-ready" : "partially-ready") : "not-ready"',
+        'deployment.status.readyReplicas > 0 ? (deployment.status.availableReplicas > 0 ? "fully-ready" : "partially-ready") : "not-ready"',
         'schema.spec.environment === "production" ? (schema.spec.replicas > 1 ? "ha-prod" : "single-prod") : (schema.spec.environment === "staging" ? "staging" : "dev")',
-        'deployment.status.phase === "Running" ? (deployment.status.readyReplicas === schema.spec.replicas ? "healthy" : "degraded") : (deployment.status.phase === "Pending" ? "starting" : "failed")',
+        'deployment.status.readyReplicas > 0 ? (deployment.status.readyReplicas === schema.spec.replicas ? "healthy" : "degraded") : (deployment.status.availableReplicas > 0 ? "starting" : "failed")',
       ];
 
       for (const expr of nestedConditionals) {
@@ -109,9 +109,9 @@ describe('Complex Expressions and Edge Cases', () => {
     it('should handle template literals with multiple interpolations', () => {
       const complexTemplates = [
         '`http://${service.status.loadBalancer.ingress[0].ip}:${service.spec.ports[0].port}/${schema.spec.path}`',
-        '`${schema.spec.name}-${deployment.status.readyReplicas}/${schema.spec.replicas}-${service.status.ready ? "ready" : "not-ready"}`',
-        '`Database: postgres://${database.status.podIP}:5432/${schema.spec.dbName}?sslmode=${schema.spec.ssl ? "require" : "disable"}`',
-        '`Status: ${deployment.status.phase} | Ready: ${deployment.status.readyReplicas}/${schema.spec.replicas} | URL: ${service.status?.loadBalancer?.ingress?.[0]?.ip || "pending"}`',
+        '`${schema.spec.name}-${deployment.status.readyReplicas}/${schema.spec.replicas}-${deployment.status.availableReplicas > 0 ? "ready" : "not-ready"}`',
+        '`Database: postgres://${database.metadata.name}:5432/${schema.spec.dbName}?sslmode=${schema.spec.ssl ? "require" : "disable"}`',
+        '`Status: ${deployment.status.readyReplicas} | Ready: ${deployment.status.readyReplicas}/${schema.spec.replicas} | URL: ${service.status?.loadBalancer?.ingress?.[0]?.ip || "pending"}`',
       ];
 
       for (const expr of complexTemplates) {
@@ -131,7 +131,7 @@ describe('Complex Expressions and Edge Cases', () => {
       const nestedTemplates = [
         '`Outer: ${`Inner: ${deployment.status.readyReplicas}`}`',
         '`Config: ${configmap.data[`${schema.spec.name}-config`]}`',
-        '`URL: ${service.status.ready ? `http://${service.status.clusterIP}` : "not-ready"}`',
+        '`URL: ${deployment.status.availableReplicas > 0 ? `http://${service.metadata.name}` : "not-ready"}`',
       ];
 
       for (const expr of nestedTemplates) {
@@ -146,7 +146,7 @@ describe('Complex Expressions and Edge Cases', () => {
     it('should handle template literals with complex expressions', () => {
       const complexExpressionTemplates = [
         '`Ready: ${deployment.status.conditions.find(c => c.type === "Available")?.status === "True" ? "yes" : "no"}`',
-        '`Health: ${deployment.status.readyReplicas > 0 && service.status.ready && ingress.status?.loadBalancer?.ingress?.length > 0 ? "healthy" : "unhealthy"}`',
+        '`Health: ${deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0 && ingress.status?.loadBalancer?.ingress?.length > 0 ? "healthy" : "unhealthy"}`',
         '`Replicas: ${Math.min(deployment.status.readyReplicas || 0, schema.spec.replicas)}`',
       ];
 
@@ -163,10 +163,10 @@ describe('Complex Expressions and Edge Cases', () => {
   describe('Complex Logical Expressions', () => {
     it('should handle complex boolean logic with multiple resources', () => {
       const complexLogicalExpressions = [
-        'deployment.status.readyReplicas > 0 && service.status.ready && ingress.status?.loadBalancer?.ingress?.length > 0',
-        '(deployment.status.phase === "Running" || deployment.status.phase === "Succeeded") && service.status.ready',
-        'deployment.status.readyReplicas === schema.spec.replicas && service.status.ready && (ingress.status?.loadBalancer?.ingress?.length > 0 || schema.spec.ingress === false)',
-        '(database.status.ready ?? false) && (redis.status?.ready ?? false) && deployment.status.readyReplicas > 0',
+        'deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0 && ingress.status?.loadBalancer?.ingress?.length > 0',
+        '(deployment.status.readyReplicas > 0 || deployment.status.updatedReplicas > 0) && deployment.status.availableReplicas > 0',
+        'deployment.status.readyReplicas === schema.spec.replicas && deployment.status.availableReplicas > 0 && (ingress.status?.loadBalancer?.ingress?.length > 0 || schema.spec.ingress === false)',
+        '(database.status.readyReplicas > 0 ?? false) && (redis.status?.readyReplicas > 0 ?? false) && deployment.status.readyReplicas > 0',
       ];
 
       for (const expr of complexLogicalExpressions) {
@@ -184,10 +184,10 @@ describe('Complex Expressions and Edge Cases', () => {
 
     it('should handle mixed logical and comparison operators', () => {
       const mixedExpressions = [
-        'deployment.status.readyReplicas >= schema.spec.replicas * 0.8 && service.status.ready',
-        'deployment.status.readyReplicas > 0 || (service.status.type === "NodePort" && service.status.ready)',
+        'deployment.status.readyReplicas >= schema.spec.replicas * 0.8 && deployment.status.availableReplicas > 0',
+        'deployment.status.readyReplicas > 0 || (service.status.conditions?.length > 0 && deployment.status.availableReplicas > 0)',
         '(deployment.status.readyReplicas / schema.spec.replicas) > 0.5 && service.status.loadBalancer?.ingress?.length > 0',
-        'deployment.status.readyReplicas === schema.spec.replicas && (service.status.ready ?? false) && ingress.status?.loadBalancer?.ingress?.[0]?.ip !== undefined',
+        'deployment.status.readyReplicas === schema.spec.replicas && (deployment.status.availableReplicas > 0 ?? false) && ingress.status?.loadBalancer?.ingress?.[0]?.ip !== undefined',
       ];
 
       for (const expr of mixedExpressions) {
@@ -312,7 +312,7 @@ describe('Complex Expressions and Edge Cases', () => {
         'Boolean(deployment.status.readyReplicas)',
         'String(service.spec.ports[0].port)',
         'Number(configmap.data.replicas)',
-        '!!deployment.status.ready',
+        '!!deployment.status.readyReplicas',
         '+deployment.status.readyReplicas',
       ];
 
@@ -366,10 +366,10 @@ describe('Complex Expressions and Edge Cases', () => {
     it('should handle very complex expressions efficiently', () => {
       const veryComplexExpression = `
         deployment.status.conditions.find(c => c.type === "Available")?.status === "True" &&
-        service.status.ready &&
+        deployment.status.availableReplicas > 0 &&
         (ingress.status?.loadBalancer?.ingress?.length > 0 || schema.spec.ingress === false) &&
-        (database.status?.ready ?? false) &&
-        (redis.status?.ready ?? true) &&
+        (database.status?.readyReplicas > 0 ?? false) &&
+        (redis.status?.readyReplicas > 0 ?? true) &&
         deployment.status.readyReplicas >= Math.ceil(schema.spec.replicas * 0.8) &&
         service.spec.ports.some(p => p.port === 80 || p.port === 443) &&
         deployment.spec.template.spec.containers.every(c => 
@@ -422,7 +422,7 @@ describe('Complex Expressions and Edge Cases', () => {
         'deployment.status.conditions.find(c => c.type === "Available" && c.status === "True"', // Missing closing parenthesis
         'service.status?.loadBalancer?.ingress?.[0]?.ip || "pending")', // Extra closing parenthesis
         '`${deployment.status.readyReplicas > 0 ? "ready" : "not-ready"`', // Missing closing brace in template
-        'deployment.status.readyReplicas > 0 && (service.status.ready && ingress.status.ready', // Unmatched parenthesis
+        'deployment.status.readyReplicas > 0 && (deployment.status.availableReplicas > 0 && ingress.status.loadBalancer', // Unmatched parenthesis
       ];
 
       for (const expr of complexInvalidExpressions) {

@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Builder Function Support', () => {
@@ -108,7 +108,7 @@ describe('Builder Function Support', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
           availableReplicas: resources.deployment.status.availableReplicas,
         })
@@ -149,7 +149,7 @@ describe('Builder Function Support', () => {
           };
         },
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
           availableReplicas: resources.deployment.status.availableReplicas,
         })
@@ -190,7 +190,7 @@ describe('Builder Function Support', () => {
       });
 
       const ComplexStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
         components: {
           app: 'boolean',
           database: 'boolean',
@@ -222,13 +222,13 @@ describe('Builder Function Support', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
           components: {
             app: true,
             database: true,
           },
           endpoints: {
-            app: `http://${resources.deployment.status.podIP}`,
+            app: `http://${resources.deployment.metadata.name}`,
           },
         })
       );
@@ -250,7 +250,7 @@ describe('Builder Function Support', () => {
       });
 
       const SimpleStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const resourceGraph = toResourceGraph(
@@ -275,7 +275,7 @@ describe('Builder Function Support', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 

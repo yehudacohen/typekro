@@ -1,26 +1,26 @@
 /**
  * Regression tests for existing CEL expression compatibility
- * 
+ *
  * Ensures that the JavaScript to CEL conversion system maintains backward
  * compatibility with existing CEL expressions and doesn't break existing functionality.
  */
 
-import { describe, it, expect } from 'bun:test';
-import { toResourceGraph, simple, Cel } from '../../../src/index.js';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { Cel, simple, toResourceGraph } from '../../../src/index.js';
 
 describe('CEL Expression Compatibility Regression Tests', () => {
   describe('Existing CEL Expression Support', () => {
     it('should continue to support manual CEL expressions', async () => {
       const WebAppSpec = type({
         name: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       const WebAppStatus = type({
         ready: 'boolean',
         url: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       // Test with existing CEL expressions (should continue to work)
@@ -30,27 +30,30 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'WebApp',
           spec: WebAppSpec,
-          status: WebAppStatus
+          status: WebAppStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: schema.spec.replicas,
-            id: 'webappDeployment'
+            id: 'webappDeployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'webappService'
-          })
+            id: 'webappService',
+          }),
         }),
         (_schema, resources) => ({
           // Existing CEL expressions should continue to work
           ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
-          url: Cel.template('http://%s', resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'),
-          replicas: resources.deployment.status.readyReplicas
+          url: Cel.template(
+            'http://%s',
+            resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'
+          ),
+          replicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -64,7 +67,7 @@ describe('CEL Expression Compatibility Regression Tests', () => {
       const MixedSpec = type({
         name: 'string',
         replicas: 'number',
-        environment: 'string'
+        environment: 'string',
       });
 
       const MixedStatus = type({
@@ -72,7 +75,7 @@ describe('CEL Expression Compatibility Regression Tests', () => {
         jsReady: 'boolean',
         celUrl: 'string',
         jsUrl: 'string',
-        mixed: 'string'
+        mixed: 'string',
       });
 
       const graph = toResourceGraph(
@@ -81,39 +84,43 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'MixedExpressions',
           spec: MixedSpec,
-          status: MixedStatus
+          status: MixedStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: schema.spec.replicas,
-            id: 'mixedDeployment'
+            id: 'mixedDeployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'mixedService'
-          })
+            id: 'mixedService',
+          }),
         }),
         (_schema, resources) => ({
           // Existing CEL expression
           celReady: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
-          
+
           // New JavaScript expression
           jsReady: resources.deployment.status.readyReplicas > 0,
-          
+
           // Existing CEL template
-          celUrl: Cel.template('http://%s', resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'),
-          
+          celUrl: Cel.template(
+            'http://%s',
+            resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'
+          ),
+
           // New JavaScript template
           jsUrl: `http://${resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
-          
+
           // Mixed - CEL expression with JavaScript fallback
-          mixed: resources.deployment.status.readyReplicas > 0 
-            ? Cel.template('Ready: %s replicas', resources.deployment.status.readyReplicas)
-            : 'Not ready'
+          mixed:
+            resources.deployment.status.readyReplicas > 0
+              ? Cel.template('Ready: %s replicas', resources.deployment.status.readyReplicas)
+              : 'Not ready',
         })
       );
 
@@ -125,11 +132,11 @@ describe('CEL Expression Compatibility Regression Tests', () => {
 
     it('should maintain CEL expression behavior in direct factory', async () => {
       const DirectSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const DirectStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       const graph = toResourceGraph(
@@ -138,18 +145,18 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'DirectCEL',
           spec: DirectSpec,
-          status: DirectStatus
+          status: DirectStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'directDeployment'
-          })
+            id: 'directDeployment',
+          }),
         }),
         (_schema, resources) => ({
           // CEL expression should work with direct factory
-          ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')
+          ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
         })
       );
 
@@ -175,7 +182,7 @@ describe('CEL Expression Compatibility Regression Tests', () => {
         Cel.template('Hello %s', 'world'),
         Cel.string('static value'),
         Cel.expr<boolean>('1 > 0'),
-        Cel.expr<string>('"a" + "b"')
+        Cel.expr<string>('"a" + "b"'),
       ];
 
       for (const celExpr of celExpressions) {
@@ -186,19 +193,19 @@ describe('CEL Expression Compatibility Regression Tests', () => {
 
     it('should support CEL expressions with resource references', async () => {
       const CelRefSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const CelRefStatus = type({
         deployment: {
           ready: 'boolean',
           replicas: 'number',
-          phase: 'string'
+          phase: 'string',
         },
         service: {
           ready: 'boolean',
-          type: 'string'
-        }
+          type: 'string',
+        },
       });
 
       const graph = toResourceGraph(
@@ -207,31 +214,31 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'CELReferences',
           spec: CelRefSpec,
-          status: CelRefStatus
+          status: CelRefStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'celDeployment'
+            id: 'celDeployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'celService'
-          })
+            id: 'celService',
+          }),
         }),
         (_schema, resources) => ({
           deployment: {
             ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
             replicas: Cel.expr<number>(resources.deployment.status.readyReplicas),
-            phase: Cel.expr<string>(resources.deployment.status.phase)
+            phase: Cel.expr<string>(resources.deployment.metadata.name),
           },
           service: {
-            ready: Cel.expr<boolean>(resources.service.status.ready),
-            type: Cel.expr<string>(resources.service.spec.type)
-          }
+            ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
+            type: Cel.expr<string>(resources.service.spec.type),
+          },
         })
       );
 
@@ -248,7 +255,7 @@ describe('CEL Expression Compatibility Regression Tests', () => {
       const ExistingSpec = type({
         appName: 'string',
         replicas: 'number',
-        image: 'string'
+        image: 'string',
       });
 
       const ExistingStatus = type({
@@ -256,8 +263,8 @@ describe('CEL Expression Compatibility Regression Tests', () => {
         url: 'string',
         health: {
           deployment: 'boolean',
-          service: 'boolean'
-        }
+          service: 'boolean',
+        },
       });
 
       // Simulate existing code pattern
@@ -267,7 +274,7 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'ExistingPattern',
           spec: ExistingSpec,
-          status: ExistingStatus
+          status: ExistingStatus,
         },
         (schema) => {
           // Existing resource creation pattern
@@ -275,14 +282,14 @@ describe('CEL Expression Compatibility Regression Tests', () => {
             name: schema.spec.appName,
             image: schema.spec.image,
             replicas: schema.spec.replicas,
-            id: 'existingDeployment'
+            id: 'existingDeployment',
           });
 
           const service = simple.Service({
             name: schema.spec.appName,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.appName },
-            id: 'existingService'
+            id: 'existingService',
           });
 
           return { deployment, service };
@@ -291,9 +298,10 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           // Existing status pattern with CEL
           return {
             ready: Cel.expr<boolean>(
-              resources.deployment.status.readyReplicas, 
-              ' > 0 && ', 
-              resources.service.status.ready
+              resources.deployment.status.readyReplicas,
+              ' > 0 && ',
+              resources.deployment.status.availableReplicas,
+              ' > 0'
             ),
             url: Cel.template(
               'http://%s',
@@ -301,8 +309,8 @@ describe('CEL Expression Compatibility Regression Tests', () => {
             ),
             health: {
               deployment: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
-              service: Cel.expr<boolean>(resources.service.status.ready)
-            }
+              service: Cel.expr<boolean>(resources.deployment.status.availableReplicas, ' > 0'),
+            },
           };
         }
       );
@@ -323,15 +331,15 @@ describe('CEL Expression Compatibility Regression Tests', () => {
         spec: {
           name: 'test-app',
           image: 'nginx:latest',
-          replicas: 3
-        }
+          replicas: 3,
+        },
       };
 
       // Existing pattern with static values
       const deployment1 = simple.Deployment({
         name: mockSchema.spec.name,
         image: mockSchema.spec.image,
-        replicas: mockSchema.spec.replicas
+        replicas: mockSchema.spec.replicas,
       });
 
       expect(deployment1).toBeDefined();
@@ -343,7 +351,7 @@ describe('CEL Expression Compatibility Regression Tests', () => {
         name: Cel.expr<string>('"test-app"'),
         image: Cel.expr<string>('"nginx:latest"'),
         replicas: Cel.expr<number>('3'),
-        id: 'celDeployment'
+        id: 'celDeployment',
       });
 
       expect(deployment2).toBeDefined();
@@ -356,11 +364,11 @@ describe('CEL Expression Compatibility Regression Tests', () => {
     it('should not significantly impact performance for existing CEL expressions', async () => {
       const PerfSpec = type({
         name: 'string',
-        count: 'number'
+        count: 'number',
       });
 
       const PerfStatus = type({
-        items: 'string[]'
+        items: 'string[]',
       });
 
       // Create a graph with many CEL expressions (existing pattern)
@@ -372,29 +380,29 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'PerformanceTest',
           spec: PerfSpec,
-          status: PerfStatus
+          status: PerfStatus,
         },
         (schema) => {
           const resources: Record<string, any> = {};
-          
+
           for (let i = 0; i < 20; i++) {
             resources[`deployment-${i}`] = simple.Deployment({
               name: `${schema.spec.name}-${i}`,
               image: 'nginx:latest',
               replicas: 1,
-              id: `perfDeployment${i}`
+              id: `perfDeployment${i}`,
             });
           }
-          
+
           return resources;
         },
         (schema, _resources) => {
           const items = [];
-          
+
           for (let i = 0; i < 20; i++) {
             items.push(Cel.template('%s-%d', schema.spec.name, i));
           }
-          
+
           return { items };
         }
       );
@@ -403,7 +411,7 @@ describe('CEL Expression Compatibility Regression Tests', () => {
       const endTime = performance.now();
 
       expect(factory).toBeDefined();
-      
+
       // Should complete within reasonable time (not significantly slower than before)
       const duration = endTime - startTime;
       expect(duration).toBeLessThan(2000); // 2 seconds
@@ -411,49 +419,52 @@ describe('CEL Expression Compatibility Regression Tests', () => {
 
     it('should cache CEL expressions effectively', async () => {
       const CacheSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const CacheStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // Create multiple graphs with the same CEL expressions
-      const createGraph = () => toResourceGraph(
-        {
-          name: 'cache-test',
-          apiVersion: 'example.com/v1',
-          kind: 'CacheTest',
-          spec: CacheSpec,
-          status: CacheStatus
-        },
-        (schema) => ({
-          deployment: simple.Deployment({
-            name: schema.spec.name,
-            image: 'nginx:latest',
-            id: 'cacheDeployment'
+      const createGraph = () =>
+        toResourceGraph(
+          {
+            name: 'cache-test',
+            apiVersion: 'example.com/v1',
+            kind: 'CacheTest',
+            spec: CacheSpec,
+            status: CacheStatus,
+          },
+          (schema) => ({
+            deployment: simple.Deployment({
+              name: schema.spec.name,
+              image: 'nginx:latest',
+              id: 'cacheDeployment',
+            }),
+          }),
+          (_schema, resources) => ({
+            // Same CEL expression - should be cached
+            ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
           })
-        }),
-        (_schema, resources) => ({
-          // Same CEL expression - should be cached
-          ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')
-        })
-      );
+        );
 
       const startTime = performance.now();
 
       // Create multiple graphs
-      const graphs = Array(10).fill(null).map(() => createGraph());
-      
+      const graphs = Array(10)
+        .fill(null)
+        .map(() => createGraph());
+
       // Create factories for all graphs
       const factories = await Promise.all(
-        graphs.map(graph => graph.factory('kro', { namespace: 'test' }))
+        graphs.map((graph) => graph.factory('kro', { namespace: 'test' }))
       );
 
       const endTime = performance.now();
 
       expect(factories).toHaveLength(10);
-      factories.forEach(factory => expect(factory).toBeDefined());
+      factories.forEach((factory) => expect(factory).toBeDefined());
 
       // Should complete quickly with caching
       const duration = endTime - startTime;
@@ -464,11 +475,11 @@ describe('CEL Expression Compatibility Regression Tests', () => {
   describe('Error Handling Regression', () => {
     it('should maintain existing error handling behavior', async () => {
       const ErrorSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const ErrorStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // Test that existing error scenarios still work the same way
@@ -478,18 +489,18 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'ErrorTest',
           spec: ErrorSpec,
-          status: ErrorStatus
+          status: ErrorStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'errorDeployment'
-          })
+            id: 'errorDeployment',
+          }),
         }),
         (_schema, resources) => ({
           // This should work (existing behavior)
-          ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')
+          ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
         })
       );
 
@@ -511,20 +522,20 @@ describe('CEL Expression Compatibility Regression Tests', () => {
       const patterns = [
         // Simple CEL expression
         () => Cel.expr<boolean>('true'),
-        
+
         // CEL template
         () => Cel.template('Hello %s', 'world'),
-        
+
         // CEL string
         () => Cel.string('static'),
-        
+
         // Complex CEL expression
-        () => Cel.expr<boolean>('1 > 0 && "a" == "a"')
+        () => Cel.expr<boolean>('1 > 0 && "a" == "a"'),
       ];
 
       for (const pattern of patterns) {
         expect(() => pattern()).not.toThrow();
-        
+
         const result = pattern();
         expect(result).toBeDefined();
         expect(typeof result.toString).toBe('function');
@@ -555,13 +566,13 @@ describe('CEL Expression Compatibility Regression Tests', () => {
 
     it('should maintain resource reference type safety', async () => {
       const TypeSafetySpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const TypeSafetyStatus = type({
         ready: 'boolean',
         replicas: 'number',
-        name: 'string'
+        name: 'string',
       });
 
       const graph = toResourceGraph(
@@ -570,20 +581,20 @@ describe('CEL Expression Compatibility Regression Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'TypeSafety',
           spec: TypeSafetySpec,
-          status: TypeSafetyStatus
+          status: TypeSafetyStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'typeSafetyDeployment'
-          })
+            id: 'typeSafetyDeployment',
+          }),
         }),
         (_schema, resources) => ({
           // These should maintain proper typing
           ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
           replicas: Cel.expr<number>(resources.deployment.status.readyReplicas),
-          name: Cel.expr<string>(resources.deployment.metadata.name)
+          name: Cel.expr<string>(resources.deployment.metadata.name),
         })
       );
 

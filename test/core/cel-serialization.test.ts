@@ -232,8 +232,8 @@ describe('CEL Expression Serialization Pipeline', () => {
         name: 'webapp',
         image: 'nginx:latest',
         env: {
-          // Direct KubernetesRef (string type - should not need string() wrapper)
-          DATABASE_HOST: database.status.podIP!,
+          // KubernetesRef (number type converted to string via Cel.string)
+          DATABASE_HOST: Cel.string(database.status.replicas),
           // Direct KubernetesRef (number type converted to string)
           DATABASE_AVAILABLE_REPLICAS: Cel.string(database.status.availableReplicas),
           // CelExpression for type conversion
@@ -263,8 +263,8 @@ describe('CEL Expression Serialization Pipeline', () => {
       );
       const yaml = resourceGraph.toYaml();
 
-      // Direct KubernetesRef should become simple CEL expression (string fields don't need string() wrapper)
-      expect(yaml).toContain('value: ${deploymentPostgres.status.podIP}');
+      // KubernetesRef wrapped in Cel.string should become string() CEL expression
+      expect(yaml).toContain('value: ${string(deploymentPostgres.status.replicas)}');
 
       // CelExpression should become the expression content
       expect(yaml).toContain('value: ${string(deploymentPostgres.status.readyReplicas)}');

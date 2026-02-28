@@ -7,6 +7,7 @@
 
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { Cel } from '../../../core/references/cel.js';
 import {
   ciliumHelmRelease,
   ciliumHelmRepository,
@@ -277,17 +278,35 @@ export const ciliumBootstrap = kubernetesComposition(
     });
 
     // Return nested status matching the schema structure
-    // Use direct resource references to generate CEL expressions
+    // Use CEL expressions with actual HelmRelease conditions (Flux v2 pattern)
+    // HelmReleaseStatus has a conditions array, not a phase field.
+    // We use CEL .exists() to check for the Ready condition, matching the
+    // cert-manager-bootstrap pattern.
     return {
-      // Overall status derived from HelmRelease - these will become CEL expressions
-      phase: helmRelease.status.phase,
-      ready: helmRelease.status.phase as unknown as boolean, // KubernetesRef proxy, becomes CEL expression during serialization
+      // Overall status derived from HelmRelease conditions
+      phase: Cel.expr<'Installing' | 'Ready' | 'Failed' | 'Upgrading' | 'Pending'>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+      ),
+      ready: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
       version: spec.version || '1.18.1',
 
-      // Component readiness based on HelmRelease status - these will become CEL expressions
-      agentReady: helmRelease.status.phase as unknown as boolean, // KubernetesRef proxy, becomes CEL expression during serialization
-      operatorReady: helmRelease.status.phase as unknown as boolean, // KubernetesRef proxy, becomes CEL expression during serialization
-      hubbleReady: helmRelease.status.phase as unknown as boolean, // KubernetesRef proxy, becomes CEL expression during serialization
+      // Component readiness based on HelmRelease conditions
+      agentReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      operatorReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      hubbleReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
 
       // Feature status based on configuration and deployment state
       encryptionEnabled: spec.security?.encryptionEnabled || false,

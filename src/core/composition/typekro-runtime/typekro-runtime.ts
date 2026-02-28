@@ -3,6 +3,7 @@ import { helmRepository } from '../../../factories/helm/helm-repository.js';
 import { namespace } from '../../../factories/kubernetes/core/namespace.js';
 import { clusterRoleBinding } from '../../../factories/kubernetes/rbac/index.js';
 import { yamlFile } from '../../../factories/kubernetes/yaml/yaml-file.js';
+import { Cel } from '../../references/cel.js';
 import { fixCRDSchemaForK8s133 } from '../../runtime-patches/crd-schema-fix.js';
 import { kubernetesComposition } from '../imperative.js';
 import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } from './types.js';
@@ -171,18 +172,22 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
         id: 'kroHelmRelease',
       });
 
-      // ✨ JavaScript expressions - automatically converted to CEL
+      // Use CEL expressions with actual HelmRelease conditions (Flux v2 pattern).
+      // HelmReleaseStatus has a conditions array, not a phase field.
+      // We use CEL .exists() to check for the Ready condition, matching the
+      // cert-manager-bootstrap and cilium-bootstrap patterns.
       return {
-        phase: (kroHelmRelease.status.phase === 'Ready' ? 'Ready' : 'Installing') as
-          | 'Pending'
-          | 'Installing'
-          | 'Ready'
-          | 'Failed'
-          | 'Upgrading',
+        phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading'>(
+          kroHelmRelease.status.conditions,
+          '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+        ),
         components: {
           fluxSystem: true,
-          // Kro system readiness based on HelmRelease status
-          kroSystem: kroHelmRelease.status.phase === 'Ready',
+          // Kro system readiness based on HelmRelease conditions
+          kroSystem: Cel.expr<boolean>(
+            kroHelmRelease.status.conditions,
+            '.exists(c, c.type == "Ready" && c.status == "True")'
+          ),
         },
       };
     }

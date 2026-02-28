@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
 // --- Test Suite 1: End-to-End Schema and Builder Validation ---
 
@@ -57,7 +57,7 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
         app: {
           ready: Cel.expr<boolean>`${resources.deployment.status.readyReplicas} > 0`,
         },
-        observedUrl: `http://${resources.deployment.status.podIP}`,
+        observedUrl: `http://${resources.deployment.metadata.name}`,
       })
     );
 
@@ -85,7 +85,7 @@ describe.skip('Cross-Resource Reference Test (needs API update)', () => {
     });
 
     const TestStatusSchema = type({
-      phase: 'string',
+      readyReplicas: 'number%1',
     });
 
     const resourceGraph = toResourceGraph(
@@ -116,7 +116,7 @@ describe.skip('Cross-Resource Reference Test (needs API update)', () => {
         };
       },
       (_schema, resources) => ({
-        phase: resources.theDeployment.status.phase,
+        readyReplicas: resources.theDeployment.status.readyReplicas,
       })
     );
 

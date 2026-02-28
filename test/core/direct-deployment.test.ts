@@ -1191,7 +1191,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1215,7 +1215,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1237,7 +1237,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1261,7 +1261,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1289,7 +1289,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1313,7 +1313,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1342,7 +1342,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1366,7 +1366,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1389,7 +1389,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1413,7 +1413,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 

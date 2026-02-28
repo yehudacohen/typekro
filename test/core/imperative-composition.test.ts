@@ -8,7 +8,13 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, getCurrentCompositionContext, kubernetesComposition, toResourceGraph, simple } from '../../src/index.js';
+import {
+  Cel,
+  getCurrentCompositionContext,
+  kubernetesComposition,
+  simple,
+  toResourceGraph,
+} from '../../src/index.js';
 
 describe('Imperative Composition Pattern', () => {
   // Test schemas compatible with Kro
@@ -1430,11 +1436,11 @@ describe('Imperative Composition Pattern', () => {
           dependencies: {
             database: {
               ready: Cel.expr<boolean>(databaseDeployment.status.readyReplicas, ' > 0'),
-              endpoint: Cel.template('postgres://%s:5432', databaseService.status.clusterIP),
+              endpoint: Cel.template('postgres://%s:5432', databaseService.metadata.name),
             },
             cache: {
               ready: Cel.expr<boolean>(cacheDeployment.status.readyReplicas, ' > 0'),
-              endpoint: Cel.template('redis://%s:6379', cacheService.status.clusterIP),
+              endpoint: Cel.template('redis://%s:6379', cacheService.metadata.name),
             },
             storage: {
               ready: Cel.expr<boolean>(databaseDeployment.status.readyReplicas, ' > 0'),
