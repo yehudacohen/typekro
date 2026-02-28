@@ -7,10 +7,13 @@
 
 import type * as k8s from '@kubernetes/client-node';
 import {
+  DEFAULT_CONFLICT_RETRY_DELAY,
   DEFAULT_CRD_READY_TIMEOUT,
   DEFAULT_DELETE_TIMEOUT,
   DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
   DEFAULT_MAX_RETRY_DELAY,
+  DEFAULT_POLL_INTERVAL,
   DEFAULT_READINESS_TIMEOUT,
 } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
@@ -1695,7 +1698,7 @@ export class DirectDeploymentEngine {
                   });
 
                   // Wait a moment for deletion to propagate
-                  await new Promise((resolve) => setTimeout(resolve, 500));
+                  await new Promise((resolve) => setTimeout(resolve, DEFAULT_CONFLICT_RETRY_DELAY));
 
                   // Create the new resource
                   const jsonResource =
@@ -1901,7 +1904,7 @@ export class DirectDeploymentEngine {
 
         // Wait before next check - use abortable delay
         try {
-          await this.abortableDelay(2000, abortSignal);
+          await this.abortableDelay(DEFAULT_POLL_INTERVAL, abortSignal);
         } catch (error) {
           if (
             error instanceof DOMException &&
@@ -1930,7 +1933,7 @@ export class DirectDeploymentEngine {
 
         // If we can't read the resource, it's not ready yet - use abortable delay
         try {
-          await this.abortableDelay(2000, abortSignal);
+          await this.abortableDelay(DEFAULT_POLL_INTERVAL, abortSignal);
         } catch (delayError) {
           if (
             delayError instanceof DOMException &&
@@ -2084,7 +2087,7 @@ export class DirectDeploymentEngine {
           });
 
           // Resource still exists, wait and try again
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, DEFAULT_FAST_POLL_INTERVAL));
         } catch (error) {
           // Resource not found, deletion successful
           if (isNotFoundError(error)) {

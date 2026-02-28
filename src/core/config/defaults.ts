@@ -43,6 +43,19 @@ export const DEFAULT_MAX_RETRY_DELAY = 30_000;
 export const DEFAULT_RECONNECT_MAX_DELAY = 30_000;
 
 // =============================================================================
+// POLL INTERVALS
+// =============================================================================
+
+/** Standard poll interval for readiness/status checks (2 seconds) */
+export const DEFAULT_POLL_INTERVAL = 2_000;
+
+/** Fast poll interval for time-sensitive checks like deletion confirmation (1 second) */
+export const DEFAULT_FAST_POLL_INTERVAL = 1_000;
+
+/** Short delay after delete-before-recreate on 409 conflict (500ms) */
+export const DEFAULT_CONFLICT_RETRY_DELAY = 500;
+
+// =============================================================================
 // CACHE & HYDRATION TIMEOUTS
 // =============================================================================
 

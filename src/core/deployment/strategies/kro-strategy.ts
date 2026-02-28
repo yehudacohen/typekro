@@ -9,7 +9,11 @@ import type * as k8s from '@kubernetes/client-node';
 import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
 import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
 import { preserveNonEnumerableProperties } from '../../../utils/helpers.js';
-import { DEFAULT_DEPLOYMENT_TIMEOUT, DEFAULT_RGD_TIMEOUT } from '../../config/defaults.js';
+import {
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
+  DEFAULT_RGD_TIMEOUT,
+} from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { DeploymentTimeoutError, ResourceGraphFactoryError, TypeKroError } from '../../errors.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
@@ -322,7 +326,7 @@ export class KroDeploymentStrategy<
 
         if (!status) {
           logger.debug('No status found yet, continuing to wait', { instanceName });
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_INTERVAL));
           continue;
         }
 
@@ -426,7 +430,7 @@ export class KroDeploymentStrategy<
       }
 
       // Wait before checking again
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_INTERVAL));
     }
 
     throw new DeploymentTimeoutError(
