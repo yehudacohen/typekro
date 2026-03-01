@@ -1,1 +1,4 @@
-export { mapCertManagerConfigToHelmValues, validateCertManagerHelmValues } from './helm-values-mapper.js';
+export {
+  getCertManagerHelmValueWarnings,
+  mapCertManagerConfigToHelmValues,
+} from './helm-values-mapper.js';

@@ -100,12 +100,16 @@ export function mapCertManagerConfigToHelmValues(
 }
 
 /**
- * Validates cert-manager Helm values for common configuration issues
+ * Checks cert-manager Helm values for best-practice warnings (e.g., HA, monitoring).
  *
- * @param values - The Helm values to validate
- * @returns Array of validation warnings/errors
+ * Unlike {@link validateCertManagerHelmValues} (in `resources/helm.ts`) which performs
+ * hard validation (invalid replica counts, wrong resource types), this function
+ * returns advisory warnings about sub-optimal but technically valid configurations.
+ *
+ * @param values - The Helm values to check
+ * @returns Array of warning messages (empty if no issues found)
  */
-export function validateCertManagerHelmValues(values: CertManagerHelmValues): string[] {
+export function getCertManagerHelmValueWarnings(values: CertManagerHelmValues): string[] {
   const warnings: string[] = [];
 
   // Check CRD installation

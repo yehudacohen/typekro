@@ -385,7 +385,10 @@ export function validateCertManagerHelmValues(values: CertManagerHelmValues): {
   }
 
   // Validate resource requirements format
-  const validateResources = (resources: any, component: string) => {
+  const validateResources = (
+    resources: { limits?: Record<string, unknown>; requests?: Record<string, unknown> },
+    component: string
+  ) => {
     if (resources) {
       if (resources.limits) {
         if (resources.limits.cpu && typeof resources.limits.cpu !== 'string') {
