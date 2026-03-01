@@ -12,6 +12,16 @@ const logger = getComponentLogger('cel');
 const SUSPICIOUS_JS_PATTERNS = [/===/, /!==/];
 
 /**
+ * Regex matching string parts that look like CEL operators but lack a leading space.
+ * Matches strings starting with >, <, ==, !=, >=, <=, &&, ||, +, -, *, / followed
+ * by a space character. The trailing space distinguishes operator-like strings
+ * (e.g., `'> 0'` meant as `' > 0'`) from string suffixes (e.g., `'-db'`).
+ * Does NOT match strings starting with a space (correct usage) or
+ * method-call-style strings like '.exists(...)'.
+ */
+const MISSING_LEADING_SPACE = /^(?:>=|<=|==|!=|&&|\|\||[><!+\-*/]) /;
+
+/**
  * Validates inputs to Cel.expr() and warns about suspicious patterns.
  * @throws {TypeKroError} if inputs are null, undefined, or empty strings
  */
@@ -48,6 +58,22 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
           );
           break;
         }
+      }
+
+      // Warn about missing leading space in operator parts.
+      // Only check parts after the first one — the first part is often a standalone
+      // CEL expression (e.g., 'true', '1 > 0') where a leading space makes no sense.
+      if (i > 0 && MISSING_LEADING_SPACE.test(part)) {
+        logger.warn(
+          `Cel.expr() operator string at argument index ${i} is missing a leading space. ` +
+            `Got "${part}" — did you mean " ${part}"? Without the space, the generated CEL ` +
+            'expression will concatenate the operator directly against the previous token, ' +
+            'producing invalid CEL (e.g., "field> 0" instead of "field > 0").',
+          {
+            argumentIndex: i,
+            input: part,
+          }
+        );
       }
     }
   }
