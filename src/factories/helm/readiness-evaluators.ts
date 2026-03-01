@@ -5,7 +5,11 @@
  * checking Helm installation and upgrade phases for proper readiness.
  */
 
-import type { ReadinessEvaluator, ResourceStatus } from '../../core/types/index.js';
+import type {
+  KubernetesCondition,
+  ReadinessEvaluator,
+  ResourceStatus,
+} from '../../core/types/index.js';
 
 /**
  * Create a readiness evaluator for HelmRelease resources.
@@ -72,8 +76,9 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
 
       // Case 4: Check conditions array if available (Flux CD v2 pattern)
       if (status.conditions && Array.isArray(status.conditions)) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- conditions array items are untyped CRD fields
-        const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
+        const readyCondition = status.conditions.find(
+          (c: KubernetesCondition) => c.type === 'Ready'
+        );
         if (readyCondition && readyCondition.status === 'True') {
           return {
             ready: true,
@@ -191,7 +196,9 @@ export function createHelmTestReadinessEvaluator(
       // Check for test conditions
       const status = liveResource.status;
       if (status.conditions && Array.isArray(status.conditions)) {
-        const testCondition = status.conditions.find((c: any) => c.type === 'TestSuccess');
+        const testCondition = status.conditions.find(
+          (c: KubernetesCondition) => c.type === 'TestSuccess'
+        );
         if (testCondition) {
           if (testCondition.status === 'True') {
             return {

@@ -1,4 +1,4 @@
-import type { Enhanced, ReadinessEvaluator } from '../../core/types/index.js';
+import type { Enhanced, KubernetesCondition, ReadinessEvaluator } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 
 export interface HelmRepositorySpec {
@@ -55,8 +55,7 @@ export function createHelmRepositoryReadinessEvaluator(label?: string): Readines
   return (resource: any) => {
     // HelmRepository is ready when it has a Ready condition with status True
     const conditions = resource.status?.conditions || [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- conditions array items are untyped CRD fields
-    const readyCondition = conditions.find((c: any) => c.type === 'Ready');
+    const readyCondition = conditions.find((c: KubernetesCondition) => c.type === 'Ready');
 
     // For OCI repositories, they may not have status conditions but are functional
     // if the resource exists and has been processed by Flux

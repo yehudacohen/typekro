@@ -10,6 +10,7 @@ import { getCurrentCompositionContext } from '../../composition/context.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type {
   Enhanced,
+  KubernetesCondition,
   KubernetesRef,
   ReadinessEvaluator,
   ResourceStatus,
@@ -301,7 +302,7 @@ export class ReadinessIntegrator {
       // Check for common error conditions
       const conditions = liveResource.status?.conditions || [];
       const errorCondition = conditions.find(
-        (c: any) => c.type === 'Failed' && c.status === 'True'
+        (c: KubernetesCondition) => c.type === 'Failed' && c.status === 'True'
       );
 
       if (errorCondition) {

@@ -3,7 +3,7 @@
  */
 
 import { getComponentLogger } from '../../core/logging/index.js';
-import type { Enhanced, ResourceStatus } from '../../core/types/index.js';
+import type { Enhanced, KubernetesCondition, ResourceStatus } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 
 // Logger for RGD readiness evaluation
@@ -58,7 +58,9 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
 
       // 2. Check for explicit failure conditions first for faster feedback.
       const conditions = Array.isArray(status.conditions) ? status.conditions : [];
-      const failedCondition = conditions.find((c: any) => c && c.status === 'False');
+      const failedCondition = conditions.find(
+        (c: KubernetesCondition) => c && c.status === 'False'
+      );
       if (status.state === 'failed' || failedCondition) {
         return {
           ready: false,
@@ -76,26 +78,26 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
       // CustomResourceDefinitionSynced) and v0.8.x names (Ready, ControllerReady,
       // KindReady, ResourceGraphAccepted).
       const hasV08Conditions = conditions.some(
-        (c: Record<string, string>) => c?.type === 'Ready' || c?.type === 'ControllerReady'
+        (c: KubernetesCondition) => c?.type === 'Ready' || c?.type === 'ControllerReady'
       );
 
       let allConditionsReady: boolean;
       if (hasV08Conditions) {
         // Kro v0.8.x: check Ready condition
         const readyCondition = conditions.find(
-          (c: Record<string, string>) => c?.type === 'Ready' && c?.status === 'True'
+          (c: KubernetesCondition) => c?.type === 'Ready' && c?.status === 'True'
         );
         allConditionsReady = !!readyCondition;
       } else {
         // Kro v0.3.x: check legacy conditions
         const reconcilerReady = conditions.find(
-          (c: Record<string, string>) => c?.type === 'ReconcilerReady' && c?.status === 'True'
+          (c: KubernetesCondition) => c?.type === 'ReconcilerReady' && c?.status === 'True'
         );
         const graphVerified = conditions.find(
-          (c: Record<string, string>) => c?.type === 'GraphVerified' && c?.status === 'True'
+          (c: KubernetesCondition) => c?.type === 'GraphVerified' && c?.status === 'True'
         );
         const crdSynced = conditions.find(
-          (c: Record<string, string>) =>
+          (c: KubernetesCondition) =>
             c?.type === 'CustomResourceDefinitionSynced' && c?.status === 'True'
         );
         allConditionsReady = !!(reconcilerReady && graphVerified && crdSynced);
