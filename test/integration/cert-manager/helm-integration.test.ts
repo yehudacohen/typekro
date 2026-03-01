@@ -380,26 +380,27 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
     });
 
     it('should handle mapping function correctly', async () => {
-      // Import the mapping function
+      // Import the canonical mapping function from utils
       const { mapCertManagerConfigToHelmValues } = await import(
-        '../../../src/factories/cert-manager/resources/helm.js'
+        '../../../src/factories/cert-manager/utils/helm-values-mapper.js'
       );
 
       const config = {
+        name: 'cert-manager',
         installCRDs: true,
         replicaCount: 2,
         webhook: {
           replicaCount: 2,
         },
-        customValue: 'test', // Custom values should be preserved
+        customValues: { customValue: 'test' }, // Custom values should be preserved
       };
 
       const mappedValues = mapCertManagerConfigToHelmValues(config);
 
       expect(mappedValues.installCRDs).toBe(true);
       expect(mappedValues.replicaCount).toBe(2);
-      expect(mappedValues.webhook.replicaCount).toBe(2);
-      expect(mappedValues.customValue).toBe('test');
+      expect(mappedValues.webhook?.replicaCount).toBe(2);
+      expect((mappedValues as Record<string, unknown>).customValue).toBe('test');
     });
   });
 

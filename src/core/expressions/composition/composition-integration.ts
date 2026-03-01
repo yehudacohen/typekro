@@ -1299,11 +1299,6 @@ export class CompositionIntegrationHooks {
 }
 
 /**
- * Global composition integration instance
- */
-export const compositionIntegration = new CompositionIntegrationHooks();
-
-/**
  * Utility function to check if a composition function uses KubernetesRef objects
  */
 export function compositionUsesKubernetesRefs<
@@ -1324,18 +1319,4 @@ export function compositionUsesKubernetesRefs<
     logger.debug('Composition analysis failed, assuming KubernetesRef usage', { err: error });
     return true;
   }
-}
-
-/**
- * Utility function to get composition analysis metadata
- */
-export function getCompositionAnalysis<
-  TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType,
->(
-  compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
-  schemaProxy: SchemaProxy<TSpec, TStatus>
-): CompositionAnalysisResult<TStatus> {
-  const analyzer = new CompositionExpressionAnalyzer();
-  return analyzer.analyzeCompositionFunction(compositionFn, schemaProxy);
 }

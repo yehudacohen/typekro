@@ -504,38 +504,3 @@ export class ReadinessIntegrator {
     return current;
   }
 }
-
-/**
- * Global readiness integrator instance
- */
-export const readinessIntegrator = new ReadinessIntegrator();
-
-/**
- * Utility function to create readiness evaluator from readyWhen expression
- *
- * @param readyWhenExpression - The readyWhen expression to convert
- * @param context - Factory context
- * @param config - Integration configuration
- * @returns Readiness integration result
- */
-export function createReadinessEvaluator(
-  readyWhenExpression: any,
-  context: FactoryExpressionContext,
-  config?: ReadinessIntegrationConfig
-): ReadinessIntegrationResult {
-  return readinessIntegrator.createReadinessEvaluator(readyWhenExpression, context, config);
-}
-
-/**
- * Utility function to add readyWhen support to an Enhanced resource
- *
- * @param resource - Enhanced resource to augment
- * @param config - Integration configuration
- * @returns Enhanced resource with readyWhen support
- */
-export function withReadyWhenSupport<TSpec, TStatus>(
-  resource: Enhanced<TSpec, TStatus>,
-  config?: ReadinessIntegrationConfig
-): Enhanced<TSpec, TStatus> & { withReadyWhen(expression: any): Enhanced<TSpec, TStatus> } {
-  return readinessIntegrator.addReadyWhenSupport(resource, config);
-}
