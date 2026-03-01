@@ -10,6 +10,7 @@
 
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode } from 'estree';
+import { escapeRegExp } from '../../../utils/helpers.js';
 import {
   containsKubernetesRefs,
   extractResourceReferences,
@@ -1650,7 +1651,10 @@ export class JavaScriptToCelAnalyzer {
     // Look for direct resource references (deployment.status.field)
     if (context.availableReferences) {
       for (const [resourceKey, _resource] of Object.entries(context.availableReferences)) {
-        const resourcePattern = new RegExp(`\\b${resourceKey}\\.([a-zA-Z0-9_.?\\[\\]]+)`, 'g');
+        const resourcePattern = new RegExp(
+          `\\b${escapeRegExp(resourceKey)}\\.([a-zA-Z0-9_.?\\[\\]]+)`,
+          'g'
+        );
         const matches = expression.match(resourcePattern);
         if (matches) {
           for (const match of matches) {

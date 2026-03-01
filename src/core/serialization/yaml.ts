@@ -6,6 +6,7 @@
  */
 
 import * as yaml from 'js-yaml';
+import { escapeRegExp } from '../../utils/helpers.js';
 import {
   extractResourceReferences,
   isCelExpression,
@@ -151,7 +152,7 @@ function convertReadyWhenCallbackToCel(fn: Function, resourceId: string): string
   }
 
   // Replace parameter name with resource id (word boundary to avoid substrings)
-  let celExpr = bodyStr.replace(new RegExp(`\\b${paramName}\\b`, 'g'), resourceId);
+  let celExpr = bodyStr.replace(new RegExp(`\\b${escapeRegExp(paramName)}\\b`, 'g'), resourceId);
 
   // JS → CEL operator conversions (must happen before inner callback processing)
   celExpr = celExpr.replace(/===/g, '==');

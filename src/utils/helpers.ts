@@ -78,6 +78,21 @@ export function preserveNonEnumerableProperties<T extends Record<string, unknown
 }
 
 /**
+ * Escapes special regular expression characters in a string so it can be
+ * safely interpolated into a `new RegExp()` pattern.
+ *
+ * Without this, user-controlled strings like resource names containing
+ * characters such as `.`, `+`, `*`, `(`, `)` etc. would be interpreted
+ * as regex operators, potentially causing incorrect matches or ReDoS.
+ *
+ * @param str - The raw string to escape
+ * @returns The escaped string safe for `new RegExp()` interpolation
+ */
+export function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Recursively converts an Enhanced resource proxy into a plain JavaScript object.
  *
  * This is a safe way to serialize the object for the Kubernetes client, preserving
