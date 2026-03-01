@@ -9,7 +9,11 @@ import { DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { ensureReadinessEvaluator } from '../../readiness/evaluator.js';
-import type { DeploymentResult, FactoryOptions, ResourceGraph } from '../../types/deployment.js';
+import type {
+  DeploymentResourceGraph,
+  DeploymentResult,
+  FactoryOptions,
+} from '../../types/deployment.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
 import type {
   KroCompatibleType,
@@ -325,7 +329,10 @@ export class AlchemyDeploymentStrategy<
   /**
    * Create resource graph for instance using base strategy logic
    */
-  private createResourceGraphForInstance(spec: TSpec, instanceName: string): ResourceGraph {
+  private createResourceGraphForInstance(
+    spec: TSpec,
+    instanceName: string
+  ): DeploymentResourceGraph {
     // Delegate to the base strategy's resource resolution logic
     if (this.baseStrategy instanceof DirectDeploymentStrategy) {
       const baseStrategy = this.baseStrategy as DirectDeploymentStrategy<TSpec, TStatus>;

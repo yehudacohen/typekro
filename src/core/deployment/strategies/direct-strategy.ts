@@ -9,9 +9,9 @@ import { isCelExpression } from '../../../utils/type-guards.js';
 import type {
   DeployedResource,
   DeploymentContext,
+  DeploymentResourceGraph,
   DeploymentResult,
   FactoryOptions,
-  ResourceGraph,
 } from '../../types/deployment.js';
 import type { Enhanced } from '../../types/index.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
@@ -41,7 +41,7 @@ export class DirectDeploymentStrategy<
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
     public resourceResolver: {
-      createResourceGraphForInstance(spec: TSpec): ResourceGraph;
+      createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph;
       getReExecutedStatus?(): TStatus | null;
     } // Resource resolution logic
   ) {
@@ -69,7 +69,7 @@ export class DirectDeploymentStrategy<
         // Type assertion is safe here because we've checked that the method exists
         const engineWithClosures = this.deploymentEngine as DirectDeploymentEngine & {
           deployWithClosures<TSpec>(
-            graph: ResourceGraph,
+            graph: DeploymentResourceGraph,
             closures: Record<string, unknown>,
             options: Parameters<DirectDeploymentEngine['deploy']>[1],
             spec: TSpec,

@@ -9,9 +9,9 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   DependencyGraph,
   type DeployableK8sResource,
+  type DeploymentResourceGraph,
   DirectDeploymentEngine,
   type Enhanced,
-  type ResourceGraph,
 } from '../../src/index.js';
 
 // Mock the Kubernetes client (new API returns objects directly, no .body wrapper)
@@ -152,7 +152,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     dependencyGraph.addNode(crd.id, crd);
     dependencyGraph.addNode(customResource.id, customResource);
 
-    const graph: ResourceGraph = {
+    const graph: DeploymentResourceGraph = {
       name: 'test-crd-graph',
       resources: [
         { id: crd.id, manifest: crd },
@@ -218,7 +218,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     const dependencyGraph = new DependencyGraph();
     dependencyGraph.addNode(deployment.id, deployment);
 
-    const graph: ResourceGraph = {
+    const graph: DeploymentResourceGraph = {
       name: 'test-no-crd-graph',
       resources: [{ id: deployment.id, manifest: deployment }],
       dependencyGraph,
@@ -287,7 +287,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     const dependencyGraph = new DependencyGraph();
     dependencyGraph.addNode(customResource.id, customResource);
 
-    const graph: ResourceGraph = {
+    const graph: DeploymentResourceGraph = {
       name: 'test-slow-cr-graph',
       resources: [{ id: customResource.id, manifest: customResource }],
       dependencyGraph,
