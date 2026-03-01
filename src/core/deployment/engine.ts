@@ -48,6 +48,7 @@ import type {
   KubernetesApiError,
   KubernetesObjectWithStatus,
   KubernetesResource,
+  WithResourceId,
 } from '../types.js';
 import { analyzeClosureDependencies, integrateClosuresIntoPlan } from './closure-planner.js';
 import { CRDManager } from './crd-manager.js';
@@ -413,7 +414,7 @@ export class DirectDeploymentEngine {
       // This allows the reference resolver to find resources by their original IDs during deployment
       const resourceKeyMapping = new Map<string, unknown>();
       for (const resource of graph.resources) {
-        const manifest = resource.manifest as KubernetesResource & { __resourceId?: string };
+        const manifest = resource.manifest as KubernetesResource & WithResourceId;
         const originalResourceId = manifest.__resourceId;
         if (originalResourceId) {
           // Convert the Enhanced proxy to a plain object for reliable field extraction
@@ -579,9 +580,7 @@ export class DirectDeploymentEngine {
               // Update resourceKeyMapping with the live resource from the cluster (including status)
               // This is critical for CEL expression evaluation which needs access to resource status
               const deployedRes = deploymentResult.deployedResource;
-              const manifestWithId = deployedRes.manifest as KubernetesResource & {
-                __resourceId?: string;
-              };
+              const manifestWithId = deployedRes.manifest as KubernetesResource & WithResourceId;
               const originalResourceId = manifestWithId.__resourceId;
               if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
                 try {
@@ -881,7 +880,7 @@ export class DirectDeploymentEngine {
       // The resourceKeyMapping maps original resource IDs (like 'webappDeployment') to their manifests
       const resourceKeyMapping = new Map<string, unknown>();
       for (const resource of graph.resources) {
-        const manifest = resource.manifest as KubernetesResource & { __resourceId?: string };
+        const manifest = resource.manifest as KubernetesResource & WithResourceId;
         const originalResourceId = manifest.__resourceId;
         if (originalResourceId) {
           // Convert the Enhanced proxy to a plain object for reliable field extraction
@@ -1290,7 +1289,7 @@ export class DirectDeploymentEngine {
     }
 
     // __resourceId is an internal non-enumerable field set by createGenericProxyResource
-    const internalId = (resource as KubernetesResource & { __resourceId?: string }).__resourceId;
+    const internalId = (resource as KubernetesResource & WithResourceId).__resourceId;
     const resourceId = internalId || getResourceId(resource);
     const resourceLogger = this.logger.child({
       resourceId,
@@ -1372,10 +1371,10 @@ export class DirectDeploymentEngine {
       };
 
       // Copy the non-enumerable readiness evaluator if it exists
-      const resourceWithEvaluator = resolvedResource as KubernetesResource & {
-        readinessEvaluator?: (liveResource: unknown) => { ready: boolean; message?: string };
-        __resourceId?: string;
-      };
+      const resourceWithEvaluator = resolvedResource as KubernetesResource &
+        WithResourceId & {
+          readinessEvaluator?: (liveResource: unknown) => { ready: boolean; message?: string };
+        };
       const readinessEvaluator = resourceWithEvaluator.readinessEvaluator;
       if (readinessEvaluator) {
         Object.defineProperty(newResolvedResource, 'readinessEvaluator', {
