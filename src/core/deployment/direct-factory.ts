@@ -7,7 +7,7 @@
 
 import { toCamelCase } from '../../utils/string.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
-import { DEFAULT_DELETE_TIMEOUT } from '../config/defaults.js';
+import { DEFAULT_DELETE_TIMEOUT, DEFAULT_FAST_POLL_INTERVAL } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
 import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
@@ -300,7 +300,7 @@ export class DirectResourceFactoryImpl<
     namespaces: string[],
     timeout: number
   ): Promise<void> {
-    const pollInterval = 1000;
+    const pollInterval = DEFAULT_FAST_POLL_INTERVAL;
 
     for (const ns of namespaces) {
       // Each namespace gets its own timeout budget

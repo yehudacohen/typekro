@@ -5,7 +5,11 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { DEFAULT_CRD_READY_TIMEOUT, DEFAULT_DEPLOYMENT_TIMEOUT } from '../config/defaults.js';
+import {
+  DEFAULT_CRD_READY_TIMEOUT,
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
+} from '../config/defaults.js';
 import { DeploymentTimeoutError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentOptions } from '../types/deployment.js';
@@ -238,7 +242,7 @@ export class CRDManager {
     const crdName = crd.metadata?.name;
     const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
     const startTime = Date.now();
-    const pollInterval = 2000;
+    const pollInterval = DEFAULT_POLL_INTERVAL;
 
     logger.debug('Waiting for CRD to exist and be established', { crdName, timeout });
 

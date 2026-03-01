@@ -5,7 +5,12 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../config/defaults.js';
+import {
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_POLL_INTERVAL,
+  DEFAULT_READINESS_MAX_BACKOFF,
+} from '../config/defaults.js';
 import type { DeploymentEvent, DeploymentOptions, ReadinessConfig } from '../types/deployment.js';
 import type {
   DeployedResource,
@@ -201,10 +206,10 @@ export class ResourceReadinessChecker {
   private getReadinessConfig(options: DeploymentOptions): ReadinessConfig {
     return {
       timeout: options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
-      initialDelay: 1000, // 1 second
-      maxDelay: 10000, // 10 seconds max
+      initialDelay: DEFAULT_FAST_POLL_INTERVAL,
+      maxDelay: DEFAULT_READINESS_MAX_BACKOFF,
       backoffMultiplier: 1.5,
-      errorRetryDelay: 2000, // 2 seconds on error
+      errorRetryDelay: DEFAULT_POLL_INTERVAL,
       progressInterval: 5, // Emit progress every 5 attempts
     };
   }
