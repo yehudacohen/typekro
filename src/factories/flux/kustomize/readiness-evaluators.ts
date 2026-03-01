@@ -1,4 +1,8 @@
-import type { ReadinessEvaluator, ResourceStatus } from '../../../core/types/index.js';
+import type {
+  KubernetesCondition,
+  ReadinessEvaluator,
+  ResourceStatus,
+} from '../../../core/types/index.js';
 
 /**
  * Readiness evaluator for Kustomization resources
@@ -31,7 +35,7 @@ export const kustomizationReadinessEvaluator: ReadinessEvaluator<any> = (
     }
 
     // Check for Ready condition
-    const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
+    const readyCondition = status.conditions.find((c: KubernetesCondition) => c.type === 'Ready');
     if (!readyCondition) {
       return {
         ready: false,
@@ -49,7 +53,9 @@ export const kustomizationReadinessEvaluator: ReadinessEvaluator<any> = (
     }
 
     // Check for Healthy condition if present
-    const healthyCondition = status.conditions.find((c: any) => c.type === 'Healthy');
+    const healthyCondition = status.conditions.find(
+      (c: KubernetesCondition) => c.type === 'Healthy'
+    );
     if (healthyCondition && healthyCondition.status !== 'True') {
       return {
         ready: false,

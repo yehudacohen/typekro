@@ -1,4 +1,4 @@
-import type { ResourceStatus } from '../../core/types/index.js';
+import type { KubernetesCondition, ResourceStatus } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 
 export interface GitRepositorySpec {
@@ -94,7 +94,7 @@ export function gitRepository(config: GitRepositoryConfig) {
 
     // Check status.conditions for Ready=True
     if (status.conditions && Array.isArray(status.conditions)) {
-      const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
+      const readyCondition = status.conditions.find((c: KubernetesCondition) => c.type === 'Ready');
       if (readyCondition?.status === 'True') {
         return {
           ready: true,
