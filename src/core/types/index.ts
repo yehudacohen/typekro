@@ -1,31 +1,29 @@
 /**
- * Comprehensive types index - exports all domain-specific types
+ * Comprehensive types index - exports all domain-specific types.
+ *
+ * `export *` re-exports both values and types, so separate
+ * `export type *` lines are unnecessary and have been removed.
  */
 
 // =============================================================================
 // Common Types
 // =============================================================================
-export type * from './common.js';
 export * from './common.js';
 // =============================================================================
 // Dependencies Types
 // =============================================================================
-export type * from './dependencies.js';
 export * from './dependencies.js';
 // =============================================================================
 // Deployment Types
 // =============================================================================
-export type * from './deployment.js';
 export * from './deployment.js';
 // =============================================================================
 // Kubernetes Types
 // =============================================================================
-export type * from './kubernetes.js';
 export * from './kubernetes.js';
 // =============================================================================
 // Reference Types
 // =============================================================================
-export type * from './references.js';
 export * from './references.js';
 // =============================================================================
 // Resource Graph Types (selective export to avoid conflicts)
@@ -34,20 +32,12 @@ export type { ResourceGraph } from './resource-graph.js';
 // =============================================================================
 // Schema Types (extracted to break deployment↔serialization cycle)
 // =============================================================================
-export type * from './schema.js';
 export * from './schema.js';
 // =============================================================================
 // Serialization Types
 // =============================================================================
-export type * from './serialization.js';
 export * from './serialization.js';
 // =============================================================================
 // YAML Types
 // =============================================================================
-export type * from './yaml.js';
 export * from './yaml.js';
-
-// =============================================================================
-// Backward Compatibility - Re-export serialization types
-// =============================================================================
-// These types are already exported from serialization.ts above
