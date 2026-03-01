@@ -20,6 +20,8 @@
 // 1. ESSENTIAL — Core APIs every user needs
 // =============================================================================
 
+// Imperative composition (define compositions with native TypeScript)
+export { kubernetesComposition } from './core/composition/imperative.js';
 // Resource factory (used inside resource builders)
 export { createResource } from './core/proxy/create-resource.js';
 // CEL expression helpers (used in status builders)
@@ -62,7 +64,6 @@ export {
   disableCompositionDebugging,
   enableCompositionDebugging,
   getCompositionDebugLogs,
-  kubernetesComposition,
 } from './core/composition/imperative.js';
 export type { WebServiceComponent } from './core/composition/index.js';
 export { createWebService } from './core/composition/index.js';
@@ -92,7 +93,6 @@ export {
 
 export {
   CelEvaluator,
-  createExternalRefWithoutRegistration,
   createResourcesProxy,
   createSchemaProxy,
   DeploymentMode,
@@ -106,7 +106,6 @@ export {
 //   const mode: DeploymentMode = DeploymentMode.KRO;
 
 export {
-  generateCelReference,
   getInnerCelPath,
   processResourceReferences,
 } from './core/serialization/cel-references.js';
@@ -213,5 +212,4 @@ export {
   isCelExpression,
   isKubernetesRef,
   isResourceReference,
-  pascalCase,
 } from './utils/index.js';
