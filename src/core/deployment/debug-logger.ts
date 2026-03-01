@@ -502,7 +502,7 @@ export function createDebugLoggerFromDeploymentOptions(options: {
     enabled: options.debugLogging?.enabled ?? false,
     statusPolling: options.debugLogging?.statusPolling ?? false,
     readinessEvaluation: options.debugLogging?.readinessEvaluation ?? false,
-    maxStatusObjectSize: options.debugLogging?.maxStatusObjectSize ?? 1000,
+    maxStatusObjectSize: options.debugLogging?.maxStatusObjectSize ?? 1024,
     verboseMode: options.debugLogging?.verboseMode ?? false,
     ...(options.progressCallback && { progressCallback: options.progressCallback }),
   };
