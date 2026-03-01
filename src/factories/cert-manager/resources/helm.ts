@@ -9,7 +9,12 @@
 
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../../core/constants/brands.js';
 import type { Enhanced } from '../../../core/types/index.js';
-import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
+import {
+  createHelmRepositoryReadinessEvaluator,
+  type HelmRepositorySpec,
+  type HelmRepositoryStatus,
+} from '../../helm/helm-repository.js';
+import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { createResource } from '../../shared.js';
 import type {
@@ -53,31 +58,9 @@ import type {
  * ```
  */
 
-/**
- * Readiness evaluator for cert-manager HelmRepository resources
- * HelmRepository is ready when it has a Ready condition with status True
- * For OCI repositories, they may not have status conditions but are functional
- */
-function certManagerHelmRepositoryReadinessEvaluator(resource: any) {
-  const conditions = resource.status?.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-
-  // For OCI repositories, they may not have status conditions but are functional
-  // if the resource exists and has been processed by Flux
-  const isOciRepository = resource.spec?.type === 'oci';
-  const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
-
-  const isReady = readyCondition?.status === 'True' || (isOciRepository && !!hasBeenProcessed);
-
-  return {
-    ready: isReady,
-    message: isReady
-      ? isOciRepository && !readyCondition
-        ? 'Cert-Manager OCI HelmRepository is functional'
-        : 'Cert-Manager HelmRepository is ready'
-      : 'Cert-Manager HelmRepository is not ready',
-  };
-}
+/** Cert-Manager HelmRepository readiness evaluator (delegates to shared implementation) */
+const certManagerHelmRepositoryReadinessEvaluator =
+  createHelmRepositoryReadinessEvaluator('Cert-Manager');
 
 export function certManagerHelmRepository(
   config: CertManagerHelmRepositoryConfig
@@ -140,46 +123,8 @@ export function certManagerHelmRepository(
  * ```
  */
 
-/**
- * Readiness evaluator for cert-manager HelmRelease resources
- * HelmRelease is ready when it has a Ready phase
- */
-function certManagerHelmReleaseReadinessEvaluator(resource: any) {
-  const status = resource.status;
-
-  if (!status) {
-    return {
-      ready: false,
-      message: 'Cert-Manager HelmRelease status not available yet',
-    };
-  }
-
-  if (status.phase === 'Ready') {
-    return {
-      ready: true,
-      message: `Cert-Manager HelmRelease is ready (revision ${status.revision || 'unknown'})`,
-    };
-  }
-
-  // Check conditions for more detailed status
-  const conditions = status.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-
-  if (readyCondition) {
-    const isReady = readyCondition.status === 'True';
-    return {
-      ready: isReady,
-      message: isReady
-        ? `Cert-Manager HelmRelease is ready (revision ${status.revision || 'unknown'})`
-        : readyCondition.message || 'Cert-Manager HelmRelease is not ready',
-    };
-  }
-
-  return {
-    ready: false,
-    message: `Cert-Manager HelmRelease phase: ${status.phase || 'unknown'}`,
-  };
-}
+/** Cert-Manager HelmRelease readiness evaluator (delegates to shared implementation) */
+const certManagerHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('Cert-Manager');
 
 export function certManagerHelmRelease(
   config: CertManagerHelmReleaseConfig

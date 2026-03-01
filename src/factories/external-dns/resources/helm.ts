@@ -7,15 +7,20 @@
  * while reusing existing readiness evaluators.
  */
 
-import { createResource } from '../../shared.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import {
+  createHelmRepositoryReadinessEvaluator,
+  type HelmRepositorySpec,
+  type HelmRepositoryStatus,
+} from '../../helm/helm-repository.js';
+import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
+import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import { createResource } from '../../shared.js';
 import type {
-  ExternalDnsHelmRepositoryConfig,
   ExternalDnsHelmReleaseConfig,
+  ExternalDnsHelmRepositoryConfig,
   ExternalDnsHelmValues,
 } from '../types.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
-import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
 
 // =============================================================================
 // EXTERNAL-DNS HELM REPOSITORY WRAPPER
@@ -52,22 +57,13 @@ import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-r
  * ```
  */
 
-/**
- * Readiness evaluator for external-dns HelmRepository resources
- * HelmRepository is ready when it has a Ready condition with status True
- */
-function externalDnsHelmRepositoryReadinessEvaluator(resource: any) {
-  const conditions = resource.status?.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-  const isReady = readyCondition?.status === 'True';
-  
-  return {
-    ready: isReady,
-    message: isReady ? 'External-DNS HelmRepository is ready' : 'External-DNS HelmRepository is not ready',
-  };
-}
+/** External-DNS HelmRepository readiness evaluator (delegates to shared implementation) */
+const externalDnsHelmRepositoryReadinessEvaluator =
+  createHelmRepositoryReadinessEvaluator('External-DNS');
 
-export function externalDnsHelmRepository(config: ExternalDnsHelmRepositoryConfig): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
+export function externalDnsHelmRepository(
+  config: ExternalDnsHelmRepositoryConfig
+): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   // For Kro deployments, we need to avoid status expectations that conflict with actual Flux status
   // Create the resource directly without status template to avoid Kro controller conflicts
   return createResource<HelmRepositorySpec, HelmRepositoryStatus>({
@@ -126,48 +122,12 @@ export function externalDnsHelmRepository(config: ExternalDnsHelmRepositoryConfi
  * ```
  */
 
-/**
- * Readiness evaluator for external-dns HelmRelease resources
- * HelmRelease is ready when it has a Ready phase
- */
-function externalDnsHelmReleaseReadinessEvaluator(resource: any) {
-  const status = resource.status;
-  
-  if (!status) {
-    return {
-      ready: false,
-      message: 'External-DNS HelmRelease status not available yet',
-    };
-  }
-  
-  if (status.phase === 'Ready') {
-    return {
-      ready: true,
-      message: `External-DNS HelmRelease is ready (revision ${status.revision || 'unknown'})`,
-    };
-  }
-  
-  // Check conditions for more detailed status
-  const conditions = status.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-  
-  if (readyCondition) {
-    const isReady = readyCondition.status === 'True';
-    return {
-      ready: isReady,
-      message: isReady
-        ? `External-DNS HelmRelease is ready (revision ${status.revision || 'unknown'})`
-        : readyCondition.message || 'External-DNS HelmRelease is not ready',
-    };
-  }
-  
-  return {
-    ready: false,
-    message: `External-DNS HelmRelease phase: ${status.phase || 'unknown'}`,
-  };
-}
+/** External-DNS HelmRelease readiness evaluator (delegates to shared implementation) */
+const externalDnsHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('External-DNS');
 
-export function externalDnsHelmRelease(config: ExternalDnsHelmReleaseConfig): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+export function externalDnsHelmRelease(
+  config: ExternalDnsHelmReleaseConfig
+): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
@@ -191,7 +151,10 @@ export function externalDnsHelmRelease(config: ExternalDnsHelmReleaseConfig): En
           },
         },
       },
-      ...(config.values && Object.keys(config.values).length > 0 && { values: mapExternalDnsConfigToHelmValues(config.values) }),
+      ...(config.values &&
+        Object.keys(config.values).length > 0 && {
+          values: mapExternalDnsConfigToHelmValues(config.values),
+        }),
     },
   }).withReadinessEvaluator(externalDnsHelmReleaseReadinessEvaluator);
 }
@@ -219,7 +182,9 @@ export function externalDnsHelmRelease(config: ExternalDnsHelmReleaseConfig): En
  * const helmValues = mapExternalDnsConfigToHelmValues(config);
  * ```
  */
-export function mapExternalDnsConfigToHelmValues(config: ExternalDnsHelmValues): Record<string, any> {
+export function mapExternalDnsConfigToHelmValues(
+  config: ExternalDnsHelmValues
+): Record<string, any> {
   const values: Record<string, any> = {};
 
   // Provider configuration
@@ -385,16 +350,49 @@ export function mapExternalDnsConfigToHelmValues(config: ExternalDnsHelmValues):
   }
 
   // Include any additional custom values
-  Object.keys(config).forEach(key => {
-    if (!Object.hasOwn(values, key) && 
-        !['provider', 'aws', 'azure', 'cloudflare', 'google', 'digitalocean',
-          'domainFilters', 'excludeDomains', 'regexDomainFilter', 'regexDomainExclusion',
-          'txtOwnerId', 'txtPrefix', 'txtSuffix', 'sources', 'policy', 'registry',
-          'interval', 'triggerLoopOnEvent', 'replicaCount', 'image', 'resources',
-          'nodeSelector', 'tolerations', 'affinity', 'securityContext', 
-          'containerSecurityContext', 'podSecurityContext', 'serviceAccount', 'rbac',
-          'metrics', 'logLevel', 'logFormat', 'dryRun', 'annotationFilter', 
-          'labelFilter', 'ingressClass', 'env'].includes(key)) {
+  Object.keys(config).forEach((key) => {
+    if (
+      !Object.hasOwn(values, key) &&
+      ![
+        'provider',
+        'aws',
+        'azure',
+        'cloudflare',
+        'google',
+        'digitalocean',
+        'domainFilters',
+        'excludeDomains',
+        'regexDomainFilter',
+        'regexDomainExclusion',
+        'txtOwnerId',
+        'txtPrefix',
+        'txtSuffix',
+        'sources',
+        'policy',
+        'registry',
+        'interval',
+        'triggerLoopOnEvent',
+        'replicaCount',
+        'image',
+        'resources',
+        'nodeSelector',
+        'tolerations',
+        'affinity',
+        'securityContext',
+        'containerSecurityContext',
+        'podSecurityContext',
+        'serviceAccount',
+        'rbac',
+        'metrics',
+        'logLevel',
+        'logFormat',
+        'dryRun',
+        'annotationFilter',
+        'labelFilter',
+        'ingressClass',
+        'env',
+      ].includes(key)
+    ) {
       values[key] = (config as any)[key];
     }
   });
@@ -430,7 +428,19 @@ export function validateExternalDnsHelmValues(values: ExternalDnsHelmValues): {
   if (!values.provider) {
     errors.push('provider is required');
   } else {
-    const validProviders = ['aws', 'azure', 'cloudflare', 'google', 'digitalocean', 'linode', 'rfc2136', 'webhook', 'akamai', 'ns1', 'plural'];
+    const validProviders = [
+      'aws',
+      'azure',
+      'cloudflare',
+      'google',
+      'digitalocean',
+      'linode',
+      'rfc2136',
+      'webhook',
+      'akamai',
+      'ns1',
+      'plural',
+    ];
     if (!validProviders.includes(values.provider)) {
       errors.push(`provider must be one of: ${validProviders.join(', ')}`);
     }

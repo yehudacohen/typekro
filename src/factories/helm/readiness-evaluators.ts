@@ -8,98 +8,112 @@
 import type { ReadinessEvaluator, ResourceStatus } from '../../core/types/index.js';
 
 /**
- * Default readiness evaluator for HelmRelease resources
+ * Create a readiness evaluator for HelmRelease resources.
  *
- * HelmReleases are considered "ready" when they are successfully installed or upgraded
- * and the Helm release status indicates success.
+ * Checks multiple readiness criteria in priority order: status phase,
+ * Flux CD conditions array, and installation/upgrade progress. Wraps
+ * the evaluation in a try/catch for resilience.
+ *
+ * @param label - Optional label prefix for log messages (e.g., `'Cert-Manager'`).
+ *   Defaults to no prefix (`'HelmRelease'`).
  *
  * IMPORTANT: In Flux CD v2, HelmRelease may NOT have status field initially
  * during installation/upgrades. The status field is added later by controllers.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
-export const helmReleaseReadinessEvaluator: ReadinessEvaluator<any> = (
-  liveResource: any
-): ResourceStatus => {
-  try {
-    // For HelmRelease resources, we need to check multiple readiness criteria
-    const status = liveResource.status;
+export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEvaluator<any> {
+  const prefix = label ? `${label} ` : '';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
+  return (liveResource: any): ResourceStatus => {
+    try {
+      const status = liveResource.status;
 
-    // Case 1: No status field yet (common during initial creation)
-    if (!status) {
-      return {
-        ready: false,
-        reason: 'Installing',
-        message: 'HelmRelease installation in progress - status not available yet',
-      };
-    }
-
-    // Case 2: Check the phase of the HelmRelease (primary readiness indicator)
-    if (status.phase === 'Ready') {
-      return {
-        ready: true,
-        message: `HelmRelease is ready (revision ${status.revision || 'unknown'})`,
-      };
-    }
-
-    if (status.phase === 'Failed') {
-      return {
-        ready: false,
-        reason: 'InstallationFailed',
-        message: status.message || 'Helm installation/upgrade failed',
-      };
-    }
-
-    // Case 3: Handle Installing/Upgrading phases explicitly
-    if (status.phase === 'Installing') {
-      return {
-        ready: false,
-        reason: 'Installing',
-        message: 'HelmRelease installation in progress',
-      };
-    }
-
-    if (status.phase === 'Upgrading') {
-      return {
-        ready: false,
-        reason: 'Upgrading',
-        message: 'HelmRelease upgrade in progress',
-      };
-    }
-
-    // Case 4: Check conditions array if available (Flux CD v2 pattern)
-    // This is for more detailed status information from controllers
-    if (status.conditions && Array.isArray(status.conditions)) {
-      const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
-      if (readyCondition && readyCondition.status === 'True') {
-        return {
-          ready: true,
-          message:
-            readyCondition.message ||
-            `HelmRelease is ready (revision ${status.revision || 'unknown'})`,
-        };
-      } else {
+      // Case 1: No status field yet (common during initial creation)
+      if (!status) {
         return {
           ready: false,
-          reason: readyCondition?.reason || 'NotReady',
-          message: readyCondition?.message || 'HelmRelease is not ready',
+          reason: 'Installing',
+          message: `${prefix}HelmRelease installation in progress - status not available yet`,
         };
       }
-    }
 
-    // Case 5: If status exists but no known phase or conditions, assume processing
-    return {
-      ready: false,
-      reason: 'Processing',
-      message: `HelmRelease is ${status.phase || 'processing'} (revision ${status.revision || 'unknown'})`,
-    };
-  } catch (error) {
-    return {
-      ready: false,
-      reason: 'EvaluationError',
-      message: `Error evaluating HelmRelease readiness: ${error}`,
-    };
-  }
-};
+      // Case 2: Check the phase of the HelmRelease (primary readiness indicator)
+      if (status.phase === 'Ready') {
+        return {
+          ready: true,
+          message: `${prefix}HelmRelease is ready (revision ${status.revision || 'unknown'})`,
+        };
+      }
+
+      if (status.phase === 'Failed') {
+        return {
+          ready: false,
+          reason: 'InstallationFailed',
+          message: status.message || `${prefix}Helm installation/upgrade failed`,
+        };
+      }
+
+      // Case 3: Handle Installing/Upgrading phases explicitly
+      if (status.phase === 'Installing') {
+        return {
+          ready: false,
+          reason: 'Installing',
+          message: `${prefix}HelmRelease installation in progress`,
+        };
+      }
+
+      if (status.phase === 'Upgrading') {
+        return {
+          ready: false,
+          reason: 'Upgrading',
+          message: `${prefix}HelmRelease upgrade in progress`,
+        };
+      }
+
+      // Case 4: Check conditions array if available (Flux CD v2 pattern)
+      if (status.conditions && Array.isArray(status.conditions)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- conditions array items are untyped CRD fields
+        const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
+        if (readyCondition && readyCondition.status === 'True') {
+          return {
+            ready: true,
+            message:
+              readyCondition.message ||
+              `${prefix}HelmRelease is ready (revision ${status.revision || 'unknown'})`,
+          };
+        } else {
+          return {
+            ready: false,
+            reason: readyCondition?.reason || 'NotReady',
+            message: readyCondition?.message || `${prefix}HelmRelease is not ready`,
+          };
+        }
+      }
+
+      // Case 5: If status exists but no known phase or conditions, assume processing
+      return {
+        ready: false,
+        reason: 'Processing',
+        message: `${prefix}HelmRelease is ${status.phase || 'processing'} (revision ${status.revision || 'unknown'})`,
+      };
+    } catch (error) {
+      return {
+        ready: false,
+        reason: 'EvaluationError',
+        message: `Error evaluating ${prefix}HelmRelease readiness: ${error}`,
+      };
+    }
+  };
+}
+
+/**
+ * Default (unlabeled) readiness evaluator for HelmRelease resources.
+ *
+ * For a labeled variant, use {@link createLabeledHelmReleaseEvaluator}.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
+export const helmReleaseReadinessEvaluator: ReadinessEvaluator<any> =
+  createLabeledHelmReleaseEvaluator();
 
 /**
  * Create a readiness evaluator that waits for a specific Helm release revision
