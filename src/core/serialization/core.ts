@@ -671,7 +671,9 @@ function createTypedResourceGraph<
     );
 
     // Check if this is from an imperative composition with original expressions
-    const originalCompositionFn = statusMappings.__originalCompositionFn;
+    // __originalCompositionFn is injected at runtime by imperative.ts (not part of the status schema)
+    const originalCompositionFn = (statusMappings as Record<string, unknown>)
+      .__originalCompositionFn as Function | undefined;
 
     // Debug logging removed for cleaner output
 
@@ -684,7 +686,8 @@ function createTypedResourceGraph<
       // If so, we can use those directly instead of parsing the JavaScript source code
       let hasKubernetesRefs = containsKubernetesRefs(statusMappings);
       let hasCelExpressions = containsCelExpressions(statusMappings);
-      const needsPreAnalysis = statusMappings.__needsPreAnalysis === true;
+      const needsPreAnalysis =
+        (statusMappings as Record<string, unknown>).__needsPreAnalysis === true;
 
       serializationLogger.debug('Imperative composition analysis', {
         hasKubernetesRefs,
@@ -930,7 +933,7 @@ function createTypedResourceGraph<
       }
       serializationLogger.debug('Successfully converted JavaScript expressions to CEL', {
         convertedFields: Object.keys(convertedStatusMappings).filter(
-          (key) => convertedStatusMappings[key] !== statusMappings[key]
+          (key) => convertedStatusMappings[key] !== (statusMappings as Record<string, unknown>)[key]
         ).length,
         preservedFields: Object.keys(preservedMappings).length,
         staticFields: mappingAnalysis.staticValueFields.length,
