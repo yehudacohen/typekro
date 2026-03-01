@@ -142,7 +142,7 @@ export function certManagerHelmRelease(
   // 2. startupapicheck.enabled: true — validates webhook readiness before marking ready
   //
   // NOTE: config.values may already be the result of mapCertManagerConfigToHelmValues()
-  // from the bootstrap composition, so we DON'T call mapCertManagerConfigToHelmValues again.
+  // from the bootstrap composition (see utils/helm-values-mapper.ts).
   // We just sanitize the values to remove any proxy references.
   // The bootstrap composition's startupapicheck settings take precedence via the spread.
   const baseValues = config.values ? sanitizeHelmValues(config.values) : {};
@@ -215,134 +215,6 @@ function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unk
 // =============================================================================
 // HELM VALUES MAPPING SYSTEM
 // =============================================================================
-
-/**
- * Maps Cert-Manager configuration to Helm values
- *
- * This function converts the TypeKro CertManagerHelmValues interface
- * to the format expected by the cert-manager Helm chart.
- *
- * @param config - Cert-Manager configuration object
- * @returns Helm values object compatible with cert-manager chart
- *
- * @example
- * ```typescript
- * const config = {
- *   installCRDs: false,
- *   replicaCount: 2,
- *   webhook: { enabled: true }
- * };
- * const helmValues = mapCertManagerConfigToHelmValues(config);
- * ```
- */
-export function mapCertManagerConfigToHelmValues(
-  config: CertManagerHelmValues
-): Record<string, any> {
-  const values: Record<string, any> = {
-    // Installation configuration - default to true for TypeKro comprehensive deployment
-    installCRDs: config.installCRDs ?? true,
-  };
-
-  // Global configuration
-  if (config.global) {
-    values.global = { ...config.global };
-  }
-
-  // Replica configuration
-  if (config.replicaCount !== undefined) {
-    values.replicaCount = config.replicaCount;
-  }
-
-  // Deployment strategy
-  if (config.strategy) {
-    values.strategy = { ...config.strategy };
-  }
-
-  // Image configuration
-  if (config.image) {
-    values.image = { ...config.image };
-  }
-
-  // Controller configuration
-  // NOTE: The cert-manager Helm chart places most controller settings at the root level,
-  // not under a "controller" key. Specifically:
-  //   - extraArgs, resources, nodeSelector, image, serviceAccount at root = controller settings
-  //   - webhook.extraArgs = webhook settings
-  //   - cainjector.extraArgs = cainjector settings
-  if (config.controller) {
-    const { extraArgs, env, resources, nodeSelector, image, serviceAccount, ...rest } =
-      config.controller;
-    // Map controller fields to root level where the chart expects them
-    if (extraArgs) values.extraArgs = extraArgs;
-    if (env) values.extraEnv = env;
-    if (resources) values.resources = resources;
-    if (nodeSelector) values.nodeSelector = nodeSelector;
-    if (image) values.image = { ...values.image, ...image };
-    if (serviceAccount) values.serviceAccount = serviceAccount;
-    // Any remaining fields stay under controller
-    if (Object.keys(rest).length > 0) {
-      values.controller = { ...rest };
-    }
-  }
-
-  // Webhook configuration
-  if (config.webhook) {
-    values.webhook = { ...config.webhook };
-  }
-
-  // CA Injector configuration
-  if (config.cainjector) {
-    values.cainjector = { ...config.cainjector };
-  }
-
-  // ACME solver configuration
-  if (config.acmesolver) {
-    values.acmesolver = { ...config.acmesolver };
-  }
-
-  // Startup API check configuration
-  // Only pass startupapicheck if it's explicitly enabled, otherwise don't include it
-  // to ensure the Helm chart uses its default behavior (which may be to skip the hook)
-  if (config.startupapicheck && config.startupapicheck.enabled !== false) {
-    values.startupapicheck = { ...config.startupapicheck };
-  } else if (config.startupapicheck?.enabled === false) {
-    // Explicitly disable startupapicheck - only pass the enabled flag
-    values.startupapicheck = { enabled: false };
-  }
-
-  // Monitoring configuration
-  if (config.prometheus) {
-    values.prometheus = { ...config.prometheus };
-  }
-
-  // Include any additional custom values
-  const handledKeys = new Set([
-    'installCRDs',
-    'global',
-    'replicaCount',
-    'strategy',
-    'image',
-    'controller',
-    'webhook',
-    'cainjector',
-    'acmesolver',
-    'startupapicheck',
-    'prometheus',
-    // Root-level fields that may be mapped from controller config
-    'extraArgs',
-    'extraEnv',
-    'resources',
-    'nodeSelector',
-    'serviceAccount',
-  ]);
-  Object.keys(config).forEach((key) => {
-    if (!Object.hasOwn(values, key) && !handledKeys.has(key)) {
-      values[key] = (config as any)[key];
-    }
-  });
-
-  return values;
-}
 
 /**
  * Validates Cert-Manager Helm values configuration
