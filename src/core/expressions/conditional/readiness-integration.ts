@@ -13,6 +13,7 @@ import type {
   KubernetesRef,
   ReadinessEvaluator,
   ResourceStatus,
+  WithResourceId,
 } from '../../types/index.js';
 import type { FactoryExpressionContext } from '../analysis/types.js';
 import {
@@ -192,7 +193,7 @@ export class ReadinessIntegrator {
         } else {
           // Log warning and return without readiness evaluator
           logger.warn('Failed to create readiness evaluator from readyWhen expression', {
-            resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
+            resourceId: (enhanced as WithResourceId).__resourceId,
             warnings: integrationResult.warnings,
           });
           return enhanced;
@@ -211,7 +212,7 @@ export class ReadinessIntegrator {
           factoryType: 'kro', // Default to Kro, can be overridden
           factoryName: (enhanced as unknown as { kind?: string }).kind || 'unknown',
           analysisEnabled: true,
-          resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId || 'unknown',
+          resourceId: (enhanced as WithResourceId).__resourceId || 'unknown',
           availableResources: compositionContext?.resources || {},
           schemaProxy: undefined, // Will be set by toResourceGraph if available
         };

@@ -12,6 +12,8 @@
  * - String utilities → `src/utils/string.ts`
  */
 
+import type { WithResourceId } from '../core/types/kubernetes.js';
+
 /**
  * Recursively removes `undefined` values from an object tree.
  *
@@ -64,7 +66,7 @@ export function preserveNonEnumerableProperties<T extends Record<string, unknown
     });
   }
 
-  const resourceId = (source as Record<string, unknown>).__resourceId;
+  const resourceId = (source as WithResourceId).__resourceId;
   if (resourceId !== undefined) {
     Object.defineProperty(target, '__resourceId', {
       value: resourceId,

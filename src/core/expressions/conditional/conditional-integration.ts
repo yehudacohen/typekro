@@ -8,13 +8,13 @@
 
 import { getCurrentCompositionContext } from '../../composition/context.js';
 import { getComponentLogger } from '../../logging/index.js';
-import type { Enhanced } from '../../types/index.js';
+import type { Enhanced, WithResourceId } from '../../types/index.js';
+import type { FactoryExpressionContext } from '../analysis/types.js';
 import {
   type ConditionalExpressionConfig,
   ConditionalExpressionProcessor,
   type ConditionalExpressionResult,
 } from './conditional-expression-processor.js';
-import type { FactoryExpressionContext } from '../analysis/types.js';
 
 const logger = getComponentLogger('conditional-integration');
 
@@ -130,7 +130,7 @@ export class ConditionalExpressionIntegrator {
 
           if (result.validationErrors.length > 0) {
             logger.warn('includeWhen validation warnings', {
-              resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
+              resourceId: (enhanced as WithResourceId).__resourceId,
               errors: result.validationErrors,
             });
           }
@@ -172,7 +172,7 @@ export class ConditionalExpressionIntegrator {
 
           if (result.validationErrors.length > 0) {
             logger.warn('readyWhen validation warnings', {
-              resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
+              resourceId: (enhanced as WithResourceId).__resourceId,
               errors: result.validationErrors,
             });
           }
@@ -223,7 +223,7 @@ export class ConditionalExpressionIntegrator {
 
           if (result.validationErrors.length > 0) {
             logger.warn('Custom conditional validation warnings', {
-              resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId,
+              resourceId: (enhanced as WithResourceId).__resourceId,
               conditionalName: name,
               errors: result.validationErrors,
             });
@@ -251,7 +251,7 @@ export class ConditionalExpressionIntegrator {
           analysisEnabled: true,
           availableResources: compositionContext?.resources || {},
           schemaProxy: undefined, // Will be set by toResourceGraph if available
-          resourceId: (enhanced as unknown as { __resourceId?: string }).__resourceId || 'unknown',
+          resourceId: (enhanced as WithResourceId).__resourceId || 'unknown',
         };
       },
       enumerable: false,

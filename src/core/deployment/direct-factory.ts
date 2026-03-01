@@ -28,7 +28,12 @@ import type {
   ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
-import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
+import type {
+  DeployableK8sResource,
+  Enhanced,
+  KubernetesResource,
+  WithResourceId,
+} from '../types/kubernetes.js';
 // Alchemy integration
 import type {
   KroCompatibleType,
@@ -760,7 +765,7 @@ metadata:
       // Preserve the __resourceId property if it exists (it's non-enumerable)
       // This is the original resource ID (e.g., 'webappConfig') that's used for cross-resource references
       // Note: For Enhanced proxy resources, __resourceId is on the target object and accessible via Reflect.get
-      const originalResourceId = (resource as any).__resourceId;
+      const originalResourceId = (resource as WithResourceId).__resourceId;
 
       // Also check if the resource has an 'id' property that was set by the factory
       // The proxy returns resourceId when accessing 'id' property

@@ -100,6 +100,34 @@ export interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
   toJSON?: () => KubernetesResource<TSpec, TStatus>;
 }
 
+/**
+ * Internal type augmentation for objects that carry a non-enumerable `__resourceId`
+ * property. This property is set by the proxy system via `Object.defineProperty`
+ * and is used for cross-resource references and dependency tracking.
+ *
+ * Use the {@link hasResourceId} type guard to safely narrow to this type
+ * instead of ad-hoc `as any` or `as unknown as { __resourceId?: string }` casts.
+ *
+ * @internal
+ */
+export interface WithResourceId {
+  readonly __resourceId?: string;
+}
+
+/**
+ * Type guard that checks whether an object carries the internal `__resourceId` property.
+ *
+ * Since `__resourceId` is non-enumerable (set via `Object.defineProperty`),
+ * this guard uses a direct property check rather than `in` or `hasOwnProperty`.
+ *
+ * @internal
+ */
+export function hasResourceId(obj: unknown): obj is WithResourceId {
+  return (
+    typeof obj === 'object' && obj !== null && (obj as WithResourceId).__resourceId !== undefined
+  );
+}
+
 export type KubernetesResourceHeader<T extends KubernetesResource> = Pick<
   T,
   'apiVersion' | 'kind'

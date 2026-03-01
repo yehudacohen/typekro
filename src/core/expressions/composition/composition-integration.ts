@@ -18,6 +18,7 @@ import type {
   SchemaProxy,
 } from '../../types/serialization.js';
 import type { Enhanced } from '../../types.js';
+import { hasResourceId } from '../../types.js';
 import { CelConversionEngine } from '../factory/cel-conversion-engine.js';
 import { MagicAssignableAnalyzer } from '../magic-proxy/magic-assignable-analyzer.js';
 
@@ -1280,19 +1281,17 @@ export class CompositionIntegrationHooks {
    */
   private generateResourceIdFromResource(resource: Enhanced<unknown, unknown>): string {
     // Try to extract ID from common resource properties
-    const resourceObj = resource as any;
-
-    if (resourceObj.__resourceId) {
-      return resourceObj.__resourceId;
+    if (hasResourceId(resource) && resource.__resourceId) {
+      return resource.__resourceId;
     }
 
-    if (resourceObj.metadata?.name) {
-      const kind = resourceObj.kind || 'resource';
-      return `${kind.toLowerCase()}-${resourceObj.metadata.name}`;
+    if (resource.metadata?.name) {
+      const kind = resource.kind || 'resource';
+      return `${kind.toLowerCase()}-${String(resource.metadata.name)}`;
     }
 
-    if (resourceObj.kind) {
-      return `${resourceObj.kind.toLowerCase()}-${Date.now()}`;
+    if (resource.kind) {
+      return `${String(resource.kind).toLowerCase()}-${Date.now()}`;
     }
 
     return `resource-${Date.now()}`;

@@ -1,7 +1,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { DEFAULT_STATUS_CACHE_TTL } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
-import type { DeployedResource, Enhanced, KubernetesResource } from '../types.js';
+import type { DeployedResource, Enhanced, KubernetesResource, WithResourceId } from '../types.js';
 
 /**
  * Options for status hydration
@@ -183,7 +183,7 @@ export class StatusHydrator {
     hydratedFields: string[]
   ): void {
     const resourceId =
-      (enhanced as { __resourceId?: string }).__resourceId || enhanced.metadata?.name || 'unknown';
+      (enhanced as WithResourceId).__resourceId || enhanced.metadata?.name || 'unknown';
     const statusLogger = this.logger.child({ resourceId });
 
     statusLogger.debug('Populating enhanced status', {

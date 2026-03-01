@@ -11,7 +11,7 @@ import { createBunCompatibleKubernetesObjectApi } from '../../kubernetes/bun-api
 import { getComponentLogger } from '../../logging/index.js';
 import { createResourcesProxy } from '../../references/schema-proxy.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
-import type { Enhanced, KubernetesResource } from '../../types/kubernetes.js';
+import type { Enhanced, KubernetesResource, WithResourceId } from '../../types/kubernetes.js';
 import type {
   KroCompatibleType,
   SchemaDefinition,
@@ -435,7 +435,7 @@ export abstract class BaseDeploymentStrategy<
 
         for (const deployedResource of deployedResources) {
           // Extract the original resource key from __resourceId or the deployment ID pattern
-          const manifestResourceId = (deployedResource.manifest as any).__resourceId;
+          const manifestResourceId = (deployedResource.manifest as WithResourceId).__resourceId;
           const resourceIdPattern = new RegExp(`^${camelCaseInstanceName}Resource\\d+(.+)$`);
           const match = deployedResource.id.match(resourceIdPattern);
 

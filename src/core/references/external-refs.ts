@@ -11,7 +11,7 @@
 
 import { getCurrentCompositionContext } from '../composition/context.js';
 import { createResource } from '../proxy/create-resource.js';
-import type { Enhanced, KubernetesResource } from '../types.js';
+import type { Enhanced, KubernetesResource, WithResourceId } from '../types.js';
 
 /**
  * Object-form configuration for creating an external reference.
@@ -105,7 +105,7 @@ export function externalRef<TSpec extends object, TStatus extends object>(
   // createExternalRefWithoutRegistration() instead.
   const context = getCurrentCompositionContext();
   if (context) {
-    const resourceId = (enhanced as unknown as Record<string, string>).__resourceId;
+    const resourceId = (enhanced as WithResourceId).__resourceId;
     if (resourceId) {
       context.addResource(resourceId, enhanced as Enhanced<unknown, unknown>);
     }
