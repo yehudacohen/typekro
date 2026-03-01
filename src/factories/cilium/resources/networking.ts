@@ -37,7 +37,8 @@ import type {
  * - Endpoint selection and rule application
  * - Error conditions and validation status
  */
-export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- CiliumNetworkPolicy is a CRD without typed client
+export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator<any> = (
   resource: any
 ): ResourceStatus => {
   const status = resource.status as CiliumResourceStatus | undefined;
@@ -363,7 +364,8 @@ export function ciliumNetworkPolicy(
  * - Node selector validation
  * - Cluster-wide rule application status
  */
-export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluator = (
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- CiliumClusterwideNetworkPolicy is a CRD without typed client
+export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluator<any> = (
   resource: any
 ): ResourceStatus => {
   const status = resource.status as CiliumResourceStatus | undefined;
