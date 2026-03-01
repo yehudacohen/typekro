@@ -1,12 +1,13 @@
 /**
  * Type Safety Integration for JavaScript to CEL Expression Conversion
- * 
+ *
  * This module provides TypeScript type system integration for validating
  * JavaScript expressions during conversion to CEL. It ensures type safety
  * throughout the conversion process and provides compile-time validation.
  */
 
 import type { Type } from 'arktype';
+import { TypeKroError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -17,22 +18,22 @@ import type { SchemaProxy } from '../../types/serialization.js';
 export interface TypeInfo {
   /** The TypeScript type name */
   typeName: string;
-  
+
   /** Whether the type is optional */
   optional: boolean;
-  
+
   /** Whether the type is nullable */
   nullable: boolean;
-  
+
   /** Array element type if this is an array */
   elementType?: TypeInfo;
-  
+
   /** Object property types if this is an object */
   properties?: Record<string, TypeInfo>;
-  
+
   /** Union type alternatives if this is a union */
   unionTypes?: TypeInfo[];
-  
+
   /** The original TypeScript type definition */
   originalType?: any;
 }
@@ -43,16 +44,16 @@ export interface TypeInfo {
 export interface TypeValidationResult {
   /** Whether the expression is type-safe */
   valid: boolean;
-  
+
   /** Inferred result type of the expression */
   resultType?: TypeInfo;
-  
+
   /** Type validation errors */
   errors: TypeValidationError[];
-  
+
   /** Type warnings (non-blocking issues) */
   warnings: TypeValidationWarning[];
-  
+
   /** Suggested fixes for type issues */
   suggestions: string[];
 }
@@ -60,7 +61,7 @@ export interface TypeValidationResult {
 /**
  * Type validation error
  */
-export class TypeValidationError extends Error {
+export class TypeValidationError extends TypeKroError {
   constructor(
     message: string,
     public readonly expression: string,
@@ -68,10 +69,15 @@ export class TypeValidationError extends Error {
     public readonly actualType: TypeInfo,
     public readonly location?: { line: number; column: number }
   ) {
-    super(message);
+    super(message, 'TYPE_VALIDATION_ERROR', {
+      expression,
+      expectedType,
+      actualType,
+      location,
+    });
     this.name = 'TypeValidationError';
   }
-  
+
   static forTypeMismatch(
     expression: string,
     expectedType: TypeInfo,
@@ -86,7 +92,7 @@ export class TypeValidationError extends Error {
       location
     );
   }
-  
+
   static forUndefinedProperty(
     expression: string,
     propertyName: string,
@@ -101,7 +107,7 @@ export class TypeValidationError extends Error {
       location
     );
   }
-  
+
   static forInvalidOperation(
     expression: string,
     operation: string,
@@ -128,7 +134,7 @@ export class TypeValidationWarning {
     public readonly expression: string,
     public readonly location?: { line: number; column: number }
   ) {}
-  
+
   static forPotentialNullAccess(
     expression: string,
     location?: { line: number; column: number }
@@ -139,7 +145,7 @@ export class TypeValidationWarning {
       location
     );
   }
-  
+
   static forImplicitTypeCoercion(
     expression: string,
     fromType: string,
@@ -158,7 +164,6 @@ export class TypeValidationWarning {
  * Type safety validator for JavaScript expressions
  */
 export class ExpressionTypeValidator {
-  
   /**
    * Validate the types in a JavaScript expression
    */
@@ -170,50 +175,50 @@ export class ExpressionTypeValidator {
     try {
       // Parse the expression to understand its structure
       const expressionType = this.inferExpressionType(expression, availableTypes);
-      
+
       const errors: TypeValidationError[] = [];
       const warnings: TypeValidationWarning[] = [];
       const suggestions: string[] = [];
-      
+
       // Validate against expected result type if provided
       if (expectedResultType && !this.isTypeCompatible(expressionType, expectedResultType)) {
-        errors.push(TypeValidationError.forTypeMismatch(
-          expression,
-          expectedResultType,
-          expressionType
-        ));
-        
+        errors.push(
+          TypeValidationError.forTypeMismatch(expression, expectedResultType, expressionType)
+        );
+
         suggestions.push(this.suggestTypeConversion(expressionType, expectedResultType));
       }
-      
+
       // Check for potential null/undefined access
       if (this.hasNullableAccess(expression, availableTypes)) {
         warnings.push(TypeValidationWarning.forPotentialNullAccess(expression));
         suggestions.push('Consider using optional chaining (?.) for safer property access');
       }
-      
+
       return {
         valid: errors.length === 0,
         resultType: expressionType,
         errors,
         warnings,
-        suggestions
+        suggestions,
       };
     } catch (error) {
       return {
         valid: false,
-        errors: [new TypeValidationError(
-          `Type validation failed: ${error instanceof Error ? error.message : String(error)}`,
-          expression,
-          { typeName: 'unknown', optional: false, nullable: false },
-          { typeName: 'unknown', optional: false, nullable: false }
-        )],
+        errors: [
+          new TypeValidationError(
+            `Type validation failed: ${error instanceof Error ? error.message : String(error)}`,
+            expression,
+            { typeName: 'unknown', optional: false, nullable: false },
+            { typeName: 'unknown', optional: false, nullable: false }
+          ),
+        ],
         warnings: [],
-        suggestions: []
+        suggestions: [],
       };
     }
   }
-  
+
   /**
    * Validate KubernetesRef types during conversion
    */
@@ -225,75 +230,85 @@ export class ExpressionTypeValidator {
     const errors: TypeValidationError[] = [];
     const warnings: TypeValidationWarning[] = [];
     const suggestions: string[] = [];
-    
+
     try {
       // Validate resource exists
       if (ref.resourceId === '__schema__') {
         if (!schemaProxy) {
-          errors.push(new TypeValidationError(
-            'Schema reference used but no schema proxy available',
-            `${ref.resourceId}.${ref.fieldPath}`,
-            { typeName: 'SchemaProxy', optional: false, nullable: false },
-            { typeName: 'undefined', optional: false, nullable: false }
-          ));
+          errors.push(
+            new TypeValidationError(
+              'Schema reference used but no schema proxy available',
+              `${ref.resourceId}.${ref.fieldPath}`,
+              { typeName: 'SchemaProxy', optional: false, nullable: false },
+              { typeName: 'undefined', optional: false, nullable: false }
+            )
+          );
         } else {
           // Validate schema field path
           const schemaType = this.extractSchemaType(schemaProxy, ref.fieldPath);
           if (!schemaType) {
-            errors.push(TypeValidationError.forUndefinedProperty(
-              `${ref.resourceId}.${ref.fieldPath}`,
-              ref.fieldPath,
-              { typeName: 'Schema', optional: false, nullable: false }
-            ));
+            errors.push(
+              TypeValidationError.forUndefinedProperty(
+                `${ref.resourceId}.${ref.fieldPath}`,
+                ref.fieldPath,
+                { typeName: 'Schema', optional: false, nullable: false }
+              )
+            );
           }
         }
       } else {
         // Validate resource reference
         const resource = availableResources[ref.resourceId];
         if (!resource) {
-          errors.push(new TypeValidationError(
-            `Resource '${ref.resourceId}' not found in available resources`,
-            `${ref.resourceId}.${ref.fieldPath}`,
-            { typeName: 'Enhanced', optional: false, nullable: false },
-            { typeName: 'undefined', optional: false, nullable: false }
-          ));
-          
+          errors.push(
+            new TypeValidationError(
+              `Resource '${ref.resourceId}' not found in available resources`,
+              `${ref.resourceId}.${ref.fieldPath}`,
+              { typeName: 'Enhanced', optional: false, nullable: false },
+              { typeName: 'undefined', optional: false, nullable: false }
+            )
+          );
+
           suggestions.push(`Available resources: ${Object.keys(availableResources).join(', ')}`);
         } else {
           // Validate field path on resource
           const fieldType = this.extractResourceFieldType(resource, ref.fieldPath);
           if (!fieldType) {
-            errors.push(TypeValidationError.forUndefinedProperty(
-              `${ref.resourceId}.${ref.fieldPath}`,
-              ref.fieldPath,
-              { typeName: resource.constructor.name, optional: false, nullable: false }
-            ));
+            errors.push(
+              TypeValidationError.forUndefinedProperty(
+                `${ref.resourceId}.${ref.fieldPath}`,
+                ref.fieldPath,
+                { typeName: resource.constructor.name, optional: false, nullable: false }
+              )
+            );
           }
         }
       }
-      
+
       return {
         valid: errors.length === 0,
         resultType: this.inferKubernetesRefType(ref),
         errors,
         warnings,
-        suggestions
+        suggestions,
       };
     } catch (error) {
       return {
         valid: false,
-        errors: [new TypeValidationError(
-          `KubernetesRef validation failed: ${error instanceof Error ? error.message : String(error)}`,
-          `${ref.resourceId}.${ref.fieldPath}`,
-          { typeName: 'unknown', optional: false, nullable: false },
-          { typeName: 'unknown', optional: false, nullable: false }
-        )],
+        errors: [
+          new TypeValidationError(
+            `KubernetesRef validation failed: ${error instanceof Error ? error.message : String(error)}`,
+            `${ref.resourceId}.${ref.fieldPath}`,
+            { typeName: 'unknown', optional: false, nullable: false },
+            { typeName: 'unknown', optional: false, nullable: false }
+          ),
+        ],
         warnings: [],
-        suggestions: []
+        suggestions: [],
       };
     }
   }
-  
+
   /**
    * Infer the TypeScript type of an expression
    */
@@ -302,40 +317,46 @@ export class ExpressionTypeValidator {
     availableTypes: Record<string, TypeInfo>
   ): TypeInfo {
     // Simple type inference based on expression patterns
-    
+
     // String literals
     if (expression.match(/^["'`].*["'`]$/)) {
       return { typeName: 'string', optional: false, nullable: false };
     }
-    
+
     // Number literals
     if (expression.match(/^\d+(\.\d+)?$/)) {
       return { typeName: 'number', optional: false, nullable: false };
     }
-    
+
     // Boolean literals
     if (expression === 'true' || expression === 'false') {
       return { typeName: 'boolean', optional: false, nullable: false };
     }
-    
+
     // Null/undefined
     if (expression === 'null' || expression === 'undefined') {
       return { typeName: 'null', optional: false, nullable: true };
     }
-    
+
     // Binary operations
-    if (expression.includes(' > ') || expression.includes(' < ') || 
-        expression.includes(' >= ') || expression.includes(' <= ') ||
-        expression.includes(' == ') || expression.includes(' != ') ||
-        expression.includes(' && ') || expression.includes(' || ')) {
+    if (
+      expression.includes(' > ') ||
+      expression.includes(' < ') ||
+      expression.includes(' >= ') ||
+      expression.includes(' <= ') ||
+      expression.includes(' == ') ||
+      expression.includes(' != ') ||
+      expression.includes(' && ') ||
+      expression.includes(' || ')
+    ) {
       return { typeName: 'boolean', optional: false, nullable: false };
     }
-    
+
     // Template literals
     if (expression.includes('${')) {
       return { typeName: 'string', optional: false, nullable: false };
     }
-    
+
     // Property access
     if (expression.includes('.')) {
       const parts = expression.split('.');
@@ -347,17 +368,17 @@ export class ExpressionTypeValidator {
         }
       }
     }
-    
+
     // Variable reference
     const variableType = availableTypes[expression];
     if (variableType) {
       return variableType;
     }
-    
+
     // Default to unknown
     return { typeName: 'unknown', optional: false, nullable: false };
   }
-  
+
   /**
    * Check if two types are compatible
    */
@@ -366,53 +387,55 @@ export class ExpressionTypeValidator {
     if (actualType.typeName === expectedType.typeName) {
       return true;
     }
-    
+
     // Handle optionality
     if (expectedType.optional && actualType.typeName === 'undefined') {
       return true;
     }
-    
+
     // Handle nullability
     if (expectedType.nullable && actualType.typeName === 'null') {
       return true;
     }
-    
+
     // Handle union types
     if (expectedType.unionTypes) {
-      return expectedType.unionTypes.some(unionType => 
+      return expectedType.unionTypes.some((unionType) =>
         this.isTypeCompatible(actualType, unionType)
       );
     }
-    
+
     // Handle type coercion for common cases
-    if (expectedType.typeName === 'string' && 
-        (actualType.typeName === 'number' || actualType.typeName === 'boolean')) {
+    if (
+      expectedType.typeName === 'string' &&
+      (actualType.typeName === 'number' || actualType.typeName === 'boolean')
+    ) {
       return true; // Implicit string conversion
     }
-    
+
     if (expectedType.typeName === 'boolean' && actualType.typeName !== 'void') {
       return true; // Truthy/falsy conversion
     }
-    
+
     return false;
   }
-  
+
   /**
    * Follow a property path through a type definition
    */
   private followPropertyPath(rootType: TypeInfo, path: string[]): TypeInfo {
     let currentType = rootType;
-    
+
     for (const property of path) {
       if (!currentType.properties || !currentType.properties[property]) {
         return { typeName: 'unknown', optional: false, nullable: false };
       }
       currentType = currentType.properties[property];
     }
-    
+
     return currentType;
   }
-  
+
   /**
    * Check if an expression has nullable property access
    */
@@ -427,12 +450,12 @@ export class ExpressionTypeValidator {
       }
       return false;
     }
-    
+
     for (const access of propertyAccesses) {
       const [object, property] = access.split('.');
       if (object) {
         const objectType = availableTypes[object];
-        
+
         if (objectType && (objectType.nullable || objectType.optional)) {
           // Check if optional chaining is used
           const optionalChainPattern = new RegExp(`${object}\\?\\.${property}`);
@@ -442,10 +465,10 @@ export class ExpressionTypeValidator {
         }
       }
     }
-    
+
     return false;
   }
-  
+
   /**
    * Suggest type conversion for incompatible types
    */
@@ -453,36 +476,42 @@ export class ExpressionTypeValidator {
     if (expectedType.typeName === 'string') {
       return `Convert to string using String(${actualType.typeName}) or template literal`;
     }
-    
+
     if (expectedType.typeName === 'number') {
       return `Convert to number using Number(${actualType.typeName}) or parseInt/parseFloat`;
     }
-    
+
     if (expectedType.typeName === 'boolean') {
       return `Convert to boolean using Boolean(${actualType.typeName}) or !! operator`;
     }
-    
+
     return `Ensure the expression returns type '${expectedType.typeName}'`;
   }
-  
+
   /**
    * Extract type information from schema proxy
    */
-  private extractSchemaType(_schemaProxy: SchemaProxy<any, any>, _fieldPath: string): TypeInfo | null {
+  private extractSchemaType(
+    _schemaProxy: SchemaProxy<any, any>,
+    _fieldPath: string
+  ): TypeInfo | null {
     // This would integrate with the actual schema type system
     // For now, return a placeholder
     return { typeName: 'unknown', optional: false, nullable: false };
   }
-  
+
   /**
    * Extract type information from resource field
    */
-  private extractResourceFieldType(_resource: Enhanced<any, any>, _fieldPath: string): TypeInfo | null {
+  private extractResourceFieldType(
+    _resource: Enhanced<any, any>,
+    _fieldPath: string
+  ): TypeInfo | null {
     // This would integrate with the Enhanced type system
     // For now, return a placeholder
     return { typeName: 'unknown', optional: false, nullable: false };
   }
-  
+
   /**
    * Infer the type of a KubernetesRef
    */
@@ -491,11 +520,11 @@ export class ExpressionTypeValidator {
     if (ref._type) {
       return this.convertTypeToTypeInfo(ref._type);
     }
-    
+
     // Default to unknown
     return { typeName: 'unknown', optional: false, nullable: false };
   }
-  
+
   /**
    * Convert a TypeScript type to TypeInfo
    */
@@ -505,7 +534,7 @@ export class ExpressionTypeValidator {
     if (typeof type === 'string') {
       return { typeName: type, optional: false, nullable: false };
     }
-    
+
     return { typeName: 'unknown', optional: false, nullable: false };
   }
 }
@@ -517,73 +546,73 @@ export class TypeRegistry {
   private types = new Map<string, TypeInfo>();
   private resourceTypes = new Map<string, TypeInfo>();
   private schemaTypes = new Map<string, TypeInfo>();
-  
+
   /**
    * Register a type in the registry
    */
   registerType(name: string, typeInfo: TypeInfo): void {
     this.types.set(name, typeInfo);
   }
-  
+
   /**
    * Register a resource type
    */
   registerResourceType(resourceId: string, typeInfo: TypeInfo): void {
     this.resourceTypes.set(resourceId, typeInfo);
   }
-  
+
   /**
    * Register schema types
    */
   registerSchemaType(fieldPath: string, typeInfo: TypeInfo): void {
     this.schemaTypes.set(fieldPath, typeInfo);
   }
-  
+
   /**
    * Get type information for a name
    */
   getType(name: string): TypeInfo | undefined {
     return this.types.get(name);
   }
-  
+
   /**
    * Get resource type information
    */
   getResourceType(resourceId: string): TypeInfo | undefined {
     return this.resourceTypes.get(resourceId);
   }
-  
+
   /**
    * Get schema type information
    */
   getSchemaType(fieldPath: string): TypeInfo | undefined {
     return this.schemaTypes.get(fieldPath);
   }
-  
+
   /**
    * Get all available types for a context
    */
   getAvailableTypes(): Record<string, TypeInfo> {
     const allTypes: Record<string, TypeInfo> = {};
-    
+
     // Add basic types
     this.types.forEach((typeInfo, name) => {
       allTypes[name] = typeInfo;
     });
-    
+
     // Add resource types with 'resources.' prefix
     this.resourceTypes.forEach((typeInfo, resourceId) => {
       allTypes[`resources.${resourceId}`] = typeInfo;
     });
-    
+
     // Add schema types with 'schema.' prefix
     this.schemaTypes.forEach((typeInfo, fieldPath) => {
       allTypes[`schema.${fieldPath}`] = typeInfo;
     });
-    
+
     return allTypes;
   }
-  
+
   /**
    * Clear all registered types
    */
@@ -607,10 +636,10 @@ export class TypeSafetyUtils {
     return {
       typeName: 'unknown',
       optional: false,
-      nullable: false
+      nullable: false,
     };
   }
-  
+
   /**
    * Create TypeInfo for Enhanced resource types
    */
@@ -623,11 +652,11 @@ export class TypeSafetyUtils {
       properties: {
         metadata: { typeName: 'ObjectMeta', optional: true, nullable: false },
         spec: { typeName: 'unknown', optional: true, nullable: false },
-        status: { typeName: 'unknown', optional: true, nullable: false }
-      }
+        status: { typeName: 'unknown', optional: true, nullable: false },
+      },
     };
   }
-  
+
   /**
    * Validate that a CEL expression type matches expected type
    */
@@ -642,7 +671,7 @@ export class TypeSafetyUtils {
       resultType: expectedType,
       errors: [],
       warnings: [],
-      suggestions: []
+      suggestions: [],
     };
   }
 }

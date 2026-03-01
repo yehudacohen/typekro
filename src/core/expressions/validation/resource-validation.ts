@@ -7,6 +7,7 @@
  */
 
 import { calculateSimilarity } from '../../../utils/string.js';
+import { TypeKroError } from '../../errors.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -38,14 +39,18 @@ export interface ResourceValidationResult {
 /**
  * Resource validation error
  */
-export class ResourceValidationError extends Error {
+export class ResourceValidationError extends TypeKroError {
   constructor(
     message: string,
     public readonly resourceRef: string,
     public readonly errorType: ResourceValidationErrorType,
     public readonly location?: { line: number; column: number }
   ) {
-    super(message);
+    super(message, 'RESOURCE_VALIDATION_ERROR', {
+      resourceRef,
+      errorType,
+      location,
+    });
     this.name = 'ResourceValidationError';
   }
 
