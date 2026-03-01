@@ -6,7 +6,8 @@ import type { ReadinessEvaluator, ResourceStatus } from '../../../core/types/ind
  * Checks if the Kustomization has been successfully applied and all resources are ready.
  * This evaluator follows TypeKro patterns and integrates with the cluster state access system.
  */
-export const kustomizationReadinessEvaluator: ReadinessEvaluator = (
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Kustomization is a CRD without typed client
+export const kustomizationReadinessEvaluator: ReadinessEvaluator<any> = (
   liveResource: any
 ): ResourceStatus => {
   try {

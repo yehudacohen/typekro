@@ -14,12 +14,12 @@ import type {
   ReadinessEvaluator,
   ResourceStatus,
 } from '../../types/index.js';
+import type { FactoryExpressionContext } from '../analysis/types.js';
 import {
   type ConditionalExpressionConfig,
   ConditionalExpressionProcessor,
   type ConditionalExpressionResult,
 } from './conditional-expression-processor.js';
-import type { FactoryExpressionContext } from '../analysis/types.js';
 
 const logger = getComponentLogger('readiness-integration');
 
@@ -42,7 +42,8 @@ export interface ReadinessIntegrationResult {
   /** Whether readyWhen expression was processed */
   wasProcessed: boolean;
   /** Generated readiness evaluator */
-  evaluator?: ReadinessEvaluator;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime evaluator for heterogeneous K8s types
+  evaluator?: ReadinessEvaluator<any>;
   /** Processing result from conditional expression processor */
   processingResult?: ConditionalExpressionResult;
   /** Integration warnings */
@@ -229,10 +230,12 @@ export class ReadinessIntegrator {
     processingResult: ConditionalExpressionResult,
     context: FactoryExpressionContext,
     config: ReadinessIntegrationConfig
-  ): ReadinessEvaluator {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime evaluator for heterogeneous K8s types
+  ): ReadinessEvaluator<any> {
     const processedExpression = processingResult.expression;
     const originalExpression = processingResult.original;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime K8s objects have unknown shape
     return (liveResource: any): ResourceStatus => {
       try {
         // If the expression wasn't actually processed (no KubernetesRef objects),
@@ -281,7 +284,9 @@ export class ReadinessIntegrator {
   /**
    * Create fallback readiness evaluator
    */
-  private createFallbackEvaluator(expression: any): ReadinessEvaluator {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime evaluator for heterogeneous K8s types
+  private createFallbackEvaluator(expression: any): ReadinessEvaluator<any> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime K8s objects have unknown shape
     return (liveResource: any): ResourceStatus => {
       // Simple fallback: check if resource exists and has no error conditions
       if (!liveResource) {

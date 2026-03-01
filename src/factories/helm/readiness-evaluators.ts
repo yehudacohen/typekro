@@ -16,7 +16,8 @@ import type { ReadinessEvaluator, ResourceStatus } from '../../core/types/index.
  * IMPORTANT: In Flux CD v2, HelmRelease may NOT have status field initially
  * during installation/upgrades. The status field is added later by controllers.
  */
-export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
+export const helmReleaseReadinessEvaluator: ReadinessEvaluator<any> = (
   liveResource: any
 ): ResourceStatus => {
   try {
@@ -108,7 +109,10 @@ export const helmReleaseReadinessEvaluator: ReadinessEvaluator = (
  * @param expectedRevision The revision number to wait for
  * @returns ReadinessEvaluator function
  */
-export function createHelmRevisionReadinessEvaluator(expectedRevision: number): ReadinessEvaluator {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
+export function createHelmRevisionReadinessEvaluator(
+  expectedRevision: number
+): ReadinessEvaluator<any> {
   return (liveResource: any): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
@@ -154,7 +158,8 @@ export function createHelmRevisionReadinessEvaluator(expectedRevision: number): 
  */
 export function createHelmTestReadinessEvaluator(
   requireTests: boolean = false
-): ReadinessEvaluator {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
+): ReadinessEvaluator<any> {
   return (liveResource: any): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
@@ -215,7 +220,8 @@ export function createHelmTestReadinessEvaluator(
  */
 export function createHelmTimeoutReadinessEvaluator(
   timeoutMinutes: number = 10
-): ReadinessEvaluator {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
+): ReadinessEvaluator<any> {
   return (liveResource: any): ResourceStatus => {
     try {
       const baseStatus = helmReleaseReadinessEvaluator(liveResource);
@@ -272,7 +278,8 @@ export function createHelmTimeoutReadinessEvaluator(
  */
 export function createComprehensiveHelmReadinessEvaluator(
   options: { expectedRevision?: number; requireTests?: boolean; timeoutMinutes?: number } = {}
-): ReadinessEvaluator {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- HelmRelease is a CRD without typed client
+): ReadinessEvaluator<any> {
   const { expectedRevision, requireTests = false, timeoutMinutes = 10 } = options;
 
   return (liveResource: any): ResourceStatus => {

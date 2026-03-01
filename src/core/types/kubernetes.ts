@@ -167,10 +167,12 @@ export type Enhanced<TSpec, TStatus> = Omit<
   readonly subsets?: MagicProxy<V1EndpointSubset[]>; // Endpoints
 
   // Optional readiness evaluator that returns structured status
-  readonly readinessEvaluator?: ReadinessEvaluator;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- stored evaluator is called with runtime K8s objects
+  readonly readinessEvaluator?: ReadinessEvaluator<any>;
 
   // Fluent builder method for setting readiness evaluator
-  withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
+  withReadinessEvaluator(evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus>;
 
   // Kro v0.8.x conditional expression support (added at runtime by ConditionalExpressionIntegrator)
   /** Set includeWhen condition — CEL expression or callback for conditional resource creation */
@@ -193,15 +195,23 @@ export interface ResourceStatus {
 }
 
 /**
- * Readiness evaluator function type
+ * Evaluates the readiness of a live Kubernetes resource.
+ *
+ * Use an explicit type parameter for typed K8s resources (e.g.,
+ * `ReadinessEvaluator<V1Deployment>`). For CRD-based resources without
+ * a typed client, pass `any` explicitly: `ReadinessEvaluator<any>`.
+ *
+ * @typeParam T - The live resource type. Defaults to `unknown` to encourage
+ *   explicit typing; use `any` for untyped CRD resources.
  */
-export type ReadinessEvaluator<T = any> = (liveResource: T) => ResourceStatus;
+export type ReadinessEvaluator<T = unknown> = (liveResource: T) => ResourceStatus;
 
 /**
  * Fluent builder interface for Enhanced resources with readiness evaluation
  */
 export interface EnhancedBuilder<TSpec, TStatus> extends Enhanced<TSpec, TStatus> {
-  withReadinessEvaluator(evaluator: ReadinessEvaluator): Enhanced<TSpec, TStatus>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
+  withReadinessEvaluator(evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus>;
 }
 
 // =============================================================================
