@@ -285,17 +285,23 @@ export interface ValidationResult {
   errors: string[];
 }
 
-// Magic assignable type for status field mappings with recursive support
-// This allows status builders to return either:
-// 1. Plain objects with static values (e.g., { ready: true, phase: 'Ready' })
-// 2. Objects with MagicAssignable values (e.g., { ready: someRef.status.ready })
-// 3. Mix of both
+/**
+ * Magic assignable type for status field mappings with recursive support.
+ *
+ * This allows status builders to return either:
+ * 1. Plain objects with static values (e.g., `{ ready: true, phase: 'Ready' }`)
+ * 2. Objects with MagicAssignable values (e.g., `{ ready: someRef.status.ready }`)
+ * 3. A mix of both
+ *
+ * TypeScript enforces that only keys defined in the status schema are returned,
+ * catching typos and extra properties at compile time.
+ */
 export type MagicAssignableShape<T> = T extends object
   ? {
       [K in keyof T]: T[K] extends object
         ? MagicAssignableShape<T[K]> // Recursively handle nested objects
         : T[K] | MagicAssignable<T[K]>; // Accept both plain values and MagicAssignable
-    } & { [key: string]: any } // Index signature for runtime access
+    }
   : T;
 
 export type ResourceBuilder<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType> = (
