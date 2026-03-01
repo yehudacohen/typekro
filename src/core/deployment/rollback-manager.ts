@@ -6,6 +6,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import { DEFAULT_POLL_INTERVAL } from '../config/defaults.js';
 import { DeploymentTimeoutError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -212,7 +213,7 @@ export class ResourceRollbackManager {
     timeout: number
   ): Promise<void> {
     const startTime = Date.now();
-    const pollInterval = 2000; // 2 seconds
+    const pollInterval = DEFAULT_POLL_INTERVAL;
 
     while (Date.now() - startTime < timeout) {
       try {

@@ -6,7 +6,7 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { DEFAULT_RECONNECT_MAX_DELAY } from '../config/defaults.js';
+import { DEFAULT_FAST_POLL_INTERVAL, DEFAULT_RECONNECT_MAX_DELAY } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, DeploymentEvent } from '../types/deployment.js';
 
@@ -303,7 +303,7 @@ export class EventMonitor {
         });
         // Clean up timeout reference after execution
         this.childDiscoveryTimeouts.delete(timeoutId);
-      }, 1000); // Wait 1 second to allow resource to be fully created
+      }, DEFAULT_FAST_POLL_INTERVAL); // Wait for resource to be fully created
 
       // Track timeout for cleanup
       this.childDiscoveryTimeouts.add(timeoutId);

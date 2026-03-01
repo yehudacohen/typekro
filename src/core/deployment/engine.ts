@@ -1420,7 +1420,7 @@ export class DirectDeploymentEngine {
       const retryPolicy = options.retryPolicy || {
         maxRetries: 3,
         backoffMultiplier: 2,
-        initialDelay: 1000,
+        initialDelay: DEFAULT_FAST_POLL_INTERVAL,
         maxDelay: DEFAULT_MAX_RETRY_DELAY,
       };
 

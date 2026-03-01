@@ -52,6 +52,9 @@ export const DEFAULT_POLL_INTERVAL = 2_000;
 /** Fast poll interval for time-sensitive checks like deletion confirmation (1 second) */
 export const DEFAULT_FAST_POLL_INTERVAL = 1_000;
 
+/** Maximum backoff delay for readiness polling (10 seconds) */
+export const DEFAULT_READINESS_MAX_BACKOFF = 10_000;
+
 /** Short delay after delete-before-recreate on 409 conflict (500ms) */
 export const DEFAULT_CONFLICT_RETRY_DELAY = 500;
 
