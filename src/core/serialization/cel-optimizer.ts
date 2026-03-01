@@ -213,7 +213,7 @@ export function optimizeStatusMappings(
       return {
         [CEL_EXPRESSION_BRAND]: true,
         expression: result.expression,
-        ...((value as any).__isTemplate && { __isTemplate: true }),
+        ...(value.__isTemplate && { __isTemplate: true }),
       } as CelExpression<unknown>;
     }
 

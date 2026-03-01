@@ -565,10 +565,9 @@ export class ReferenceResolver {
     expr: CelExpression<T>,
     context: ResolutionContext
   ): Promise<T> {
-    const exprRecord = expr as CelExpression<T> & Record<string, unknown>;
     this.logger.debug('Starting CEL expression evaluation', {
       expression: expr.expression,
-      isTemplate: exprRecord.__isTemplate,
+      isTemplate: expr.__isTemplate,
       hasResourceKeyMapping: !!context.resourceKeyMapping,
       resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
       resourceKeyMappingKeys: context.resourceKeyMapping
@@ -580,7 +579,7 @@ export class ReferenceResolver {
 
     // Handle template expressions specially - they contain ${...} placeholders
     // that need to be resolved individually, not as a single CEL expression
-    if (exprRecord.__isTemplate) {
+    if (expr.__isTemplate) {
       return await this.evaluateTemplateExpression(expr, context);
     }
 
