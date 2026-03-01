@@ -580,36 +580,11 @@ export class DirectDeploymentEngine {
             if (deploymentResult.success && deploymentResult.deployedResource) {
               deployedResources.push(deploymentResult.deployedResource);
 
-              // Update resourceKeyMapping with the live resource from the cluster (including status)
-              // This is critical for CEL expression evaluation which needs access to resource status
-              const deployedRes = deploymentResult.deployedResource;
-              const manifestWithId = deployedRes.manifest as KubernetesResource & WithResourceId;
-              const originalResourceId = manifestWithId.__resourceId;
-              if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
-                try {
-                  // Query the live resource from the cluster to get its current status
-                  const liveResource = await this.k8sApi.read({
-                    apiVersion: deployedRes.manifest.apiVersion || '',
-                    kind: deployedRes.kind,
-                    metadata: {
-                      name: deployedRes.name,
-                      namespace: deployedRes.namespace,
-                    },
-                  });
-                  resourceKeyMapping.set(originalResourceId, liveResource);
-                  deploymentLogger.debug('Updated resourceKeyMapping with live resource status', {
-                    originalResourceId,
-                    kind: deployedRes.kind,
-                    name: deployedRes.name,
-                    hasStatus: !!(liveResource as KubernetesObjectWithStatus).status,
-                  });
-                } catch (error) {
-                  deploymentLogger.warn('Failed to update resourceKeyMapping with live resource', {
-                    originalResourceId,
-                    error: error instanceof Error ? error.message : String(error),
-                  });
-                }
-              }
+              await this.updateResourceKeyMappingWithLiveResource(
+                deploymentResult.deployedResource,
+                resourceKeyMapping,
+                deploymentLogger
+              );
             } else {
               levelHasFailures = true;
               if (deploymentResult.error) {
@@ -1093,41 +1068,11 @@ export class DirectDeploymentEngine {
                 deployedResources.push(deploymentResult.deployedResource);
                 successfulResources++;
 
-                // Update resourceKeyMapping with the live resource from the cluster (including status)
-                // This is critical for CEL expression evaluation which needs access to resource status
-                const deployedRes = deploymentResult.deployedResource;
-                const manifestWithId = deployedRes.manifest as KubernetesResource & {
-                  __resourceId?: string;
-                };
-                const originalResourceId = manifestWithId.__resourceId;
-                if (originalResourceId && resourceKeyMapping.has(originalResourceId)) {
-                  try {
-                    // Query the live resource from the cluster to get its current status
-                    const liveResource = await this.k8sApi.read({
-                      apiVersion: deployedRes.manifest.apiVersion || '',
-                      kind: deployedRes.kind,
-                      metadata: {
-                        name: deployedRes.name,
-                        namespace: deployedRes.namespace,
-                      },
-                    });
-                    resourceKeyMapping.set(originalResourceId, liveResource);
-                    deploymentLogger.debug('Updated resourceKeyMapping with live resource status', {
-                      originalResourceId,
-                      kind: deployedRes.kind,
-                      name: deployedRes.name,
-                      hasStatus: !!(liveResource as KubernetesObjectWithStatus).status,
-                    });
-                  } catch (error) {
-                    deploymentLogger.warn(
-                      'Failed to update resourceKeyMapping with live resource',
-                      {
-                        originalResourceId,
-                        error: error instanceof Error ? error.message : String(error),
-                      }
-                    );
-                  }
-                }
+                await this.updateResourceKeyMappingWithLiveResource(
+                  deploymentResult.deployedResource,
+                  resourceKeyMapping,
+                  deploymentLogger
+                );
               } else {
                 levelHasFailures = true;
                 failedResources++;
@@ -1276,8 +1221,47 @@ export class DirectDeploymentEngine {
         ],
       };
     }
-  } /**
+  }
 
+  /**
+   * Update the resourceKeyMapping with a live resource fetched from the cluster.
+   * This is critical for CEL expression evaluation which needs access to resource status.
+   */
+  private async updateResourceKeyMappingWithLiveResource(
+    deployedRes: DeployedResource,
+    resourceKeyMapping: Map<string, unknown>,
+    logger: ReturnType<typeof getComponentLogger>
+  ): Promise<void> {
+    const manifestWithId = deployedRes.manifest as KubernetesResource & WithResourceId;
+    const originalResourceId = manifestWithId.__resourceId;
+    if (!originalResourceId || !resourceKeyMapping.has(originalResourceId)) {
+      return;
+    }
+    try {
+      const liveResource = await this.k8sApi.read({
+        apiVersion: deployedRes.manifest.apiVersion || '',
+        kind: deployedRes.kind,
+        metadata: {
+          name: deployedRes.name,
+          namespace: deployedRes.namespace,
+        },
+      });
+      resourceKeyMapping.set(originalResourceId, liveResource);
+      logger.debug('Updated resourceKeyMapping with live resource status', {
+        originalResourceId,
+        kind: deployedRes.kind,
+        name: deployedRes.name,
+        hasStatus: !!(liveResource as KubernetesObjectWithStatus).status,
+      });
+    } catch (error) {
+      logger.warn('Failed to update resourceKeyMapping with live resource', {
+        originalResourceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Deploy a single resource
    */
   private async deploySingleResource(
