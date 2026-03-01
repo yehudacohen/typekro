@@ -6,33 +6,23 @@
  * and provide Pebble-specific configuration interfaces while reusing existing readiness evaluators.
  */
 
-import { createResource } from '../../shared.js';
 import type { Enhanced } from '../../../core/types/index.js';
-import type {
-  PebbleHelmRepositoryConfig,
-  PebbleHelmReleaseConfig,
-} from '../types.js';
+import {
+  createHelmRepositoryReadinessEvaluator,
+  type HelmRepositorySpec,
+  type HelmRepositoryStatus,
+} from '../../helm/helm-repository.js';
+import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
-import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
+import { createResource } from '../../shared.js';
+import type { PebbleHelmReleaseConfig, PebbleHelmRepositoryConfig } from '../types.js';
 
 // =============================================================================
 // PEBBLE HELM REPOSITORY WRAPPER
 // =============================================================================
 
-/**
- * Readiness evaluator for Pebble HelmRepository resources
- * HelmRepository is ready when it has a Ready condition with status True
- */
-function pebbleHelmRepositoryReadinessEvaluator(resource: any) {
-  const conditions = resource.status?.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-  const isReady = readyCondition?.status === 'True';
-  
-  return {
-    ready: isReady,
-    message: isReady ? 'Pebble HelmRepository is ready' : 'Pebble HelmRepository is not ready',
-  };
-}
+/** Pebble HelmRepository readiness evaluator (delegates to shared implementation) */
+const pebbleHelmRepositoryReadinessEvaluator = createHelmRepositoryReadinessEvaluator('Pebble');
 
 /**
  * Wrapper function for creating Pebble HelmRepository resources
@@ -64,7 +54,9 @@ function pebbleHelmRepositoryReadinessEvaluator(resource: any) {
  * });
  * ```
  */
-export function pebbleHelmRepository(config: PebbleHelmRepositoryConfig): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
+export function pebbleHelmRepository(
+  config: PebbleHelmRepositoryConfig
+): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return createResource<HelmRepositorySpec, HelmRepositoryStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'source.toolkit.fluxcd.io/v1',
@@ -84,20 +76,8 @@ export function pebbleHelmRepository(config: PebbleHelmRepositoryConfig): Enhanc
 // PEBBLE HELM RELEASE WRAPPER
 // =============================================================================
 
-/**
- * Readiness evaluator for Pebble HelmRelease resources
- * HelmRelease is ready when it has a Ready condition with status True
- */
-function pebbleHelmReleaseReadinessEvaluator(resource: any) {
-  const conditions = resource.status?.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-  const isReady = readyCondition?.status === 'True';
-  
-  return {
-    ready: isReady,
-    message: isReady ? 'Pebble HelmRelease is ready' : 'Pebble HelmRelease is not ready',
-  };
-}
+/** Pebble HelmRelease readiness evaluator (delegates to shared implementation) */
+const pebbleHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('Pebble');
 
 /**
  * Wrapper function for creating Pebble HelmRelease resources
@@ -154,7 +134,9 @@ function pebbleHelmReleaseReadinessEvaluator(resource: any) {
  * });
  * ```
  */
-export function pebbleHelmRelease(config: PebbleHelmReleaseConfig): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+export function pebbleHelmRelease(
+  config: PebbleHelmReleaseConfig
+): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
