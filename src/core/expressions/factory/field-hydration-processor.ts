@@ -29,17 +29,10 @@ import {
   type CelConversionResult,
   JavaScriptToCelAnalyzer,
 } from '../analysis/analyzer.js';
-import { MagicProxyAnalyzer } from '../magic-proxy/magic-proxy-analyzer.js';
 import { parseScript } from '../analysis/parser.js';
 import { SourceMapBuilder, type SourceMapEntry } from '../analysis/source-map.js';
-
-/**
- * Status builder function type for analysis
- */
-export type StatusBuilderFunction<TSpec extends Record<string, any> = any, TStatus = any> = (
-  schema: SchemaProxy<TSpec, any>,
-  resources: Record<string, Enhanced<any, any>>
-) => TStatus;
+import { MagicProxyAnalyzer } from '../magic-proxy/magic-proxy-analyzer.js';
+import type { StatusBuilderFunction } from './status-builder-analyzer.js';
 
 /**
  * Resource reference for dependency tracking

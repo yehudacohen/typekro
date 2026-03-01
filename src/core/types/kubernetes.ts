@@ -275,7 +275,7 @@ export interface ResourceStatus {
   ready: boolean;
   reason?: string; // Machine-readable reason code
   message?: string; // Human-readable status message
-  details?: Record<string, any>; // Additional debugging information
+  details?: Record<string, unknown>; // Additional debugging information
 }
 
 /**
@@ -658,7 +658,7 @@ export interface GenericResourceStatus {
     message?: string;
   }>;
   phase?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // Spec interfaces for resources that need them
