@@ -16,11 +16,12 @@
 
 import { type Options, Parser } from 'acorn';
 import type { Node as ESTreeNode } from 'estree';
+import { TypeKroError } from '../../errors.js';
 
 /**
  * Custom error class for parser errors with enhanced information
  */
-export class ParserError extends Error {
+export class ParserError extends TypeKroError {
   /** Line number where the error occurred (1-indexed) */
   public readonly line: number;
 
@@ -40,7 +41,12 @@ export class ParserError extends Error {
     originalExpression: string,
     suggestions: string[] = []
   ) {
-    super(message);
+    super(message, 'PARSER_ERROR', {
+      line,
+      column,
+      originalExpression,
+      suggestions,
+    });
     this.name = 'ParserError';
     this.line = line;
     this.column = column;

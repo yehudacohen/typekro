@@ -1,15 +1,16 @@
 /**
  * Compile-Time Type Checking for Expression Compatibility
- * 
+ *
  * This module provides compile-time type checking capabilities for JavaScript
  * expressions that will be converted to CEL. It integrates with TypeScript's
  * type system to validate expressions before runtime conversion.
  */
 
+import { TypeKroError } from '../../errors.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
-import type { TypeInfo, } from './type-safety.js';
+import type { TypeInfo } from './type-safety.js';
 
 /**
  * Compile-time validation result
@@ -104,14 +105,18 @@ export interface TypeCompatibilityIssue {
 /**
  * Compile-time error
  */
-export class CompileTimeError extends Error {
+export class CompileTimeError extends TypeKroError {
   constructor(
     message: string,
     public readonly errorType: CompileTimeErrorType,
     public readonly expression: string,
     public readonly location?: { line: number; column: number }
   ) {
-    super(message);
+    super(message, 'COMPILE_TIME_ERROR', {
+      errorType,
+      expression,
+      location,
+    });
     this.name = 'CompileTimeError';
   }
 
@@ -166,7 +171,7 @@ export class CompileTimeWarning {
     public readonly warningType: CompileTimeWarningType,
     public readonly expression: string,
     public readonly location?: { line: number; column: number }
-  ) { }
+  ) {}
 
   static forPotentialRuntimeError(
     expression: string,
@@ -204,12 +209,7 @@ export class CompileTimeWarning {
       ? `Deprecated feature '${feature}', use '${replacement}' instead`
       : `Deprecated feature '${feature}'`;
 
-    return new CompileTimeWarning(
-      message,
-      'DEPRECATED_FEATURE',
-      expression,
-      location
-    );
+    return new CompileTimeWarning(message, 'DEPRECATED_FEATURE', expression, location);
   }
 }
 
@@ -345,7 +345,9 @@ export class CompileTimeTypeChecker {
       const validationTime = Date.now() - startTime;
 
       const result: CompileTimeValidationResult = {
-        valid: errors.length === 0 && compatibilityIssues.filter(i => i.severity === 'error').length === 0,
+        valid:
+          errors.length === 0 &&
+          compatibilityIssues.filter((i) => i.severity === 'error').length === 0,
         compileTimeType,
         runtimeType,
         compatibilityIssues,
@@ -357,8 +359,8 @@ export class CompileTimeTypeChecker {
           strictNullChecks: context.strictNullChecks || false,
           validationTime,
           typeChecksPerformed: 1,
-          complexityScore: this.calculateComplexityScore(expression)
-        }
+          complexityScore: this.calculateComplexityScore(expression),
+        },
       };
 
       // Cache the result
@@ -382,8 +384,8 @@ export class CompileTimeTypeChecker {
           strictNullChecks: context.strictNullChecks || false,
           validationTime: Date.now() - startTime,
           typeChecksPerformed: 0,
-          complexityScore: 0
-        }
+          complexityScore: 0,
+        },
       };
 
       this.validationCache.set(cacheKey, result);
@@ -398,7 +400,7 @@ export class CompileTimeTypeChecker {
     expressions: string[],
     context: CompileTimeValidationContext
   ): CompileTimeValidationResult[] {
-    return expressions.map(expr => this.validateExpressionCompatibility(expr, context));
+    return expressions.map((expr) => this.validateExpressionCompatibility(expr, context));
   }
 
   /**
@@ -430,8 +432,8 @@ export class CompileTimeTypeChecker {
         strictNullChecks: validationContext.strictNullChecks || false,
         validationTime: 0,
         typeChecksPerformed: 1,
-        complexityScore: 1
-      }
+        complexityScore: 1,
+      },
     };
   }
 
@@ -453,7 +455,7 @@ export class CompileTimeTypeChecker {
         isGeneric: false,
         optional: false,
         nullable: false,
-        undefinable: false
+        undefinable: false,
       };
     }
 
@@ -464,7 +466,7 @@ export class CompileTimeTypeChecker {
         isGeneric: false,
         optional: false,
         nullable: false,
-        undefinable: false
+        undefinable: false,
       };
     }
 
@@ -475,7 +477,7 @@ export class CompileTimeTypeChecker {
         isGeneric: false,
         optional: false,
         nullable: false,
-        undefinable: false
+        undefinable: false,
       };
     }
 
@@ -487,7 +489,7 @@ export class CompileTimeTypeChecker {
         isGeneric: false,
         optional: false,
         nullable: false,
-        undefinable: false
+        undefinable: false,
       };
     }
 
@@ -499,7 +501,7 @@ export class CompileTimeTypeChecker {
         isGeneric: false,
         optional: false,
         nullable: false,
-        undefinable: false
+        undefinable: false,
       };
     }
 
@@ -512,7 +514,7 @@ export class CompileTimeTypeChecker {
         genericParams: ['unknown'],
         optional: false,
         nullable: false,
-        undefinable: false
+        undefinable: false,
       };
     }
 
@@ -523,24 +525,21 @@ export class CompileTimeTypeChecker {
       isGeneric: false,
       optional: false,
       nullable: false,
-      undefinable: false
+      undefinable: false,
     };
   }
 
   /**
    * Infer runtime type from compile-time information
    */
-  private inferRuntimeType(
-    expression: string,
-    context: CompileTimeValidationContext
-  ): TypeInfo {
+  private inferRuntimeType(expression: string, context: CompileTimeValidationContext): TypeInfo {
     // Convert compile-time type to runtime type
     const compileTimeType = this.extractCompileTimeType(expression, context);
 
     return {
       typeName: compileTimeType.typeName,
       optional: compileTimeType.optional,
-      nullable: compileTimeType.nullable
+      nullable: compileTimeType.nullable,
     };
   }
 
@@ -555,14 +554,16 @@ export class CompileTimeTypeChecker {
     const issues: TypeCompatibilityIssue[] = [];
 
     // Check basic type compatibility
-    if (compileTimeType.typeName !== runtimeType.typeName &&
-      !this.areTypesCompatible(compileTimeType.typeName, runtimeType.typeName)) {
+    if (
+      compileTimeType.typeName !== runtimeType.typeName &&
+      !this.areTypesCompatible(compileTimeType.typeName, runtimeType.typeName)
+    ) {
       issues.push({
         type: 'TYPE_MISMATCH',
         description: `Compile-time type '${compileTimeType.typeName}' does not match runtime type '${runtimeType.typeName}'`,
         expectedType: compileTimeType,
         actualType: this.convertRuntimeToCompileTime(runtimeType),
-        severity: 'error'
+        severity: 'error',
       });
     }
 
@@ -573,7 +574,7 @@ export class CompileTimeTypeChecker {
         description: `Nullability mismatch between compile-time and runtime types`,
         expectedType: compileTimeType,
         actualType: this.convertRuntimeToCompileTime(runtimeType),
-        severity: 'warning'
+        severity: 'warning',
       });
     }
 
@@ -584,7 +585,7 @@ export class CompileTimeTypeChecker {
         description: `Optionality mismatch between compile-time and runtime types`,
         expectedType: compileTimeType,
         actualType: this.convertRuntimeToCompileTime(runtimeType),
-        severity: 'warning'
+        severity: 'warning',
       });
     }
 
@@ -598,7 +599,11 @@ export class CompileTimeTypeChecker {
     actualType: CompileTimeTypeInfo,
     expectedType: CompileTimeTypeInfo,
     _context: CompileTimeValidationContext
-  ): { issues: TypeCompatibilityIssue[]; errors: CompileTimeError[]; warnings: CompileTimeWarning[] } {
+  ): {
+    issues: TypeCompatibilityIssue[];
+    errors: CompileTimeError[];
+    warnings: CompileTimeWarning[];
+  } {
     const issues: TypeCompatibilityIssue[] = [];
     const errors: CompileTimeError[] = [];
     const warnings: CompileTimeWarning[] = [];
@@ -610,14 +615,12 @@ export class CompileTimeTypeChecker {
         expectedType,
         actualType,
         severity: 'error',
-        suggestedFix: `Convert to ${expectedType.typeName} or adjust the expected type`
+        suggestedFix: `Convert to ${expectedType.typeName} or adjust the expected type`,
       });
 
-      errors.push(CompileTimeError.forTypeIncompatibility(
-        '',
-        expectedType.typeName,
-        actualType.typeName
-      ));
+      errors.push(
+        CompileTimeError.forTypeIncompatibility('', expectedType.typeName, actualType.typeName)
+      );
     }
 
     return { issues, errors, warnings };
@@ -638,7 +641,7 @@ export class CompileTimeTypeChecker {
       { pattern: /async\s+/, feature: 'async/await' },
       { pattern: /yield\s+/, feature: 'generators' },
       { pattern: /class\s+/, feature: 'class declarations' },
-      { pattern: /function\*/, feature: 'generator functions' }
+      { pattern: /function\*/, feature: 'generator functions' },
     ];
 
     for (const { pattern, feature } of unsupportedFeatures) {
@@ -651,15 +654,17 @@ export class CompileTimeTypeChecker {
     const problematicFeatures = [
       { pattern: /eval\(/, feature: 'eval() usage' },
       { pattern: /new Function/, feature: 'Function constructor' },
-      { pattern: /with\s*\(/, feature: 'with statements' }
+      { pattern: /with\s*\(/, feature: 'with statements' },
     ];
 
     for (const { pattern, feature } of problematicFeatures) {
       if (pattern.test(expression)) {
-        warnings.push(CompileTimeWarning.forPotentialRuntimeError(
-          expression,
-          `${feature} may cause runtime issues`
-        ));
+        warnings.push(
+          CompileTimeWarning.forPotentialRuntimeError(
+            expression,
+            `${feature} may cause runtime issues`
+          )
+        );
       }
     }
 
@@ -682,28 +687,34 @@ export class CompileTimeTypeChecker {
       // For expressions like "obj.prop.nested", assume the intermediate objects could be null
       const propertyAccesses = expression.split('.').length - 1;
       if (propertyAccesses > 1) {
-        warnings.push(CompileTimeWarning.forPotentialRuntimeError(
-          expression,
-          'Property access on potentially null/undefined value'
-        ));
+        warnings.push(
+          CompileTimeWarning.forPotentialRuntimeError(
+            expression,
+            'Property access on potentially null/undefined value'
+          )
+        );
         suggestions.push('Consider using optional chaining (?.) for safer property access');
       }
-      
+
       if (compileTimeType.nullable || compileTimeType.undefinable) {
-        warnings.push(CompileTimeWarning.forPotentialRuntimeError(
-          expression,
-          'Property access on potentially null/undefined value'
-        ));
+        warnings.push(
+          CompileTimeWarning.forPotentialRuntimeError(
+            expression,
+            'Property access on potentially null/undefined value'
+          )
+        );
         suggestions.push('Consider using optional chaining (?.) for safer property access');
       }
     }
 
     // Check for performance implications
     if (expression.includes('find(') || expression.includes('filter(')) {
-      warnings.push(CompileTimeWarning.forPerformanceImpact(
-        expression,
-        'Array methods may have performance implications in CEL'
-      ));
+      warnings.push(
+        CompileTimeWarning.forPerformanceImpact(
+          expression,
+          'Array methods may have performance implications in CEL'
+        )
+      );
       suggestions.push('Consider using simpler expressions when possible');
     }
 
@@ -724,7 +735,7 @@ export class CompileTimeTypeChecker {
       genericParams: [String(ref._type || 'unknown')],
       optional: false,
       nullable: false,
-      undefinable: false
+      undefinable: false,
     };
   }
 
@@ -750,19 +761,27 @@ export class CompileTimeTypeChecker {
 
     // Validate that the resource exists
     if (!usageContext.availableResources[ref.resourceId] && ref.resourceId !== '__schema__') {
-      errors.push(CompileTimeError.forTypeIncompatibility(
-        `${ref.resourceId}.${ref.fieldPath}`,
-        'Enhanced<any, any>',
-        'undefined'
-      ));
+      errors.push(
+        CompileTimeError.forTypeIncompatibility(
+          `${ref.resourceId}.${ref.fieldPath}`,
+          'Enhanced<any, any>',
+          'undefined'
+        )
+      );
     }
 
     // Validate field path
-    if (ref.fieldPath.includes('..') || ref.fieldPath.startsWith('.') || ref.fieldPath.endsWith('.')) {
-      errors.push(CompileTimeError.forUnsupportedSyntax(
-        `${ref.resourceId}.${ref.fieldPath}`,
-        'invalid field path syntax'
-      ));
+    if (
+      ref.fieldPath.includes('..') ||
+      ref.fieldPath.startsWith('.') ||
+      ref.fieldPath.endsWith('.')
+    ) {
+      errors.push(
+        CompileTimeError.forUnsupportedSyntax(
+          `${ref.resourceId}.${ref.fieldPath}`,
+          'invalid field path syntax'
+        )
+      );
     }
 
     return {
@@ -771,7 +790,7 @@ export class CompileTimeTypeChecker {
       issues,
       errors,
       warnings,
-      suggestions
+      suggestions,
     };
   }
 
@@ -785,11 +804,11 @@ export class CompileTimeTypeChecker {
 
     // Handle basic type compatibility
     const compatibilityMap: Record<string, string[]> = {
-      'string': ['string', 'String'],
-      'number': ['number', 'Number'],
-      'boolean': ['boolean', 'Boolean'],
-      'null': ['null', 'undefined'],
-      'undefined': ['undefined', 'null']
+      string: ['string', 'String'],
+      number: ['number', 'Number'],
+      boolean: ['boolean', 'Boolean'],
+      null: ['null', 'undefined'],
+      undefined: ['undefined', 'null'],
     };
 
     return compatibilityMap[type1]?.includes(type2) || false;
@@ -802,7 +821,7 @@ export class CompileTimeTypeChecker {
       isGeneric: false,
       optional: runtimeType.optional,
       nullable: runtimeType.nullable,
-      undefinable: runtimeType.optional
+      undefinable: runtimeType.optional,
     };
   }
 
@@ -823,7 +842,9 @@ export class CompileTimeTypeChecker {
     // Generate suggestions based on errors
     for (const error of errors) {
       if (error.errorType === 'TYPE_INCOMPATIBILITY') {
-        suggestions.push('Consider adding type assertions or converting the value to the expected type');
+        suggestions.push(
+          'Consider adding type assertions or converting the value to the expected type'
+        );
       }
     }
 
@@ -846,21 +867,24 @@ export class CompileTimeTypeChecker {
     return `${expression}:${JSON.stringify({
       strictMode: context.strictMode,
       strictNullChecks: context.strictNullChecks,
-      expectedType: context.expectedType?.typeName
+      expectedType: context.expectedType?.typeName,
     })}`;
   }
 
   private isBooleanExpression(expression: string): boolean {
     // Boolean operators
     const booleanOperators = ['&&', '||', '!', '==', '!=', '===', '!==', '>', '<', '>=', '<='];
-    return booleanOperators.some(op => expression.includes(op));
+    return booleanOperators.some((op) => expression.includes(op));
   }
 
   private isNumericExpression(expression: string): boolean {
     // Numeric operators
     const numericOperators = ['+', '-', '*', '/', '%'];
-    return numericOperators.some(op => expression.includes(op)) &&
-      !expression.includes('"') && !expression.includes("'");
+    return (
+      numericOperators.some((op) => expression.includes(op)) &&
+      !expression.includes('"') &&
+      !expression.includes("'")
+    );
   }
 
   /**

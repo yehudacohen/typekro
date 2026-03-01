@@ -1080,17 +1080,25 @@ export class ReferenceResolver {
 }
 
 // Error classes
-export class ReferenceResolutionError extends Error {
+export class ReferenceResolutionError extends TypeKroError {
   constructor(ref: KubernetesRef, cause: Error) {
-    super(`Failed to resolve reference ${ref.resourceId}.${ref.fieldPath}: ${cause.message}`);
+    super(
+      `Failed to resolve reference ${ref.resourceId}.${ref.fieldPath}: ${cause.message}`,
+      'REFERENCE_RESOLUTION_ERROR',
+      { resourceId: ref.resourceId, fieldPath: ref.fieldPath, cause: cause.message }
+    );
     this.name = 'ReferenceResolutionError';
     this.cause = cause;
   }
 }
 
-export class CelExpressionError extends Error {
+export class CelExpressionError extends TypeKroError {
   constructor(expr: CelExpression, cause: Error) {
-    super(`Failed to evaluate CEL expression '${expr.expression}': ${cause.message}`);
+    super(
+      `Failed to evaluate CEL expression '${expr.expression}': ${cause.message}`,
+      'CEL_EXPRESSION_ERROR',
+      { expression: expr.expression, cause: cause.message }
+    );
     this.name = 'CelExpressionError';
     this.cause = cause;
   }

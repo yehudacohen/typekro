@@ -6,6 +6,7 @@
  * to determine their result types and validates type compatibility.
  */
 
+import { TypeKroError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -38,13 +39,16 @@ export interface CelTypeInferenceResult {
 /**
  * Type inference error
  */
-export class TypeInferenceError extends Error {
+export class TypeInferenceError extends TypeKroError {
   constructor(
     message: string,
     public readonly celExpression: string,
     public readonly location?: { start: number; end: number }
   ) {
-    super(message);
+    super(message, 'TYPE_INFERENCE_ERROR', {
+      celExpression,
+      location,
+    });
     this.name = 'TypeInferenceError';
   }
 
