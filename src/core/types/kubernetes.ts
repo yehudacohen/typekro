@@ -43,6 +43,7 @@ import type {
   V1VolumeAttachment,
   V2HorizontalPodAutoscaler,
 } from '@kubernetes/client-node';
+import type { CelExpression, KubernetesRef } from './common.js';
 import type { MagicProxy } from './references.js';
 
 export interface KubernetesResource<TSpec = unknown, TStatus = unknown> {
@@ -133,6 +134,61 @@ type NonOptional<T> = {
     : NonNullable<T[K]>;
 };
 
+// =============================================================================
+// CONDITIONAL EXPRESSION CONDITION TYPES
+// =============================================================================
+
+/**
+ * Condition type accepted by {@link Enhanced.withIncludeWhen}.
+ *
+ * - `KubernetesRef<boolean>` — magic proxy access like `spec.ingress.enabled`
+ * - `CelExpression<boolean>` — explicit CEL via `Cel.expr<boolean>(...)`
+ * - `string` — raw CEL expression string
+ * - `boolean` — static include/exclude
+ */
+export type IncludeWhenCondition =
+  | KubernetesRef<boolean>
+  | KubernetesRef<string>
+  | CelExpression<boolean>
+  | string
+  | boolean;
+
+/**
+ * Callback form for {@link Enhanced.withReadyWhen}: receives a `self` (or `each`
+ * for collections) object and returns a boolean expression. The function body is
+ * parsed via `toString()` and transpiled to CEL at serialization time.
+ *
+ * @example
+ * ```typescript
+ * deployment.withReadyWhen((self: { status: { readyReplicas: number } }) =>
+ *   self.status.readyReplicas > 0
+ * );
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- self shape is user-defined per resource
+export type ReadyWhenCallback = (self: any) => boolean;
+
+/**
+ * Condition type accepted by {@link Enhanced.withReadyWhen}.
+ *
+ * - `ReadyWhenCallback` — arrow function parsed to CEL (dominant pattern)
+ * - `CelExpression<boolean>` — explicit CEL via `Cel.expr<boolean>(...)`
+ * - `KubernetesRef<boolean>` — magic proxy boolean reference
+ * - `string` — raw CEL expression string
+ * - `boolean` — static ready/not-ready
+ */
+export type ReadyWhenCondition =
+  | ReadyWhenCallback
+  | CelExpression<boolean>
+  | KubernetesRef<boolean>
+  | KubernetesRef<string>
+  | string
+  | boolean;
+
+// =============================================================================
+// ENHANCED RESOURCE TYPE
+// =============================================================================
+
 /**
  * The final, user-facing type. All key properties are now magic proxies,
  * providing a consistent and powerful developer experience.
@@ -175,10 +231,10 @@ export type Enhanced<TSpec, TStatus> = Omit<
   withReadinessEvaluator(evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus>;
 
   // Kro v0.8.x conditional expression support (added at runtime by ConditionalExpressionIntegrator)
-  /** Set includeWhen condition — CEL expression or callback for conditional resource creation */
-  withIncludeWhen(condition: unknown): Enhanced<TSpec, TStatus>;
-  /** Set readyWhen condition — callback receiving self/each reference, or CEL expression */
-  withReadyWhen(condition: unknown): Enhanced<TSpec, TStatus>;
+  /** Set includeWhen condition — CEL expression, magic proxy boolean ref, or static boolean */
+  withIncludeWhen(condition: IncludeWhenCondition): Enhanced<TSpec, TStatus>;
+  /** Set readyWhen condition — callback `(self) => bool`, CEL expression, ref, or static boolean */
+  withReadyWhen(condition: ReadyWhenCondition): Enhanced<TSpec, TStatus>;
 };
 
 // =============================================================================
