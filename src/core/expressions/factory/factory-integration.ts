@@ -1,51 +1,44 @@
 /**
  * Factory Integration for Expression Analysis
- * 
+ *
  * This module provides integration between factory functions and the expression
  * analysis system, enabling automatic detection and conversion of KubernetesRef
  * objects in factory configurations.
  */
 
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { KubernetesRef, MagicAssignable } from '../../types/index.js';
-import { isKubernetesRef, isCelExpression } from '../../../utils/type-guards.js';
-import { ResourceAnalyzer } from './resource-analyzer.js';
-import { ExpressionContextDetector } from '../context/context-detector.js';
-import { ContextAwareCelGenerator } from '../context/context-aware-generator.js';
-import { 
-  MagicProxyDetector, 
-  type MagicProxyDetectionResult,
-  type MagicProxyDetectionConfig 
-} from '../magic-proxy/magic-proxy-detector.js';
-import { 
-  CelConversionEngine,
-  type CelConversionConfig,
-} from './cel-conversion-engine.js';
-import type { 
+import type {
   ExpressionAnalysisResult,
   FactoryAnalysisResult,
-  FactoryExpressionContext
-} from '../analysis/types.js';
-
-export type { 
-  ExpressionAnalysisResult,
   FactoryExpressionContext,
-  FactoryAnalysisResult
-};
+} from '../analysis/types.js';
+import { ContextAwareCelGenerator } from '../context/context-aware-generator.js';
+import { ExpressionContextDetector } from '../context/context-detector.js';
+import {
+  type MagicProxyDetectionConfig,
+  type MagicProxyDetectionResult,
+  MagicProxyDetector,
+} from '../magic-proxy/magic-proxy-detector.js';
+import { type CelConversionConfig, CelConversionEngine } from './cel-conversion-engine.js';
+import { ResourceAnalyzer } from './resource-analyzer.js';
+
+export type { ExpressionAnalysisResult, FactoryExpressionContext, FactoryAnalysisResult };
 
 export interface FactoryAnalysisConfig {
   /** Whether to enable expression analysis for this factory */
   enableAnalysis?: boolean;
-  
+
   /** Factory type for analysis context */
   factoryType?: 'direct' | 'kro';
-  
+
   /** Whether to include detailed debug information */
   includeDebugInfo?: boolean;
-  
+
   /** Maximum depth for recursive analysis */
   maxDepth?: number;
-  
+
   /** Whether to validate expression types */
   validateTypes?: boolean;
 }
@@ -88,7 +81,7 @@ export interface FactoryConfigAnalysisResult {
 
 /**
  * Factory Expression Analyzer
- * 
+ *
  * Analyzes factory configurations for KubernetesRef objects and provides
  * context-aware expression handling recommendations.
  */
@@ -109,7 +102,7 @@ export class FactoryExpressionAnalyzer {
 
   /**
    * Analyze a factory configuration for KubernetesRef objects
-   * 
+   *
    * @param config - Factory configuration object
    * @param context - Analysis context
    * @param options - Analysis options
@@ -121,10 +114,10 @@ export class FactoryExpressionAnalyzer {
     options: FactoryAnalysisConfig = {}
   ): FactoryConfigAnalysisResult {
     const startTime = performance.now();
-    
-    logger.debug('Analyzing factory configuration', { 
+
+    logger.debug('Analyzing factory configuration', {
       factoryType: context.factoryType,
-      configKeys: Object.keys(config)
+      configKeys: Object.keys(config),
     });
 
     const result: FactoryConfigAnalysisResult = {
@@ -134,8 +127,8 @@ export class FactoryExpressionAnalyzer {
       metrics: {
         analysisTimeMs: 0,
         fieldsAnalyzed: 0,
-        referencesFound: 0
-      }
+        referencesFound: 0,
+      },
     };
 
     // Skip analysis if disabled
@@ -149,7 +142,7 @@ export class FactoryExpressionAnalyzer {
       maxDepth: options.maxDepth || 10,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
-      trackMetrics: true
+      trackMetrics: true,
     };
 
     const magicProxyResult = this.magicProxyDetector.detectKubernetesRefs(config, detectionConfig);
@@ -158,18 +151,24 @@ export class FactoryExpressionAnalyzer {
     result.metrics.referencesFound = magicProxyResult.stats.totalReferences;
 
     // Analyze each field in the configuration using enhanced detection
-    this.analyzeConfigFieldsWithMagicProxy(config, context, result, magicProxyResult, options.maxDepth || 10);
+    this.analyzeConfigFieldsWithMagicProxy(
+      config,
+      context,
+      result,
+      magicProxyResult,
+      options.maxDepth || 10
+    );
 
     // Generate optimizations based on analysis
     this.generateOptimizations(result, context);
 
     result.metrics.analysisTimeMs = performance.now() - startTime;
-    
+
     logger.debug('Factory configuration analysis complete', {
       hasKubernetesRefs: result.hasKubernetesRefs,
       fieldsAnalyzed: result.metrics.fieldsAnalyzed,
       referencesFound: result.metrics.referencesFound,
-      analysisTimeMs: result.metrics.analysisTimeMs
+      analysisTimeMs: result.metrics.analysisTimeMs,
     });
 
     return result;
@@ -177,7 +176,7 @@ export class FactoryExpressionAnalyzer {
 
   /**
    * Process a factory configuration value, handling KubernetesRef objects appropriately
-   * 
+   *
    * @param value - Configuration value to process
    * @param context - Factory context
    * @param fieldPath - Path to the field being processed
@@ -194,7 +193,7 @@ export class FactoryExpressionAnalyzer {
       fieldPath,
       factoryType: context.factoryType,
       valueType: typeof value,
-      enableCelConversion: options.enableCelConversion
+      enableCelConversion: options.enableCelConversion,
     });
 
     // Check if the value needs CEL conversion
@@ -203,16 +202,20 @@ export class FactoryExpressionAnalyzer {
         factoryType: context.factoryType,
         enableOptimization: true,
         preserveStatic: true,
-        includeDebugInfo: false
+        includeDebugInfo: false,
       };
 
-      const conversionResult = this.celConversionEngine.convertValue(value, context, conversionConfig);
-      
+      const conversionResult = this.celConversionEngine.convertValue(
+        value,
+        context,
+        conversionConfig
+      );
+
       if (conversionResult.wasConverted) {
         logger.debug('CEL conversion applied', {
           fieldPath,
           strategy: conversionResult.strategy,
-          referencesConverted: conversionResult.metrics.referencesConverted
+          referencesConverted: conversionResult.metrics.referencesConverted,
         });
         return conversionResult.converted as T;
       }
@@ -224,7 +227,7 @@ export class FactoryExpressionAnalyzer {
         fieldPath,
         factoryType: context.factoryType,
         resourceId: (value as KubernetesRef<T>).resourceId,
-        refFieldPath: (value as KubernetesRef<T>).fieldPath
+        refFieldPath: (value as KubernetesRef<T>).fieldPath,
       });
 
       // For direct factories, preserve the reference for runtime resolution
@@ -237,7 +240,7 @@ export class FactoryExpressionAnalyzer {
       logger.debug('Processing CelExpression in factory configuration', {
         fieldPath,
         factoryType: context.factoryType,
-        expression: (value as any).expression
+        expression: value.expression,
       });
 
       // Preserve CelExpression objects as-is - the serialization system will convert them to ${expression} format
@@ -246,7 +249,7 @@ export class FactoryExpressionAnalyzer {
 
     // Handle arrays and objects recursively
     if (Array.isArray(value)) {
-      return value.map((item, index) => 
+      return value.map((item, index) =>
         this.processFactoryValue(item, context, `${fieldPath}[${index}]`, options)
       ) as T;
     }
@@ -265,7 +268,7 @@ export class FactoryExpressionAnalyzer {
 
   /**
    * Create an enhanced factory function that includes expression analysis
-   * 
+   *
    * @param originalFactory - Original factory function
    * @param factoryName - Name of the factory for logging
    * @returns Enhanced factory function
@@ -278,23 +281,19 @@ export class FactoryExpressionAnalyzer {
       const context: FactoryExpressionContext = {
         factoryType: options.factoryType || 'kro',
         factoryName,
-        analysisEnabled: options.enableAnalysis !== false
+        analysisEnabled: options.enableAnalysis !== false,
       };
 
       // Analyze the configuration if analysis is enabled
       if (context.analysisEnabled) {
-        const analysis = this.analyzeFactoryConfig(
-          config as Record<string, any>,
-          context,
-          options
-        );
+        const analysis = this.analyzeFactoryConfig(config as Record<string, any>, context, options);
 
         // Log analysis results for debugging
         if (analysis.hasKubernetesRefs) {
           logger.debug('Factory configuration contains KubernetesRef objects', {
             factoryName,
             referencesFound: analysis.metrics.referencesFound,
-            optimizations: analysis.optimizations
+            optimizations: analysis.optimizations,
           });
         }
       }
@@ -331,10 +330,10 @@ export class FactoryExpressionAnalyzer {
           availableReferences: {},
           resourceContext: {
             resourceId: (value as KubernetesRef<any>).resourceId,
-            fieldPath: (value as KubernetesRef<any>).fieldPath
+            fieldPath: (value as KubernetesRef<any>).fieldPath,
           },
           resourceId: 'factory-config',
-          resourceConfig: { [key]: value }
+          resourceConfig: { [key]: value },
         };
 
         const analysis = this.resourceAnalyzer.analyzeResourceConfig(
@@ -348,7 +347,7 @@ export class FactoryExpressionAnalyzer {
           staticFields: [],
           kubernetesRefFields: [fieldPath],
           celExpressionFields: [],
-          analysisDetails: analysis
+          analysisDetails: analysis,
         };
       } else if (Array.isArray(value)) {
         // Recursively analyze array elements
@@ -366,14 +365,7 @@ export class FactoryExpressionAnalyzer {
         });
       } else if (value && typeof value === 'object' && value.constructor === Object) {
         // Recursively analyze nested objects
-        this.analyzeConfigFields(
-          value,
-          context,
-          result,
-          maxDepth,
-          fieldPath,
-          currentDepth + 1
-        );
+        this.analyzeConfigFields(value, context, result, maxDepth, fieldPath, currentDepth + 1);
       }
     }
   }
@@ -388,7 +380,7 @@ export class FactoryExpressionAnalyzer {
     // Use the magic proxy detection results to create field analysis
     for (const refInfo of magicProxyResult.references) {
       const fieldPath = refInfo.path;
-      
+
       if (!result.fieldAnalysis[fieldPath]) {
         result.fieldAnalysis[fieldPath] = {
           hasKubernetesRefs: true,
@@ -400,8 +392,8 @@ export class FactoryExpressionAnalyzer {
             resourceId: refInfo.resourceId,
             fieldPath: refInfo.fieldPath,
             isNested: refInfo.isNested,
-            nestingDepth: refInfo.nestingDepth
-          }
+            nestingDepth: refInfo.nestingDepth,
+          },
         };
       }
     }
@@ -415,43 +407,61 @@ export class FactoryExpressionAnalyzer {
     context: FactoryExpressionContext
   ): void {
     if (!result.hasKubernetesRefs) {
-      result.optimizations.push('Configuration contains only static values - no expression analysis needed');
+      result.optimizations.push(
+        'Configuration contains only static values - no expression analysis needed'
+      );
       return;
     }
 
     if (context.factoryType === 'direct') {
-      result.optimizations.push('Direct factory detected - KubernetesRef objects will be resolved at runtime');
+      result.optimizations.push(
+        'Direct factory detected - KubernetesRef objects will be resolved at runtime'
+      );
     } else {
-      result.optimizations.push('Kro factory detected - KubernetesRef objects will be converted to CEL expressions');
+      result.optimizations.push(
+        'Kro factory detected - KubernetesRef objects will be converted to CEL expressions'
+      );
     }
 
     // Enhanced optimizations based on magic proxy detection
     if (result.magicProxyDetection) {
       const detection = result.magicProxyDetection;
-      
+
       if (detection.stats.schemaReferences > 0) {
-        result.optimizations.push(`Found ${detection.stats.schemaReferences} schema references - these will be resolved during serialization`);
+        result.optimizations.push(
+          `Found ${detection.stats.schemaReferences} schema references - these will be resolved during serialization`
+        );
       }
-      
+
       if (detection.stats.resourceReferences > 0) {
-        result.optimizations.push(`Found ${detection.stats.resourceReferences} resource references - these create dependencies`);
+        result.optimizations.push(
+          `Found ${detection.stats.resourceReferences} resource references - these create dependencies`
+        );
       }
-      
+
       if (detection.stats.nestedReferences > 0) {
-        result.optimizations.push(`Found ${detection.stats.nestedReferences} nested references - consider flattening for better performance`);
+        result.optimizations.push(
+          `Found ${detection.stats.nestedReferences} nested references - consider flattening for better performance`
+        );
       }
-      
+
       if (detection.stats.maxNestingDepth > 5) {
-        result.optimizations.push(`Deep nesting detected (depth: ${detection.stats.maxNestingDepth}) - consider restructuring for better maintainability`);
+        result.optimizations.push(
+          `Deep nesting detected (depth: ${detection.stats.maxNestingDepth}) - consider restructuring for better maintainability`
+        );
       }
     }
 
     if (result.metrics.referencesFound > 10) {
-      result.optimizations.push('High number of references detected - consider caching analysis results');
+      result.optimizations.push(
+        'High number of references detected - consider caching analysis results'
+      );
     }
 
     if (result.metrics.analysisTimeMs > 100) {
-      result.optimizations.push('Analysis took significant time - consider enabling lazy analysis for complex configurations');
+      result.optimizations.push(
+        'Analysis took significant time - consider enabling lazy analysis for complex configurations'
+      );
     }
   }
 }
@@ -463,7 +473,7 @@ export const factoryExpressionAnalyzer = new FactoryExpressionAnalyzer();
 
 /**
  * Utility function to enhance a factory function with expression analysis
- * 
+ *
  * @param factory - Original factory function
  * @param name - Factory name for logging
  * @returns Enhanced factory function
@@ -477,7 +487,7 @@ export function withExpressionAnalysis<TConfig, TResource>(
 
 /**
  * Utility function to analyze a factory configuration
- * 
+ *
  * @param config - Factory configuration
  * @param context - Analysis context
  * @param options - Analysis options
@@ -493,7 +503,7 @@ export function analyzeFactoryConfig<T extends Record<string, any>>(
 
 /**
  * Utility function to process a factory value with KubernetesRef handling
- * 
+ *
  * @param value - Value to process
  * @param context - Factory context
  * @param fieldPath - Field path for logging
