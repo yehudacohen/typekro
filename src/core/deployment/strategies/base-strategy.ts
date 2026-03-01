@@ -5,6 +5,7 @@
  * with common template method pattern implementation.
  */
 
+import { escapeRegExp } from '../../../utils/helpers.js';
 import { DEFAULT_HYDRATION_TIMEOUT_CAP, DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { StatusHydrationError } from '../../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../../kubernetes/bun-api-client.js';
@@ -436,7 +437,9 @@ export abstract class BaseDeploymentStrategy<
         for (const deployedResource of deployedResources) {
           // Extract the original resource key from __resourceId or the deployment ID pattern
           const manifestResourceId = (deployedResource.manifest as WithResourceId).__resourceId;
-          const resourceIdPattern = new RegExp(`^${camelCaseInstanceName}Resource\\d+(.+)$`);
+          const resourceIdPattern = new RegExp(
+            `^${escapeRegExp(camelCaseInstanceName)}Resource\\d+(.+)$`
+          );
           const match = deployedResource.id.match(resourceIdPattern);
 
           let originalKey: string | undefined;
