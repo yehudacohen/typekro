@@ -290,14 +290,6 @@ export interface ResourceStatus {
  */
 export type ReadinessEvaluator<T = unknown> = (liveResource: T) => ResourceStatus;
 
-/**
- * Fluent builder interface for Enhanced resources with readiness evaluation
- */
-export interface EnhancedBuilder<TSpec, TStatus> extends Enhanced<TSpec, TStatus> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
-  withReadinessEvaluator(evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus>;
-}
-
 // =============================================================================
 // KRO-SPECIFIC TYPES
 
