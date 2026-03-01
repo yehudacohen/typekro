@@ -32,6 +32,8 @@ export interface CelExpression<T = unknown> {
   [CEL_EXPRESSION_BRAND]: true;
   expression: string;
   _type?: T;
+  /** When true, the expression is a mixed template containing `${...}` placeholders. */
+  __isTemplate?: boolean;
 }
 
 /**

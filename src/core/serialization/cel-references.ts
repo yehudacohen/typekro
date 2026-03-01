@@ -180,7 +180,7 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   }
 
   if (isCelExpression(obj)) {
-    if ((obj as unknown as Record<string, unknown>).__isTemplate) {
+    if (obj.__isTemplate) {
       const templateExpr = obj.expression;
       const celExpression = convertTemplateToCelConcat(templateExpr);
       return `\${${celExpression}}`;
@@ -243,12 +243,11 @@ export function serializeStatusMappingsToCel(
     }
 
     if (isCelExpression(value)) {
-      if ((value as unknown as Record<string, unknown>).__isTemplate) {
-        const templateExpr = (value as { expression: string }).expression;
-        const celExpression = convertTemplateToCelConcat(templateExpr);
+      if (value.__isTemplate) {
+        const celExpression = convertTemplateToCelConcat(value.expression);
         return `\${${celExpression}}`;
       }
-      return `\${${(value as { expression: string }).expression}}`;
+      return `\${${value.expression}}`;
     }
 
     if (value && typeof value === 'object' && !Array.isArray(value)) {
