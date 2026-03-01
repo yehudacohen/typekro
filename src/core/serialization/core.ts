@@ -29,9 +29,9 @@ import { createExternalRefWithoutRegistration, createSchemaProxy } from '../refe
 import { getResourceId } from '../resources/id.js';
 import type {
   DeploymentClosure,
+  DeploymentResourceGraph,
   FactoryForMode,
   FactoryOptions,
-  ResourceGraph,
   ResourceGraphResource,
   TypedResourceGraph,
 } from '../types/deployment.js';
@@ -481,7 +481,7 @@ function isLikelyStaticObject(obj: any): boolean {
 function _createResourceGraph(
   name: string,
   resources: Record<string, KubernetesResource>
-): ResourceGraph {
+): DeploymentResourceGraph {
   const dependencyResolver = new DependencyResolver();
 
   // Deduplicate resources by reference (same resource may have multiple keys)

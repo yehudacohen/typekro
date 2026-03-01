@@ -11,7 +11,7 @@ import { ResourceDeploymentError } from '../core/deployment/errors.js';
 import { getComponentLogger } from '../core/logging/index.js';
 import { ensureReadinessEvaluator } from '../core/readiness/evaluator.js';
 import { generateDeterministicResourceId, getResourceId } from '../core/resources/id.js';
-import type { DeploymentOptions, ResourceGraph } from '../core/types/deployment.js';
+import type { DeploymentOptions, DeploymentResourceGraph } from '../core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.js';
 import type { TypeKroDeployer } from './types.js';
 
@@ -27,7 +27,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
    * Create a ResourceGraph for a single resource
    * This helper function reduces duplication between deploy and delete operations
    */
-  private createResourceGraph<T extends Enhanced<any, any>>(resource: T): ResourceGraph {
+  private createResourceGraph<T extends Enhanced<any, any>>(resource: T): DeploymentResourceGraph {
     const resourceWithId = {
       ...resource,
       id: getResourceId(resource, 'unnamed'),
@@ -151,7 +151,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
 
   async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
     // Convert single resource to ResourceGraph for DirectDeploymentEngine
-    const resourceGraph: ResourceGraph = {
+    const resourceGraph: DeploymentResourceGraph = {
       name: resource.metadata?.name || 'unnamed-resource',
       resources: [
         {

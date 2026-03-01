@@ -34,10 +34,10 @@ import type {
   DeploymentEvent,
   DeploymentOperationStatus,
   DeploymentOptions,
+  DeploymentResourceGraph,
   DeploymentResult,
   DeploymentStateRecord,
   ResolutionContext,
-  ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
 import type { Scope } from '../types/serialization.js';
@@ -323,7 +323,10 @@ export class DirectDeploymentEngine {
   /**
    * Deploy a resource graph to the Kubernetes cluster
    */
-  async deploy(graph: ResourceGraph, options: DeploymentOptions): Promise<DeploymentResult> {
+  async deploy(
+    graph: DeploymentResourceGraph,
+    options: DeploymentOptions
+  ): Promise<DeploymentResult> {
     const deploymentId = this.generateDeploymentId();
     const startTime = Date.now();
     const deployedResources: DeployedResource[] = [];
@@ -792,7 +795,7 @@ export class DirectDeploymentEngine {
    * Deploy a resource graph with deployment closures integrated into level-based execution
    */
   async deployWithClosures<TSpec>(
-    graph: ResourceGraph,
+    graph: DeploymentResourceGraph,
     closures: Record<string, DeploymentClosure>,
     options: DeploymentOptions,
     spec: TSpec,

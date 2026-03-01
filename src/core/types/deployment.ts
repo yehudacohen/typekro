@@ -378,7 +378,13 @@ export interface ResourceGraphResource {
   manifest: DeployableK8sResource<Enhanced<unknown, unknown>>;
 }
 
-export interface ResourceGraph {
+/**
+ * Internal deployment-specific resource graph used by the deployment engine.
+ *
+ * Not to be confused with `ResourceGraph<TSpec, TStatus>` in `resource-graph.ts`,
+ * which is the generic, user-facing interface returned by `toResourceGraph()`.
+ */
+export interface DeploymentResourceGraph {
   name: string;
   resources: ResourceGraphResource[];
   dependencyGraph: DependencyGraph;

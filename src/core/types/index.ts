@@ -26,9 +26,9 @@ export * from './kubernetes.js';
 // =============================================================================
 export * from './references.js';
 // =============================================================================
-// Resource Graph Types (selective export to avoid conflicts)
+// Resource Graph Types
 // =============================================================================
-export type { ResourceGraph } from './resource-graph.js';
+export * from './resource-graph.js';
 // =============================================================================
 // Schema Types (extracted to break deployment↔serialization cycle)
 // =============================================================================

@@ -79,7 +79,7 @@ export { CompositionDebugger } from './core/composition-debugger.js';
 // 3. DEPLOYMENT — Engines, readiness, and deployers
 // =============================================================================
 
-export type { DeploymentOptions, ResourceGraph } from './core/deployment/index.js';
+export type { DeploymentOptions, DeploymentResourceGraph } from './core/deployment/index.js';
 export {
   DirectDeploymentEngine,
   ResourceDeploymentError,

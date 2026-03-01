@@ -21,11 +21,11 @@ import { getComponentLogger } from '../logging/index.js';
 import type {
   DeploymentClosure,
   DeploymentError,
+  DeploymentResourceGraph,
   DeploymentResult,
   DirectResourceFactory,
   FactoryOptions,
   FactoryStatus,
-  ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
 import type {
@@ -735,7 +735,7 @@ metadata:
   /**
    * Create a resource graph for a specific instance
    */
-  public createResourceGraphForInstance(spec: TSpec): ResourceGraph {
+  public createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph {
     const dependencyResolver = new DependencyResolver();
     const resolvedResources = this.resolveResourcesForSpec(spec);
 
