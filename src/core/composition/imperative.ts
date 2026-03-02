@@ -74,7 +74,7 @@ function executeNestedComposition<
   TStatus extends KroCompatibleType,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
-  compositionFn: (spec: TSpec) => TStatus | MagicAssignableShape<TStatus>,
+  compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   options: SerializationOptions | undefined,
   parentContext: CompositionContext,
   compositionName: string
@@ -185,7 +185,7 @@ function executeNestedCompositionWithSpec<
   TStatus extends KroCompatibleType,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
-  compositionFn: (spec: TSpec) => TStatus | MagicAssignableShape<TStatus>,
+  compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   options: SerializationOptions | undefined,
   parentContext: CompositionContext,
   spec: TSpec,
@@ -424,7 +424,7 @@ function _createHybridSpec<TSpec extends KroCompatibleType>(
  */
 function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
-  compositionFn: (spec: TSpec) => TStatus | MagicAssignableShape<TStatus>,
+  compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   options: SerializationOptions | undefined,
   context: CompositionContext,
   compositionName: string,
@@ -433,7 +433,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
   const startTime = Date.now();
 
   // Declare capturedStatus here so it's accessible to both resource and status builders
-  let capturedStatus: TStatus | MagicAssignableShape<TStatus> | undefined;
+  let capturedStatus: MagicAssignableShape<TStatus> | undefined;
 
   try {
     CompositionDebugger.logCompositionStart(compositionName);
@@ -473,9 +473,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           // Enhanced resource proxies return KubernetesRef objects, enabling
           // JavaScript-to-CEL conversion during serialization.
           const specToUse = actualSpec || (schema.spec as TSpec);
-          capturedStatus = runInStatusBuilderContext(
-            () => compositionFn(specToUse) as MagicAssignableShape<TStatus>
-          );
+          capturedStatus = runInStatusBuilderContext(() => compositionFn(specToUse));
 
           // Store the original composition function for later analysis
           // This allows the serialization system to analyze the original JavaScript expressions
@@ -692,7 +690,7 @@ export function kubernetesComposition<
   TStatus extends KroCompatibleType,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
-  compositionFn: (spec: TSpec) => TStatus | MagicAssignableShape<TStatus>,
+  compositionFn: (spec: TSpec) => MagicAssignableShape<TStatus>,
   options?: SerializationOptions
 ): CallableComposition<TSpec, TStatus> {
   const compositionName = definition.name || 'unnamed-composition';

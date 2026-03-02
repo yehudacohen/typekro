@@ -429,12 +429,12 @@ export class CompositionExpressionAnalyzer {
    * Process a composition's status shape for CEL conversion
    */
   processCompositionStatus<TStatus extends KroCompatibleType>(
-    statusShape: TStatus | MagicAssignableShape<TStatus>,
+    statusShape: MagicAssignableShape<TStatus>,
     factoryType: 'direct' | 'kro' = 'kro'
   ): MagicAssignableShape<TStatus> {
     if (factoryType === 'direct') {
       // For direct factory, leave expressions as-is for runtime evaluation
-      return statusShape as MagicAssignableShape<TStatus>;
+      return statusShape;
     }
 
     // Create analysis context
@@ -445,17 +445,15 @@ export class CompositionExpressionAnalyzer {
     };
 
     // For Kro factory, convert KubernetesRef-containing expressions to CEL
-    return this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
-      statusShape as MagicAssignableShape<TStatus>,
-      analysisContext
-    ).processedShape as MagicAssignableShape<TStatus>;
+    return this.magicAssignableAnalyzer.analyzeMagicAssignableShape(statusShape, analysisContext)
+      .processedShape as MagicAssignableShape<TStatus>;
   }
 
   /**
    * Enhanced status building with comprehensive KubernetesRef handling
    */
   buildCompositionStatus<TStatus extends KroCompatibleType>(
-    statusShape: TStatus | MagicAssignableShape<TStatus>,
+    statusShape: MagicAssignableShape<TStatus>,
     context: CompositionContext,
     factoryType: 'direct' | 'kro' = 'kro'
   ): {
@@ -479,7 +477,7 @@ export class CompositionExpressionAnalyzer {
 
     // Analyze the status shape for KubernetesRef objects
     const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
-      statusShape as MagicAssignableShape<TStatus>,
+      statusShape,
       analysisContext
     );
 
@@ -507,7 +505,7 @@ export class CompositionExpressionAnalyzer {
 
     if (factoryType === 'direct') {
       // For direct factory, leave expressions as-is for runtime evaluation
-      processedStatus = statusShape as MagicAssignableShape<TStatus>;
+      processedStatus = statusShape;
     } else {
       // For Kro factory, convert KubernetesRef-containing expressions to CEL
       processedStatus = analysisResult.processedShape as MagicAssignableShape<TStatus>;
