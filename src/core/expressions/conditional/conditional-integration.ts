@@ -8,7 +8,12 @@
 
 import { getCurrentCompositionContext } from '../../composition/context.js';
 import { getComponentLogger } from '../../logging/index.js';
-import type { Enhanced, WithResourceId } from '../../types/index.js';
+import type {
+  Enhanced,
+  IncludeWhenCondition,
+  ReadyWhenCondition,
+  WithResourceId,
+} from '../../types/index.js';
 import type { FactoryExpressionContext } from '../analysis/types.js';
 import {
   type ConditionalExpressionConfig,
@@ -32,12 +37,12 @@ export interface ConditionalIntegrationConfig extends ConditionalExpressionConfi
  * Conditional expression properties that can be added to Enhanced resources
  */
 export interface ConditionalExpressionProperties {
-  /** Condition for including this resource in deployment */
-  includeWhen?: any;
-  /** Condition for considering this resource ready */
-  readyWhen?: any;
+  /** Condition for including this resource in deployment (may accumulate into an array for AND semantics) */
+  includeWhen?: IncludeWhenCondition | IncludeWhenCondition[];
+  /** Condition for considering this resource ready (may accumulate into an array) */
+  readyWhen?: ReadyWhenCondition | ReadyWhenCondition[];
   /** Custom conditional expressions */
-  conditionals?: Record<string, any>;
+  conditionals?: Record<string, IncludeWhenCondition | ReadyWhenCondition>;
 }
 
 /**
@@ -46,11 +51,14 @@ export interface ConditionalExpressionProperties {
 export type EnhancedWithConditionals<TSpec, TStatus> = Enhanced<TSpec, TStatus> &
   ConditionalExpressionProperties & {
     /** Set includeWhen condition */
-    withIncludeWhen(condition: any): EnhancedWithConditionals<TSpec, TStatus>;
+    withIncludeWhen(condition: IncludeWhenCondition): EnhancedWithConditionals<TSpec, TStatus>;
     /** Set readyWhen condition */
-    withReadyWhen(condition: any): EnhancedWithConditionals<TSpec, TStatus>;
+    withReadyWhen(condition: ReadyWhenCondition): EnhancedWithConditionals<TSpec, TStatus>;
     /** Add custom conditional expression */
-    withConditional(name: string, condition: any): EnhancedWithConditionals<TSpec, TStatus>;
+    withConditional(
+      name: string,
+      condition: IncludeWhenCondition | ReadyWhenCondition
+    ): EnhancedWithConditionals<TSpec, TStatus>;
   };
 
 /**
@@ -121,7 +129,7 @@ export class ConditionalExpressionIntegrator {
 
     // Add fluent builder methods — accumulate conditions in arrays (AND semantics)
     Object.defineProperty(enhanced, 'withIncludeWhen', {
-      value: (condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
+      value: (condition: IncludeWhenCondition): EnhancedWithConditionals<TSpec, TStatus> => {
         if (config.autoProcess) {
           const context = (
             enhanced as unknown as { createFactoryContext(): FactoryExpressionContext }
@@ -163,7 +171,7 @@ export class ConditionalExpressionIntegrator {
     });
 
     Object.defineProperty(enhanced, 'withReadyWhen', {
-      value: (condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
+      value: (condition: ReadyWhenCondition): EnhancedWithConditionals<TSpec, TStatus> => {
         if (config.autoProcess) {
           const context = (
             enhanced as unknown as { createFactoryContext(): FactoryExpressionContext }
@@ -205,7 +213,10 @@ export class ConditionalExpressionIntegrator {
     });
 
     Object.defineProperty(enhanced, 'withConditional', {
-      value: (name: string, condition: any): EnhancedWithConditionals<TSpec, TStatus> => {
+      value: (
+        name: string,
+        condition: IncludeWhenCondition | ReadyWhenCondition
+      ): EnhancedWithConditionals<TSpec, TStatus> => {
         const context = (
           enhanced as unknown as { createFactoryContext(): FactoryExpressionContext }
         ).createFactoryContext();

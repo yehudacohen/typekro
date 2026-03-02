@@ -202,6 +202,7 @@ export type ReadyWhenCallback = (self: any) => boolean;
  * - `ReadyWhenCallback` — arrow function parsed to CEL (dominant pattern)
  * - `CelExpression<boolean>` — explicit CEL via `Cel.expr<boolean>(...)`
  * - `KubernetesRef<boolean>` — magic proxy boolean reference
+ * - `KubernetesRef<number>` — numeric proxy reference (e.g., `readyReplicas`, truthy evaluation)
  * - `string` — raw CEL expression string
  * - `boolean` — static ready/not-ready
  */
@@ -210,6 +211,7 @@ export type ReadyWhenCondition =
   | CelExpression<boolean>
   | KubernetesRef<boolean>
   | KubernetesRef<string>
+  | KubernetesRef<number>
   | string
   | boolean;
 
