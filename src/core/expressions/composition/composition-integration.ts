@@ -103,7 +103,7 @@ export class CompositionExpressionAnalyzer {
    * Detect the composition pattern being used
    */
   detectCompositionPattern(
-    compositionFn: Function,
+    compositionFn: { toString(): string },
     context?: CompositionContext
   ): CompositionPattern {
     // If there's an active composition context, it's imperative
