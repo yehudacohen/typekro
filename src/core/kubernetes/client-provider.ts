@@ -11,7 +11,14 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { DEFAULT_CLUSTER_READY_TIMEOUT } from '../config/defaults.js';
+import {
+  DEFAULT_BACKOFF_MULTIPLIER,
+  DEFAULT_CLUSTER_READY_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_RETRIES,
+  DEFAULT_READINESS_MAX_BACKOFF,
+  DEFAULT_RETRY_BASE_DELAY,
+} from '../config/defaults.js';
 import { isTestEnvironment } from '../config/index.js';
 import { KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -442,7 +449,7 @@ export class KubernetesClientProvider {
    */
   async waitForClusterReady(
     timeout: number = DEFAULT_CLUSTER_READY_TIMEOUT,
-    retryInterval: number = 1000
+    retryInterval: number = DEFAULT_FAST_POLL_INTERVAL
   ): Promise<void> {
     const startTime = Date.now();
 
@@ -479,10 +486,10 @@ export class KubernetesClientProvider {
    */
   async withRetry<T>(operation: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
     const {
-      maxAttempts = 3,
-      baseDelay = 1000,
-      maxDelay = 10000,
-      backoffFactor = 2,
+      maxAttempts = DEFAULT_MAX_RETRIES,
+      baseDelay = DEFAULT_RETRY_BASE_DELAY,
+      maxDelay = DEFAULT_READINESS_MAX_BACKOFF,
+      backoffFactor = DEFAULT_BACKOFF_MULTIPLIER,
       retryableErrors = this.defaultRetryableErrorCheck,
     } = options;
 

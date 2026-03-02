@@ -6,7 +6,15 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
-import { DEFAULT_FAST_POLL_INTERVAL, DEFAULT_RECONNECT_MAX_DELAY } from '../config/defaults.js';
+import {
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_RECONNECT_ATTEMPTS,
+  DEFAULT_MAX_WATCH_CONNECTIONS,
+  DEFAULT_RECONNECT_JITTER_FACTOR,
+  DEFAULT_RECONNECT_MAX_DELAY,
+  DEFAULT_RETRY_BASE_DELAY,
+  DEFAULT_WATCH_TIMEOUT_SECONDS,
+} from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, DeploymentEvent } from '../types/deployment.js';
 
@@ -160,16 +168,16 @@ export class EventMonitor {
         (() => {
           /* no-op */
         }),
-      maxWatchConnections: options.maxWatchConnections || 10,
-      // Use a short server-side timeout (5 seconds) so connections close quickly
+      maxWatchConnections: options.maxWatchConnections || DEFAULT_MAX_WATCH_CONNECTIONS,
+      // Use a short server-side timeout so connections close quickly
       // and can be properly cleaned up when stopMonitoring is called.
       // The reconnection logic will re-establish connections as needed during active monitoring.
       // Setting to 0 causes connections to stay open indefinitely, which prevents clean exit.
-      watchTimeoutSeconds: options.watchTimeoutSeconds ?? 5,
-      maxReconnectAttempts: options.maxReconnectAttempts ?? 10,
-      reconnectBaseDelay: options.reconnectBaseDelay ?? 1000,
+      watchTimeoutSeconds: options.watchTimeoutSeconds ?? DEFAULT_WATCH_TIMEOUT_SECONDS,
+      maxReconnectAttempts: options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
+      reconnectBaseDelay: options.reconnectBaseDelay ?? DEFAULT_RETRY_BASE_DELAY,
       reconnectMaxDelay: options.reconnectMaxDelay ?? DEFAULT_RECONNECT_MAX_DELAY,
-      reconnectJitter: options.reconnectJitter ?? 0.2,
+      reconnectJitter: options.reconnectJitter ?? DEFAULT_RECONNECT_JITTER_FACTOR,
     };
   }
 

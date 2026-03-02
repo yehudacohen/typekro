@@ -5,6 +5,7 @@
  * evaluation to help developers troubleshoot deployment issues.
  */
 
+import { DEFAULT_MAX_STATUS_OBJECT_SIZE } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, DeploymentEvent, StatusDebugEvent } from '../types/deployment.js';
 
@@ -69,7 +70,7 @@ export class DebugLogger {
       enabled: options.enabled ?? false,
       statusPolling: options.statusPolling ?? true,
       readinessEvaluation: options.readinessEvaluation ?? true,
-      maxStatusObjectSize: options.maxStatusObjectSize || 1024,
+      maxStatusObjectSize: options.maxStatusObjectSize || DEFAULT_MAX_STATUS_OBJECT_SIZE,
       verboseMode: options.verboseMode ?? false,
       ...(options.progressCallback && { progressCallback: options.progressCallback }),
     };
@@ -534,7 +535,8 @@ export function createDebugLoggerFromDeploymentOptions(options: {
     enabled: options.debugLogging?.enabled ?? false,
     statusPolling: options.debugLogging?.statusPolling ?? false,
     readinessEvaluation: options.debugLogging?.readinessEvaluation ?? false,
-    maxStatusObjectSize: options.debugLogging?.maxStatusObjectSize ?? 1024,
+    maxStatusObjectSize:
+      options.debugLogging?.maxStatusObjectSize ?? DEFAULT_MAX_STATUS_OBJECT_SIZE,
     verboseMode: options.debugLogging?.verboseMode ?? false,
     ...(options.progressCallback && { progressCallback: options.progressCallback }),
   };

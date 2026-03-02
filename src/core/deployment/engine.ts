@@ -7,11 +7,13 @@
 
 import type * as k8s from '@kubernetes/client-node';
 import {
+  DEFAULT_BACKOFF_MULTIPLIER,
   DEFAULT_CONFLICT_RETRY_DELAY,
   DEFAULT_CRD_READY_TIMEOUT,
   DEFAULT_DELETE_TIMEOUT,
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_RETRIES,
   DEFAULT_MAX_RETRY_DELAY,
   DEFAULT_POLL_INTERVAL,
   DEFAULT_READINESS_TIMEOUT,
@@ -1402,8 +1404,8 @@ export class DirectDeploymentEngine {
     } else {
       // Apply resource with retry logic
       const retryPolicy = options.retryPolicy || {
-        maxRetries: 3,
-        backoffMultiplier: 2,
+        maxRetries: DEFAULT_MAX_RETRIES,
+        backoffMultiplier: DEFAULT_BACKOFF_MULTIPLIER,
         initialDelay: DEFAULT_FAST_POLL_INTERVAL,
         maxDelay: DEFAULT_MAX_RETRY_DELAY,
       };
