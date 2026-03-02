@@ -599,68 +599,6 @@ export class ContextExpressionValidator {
 }
 
 /**
- * Validation utilities
- */
-export class ContextValidationUtils {
-  /**
-   * Create a validation report summary
-   */
-  static createSummary(report: ContextValidationReport): string {
-    const { valid, errors, warnings, info, confidence } = report;
-
-    let summary = `Validation ${valid ? 'PASSED' : 'FAILED'} (confidence: ${(confidence * 100).toFixed(1)}%)`;
-
-    if (errors.length > 0) {
-      summary += `\n  Errors: ${errors.length}`;
-    }
-
-    if (warnings.length > 0) {
-      summary += `\n  Warnings: ${warnings.length}`;
-    }
-
-    if (info.length > 0) {
-      summary += `\n  Info: ${info.length}`;
-    }
-
-    return summary;
-  }
-
-  /**
-   * Format validation issues for display
-   */
-  static formatIssues(issues: ValidationIssue[]): string[] {
-    return issues.map((issue) => {
-      let formatted = `[${issue.severity.toUpperCase()}] ${issue.message}`;
-
-      if (issue.suggestions.length > 0) {
-        formatted += `\n  Suggestions: ${issue.suggestions.join(', ')}`;
-      }
-
-      return formatted;
-    });
-  }
-
-  /**
-   * Check if a validation report indicates the expression is safe to use
-   */
-  static isSafeToUse(report: ContextValidationReport): boolean {
-    return report.valid && report.confidence > 0.7;
-  }
-
-  /**
-   * Get the most critical issues from a validation report
-   */
-  static getCriticalIssues(report: ContextValidationReport): ValidationIssue[] {
-    return [
-      ...report.errors,
-      ...report.warnings.filter(
-        (w) => w.message.includes('compatibility') || w.message.includes('magic proxy')
-      ),
-    ];
-  }
-}
-
-/**
  * Default context validator instance
  */
 export const contextValidator = new ContextExpressionValidator();

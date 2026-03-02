@@ -1938,7 +1938,9 @@ describe('Imperative Composition Pattern', () => {
 
     it('should detect unsupported patterns in status objects', () => {
       // Test the pattern detector directly since it's not enabled in normal flow
-      const { UnsupportedPatternDetector } = require('../../src/index.js');
+      const {
+        UnsupportedPatternDetector,
+      } = require('../../src/core/unsupported-pattern-detector.js');
 
       const statusWithUnsupportedPatterns = {
         ready: true,
@@ -2063,7 +2065,9 @@ describe('Imperative Composition Pattern', () => {
     });
 
     it('should detect and report unsupported pattern types', () => {
-      const { UnsupportedPatternDetector } = require('../../src/index.js');
+      const {
+        UnsupportedPatternDetector,
+      } = require('../../src/core/unsupported-pattern-detector.js');
 
       const statusObject = {
         ready: true,
