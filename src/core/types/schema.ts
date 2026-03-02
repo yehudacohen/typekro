@@ -85,10 +85,15 @@ export type KroCompatibleValue<Depth extends number = 10> = Depth extends 0
       | KroCompatibleType<Prev<Depth>>; // Nested objects (with depth limit)
 
 /**
- * Constraint type for TypeScript types that can be used with Kro schemas
- * This ensures only compatible types are used for spec and status, with proper nesting support up to 10 levels deep
+ * Constraint type for TypeScript types that can be used with Kro schemas.
+ * Ensures only compatible types are used for spec and status,
+ * with proper nesting support up to 10 levels deep.
  *
- * This is more flexible than a strict index signature to allow for specific interface definitions in tests
+ * The `| object` union is necessary because named TypeScript interfaces
+ * (e.g., `interface MySpec { name: string }`) lack index signatures and
+ * are not assignable to `Record<string, KroCompatibleValue>`. ArkType's
+ * `Type<T>` further constrains this at the type level, and runtime
+ * validation catches non-serializable values.
  */
 export type KroCompatibleType<Depth extends number = 10> = Depth extends 0
   ? never

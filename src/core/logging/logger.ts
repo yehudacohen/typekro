@@ -36,22 +36,30 @@ class PinoLogger implements TypeKroLogger {
     this.pinoLogger.fatal(this.buildLogData(meta, error), msg);
   }
 
-  /** Build log payload, extracting K8s-specific error fields when present. */
+  /** Build log payload, extracting K8s-specific error fields when present.
+   * In production, stack traces and K8s API response bodies are stripped
+   * to prevent information disclosure (internal paths, cluster state). */
   private buildLogData(meta?: LogMetadata, error?: Error): Record<string, unknown> {
     const logData: Record<string, unknown> = { ...meta };
     if (error) {
+      const isProduction = process.env.NODE_ENV === 'production';
       const k8sError = error as Error & {
         statusCode?: number;
         body?: unknown;
-        response?: { body?: unknown };
+        response?: { body?: unknown; statusCode?: number };
       };
       logData.error = {
         name: error.name,
         message: error.message,
-        stack: error.stack,
-        statusCode: k8sError.statusCode,
-        body: k8sError.body,
-        response: k8sError.response?.body,
+        // Only include stack traces and K8s response bodies in non-production
+        ...(isProduction
+          ? {}
+          : {
+              stack: error.stack,
+              body: k8sError.body,
+              response: k8sError.response?.body,
+            }),
+        statusCode: k8sError.statusCode ?? k8sError.response?.statusCode,
       };
     }
     return logData;

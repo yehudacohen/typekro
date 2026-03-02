@@ -367,11 +367,12 @@ export interface ResourceGraphDefinition<TSpec extends KroCompatibleType, TStatu
   /** Kubernetes-compatible name for this RGD. Must follow DNS subdomain rules (lowercase, hyphens). */
   name: string;
   /**
-   * Version string for the generated CRD.
-   * This is the version suffix only (e.g. `'v1alpha1'`), not the full apiVersion.
-   * The full apiVersion for instances will be `{group}/{apiVersion}`.
+   * Full apiVersion string for the generated CRD, including group and version.
+   * If a `group` is also provided, this should be just the version suffix.
    *
    * @default 'v1alpha1'
+   * @example 'v1alpha1'
+   * @example 'example.com/v1alpha1'
    */
   apiVersion?: string;
   /** The Kind for the generated CRD. Must be PascalCase (e.g. `'WebApp'`). */
