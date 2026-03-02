@@ -578,7 +578,7 @@ export class EnhancedTypeOptionalityHandler {
         dependencies,
         sourceMap: this.generateSourceMapping(
           expression,
-          { expression: celExpression } as any,
+          { [CEL_EXPRESSION_BRAND]: true, expression: celExpression } as CelExpression,
           context
         ),
         errors: [],

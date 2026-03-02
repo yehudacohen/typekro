@@ -43,6 +43,7 @@ import {
   type TypeInfo,
   TypeRegistry,
   TypeSafetyUtils,
+  TypeValidationError,
   type TypeValidationResult,
 } from '../validation/type-safety.js';
 import { type CacheOptions, type CacheStats, ExpressionCache } from './cache.js';
@@ -1461,12 +1462,12 @@ export class JavaScriptToCelAnalyzer {
         valid: false,
         errors: celInference.errors.map(
           (e) =>
-            ({
-              message: e.message,
-              expression: e.celExpression,
-              expectedType: { typeName: 'unknown', optional: false, nullable: false },
-              actualType: { typeName: 'unknown', optional: false, nullable: false },
-            }) as any
+            new TypeValidationError(
+              e.message,
+              e.celExpression,
+              { typeName: 'unknown', optional: false, nullable: false },
+              { typeName: 'unknown', optional: false, nullable: false }
+            )
         ),
         warnings: [],
         suggestions: [],

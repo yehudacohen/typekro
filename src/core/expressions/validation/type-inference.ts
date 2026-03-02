@@ -11,7 +11,7 @@ import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
-import type { TypeInfo, TypeValidationResult } from './type-safety.js';
+import { type TypeInfo, TypeValidationError, type TypeValidationResult } from './type-safety.js';
 
 /**
  * CEL expression type inference result
@@ -246,14 +246,7 @@ export class CelTypeInferenceEngine {
       valid: false,
       resultType: targetType,
       errors: errors.map(
-        (e) =>
-          ({
-            message: e.message,
-            expression: e.celExpression,
-            expectedType: targetType,
-            actualType: sourceType,
-            name: 'TypeValidationError',
-          }) as any
+        (e) => new TypeValidationError(e.message, e.celExpression, targetType, sourceType)
       ),
       warnings: [],
       suggestions: [`Convert ${sourceType.typeName} to ${targetType.typeName}`],
