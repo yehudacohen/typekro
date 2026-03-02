@@ -13,6 +13,7 @@ import type {
   KubernetesCondition,
   KubernetesRef,
   ReadinessEvaluator,
+  ReadyWhenCondition,
   ResourceStatus,
   WithResourceId,
 } from '../../types/index.js';
@@ -79,7 +80,7 @@ export class ReadinessIntegrator {
    * @returns Readiness integration result
    */
   createReadinessEvaluator(
-    readyWhenExpression: any,
+    readyWhenExpression: ReadyWhenCondition,
     context: FactoryExpressionContext,
     config: ReadinessIntegrationConfig = {}
   ): ReadinessIntegrationResult {
@@ -161,10 +162,12 @@ export class ReadinessIntegrator {
   addReadyWhenSupport<TSpec, TStatus>(
     resource: Enhanced<TSpec, TStatus>,
     config: ReadinessIntegrationConfig = {}
-  ): Enhanced<TSpec, TStatus> & { withReadyWhen(expression: any): Enhanced<TSpec, TStatus> } {
+  ): Enhanced<TSpec, TStatus> & {
+    withReadyWhen(expression: ReadyWhenCondition): Enhanced<TSpec, TStatus>;
+  } {
     const enhanced = resource as Enhanced<TSpec, TStatus> & {
-      withReadyWhen(expression: any): Enhanced<TSpec, TStatus>;
-      __readyWhenExpression?: any;
+      withReadyWhen(expression: ReadyWhenCondition): Enhanced<TSpec, TStatus>;
+      __readyWhenExpression?: ReadyWhenCondition;
     };
 
     // Add readyWhen property
@@ -177,7 +180,7 @@ export class ReadinessIntegrator {
 
     // Add fluent builder method
     Object.defineProperty(enhanced, 'withReadyWhen', {
-      value: (expression: any): Enhanced<TSpec, TStatus> => {
+      value: (expression: ReadyWhenCondition): Enhanced<TSpec, TStatus> => {
         (enhanced as unknown as Record<string, unknown>).__readyWhenExpression = expression;
 
         // Create factory context
@@ -287,7 +290,7 @@ export class ReadinessIntegrator {
    * Create fallback readiness evaluator
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime evaluator for heterogeneous K8s types
-  private createFallbackEvaluator(expression: any): ReadinessEvaluator<any> {
+  private createFallbackEvaluator(expression: ReadyWhenCondition): ReadinessEvaluator<any> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime K8s objects have unknown shape
     return (liveResource: any): ResourceStatus => {
       // Simple fallback: check if resource exists and has no error conditions

@@ -1,18 +1,22 @@
 /**
  * Tests for Readiness Integration
- * 
+ *
  * Tests the integration between readyWhen expressions containing KubernetesRef
  * objects and TypeKro's readiness evaluation system.
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
-import type { KubernetesRef, ResourceStatus } from '../../../src/core/types/index.js';
-import { 
-  ReadinessIntegrator,
-  type ReadinessIntegrationConfig 
-} from '../../../src/core/expressions/conditional/readiness-integration.js';
 import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
+import {
+  type ReadinessIntegrationConfig,
+  ReadinessIntegrator,
+} from '../../../src/core/expressions/conditional/readiness-integration.js';
+import type {
+  KubernetesRef,
+  ReadyWhenCondition,
+  ResourceStatus,
+} from '../../../src/core/types/index.js';
 
 describe('ReadinessIntegrator', () => {
   let integrator: ReadinessIntegrator;
@@ -21,14 +25,14 @@ describe('ReadinessIntegrator', () => {
 
   beforeEach(() => {
     integrator = new ReadinessIntegrator();
-    
+
     mockContext = {
       factoryType: 'kro',
       factoryName: 'simpleDeployment',
       analysisEnabled: true,
       resourceId: 'test-resource',
       availableResources: {},
-      schemaProxy: undefined
+      schemaProxy: undefined,
     };
 
     config = {
@@ -36,7 +40,7 @@ describe('ReadinessIntegrator', () => {
       enableFallback: true,
       timeoutMs: 5000,
       enableCaching: false,
-      includeDebugInfo: true
+      includeDebugInfo: true,
     };
   });
 
@@ -45,7 +49,7 @@ describe('ReadinessIntegrator', () => {
       const statusRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.readyReplicas'
+        fieldPath: 'status.readyReplicas',
       } as KubernetesRef<number>;
 
       const result = integrator.createReadinessEvaluator(statusRef, mockContext, config);
@@ -68,7 +72,7 @@ describe('ReadinessIntegrator', () => {
       // Test the evaluator
       const mockResource = { kind: 'Deployment', status: {} };
       const status = result.evaluator!(mockResource);
-      
+
       expect(status.ready).toBe(true);
       expect(status.reason).toBe('ExpressionTrue');
     });
@@ -77,7 +81,11 @@ describe('ReadinessIntegrator', () => {
       const invalidExpression = 'not a boolean expression';
       const strictConfig = { ...config, strictValidation: true };
 
-      const result = integrator.createReadinessEvaluator(invalidExpression, mockContext, strictConfig);
+      const result = integrator.createReadinessEvaluator(
+        invalidExpression,
+        mockContext,
+        strictConfig
+      );
 
       expect(result.warnings.length).toBeGreaterThan(0);
       expect(result.evaluator).toBeDefined(); // Should still create evaluator
@@ -89,16 +97,21 @@ describe('ReadinessIntegrator', () => {
       (integrator as any).processor = {
         processReadyWhenExpression: () => {
           throw new Error('Processing failed');
-        }
+        },
       };
 
-      const problematicExpression = { invalid: 'expression' };
+      // Cast required: deliberately passing malformed input to test fallback behavior
+      const problematicExpression = { invalid: 'expression' } as unknown as ReadyWhenCondition;
       const fallbackConfig = { ...config, enableFallback: true };
 
-      const result = integrator.createReadinessEvaluator(problematicExpression, mockContext, fallbackConfig);
+      const result = integrator.createReadinessEvaluator(
+        problematicExpression,
+        mockContext,
+        fallbackConfig
+      );
 
       expect(result.evaluator).toBeDefined();
-      expect(result.warnings.some(w => w.includes('fallback'))).toBe(true);
+      expect(result.warnings.some((w) => w.includes('fallback'))).toBe(true);
 
       // Restore the original processor
       (integrator as any).processor = originalProcessor;
@@ -110,7 +123,7 @@ describe('ReadinessIntegrator', () => {
       const statusRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.readyReplicas'
+        fieldPath: 'status.readyReplicas',
       } as KubernetesRef<number>;
 
       const result = integrator.createReadinessEvaluator(statusRef, mockContext, config);
@@ -119,7 +132,7 @@ describe('ReadinessIntegrator', () => {
       // Test with ready resource
       const readyResource = {
         kind: 'Deployment',
-        status: { readyReplicas: 3 }
+        status: { readyReplicas: 3 },
       };
 
       const readyStatus = evaluator(readyResource);
@@ -130,7 +143,7 @@ describe('ReadinessIntegrator', () => {
       // Test with not ready resource
       const notReadyResource = {
         kind: 'Deployment',
-        status: { readyReplicas: 0 }
+        status: { readyReplicas: 0 },
       };
 
       const notReadyStatus = evaluator(notReadyResource);
@@ -143,7 +156,7 @@ describe('ReadinessIntegrator', () => {
       const statusRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.nonExistentField'
+        fieldPath: 'status.nonExistentField',
       } as KubernetesRef<number>;
 
       const result = integrator.createReadinessEvaluator(statusRef, mockContext, config);
@@ -151,7 +164,7 @@ describe('ReadinessIntegrator', () => {
 
       const resource = {
         kind: 'Deployment',
-        status: { readyReplicas: 3 }
+        status: { readyReplicas: 3 },
       };
 
       const status = evaluator(resource);
@@ -164,7 +177,7 @@ describe('ReadinessIntegrator', () => {
       const nestedRef: KubernetesRef<string> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.conditions[0].status'
+        fieldPath: 'status.conditions[0].status',
       } as KubernetesRef<string>;
 
       const result = integrator.createReadinessEvaluator(nestedRef, mockContext, config);
@@ -173,10 +186,8 @@ describe('ReadinessIntegrator', () => {
       const resource = {
         kind: 'Deployment',
         status: {
-          conditions: [
-            { type: 'Available', status: 'True' }
-          ]
-        }
+          conditions: [{ type: 'Available', status: 'True' }],
+        },
       };
 
       const status = evaluator(resource);
@@ -194,7 +205,7 @@ describe('ReadinessIntegrator', () => {
 
       const resource = {
         kind: 'Deployment',
-        status: { readyReplicas: 2 }
+        status: { readyReplicas: 2 },
       };
 
       const status = evaluator(resource);
@@ -209,16 +220,22 @@ describe('ReadinessIntegrator', () => {
           ready,
           reason: ready ? 'CustomReady' : 'CustomNotReady',
           message: `Custom evaluation: ${ready}`,
-          details: { replicas: resource.status?.readyReplicas }
+          details: { replicas: resource.status?.readyReplicas },
         };
       };
 
-      const result = integrator.createReadinessEvaluator(functionExpression, mockContext, config);
+      // Cast required: this test verifies runtime handling of functions returning ResourceStatus
+      // instead of the expected boolean return type
+      const result = integrator.createReadinessEvaluator(
+        functionExpression as unknown as ReadyWhenCondition,
+        mockContext,
+        config
+      );
       const evaluator = result.evaluator!;
 
       const resource = {
         kind: 'Deployment',
-        status: { readyReplicas: 2 }
+        status: { readyReplicas: 2 },
       };
 
       const status = evaluator(resource);
@@ -247,10 +264,11 @@ describe('ReadinessIntegrator', () => {
 
     it('should handle Kro factory CEL expressions', () => {
       const kroContext = { ...mockContext, factoryType: 'kro' as const };
+      // Cast required: testing runtime handling of raw CEL-like objects without proper branding
       const celExpression = {
         expression: 'deployment.status.readyReplicas > 0',
-        type: 'boolean'
-      };
+        type: 'boolean',
+      } as unknown as ReadyWhenCondition;
 
       const result = integrator.createReadinessEvaluator(celExpression, kroContext, config);
       const evaluator = result.evaluator!;
@@ -269,7 +287,7 @@ describe('ReadinessIntegrator', () => {
       const problematicRef: KubernetesRef<any> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.problematic.field'
+        fieldPath: 'status.problematic.field',
       } as KubernetesRef<any>;
 
       const result = integrator.createReadinessEvaluator(problematicRef, mockContext, config);
@@ -306,10 +324,8 @@ describe('ReadinessIntegrator', () => {
       const failedResource = {
         kind: 'Deployment',
         status: {
-          conditions: [
-            { type: 'Failed', status: 'True', message: 'Deployment failed' }
-          ]
-        }
+          conditions: [{ type: 'Failed', status: 'True', message: 'Deployment failed' }],
+        },
       };
 
       const status = fallbackEvaluator(failedResource);
@@ -332,10 +348,8 @@ describe('ReadinessIntegrator', () => {
       const healthyResource = {
         kind: 'Deployment',
         status: {
-          conditions: [
-            { type: 'Available', status: 'True' }
-          ]
-        }
+          conditions: [{ type: 'Available', status: 'True' }],
+        },
       };
 
       const status = fallbackEvaluator(healthyResource);
