@@ -3,6 +3,11 @@
  * Provides multi-level caching with performance monitoring and memory management
  */
 
+import {
+  DEFAULT_CACHE_MAX_ENTRIES,
+  DEFAULT_CACHE_MAX_MEMORY_MB,
+  DEFAULT_CACHE_TTL_MS,
+} from '../../config/defaults.js';
 import type { AnalysisContext, CelConversionResult } from './shared-types.js';
 
 /**
@@ -98,9 +103,9 @@ export class ExpressionCache {
 
   constructor(options: CacheOptions = {}) {
     this.options = {
-      maxEntries: options.maxEntries ?? 1000,
-      maxMemoryMB: options.maxMemoryMB ?? 50,
-      ttlMs: options.ttlMs ?? 5 * 60 * 1000, // 5 minutes
+      maxEntries: options.maxEntries ?? DEFAULT_CACHE_MAX_ENTRIES,
+      maxMemoryMB: options.maxMemoryMB ?? DEFAULT_CACHE_MAX_MEMORY_MB,
+      ttlMs: options.ttlMs ?? DEFAULT_CACHE_TTL_MS,
       cleanupIntervalMs: options.cleanupIntervalMs ?? 0, // Disable by default to prevent hanging
       enableASTCache: options.enableASTCache ?? true,
       enableMetrics: options.enableMetrics ?? true,

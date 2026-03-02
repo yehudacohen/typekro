@@ -20,7 +20,12 @@ import type {
 import { from, type Observable } from '@kubernetes/client-node/dist/gen/rxjsStub.js';
 import * as http from 'http';
 import * as https from 'https';
-import { DEFAULT_HTTP_READ_TIMEOUT } from '../config/defaults.js';
+import {
+  DEFAULT_HTTP_DELETE_TIMEOUT,
+  DEFAULT_HTTP_READ_TIMEOUT,
+  DEFAULT_HTTP_WATCH_TIMEOUT,
+  DEFAULT_HTTP_WRITE_TIMEOUT,
+} from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 
 /**
@@ -79,10 +84,10 @@ export interface HttpTimeoutConfig {
  */
 const DEFAULT_TIMEOUTS: Required<HttpTimeoutConfig> = {
   default: DEFAULT_HTTP_READ_TIMEOUT,
-  watch: 3600000, // 1 hour - effectively disabled (API server controls watch timeouts)
-  create: 120000, // 2 minutes - write operations with webhooks
-  update: 120000, // 2 minutes - write operations with webhooks
-  delete: 180000, // 3 minutes - may need to wait for finalizers
+  watch: DEFAULT_HTTP_WATCH_TIMEOUT, // 1 hour - effectively disabled (API server controls watch timeouts)
+  create: DEFAULT_HTTP_WRITE_TIMEOUT, // 2 minutes - write operations with webhooks
+  update: DEFAULT_HTTP_WRITE_TIMEOUT, // 2 minutes - write operations with webhooks
+  delete: DEFAULT_HTTP_DELETE_TIMEOUT, // 3 minutes - may need to wait for finalizers
 };
 
 /**

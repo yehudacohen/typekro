@@ -5,6 +5,11 @@
  * and debug information with proper formatting and rate limiting.
  */
 
+import {
+  DEFAULT_EVENT_BATCH_SIZE,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_EVENTS_PER_SECOND,
+} from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type {
   ChildResourceDiscoveredEvent,
@@ -73,9 +78,9 @@ export class EventStreamer {
         'status-debug',
         'child-resource-discovered',
       ],
-      maxEventsPerSecond: options.maxEventsPerSecond || 50,
-      batchSize: options.batchSize || 10,
-      batchTimeoutMs: options.batchTimeoutMs || 1000,
+      maxEventsPerSecond: options.maxEventsPerSecond || DEFAULT_MAX_EVENTS_PER_SECOND,
+      batchSize: options.batchSize || DEFAULT_EVENT_BATCH_SIZE,
+      batchTimeoutMs: options.batchTimeoutMs || DEFAULT_FAST_POLL_INTERVAL,
     };
   }
 
@@ -178,7 +183,7 @@ export class EventStreamer {
    */
   private checkRateLimit(): boolean {
     const now = Date.now();
-    const windowDuration = 1000; // 1 second window
+    const windowDuration = DEFAULT_FAST_POLL_INTERVAL; // 1 second window
 
     // Reset window if needed
     if (now - this.rateLimitState.windowStart >= windowDuration) {
@@ -435,7 +440,8 @@ export function createEventStreamerFromDeploymentOptions(
       'status-debug',
       'child-resource-discovered',
     ],
-    maxEventsPerSecond: options.eventMonitoring?.maxEventsPerSecond ?? 50,
+    maxEventsPerSecond:
+      options.eventMonitoring?.maxEventsPerSecond ?? DEFAULT_MAX_EVENTS_PER_SECOND,
   };
 
   const streamer = createEventStreamer(streamerOptions);

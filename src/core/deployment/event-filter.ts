@@ -6,6 +6,10 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import {
+  DEFAULT_DEDUPLICATION_WINDOW_SECONDS,
+  DEFAULT_MAX_EVENTS_PER_RESOURCE,
+} from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource } from '../types/deployment.js';
 import type { KubernetesEventData } from './event-monitor.js';
@@ -209,8 +213,8 @@ export class EventFilter {
     this.options = {
       eventTypes: options.eventTypes || ['Warning', 'Error'],
       includeChildResources: options.includeChildResources ?? true,
-      deduplicationWindow: options.deduplicationWindow || 60, // 1 minute
-      maxEventsPerResource: options.maxEventsPerResource || 100,
+      deduplicationWindow: options.deduplicationWindow || DEFAULT_DEDUPLICATION_WINDOW_SECONDS,
+      maxEventsPerResource: options.maxEventsPerResource || DEFAULT_MAX_EVENTS_PER_RESOURCE,
     };
   }
 
