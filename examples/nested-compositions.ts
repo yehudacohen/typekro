@@ -19,7 +19,7 @@
 
 import { type } from 'arktype';
 // In production: import { kubernetesComposition, simple } from 'typekro';
-import { kubernetesComposition, simple } from '../src/index.js';
+import { Cel, kubernetesComposition, simple } from '../src/index.js';
 
 // =============================================================================
 // REUSABLE DATABASE COMPOSITION
@@ -79,10 +79,10 @@ const databaseComposition = kubernetesComposition(
     });
 
     return {
-      ready: db.status.readyReplicas > 0 && dbService.status.ready,
-      host: dbService.status.clusterIP || 'localhost',
+      ready: db.status.readyReplicas > 0,
+      host: dbService.spec.clusterIP || 'localhost',
       port: 5432,
-      connectionString: `postgres://user:password@${dbService.status.clusterIP}:5432/${spec.name}`,
+      connectionString: `postgres://user:password@${dbService.spec.clusterIP}:5432/${spec.name}`,
       storageReady: storage.status.phase === 'Bound',
     };
   }
@@ -167,11 +167,8 @@ const appWithDatabase = kubernetesComposition(
       health: {
         app: app.status.readyReplicas >= spec.replicas,
         database: database.status.ready,
-        service: appService.status.ready,
-        overall:
-          app.status.readyReplicas >= spec.replicas &&
-          database.status.ready &&
-          appService.status.ready,
+        service: Cel.expr<boolean>(appService.status.loadBalancer, ' != null'),
+        overall: app.status.readyReplicas >= spec.replicas && database.status.ready,
       },
     };
   }

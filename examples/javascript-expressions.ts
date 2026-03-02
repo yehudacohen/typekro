@@ -99,12 +99,12 @@ export const fullStackApp = toResourceGraph(
 
         // Complex template with multiple references
         DATABASE_URL: schema.spec.features.database
-          ? `postgres://user:pass@${resources.database?.status.podIP}:5432/${schema.spec.name}`
+          ? `postgres://user:pass@${resources.databaseService?.spec.clusterIP}:5432/${schema.spec.name}`
           : 'sqlite:///tmp/app.db',
 
         // Conditional with fallback
         REDIS_URL: schema.spec.features.redis
-          ? `redis://${resources.redis?.status.podIP || 'localhost'}:6379`
+          ? `redis://${resources.redisService?.spec.clusterIP || 'localhost'}:6379`
           : '',
 
         // Arithmetic expressions (converted to strings for env vars)
@@ -173,8 +173,8 @@ export const fullStackApp = toResourceGraph(
     // ✅ Template literals with interpolation
     url: resources.webappService.status?.loadBalancer?.ingress?.[0]?.ip
       ? `https://${resources.webappService.status.loadBalancer.ingress[0].ip}`
-      : resources.webappService.status?.clusterIP
-        ? `http://${resources.webappService.status.clusterIP}`
+      : resources.webappService.spec?.clusterIP
+        ? `http://${resources.webappService.spec.clusterIP}`
         : 'pending',
 
     // ✅ Complex conditional expressions
@@ -345,7 +345,7 @@ export function performanceComparison() {
     timestamp: Date.now(),
 
     // Converted to CEL - mixed static and dynamic
-    url: `https://${resources.service.status.clusterIP}/api/v1`,
+    url: `https://${resources.service.spec.clusterIP}/api/v1`,
   });
 
   console.log('TypeKro optimizes by only converting expressions with resource/schema references');
@@ -358,7 +358,7 @@ export function migrationExample() {
   // Before: Manual CEL expressions (legacy approach - DON'T DO THIS)
   const _beforeStatus = (_schema: any, resources: any) => ({
     ready: Cel.expr(resources.deployment.status.readyReplicas, ' > 0'),
-    url: Cel.template('https://%s', resources.service.status.clusterIP),
+    url: Cel.template('https://%s', resources.service.spec.clusterIP),
     phase: Cel.expr(resources.deployment.status.readyReplicas, ' > 0 ? "running" : "pending"'),
   });
 
@@ -366,7 +366,7 @@ export function migrationExample() {
   const _afterStatus = (_schema: any, resources: any) => ({
     // ✨ Natural JavaScript - automatically converted to CEL
     ready: resources.deployment.status.readyReplicas > 0,
-    url: `https://${resources.service.status.clusterIP}`,
+    url: `https://${resources.service.spec.clusterIP}`,
     phase: resources.deployment.status.readyReplicas > 0 ? 'running' : 'pending',
   });
 

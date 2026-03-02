@@ -7,9 +7,9 @@
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition } from '../src/index.js';
 import { helmRelease } from '../src/factories/helm/helm-release.js';
 import { ConfigMap, Secret } from '../src/factories/simple/index.js';
+import { Cel, kubernetesComposition } from '../src/index.js';
 
 // =============================================================================
 // Example 1: Basic Helm Chart Integration
@@ -82,14 +82,16 @@ const databaseComposition = kubernetesComposition(
       id: 'postgres',
     });
 
-    // ✨ Natural JavaScript expressions - automatically converted to CEL
+    // ✨ CEL expression checking HelmRelease conditions for readiness
     return {
-      ready: postgres.status.phase === 'Ready',
-      phase: (postgres.status.phase === 'Ready' ? 'Ready' : 'Installing') as
-        | 'Pending'
-        | 'Installing'
-        | 'Ready'
-        | 'Failed',
+      ready: Cel.expr<boolean>(
+        postgres.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed'>(
+        postgres.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+      ),
       endpoint: `${spec.name}-postgresql.databases.svc.cluster.local`,
     };
   }
@@ -223,14 +225,17 @@ const webAppComposition = kubernetesComposition(
       id: 'nginx',
     });
 
-    // ✨ Natural JavaScript expressions - automatically converted to CEL
+    // ✨ CEL expressions checking HelmRelease conditions for readiness
+    const isReady = (hr: typeof database) =>
+      Cel.expr<boolean>(
+        hr.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      );
+
     return {
-      ready:
-        database.status.phase === 'Ready' &&
-        redis.status.phase === 'Ready' &&
-        nginx.status.phase === 'Ready',
-      databaseReady: database.status.phase === 'Ready',
-      redisReady: spec.redis.enabled ? redis.status.phase === 'Ready' : true,
+      ready: isReady(database) && isReady(redis) && isReady(nginx),
+      databaseReady: isReady(database),
+      redisReady: spec.redis.enabled ? isReady(redis) : true,
       url: `https://${spec.domain}`,
     };
   }
@@ -317,10 +322,15 @@ const monitoringComposition = kubernetesComposition(
       id: 'monitoring',
     });
 
+    const monitoringReady = Cel.expr<boolean>(
+      monitoring.status.conditions,
+      '.exists(c, c.type == "Ready" && c.status == "True")'
+    );
+
     return {
-      prometheusReady: monitoring.status.phase === 'Ready', // ✨ Natural JavaScript expression
-      grafanaReady: monitoring.status.phase === 'Ready', // ✨ Natural JavaScript expression
-      alertmanagerReady: spec.alertingEnabled ? monitoring.status.phase === 'Ready' : true, // ✨ Natural JavaScript conditional expression
+      prometheusReady: monitoringReady,
+      grafanaReady: monitoringReady,
+      alertmanagerReady: spec.alertingEnabled ? monitoringReady : true,
     };
   }
 );

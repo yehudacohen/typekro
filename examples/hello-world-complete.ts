@@ -150,7 +150,7 @@ const webappComposition = kubernetesComposition(
     // Return status expressions using actual resource status
     return {
       deploymentReady: deployment.status.readyReplicas >= spec.replicas,
-      serviceReady: service.status.clusterIP !== undefined,
+      serviceReady: service.spec.clusterIP !== undefined,
       ingressReady: ingress.status.loadBalancer?.ingress?.length > 0 || false,
       certificateReady:
         certificate.status?.conditions?.some(
