@@ -77,19 +77,6 @@ export type MagicString = string | KubernetesRef<string> | CelExpression<string>
 export type MagicNumber = number | KubernetesRef<number> | CelExpression<number>;
 export type MagicBoolean = boolean | KubernetesRef<boolean> | CelExpression<boolean>;
 
-// Use declaration merging to make KubernetesRef and CelExpression compatible with their underlying types
-// This allows the magic proxy system to work transparently with composition functions
-declare global {
-  namespace TypeKro {
-    interface MagicTypeCompatibility {
-      // Make KubernetesRef<string> assignable to string
-      KubernetesRefString: KubernetesRef<string> extends string ? true : false;
-      // Make CelExpression<string> assignable to string
-      CelExpressionString: CelExpression<string> extends string ? true : false;
-    }
-  }
-}
-
 /**
  * A branded type representing a reference to a Kubernetes resource field.
  *

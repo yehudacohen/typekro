@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { processResourceReferences } from '../../src/core/serialization/cel-references.js';
 import { Cel, simple, toResourceGraph } from '../../src/index';
-import { isCelExpression, processResourceReferences } from '../../src/index.js';
+import { isCelExpression } from '../../src/index.js';
 
 describe('CEL Expression Serialization Pipeline', () => {
   describe('KubernetesRef to CelExpression conversion', () => {

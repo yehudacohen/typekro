@@ -4,7 +4,6 @@
  * This barrel exports the curated public API for the expressions module.
  * For advanced or specialized APIs, import directly from sub-modules:
  *
- *   import { LazyAnalyzedExpression } from './analysis/lazy-analysis.js';
  *   import { MagicAssignableAnalyzer } from './magic-proxy/magic-assignable-analyzer.js';
  *   import { CompositionExpressionAnalyzer } from './composition/composition-integration.js';
  */
@@ -33,7 +32,6 @@ export type {
   CelGenerationResult,
 } from './context/context-aware-generator.js';
 export {
-  CelGenerationUtils,
   ContextAwareCelGenerator,
   contextAwareCelGenerator,
 } from './context/context-aware-generator.js';
@@ -48,14 +46,7 @@ export type {
 // CONTEXT-AWARE CONVERSION
 // =============================================================================
 export { contextDetector, ExpressionContextDetector } from './context/context-detector.js';
-export type {
-  ContextSwitchingConfig,
-  ContextSwitchingResult,
-} from './context/context-switcher.js';
-export {
-  createContextSwitcher,
-  ExpressionContextSwitcher,
-} from './context/context-switcher.js';
+
 export type {
   ContextValidationConfig,
   ContextValidationReport,
@@ -64,7 +55,6 @@ export type {
 } from './context/context-validator.js';
 export {
   ContextExpressionValidator,
-  ContextValidationUtils,
   contextValidator,
 } from './context/context-validator.js';
 export type { CelConversionConfig, CelConversionResult } from './factory/cel-conversion-engine.js';

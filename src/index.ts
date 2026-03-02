@@ -106,16 +106,9 @@ export {
 //   const mode: DeploymentMode = DeploymentMode.KRO;
 
 export {
-  getInnerCelPath,
-  processResourceReferences,
-} from './core/serialization/cel-references.js';
-
-export {
   getDependencyOrder,
   visualizeDependencies,
 } from './core/serialization/index.js';
-
-export { UnsupportedPatternDetector } from './core/unsupported-pattern-detector.js';
 
 // =============================================================================
 // 5. ALCHEMY INTEGRATION — Alchemy-specific deployers and resolvers
