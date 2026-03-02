@@ -32,6 +32,7 @@ import type {
   DeployableK8sResource,
   Enhanced,
   KubernetesResource,
+  ResourceStatus,
   WithResourceId,
 } from '../types/kubernetes.js';
 // Alchemy integration
@@ -793,7 +794,9 @@ metadata:
       }
 
       // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-      const originalResource = resource as { readinessEvaluator?: (resource: unknown) => boolean };
+      const originalResource = resource as {
+        readinessEvaluator?: (resource: unknown) => ResourceStatus;
+      };
       if (
         originalResource.readinessEvaluator &&
         typeof originalResource.readinessEvaluator === 'function'

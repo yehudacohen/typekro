@@ -50,6 +50,7 @@ import type {
   KubernetesApiError,
   KubernetesObjectWithStatus,
   KubernetesResource,
+  ResourceStatus,
   WithResourceId,
 } from '../types.js';
 import { analyzeClosureDependencies, integrateClosuresIntoPlan } from './closure-planner.js';
@@ -1309,7 +1310,7 @@ export class DirectDeploymentEngine {
       ])) as KubernetesResource;
       // Check for readinessEvaluator which may be on Enhanced resources
       const enhancedResource = resolvedResource as KubernetesResource & {
-        readinessEvaluator?: (liveResource: unknown) => { ready: boolean; message?: string };
+        readinessEvaluator?: (liveResource: unknown) => ResourceStatus;
       };
       resourceLogger.debug('References resolved successfully', {
         resolvedMetadata: resolvedResource.metadata,
@@ -1362,7 +1363,7 @@ export class DirectDeploymentEngine {
       // Copy the non-enumerable readiness evaluator if it exists
       const resourceWithEvaluator = resolvedResource as KubernetesResource &
         WithResourceId & {
-          readinessEvaluator?: (liveResource: unknown) => { ready: boolean; message?: string };
+          readinessEvaluator?: (liveResource: unknown) => ResourceStatus;
         };
       const readinessEvaluator = resourceWithEvaluator.readinessEvaluator;
       if (readinessEvaluator) {
@@ -1800,13 +1801,6 @@ export class DirectDeploymentEngine {
     }
 
     // Safety-first approach: check for readiness evaluator before starting the wait loop
-    // Import ResourceStatus type for proper typing
-    type ResourceStatusResult = {
-      ready: boolean;
-      reason?: string;
-      message?: string;
-      details?: Record<string, unknown>;
-    };
     const enhancedManifest = deployedResource.manifest as Enhanced<unknown, unknown>;
     const readinessEvaluator = enhancedManifest.readinessEvaluator;
 
@@ -1820,7 +1814,7 @@ export class DirectDeploymentEngine {
 
     const startTime = Date.now();
     const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
-    let lastStatus: ResourceStatusResult | null = null;
+    let lastStatus: ResourceStatus | null = null;
 
     while (Date.now() - startTime < timeout) {
       // Check if aborted before each iteration
