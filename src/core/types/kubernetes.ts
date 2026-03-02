@@ -224,8 +224,22 @@ export type ReadyWhenCondition =
  * providing a consistent and powerful developer experience.
  * This mirrors the actual Kubernetes resource structure with magic proxy support.
  *
- * Note: Both spec and status are required for better type safety and reference creation
- * The NonOptional wrapper removes undefined from all fields for cleaner type experience
+ * ## `$` Prefix Convention
+ *
+ * When assigning values in composition functions, the `$` prefix forces a value
+ * to be treated as a `KubernetesRef` (CEL expression) even when the compile-time
+ * value is a known literal. Without `$`, literal values stay as-is in the manifest;
+ * with `$`, the serializer emits a `${...}` CEL placeholder instead.
+ *
+ * ```ts
+ * // Without $: literal "3" appears directly in the YAML
+ * replicas: 3
+ * // With $: emits "${schema.spec.replicas}" CEL expression
+ * replicas: schema.spec.$replicas
+ * ```
+ *
+ * Note: Both spec and status are required for better type safety and reference creation.
+ * The NonOptional wrapper removes undefined from all fields for cleaner type experience.
  *
  * IMPORTANT: We use Omit to remove spec/status/metadata from KubernetesResource before
  * adding the MagicProxy versions. This prevents intersection type conflicts where the same
