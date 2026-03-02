@@ -673,7 +673,7 @@ function createTypedResourceGraph<
     // Check if this is from an imperative composition with original expressions
     // __originalCompositionFn is injected at runtime by imperative.ts (not part of the status schema)
     const originalCompositionFn = (statusMappings as Record<string, unknown>)
-      .__originalCompositionFn as Function | undefined;
+      .__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
 
     // Debug logging removed for cleaner output
 
@@ -995,7 +995,7 @@ function createTypedResourceGraph<
   // Wrapped in an object so Biome doesn't hoist it to `const`.
   const analysisState = { appliedToResources: false };
   const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
-    ?.__originalCompositionFn as Function | undefined;
+    ?.__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
 
   if (originalCompositionFnForAnalysis) {
     try {

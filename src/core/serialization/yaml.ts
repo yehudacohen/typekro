@@ -114,7 +114,10 @@ function resolveIncludeWhen(raw: unknown): string[] | undefined {
  *   (self) => self.status.conditions.exists((c) => c.type === 'Ready' && c.status === 'True')
  *   → 'db.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
  */
-function convertReadyWhenCallbackToCel(fn: Function, resourceId: string): string {
+function convertReadyWhenCallbackToCel(
+  fn: (...args: unknown[]) => unknown,
+  resourceId: string
+): string {
   const fnStr = fn.toString();
 
   // Extract parameter name and body from arrow function
@@ -196,7 +199,7 @@ function convertReadyWhenValueToCel(
   // Callback function — parse source to extract CEL expression
   if (typeof value === 'function') {
     const baseId = hasForEach ? 'each' : resourceId;
-    const celExpr = convertReadyWhenCallbackToCel(value as Function, baseId);
+    const celExpr = convertReadyWhenCallbackToCel(value as (...args: unknown[]) => unknown, baseId);
     return `\${${celExpr}}`;
   }
 

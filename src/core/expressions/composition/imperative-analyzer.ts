@@ -7,8 +7,8 @@
 
 import { Parser } from 'acorn';
 import * as estraverse from 'estraverse';
-import { Cel } from '../../references/cel.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { Cel } from '../../references/cel.js';
 import type { Enhanced } from '../../types/index.js';
 
 const logger = getComponentLogger('imperative-analyzer');
@@ -28,7 +28,7 @@ export interface ImperativeAnalysisResult {
  * that should be converted to CEL expressions.
  */
 export function analyzeImperativeComposition(
-  compositionFn: Function,
+  compositionFn: (...args: unknown[]) => unknown,
   resources: Record<string, Enhanced<any, any>>,
   options: ImperativeAnalysisOptions
 ): ImperativeAnalysisResult {
@@ -455,13 +455,16 @@ function convertTemplateLiteralContent(content: string): string {
   // Pattern handles both regular resource IDs and __schema__ (which has underscores)
   // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
   // For schema: __KUBERNETES_REF___schema___{fieldPath}__
-  return content.replace(/__KUBERNETES_REF_(__schema__|[^_]+)_(.+?)__/g, (match, resourceId, fieldPath) => {
-    if (resourceId === '__schema__') {
-      return `schema.${fieldPath}`;
-    } else {
-      return `${resourceId}.${fieldPath}`;
+  return content.replace(
+    /__KUBERNETES_REF_(__schema__|[^_]+)_(.+?)__/g,
+    (match, resourceId, fieldPath) => {
+      if (resourceId === '__schema__') {
+        return `schema.${fieldPath}`;
+      } else {
+        return `${resourceId}.${fieldPath}`;
+      }
     }
-  });
+  );
 }
 
 /**

@@ -8,6 +8,9 @@
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import type { KroCompatibleType, KubernetesRef, SchemaMagicProxy, SchemaProxy } from '../types.js';
 
+/** Callback type for array iteration methods (map, forEach, filter, some, every) on schema proxies. */
+type ArrayIterationCallback = (element: unknown, index: number, array: unknown[]) => unknown;
+
 /**
  * Creates a KubernetesRef object specifically for schema references
  * These are distinguished from external references by using a special resource ID prefix
@@ -63,19 +66,19 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
       // Array iteration methods: .map(), .forEach(), .filter(), .some(), .every()
       // Execute the callback once with a dummy element proxy so factory calls register.
       if (prop === 'map') {
-        return (callback: Function) => {
+        return (callback: ArrayIterationCallback) => {
           const elem = createElement();
           const result = callback(elem, 0, [elem]);
           return [result];
         };
       }
       if (prop === 'forEach') {
-        return (callback: Function) => {
+        return (callback: ArrayIterationCallback) => {
           callback(createElement(), 0, [createElement()]);
         };
       }
       if (prop === 'filter') {
-        return (callback: Function) => {
+        return (callback: ArrayIterationCallback) => {
           const elem = createElement();
           // Execute the predicate but always return the array with the element.
           // The predicate's return value is only used for AST analysis.
@@ -85,7 +88,7 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
         };
       }
       if (prop === 'some' || prop === 'every') {
-        return (callback: Function) => {
+        return (callback: ArrayIterationCallback) => {
           const elem = createElement();
           return callback(elem, 0, [elem]);
         };
@@ -111,7 +114,10 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
  * Creates a proxy for the result of .filter() calls on schema array refs.
  * This allows chaining like `spec.workers.filter(...).map(...)`.
  */
-function createSchemaArrayProxy(baseFieldPath: string, _filterCallback: Function): unknown[] {
+function createSchemaArrayProxy(
+  baseFieldPath: string,
+  _filterCallback: ArrayIterationCallback
+): unknown[] {
   // Use $item sentinel (same as the primary array proxy) so that the marker regex
   // and YAML serializer's $item substitution work correctly for chained calls.
   const createElement = (): unknown => createSchemaRefFactory(`${baseFieldPath}.$item`);
@@ -120,14 +126,14 @@ function createSchemaArrayProxy(baseFieldPath: string, _filterCallback: Function
   return new Proxy(arr, {
     get(target, prop) {
       if (prop === 'map') {
-        return (callback: Function) => {
+        return (callback: ArrayIterationCallback) => {
           const elem = createElement();
           const result = callback(elem, 0, arr);
           return [result];
         };
       }
       if (prop === 'forEach') {
-        return (callback: Function) => {
+        return (callback: ArrayIterationCallback) => {
           callback(createElement(), 0, arr);
         };
       }

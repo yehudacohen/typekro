@@ -596,7 +596,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze a function for JavaScript expressions containing KubernetesRef objects
    */
-  analyzeFunction(fn: Function, _context: AnalysisContext): CelConversionResult {
+  analyzeFunction(
+    fn: (...args: unknown[]) => unknown,
+    _context: AnalysisContext
+  ): CelConversionResult {
     try {
       // Parse function to AST using unified acorn parser
       const ast = parseScript(fn.toString());

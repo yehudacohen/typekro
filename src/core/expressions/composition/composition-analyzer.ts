@@ -1330,7 +1330,7 @@ function registerResourceControlFlow(
  * @returns Analysis result with forEach/includeWhen per resource
  */
 export function analyzeCompositionBody(
-  compositionFn: Function,
+  compositionFn: (...args: unknown[]) => unknown,
   resourceIds: Set<string>
 ): CompositionAnalysisResult {
   const result: CompositionAnalysisResult = {
