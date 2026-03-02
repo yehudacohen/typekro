@@ -363,7 +363,10 @@ export interface SchemaDefinition<
  * );
  * ```
  */
-export interface ResourceGraphDefinition<TSpec extends KroCompatibleType, TStatus> {
+export interface ResourceGraphDefinition<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+> {
   /** Kubernetes-compatible name for this RGD. Must follow DNS subdomain rules (lowercase, hyphens). */
   name: string;
   /**
