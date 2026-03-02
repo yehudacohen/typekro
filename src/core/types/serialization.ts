@@ -321,7 +321,7 @@ export type StatusBuilder<
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here
-) => TStatus | MagicAssignableShape<TStatus>;
+) => MagicAssignableShape<TStatus>;
 
 /**
  * Internal schema definition used for schema proxy creation and Kro schema generation.

@@ -566,7 +566,7 @@ export function toResourceGraph<
   statusBuilder: (
     schema: SchemaProxy<TSpec, TStatus>,
     resources: TResources
-  ) => TStatus | MagicAssignableShape<TStatus>,
+  ) => MagicAssignableShape<TStatus>,
   options?: SerializationOptions
 ): TypedResourceGraph<TSpec, TStatus> {
   // The implementation in createTypedResourceGraph must also be updated to match this signature.
@@ -586,7 +586,7 @@ function createTypedResourceGraph<
   statusBuilder: (
     schema: SchemaProxy<TSpec, TStatus>,
     resources: TResources
-  ) => TStatus | MagicAssignableShape<TStatus>,
+  ) => MagicAssignableShape<TStatus>,
   options?: SerializationOptions
 ): TypedResourceGraph<TSpec, TStatus> {
   const serializationLogger = getComponentLogger('resource-graph-serialization').child({
@@ -666,8 +666,8 @@ function createTypedResourceGraph<
   try {
     // Execute the status builder in a context where Enhanced resource proxies
     // return KubernetesRef objects, enabling JavaScript-to-CEL conversion.
-    statusMappings = runInStatusBuilderContext(
-      () => statusBuilder(schema, resourcesWithKeys as TResources) as MagicAssignableShape<TStatus>
+    statusMappings = runInStatusBuilderContext(() =>
+      statusBuilder(schema, resourcesWithKeys as TResources)
     );
 
     // Check if this is from an imperative composition with original expressions
@@ -969,8 +969,8 @@ function createTypedResourceGraph<
   } catch (error) {
     serializationLogger.error('Failed to analyze status builder', error as Error);
     // Fallback to executing status builder normally
-    statusMappings = runInStatusBuilderContext(
-      () => statusBuilder(schema, resourcesWithKeys as TResources) as MagicAssignableShape<TStatus>
+    statusMappings = runInStatusBuilderContext(() =>
+      statusBuilder(schema, resourcesWithKeys as TResources)
     );
     analyzedStatusMappings = statusMappings;
     // Create empty analysis for fallback
@@ -1177,7 +1177,7 @@ function createTypedResourceGraph<
   // so that conditional branches (ternaries, if-statements, spread conditionals)
   // evaluate correctly — e.g., `schema.spec.enableRedis ? { redis: ... } : {}`
   // will actually skip the redis resource when enableRedis is false.
-  const declarativeCompositionFn = (spec: TSpec): TStatus | MagicAssignableShape<TStatus> => {
+  const declarativeCompositionFn = (spec: TSpec): MagicAssignableShape<TStatus> => {
     // Create a plain schema object with actual values (not a magic proxy).
     // This means conditional checks like `schema.spec.enableRedis` will see
     // the real boolean value instead of a truthy KubernetesRef proxy.
