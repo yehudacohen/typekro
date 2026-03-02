@@ -45,7 +45,6 @@ export {
   helmRelease,
   helmReleaseReadinessEvaluator,
   helmRepository,
-  simpleHelmChart,
 } from './helm/index.js';
 // =============================================================================
 // KRO ECOSYSTEM
