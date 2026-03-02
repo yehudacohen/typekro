@@ -28,7 +28,7 @@ import type { SourceMapEntry } from '../analysis/source-map.js';
  */
 export interface OptionalityAnalysisResult {
   /** The KubernetesRef being analyzed */
-  kubernetesRef: KubernetesRef<any>;
+  kubernetesRef: KubernetesRef<unknown>;
 
   /** Whether this field might be undefined at runtime */
   potentiallyUndefined: boolean;
@@ -109,7 +109,7 @@ export interface OptionalityContext extends AnalysisContext {
  */
 export interface OptionalChainingPattern {
   /** The KubernetesRef involved in optional chaining */
-  kubernetesRef: KubernetesRef<any>;
+  kubernetesRef: KubernetesRef<unknown>;
 
   /** Field path being accessed */
   fieldPath: string;
@@ -135,7 +135,7 @@ export interface OptionalChainingPattern {
  */
 export interface EnhancedTypeFieldInfo {
   /** The KubernetesRef for this field */
-  kubernetesRef: KubernetesRef<any>;
+  kubernetesRef: KubernetesRef<unknown>;
 
   /** Field path */
   fieldPath: string;
@@ -164,16 +164,16 @@ export interface EnhancedTypeFieldInfo {
  */
 export interface HydrationStateAnalysis {
   /** References that are not yet hydrated */
-  unhydratedRefs: KubernetesRef<any>[];
+  unhydratedRefs: KubernetesRef<unknown>[];
 
   /** References that are fully hydrated */
-  hydratedRefs: KubernetesRef<any>[];
+  hydratedRefs: KubernetesRef<unknown>[];
 
   /** References that are currently being hydrated */
-  hydratingRefs: KubernetesRef<any>[];
+  hydratingRefs: KubernetesRef<unknown>[];
 
   /** References that failed hydration */
-  failedRefs: KubernetesRef<any>[];
+  failedRefs: KubernetesRef<unknown>[];
 
   /** Total number of references */
   totalRefs: number;
@@ -204,7 +204,7 @@ export interface HydrationPhase {
   name: string;
 
   /** Fields expected to be hydrated in this phase */
-  fields: KubernetesRef<any>[];
+  fields: KubernetesRef<unknown>[];
 
   /** Expected duration for this phase (milliseconds) */
   expectedDuration: number;
@@ -320,7 +320,7 @@ export class EnhancedTypeOptionalityHandler {
    * null-safety handling based on Enhanced type behavior and field hydration timing.
    */
   analyzeOptionalityRequirements(
-    expression: any,
+    expression: unknown,
     context: OptionalityContext
   ): OptionalityAnalysisResult[] {
     const results: OptionalityAnalysisResult[] = [];
@@ -354,7 +354,7 @@ export class EnhancedTypeOptionalityHandler {
    * that include proper null-safety handling for potentially undefined fields.
    */
   generateNullSafeCelExpression(
-    originalExpression: any,
+    originalExpression: unknown,
     optionalityResults: OptionalityAnalysisResult[],
     context: OptionalityContext
   ): CelConversionResult {
@@ -417,7 +417,7 @@ export class EnhancedTypeOptionalityHandler {
    * Enhanced types that appear non-optional at compile time.
    */
   handleOptionalChainingWithEnhancedTypes(
-    expression: any,
+    expression: unknown,
     context: OptionalityContext
   ): CelConversionResult {
     try {
@@ -461,7 +461,7 @@ export class EnhancedTypeOptionalityHandler {
    * Analyze optional chaining patterns in expressions with Enhanced types
    */
   private analyzeOptionalChainingPatterns(
-    expression: any,
+    expression: unknown,
     context: OptionalityContext
   ): {
     patterns: OptionalChainingPattern[];
@@ -507,7 +507,7 @@ export class EnhancedTypeOptionalityHandler {
    * Analyze Enhanced type field information
    */
   private analyzeEnhancedTypeField(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): EnhancedTypeFieldInfo {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -534,7 +534,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate CEL expression for optional chaining with Enhanced types
    */
   private generateOptionalChainingCelExpression(
-    expression: any,
+    expression: unknown,
     optionalChainingAnalysis: {
       patterns: OptionalChainingPattern[];
       enhancedTypeFields: EnhancedTypeFieldInfo[];
@@ -728,7 +728,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate optional chaining CEL pattern for a KubernetesRef
    */
   private generateOptionalChainingCelPattern(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): string {
     const resourcePath =
@@ -753,7 +753,7 @@ export class EnhancedTypeOptionalityHandler {
    * which fields require null-safety checks despite appearing non-optional at compile time.
    */
   detectNullSafetyRequirements(
-    enhancedResources: Record<string, Enhanced<any, any>>,
+    enhancedResources: Record<string, Enhanced<unknown, unknown>>,
     context: OptionalityContext
   ): Map<string, OptionalityAnalysisResult[]> {
     const nullSafetyMap = new Map<string, OptionalityAnalysisResult[]>();
@@ -810,7 +810,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate Enhanced type-specific null-safety patterns
    */
   private generateEnhancedTypeNullSafetyPattern(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): string {
     const resourcePath =
@@ -854,10 +854,10 @@ export class EnhancedTypeOptionalityHandler {
    * Extract potential KubernetesRef objects from Enhanced resources
    */
   private extractPotentialKubernetesRefsFromEnhanced(
-    _enhancedResource: Enhanced<any, any>,
+    _enhancedResource: Enhanced<unknown, unknown>,
     resourceId: string
-  ): KubernetesRef<any>[] {
-    const refs: KubernetesRef<any>[] = [];
+  ): KubernetesRef<unknown>[] {
+    const refs: KubernetesRef<unknown>[] = [];
 
     // Common field paths that might contain KubernetesRef objects in Enhanced types
     const commonFieldPaths = [
@@ -878,12 +878,12 @@ export class EnhancedTypeOptionalityHandler {
 
     for (const fieldPath of commonFieldPaths) {
       // Create a potential KubernetesRef for analysis
-      const potentialRef: KubernetesRef<any> = {
+      const potentialRef: KubernetesRef<unknown> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId,
         fieldPath,
         type: 'unknown',
-      } as KubernetesRef<any>;
+      } as KubernetesRef<unknown>;
 
       refs.push(potentialRef);
     }
@@ -898,7 +898,7 @@ export class EnhancedTypeOptionalityHandler {
    * handle the transition from undefined to defined values during hydration.
    */
   integrateWithFieldHydrationTiming(
-    expression: any,
+    expression: unknown,
     hydrationStates: Map<string, FieldHydrationState>,
     context: OptionalityContext
   ): {
@@ -963,7 +963,7 @@ export class EnhancedTypeOptionalityHandler {
    * values as fields are hydrated over time.
    */
   handleUndefinedToDefinedTransitions(
-    expression: any,
+    expression: unknown,
     hydrationStates: Map<string, FieldHydrationState>,
     context: OptionalityContext
   ): UndefinedToDefinedTransitionResult {
@@ -1001,13 +1001,13 @@ export class EnhancedTypeOptionalityHandler {
    * Analyze hydration states for KubernetesRef objects
    */
   private analyzeHydrationStates(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     hydrationStates: Map<string, FieldHydrationState>
   ): HydrationStateAnalysis {
-    const unhydratedRefs: KubernetesRef<any>[] = [];
-    const hydratedRefs: KubernetesRef<any>[] = [];
-    const hydratingRefs: KubernetesRef<any>[] = [];
-    const failedRefs: KubernetesRef<any>[] = [];
+    const unhydratedRefs: KubernetesRef<unknown>[] = [];
+    const hydratedRefs: KubernetesRef<unknown>[] = [];
+    const hydratingRefs: KubernetesRef<unknown>[] = [];
+    const failedRefs: KubernetesRef<unknown>[] = [];
 
     for (const ref of kubernetesRefs) {
       const stateKey = `${ref.resourceId}:${ref.fieldPath}`;
@@ -1040,7 +1040,7 @@ export class EnhancedTypeOptionalityHandler {
    * Create transition plan for hydration phases
    */
   private createTransitionPlan(
-    kubernetesRefs: KubernetesRef<any>[],
+    kubernetesRefs: KubernetesRef<unknown>[],
     _hydrationStates: Map<string, FieldHydrationState>,
     _context: OptionalityContext
   ): HydrationTransitionPlan {
@@ -1048,9 +1048,9 @@ export class EnhancedTypeOptionalityHandler {
     const criticalFields: string[] = [];
 
     // Group fields by expected hydration timing
-    const immediateFields: KubernetesRef<any>[] = [];
-    const earlyFields: KubernetesRef<any>[] = [];
-    const lateFields: KubernetesRef<any>[] = [];
+    const immediateFields: KubernetesRef<unknown>[] = [];
+    const earlyFields: KubernetesRef<unknown>[] = [];
+    const lateFields: KubernetesRef<unknown>[] = [];
 
     for (const ref of kubernetesRefs) {
       const fieldPath = ref.fieldPath || '';
@@ -1117,7 +1117,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate hydration transition handlers
    */
   private generateHydrationTransitionHandlers(
-    expression: any,
+    expression: unknown,
     hydrationAnalysis: HydrationStateAnalysis,
     context: OptionalityContext
   ): HydrationTransitionHandler[] {
@@ -1175,7 +1175,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate phase expressions for different hydration phases
    */
   private generatePhaseExpressions(
-    expression: any,
+    expression: unknown,
     transitionPlan: HydrationTransitionPlan,
     context: OptionalityContext
   ): Map<string, CelExpression> {
@@ -1227,7 +1227,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate fallback expressions for hydration failures
    */
   private generateFallbackExpressions(
-    _expression: any,
+    _expression: unknown,
     transitionPlan: HydrationTransitionPlan,
     _context: OptionalityContext
   ): Map<string, CelExpression> {
@@ -1250,7 +1250,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate phase-specific expression
    */
   private generatePhaseSpecificExpression(
-    _expression: any,
+    _expression: unknown,
     phase: HydrationPhase,
     _context: OptionalityContext
   ): CelExpression {
@@ -1276,7 +1276,7 @@ export class EnhancedTypeOptionalityHandler {
   /**
    * Generate condition for hydration start
    */
-  private generateHydrationStartCondition(refs: KubernetesRef<any>[]): string {
+  private generateHydrationStartCondition(refs: KubernetesRef<unknown>[]): string {
     const conditions = refs.map((ref) => {
       const resourcePath =
         ref.resourceId === '__schema__'
@@ -1292,8 +1292,8 @@ export class EnhancedTypeOptionalityHandler {
    * Generate expression for hydration start
    */
   private generateHydrationStartExpression(
-    _expression: any,
-    _refs: KubernetesRef<any>[],
+    _expression: unknown,
+    _refs: KubernetesRef<unknown>[],
     _context: OptionalityContext
   ): CelExpression {
     return {
@@ -1306,7 +1306,7 @@ export class EnhancedTypeOptionalityHandler {
   /**
    * Generate condition for hydration complete
    */
-  private generateHydrationCompleteCondition(refs: KubernetesRef<any>[]): string {
+  private generateHydrationCompleteCondition(refs: KubernetesRef<unknown>[]): string {
     const conditions = refs.map((ref) => {
       const resourcePath =
         ref.resourceId === '__schema__'
@@ -1322,8 +1322,8 @@ export class EnhancedTypeOptionalityHandler {
    * Generate expression for hydration complete
    */
   private generateHydrationCompleteExpression(
-    expression: any,
-    _refs: KubernetesRef<any>[],
+    expression: unknown,
+    _refs: KubernetesRef<unknown>[],
     context: OptionalityContext
   ): CelExpression {
     // Use the original expression since all fields are now available
@@ -1333,7 +1333,7 @@ export class EnhancedTypeOptionalityHandler {
   /**
    * Generate condition for hydration failure
    */
-  private generateHydrationFailureCondition(_refs: KubernetesRef<any>[]): string {
+  private generateHydrationFailureCondition(_refs: KubernetesRef<unknown>[]): string {
     // This would typically check for timeout or error conditions
     return 'false'; // Placeholder
   }
@@ -1342,8 +1342,8 @@ export class EnhancedTypeOptionalityHandler {
    * Generate expression for hydration failure
    */
   private generateHydrationFailureExpression(
-    _expression: any,
-    _refs: KubernetesRef<any>[],
+    _expression: unknown,
+    _refs: KubernetesRef<unknown>[],
     _context: OptionalityContext
   ): CelExpression {
     return {
@@ -1357,7 +1357,7 @@ export class EnhancedTypeOptionalityHandler {
    * Analyze a single KubernetesRef for optionality requirements
    */
   private analyzeKubernetesRefOptionality(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): OptionalityAnalysisResult {
     const isSchemaReference = kubernetesRef.resourceId === '__schema__';
@@ -1395,7 +1395,7 @@ export class EnhancedTypeOptionalityHandler {
    * Determine if a KubernetesRef is potentially undefined at runtime
    */
   private isPotentiallyUndefinedAtRuntime(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): boolean {
     // Schema references are generally available, but some schema fields might be optional
@@ -1436,7 +1436,7 @@ export class EnhancedTypeOptionalityHandler {
    * Check if a schema field is potentially undefined
    */
   private isSchemaFieldPotentiallyUndefined(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): boolean {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1471,7 +1471,7 @@ export class EnhancedTypeOptionalityHandler {
    * Check if a status field is potentially undefined
    */
   private isStatusFieldPotentiallyUndefined(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     _context: OptionalityContext
   ): boolean {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1502,7 +1502,7 @@ export class EnhancedTypeOptionalityHandler {
    * Check if a spec field is potentially undefined
    */
   private isSpecFieldPotentiallyUndefined(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): boolean {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1539,7 +1539,7 @@ export class EnhancedTypeOptionalityHandler {
    * Check if a metadata field is potentially undefined
    */
   private isMetadataFieldPotentiallyUndefined(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): boolean {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1578,7 +1578,7 @@ export class EnhancedTypeOptionalityHandler {
    * Check if optional chaining was used in the original expression
    */
   private hasOptionalChainingInExpression(
-    _kubernetesRef: KubernetesRef<any>,
+    _kubernetesRef: KubernetesRef<unknown>,
     _context: OptionalityContext
   ): boolean {
     // This would need to be determined from the original expression AST
@@ -1590,7 +1590,7 @@ export class EnhancedTypeOptionalityHandler {
    * Calculate confidence level for optionality analysis
    */
   private calculateOptionalityConfidence(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): number {
     let confidence = 0.8; // Base confidence
@@ -1617,7 +1617,7 @@ export class EnhancedTypeOptionalityHandler {
    * Determine the reason for optionality determination
    */
   private determineOptionalityReason(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     _context: OptionalityContext
   ): string {
     if (kubernetesRef.resourceId === '__schema__') {
@@ -1635,7 +1635,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate suggested CEL pattern for null-safety
    */
   private generateSuggestedCelPattern(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): string {
     const resourcePath =
@@ -1662,7 +1662,7 @@ export class EnhancedTypeOptionalityHandler {
   /**
    * Convert expression to basic CEL without null-safety
    */
-  private convertToBasicCel(expression: any, _context: OptionalityContext): CelExpression {
+  private convertToBasicCel(expression: unknown, _context: OptionalityContext): CelExpression {
     // This is a placeholder - would need to integrate with the main analyzer
     return {
       [CEL_EXPRESSION_BRAND]: true,
@@ -1678,7 +1678,7 @@ export class EnhancedTypeOptionalityHandler {
    * for all potentially undefined fields in the expression.
    */
   generateCelWithHasChecks(
-    expression: any,
+    expression: unknown,
     optionalityResults: OptionalityAnalysisResult[],
     context: OptionalityContext
   ): CelExpression {
@@ -1788,7 +1788,7 @@ export class EnhancedTypeOptionalityHandler {
    * Convert expression with KubernetesRef objects to CEL
    */
   private convertExpressionWithKubernetesRefs(
-    expression: any,
+    expression: unknown,
     optionalityResults: OptionalityAnalysisResult[],
     context: OptionalityContext
   ): string {
@@ -1865,7 +1865,7 @@ export class EnhancedTypeOptionalityHandler {
   /**
    * Infer the type of the expression result
    */
-  private inferExpressionType(expression: any, _context: OptionalityContext): string {
+  private inferExpressionType(expression: unknown, _context: OptionalityContext): string {
     if (typeof expression === 'string') {
       return 'string';
     }
@@ -1893,7 +1893,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate null-safe CEL expression
    */
   private generateNullSafeExpression(
-    expression: any,
+    expression: unknown,
     optionalityResults: OptionalityAnalysisResult[],
     context: OptionalityContext
   ): CelExpression {
@@ -1905,7 +1905,7 @@ export class EnhancedTypeOptionalityHandler {
    * Generate source mapping for debugging
    */
   private generateSourceMapping(
-    originalExpression: any,
+    originalExpression: unknown,
     celExpression: CelExpression,
     context: OptionalityContext
   ): SourceMapEntry[] {
@@ -1933,8 +1933,8 @@ export class EnhancedTypeOptionalityHandler {
    * Generate pre-hydration expression (for unhydrated fields)
    */
   private generatePreHydrationExpression(
-    _expression: any,
-    _unhydratedRefs: KubernetesRef<any>[],
+    _expression: unknown,
+    _unhydratedRefs: KubernetesRef<unknown>[],
     _context: OptionalityContext
   ): CelExpression {
     // For pre-hydration, return a safe default or null check
@@ -1949,8 +1949,8 @@ export class EnhancedTypeOptionalityHandler {
    * Generate post-hydration expression (for hydrated fields)
    */
   private generatePostHydrationExpression(
-    expression: any,
-    _hydratedRefs: KubernetesRef<any>[],
+    expression: unknown,
+    _hydratedRefs: KubernetesRef<unknown>[],
     context: OptionalityContext
   ): CelExpression {
     // For post-hydration, can use the fields directly
@@ -1961,8 +1961,8 @@ export class EnhancedTypeOptionalityHandler {
    * Generate hydration-dependent expression (for fields being hydrated)
    */
   private generateHydrationDependentExpression(
-    _expression: any,
-    hydratingRefs: KubernetesRef<any>[],
+    _expression: unknown,
+    hydratingRefs: KubernetesRef<unknown>[],
     _context: OptionalityContext
   ): CelExpression {
     // For fields being hydrated, use conditional checks
@@ -1988,7 +1988,7 @@ export class EnhancedTypeOptionalityHandler {
  * Convenience function to analyze optionality requirements
  */
 export function analyzeOptionalityRequirements(
-  expression: any,
+  expression: unknown,
   context: OptionalityContext,
   options?: OptionalityHandlingOptions
 ): OptionalityAnalysisResult[] {
@@ -2000,7 +2000,7 @@ export function analyzeOptionalityRequirements(
  * Convenience function to generate null-safe CEL expressions
  */
 export function generateNullSafeCelExpression(
-  expression: any,
+  expression: unknown,
   optionalityResults: OptionalityAnalysisResult[],
   context: OptionalityContext,
   options?: OptionalityHandlingOptions
@@ -2013,7 +2013,7 @@ export function generateNullSafeCelExpression(
  * Convenience function to handle optional chaining with Enhanced types
  */
 export function handleOptionalChainingWithEnhancedTypes(
-  expression: any,
+  expression: unknown,
   context: OptionalityContext,
   options?: OptionalityHandlingOptions
 ): CelConversionResult {
@@ -2025,7 +2025,7 @@ export function handleOptionalChainingWithEnhancedTypes(
  * Convenience function to generate CEL expressions with has() checks
  */
 export function generateCelWithHasChecks(
-  expression: any,
+  expression: unknown,
   optionalityResults: OptionalityAnalysisResult[],
   context: OptionalityContext,
   options?: OptionalityHandlingOptions
@@ -2038,7 +2038,7 @@ export function generateCelWithHasChecks(
  * Convenience function to detect null-safety requirements for Enhanced types
  */
 export function detectNullSafetyRequirements(
-  enhancedResources: Record<string, Enhanced<any, any>>,
+  enhancedResources: Record<string, Enhanced<unknown, unknown>>,
   context: OptionalityContext,
   options?: OptionalityHandlingOptions
 ): Map<string, OptionalityAnalysisResult[]> {
@@ -2050,7 +2050,7 @@ export function detectNullSafetyRequirements(
  * Convenience function to integrate with field hydration timing
  */
 export function integrateWithFieldHydrationTiming(
-  expression: any,
+  expression: unknown,
   hydrationStates: Map<string, FieldHydrationState>,
   context: OptionalityContext,
   options?: OptionalityHandlingOptions
@@ -2068,7 +2068,7 @@ export function integrateWithFieldHydrationTiming(
  * Convenience function to handle undefined-to-defined transitions
  */
 export function handleUndefinedToDefinedTransitions(
-  expression: any,
+  expression: unknown,
   hydrationStates: Map<string, FieldHydrationState>,
   context: OptionalityContext,
   options?: OptionalityHandlingOptions
