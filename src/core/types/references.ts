@@ -96,7 +96,20 @@ export type MagicProxy<T> = T & {
     DistributivePick<T, P>
   >;
 } & {
-  // Index signature for truly unknown properties (fallback)
+  /**
+   * Catch-all index signature for dynamic property access.
+   *
+   * This MUST remain `MagicAssignable<any>` because it enables cross-composition
+   * status references — e.g., `nestedComp.status.customField` where `customField`
+   * is defined by the user's status schema, not a built-in K8s type. TypeScript
+   * resolves known properties from `T & MappedType` above; only truly unknown
+   * properties fall through to this index signature.
+   *
+   * Alternatives investigated and rejected:
+   * - Branded error type: breaks ~40+ cross-composition references in tests/examples/production
+   * - `MagicAssignable<unknown>`: produces unclear errors and breaks assignments
+   * - `never`: is a bottom type assignable to everything, provides no safety
+   */
   [key: string]: MagicAssignable<any>;
 };
 
