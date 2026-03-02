@@ -16,7 +16,7 @@
 
 import * as acorn from 'acorn';
 import * as estraverse from 'estraverse';
-import type { Node as ESTreeNode, ObjectExpression, ReturnStatement } from 'estree';
+import type { Node as ESTreeNode, Identifier, ObjectExpression, ReturnStatement } from 'estree';
 import { containsKubernetesRefs } from '../../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { ConversionError } from '../../errors.js';
@@ -29,6 +29,7 @@ import {
   type CelConversionResult,
   JavaScriptToCelAnalyzer,
 } from '../analysis/analyzer.js';
+import { SourceMapBuilder, type SourceMapEntry } from '../analysis/source-map.js';
 import { MagicProxyAnalyzer } from '../magic-proxy/magic-proxy-analyzer.js';
 import {
   EnhancedTypeOptionalityHandler,
@@ -36,7 +37,6 @@ import {
   type OptionalityAnalysisResult,
   type OptionalityContext,
 } from '../magic-proxy/optionality-handler.js';
-import { SourceMapBuilder, type SourceMapEntry } from '../analysis/source-map.js';
 
 /**
  * Status builder function type for analysis
@@ -348,9 +348,9 @@ export class StatusBuilderAnalyzer {
             if (fieldResult.celExpression) {
               // For dynamic expressions, use the CEL expression directly
               statusMappings[property.name] = fieldResult.celExpression;
-            } else if ((fieldResult as any).staticValue !== undefined) {
+            } else if (fieldResult.staticValue !== undefined) {
               // For static objects, keep as plain JavaScript objects for performance
-              statusMappings[property.name] = (fieldResult as any).staticValue;
+              statusMappings[property.name] = fieldResult.staticValue;
             } else if (property.valueNode.type === 'Literal') {
               // For static literals, keep as plain JavaScript values for performance
               statusMappings[property.name] = property.valueNode.value;
@@ -1392,7 +1392,7 @@ export class StatusBuilderAnalyzer {
           return `${object}[${this.getNodeSource(node.property, originalSource)}]`;
         } else {
           const propertyName =
-            (node.property as any).name || this.getNodeSource(node.property, originalSource);
+            (node.property as Identifier).name || this.getNodeSource(node.property, originalSource);
           return `${object}.${propertyName}`;
         }
       }

@@ -15,7 +15,13 @@
  */
 
 import * as estraverse from 'estraverse';
-import type { Node as ESTreeNode, ObjectExpression, Property, ReturnStatement } from 'estree';
+import type {
+  ArrowFunctionExpression,
+  Node as ESTreeNode,
+  ObjectExpression,
+  Property,
+  ReturnStatement,
+} from 'estree';
 import { extractResourceReferences } from '../../../utils/type-guards.js';
 import { DependencyResolver } from '../../dependencies/index.js';
 import type { DeploymentPlan } from '../../dependencies/resolver.js';
@@ -552,7 +558,8 @@ export class FieldHydrationExpressionProcessor {
       // Fallback: try to execute the function to get field names
       try {
         const mockResources = this.createMockResources(resources || {});
-        const mockSchema = schemaProxy || ({} as any);
+        const mockSchema =
+          schemaProxy || ({} as SchemaProxy<Record<string, unknown>, Record<string, unknown>>);
         const result = statusBuilder(mockSchema, mockResources);
 
         if (result && typeof result === 'object') {
@@ -575,9 +582,11 @@ export class FieldHydrationExpressionProcessor {
    */
   private findReturnStatement(
     ast: ESTreeNode
-  ): ReturnStatement | { type: 'ArrowFunctionBody'; argument: any } | null {
-    let returnStatement: ReturnStatement | { type: 'ArrowFunctionBody'; argument: any } | null =
-      null;
+  ): ReturnStatement | { type: 'ArrowFunctionBody'; argument: ESTreeNode } | null {
+    let returnStatement:
+      | ReturnStatement
+      | { type: 'ArrowFunctionBody'; argument: ESTreeNode }
+      | null = null;
 
     estraverse.traverse(ast, {
       enter(node) {
@@ -586,8 +595,8 @@ export class FieldHydrationExpressionProcessor {
           return estraverse.VisitorOption.Break;
         } else if (node.type === 'ArrowFunctionExpression') {
           // Handle arrow function with expression body (no explicit return)
-          const arrowFunc = node as any;
-          if (arrowFunc.body && arrowFunc.body.type !== 'BlockStatement') {
+          const arrowFunc = node as ArrowFunctionExpression;
+          if (arrowFunc.body.type !== 'BlockStatement') {
             // This is an expression body, treat it as the return value
             returnStatement = {
               type: 'ArrowFunctionBody',
