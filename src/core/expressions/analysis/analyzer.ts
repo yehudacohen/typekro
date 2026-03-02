@@ -9,7 +9,25 @@
  */
 
 import * as estraverse from 'estraverse';
-import type { Node as ESTreeNode } from 'estree';
+import type {
+  ArrayExpression as ESTreeArrayExpression,
+  ArrowFunctionExpression as ESTreeArrowFunction,
+  BinaryExpression as ESTreeBinaryExpression,
+  SimpleCallExpression as ESTreeCallExpression,
+  ChainExpression as ESTreeChainExpression,
+  ConditionalExpression as ESTreeConditionalExpression,
+  Expression as ESTreeExpression,
+  Identifier as ESTreeIdentifier,
+  Literal as ESTreeLiteral,
+  LogicalExpression as ESTreeLogicalExpression,
+  MemberExpression as ESTreeMemberExpression,
+  Node as ESTreeNode,
+  ReturnStatement as ESTreeReturnStatement,
+  SimpleLiteral as ESTreeSimpleLiteral,
+  SpreadElement as ESTreeSpreadElement,
+  TemplateLiteral as ESTreeTemplateLiteral,
+  UnaryExpression as ESTreeUnaryExpression,
+} from 'estree';
 import { escapeRegExp } from '../../../utils/helpers.js';
 import {
   containsKubernetesRefs,
@@ -50,7 +68,7 @@ import { type CacheOptions, type CacheStats, ExpressionCache } from './cache.js'
 import { ParserError, parseExpression, parseScript } from './parser.js';
 // Shared types — extracted from this file to break circular deps with cache.ts / factory-pattern-handler.ts
 import type { AnalysisContext, CelConversionResult, ValidationWarning } from './shared-types.js';
-import { type SourceMapBuilder, type SourceMapEntry, SourceMapUtils } from './source-map.js';
+import { type SourceMapEntry, SourceMapUtils } from './source-map.js';
 
 // Re-export shared types for backward compatibility
 export type { AnalysisContext, CelConversionResult, ValidationWarning } from './shared-types.js';
@@ -123,15 +141,15 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze any expression type and convert to CEL if needed
    */
-  analyzeExpression(expression: any, context: AnalysisContext): CelConversionResult {
+  analyzeExpression(expression: unknown, context: AnalysisContext): CelConversionResult {
     // Handle different expression types
     if (typeof expression === 'string') {
       return this.analyzeStringExpression(expression, context);
     }
 
     // Handle KubernetesRef objects directly
-    if (expression && typeof expression === 'object' && expression[KUBERNETES_REF_BRAND]) {
-      return this.analyzeKubernetesRefObject(expression as KubernetesRef<any>, context);
+    if (isKubernetesRef(expression)) {
+      return this.analyzeKubernetesRefObject(expression, context);
     }
 
     // Handle other objects
@@ -240,12 +258,16 @@ export class JavaScriptToCelAnalyzer {
       const hasTypeValidationErrors = typeValidation && !typeValidation.valid;
 
       // Collect only critical validation errors that should affect validity
-      const criticalErrors: any[] = [];
+      const criticalErrors: ConversionError[] = [];
       if (compileTimeValidation?.errors) {
-        criticalErrors.push(...compileTimeValidation.errors);
+        for (const err of compileTimeValidation.errors) {
+          criticalErrors.push(new ConversionError(err.message, '', 'unknown'));
+        }
       }
       if (typeValidation?.errors) {
-        criticalErrors.push(...typeValidation.errors);
+        for (const err of typeValidation.errors) {
+          criticalErrors.push(new ConversionError(err.message, '', 'unknown'));
+        }
       }
       // Resource validation errors are treated as warnings, not critical errors
 
@@ -372,7 +394,7 @@ export class JavaScriptToCelAnalyzer {
    * Analyze a KubernetesRef object directly
    */
   private analyzeKubernetesRefObject(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: AnalysisContext
   ): CelConversionResult {
     // Use the proper CEL path format
@@ -403,8 +425,8 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze object expression by examining its structure
    */
-  private analyzeObjectExpression(obj: any, context: AnalysisContext): CelConversionResult {
-    const kubernetesRefs: KubernetesRef<any>[] = [];
+  private analyzeObjectExpression(obj: unknown, context: AnalysisContext): CelConversionResult {
+    const kubernetesRefs: KubernetesRef<unknown>[] = [];
 
     // Recursively examine object properties for KubernetesRef objects
     this.extractKubernetesRefsFromObject(obj, kubernetesRefs, '');
@@ -429,7 +451,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze primitive expression (no KubernetesRef objects)
    */
-  private analyzePrimitiveExpression(_value: any, _context: AnalysisContext): CelConversionResult {
+  private analyzePrimitiveExpression(
+    _value: unknown,
+    _context: AnalysisContext
+  ): CelConversionResult {
     return {
       valid: true,
       celExpression: null,
@@ -455,7 +480,7 @@ export class JavaScriptToCelAnalyzer {
    * This is the key method that detects when JavaScript expressions contain KubernetesRef objects
    */
   analyzeExpressionWithRefs(
-    expression: any, // Could be a JavaScript expression or contain KubernetesRef objects
+    expression: unknown, // Could be a JavaScript expression or contain KubernetesRef objects
     context: AnalysisContext
   ): CelConversionResult {
     try {
@@ -479,7 +504,7 @@ export class JavaScriptToCelAnalyzer {
 
       if (typeof expression === 'function') {
         // Function expression - analyze function body
-        return this.analyzeFunction(expression, context);
+        return this.analyzeFunction(expression as (...args: unknown[]) => unknown, context);
       }
 
       // Direct KubernetesRef object
@@ -651,7 +676,7 @@ export class JavaScriptToCelAnalyzer {
    * Convert a single KubernetesRef to a conversion result
    */
   private convertKubernetesRefToResult(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: AnalysisContext
   ): CelConversionResult {
     try {
@@ -719,8 +744,8 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Analyze complex values (objects/arrays) that may contain KubernetesRef objects
    */
-  private analyzeComplexValue(value: any, context: AnalysisContext): CelConversionResult {
-    const dependencies: KubernetesRef<any>[] = [];
+  private analyzeComplexValue(value: unknown, context: AnalysisContext): CelConversionResult {
+    const dependencies: KubernetesRef<unknown>[] = [];
     const errors: ConversionError[] = [];
 
     try {
@@ -784,7 +809,10 @@ export class JavaScriptToCelAnalyzer {
    * Generate CEL expression from KubernetesRef based on context
    * This handles the core KubernetesRef to CEL field path conversion (resourceId.fieldPath)
    */
-  private generateCelFromKubernetesRef(ref: KubernetesRef<any>, context: AnalysisContext): string {
+  private generateCelFromKubernetesRef(
+    ref: KubernetesRef<unknown>,
+    context: AnalysisContext
+  ): string {
     // Validate the KubernetesRef
     if (!ref.resourceId || !ref.fieldPath) {
       throw new ConversionError(
@@ -821,7 +849,7 @@ export class JavaScriptToCelAnalyzer {
    * Convert a KubernetesRef directly to a CEL expression
    * This is the main method for KubernetesRef to CEL field path conversion
    */
-  convertKubernetesRefToCel(ref: KubernetesRef<any>, context: AnalysisContext): CelExpression {
+  convertKubernetesRefToCel(ref: KubernetesRef<unknown>, context: AnalysisContext): CelExpression {
     try {
       // Validate KubernetesRef types if type checking is enabled
       if (context.strictTypeChecking !== false && context.typeRegistry) {
@@ -864,13 +892,13 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Find return statement in AST
    */
-  private findReturnStatement(ast: any): any {
-    let returnStatement = null;
+  private findReturnStatement(ast: ESTreeNode): ESTreeReturnStatement | null {
+    let returnStatement: ESTreeReturnStatement | null = null;
 
     estraverse.traverse(ast, {
       enter: (node) => {
         if (node.type === 'ReturnStatement') {
-          returnStatement = node;
+          returnStatement = node as ESTreeReturnStatement;
           return estraverse.VisitorOption.Break;
         }
         return undefined; // Continue traversal
@@ -884,7 +912,7 @@ export class JavaScriptToCelAnalyzer {
    * Check if a value is a template literal expression
    * This checks for JavaScript template literal syntax in runtime values
    */
-  private isTemplateLiteral(value: any): boolean {
+  private isTemplateLiteral(value: unknown): boolean {
     // Check if it's a string that looks like a template literal
     if (typeof value === 'string') {
       // Look for template literal patterns like `text ${expression} more text`
@@ -892,7 +920,7 @@ export class JavaScriptToCelAnalyzer {
     }
 
     // Check if it's an object that represents a template literal structure
-    if (value && typeof value === 'object' && value.type === 'TemplateLiteral') {
+    if (value && typeof value === 'object' && 'type' in value && value.type === 'TemplateLiteral') {
       return true;
     }
 
@@ -903,7 +931,10 @@ export class JavaScriptToCelAnalyzer {
    * Analyze template literal expressions containing KubernetesRef objects
    * This handles runtime template literal values that contain KubernetesRef interpolations
    */
-  private analyzeTemplateLiteral(expression: any, context: AnalysisContext): CelConversionResult {
+  private analyzeTemplateLiteral(
+    expression: unknown,
+    context: AnalysisContext
+  ): CelConversionResult {
     try {
       const dependencies = extractResourceReferences(expression);
       const originalExpression = String(expression);
@@ -989,7 +1020,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Extract all KubernetesRef objects from a complex value
    */
-  private extractKubernetesRefs(value: any, refs: KubernetesRef<any>[]): void {
+  private extractKubernetesRefs(value: unknown, refs: KubernetesRef<unknown>[]): void {
     const extractedRefs = extractResourceReferences(value);
     refs.push(...extractedRefs);
   }
@@ -1485,9 +1516,9 @@ export class JavaScriptToCelAnalyzer {
    * Validate resource references in KubernetesRef objects
    */
   validateResourceReferences(
-    refs: KubernetesRef<any>[],
-    availableResources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>,
+    refs: KubernetesRef<unknown>[],
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     validationContext?: ValidationContext
   ): ResourceValidationResult[] {
     return this.resourceValidator.validateKubernetesRefs(
@@ -1502,9 +1533,9 @@ export class JavaScriptToCelAnalyzer {
    * Validate a single resource reference
    */
   validateResourceReference(
-    ref: KubernetesRef<any>,
-    availableResources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>,
+    ref: KubernetesRef<unknown>,
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     validationContext?: ValidationContext
   ): ResourceValidationResult {
     return this.resourceValidator.validateKubernetesRef(
@@ -1519,9 +1550,9 @@ export class JavaScriptToCelAnalyzer {
    * Validate a reference chain for type safety and circular dependencies
    */
   validateReferenceChain(
-    refs: KubernetesRef<any>[],
-    availableResources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>
+    refs: KubernetesRef<unknown>[],
+    availableResources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
   ): ResourceValidationResult {
     return this.resourceValidator.validateReferenceChain(refs, availableResources, schemaProxy);
   }
@@ -1567,7 +1598,7 @@ export class JavaScriptToCelAnalyzer {
    * Validate KubernetesRef compile-time compatibility
    */
   validateKubernetesRefCompileTimeCompatibility(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: AnalysisContext
   ): CompileTimeValidationResult {
     if (!context.compileTimeContext) {
@@ -1649,8 +1680,8 @@ export class JavaScriptToCelAnalyzer {
   private extractDependenciesFromExpressionString(
     expression: string,
     context: AnalysisContext
-  ): KubernetesRef<any>[] {
-    const dependencies: KubernetesRef<any>[] = [];
+  ): KubernetesRef<unknown>[] {
+    const dependencies: KubernetesRef<unknown>[] = [];
 
     // Look for direct resource references (deployment.status.field)
     if (context.availableReferences) {
@@ -1667,7 +1698,7 @@ export class JavaScriptToCelAnalyzer {
               .replace(/\?\./g, '.') // Remove optional chaining
               .replace(/\?\[/g, '['); // Remove optional array access
 
-            const ref: KubernetesRef<any> = {
+            const ref: KubernetesRef<unknown> = {
               [KUBERNETES_REF_BRAND]: true,
               resourceId: resourceKey,
               fieldPath,
@@ -1697,7 +1728,7 @@ export class JavaScriptToCelAnalyzer {
           .replace(/\?\./g, '.') // Remove optional chaining
           .replace(/\?\[/g, '['); // Remove optional array access
 
-        const ref: KubernetesRef<any> = {
+        const ref: KubernetesRef<unknown> = {
           [KUBERNETES_REF_BRAND]: true,
           resourceId: '__schema__',
           fieldPath,
@@ -1735,7 +1766,7 @@ export class JavaScriptToCelAnalyzer {
           const resourceId = parts[1]!;
           const fieldPath = parts.slice(2).join('.');
 
-          const ref: KubernetesRef<any> = {
+          const ref: KubernetesRef<unknown> = {
             [KUBERNETES_REF_BRAND]: true,
             resourceId,
             fieldPath,
@@ -1760,7 +1791,7 @@ export class JavaScriptToCelAnalyzer {
       for (const match of schemaMatches) {
         const fieldPath = match.replace('schema.', '');
 
-        const ref: KubernetesRef<any> = {
+        const ref: KubernetesRef<unknown> = {
           [KUBERNETES_REF_BRAND]: true,
           resourceId: '__schema__',
           fieldPath,
@@ -1841,7 +1872,7 @@ export class JavaScriptToCelAnalyzer {
           true; // Add all for now, let validation handle it later
 
         if (shouldAdd) {
-          const ref: KubernetesRef<any> = {
+          const ref: KubernetesRef<unknown> = {
             [KUBERNETES_REF_BRAND]: true,
             resourceId,
             fieldPath,
@@ -1910,7 +1941,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert binary expressions (>, <, ==, !=, &&, ||) with KubernetesRef operand handling
    */
-  private convertBinaryExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertBinaryExpression(
+    node: ESTreeBinaryExpression,
+    context: AnalysisContext
+  ): CelExpression {
     // Convert operands with proper precedence handling
     const left = this.handleComplexExpression(node.left, context, node.operator);
     const right = this.handleComplexExpression(node.right, context, node.operator);
@@ -1934,7 +1968,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert member expressions (object.property, object['property']) and array access (array[0], array[index])
    */
-  private convertMemberExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertMemberExpression(
+    node: ESTreeMemberExpression,
+    context: AnalysisContext
+  ): CelExpression {
     // Handle optional member expressions (obj?.prop)
     if (node.optional) {
       return this.convertOptionalMemberExpression(node, context);
@@ -1952,7 +1989,10 @@ export class JavaScriptToCelAnalyzer {
     ) {
       // Convert the object expression first
       const objectExpr = this.convertASTNode(node.object, context);
-      const propertyName = node.property.name;
+      const propertyName =
+        node.property.type === 'Identifier' || node.property.type === 'PrivateIdentifier'
+          ? node.property.name
+          : String((node.property as ESTreeSimpleLiteral).value);
 
       // Create a member access on the result of the complex expression
       const expression = `${objectExpr.expression}.${propertyName}`;
@@ -1971,7 +2011,10 @@ export class JavaScriptToCelAnalyzer {
     } catch (_error) {
       // If path extraction fails, fall back to converting the object and property separately
       const objectExpr = this.convertASTNode(node.object, context);
-      const propertyName = node.property.name;
+      const propertyName =
+        node.property.type === 'Identifier' || node.property.type === 'PrivateIdentifier'
+          ? node.property.name
+          : String((node.property as ESTreeSimpleLiteral).value);
 
       const expression = `${objectExpr.expression}.${propertyName}`;
 
@@ -2028,7 +2071,7 @@ export class JavaScriptToCelAnalyzer {
       // For now, we'll be lenient and allow unknown resources with warnings
 
       // Create a placeholder KubernetesRef for the unknown resource
-      const unknownRef: KubernetesRef<any> = {
+      const unknownRef: KubernetesRef<unknown> = {
         [KUBERNETES_REF_BRAND]: true as const,
         resourceId: resourceName,
         fieldPath: fieldPath,
@@ -2061,7 +2104,10 @@ export class JavaScriptToCelAnalyzer {
    * Convert conditional expressions (condition ? true : false)
    * Handles ternary operators with proper CEL syntax and KubernetesRef support
    */
-  private convertConditionalExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertConditionalExpression(
+    node: ESTreeConditionalExpression,
+    context: AnalysisContext
+  ): CelExpression {
     const test = this.handleComplexExpression(node.test, context, '?');
     const consequent = this.handleComplexExpression(node.consequent, context, '?');
     const alternate = this.handleComplexExpression(node.alternate, context, '?');
@@ -2223,7 +2269,7 @@ export class JavaScriptToCelAnalyzer {
    * Handle complex nested expressions with proper precedence
    */
   private handleComplexExpression(
-    node: any,
+    node: ESTreeNode,
     context: AnalysisContext,
     parentOperator?: string
   ): CelExpression {
@@ -2243,7 +2289,10 @@ export class JavaScriptToCelAnalyzer {
    * Convert logical expressions (&&, ||, ??)
    * Handles logical OR fallback conversion (value || default) and nullish coalescing (value ?? default)
    */
-  private convertLogicalExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertLogicalExpression(
+    node: ESTreeLogicalExpression,
+    context: AnalysisContext
+  ): CelExpression {
     const left = this.convertASTNode(node.left, context);
     const right = this.convertASTNode(node.right, context);
 
@@ -2366,7 +2415,10 @@ export class JavaScriptToCelAnalyzer {
    * Convert optional chaining expressions (obj?.prop?.field) to Kro conditional CEL
    * Uses Kro's ? operator for null-safe property access
    */
-  private convertOptionalChaining(node: any, context: AnalysisContext): CelExpression {
+  private convertOptionalChaining(
+    node: ESTreeChainExpression,
+    context: AnalysisContext
+  ): CelExpression {
     // ChainExpression wraps the actual optional expression
     const expression = node.expression;
 
@@ -2385,7 +2437,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert optional member expressions (obj?.prop, obj?.prop?.field)
    */
-  private convertOptionalMemberExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertOptionalMemberExpression(
+    node: ESTreeMemberExpression,
+    context: AnalysisContext
+  ): CelExpression {
     // Build the optional chain by recursively processing the object
     const objectExpr = this.convertASTNode(node.object, context);
 
@@ -2396,7 +2451,11 @@ export class JavaScriptToCelAnalyzer {
       propertyAccess = `[${property.expression}]`;
     } else {
       // Handle obj?.prop syntax
-      propertyAccess = `.${node.property.name}`;
+      const propName =
+        node.property.type === 'Identifier' || node.property.type === 'PrivateIdentifier'
+          ? node.property.name
+          : String((node.property as ESTreeSimpleLiteral).value);
+      propertyAccess = `.${propName}`;
     }
 
     // Use Kro's ? operator for null-safe access
@@ -2413,13 +2472,16 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert optional call expressions (obj?.method?.())
    */
-  private convertOptionalCallExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertOptionalCallExpression(
+    node: ESTreeCallExpression,
+    context: AnalysisContext
+  ): CelExpression {
     // Convert the callee with optional chaining
-    const callee = this.convertASTNode(node.callee, context);
+    const callee = this.convertASTNode(node.callee as ESTreeNode, context);
 
     // Convert arguments
     const args = node.arguments
-      .map((arg: any) => this.convertASTNode(arg, context).expression)
+      .map((arg) => this.convertASTNode(arg as ESTreeNode, context).expression)
       .join(', ');
 
     // Use Kro's ? operator for null-safe method calls
@@ -2436,19 +2498,24 @@ export class JavaScriptToCelAnalyzer {
    * Convert template literals with KubernetesRef interpolation
    * Handles expressions like `http://${database.status.podIP}:5432/db`
    */
-  private convertTemplateLiteral(node: any, context: AnalysisContext): CelExpression {
+  private convertTemplateLiteral(
+    node: ESTreeTemplateLiteral,
+    context: AnalysisContext
+  ): CelExpression {
     let result = '';
-    const _dependencies: KubernetesRef<any>[] = [];
+    const _dependencies: KubernetesRef<unknown>[] = [];
 
     // Process each part of the template literal
     for (let i = 0; i < node.quasis.length; i++) {
       // Add the literal string part
-      const literalPart = node.quasis[i].value.cooked;
+      const quasi = node.quasis[i];
+      const literalPart = quasi?.value.cooked ?? '';
       result += literalPart;
 
       // Add the interpolated expression if it exists
-      if (i < node.expressions.length) {
-        const expr = this.convertASTNode(node.expressions[i], context);
+      const exprNode = node.expressions[i];
+      if (i < node.expressions.length && exprNode) {
+        const expr = this.convertASTNode(exprNode, context);
 
         // For template literals, we need to wrap expressions in ${}
         result += `\${${expr.expression}}`;
@@ -2470,7 +2537,7 @@ export class JavaScriptToCelAnalyzer {
    * Convert literal values (strings, numbers, booleans - no KubernetesRef objects)
    * This preserves literal values exactly as they are, without any KubernetesRef processing
    */
-  private convertLiteral(node: any, _context: AnalysisContext): CelExpression {
+  private convertLiteral(node: ESTreeLiteral, _context: AnalysisContext): CelExpression {
     let literalValue: string;
 
     if (typeof node.value === 'string') {
@@ -2503,7 +2570,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert call expressions (method calls and global functions)
    */
-  private convertCallExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertCallExpression(
+    node: ESTreeCallExpression,
+    context: AnalysisContext
+  ): CelExpression {
     // Handle global functions and Math methods
     if (node.callee.type === 'Identifier') {
       const functionName = node.callee.name;
@@ -2514,14 +2584,15 @@ export class JavaScriptToCelAnalyzer {
     if (
       node.callee.type === 'MemberExpression' &&
       node.callee.object.type === 'Identifier' &&
-      node.callee.object.name === 'Math'
+      node.callee.object.name === 'Math' &&
+      node.callee.property.type === 'Identifier'
     ) {
       const mathMethod = node.callee.property.name;
       return this.convertMathFunction(mathMethod, node.arguments, context);
     }
 
     // Handle common JavaScript methods that can be converted to CEL
-    if (node.callee.type === 'MemberExpression') {
+    if (node.callee.type === 'MemberExpression' && node.callee.property.type === 'Identifier') {
       const object = this.convertASTNode(node.callee.object, context);
       const methodName = node.callee.property.name;
 
@@ -2589,7 +2660,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertGlobalFunction(
     functionName: string,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     const convertedArgs = args.map((arg) => this.convertASTNode(arg, context));
@@ -2654,7 +2725,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertMathFunction(
     mathMethod: string,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     const convertedArgs = args.map((arg) => this.convertASTNode(arg, context));
@@ -2753,7 +2824,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert unary expressions like !x, +x, -x, !!x
    */
-  private convertUnaryExpression(node: any, context: AnalysisContext): CelExpression {
+  private convertUnaryExpression(
+    node: ESTreeUnaryExpression,
+    context: AnalysisContext
+  ): CelExpression {
     const operand = this.convertASTNode(node.argument, context);
 
     switch (node.operator) {
@@ -2793,8 +2867,11 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert array expressions
    */
-  private convertArrayExpression(node: any, context: AnalysisContext): CelExpression {
-    const elements = node.elements.map((element: any) => {
+  private convertArrayExpression(
+    node: ESTreeArrayExpression,
+    context: AnalysisContext
+  ): CelExpression {
+    const elements = node.elements.map((element) => {
       if (element === null) return 'null';
       return this.convertASTNode(element, context).expression;
     });
@@ -2811,7 +2888,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert identifier expressions
    */
-  private convertIdentifier(node: any, context: AnalysisContext): CelExpression {
+  private convertIdentifier(node: ESTreeIdentifier, context: AnalysisContext): CelExpression {
     // For identifiers, we need to check if they refer to available references
     const name = node.name;
 
@@ -2865,7 +2942,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Extract member path from AST node
    */
-  private extractMemberPath(node: any): string {
+  private extractMemberPath(node: ESTreeNode): string {
     if (node.type === 'Identifier') {
       return node.name;
     }
@@ -2881,7 +2958,7 @@ export class JavaScriptToCelAnalyzer {
         return `${object}${optionalMarker}[${property}]`;
       } else {
         // For regular property access like object.property or object?.property
-        const property = node.property.name;
+        const property = this.getPropertyName(node.property);
         const optionalMarker = node.optional ? '?.' : '.';
         return `${object}${optionalMarker}${property}`;
       }
@@ -2902,7 +2979,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Check if a node represents a complex expression that can't be handled as a simple path
    */
-  private isComplexExpression(node: any): boolean {
+  private isComplexExpression(node: ESTreeNode): boolean {
     if (node.type === 'CallExpression') {
       return true;
     }
@@ -2918,7 +2995,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Get source text from AST node (placeholder implementation)
    */
-  private getSourceText(node: any): string {
+  private getSourceText(node: ESTreeNode): string {
     // For now, return a placeholder - this would need access to original source
     if (node.type === 'Literal') {
       return String(node.value);
@@ -2930,7 +3007,7 @@ export class JavaScriptToCelAnalyzer {
    * Generate CEL expression for resource field reference
    */
   private getResourceFieldReference(
-    _resource: Enhanced<any, any>,
+    _resource: Enhanced<unknown, unknown>,
     resourceKey: string,
     fieldPath: string,
     context: AnalysisContext
@@ -2940,7 +3017,7 @@ export class JavaScriptToCelAnalyzer {
     const expression = `${resourceKey}.${fieldPath}`;
 
     // Create a KubernetesRef object and add it to dependencies
-    const ref: KubernetesRef<any> = {
+    const ref: KubernetesRef<unknown> = {
       [KUBERNETES_REF_BRAND]: true,
       resourceId: resourceKey,
       fieldPath,
@@ -2965,7 +3042,7 @@ export class JavaScriptToCelAnalyzer {
   private getSchemaFieldReference(path: string, context: AnalysisContext): CelExpression {
     // Create a KubernetesRef object for schema reference and add it to dependencies
     const fieldPath = path.substring('schema.'.length);
-    const ref: KubernetesRef<any> = {
+    const ref: KubernetesRef<unknown> = {
       [KUBERNETES_REF_BRAND]: true,
       resourceId: '__schema__',
       fieldPath,
@@ -2986,11 +3063,58 @@ export class JavaScriptToCelAnalyzer {
   }
 
   /**
+   * Safely extract an arrow function predicate's parameter name from an ESTree argument.
+   * Returns the param name and the arrow function node, or throws if not an arrow function.
+   */
+  private extractArrowPredicate(arg: ESTreeExpression | ESTreeSpreadElement): {
+    param: string;
+    arrow: ESTreeArrowFunction;
+  } {
+    if (arg.type !== 'ArrowFunctionExpression') {
+      throw new ConversionError(
+        'Expected arrow function predicate',
+        String(arg.type),
+        'function-call'
+      );
+    }
+    const firstParam = arg.params[0];
+    const paramName = firstParam && firstParam.type === 'Identifier' ? firstParam.name : '_item';
+    return { param: paramName, arrow: arg };
+  }
+
+  /**
+   * Get the name of a MemberExpression's property, safely handling the Expression | PrivateIdentifier union.
+   */
+  private getPropertyName(prop: ESTreeExpression | { type: string; name: string }): string {
+    if ('name' in prop && (prop.type === 'Identifier' || prop.type === 'PrivateIdentifier')) {
+      return prop.name;
+    }
+    if (prop.type === 'Literal' && 'value' in prop) {
+      return String((prop as ESTreeSimpleLiteral).value);
+    }
+    return '<unknown>';
+  }
+
+  /**
+   * Safely get an arg at a specific index, asserting it exists after length check.
+   */
+  private getArg(
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
+    index: number
+  ): ESTreeExpression | ESTreeSpreadElement {
+    const arg = args[index];
+    if (!arg) {
+      throw new ConversionError(`Expected argument at index ${index}`, '', 'function-call');
+    }
+    return arg;
+  }
+
+  /**
    * Convert array.find() method calls
    */
   private convertArrayFind(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3002,16 +3126,20 @@ export class JavaScriptToCelAnalyzer {
     }
 
     // For simple property comparisons like c => c.type === "Available", we can convert to CEL
-    const arg = args[0];
+    const arg = this.getArg(args, 0);
     if (arg.type === 'ArrowFunctionExpression' && arg.body.type === 'BinaryExpression') {
-      const param = arg.params[0].name;
+      const { param } = this.extractArrowPredicate(arg);
       const binaryExpr = arg.body;
 
       // Handle the left side (should be a member expression like c.type)
       let leftExpr: string;
-      if (binaryExpr.left.type === 'MemberExpression' && binaryExpr.left.object.name === param) {
+      if (
+        binaryExpr.left.type === 'MemberExpression' &&
+        binaryExpr.left.object.type === 'Identifier' &&
+        binaryExpr.left.object.name === param
+      ) {
         // Simple case: c.type
-        leftExpr = `${param}.${binaryExpr.left.property.name}`;
+        leftExpr = `${param}.${this.getPropertyName(binaryExpr.left.property)}`;
       } else {
         // More complex case - try to convert but replace parameter references
         try {
@@ -3065,7 +3193,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertArrayFilter(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3077,13 +3205,13 @@ export class JavaScriptToCelAnalyzer {
     }
 
     // For simple property access like i => i.ip, we can convert to CEL
-    const arg = args[0];
+    const arg = this.getArg(args, 0);
     if (arg.type === 'ArrowFunctionExpression') {
-      const param = arg.params[0].name;
+      const { param, arrow } = this.extractArrowPredicate(arg);
 
-      if (arg.body.type === 'MemberExpression') {
+      if (arrow.body.type === 'MemberExpression') {
         // Simple property access: i => i.ip
-        const property = arg.body.property.name;
+        const property = this.getPropertyName(arrow.body.property);
         const expression = `${object.expression}.filter(${param}, has(${param}.${property}) && ${param}.${property} != null)`;
 
         return {
@@ -3091,11 +3219,11 @@ export class JavaScriptToCelAnalyzer {
           expression,
           _type: undefined,
         } as CelExpression;
-      } else if (arg.body.type === 'BinaryExpression') {
+      } else if (arrow.body.type === 'BinaryExpression') {
         // Binary comparison: i => i.type === "Available"
-        const left = this.convertASTNode(arg.body.left, context);
-        const operator = this.convertBinaryOperator(arg.body.operator);
-        const right = this.convertASTNode(arg.body.right, context);
+        const left = this.convertASTNode(arrow.body.left, context);
+        const operator = this.convertBinaryOperator(arrow.body.operator);
+        const right = this.convertASTNode(arrow.body.right, context);
 
         // Replace parameter references with the iteration variable
         const leftExpr = left.expression.replace(new RegExp(`\\b${param}\\b`, 'g'), param);
@@ -3131,7 +3259,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringIncludes(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3142,7 +3270,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const searchValue = this.convertASTNode(args[0], context);
+    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
     const expression = `${object.expression}.contains(${searchValue.expression})`;
 
     return {
@@ -3157,7 +3285,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertArrayMap(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3169,10 +3297,17 @@ export class JavaScriptToCelAnalyzer {
     }
 
     // For simple property access like c => c.name, we can convert to CEL
-    const arg = args[0];
-    if (arg.type === 'ArrowFunctionExpression' && arg.body.type === 'MemberExpression') {
-      const param = arg.params[0].name;
-      const property = arg.body.property.name;
+    const arg = this.getArg(args, 0);
+    if (arg.type === 'ArrowFunctionExpression') {
+      const { param, arrow } = this.extractArrowPredicate(arg);
+      if (arrow.body.type !== 'MemberExpression') {
+        throw new ConversionError(
+          'Complex Array.map() predicates cannot be automatically converted to CEL.',
+          `${object.expression}.map(...)`,
+          'function-call'
+        );
+      }
+      const property = this.getPropertyName(arrow.body.property);
       const expression = `${object.expression}.map(${param}, ${param}.${property})`;
 
       return {
@@ -3202,7 +3337,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertArraySome(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3233,7 +3368,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertArrayEvery(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3264,7 +3399,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringStartsWith(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3275,7 +3410,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const searchValue = this.convertASTNode(args[0], context);
+    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
     const expression = `${object.expression}.startsWith(${searchValue.expression})`;
 
     return {
@@ -3290,7 +3425,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringEndsWith(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3301,7 +3436,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const searchValue = this.convertASTNode(args[0], context);
+    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
     const expression = `${object.expression}.endsWith(${searchValue.expression})`;
 
     return {
@@ -3316,7 +3451,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringToLowerCase(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 0) {
@@ -3341,7 +3476,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringToUpperCase(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 0) {
@@ -3366,7 +3501,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringTrim(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 0) {
@@ -3392,7 +3527,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringSubstring(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
@@ -3403,7 +3538,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const startIndex = this.convertASTNode(args[0], context);
+    const startIndex = this.convertASTNode(this.getArg(args, 0), context);
     if (args.length === 1) {
       const expression = `${object.expression}.substring(${startIndex.expression})`;
       return {
@@ -3412,7 +3547,7 @@ export class JavaScriptToCelAnalyzer {
         _type: undefined,
       } as CelExpression;
     } else {
-      const endIndex = this.convertASTNode(args[1], context);
+      const endIndex = this.convertASTNode(this.getArg(args, 1), context);
       const expression = `${object.expression}.substring(${startIndex.expression}, ${endIndex.expression})`;
       return {
         [CEL_EXPRESSION_BRAND]: true,
@@ -3427,7 +3562,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringSlice(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
@@ -3438,7 +3573,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const startIndex = this.convertASTNode(args[0], context);
+    const startIndex = this.convertASTNode(this.getArg(args, 0), context);
     if (args.length === 1) {
       const expression = `${object.expression}.substring(${startIndex.expression})`;
       return {
@@ -3447,7 +3582,7 @@ export class JavaScriptToCelAnalyzer {
         _type: undefined,
       } as CelExpression;
     } else {
-      const endIndex = this.convertASTNode(args[1], context);
+      const endIndex = this.convertASTNode(this.getArg(args, 1), context);
       const expression = `${object.expression}.substring(${startIndex.expression}, ${endIndex.expression})`;
       return {
         [CEL_EXPRESSION_BRAND]: true,
@@ -3462,7 +3597,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringSplit(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3473,7 +3608,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const separator = this.convertASTNode(args[0], context);
+    const separator = this.convertASTNode(this.getArg(args, 0), context);
     const expression = `${object.expression}.split(${separator.expression})`;
 
     return {
@@ -3488,7 +3623,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertArrayJoin(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3499,7 +3634,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const separator = this.convertASTNode(args[0], context);
+    const separator = this.convertASTNode(this.getArg(args, 0), context);
     const expression = `${object.expression}.join(${separator.expression})`;
 
     return {
@@ -3514,7 +3649,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertArrayFlatMap(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     _context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3525,15 +3660,15 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const arg = args[0];
+    const arg = this.getArg(args, 0);
 
     // Handle arrow function: arr.flatMap(x => x.items)
     if (arg.type === 'ArrowFunctionExpression') {
-      const param = arg.params[0].name;
+      const { param, arrow } = this.extractArrowPredicate(arg);
 
-      if (arg.body.type === 'MemberExpression') {
+      if (arrow.body.type === 'MemberExpression') {
         // Simple property access: x => x.items
-        const property = arg.body.property.name;
+        const property = this.getPropertyName(arrow.body.property);
         const expression = `${object.expression}.map(${param}, ${param}.${property}).flatten()`;
 
         return {
@@ -3565,7 +3700,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringPadStart(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
@@ -3576,9 +3711,9 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const targetLength = this.convertASTNode(args[0], context);
+    const targetLength = this.convertASTNode(this.getArg(args, 0), context);
     const padString =
-      args.length > 1 ? this.convertASTNode(args[1], context) : { expression: '" "' };
+      args.length > 1 ? this.convertASTNode(this.getArg(args, 1), context) : { expression: '" "' };
 
     // CEL doesn't have padStart, so we'll simulate it
     const expression = `size(${object.expression}) >= ${targetLength.expression} ? ${object.expression} : (${padString.expression}.repeat(${targetLength.expression} - size(${object.expression})) + ${object.expression})`;
@@ -3595,7 +3730,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringPadEnd(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length < 1 || args.length > 2) {
@@ -3606,9 +3741,9 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const targetLength = this.convertASTNode(args[0], context);
+    const targetLength = this.convertASTNode(this.getArg(args, 0), context);
     const padString =
-      args.length > 1 ? this.convertASTNode(args[1], context) : { expression: '" "' };
+      args.length > 1 ? this.convertASTNode(this.getArg(args, 1), context) : { expression: '" "' };
 
     // CEL doesn't have padEnd, so we'll simulate it
     const expression = `size(${object.expression}) >= ${targetLength.expression} ? ${object.expression} : (${object.expression} + ${padString.expression}.repeat(${targetLength.expression} - size(${object.expression})))`;
@@ -3625,7 +3760,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringRepeat(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3636,7 +3771,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const count = this.convertASTNode(args[0], context);
+    const count = this.convertASTNode(this.getArg(args, 0), context);
 
     // CEL doesn't have repeat, so we'll use a simple approach for small counts
     const expression = `${object.expression}.repeat(${count.expression})`;
@@ -3653,7 +3788,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringReplace(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 2) {
@@ -3664,8 +3799,8 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const searchValue = this.convertASTNode(args[0], context);
-    const replaceValue = this.convertASTNode(args[1], context);
+    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
+    const replaceValue = this.convertASTNode(this.getArg(args, 1), context);
 
     // CEL doesn't have replace, so we'll use a simple substitution
     const expression = `${object.expression}.replace(${searchValue.expression}, ${replaceValue.expression})`;
@@ -3682,7 +3817,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringIndexOf(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3693,7 +3828,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const searchValue = this.convertASTNode(args[0], context);
+    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
 
     // CEL doesn't have indexOf, so we'll use a conditional approach
     const expression = `${object.expression}.contains(${searchValue.expression}) ? 0 : -1`;
@@ -3710,7 +3845,7 @@ export class JavaScriptToCelAnalyzer {
    */
   private convertStringLastIndexOf(
     object: CelExpression,
-    args: any[],
+    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     context: AnalysisContext
   ): CelExpression {
     if (args.length !== 1) {
@@ -3721,7 +3856,7 @@ export class JavaScriptToCelAnalyzer {
       );
     }
 
-    const searchValue = this.convertASTNode(args[0], context);
+    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
 
     // CEL doesn't have lastIndexOf, so we'll use a conditional approach
     const expression = `${object.expression}.contains(${searchValue.expression}) ? size(${object.expression}) - size(${searchValue.expression}) : -1`;
@@ -3736,7 +3871,9 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Infer type from field path based on common Kubernetes patterns
    */
-  private inferTypeFromFieldPath(fieldPath: string): any {
+  private inferTypeFromFieldPath(
+    fieldPath: string
+  ): string | number | boolean | Record<string, unknown> | unknown[] {
     // Common patterns for type inference
     if (
       fieldPath.includes('replicas') ||
@@ -3808,7 +3945,10 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Convert array access expressions with KubernetesRef support (array[0], array[index])
    */
-  private convertArrayAccess(node: any, context: AnalysisContext): CelExpression {
+  private convertArrayAccess(
+    node: ESTreeMemberExpression,
+    context: AnalysisContext
+  ): CelExpression {
     // Convert the object being accessed (could be a KubernetesRef)
     const object = this.convertASTNode(node.object, context);
 
@@ -3829,7 +3969,7 @@ export class JavaScriptToCelAnalyzer {
    * Check if a value is a static literal that doesn't need conversion
    * Static values (no KubernetesRef objects) should be preserved as-is for performance
    */
-  isStaticValue(value: any): boolean {
+  isStaticValue(value: unknown): boolean {
     // Primitive values are always static
     if (value === null || value === undefined) return true;
     if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -3858,7 +3998,7 @@ export class JavaScriptToCelAnalyzer {
   /**
    * Create a result for static values that don't require conversion
    */
-  createStaticValueResult(_value: any): CelConversionResult {
+  createStaticValueResult(_value: unknown): CelConversionResult {
     return {
       valid: true,
       celExpression: null, // No CEL expression needed for static values
@@ -3877,7 +4017,7 @@ export class JavaScriptToCelAnalyzer {
    * appropriate expression processing based on the deployment strategy.
    */
   analyzeExpressionWithFactoryPattern(
-    expression: any,
+    expression: unknown,
     context: AnalysisContext
   ): CelConversionResult {
     try {
