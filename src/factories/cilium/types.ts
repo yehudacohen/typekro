@@ -20,13 +20,13 @@ export interface CiliumBootstrapConfig {
   name: string;
   namespace?: string;
   version?: string;
-  
+
   // Cluster configuration
   cluster: {
     name: string;
     id: number;
   };
-  
+
   // Networking configuration
   networking?: {
     ipam?: {
@@ -63,7 +63,7 @@ export interface CiliumBootstrapConfig {
       acceleration?: 'disabled' | 'native' | 'best-effort';
     };
   };
-  
+
   // Security configuration
   security?: {
     encryption?: {
@@ -92,7 +92,7 @@ export interface CiliumBootstrapConfig {
     policyEnforcement?: 'default' | 'always' | 'never';
     policyAuditMode?: boolean;
   };
-  
+
   // BGP configuration
   bgp?: {
     enabled?: boolean;
@@ -101,7 +101,7 @@ export interface CiliumBootstrapConfig {
       podCIDR?: boolean;
     };
   };
-  
+
   // Gateway API configuration
   gatewayAPI?: {
     enabled?: boolean;
@@ -110,7 +110,7 @@ export interface CiliumBootstrapConfig {
       name?: string;
     };
   };
-  
+
   // Observability configuration
   observability?: {
     hubble?: {
@@ -141,18 +141,18 @@ export interface CiliumBootstrapConfig {
       };
     };
   };
-  
+
   // Operator configuration
   operator?: {
     replicas?: number;
     resources?: ResourceRequirements;
   };
-  
+
   // Agent configuration
   agent?: {
     resources?: ResourceRequirements;
   };
-  
+
   // Advanced configuration
   advanced?: {
     bpf?: {
@@ -168,10 +168,10 @@ export interface CiliumBootstrapConfig {
       confPath?: string;
     };
   };
-  
+
   // Custom Helm values override
   customValues?: Record<string, any>;
-  
+
   // TypeKro specific
   id?: string;
 }
@@ -184,18 +184,18 @@ export interface CiliumBootstrapStatus {
   phase: 'Installing' | 'Ready' | 'Failed' | 'Upgrading';
   ready: boolean;
   version: string;
-  
+
   // Component readiness
   agentReady: boolean;
   operatorReady: boolean;
   hubbleReady: boolean;
-  
+
   // Feature status
   encryptionEnabled: boolean;
   bgpEnabled: boolean;
   gatewayAPIEnabled: boolean;
   clusterMeshReady: boolean;
-  
+
   // Integration endpoints for other systems
   endpoints: {
     health: string;
@@ -203,14 +203,14 @@ export interface CiliumBootstrapStatus {
     hubbleMetrics?: string;
     hubbleUI?: string;
   };
-  
+
   // CNI integration points
   cni: {
     configPath: string;
     socketPath: string;
     binPath: string;
   };
-  
+
   // Network configuration status
   networking: {
     ipamMode: string;
@@ -218,14 +218,14 @@ export interface CiliumBootstrapStatus {
     routingMode: string;
     tunnelProtocol?: string;
   };
-  
+
   // Security status
   security: {
     policyEnforcement: string;
     encryptionStatus: string;
     authenticationEnabled: boolean;
   };
-  
+
   // Resource counts and capacity
   resources: {
     totalNodes: number;
@@ -911,17 +911,6 @@ export interface BGPSessionStatus {
   updatesReceived?: number;
 }
 
-/**
- * Readiness evaluation result
- */
-export interface ReadinessResult {
-  ready: boolean;
-  message: string;
-  details?: Record<string, any>;
-  lastTransition?: string | undefined;
-  reason?: string;
-}
-
 // =============================================================================
 // HELM INTEGRATION TYPES
 // =============================================================================
@@ -973,7 +962,7 @@ export interface CiliumHelmValues {
     name: string;
     id: number;
   };
-  
+
   // IPAM configuration
   ipam?: {
     mode?: 'kubernetes' | 'cluster-pool' | 'azure' | 'aws-eni' | 'crd';
@@ -982,7 +971,7 @@ export interface CiliumHelmValues {
       clusterPoolIPv6PodCIDRList?: string[];
     };
   };
-  
+
   // Networking configuration
   kubeProxyReplacement?: boolean | 'partial';
   routingMode?: 'tunnel' | 'native';
@@ -1010,7 +999,7 @@ export interface CiliumHelmValues {
     mode?: 'snat' | 'dsr' | 'hybrid';
     acceleration?: 'disabled' | 'native' | 'best-effort';
   };
-  
+
   // Security configuration
   encryption?: {
     enabled?: boolean;
@@ -1037,7 +1026,7 @@ export interface CiliumHelmValues {
   };
   policyEnforcement?: 'default' | 'always' | 'never';
   policyAuditMode?: boolean;
-  
+
   // BGP configuration
   bgp?: {
     enabled?: boolean;
@@ -1046,7 +1035,7 @@ export interface CiliumHelmValues {
       podCIDR?: boolean;
     };
   };
-  
+
   // Gateway API configuration
   gatewayAPI?: {
     enabled?: boolean;
@@ -1055,7 +1044,7 @@ export interface CiliumHelmValues {
       name?: string;
     };
   };
-  
+
   // Observability configuration
   hubble?: {
     enabled?: boolean;
@@ -1084,7 +1073,7 @@ export interface CiliumHelmValues {
       enabled?: boolean;
     };
   };
-  
+
   // Operator configuration
   operator?: {
     replicas?: number;
@@ -1099,7 +1088,7 @@ export interface CiliumHelmValues {
       };
     };
   };
-  
+
   // Agent configuration
   agent?: {
     resources?: {
@@ -1113,7 +1102,7 @@ export interface CiliumHelmValues {
       };
     };
   };
-  
+
   // Advanced configuration
   bpf?: {
     preallocateMaps?: boolean;
@@ -1127,7 +1116,7 @@ export interface CiliumHelmValues {
     binPath?: string;
     confPath?: string;
   };
-  
+
   // Allow additional custom values
   [key: string]: any;
 }
@@ -1162,10 +1151,14 @@ export class CiliumResourceValidationError extends TypeKroError {
     public readonly resourceType: string,
     public readonly resourceName: string
   ) {
-    super(`Cilium ${resourceType} validation error for ${resourceName}: ${message}`, 'CILIUM_RESOURCE_VALIDATION_ERROR', {
-      resourceType,
-      resourceName,
-    });
+    super(
+      `Cilium ${resourceType} validation error for ${resourceName}: ${message}`,
+      'CILIUM_RESOURCE_VALIDATION_ERROR',
+      {
+        resourceType,
+        resourceName,
+      }
+    );
     this.name = 'CiliumResourceValidationError';
   }
 }
@@ -1197,11 +1190,15 @@ export class CiliumReadinessError extends TypeKroError {
     public readonly expectedState: string,
     public readonly actualState: string
   ) {
-    super(`Cilium ${component} readiness error: expected ${expectedState}, got ${actualState}. ${message}`, 'CILIUM_READINESS_ERROR', {
-      component,
-      expectedState,
-      actualState,
-    });
+    super(
+      `Cilium ${component} readiness error: expected ${expectedState}, got ${actualState}. ${message}`,
+      'CILIUM_READINESS_ERROR',
+      {
+        component,
+        expectedState,
+        actualState,
+      }
+    );
     this.name = 'CiliumReadinessError';
   }
 }

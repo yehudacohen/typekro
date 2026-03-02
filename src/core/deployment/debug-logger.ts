@@ -8,6 +8,7 @@
 import { DEFAULT_MAX_STATUS_OBJECT_SIZE } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, DeploymentEvent, StatusDebugEvent } from '../types/deployment.js';
+import type { ResourceStatus } from '../types/kubernetes.js';
 
 /**
  * Debug logging configuration
@@ -36,20 +37,6 @@ export interface StatusLoggingContext {
   isTimeout: boolean;
   progressCallback?: (event: DeploymentEvent) => void;
 }
-
-/**
- * Readiness evaluation result
- */
-export interface ReadinessResult {
-  ready: boolean;
-  reason?: string;
-  details?: Record<string, unknown>;
-}
-
-/**
- * Readiness evaluator function type
- */
-export type ReadinessEvaluator = (resource: unknown) => boolean | ReadinessResult;
 
 /**
  * DebugLogger provides enhanced debug logging for deployment operations
@@ -82,7 +69,7 @@ export class DebugLogger {
   logResourceStatus(
     resource: DeployedResource,
     currentStatus: unknown,
-    readinessResult: boolean | ReadinessResult,
+    readinessResult: boolean | ResourceStatus,
     context: StatusLoggingContext
   ): void {
     if (!this.options.enabled || !this.options.statusPolling) {
@@ -139,8 +126,8 @@ export class DebugLogger {
    */
   logReadinessEvaluation(
     resource: DeployedResource,
-    evaluator: ReadinessEvaluator,
-    result: ReadinessResult
+    evaluator: (resource: unknown) => boolean | ResourceStatus,
+    result: ResourceStatus
   ): void {
     if (!this.options.enabled || !this.options.readinessEvaluation) {
       return;
@@ -347,7 +334,7 @@ export class DebugLogger {
   /**
    * Format readiness result for display
    */
-  private formatReadinessResult(result: boolean | ReadinessResult): {
+  private formatReadinessResult(result: boolean | ResourceStatus): {
     summary: string;
     details?: string;
   } {
@@ -367,7 +354,10 @@ export class DebugLogger {
   /**
    * Get information about the readiness evaluator
    */
-  private getEvaluatorInfo(evaluator: ReadinessEvaluator): { type: string; name: string } {
+  private getEvaluatorInfo(evaluator: (resource: unknown) => boolean | ResourceStatus): {
+    type: string;
+    name: string;
+  } {
     const funcString = evaluator.toString();
 
     // Try to extract function name
