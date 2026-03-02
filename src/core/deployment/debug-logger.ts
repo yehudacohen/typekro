@@ -423,7 +423,23 @@ export class DebugLogger {
     const sanitized: Record<string, unknown> = {};
 
     // List of potentially sensitive fields to exclude
-    const sensitiveFields = ['token', 'password', 'secret', 'key', 'cert', 'credential'];
+    const sensitiveFields = [
+      'token',
+      'password',
+      'secret',
+      'key',
+      'cert',
+      'credential',
+      'apikey',
+      'bearer',
+      'authorization',
+      'private',
+      'passphrase',
+      'accesstoken',
+      'refreshtoken',
+      'kubeconfig',
+      'ssh',
+    ];
 
     for (const [key, value] of Object.entries(statusObj)) {
       const lowerKey = key.toLowerCase();
@@ -460,7 +476,23 @@ export class DebugLogger {
     // Limit number of fields to prevent huge objects
     for (const [key, value] of entries.slice(0, 20)) {
       const lowerKey = key.toLowerCase();
-      const sensitiveFields = ['token', 'password', 'secret', 'key', 'cert', 'credential'];
+      const sensitiveFields = [
+        'token',
+        'password',
+        'secret',
+        'key',
+        'cert',
+        'credential',
+        'apikey',
+        'bearer',
+        'authorization',
+        'private',
+        'passphrase',
+        'accesstoken',
+        'refreshtoken',
+        'kubeconfig',
+        'ssh',
+      ];
       const isSensitive = sensitiveFields.some((field) => lowerKey.includes(field));
 
       if (isSensitive) {

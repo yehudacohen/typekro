@@ -11,12 +11,12 @@ import { getCurrentCompositionContext } from '../../composition/context.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/index.js';
+import type { FactoryExpressionContext } from '../analysis/types.js';
 import {
   type MagicProxyDetectionResult,
   MagicProxyDetector,
   type MagicProxyRefInfo,
 } from '../magic-proxy/magic-proxy-detector.js';
-import type { FactoryExpressionContext } from '../analysis/types.js';
 
 const logger = getComponentLogger('cel-conversion-engine');
 
@@ -122,9 +122,9 @@ export class CelConversionEngine {
       trackMetrics: true,
     });
 
-    if (config.includeDebugInfo) {
-      result.debugInfo!.detectedReferences = detection.references;
-      result.debugInfo?.conversionSteps.push(
+    if (config.includeDebugInfo && result.debugInfo) {
+      result.debugInfo.detectedReferences = detection.references;
+      result.debugInfo.conversionSteps.push(
         `Detected ${detection.references.length} KubernetesRef objects`
       );
     }

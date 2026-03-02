@@ -31,9 +31,17 @@ export function getLoggerConfigFromEnv(): LoggerConfig {
     config.pretty = true;
   }
 
-  // Set custom destination if specified
+  // Set custom destination if specified (validated against path traversal)
   if (process.env.TYPEKRO_LOG_DESTINATION) {
-    config.destination = process.env.TYPEKRO_LOG_DESTINATION;
+    const dest = process.env.TYPEKRO_LOG_DESTINATION;
+    if (dest.includes('..')) {
+      throw new TypeKroError(
+        'TYPEKRO_LOG_DESTINATION must not contain path traversal sequences (..)',
+        'INVALID_CONFIG',
+        { destination: dest }
+      );
+    }
+    config.destination = dest;
   }
 
   // Configure timestamp option
