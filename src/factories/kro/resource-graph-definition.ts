@@ -2,6 +2,7 @@
  * ResourceGraphDefinition factory with readiness evaluation
  */
 
+import { ensureError } from '../../core/errors.js';
 import { getComponentLogger } from '../../core/logging/index.js';
 import type { Enhanced, KubernetesCondition, ResourceStatus } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
@@ -119,7 +120,7 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
       };
     } catch (error) {
       // Log the error for debugging but don't let it crash the readiness evaluation
-      rgdLogger.error('Unexpected error in readiness evaluator', error as Error, { liveRGD });
+      rgdLogger.error('Unexpected error in readiness evaluator', ensureError(error), { liveRGD });
       return {
         ready: false,
         reason: 'EvaluationError',

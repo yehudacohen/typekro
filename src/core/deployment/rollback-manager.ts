@@ -7,7 +7,7 @@
 
 import type * as k8s from '@kubernetes/client-node';
 import { DEFAULT_POLL_INTERVAL } from '../config/defaults.js';
-import { DeploymentTimeoutError, TypeKroError } from '../errors.js';
+import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentError, DeploymentEvent, RollbackResult } from '../types/deployment.js';
@@ -85,7 +85,7 @@ export class ResourceRollbackManager {
         });
 
         // Continue with remaining resources even if one fails
-        this.logger.error('Rollback error', error as Error);
+        this.logger.error('Rollback error', ensureError(error));
       }
     }
 

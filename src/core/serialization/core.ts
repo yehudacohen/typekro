@@ -10,7 +10,7 @@ import { runInStatusBuilderContext } from '../composition/context.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
-import { ValidationError } from '../errors.js';
+import { ensureError, ValidationError } from '../errors.js';
 import {
   analyzeCompositionBody,
   applyAnalysisToResources,
@@ -724,7 +724,7 @@ function createTypedResourceGraph<
           serializationLogger.debug(
             'Status builder analysis failed, falling back to imperative analysis',
             {
-              error: (statusAnalysisError as Error).message,
+              error: ensureError(statusAnalysisError).message,
             }
           );
           // Fall back to imperative analysis
@@ -778,7 +778,7 @@ function createTypedResourceGraph<
           serializationLogger.debug(
             'Imperative composition analysis failed, using executed status mappings',
             {
-              error: (imperativeAnalysisError as Error).message,
+              error: ensureError(imperativeAnalysisError).message,
             }
           );
           analyzedStatusMappings = statusMappings;
@@ -812,7 +812,7 @@ function createTypedResourceGraph<
         serializationLogger.debug(
           'Status builder analysis failed, using executed status mappings',
           {
-            error: (analysisError as Error).message,
+            error: ensureError(analysisError).message,
           }
         );
         analyzedStatusMappings = statusMappings;
@@ -878,7 +878,7 @@ function createTypedResourceGraph<
       } catch (migrationError) {
         serializationLogger.error(
           'Failed to analyze migration opportunities',
-          migrationError as Error
+          ensureError(migrationError)
         );
       }
     }
@@ -967,7 +967,7 @@ function createTypedResourceGraph<
       }
     }
   } catch (error) {
-    serializationLogger.error('Failed to analyze status builder', error as Error);
+    serializationLogger.error('Failed to analyze status builder', ensureError(error));
     // Fallback to executing status builder normally
     statusMappings = runInStatusBuilderContext(() =>
       statusBuilder(schema, resourcesWithKeys as TResources)
@@ -1037,7 +1037,7 @@ function createTypedResourceGraph<
     } catch (analysisError) {
       serializationLogger.debug(
         'Composition body analysis failed (non-fatal), proceeding without control flow detection',
-        { error: (analysisError as Error).message }
+        { error: ensureError(analysisError).message }
       );
     }
   }
@@ -1245,7 +1245,7 @@ function createTypedResourceGraph<
           } catch (error) {
             serializationLogger.error(
               'Failed to re-analyze status mappings for direct factory, using default analysis',
-              error as Error
+              ensureError(error)
             );
           }
         }

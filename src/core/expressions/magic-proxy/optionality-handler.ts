@@ -16,7 +16,7 @@
 
 import { extractResourceReferences, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -342,7 +342,7 @@ export class EnhancedTypeOptionalityHandler {
 
       return results;
     } catch (error) {
-      this.logger.error('Failed to analyze optionality requirements', error as Error);
+      this.logger.error('Failed to analyze optionality requirements', ensureError(error));
       return [];
     }
   }
@@ -801,7 +801,7 @@ export class EnhancedTypeOptionalityHandler {
 
       return nullSafetyMap;
     } catch (error) {
-      this.logger.error('Failed to detect null-safety requirements', error as Error);
+      this.logger.error('Failed to detect null-safety requirements', ensureError(error));
       return new Map();
     }
   }
@@ -946,7 +946,7 @@ export class EnhancedTypeOptionalityHandler {
         transitionHandlers,
       };
     } catch (error) {
-      this.logger.error('Failed to integrate with field hydration timing', error as Error);
+      this.logger.error('Failed to integrate with field hydration timing', ensureError(error));
       return {
         preHydrationExpression: null,
         postHydrationExpression: null,
@@ -1187,7 +1187,10 @@ export class EnhancedTypeOptionalityHandler {
 
         phaseExpressions.set(phase.name, phaseExpression);
       } catch (error) {
-        this.logger.error(`Failed to generate expression for phase ${phase.name}`, error as Error);
+        this.logger.error(
+          `Failed to generate expression for phase ${phase.name}`,
+          ensureError(error)
+        );
       }
     }
 
@@ -1714,7 +1717,7 @@ export class EnhancedTypeOptionalityHandler {
         type: this.inferExpressionType(expression, context),
       } as CelExpression;
     } catch (error) {
-      this.logger.error('Failed to generate CEL with has() checks', error as Error);
+      this.logger.error('Failed to generate CEL with has() checks', ensureError(error));
       return this.convertToBasicCel(expression, context);
     }
   }

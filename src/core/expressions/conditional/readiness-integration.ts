@@ -7,6 +7,7 @@
 
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { getCurrentCompositionContext } from '../../composition/context.js';
+import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type {
   Enhanced,
@@ -135,7 +136,7 @@ export class ReadinessIntegrator {
 
       return result;
     } catch (error) {
-      logger.error('Error creating readiness evaluator', error as Error, {
+      logger.error('Error creating readiness evaluator', ensureError(error), {
         factoryType: context.factoryType,
       });
 
@@ -272,7 +273,7 @@ export class ReadinessIntegrator {
         // Fallback to raw expression evaluation
         return this.evaluateRawExpression(processedExpression, liveResource, config);
       } catch (error) {
-        logger.error('Error evaluating readyWhen expression', error as Error, {
+        logger.error('Error evaluating readyWhen expression', ensureError(error), {
           resourceKind: liveResource?.kind,
         });
 

@@ -19,6 +19,7 @@ import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import {
   CRDInstanceError,
   DeploymentTimeoutError,
+  ensureError,
   ResourceGraphFactoryError,
   ValidationError,
 } from '../errors.js';
@@ -907,7 +908,7 @@ ${Object.entries(spec as Record<string, any>)
           conditions: rgdResult.status?.conditions,
         });
       } catch (statusError) {
-        this.logger.error('Could not fetch RGD status for debugging', statusError as Error);
+        this.logger.error('Could not fetch RGD status for debugging', ensureError(statusError));
       }
 
       throw new ResourceGraphFactoryError(
@@ -1010,7 +1011,7 @@ ${Object.entries(spec as Record<string, any>)
           this.logger.warn('Failed to evaluate static CEL expression', {
             field: fieldName,
             expression: fieldValue.expression,
-            error: (error as Error).message,
+            error: ensureError(error).message,
           });
           // Fallback to the original value
           evaluatedFields[fieldName] = fieldValue;
@@ -1066,14 +1067,14 @@ ${Object.entries(spec as Record<string, any>)
       if (!expression.includes('schema.spec.') && !expression.includes('spec.')) {
         this.logger.debug('Static expression evaluation failed, returning as string literal', {
           expression,
-          error: (error as Error).message,
+          error: ensureError(error).message,
         });
         return expression;
       }
       this.logger.warn('Failed to evaluate expression safely', {
         expression: scopeExpression,
         originalExpression: expression,
-        error: (error as Error).message,
+        error: ensureError(error).message,
       });
       throw error;
     }
@@ -1198,7 +1199,7 @@ ${Object.entries(spec as Record<string, any>)
         // Update the status using object assignment to avoid type issues
         Object.assign(enhancedProxy.status, mergedStatus);
       } catch (error) {
-        hydrationLogger.error('Dynamic status hydration failed', error as Error);
+        hydrationLogger.error('Dynamic status hydration failed', ensureError(error));
         // Continue with static fields only if dynamic hydration fails
       }
     }

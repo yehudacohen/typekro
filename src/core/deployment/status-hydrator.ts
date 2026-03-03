@@ -4,6 +4,7 @@ import {
   DEFAULT_STATUS_CACHE_TTL,
   DEFAULT_STATUS_QUERY_TIMEOUT,
 } from '../config/defaults.js';
+import { ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, Enhanced, KubernetesResource, WithResourceId } from '../types.js';
 
@@ -122,7 +123,7 @@ export class StatusHydrator {
       return { success: true, resourceId, hydratedFields };
     } catch (error) {
       const resourceId = enhanced.metadata?.name || 'unknown';
-      this.logger.error('Failed to hydrate status', error as Error, { resourceId });
+      this.logger.error('Failed to hydrate status', ensureError(error), { resourceId });
       return {
         success: false,
         resourceId,
@@ -215,7 +216,7 @@ export class StatusHydrator {
         } catch (error) {
           statusLogger.debug('Failed to set status field', {
             field,
-            error: (error as Error).message,
+            error: ensureError(error).message,
           });
         }
       }
@@ -250,7 +251,7 @@ export class StatusHydrator {
         proxyLogger.warn('Status hydration failed', { error: result.error?.message });
       }
     } catch (error) {
-      proxyLogger.error('Failed to hydrate Enhanced proxy status', error as Error);
+      proxyLogger.error('Failed to hydrate Enhanced proxy status', ensureError(error));
     }
   }
 
@@ -289,7 +290,7 @@ export class StatusHydrator {
       if (apiError.statusCode === 404) {
         queryLogger.warn('Resource not found');
       } else {
-        queryLogger.error('Failed to query resource status', error as Error);
+        queryLogger.error('Failed to query resource status', ensureError(error));
       }
       return null;
     }

@@ -22,6 +22,7 @@ import { DependencyResolver } from '../dependencies/index.js';
 import {
   CircularDependencyError,
   DeploymentTimeoutError,
+  ensureError,
   ResourceGraphFactoryError,
 } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
@@ -306,7 +307,7 @@ export class DirectDeploymentEngine {
       }
     } catch (error) {
       this.logger.debug('Failed to check resource readiness', {
-        error: error as Error,
+        error: ensureError(error),
         resourceId: deployedResource.id,
         kind: deployedResource.kind,
         name: deployedResource.name,
@@ -351,7 +352,7 @@ export class DirectDeploymentEngine {
       if (this.eventMonitor) {
         this.eventMonitor.stopMonitoring().catch((error) => {
           this.logger.debug('Error stopping event monitoring on timeout', {
-            error: (error as Error)?.message,
+            error: ensureError(error).message,
           });
         });
       }
@@ -403,7 +404,7 @@ export class DirectDeploymentEngine {
           deploymentLogger.debug('Event monitoring started for deployment');
         } catch (error) {
           deploymentLogger.warn('Failed to initialize event monitoring, continuing without it', {
-            error: (error as Error).message,
+            error: ensureError(error).message,
           });
         }
       }
@@ -527,7 +528,7 @@ export class DirectDeploymentEngine {
                 (error: unknown) => {
                   resourceLogger.warn(
                     'Failed to add resource to event monitoring, continuing deployment',
-                    { error: (error as Error).message }
+                    { error: ensureError(error).message }
                   );
                 }
               );
@@ -547,7 +548,7 @@ export class DirectDeploymentEngine {
               deployedResource,
             };
           } catch (error) {
-            resourceLogger.error('Resource deployment failed', error as Error);
+            resourceLogger.error('Resource deployment failed', ensureError(error));
             const failedResource: DeployedResource = {
               id: resourceId,
               kind: resource.manifest.kind,
@@ -556,7 +557,7 @@ export class DirectDeploymentEngine {
               manifest: resource.manifest,
               status: 'failed',
               deployedAt: new Date(),
-              error: error as Error,
+              error: ensureError(error),
             };
             return {
               success: false,
@@ -565,7 +566,7 @@ export class DirectDeploymentEngine {
               error: {
                 resourceId,
                 phase: 'deployment' as const,
-                error: error as Error,
+                error: ensureError(error),
                 timestamp: new Date(),
               },
             };
@@ -681,7 +682,7 @@ export class DirectDeploymentEngine {
           deploymentLogger.debug('Event monitoring stopped');
         } catch (error) {
           deploymentLogger.warn('Failed to stop event monitoring cleanly', {
-            error: (error as Error).message,
+            error: ensureError(error).message,
           });
         }
       }
@@ -727,7 +728,7 @@ export class DirectDeploymentEngine {
         type: 'failed',
         message: `Deployment failed: ${error}`,
         timestamp: new Date(),
-        error: error as Error,
+        error: ensureError(error),
       });
 
       // Stop event monitoring on error
@@ -761,7 +762,7 @@ export class DirectDeploymentEngine {
           {
             resourceId: 'deployment',
             phase: 'deployment',
-            error: error as Error,
+            error: ensureError(error),
             timestamp: new Date(),
           },
         ],
@@ -806,7 +807,7 @@ export class DirectDeploymentEngine {
       if (this.eventMonitor) {
         this.eventMonitor.stopMonitoring().catch((error) => {
           deploymentLogger.debug('Error stopping event monitoring on timeout', {
-            error: (error as Error)?.message,
+            error: ensureError(error).message,
           });
         });
       }
@@ -980,7 +981,7 @@ export class DirectDeploymentEngine {
               deployedResource,
             };
           } catch (error) {
-            resourceLogger.error('Resource deployment failed', error as Error);
+            resourceLogger.error('Resource deployment failed', ensureError(error));
             const failedResource: DeployedResource = {
               id: resourceId,
               kind: resource.manifest.kind,
@@ -989,7 +990,7 @@ export class DirectDeploymentEngine {
               manifest: resource.manifest,
               status: 'failed',
               deployedAt: new Date(),
-              error: error as Error,
+              error: ensureError(error),
             };
             return {
               success: false,
@@ -998,7 +999,7 @@ export class DirectDeploymentEngine {
               error: {
                 resourceId,
                 phase: 'deployment' as const,
-                error: error as Error,
+                error: ensureError(error),
                 timestamp: new Date(),
               },
             };
@@ -1022,7 +1023,7 @@ export class DirectDeploymentEngine {
               result,
             };
           } catch (error) {
-            closureLogger.error('Closure execution failed', error as Error);
+            closureLogger.error('Closure execution failed', ensureError(error));
             return {
               success: false,
               type: 'closure' as const,
@@ -1030,7 +1031,7 @@ export class DirectDeploymentEngine {
               error: {
                 resourceId: `closure-${closureInfo.name}`,
                 phase: 'deployment' as const,
-                error: error as Error,
+                error: ensureError(error),
                 timestamp: new Date(),
               },
             };
@@ -1194,7 +1195,7 @@ export class DirectDeploymentEngine {
         type: 'failed',
         message: `Deployment with closures failed: ${error}`,
         timestamp: new Date(),
-        error: error as Error,
+        error: ensureError(error),
       });
 
       // Store deployment state even for failed deployments (for rollback)
@@ -1218,7 +1219,7 @@ export class DirectDeploymentEngine {
           {
             resourceId: 'deployment',
             phase: 'deployment',
-            error: error as Error,
+            error: ensureError(error),
             timestamp: new Date(),
           },
         ],
@@ -1323,13 +1324,13 @@ export class DirectDeploymentEngine {
         context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
       if (hasResourceKeyMapping) {
         resourceLogger.warn('Reference resolution failed, using original resource', {
-          error: (error as Error).message,
+          error: ensureError(error).message,
         });
       } else {
         resourceLogger.debug(
           'Reference resolution skipped (no resourceKeyMapping), using original resource',
           {
-            error: (error as Error).message,
+            error: ensureError(error).message,
           }
         );
       }
@@ -1451,10 +1452,10 @@ export class DirectDeploymentEngine {
 
               if (isUnrecognizedApiError) {
                 resourceLogger.debug('CRD not yet registered, will retry after CRD establishment', {
-                  error: (error as Error).message,
+                  error: ensureError(error).message,
                 });
               } else {
-                resourceLogger.error('Error checking resource existence', error as Error);
+                resourceLogger.error('Error checking resource existence', ensureError(error));
               }
               throw error;
             }
@@ -1573,7 +1574,7 @@ export class DirectDeploymentEngine {
           // Success - break out of retry loop
           break;
         } catch (error) {
-          lastError = error as Error;
+          lastError = ensureError(error);
 
           // Check for 409 Conflict errors - resource already exists
           const apiError = error as KubernetesApiError;
@@ -1623,7 +1624,7 @@ export class DirectDeploymentEngine {
                 } catch (readError) {
                   resourceLogger.warn(
                     'Failed to read existing resource after 409, falling back to patch',
-                    { error: (readError as Error).message }
+                    { error: ensureError(readError).message }
                   );
                   // Fall back to patch strategy
                   try {
@@ -1644,7 +1645,7 @@ export class DirectDeploymentEngine {
                     conflictHandled = true;
                   } catch (patchError) {
                     resourceLogger.warn('Failed to patch resource after 409 conflict', {
-                      error: (patchError as Error).message,
+                      error: ensureError(patchError).message,
                     });
                   }
                 }
@@ -1668,7 +1669,7 @@ export class DirectDeploymentEngine {
                   conflictHandled = true;
                 } catch (patchError) {
                   resourceLogger.warn('Failed to patch resource after 409 conflict', {
-                    error: (patchError as Error).message,
+                    error: ensureError(patchError).message,
                   });
                 }
                 break;
@@ -1702,7 +1703,7 @@ export class DirectDeploymentEngine {
                   conflictHandled = true;
                 } catch (replaceError) {
                   resourceLogger.warn('Failed to replace resource after 409 conflict', {
-                    error: (replaceError as Error).message,
+                    error: ensureError(replaceError).message,
                   });
                 }
                 break;
@@ -1981,7 +1982,7 @@ export class DirectDeploymentEngine {
       } catch (error) {
         // Log and collect errors for individual resource deletion failures
         this.logger.warn('Failed to delete resource during rollback', {
-          error: error as Error,
+          error: ensureError(error),
           resourceId: resource.id,
           kind: resource.kind,
           name: resource.name,
@@ -1990,7 +1991,7 @@ export class DirectDeploymentEngine {
         errors.push({
           resourceId: resource.id,
           phase: 'rollback',
-          error: error as Error,
+          error: ensureError(error),
           timestamp: new Date(),
         });
       }
@@ -2088,7 +2089,7 @@ export class DirectDeploymentEngine {
         'deletion'
       );
     } catch (error) {
-      deleteLogger.error('Failed to delete resource', error as Error);
+      deleteLogger.error('Failed to delete resource', ensureError(error));
       throw error;
     }
   }
@@ -2146,7 +2147,7 @@ export class DirectDeploymentEngine {
           {
             resourceId: deploymentId,
             phase: 'rollback',
-            error: error as Error,
+            error: ensureError(error),
             timestamp: new Date(),
           },
         ],

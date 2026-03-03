@@ -10,6 +10,7 @@ import {
   DEFAULT_DEDUPLICATION_WINDOW_SECONDS,
   DEFAULT_MAX_EVENTS_PER_RESOURCE,
 } from '../config/defaults.js';
+import { ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource } from '../types/deployment.js';
 import type { KubernetesEventData } from './event-monitor.js';
@@ -409,7 +410,7 @@ export class EventFilter {
         childCount: childResources.length,
       });
     } catch (error) {
-      this.logger.error('Failed to discover child resources', error as Error);
+      this.logger.error('Failed to discover child resources', ensureError(error));
     }
 
     return childResources;
@@ -563,7 +564,7 @@ export class EventFilter {
           uid: pod.metadata?.uid!,
         }));
     } catch (error) {
-      this.logger.error('Failed to find pods for ReplicaSet', error as Error);
+      this.logger.error('Failed to find pods for ReplicaSet', ensureError(error));
       return [];
     }
   }

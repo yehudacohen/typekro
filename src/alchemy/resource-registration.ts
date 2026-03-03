@@ -11,6 +11,7 @@
 import type { KubeConfig } from '@kubernetes/client-node';
 import { type Context, PROVIDERS, Resource } from 'alchemy';
 import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
+import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
@@ -84,7 +85,7 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
         // Execute Alchemy context function
         return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
       } catch (error) {
-        alchemyLogger.error('Error deploying resource through Alchemy', error as Error);
+        alchemyLogger.error('Error deploying resource through Alchemy', ensureError(error));
         throw error;
       }
     }
@@ -164,7 +165,7 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
       ...props.options,
     });
   } catch (error) {
-    logger.error('Error deleting resource', error as Error);
+    logger.error('Error deleting resource', ensureError(error));
   }
   return context.destroy();
 }
@@ -271,10 +272,10 @@ function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
 
     return result;
   } catch (contextError) {
-    logger.error('Alchemy context function failed', contextError as Error, {
+    logger.error('Alchemy context function failed', ensureError(contextError), {
       alchemyType,
-      errorMessage: (contextError as Error).message,
-      errorStack: (contextError as Error).stack,
+      errorMessage: ensureError(contextError).message,
+      errorStack: ensureError(contextError).stack,
     });
     throw contextError;
   }

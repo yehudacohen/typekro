@@ -892,3 +892,27 @@ export class ConversionError extends TypeKroError {
     return formatted;
   }
 }
+
+/**
+ * Safely coerce an unknown caught value into an {@link Error} instance.
+ *
+ * In TypeScript, `catch` clauses type the caught value as `unknown`.
+ * Using `error as Error` is an unsafe cast — the thrown value might
+ * be a string, number, `null`, or any other non-Error type.
+ *
+ * This utility eliminates all `as Error` casts by returning the
+ * original value when it is already an `Error`, or wrapping it in
+ * a new `Error` otherwise.
+ *
+ * @example
+ * ```ts
+ * try { ... } catch (error) {
+ *   logger.error('Failed', ensureError(error));
+ * }
+ * ```
+ */
+export function ensureError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (typeof value === 'string') return new Error(value);
+  return new Error(String(value));
+}

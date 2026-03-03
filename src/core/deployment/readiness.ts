@@ -11,6 +11,7 @@ import {
   DEFAULT_POLL_INTERVAL,
   DEFAULT_READINESS_MAX_BACKOFF,
 } from '../config/defaults.js';
+import { ensureError } from '../errors.js';
 import type { DeploymentEvent, DeploymentOptions, ReadinessConfig } from '../types/deployment.js';
 import type {
   DeployedResource,
@@ -144,7 +145,7 @@ export class ResourceReadinessChecker {
       } catch (error) {
         // Debug logging for API errors
         if (this.debugLogger) {
-          this.debugLogger.logApiError(deployedResource, error as Error, {
+          this.debugLogger.logApiError(deployedResource, ensureError(error), {
             attempt,
             elapsedTime: Date.now() - startTime,
             isTimeout: false,

@@ -7,6 +7,7 @@
 
 import { Parser } from 'acorn';
 import * as estraverse from 'estraverse';
+import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { Cel } from '../../references/cel.js';
 import type { Enhanced } from '../../types/index.js';
@@ -242,7 +243,7 @@ export function analyzeImperativeComposition(
     };
   } catch (error) {
     const errorMessage = `Failed to analyze imperative composition: ${error instanceof Error ? error.message : String(error)}`;
-    logger.error('Imperative composition analysis failed', error as Error);
+    logger.error('Imperative composition analysis failed', ensureError(error));
 
     return {
       statusMappings: {},

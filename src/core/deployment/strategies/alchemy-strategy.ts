@@ -7,6 +7,7 @@
 
 import { DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
+import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { ensureReadinessEvaluator } from '../../readiness/evaluator.js';
 import type {
@@ -238,7 +239,7 @@ export class AlchemyDeploymentStrategy<
                 alchemyResourceType: ResourceProvider.name,
               });
             } catch (deployError) {
-              const error = deployError as Error;
+              const error = ensureError(deployError);
               this.logger.error('Failed to deploy individual resource through Alchemy', error, {
                 resourceKind: resource.manifest.kind,
                 resourceName: resource.manifest.metadata?.name,
@@ -260,7 +261,7 @@ export class AlchemyDeploymentStrategy<
             }
           });
         } catch (registrationError) {
-          const error = registrationError as Error;
+          const error = ensureError(registrationError);
           this.logger.error('Failed to register resource type with Alchemy', error, {
             resourceKind: resource.manifest.kind,
             resourceName: resource.manifest.metadata?.name,
@@ -317,7 +318,7 @@ export class AlchemyDeploymentStrategy<
         })),
       };
     } catch (error) {
-      this.logger.error('Alchemy deployment strategy failed', error as Error);
+      this.logger.error('Alchemy deployment strategy failed', ensureError(error));
       throw error;
     }
   }
@@ -537,7 +538,7 @@ export class AlchemyDeploymentStrategy<
         }
       } catch (extractionError) {
         this.logger.debug('Could not extract kubeconfig from base strategy, using default', {
-          error: (extractionError as Error).message,
+          error: ensureError(extractionError).message,
         });
       }
     }
