@@ -28,6 +28,7 @@ import type { CronJobConfig } from '../types.js';
  */
 export function CronJob(config: CronJobConfig): Enhanced<V1CronJobSpec, V1CronJobStatus> {
   return cronJob({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),
