@@ -50,6 +50,7 @@ export function PersistentVolume(config: PersistentVolumeConfig): Enhanced<V1PvS
   }
 
   return persistentVolume({
+    ...(config.id && { id: config.id }),
     metadata: {
       name,
       ...(storageClass && {

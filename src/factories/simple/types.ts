@@ -50,6 +50,8 @@ export interface StatefulSetConfig {
   env?: Record<string, string>;
   ports?: V1Container['ports'];
   volumeClaimTemplates?: V1PersistentVolumeClaim[];
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -63,6 +65,8 @@ export interface JobConfig {
   completions?: number;
   backoffLimit?: number;
   restartPolicy?: 'OnFailure' | 'Never';
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -74,6 +78,8 @@ export interface CronJobConfig {
   schedule: string;
   namespace?: string;
   command?: string[];
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -158,6 +164,8 @@ export interface HpaConfig {
   minReplicas: number;
   maxReplicas: number;
   cpuUtilization?: number;
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -189,4 +197,6 @@ export interface PersistentVolumeConfig {
     path: string;
   };
   persistentVolumeReclaimPolicy?: 'Retain' | 'Recycle' | 'Delete';
+  /** Custom resource ID for composition graph */
+  id?: string;
 }

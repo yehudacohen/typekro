@@ -28,6 +28,7 @@ import type { JobConfig } from '../types.js';
  */
 export function Job(config: JobConfig): Enhanced<V1JobSpec, V1JobStatus> {
   return job({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),

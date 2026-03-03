@@ -36,6 +36,7 @@ export function StatefulSet(
     : [];
 
   return statefulSet({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),
