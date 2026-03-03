@@ -258,6 +258,67 @@ function executeNestedCompositionWithSpec<
 }
 
 /**
+ * KubernetesRef metadata property names used by the proxy allowlist strategy.
+ * When `useAllowlist` is true, only these properties are returned from the
+ * proxy target — all other string accesses create nested proxies.
+ */
+const KUBERNETES_REF_PROXY_PROPS = new Set([
+  KUBERNETES_REF_BRAND,
+  'resourceId',
+  'fieldPath',
+  '__nestedComposition',
+]);
+
+/**
+ * Create a recursive proxy that returns `KubernetesRef` objects for
+ * arbitrarily deep property access.
+ *
+ * Two property-resolution strategies are supported:
+ * - `useAllowlist: false` (default) — uses `prop in target` to decide
+ *   whether to return the target value or create a nested proxy.
+ * - `useAllowlist: true` — only the four KubernetesRef metadata properties
+ *   (`KUBERNETES_REF_BRAND`, `resourceId`, `fieldPath`, `__nestedComposition`)
+ *   are returned from the target; everything else creates a nested proxy.
+ *
+ * @param resourceId  - The resource identifier embedded in every ref
+ * @param basePath    - The initial field path (e.g. `'status'` or `''`)
+ * @param useAllowlist - When true, use an explicit allowlist instead of `prop in target`
+ */
+// biome-ignore lint/suspicious/noExplicitAny: Proxy returns dynamic KubernetesRef shapes
+function createKubernetesRefProxy(resourceId: string, basePath: string, useAllowlist = false): any {
+  // biome-ignore lint/suspicious/noExplicitAny: base object is intentionally untyped — consumed only via proxy
+  const baseObj: any = {
+    [KUBERNETES_REF_BRAND]: true,
+    resourceId,
+    fieldPath: basePath,
+    __nestedComposition: true,
+  };
+
+  return new Proxy(baseObj, {
+    get(target, prop) {
+      // Determine whether to return the target property directly
+      const isKnownProp = useAllowlist
+        ? typeof prop === 'string' || typeof prop === 'symbol'
+          ? KUBERNETES_REF_PROXY_PROPS.has(prop as string)
+          : false
+        : prop in target;
+
+      if (isKnownProp) {
+        return target[prop];
+      }
+
+      // For any other string property, create a nested proxy
+      if (typeof prop === 'string') {
+        const fullPath = basePath ? `${basePath}.${prop}` : prop;
+        return createKubernetesRefProxy(resourceId, fullPath, useAllowlist);
+      }
+
+      return undefined;
+    },
+  });
+}
+
+/**
  * Create a status proxy for cross-composition references
  * @param compositionName - Name of the composition
  * @param parentContext - Parent composition context (if nested)
@@ -270,108 +331,17 @@ function createStatusProxy<_TStatus>(
   nestedResult?: TypedResourceGraph<any, any>,
   forCompositionProperty: boolean = false
 ): any {
-  // For CallableComposition.status property, always return KubernetesRef-based proxy
-  // This enables cross-composition references like: const ready = otherComposition.status.ready
-  if (forCompositionProperty) {
-    const resourceId = compositionName;
-
-    function createRecursiveProxy(basePath: string): any {
-      const baseObj: any = {
-        [KUBERNETES_REF_BRAND]: true,
-        resourceId,
-        fieldPath: basePath,
-        __nestedComposition: true,
-      };
-
-      return new Proxy(baseObj, {
-        get(target, prop) {
-          if (prop in target) {
-            return target[prop];
-          }
-
-          if (typeof prop === 'string') {
-            const fullPath = basePath ? `${basePath}.${prop}` : prop;
-            return createRecursiveProxy(fullPath);
-          }
-
-          return undefined;
-        },
-      });
-    }
-
-    return createRecursiveProxy('status');
+  // For CallableComposition.status property or nested composition results
+  // within a parent context, create a KubernetesRef proxy using the
+  // composition name as resource ID and 'status' as the base path.
+  if (forCompositionProperty || parentContext) {
+    return createKubernetesRefProxy(compositionName, 'status');
   }
 
-  // For nested composition call results within a parent context,
-  // create a recursive proxy that returns KubernetesRef objects
-  // This enables deep property access like nested.status.metadata.name
-  if (parentContext) {
-    const resourceId = compositionName;
-
-    function createRecursiveProxy(basePath: string): any {
-      const baseObj: any = {
-        [KUBERNETES_REF_BRAND]: true,
-        resourceId,
-        fieldPath: basePath,
-        __nestedComposition: true,
-      };
-
-      return new Proxy(baseObj, {
-        get(target, prop) {
-          if (prop in target) {
-            return target[prop];
-          }
-
-          if (typeof prop === 'string') {
-            const fullPath = basePath ? `${basePath}.${prop}` : prop;
-            return createRecursiveProxy(fullPath);
-          }
-
-          return undefined;
-        },
-      });
-    }
-
-    return createRecursiveProxy('status');
-  }
-
-  // For top-level composition calls (no parent context),
-  // create a proxy that returns KubernetesRef objects
-  const resourceId = `${compositionName}-status`;
-
-  function createRecursiveProxy(basePath: string): any {
-    const baseObj: any = {
-      [KUBERNETES_REF_BRAND]: true,
-      resourceId,
-      fieldPath: basePath,
-      __nestedComposition: true,
-    };
-
-    return new Proxy(baseObj, {
-      get(target, prop) {
-        // Only return the actual KubernetesRef metadata properties
-        // Don't intercept other property accesses - let them create nested proxies
-        if (
-          prop === KUBERNETES_REF_BRAND ||
-          prop === 'resourceId' ||
-          prop === 'fieldPath' ||
-          prop === '__nestedComposition'
-        ) {
-          return target[prop];
-        }
-
-        // For any other string property, create a nested proxy to support deep access like status.metadata.name
-        if (typeof prop === 'string') {
-          const fullPath = basePath ? `${basePath}.${prop}` : prop;
-          return createRecursiveProxy(fullPath);
-        }
-
-        return undefined;
-      },
-    });
-  }
-
-  return createRecursiveProxy('');
+  // For top-level composition calls (no parent context), use the strict
+  // allowlist strategy so only KubernetesRef metadata properties are
+  // returned directly from the target, and start from an empty base path.
+  return createKubernetesRefProxy(`${compositionName}-status`, '', /* useAllowlist */ true);
 }
 
 /**
