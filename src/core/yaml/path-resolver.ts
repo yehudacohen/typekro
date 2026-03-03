@@ -6,6 +6,7 @@
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
+import { DEFAULT_HTTP_READ_TIMEOUT } from '../config/defaults.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 
@@ -553,6 +554,7 @@ export class PathResolver {
           // TODO: Add authentication support for private repositories
           // 'Authorization': `token ${process.env.GITHUB_TOKEN}`,
         },
+        signal: AbortSignal.timeout(DEFAULT_HTTP_READ_TIMEOUT),
       });
 
       if (!response.ok) {
@@ -564,6 +566,7 @@ export class PathResolver {
               Accept: 'application/vnd.github.v3+json',
               'User-Agent': 'TypeKro/1.0',
             },
+            signal: AbortSignal.timeout(DEFAULT_HTTP_READ_TIMEOUT),
           });
 
           if (!repoResponse.ok) {
@@ -805,6 +808,7 @@ export class PathResolver {
           Accept: 'application/vnd.github.v3+json',
           'User-Agent': 'TypeKro/1.0',
         },
+        signal: AbortSignal.timeout(DEFAULT_HTTP_READ_TIMEOUT),
       });
 
       if (!response.ok) {
@@ -977,7 +981,9 @@ export class PathResolver {
     validateUrlSafety(url, resourceName);
 
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(DEFAULT_HTTP_READ_TIMEOUT),
+      });
 
       if (!response.ok) {
         throw new YamlPathResolutionError(
