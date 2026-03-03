@@ -23,7 +23,7 @@
 import { evaluate, parse } from 'cel-js';
 import { isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
-import { TypeKroError } from '../errors.js';
+import { ensureError, TypeKroError } from '../errors.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import { CelEvaluationError } from '../types/references.js';
 import type { CelExpression, KubernetesRef } from '../types.js';
@@ -64,7 +64,7 @@ export class CelEvaluator {
 
       return result;
     } catch (error) {
-      throw new CelEvaluationError(expression, error as Error);
+      throw new CelEvaluationError(expression, ensureError(error));
     }
   }
 
@@ -107,7 +107,7 @@ export class CelEvaluator {
         return evaluate(parseResult.cst, celContext, functions);
       };
     } catch (error) {
-      throw new CelEvaluationError(expression, error as Error);
+      throw new CelEvaluationError(expression, ensureError(error));
     }
   }
 

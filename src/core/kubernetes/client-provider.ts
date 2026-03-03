@@ -20,7 +20,7 @@ import {
   DEFAULT_RETRY_BASE_DELAY,
 } from '../config/defaults.js';
 import { isTestEnvironment } from '../config/index.js';
-import { KubernetesClientError } from '../errors.js';
+import { ensureError, KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
   createBunCompatibleApiClient,
@@ -232,10 +232,10 @@ export class KubernetesClientProvider {
         userName: this.kubeConfig.getCurrentUser()?.name,
       });
     } catch (error) {
-      this.logger.error('Failed to initialize Kubernetes client provider', error as Error);
+      this.logger.error('Failed to initialize Kubernetes client provider', ensureError(error));
       this.reset();
       throw new KubernetesClientError(
-        `Failed to initialize Kubernetes client provider: ${(error as Error).message}`,
+        `Failed to initialize Kubernetes client provider: ${ensureError(error).message}`,
         'initialization',
         error instanceof Error ? error : new Error(String(error))
       );
@@ -264,10 +264,10 @@ export class KubernetesClientProvider {
         runtime: isBunRuntime() ? 'bun' : 'node',
       });
     } catch (error) {
-      this.logger.error('Failed to initialize with pre-configured KubeConfig', error as Error);
+      this.logger.error('Failed to initialize with pre-configured KubeConfig', ensureError(error));
       this.reset();
       throw new KubernetesClientError(
-        `Failed to initialize with pre-configured KubeConfig: ${(error as Error).message}`,
+        `Failed to initialize with pre-configured KubeConfig: ${ensureError(error).message}`,
         'initialization',
         error instanceof Error ? error : new Error(String(error))
       );
@@ -433,7 +433,7 @@ export class KubernetesClientProvider {
       return true;
     } catch (error) {
       this.logger.debug('Cluster availability check failed', {
-        error: (error as Error).message,
+        error: ensureError(error).message,
       });
       return false;
     }
@@ -508,7 +508,7 @@ export class KubernetesClientProvider {
 
         return result;
       } catch (error) {
-        lastError = error as Error;
+        lastError = ensureError(error);
 
         if (attempt === maxAttempts || !retryableErrors(lastError)) {
           this.logger.error('Operation failed after all retry attempts', lastError, {
@@ -582,7 +582,7 @@ export class KubernetesClientProvider {
       }
     } catch (error) {
       // Log detailed information about why client creation failed
-      this.logger.error('API client creation failed', error as Error, {
+      this.logger.error('API client creation failed', ensureError(error), {
         clientType,
         clientClassName: clientClass?.name,
         isBun: isBunRuntime(),
@@ -593,7 +593,7 @@ export class KubernetesClientProvider {
 
       // Re-throw the error instead of falling back
       throw new KubernetesClientError(
-        `Failed to create ${clientType} API client: ${(error as Error).message}`,
+        `Failed to create ${clientType} API client: ${ensureError(error).message}`,
         'client-creation',
         error instanceof Error ? error : new Error(String(error))
       );
@@ -716,7 +716,7 @@ export class KubernetesClientProvider {
         if (!isTestEnv) {
           this.logger.error(
             'Failed to load kubeconfig in non-test environment, re-throwing',
-            error as Error
+            ensureError(error)
           );
           throw error;
         }
@@ -724,7 +724,7 @@ export class KubernetesClientProvider {
         this.logger.warn(
           'Failed to load kubeconfig, creating minimal mock configuration for testing',
           {
-            error: (error as Error).message,
+            error: ensureError(error).message,
           }
         );
 
@@ -809,7 +809,7 @@ export class KubernetesClientProvider {
           context: config.context,
         });
       } catch (error) {
-        this.logger.error('Failed to set context', error as Error, {
+        this.logger.error('Failed to set context', ensureError(error), {
           requestedContext: config.context,
           availableContexts: kc.getContexts().map((c) => c.name),
         });
@@ -859,7 +859,7 @@ export class KubernetesClientProvider {
       } catch (error) {
         this.logger.warn('Invalid server URL format', {
           server: cluster.server,
-          error: (error as Error).message,
+          error: ensureError(error).message,
         });
       }
     }

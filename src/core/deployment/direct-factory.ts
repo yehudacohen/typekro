@@ -10,7 +10,12 @@ import { createCompositionContext, runWithCompositionContext } from '../composit
 import { DEFAULT_DELETE_TIMEOUT, DEFAULT_FAST_POLL_INTERVAL } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
-import { ResourceGraphFactoryError, TypeKroError, ValidationError } from '../errors.js';
+import {
+  ensureError,
+  ResourceGraphFactoryError,
+  TypeKroError,
+  ValidationError,
+} from '../errors.js';
 import {
   createKubernetesClientProvider,
   createKubernetesClientProviderWithKubeConfig,
@@ -413,7 +418,7 @@ export class DirectResourceFactoryImpl<
             };
             healthErrors.push(healthError);
 
-            healthLogger.error('Failed to check resource health', error as Error, {
+            healthLogger.error('Failed to check resource health', ensureError(error), {
               resourceId: deployedResource.id,
             });
           }
@@ -460,7 +465,7 @@ export class DirectResourceFactoryImpl<
         return 'healthy';
       }
     } catch (error) {
-      healthLogger.error('Error checking factory health', error as Error);
+      healthLogger.error('Error checking factory health', ensureError(error));
       return 'failed';
     }
   }
@@ -562,7 +567,7 @@ export class DirectResourceFactoryImpl<
         errors: healthErrors,
       };
     } catch (error) {
-      healthLogger.error('Error getting health details', error as Error);
+      healthLogger.error('Error getting health details', ensureError(error));
       return {
         health: 'failed',
         resourceCounts: { healthy: 0, degraded: 0, failed: 0, total: 0 },
@@ -865,7 +870,7 @@ metadata:
       } catch (error) {
         this.logger.error(
           'Failed to re-execute composition, falling back to reference resolution',
-          error as Error
+          ensureError(error)
         );
       }
     }
@@ -883,7 +888,7 @@ metadata:
         resolvedResources[key] = resolvedResource as KubernetesResource;
       } catch (error) {
         // If resolution fails, use the original resource
-        this.logger.error('Failed to resolve references for resource', error as Error);
+        this.logger.error('Failed to resolve references for resource', ensureError(error));
         resolvedResources[key] = resource;
       }
     }
@@ -956,7 +961,7 @@ metadata:
         status: status as TStatus,
       };
     } catch (error) {
-      this.logger.error('Failed to re-execute composition', error as Error);
+      this.logger.error('Failed to re-execute composition', ensureError(error));
       return null;
     }
   }

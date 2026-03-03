@@ -11,7 +11,7 @@ import { DEFAULT_RESOURCE_READY_TIMEOUT } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { ResourceReadinessTimeoutError } from '../deployment/errors.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
-import { TypeKroError } from '../errors.js';
+import { ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
@@ -519,7 +519,7 @@ export class ReferenceResolver {
       this.cache.set(cacheKey, value);
       return value as T;
     } catch (error) {
-      throw new ReferenceResolutionError(ref, error as Error);
+      throw new ReferenceResolutionError(ref, ensureError(error));
     }
   }
 
@@ -662,7 +662,7 @@ export class ReferenceResolver {
       this.cache.set(cacheKey, result);
       return result as T;
     } catch (error) {
-      this.logger.error('CEL expression evaluation failed', error as Error, {
+      this.logger.error('CEL expression evaluation failed', ensureError(error), {
         expression: expr.expression,
         hasResourceKeyMapping: !!context.resourceKeyMapping,
         resourceKeyMappingKeys: context.resourceKeyMapping
@@ -671,7 +671,7 @@ export class ReferenceResolver {
         resourcesMapSize: resourcesMap.size,
         resourcesMapKeys: Array.from(resourcesMap.keys()),
       });
-      throw new CelExpressionError(expr, error as Error);
+      throw new CelExpressionError(expr, ensureError(error));
     }
   }
 
@@ -731,7 +731,7 @@ export class ReferenceResolver {
         this.logger.warn('Failed to evaluate template placeholder', {
           placeholder: fullMatch,
           celExpr,
-          error: (error as Error).message,
+          error: ensureError(error).message,
         });
         // Keep the original placeholder if evaluation fails
       }
@@ -819,7 +819,7 @@ export class ReferenceResolver {
         );
       }
 
-      queryLogger.error('Failed to query cluster resource', error as Error, {
+      queryLogger.error('Failed to query cluster resource', ensureError(error), {
         resourceId: ref.resourceId,
         statusCode: k8sError.statusCode,
       });
@@ -1038,7 +1038,7 @@ export class ReferenceResolver {
 
       return true;
     } catch (error) {
-      readinessLogger.error('Resource readiness check failed', error as Error, {
+      readinessLogger.error('Resource readiness check failed', ensureError(error), {
         resourceId: resourceRef.resourceId,
         timeout,
       });

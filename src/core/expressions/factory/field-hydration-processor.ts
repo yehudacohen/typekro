@@ -25,7 +25,7 @@ import type {
 import { extractResourceReferences } from '../../../utils/type-guards.js';
 import { DependencyResolver } from '../../dependencies/index.js';
 import type { DeploymentPlan } from '../../dependencies/resolver.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -312,7 +312,9 @@ export class FieldHydrationExpressionProcessor {
           fieldDependencies.set(fieldName, []);
           overallValid = false;
 
-          this.logger.error('Failed to process field expression', error as Error, { fieldName });
+          this.logger.error('Failed to process field expression', ensureError(error), {
+            fieldName,
+          });
         }
       }
 
@@ -350,7 +352,7 @@ export class FieldHydrationExpressionProcessor {
         'function-call'
       );
 
-      this.logger.error('Status expression processing failed', error as Error);
+      this.logger.error('Status expression processing failed', ensureError(error));
 
       return {
         statusMappings: {},
@@ -553,7 +555,7 @@ export class FieldHydrationExpressionProcessor {
 
       return fieldExpressions;
     } catch (error) {
-      this.logger.error('Failed to parse status builder function', error as Error);
+      this.logger.error('Failed to parse status builder function', ensureError(error));
 
       // Fallback: try to execute the function to get field names
       try {
@@ -570,7 +572,7 @@ export class FieldHydrationExpressionProcessor {
           return fieldExpressions;
         }
       } catch (fallbackError) {
-        this.logger.error('Fallback field extraction also failed', fallbackError as Error);
+        this.logger.error('Fallback field extraction also failed', ensureError(fallbackError));
       }
 
       return {};
@@ -718,7 +720,7 @@ export class FieldHydrationExpressionProcessor {
 
       return analysisResult;
     } catch (error) {
-      this.logger.error('Failed to analyze field expression', error as Error, {
+      this.logger.error('Failed to analyze field expression', ensureError(error), {
         expression: expressionSource.substring(0, 100),
       });
 

@@ -1,6 +1,11 @@
 // kubernetes-api.ts
 import * as k8s from '@kubernetes/client-node';
-import { KubernetesApiOperationError, KubernetesClientError, ValidationError } from '../errors.js';
+import {
+  ensureError,
+  KubernetesApiOperationError,
+  KubernetesClientError,
+  ValidationError,
+} from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createKubernetesClientProvider, type KubernetesClientConfig } from './client-provider.js';
 
@@ -200,7 +205,7 @@ export class KubernetesApi {
       } catch (e: unknown) {
         // If it's a 404, the resource doesn't exist, which is expected for creation
         if ((e as { statusCode?: number }).statusCode !== 404) {
-          resourceLogger.error('Error checking resource existence', e as Error);
+          resourceLogger.error('Error checking resource existence', ensureError(e));
           throw e;
         }
       }
@@ -216,9 +221,9 @@ export class KubernetesApi {
         resourceLogger.debug('Resource created');
       }
     } catch (error: unknown) {
-      resourceLogger.error('Error applying Kubernetes manifest', error as Error);
+      resourceLogger.error('Error applying Kubernetes manifest', ensureError(error));
       throw new KubernetesApiOperationError(
-        `Failed to apply Kubernetes manifest: ${(error as Error).message}`,
+        `Failed to apply Kubernetes manifest: ${ensureError(error).message}`,
         'apply',
         manifest.kind,
         manifest.metadata?.name,
@@ -251,9 +256,9 @@ export class KubernetesApi {
       } as { metadata: { name: string; namespace: string } });
       return result;
     } catch (error: unknown) {
-      getLogger.error('Error getting resource', error as Error);
+      getLogger.error('Error getting resource', ensureError(error));
       throw new KubernetesApiOperationError(
-        `Failed to get Kubernetes resource: ${(error as Error).message}`,
+        `Failed to get Kubernetes resource: ${ensureError(error).message}`,
         'get',
         kind,
         name,
@@ -293,9 +298,9 @@ export class KubernetesApi {
         deleteLogger.warn('Resource not found during deletion attempt, assuming already deleted');
         return;
       }
-      deleteLogger.error('Error deleting resource', error as Error);
+      deleteLogger.error('Error deleting resource', ensureError(error));
       throw new KubernetesApiOperationError(
-        `Failed to delete Kubernetes resource: ${(error as Error).message}`,
+        `Failed to delete Kubernetes resource: ${ensureError(error).message}`,
         'delete',
         kind,
         name,

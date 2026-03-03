@@ -10,7 +10,7 @@ import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
   DEFAULT_POLL_INTERVAL,
 } from '../config/defaults.js';
-import { DeploymentTimeoutError } from '../errors.js';
+import { DeploymentTimeoutError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeploymentOptions } from '../types/deployment.js';
 import type {
@@ -286,7 +286,7 @@ export class CRDManager {
 
         logger.debug('CRD not found yet, waiting for it to be created...', {
           crdName,
-          error: (error as Error).message,
+          error: ensureError(error).message,
         });
       }
 
