@@ -145,9 +145,9 @@ function createStubResource(
  */
 function detectAndPreserveCelExpressions(
   statusMappings: any,
-  preservedExpressions: Record<string, any> = {},
+  preservedExpressions: Record<string, unknown> = {},
   path: string = ''
-): { hasExistingCel: boolean; preservedMappings: Record<string, any> } {
+): { hasExistingCel: boolean; preservedMappings: Record<string, unknown> } {
   let hasExistingCel = false;
   const preservedMappings = { ...preservedExpressions };
 
@@ -199,9 +199,9 @@ function containsCelExpressions(value: unknown): boolean {
  * newly analyzed JavaScript expressions for backward compatibility.
  */
 function mergePreservedCelExpressions(
-  analyzedMappings: Record<string, any>,
-  preservedMappings: Record<string, any>
-): Record<string, any> {
+  analyzedMappings: Record<string, unknown>,
+  preservedMappings: Record<string, unknown>
+): Record<string, unknown> {
   const mergedMappings = { ...analyzedMappings };
 
   // Preserved CEL expressions take precedence
@@ -260,7 +260,15 @@ function analyzeStatusMappingTypes(
   const celExpressionFields: string[] = [];
   const staticValueFields: string[] = [];
   const complexExpressionFields: string[] = [];
-  const analysisDetails: Record<string, any> = {};
+  const analysisDetails: Record<
+    string,
+    {
+      type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
+      value: any;
+      requiresConversion: boolean;
+      confidence: number;
+    }
+  > = {};
 
   if (!statusMappings || typeof statusMappings !== 'object') {
     return {
@@ -659,7 +667,7 @@ function createTypedResourceGraph<
 
   // NEW: Analyze status builder for JavaScript expressions with KubernetesRef detection
   let statusMappings: MagicAssignableShape<TStatus>;
-  let analyzedStatusMappings: Record<string, any> = {};
+  let analyzedStatusMappings: Record<string, unknown> = {};
   let mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
   let imperativeAnalysisSucceeded = false;
 
@@ -717,7 +725,7 @@ function createTypedResourceGraph<
               fieldCount: Object.keys(analyzedStatusMappings).length,
             });
           } else {
-            analyzedStatusMappings = statusMappings;
+            analyzedStatusMappings = statusMappings as Record<string, unknown>;
             serializationLogger.debug('No conversion required, using original status mappings');
           }
         } catch (statusAnalysisError) {
@@ -769,7 +777,7 @@ function createTypedResourceGraph<
               }
             );
           } else {
-            analyzedStatusMappings = statusMappings;
+            analyzedStatusMappings = statusMappings as Record<string, unknown>;
             serializationLogger.debug(
               'No JavaScript expressions found, using original status mappings'
             );
@@ -781,7 +789,7 @@ function createTypedResourceGraph<
               error: ensureError(imperativeAnalysisError).message,
             }
           );
-          analyzedStatusMappings = statusMappings;
+          analyzedStatusMappings = statusMappings as Record<string, unknown>;
         }
       }
     } else {
@@ -806,7 +814,7 @@ function createTypedResourceGraph<
             fieldCount: Object.keys(analyzedStatusMappings).length,
           });
         } else {
-          analyzedStatusMappings = statusMappings;
+          analyzedStatusMappings = statusMappings as Record<string, unknown>;
         }
       } catch (analysisError) {
         serializationLogger.debug(
@@ -815,7 +823,7 @@ function createTypedResourceGraph<
             error: ensureError(analysisError).message,
           }
         );
-        analyzedStatusMappings = statusMappings;
+        analyzedStatusMappings = statusMappings as Record<string, unknown>;
       }
     }
 
@@ -850,7 +858,9 @@ function createTypedResourceGraph<
       // MIGRATION HELPER: Provide migration suggestions for existing CEL expressions
       try {
         const migrationHelper = new CelToJavaScriptMigrationHelper();
-        const migrationAnalysis = migrationHelper.analyzeMigrationOpportunities(statusMappings);
+        const migrationAnalysis = migrationHelper.analyzeMigrationOpportunities(
+          statusMappings as Record<string, unknown>
+        );
 
         if (migrationAnalysis.migrationFeasibility.migratableExpressions > 0) {
           serializationLogger.info('Migration opportunities detected for CEL expressions', {
@@ -892,7 +902,7 @@ function createTypedResourceGraph<
     const celConversionEngine = new CelConversionEngine();
 
     // Convert the status mappings to CEL expressions for Kro factories
-    const convertedStatusMappings: Record<string, any> = {};
+    const convertedStatusMappings: Record<string, unknown> = {};
     let hasConversions = false;
 
     for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
@@ -944,7 +954,10 @@ function createTypedResourceGraph<
         // Only overwrite if imperative analysis hasn't already provided CEL expressions
         if (!imperativeAnalysisSucceeded) {
           // Merge original mappings with preserved CEL expressions
-          analyzedStatusMappings = mergePreservedCelExpressions(statusMappings, preservedMappings);
+          analyzedStatusMappings = mergePreservedCelExpressions(
+            statusMappings as Record<string, unknown>,
+            preservedMappings
+          );
         }
         serializationLogger.debug('Preserved existing CEL expressions without conversion', {
           preservedFields: Object.keys(preservedMappings).length,
@@ -954,7 +967,7 @@ function createTypedResourceGraph<
       } else {
         // No KubernetesRef objects or CEL expressions, use status mappings as-is
         if (!imperativeAnalysisSucceeded) {
-          analyzedStatusMappings = statusMappings;
+          analyzedStatusMappings = statusMappings as Record<string, unknown>;
         }
         serializationLogger.debug(
           'Status builder contains only static values and complex expressions',
@@ -972,7 +985,7 @@ function createTypedResourceGraph<
     statusMappings = runInStatusBuilderContext(() =>
       statusBuilder(schema, resourcesWithKeys as TResources)
     );
-    analyzedStatusMappings = statusMappings;
+    analyzedStatusMappings = statusMappings as Record<string, unknown>;
     // Create empty analysis for fallback
     mappingAnalysis = {
       kubernetesRefFields: [],

@@ -1139,7 +1139,7 @@ export class StatusBuilderAnalyzer {
       return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
     }
 
-    const result: Record<string, any> = {};
+    const result: Record<string, unknown> = {};
     const allDependencies: any[] = [];
     let requiresConversion = false;
 
@@ -1264,7 +1264,7 @@ export class StatusBuilderAnalyzer {
       return null;
     }
 
-    const result: Record<string, any> = {};
+    const result: Record<string, unknown> = {};
 
     for (const prop of objectNode.properties) {
       if (prop.type === 'Property' && prop.key.type === 'Identifier') {

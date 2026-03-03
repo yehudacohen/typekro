@@ -1,11 +1,11 @@
 /**
  * Expression Analysis Types
- * 
+ *
  * This module contains type definitions for the expression analysis system,
  * including contexts, results, and configuration interfaces.
  */
 
-import type { KubernetesRef, } from '../../types/index.js';
+import type { KubernetesRef } from '../../types/index.js';
 
 /**
  * Context for expression analysis
@@ -24,7 +24,7 @@ export interface AnalysisContext {
     fieldPath: string;
   };
   /** Additional metadata for analysis */
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -38,7 +38,7 @@ export interface FactoryExpressionContext {
   /** Whether analysis is enabled */
   analysisEnabled: boolean;
   /** Available resources for context analysis */
-  availableResources?: Record<string, any>;
+  availableResources?: Record<string, unknown>;
   /** Schema proxy for schema field analysis */
   schemaProxy?: any;
   /** Resource ID for context */
@@ -250,7 +250,7 @@ export interface ResourceAnalysisContext extends AnalysisContext {
   /** Resource type being analyzed */
   resourceType: string;
   /** Resource configuration */
-  resourceConfig: Record<string, any>;
+  resourceConfig: Record<string, unknown>;
 }
 
 /**
@@ -260,7 +260,7 @@ export interface StatusBuilderContext extends AnalysisContext {
   /** Status schema type */
   statusSchemaType: string;
   /** Available resources for status building */
-  availableResources: Record<string, any>;
+  availableResources: Record<string, unknown>;
 }
 
 /**

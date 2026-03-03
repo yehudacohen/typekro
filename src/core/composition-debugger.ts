@@ -43,7 +43,7 @@ export class CompositionDebugger {
   /**
    * Add a debug log entry
    */
-  static log(phase: string, message: string, context?: Record<string, any>): void {
+  static log(phase: string, message: string, context?: Record<string, unknown>): void {
     if (!CompositionDebugger.debugMode) return;
 
     const timestamp = new Date().toISOString();
@@ -155,7 +155,7 @@ export class CompositionDebugger {
     phase: string,
     startTime: number,
     endTime: number,
-    additionalMetrics?: Record<string, any>
+    additionalMetrics?: Record<string, unknown>
   ): void {
     const duration = endTime - startTime;
     CompositionDebugger.log('PERFORMANCE', `${phase} completed in ${duration}ms`, {

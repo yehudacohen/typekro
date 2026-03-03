@@ -19,7 +19,7 @@ export interface ImperativeAnalysisOptions {
 }
 
 export interface ImperativeAnalysisResult {
-  statusMappings: Record<string, any>;
+  statusMappings: Record<string, unknown>;
   hasJavaScriptExpressions: boolean;
   errors: string[];
 }
@@ -78,7 +78,7 @@ export function analyzeImperativeComposition(
     }
 
     // Analyze each property in the returned object
-    const statusMappings: Record<string, any> = {};
+    const statusMappings: Record<string, unknown> = {};
     const errors: string[] = [];
     let hasJavaScriptExpressions = false;
 
@@ -98,10 +98,10 @@ export function analyzeImperativeComposition(
               if (parentPath) {
                 // Navigate to the parent object and create the nested structure
                 const pathParts = parentPath.split('.');
-                let current = statusMappings;
+                let current: Record<string, unknown> = statusMappings;
                 for (const part of pathParts) {
                   if (!current[part]) current[part] = {};
-                  current = current[part];
+                  current = current[part] as Record<string, unknown>;
                 }
                 if (!current[fieldName]) current[fieldName] = {};
               } else {
@@ -147,10 +147,10 @@ export function analyzeImperativeComposition(
               // Set the CEL expression at the correct nested path
               if (parentPath) {
                 const pathParts = parentPath.split('.');
-                let current = statusMappings;
+                let current: Record<string, unknown> = statusMappings;
                 for (const part of pathParts) {
                   if (!current[part]) current[part] = {};
-                  current = current[part];
+                  current = current[part] as Record<string, unknown>;
                 }
                 current[fieldName] = celExpression;
               } else {
@@ -171,10 +171,10 @@ export function analyzeImperativeComposition(
               // Set the static value at the correct nested path
               if (parentPath) {
                 const pathParts = parentPath.split('.');
-                let current = statusMappings;
+                let current: Record<string, unknown> = statusMappings;
                 for (const part of pathParts) {
                   if (!current[part]) current[part] = {};
-                  current = current[part];
+                  current = current[part] as Record<string, unknown>;
                 }
                 current[fieldName] = staticValue;
               } else {
@@ -200,10 +200,10 @@ export function analyzeImperativeComposition(
               const staticValue = evaluateStaticExpression(property.value);
               if (parentPath) {
                 const pathParts = parentPath.split('.');
-                let current = statusMappings;
+                let current: Record<string, unknown> = statusMappings;
                 for (const part of pathParts) {
                   if (!current[part]) current[part] = {};
-                  current = current[part];
+                  current = current[part] as Record<string, unknown>;
                 }
                 current[fieldName] = staticValue;
               } else {
@@ -212,10 +212,10 @@ export function analyzeImperativeComposition(
             } catch (_evalError) {
               if (parentPath) {
                 const pathParts = parentPath.split('.');
-                let current = statusMappings;
+                let current: Record<string, unknown> = statusMappings;
                 for (const part of pathParts) {
                   if (!current[part]) current[part] = {};
-                  current = current[part];
+                  current = current[part] as Record<string, unknown>;
                 }
                 current[fieldName] = null;
               } else {
@@ -542,7 +542,7 @@ function evaluateStaticExpression(node: any): any {
     case 'LogicalExpression':
       return null;
     case 'ObjectExpression': {
-      const obj: Record<string, any> = {};
+      const obj: Record<string, unknown> = {};
       for (const prop of node.properties) {
         if (prop.type === 'Property' && prop.key.type === 'Identifier') {
           obj[prop.key.name] = evaluateStaticExpression(prop.value);

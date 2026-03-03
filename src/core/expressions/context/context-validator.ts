@@ -58,7 +58,7 @@ export interface ContextValidationRuleResult {
   suggestions?: string[];
 
   /** Additional metadata */
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 /**

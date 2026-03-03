@@ -132,7 +132,7 @@ export const logger: TypeKroLogger = createLogger();
  */
 export function getComponentLogger(
   component: string,
-  additionalContext?: Record<string, any>
+  additionalContext?: Record<string, unknown>
 ): TypeKroLogger {
   return logger.child({ component, ...additionalContext });
 }
@@ -142,7 +142,7 @@ export function getComponentLogger(
  */
 export function getResourceLogger(
   resourceId: string,
-  additionalContext?: Record<string, any>
+  additionalContext?: Record<string, unknown>
 ): TypeKroLogger {
   return logger.child({ resourceId, ...additionalContext });
 }
@@ -153,7 +153,7 @@ export function getResourceLogger(
 export function getDeploymentLogger(
   deploymentId: string,
   namespace?: string,
-  additionalContext?: Record<string, any>
+  additionalContext?: Record<string, unknown>
 ): TypeKroLogger {
   return logger.child({ deploymentId, namespace, ...additionalContext });
 }

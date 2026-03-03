@@ -24,7 +24,7 @@ export interface ResourceAnalysisContext extends AnalysisContext {
   resourceId: string;
 
   /** The resource configuration being analyzed */
-  resourceConfig: Record<string, any>;
+  resourceConfig: Record<string, unknown>;
 
   /** Other resources available for cross-resource references */
   availableResources?: Record<string, Enhanced<any, any>>;
@@ -38,10 +38,10 @@ export interface ResourceAnalysisContext extends AnalysisContext {
  */
 export interface ResourceAnalysisResult {
   /** The original resource configuration */
-  originalConfig: Record<string, any>;
+  originalConfig: Record<string, unknown>;
 
   /** The processed configuration with CEL expressions */
-  processedConfig: Record<string, any>;
+  processedConfig: Record<string, unknown>;
 
   /** All KubernetesRef dependencies found in the configuration */
   dependencies: KubernetesRef<any>[];
@@ -177,7 +177,7 @@ export class ResourceAnalyzer {
    */
   analyzeResourceConfig(
     resourceId: string,
-    config: Record<string, any>,
+    config: Record<string, unknown>,
     context: ResourceAnalysisContext
   ): ResourceAnalysisResult {
     const result: ResourceAnalysisResult = {
@@ -491,7 +491,7 @@ export class ResourceAnalyzer {
  */
 export function analyzeResourceConfig(
   resourceId: string,
-  config: Record<string, any>,
+  config: Record<string, unknown>,
   context: Omit<ResourceAnalysisContext, 'resourceId' | 'resourceConfig'>
 ): ResourceAnalysisResult {
   const analyzer = new ResourceAnalyzer();
