@@ -340,7 +340,7 @@ export class CelConversionEngine {
     }
 
     if (value && typeof value === 'object' && value.constructor === Object) {
-      const converted: Record<string, any> = {};
+      const converted: Record<string, unknown> = {};
 
       for (const [key, val] of Object.entries(value)) {
         if (isKubernetesRef(val)) {

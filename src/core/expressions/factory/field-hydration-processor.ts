@@ -559,7 +559,10 @@ export class FieldHydrationExpressionProcessor {
 
       // Fallback: try to execute the function to get field names
       try {
-        const mockResources = this.createMockResources(resources || {});
+        const mockResources = this.createMockResources(resources || {}) as Record<
+          string,
+          Enhanced<any, any>
+        >;
         const mockSchema =
           schemaProxy || ({} as SchemaProxy<Record<string, unknown>, Record<string, unknown>>);
         const result = statusBuilder(mockSchema, mockResources);
@@ -672,8 +675,10 @@ export class FieldHydrationExpressionProcessor {
   /**
    * Create mock resources for fallback field extraction
    */
-  private createMockResources(resources: Record<string, Enhanced<any, any>>): Record<string, any> {
-    const mockResources: Record<string, any> = {};
+  private createMockResources(
+    resources: Record<string, Enhanced<any, any>>
+  ): Record<string, unknown> {
+    const mockResources: Record<string, unknown> = {};
 
     for (const [resourceName, _resource] of Object.entries(resources)) {
       // Create a simple mock that returns truthy values for any property access

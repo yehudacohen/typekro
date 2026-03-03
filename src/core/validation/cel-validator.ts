@@ -121,14 +121,14 @@ function requiresKroResolution(value: any): boolean {
 /**
  * Separates a nested object into static and dynamic parts
  */
-function separateNestedObject(obj: Record<string, any>): {
-  staticPart: Record<string, any>;
-  dynamicPart: Record<string, any>;
+function separateNestedObject(obj: Record<string, unknown>): {
+  staticPart: Record<string, unknown>;
+  dynamicPart: Record<string, unknown>;
   hasStatic: boolean;
   hasDynamic: boolean;
 } {
-  const staticPart: Record<string, any> = {};
-  const dynamicPart: Record<string, any> = {};
+  const staticPart: Record<string, unknown> = {};
+  const dynamicPart: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(obj)) {
     if (requiresKroResolution(value)) {
@@ -149,12 +149,12 @@ function separateNestedObject(obj: Record<string, any>): {
 /**
  * Separates status mappings into static fields (can be hydrated directly) and dynamic fields (need Kro resolution)
  */
-export function separateStatusFields(statusMappings: Record<string, any>): {
-  staticFields: Record<string, any>;
-  dynamicFields: Record<string, any>;
+export function separateStatusFields(statusMappings: Record<string, unknown>): {
+  staticFields: Record<string, unknown>;
+  dynamicFields: Record<string, unknown>;
 } {
-  const staticFields: Record<string, any> = {};
-  const dynamicFields: Record<string, any> = {};
+  const staticFields: Record<string, unknown> = {};
+  const dynamicFields: Record<string, unknown> = {};
 
   // Handle null/undefined inputs
   if (!statusMappings || typeof statusMappings !== 'object') {
@@ -170,7 +170,9 @@ export function separateStatusFields(statusMappings: Record<string, any>): {
       !isCelExpression(fieldValue)
     ) {
       // Handle nested objects that might have mixed static/dynamic fields
-      const { staticPart, dynamicPart, hasStatic, hasDynamic } = separateNestedObject(fieldValue);
+      const { staticPart, dynamicPart, hasStatic, hasDynamic } = separateNestedObject(
+        fieldValue as Record<string, unknown>
+      );
 
       if (hasStatic) {
         staticFields[fieldName] = staticPart;
@@ -192,7 +194,7 @@ export function separateStatusFields(statusMappings: Record<string, any>): {
  * Validates CEL expressions in dynamic status fields to ensure they reference actual resources
  */
 export function validateStatusCelExpressions(
-  statusMappings: Record<string, any>,
+  statusMappings: Record<string, unknown>,
   resources: Record<string, KubernetesResource>
 ): CelValidationResult {
   const errors: CelValidationError[] = [];
@@ -331,7 +333,7 @@ export function validateResourceIds(
  */
 export function validateResourceGraphDefinition(
   resources: Record<string, KubernetesResource>,
-  statusMappings?: Record<string, any>
+  statusMappings?: Record<string, unknown>
 ): CelValidationResult {
   const resourceIdValidation = validateResourceIds(resources);
   const statusValidation = statusMappings

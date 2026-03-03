@@ -62,7 +62,7 @@ export interface ValidationResult {
   /** Suggestions for fixing issues */
   suggestions?: string[];
   /** Additional details */
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
   /** Location information if available */
   location?: {
     line?: number;

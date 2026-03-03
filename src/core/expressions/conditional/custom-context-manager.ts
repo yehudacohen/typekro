@@ -9,13 +9,16 @@
 import { TypeKroError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { Enhanced } from '../../types/index.js';
+import type { FactoryExpressionContext } from '../analysis/types.js';
+import {
+  type ContextDetectionResult,
+  ExpressionContextDetector,
+} from '../context/context-detector.js';
 import {
   type ConditionalExpressionConfig,
   ConditionalExpressionProcessor,
   type ConditionalExpressionResult,
 } from './conditional-expression-processor.js';
-import { type ContextDetectionResult, ExpressionContextDetector } from '../context/context-detector.js';
-import type { FactoryExpressionContext } from '../analysis/types.js';
 
 const logger = getComponentLogger('custom-context-manager');
 
@@ -68,7 +71,7 @@ export interface CustomContextValidationResult {
   /** Suggestions for fixing validation issues */
   suggestions?: string[];
   /** Additional validation details */
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
 /**

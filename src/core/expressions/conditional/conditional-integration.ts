@@ -377,8 +377,8 @@ export class ConditionalExpressionIntegrator {
    */
   extractConditionalsForSerialization<TSpec, TStatus>(
     resource: EnhancedWithConditionals<TSpec, TStatus>
-  ): Record<string, any> {
-    const conditionals: Record<string, any> = {};
+  ): Record<string, unknown> {
+    const conditionals: Record<string, unknown> = {};
 
     if (resource.includeWhen !== undefined) {
       conditionals.includeWhen = resource.includeWhen;

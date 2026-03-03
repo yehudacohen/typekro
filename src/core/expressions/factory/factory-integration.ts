@@ -255,7 +255,7 @@ export class FactoryExpressionAnalyzer {
     }
 
     if (value && typeof value === 'object' && value.constructor === Object) {
-      const processed: Record<string, any> = {};
+      const processed: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(value)) {
         processed[key] = this.processFactoryValue(val, context, `${fieldPath}.${key}`, options);
       }
@@ -304,7 +304,7 @@ export class FactoryExpressionAnalyzer {
   }
 
   private analyzeConfigFields(
-    config: Record<string, any>,
+    config: Record<string, unknown>,
     context: FactoryExpressionContext,
     result: FactoryConfigAnalysisResult,
     maxDepth: number,
@@ -365,13 +365,20 @@ export class FactoryExpressionAnalyzer {
         });
       } else if (value && typeof value === 'object' && value.constructor === Object) {
         // Recursively analyze nested objects
-        this.analyzeConfigFields(value, context, result, maxDepth, fieldPath, currentDepth + 1);
+        this.analyzeConfigFields(
+          value as Record<string, unknown>,
+          context,
+          result,
+          maxDepth,
+          fieldPath,
+          currentDepth + 1
+        );
       }
     }
   }
 
   private analyzeConfigFieldsWithMagicProxy(
-    _config: Record<string, any>,
+    _config: Record<string, unknown>,
     _context: FactoryExpressionContext,
     result: FactoryConfigAnalysisResult,
     magicProxyResult: MagicProxyDetectionResult,

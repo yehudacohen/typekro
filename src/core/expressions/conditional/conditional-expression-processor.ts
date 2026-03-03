@@ -1,24 +1,24 @@
 /**
  * Conditional Expression Processor for JavaScript to CEL Conversion
- * 
+ *
  * This module provides functionality to process conditional expressions like
  * includeWhen and readyWhen that contain KubernetesRef objects, converting
  * them to appropriate CEL expressions for different deployment strategies.
  */
 
-import { getComponentLogger } from '../../logging/index.js';
-import type { KubernetesRef, CelExpression } from '../../types/index.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
-import { 
-  MagicProxyDetector,
-  type MagicProxyDetectionResult 
-} from '../magic-proxy/magic-proxy-detector.js';
+import { getComponentLogger } from '../../logging/index.js';
+import type { CelExpression, KubernetesRef } from '../../types/index.js';
 import type { FactoryExpressionContext } from '../analysis/types.js';
-import { 
+import {
+  type ContextDetectionResult,
   ExpressionContextDetector,
-  type ContextDetectionResult 
 } from '../context/context-detector.js';
+import {
+  type MagicProxyDetectionResult,
+  MagicProxyDetector,
+} from '../magic-proxy/magic-proxy-detector.js';
 
 const logger = getComponentLogger('conditional-expression-processor');
 
@@ -67,7 +67,7 @@ export interface ConditionalExpressionResult<T = any> {
 
 /**
  * Conditional Expression Processor
- * 
+ *
  * Processes conditional expressions containing KubernetesRef objects and converts
  * them to appropriate CEL expressions for different deployment contexts.
  */
@@ -82,7 +82,7 @@ export class ConditionalExpressionProcessor {
 
   /**
    * Process an includeWhen expression containing KubernetesRef objects
-   * 
+   *
    * @param expression - The includeWhen expression to process
    * @param context - Factory context
    * @param config - Processing configuration
@@ -94,11 +94,11 @@ export class ConditionalExpressionProcessor {
     config: ConditionalExpressionConfig = {}
   ): ConditionalExpressionResult<T> {
     const startTime = performance.now();
-    
+
     logger.debug('Processing includeWhen expression', {
       factoryType: context.factoryType,
       factoryName: context.factoryName,
-      expressionType: typeof expression
+      expressionType: typeof expression,
     });
 
     const result: ConditionalExpressionResult<T> = {
@@ -108,32 +108,36 @@ export class ConditionalExpressionProcessor {
       conditionalType: 'includeWhen',
       contextResult: this.contextDetector.detectContextFromFunction('includeWhen', [expression], {
         factoryType: context.factoryType,
-        functionContext: 'includeWhen'
+        functionContext: 'includeWhen',
       }),
       validationErrors: [],
       metrics: {
         processingTimeMs: 0,
         referencesProcessed: 0,
-        expressionsGenerated: 0
+        expressionsGenerated: 0,
       },
-      ...(config.includeDebugInfo ? {
-        debugInfo: {
-          detectedReferences: [],
-          processingSteps: []
-        }
-      } : {})
+      ...(config.includeDebugInfo
+        ? {
+            debugInfo: {
+              detectedReferences: [],
+              processingSteps: [],
+            },
+          }
+        : {}),
     };
 
     // Detect KubernetesRef objects in the expression
     const detection = this.magicProxyDetector.detectKubernetesRefs(expression, {
       maxDepth: config.maxDepth || 10,
       includeDetailedPaths: true,
-      analyzeReferenceSources: true
+      analyzeReferenceSources: true,
     });
 
     if (config.includeDebugInfo && result.debugInfo) {
-      result.debugInfo.detectedReferences = detection.references.map(ref => ref.ref);
-      result.debugInfo.processingSteps.push(`Detected ${detection.references.length} KubernetesRef objects`);
+      result.debugInfo.detectedReferences = detection.references.map((ref) => ref.ref);
+      result.debugInfo.processingSteps.push(
+        `Detected ${detection.references.length} KubernetesRef objects`
+      );
     }
 
     // Validate the expression for includeWhen context (regardless of KubernetesRef presence)
@@ -173,7 +177,7 @@ export class ConditionalExpressionProcessor {
     logger.debug('includeWhen expression processing completed', {
       wasProcessed: result.wasProcessed,
       referencesProcessed: result.metrics.referencesProcessed,
-      processingTimeMs: result.metrics.processingTimeMs
+      processingTimeMs: result.metrics.processingTimeMs,
     });
 
     return result;
@@ -181,7 +185,7 @@ export class ConditionalExpressionProcessor {
 
   /**
    * Process a readyWhen expression containing KubernetesRef objects
-   * 
+   *
    * @param expression - The readyWhen expression to process
    * @param context - Factory context
    * @param config - Processing configuration
@@ -193,11 +197,11 @@ export class ConditionalExpressionProcessor {
     config: ConditionalExpressionConfig = {}
   ): ConditionalExpressionResult<T> {
     const startTime = performance.now();
-    
+
     logger.debug('Processing readyWhen expression', {
       factoryType: context.factoryType,
       factoryName: context.factoryName,
-      expressionType: typeof expression
+      expressionType: typeof expression,
     });
 
     const result: ConditionalExpressionResult<T> = {
@@ -207,32 +211,36 @@ export class ConditionalExpressionProcessor {
       conditionalType: 'readyWhen',
       contextResult: this.contextDetector.detectContextFromFunction('readyWhen', [expression], {
         factoryType: context.factoryType,
-        functionContext: 'readyWhen'
+        functionContext: 'readyWhen',
       }),
       validationErrors: [],
       metrics: {
         processingTimeMs: 0,
         referencesProcessed: 0,
-        expressionsGenerated: 0
+        expressionsGenerated: 0,
       },
-      ...(config.includeDebugInfo ? {
-        debugInfo: {
-          detectedReferences: [],
-          processingSteps: []
-        }
-      } : {})
+      ...(config.includeDebugInfo
+        ? {
+            debugInfo: {
+              detectedReferences: [],
+              processingSteps: [],
+            },
+          }
+        : {}),
     };
 
     // Detect KubernetesRef objects in the expression
     const detection = this.magicProxyDetector.detectKubernetesRefs(expression, {
       maxDepth: config.maxDepth || 10,
       includeDetailedPaths: true,
-      analyzeReferenceSources: true
+      analyzeReferenceSources: true,
     });
 
     if (config.includeDebugInfo && result.debugInfo) {
-      result.debugInfo.detectedReferences = detection.references.map(ref => ref.ref);
-      result.debugInfo.processingSteps.push(`Detected ${detection.references.length} KubernetesRef objects`);
+      result.debugInfo.detectedReferences = detection.references.map((ref) => ref.ref);
+      result.debugInfo.processingSteps.push(
+        `Detected ${detection.references.length} KubernetesRef objects`
+      );
     }
 
     // Validate the expression for readyWhen context (regardless of KubernetesRef presence)
@@ -269,7 +277,7 @@ export class ConditionalExpressionProcessor {
     logger.debug('readyWhen expression processing completed', {
       wasProcessed: result.wasProcessed,
       referencesProcessed: result.metrics.referencesProcessed,
-      processingTimeMs: result.metrics.processingTimeMs
+      processingTimeMs: result.metrics.processingTimeMs,
     });
 
     return result;
@@ -277,7 +285,7 @@ export class ConditionalExpressionProcessor {
 
   /**
    * Process a custom conditional expression containing KubernetesRef objects
-   * 
+   *
    * @param expression - The conditional expression to process
    * @param context - Factory context
    * @param config - Processing configuration
@@ -289,11 +297,11 @@ export class ConditionalExpressionProcessor {
     config: ConditionalExpressionConfig = {}
   ): ConditionalExpressionResult<T> {
     const startTime = performance.now();
-    
+
     logger.debug('Processing custom conditional expression', {
       factoryType: context.factoryType,
       factoryName: context.factoryName,
-      expressionType: typeof expression
+      expressionType: typeof expression,
     });
 
     const result: ConditionalExpressionResult<T> = {
@@ -303,36 +311,44 @@ export class ConditionalExpressionProcessor {
       conditionalType: 'custom',
       contextResult: this.contextDetector.detectContextFromFunction('conditional', [expression], {
         factoryType: context.factoryType,
-        functionContext: 'conditional'
+        functionContext: 'conditional',
       }),
       validationErrors: [],
       metrics: {
         processingTimeMs: 0,
         referencesProcessed: 0,
-        expressionsGenerated: 0
+        expressionsGenerated: 0,
       },
-      ...(config.includeDebugInfo ? {
-        debugInfo: {
-          detectedReferences: [],
-          processingSteps: []
-        }
-      } : {})
+      ...(config.includeDebugInfo
+        ? {
+            debugInfo: {
+              detectedReferences: [],
+              processingSteps: [],
+            },
+          }
+        : {}),
     };
 
     // Detect KubernetesRef objects in the expression
     const detection = this.magicProxyDetector.detectKubernetesRefs(expression, {
       maxDepth: config.maxDepth || 10,
       includeDetailedPaths: true,
-      analyzeReferenceSources: true
+      analyzeReferenceSources: true,
     });
 
     if (config.includeDebugInfo && result.debugInfo) {
-      result.debugInfo.detectedReferences = detection.references.map(ref => ref.ref);
-      result.debugInfo.processingSteps.push(`Detected ${detection.references.length} KubernetesRef objects`);
+      result.debugInfo.detectedReferences = detection.references.map((ref) => ref.ref);
+      result.debugInfo.processingSteps.push(
+        `Detected ${detection.references.length} KubernetesRef objects`
+      );
     }
 
     // Validate the expression for conditional context (regardless of KubernetesRef presence)
-    const validationErrors = this.validateCustomConditionalExpression(expression, detection, config);
+    const validationErrors = this.validateCustomConditionalExpression(
+      expression,
+      detection,
+      config
+    );
     result.validationErrors = validationErrors;
 
     // If no KubernetesRef objects found, return as-is (but with validation results)
@@ -365,7 +381,7 @@ export class ConditionalExpressionProcessor {
     logger.debug('Custom conditional expression processing completed', {
       wasProcessed: result.wasProcessed,
       referencesProcessed: result.metrics.referencesProcessed,
-      processingTimeMs: result.metrics.processingTimeMs
+      processingTimeMs: result.metrics.processingTimeMs,
     });
 
     return result;
@@ -387,10 +403,14 @@ export class ConditionalExpressionProcessor {
       if (config.includeDebugInfo && result.debugInfo) {
         result.debugInfo.processingSteps.push('Processing direct KubernetesRef');
       }
-      
+
       if (context.factoryType === 'kro') {
         // For Kro factories, convert to CEL expression
-        const celExpr = this.convertKubernetesRefToConditionalCel(expression, conditionalType, context);
+        const celExpr = this.convertKubernetesRefToConditionalCel(
+          expression,
+          conditionalType,
+          context
+        );
         result.metrics.expressionsGenerated = 1;
         return celExpr as T;
       } else {
@@ -402,9 +422,17 @@ export class ConditionalExpressionProcessor {
     // Handle boolean expressions with KubernetesRef objects
     if (this.isBooleanExpressionWithRefs(expression, detection)) {
       if (config.includeDebugInfo && result.debugInfo) {
-        result.debugInfo.processingSteps.push('Processing boolean expression with KubernetesRef objects');
+        result.debugInfo.processingSteps.push(
+          'Processing boolean expression with KubernetesRef objects'
+        );
       }
-      return this.processBooleanExpression(expression, detection, context, conditionalType, result) as T;
+      return this.processBooleanExpression(
+        expression,
+        detection,
+        context,
+        conditionalType,
+        result
+      ) as T;
     }
 
     // Handle complex conditional expressions
@@ -412,15 +440,30 @@ export class ConditionalExpressionProcessor {
       if (config.includeDebugInfo && result.debugInfo) {
         result.debugInfo.processingSteps.push('Processing complex conditional expression');
       }
-      return this.processComplexConditionalExpression(expression, detection, context, conditionalType, result) as T;
+      return this.processComplexConditionalExpression(
+        expression,
+        detection,
+        context,
+        conditionalType,
+        result
+      ) as T;
     }
 
     // Handle objects and arrays recursively
     if (expression && typeof expression === 'object') {
       if (config.includeDebugInfo && result.debugInfo) {
-        result.debugInfo.processingSteps.push('Processing object/array with nested KubernetesRef objects');
+        result.debugInfo.processingSteps.push(
+          'Processing object/array with nested KubernetesRef objects'
+        );
       }
-      return this.processObjectWithConditionalRefs(expression, detection, context, conditionalType, config, result) as T;
+      return this.processObjectWithConditionalRefs(
+        expression,
+        detection,
+        context,
+        conditionalType,
+        config,
+        result
+      ) as T;
     }
 
     // Fallback: return as-is
@@ -436,11 +479,11 @@ export class ConditionalExpressionProcessor {
     context: FactoryExpressionContext
   ): CelExpression<T> {
     const celExpression = this.generateConditionalCelFromRef(ref, conditionalType, context);
-    
+
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: celExpression,
-      type: 'boolean' // Conditional expressions should evaluate to boolean
+      type: 'boolean', // Conditional expressions should evaluate to boolean
     } as CelExpression<T>;
   }
 
@@ -465,7 +508,7 @@ export class ConditionalExpressionProcessor {
       case 'includeWhen':
         // includeWhen expressions typically reference schema fields for configuration
         return `${resourceId}.${fieldPath}`;
-      
+
       case 'readyWhen':
         // readyWhen expressions typically reference resource status fields
         return `${resourceId}.${fieldPath}`;
@@ -478,20 +521,31 @@ export class ConditionalExpressionProcessor {
   /**
    * Check if expression is a boolean expression with KubernetesRef objects
    */
-  private isBooleanExpressionWithRefs(expression: any, detection: MagicProxyDetectionResult): boolean {
+  private isBooleanExpressionWithRefs(
+    expression: any,
+    detection: MagicProxyDetectionResult
+  ): boolean {
     // This is a simplified check - in a real implementation, we'd parse the expression
-    return typeof expression === 'string' && 
-           detection.hasKubernetesRefs && 
-           /[><=!]=?|&&|\|\||true|false/.test(expression);
+    return (
+      typeof expression === 'string' &&
+      detection.hasKubernetesRefs &&
+      /[><=!]=?|&&|\|\||true|false/.test(expression)
+    );
   }
 
   /**
    * Check if expression is a complex conditional expression
    */
-  private isComplexConditionalExpression(expression: any, detection: MagicProxyDetectionResult): boolean {
-    return typeof expression === 'string' && 
-           detection.hasKubernetesRefs && 
-           expression.includes('?') && expression.includes(':');
+  private isComplexConditionalExpression(
+    expression: any,
+    detection: MagicProxyDetectionResult
+  ): boolean {
+    return (
+      typeof expression === 'string' &&
+      detection.hasKubernetesRefs &&
+      expression.includes('?') &&
+      expression.includes(':')
+    );
   }
 
   /**
@@ -527,7 +581,9 @@ export class ConditionalExpressionProcessor {
     // In a full implementation, this would parse the conditional expression and convert
     // embedded KubernetesRef objects to CEL expressions
     if (result.debugInfo) {
-      result.debugInfo.processingSteps.push('Complex conditional expression processing not fully implemented');
+      result.debugInfo.processingSteps.push(
+        'Complex conditional expression processing not fully implemented'
+      );
     }
     return expression;
   }
@@ -547,38 +603,53 @@ export class ConditionalExpressionProcessor {
       return value.map((item) => {
         if (isKubernetesRef(item)) {
           result.metrics.expressionsGenerated++;
-          return context.factoryType === 'kro' 
+          return context.factoryType === 'kro'
             ? this.convertKubernetesRefToConditionalCel(item, conditionalType, context)
             : item;
         }
-        
+
         // Recursively process nested items
         if (this.magicProxyDetector.containsKubernetesRefs(item)) {
-          const nestedResult = this.processConditionalExpression(item, detection, context, conditionalType, config, result);
+          const nestedResult = this.processConditionalExpression(
+            item,
+            detection,
+            context,
+            conditionalType,
+            config,
+            result
+          );
           return nestedResult;
         }
-        
+
         return item;
       }) as T;
     }
 
     if (value && typeof value === 'object' && value.constructor === Object) {
-      const processed: Record<string, any> = {};
-      
+      const processed: Record<string, unknown> = {};
+
       for (const [key, val] of Object.entries(value)) {
         if (isKubernetesRef(val)) {
           result.metrics.expressionsGenerated++;
-          processed[key] = context.factoryType === 'kro' 
-            ? this.convertKubernetesRefToConditionalCel(val, conditionalType, context)
-            : val;
+          processed[key] =
+            context.factoryType === 'kro'
+              ? this.convertKubernetesRefToConditionalCel(val, conditionalType, context)
+              : val;
         } else if (this.magicProxyDetector.containsKubernetesRefs(val)) {
-          const nestedResult = this.processConditionalExpression(val, detection, context, conditionalType, config, result);
+          const nestedResult = this.processConditionalExpression(
+            val,
+            detection,
+            context,
+            conditionalType,
+            config,
+            result
+          );
           processed[key] = nestedResult;
         } else {
           processed[key] = val;
         }
       }
-      
+
       return processed as T;
     }
 
@@ -624,10 +695,10 @@ export class ConditionalExpressionProcessor {
     }
 
     // readyWhen expressions should typically reference status fields
-    const hasStatusReferences = detection.references.some(ref => 
+    const hasStatusReferences = detection.references.some((ref) =>
       ref.fieldPath.includes('status')
     );
-    
+
     if (!hasStatusReferences && detection.references.length > 0) {
       errors.push('readyWhen expressions should typically reference resource status fields');
     }
@@ -657,7 +728,9 @@ export class ConditionalExpressionProcessor {
    * Check if expression looks like it evaluates to boolean
    */
   private looksLikeBooleanExpression(expression: string): boolean {
-    return /[><=!]=?|&&|\|\||true|false|ready|available|enabled|disabled/.test(expression.toLowerCase());
+    return /[><=!]=?|&&|\|\||true|false|ready|available|enabled|disabled/.test(
+      expression.toLowerCase()
+    );
   }
 }
 
@@ -696,5 +769,9 @@ export function processCustomConditional<T>(
   context: FactoryExpressionContext,
   config?: ConditionalExpressionConfig
 ): ConditionalExpressionResult<T> {
-  return conditionalExpressionProcessor.processCustomConditionalExpression(expression, context, config);
+  return conditionalExpressionProcessor.processCustomConditionalExpression(
+    expression,
+    context,
+    config
+  );
 }

@@ -980,8 +980,8 @@ ${Object.entries(spec as Record<string, any>)
    * Separate static and dynamic status fields
    */
   private async separateStatusFields(): Promise<{
-    staticFields: Record<string, any>;
-    dynamicFields: Record<string, any>;
+    staticFields: Record<string, unknown>;
+    dynamicFields: Record<string, unknown>;
   }> {
     if (!this.statusMappings) {
       return { staticFields: {}, dynamicFields: {} };
@@ -996,10 +996,10 @@ ${Object.entries(spec as Record<string, any>)
    * Evaluate static CEL expressions with actual spec values
    */
   private async evaluateStaticFields(
-    staticFields: Record<string, any>,
+    staticFields: Record<string, unknown>,
     spec: TSpec
-  ): Promise<Record<string, any>> {
-    const evaluatedFields: Record<string, any> = {};
+  ): Promise<Record<string, unknown>> {
+    const evaluatedFields: Record<string, unknown> = {};
 
     for (const [fieldName, fieldValue] of Object.entries(staticFields)) {
       if (this.isCelExpression(fieldValue)) {
@@ -1022,7 +1022,10 @@ ${Object.entries(spec as Record<string, any>)
         !Array.isArray(fieldValue)
       ) {
         // Recursively evaluate nested objects
-        evaluatedFields[fieldName] = await this.evaluateStaticFields(fieldValue, spec);
+        evaluatedFields[fieldName] = await this.evaluateStaticFields(
+          fieldValue as Record<string, unknown>,
+          spec
+        );
       } else {
         // Keep non-CEL values as-is
         evaluatedFields[fieldName] = fieldValue;
@@ -1381,8 +1384,8 @@ ${Object.entries(spec as Record<string, any>)
    */
   private async hydrateDynamicStatusFields(
     instanceName: string,
-    dynamicFields: Record<string, any>
-  ): Promise<Record<string, any>> {
+    dynamicFields: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
     const dynamicLogger = this.logger.child({ instanceName });
 
     // Get the live custom resource to extract dynamic status fields
@@ -1414,7 +1417,7 @@ ${Object.entries(spec as Record<string, any>)
     // against the live Kro resource data and return the evaluated results
 
     // Extract only the fields that were marked as dynamic
-    const hydratedFields: Record<string, any> = {};
+    const hydratedFields: Record<string, unknown> = {};
 
     for (const [fieldName, _fieldValue] of Object.entries(dynamicFields)) {
       if (liveInstance.status[fieldName] !== undefined) {

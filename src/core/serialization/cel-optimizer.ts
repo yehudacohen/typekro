@@ -173,10 +173,10 @@ export function optimizeCelExpression(
  * - Preserving KubernetesRef objects for proper CEL string generation
  */
 export function optimizeStatusMappings(
-  statusMappings: Record<string, any>,
+  statusMappings: Record<string, unknown>,
   context: EvaluationContext
-): { mappings: Record<string, any>; optimizations: string[] } {
-  const optimizedMappings: Record<string, any> = {};
+): { mappings: Record<string, unknown>; optimizations: string[] } {
+  const optimizedMappings: Record<string, unknown> = {};
   const allOptimizations: string[] = [];
 
   function evaluateValue(value: any, path: string): any {
@@ -218,7 +218,7 @@ export function optimizeStatusMappings(
     }
 
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      const optimizedObject: Record<string, any> = {};
+      const optimizedObject: Record<string, unknown> = {};
       for (const [key, nestedValue] of Object.entries(value)) {
         optimizedObject[key] = evaluateValue(nestedValue, `${path}.${key}`);
       }

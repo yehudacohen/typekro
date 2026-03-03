@@ -503,7 +503,7 @@ export interface FactoryOptions extends BaseDeploymentConfig {
   /** Factory type for expression analysis and conversion */
   factoryType?: 'direct' | 'kro';
   /** Pre-analyzed status mappings for factory-specific handling */
-  statusMappings?: Record<string, any>;
+  statusMappings?: Record<string, unknown>;
 
   /**
    * HTTP request timeout configuration for Kubernetes API operations
