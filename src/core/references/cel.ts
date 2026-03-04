@@ -509,6 +509,18 @@ export const Cel = {
   concat,
   cel,
 
+  // Typed convenience methods — pre-bound type parameters for Cel.expr
+  /** Create a boolean CEL expression. Shorthand for Cel.expr<boolean>(...). */
+  boolean: (...parts: RefOrValue<unknown>[]): CelExpression<boolean> & boolean =>
+    expr<boolean>(...parts),
+
+  /** Create a string CEL expression. Shorthand for Cel.expr<string>(...). */
+  str: (...parts: RefOrValue<unknown>[]): CelExpression<string> & string => expr<string>(...parts),
+
+  /** Create a number CEL expression. Shorthand for Cel.expr<number>(...). */
+  number: (...parts: RefOrValue<unknown>[]): CelExpression<number> & number =>
+    expr<number>(...parts),
+
   // Common CEL functions as utilities
   min: (...values: RefOrValue<CelValue>[]) => math<number>('min', ...values),
   max: (...values: RefOrValue<CelValue>[]) => math<number>('max', ...values),
