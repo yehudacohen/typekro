@@ -75,7 +75,7 @@ export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceS
         ready: true,
         message: `${serviceType} service is ready`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

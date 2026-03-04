@@ -77,7 +77,7 @@ export const kustomizationReadinessEvaluator: ReadinessEvaluator<any> = (
       ready: true,
       message: `Kustomization is ready with ${status.inventory?.entries?.length || 0} applied resources`,
     };
-  } catch (error) {
+  } catch (error: unknown) {
     return {
       ready: false,
       reason: 'EvaluationError',

@@ -97,7 +97,7 @@ export class DependencyGraph {
     try {
       this.getTopologicalOrder();
       return false;
-    } catch (error) {
+    } catch (error: unknown) {
       return error instanceof CircularDependencyError;
     }
   }

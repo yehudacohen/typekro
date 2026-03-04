@@ -366,7 +366,7 @@ export class CompileTimeTypeChecker {
       // Cache the result
       this.validationCache.set(cacheKey, result);
       return result;
-    } catch (_error) {
+    } catch (_error: unknown) {
       const validationError = CompileTimeError.forTypeIncompatibility(
         expression,
         'unknown',

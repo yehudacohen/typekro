@@ -669,7 +669,7 @@ function createTypedResourceGraph<
             analyzedStatusMappings = statusMappings as Record<string, unknown>;
             serializationLogger.debug('No conversion required, using original status mappings');
           }
-        } catch (statusAnalysisError) {
+        } catch (statusAnalysisError: unknown) {
           serializationLogger.debug(
             'Status builder analysis failed, falling back to imperative analysis',
             {
@@ -723,7 +723,7 @@ function createTypedResourceGraph<
               'No JavaScript expressions found, using original status mappings'
             );
           }
-        } catch (imperativeAnalysisError) {
+        } catch (imperativeAnalysisError: unknown) {
           serializationLogger.debug(
             'Imperative composition analysis failed, using executed status mappings',
             {
@@ -757,7 +757,7 @@ function createTypedResourceGraph<
         } else {
           analyzedStatusMappings = statusMappings as Record<string, unknown>;
         }
-      } catch (analysisError) {
+      } catch (analysisError: unknown) {
         serializationLogger.debug(
           'Status builder analysis failed, using executed status mappings',
           {
@@ -826,7 +826,7 @@ function createTypedResourceGraph<
             });
           }
         }
-      } catch (migrationError) {
+      } catch (migrationError: unknown) {
         serializationLogger.error(
           'Failed to analyze migration opportunities',
           ensureError(migrationError)
@@ -920,7 +920,7 @@ function createTypedResourceGraph<
         );
       }
     }
-  } catch (error) {
+  } catch (error: unknown) {
     serializationLogger.error('Failed to analyze status builder', ensureError(error));
     // Fallback to executing status builder normally
     statusMappings = runInStatusBuilderContext(() =>
@@ -988,7 +988,7 @@ function createTypedResourceGraph<
           });
         }
       }
-    } catch (analysisError) {
+    } catch (analysisError: unknown) {
       serializationLogger.debug(
         'Composition body analysis failed (non-fatal), proceeding without control flow detection',
         { error: ensureError(analysisError).message }
@@ -1196,7 +1196,7 @@ function createTypedResourceGraph<
                 'Successfully re-analyzed status mappings for direct factory'
               );
             }
-          } catch (error) {
+          } catch (error: unknown) {
             serializationLogger.error(
               'Failed to re-analyze status mappings for direct factory, using default analysis',
               ensureError(error)

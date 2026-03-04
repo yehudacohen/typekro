@@ -69,7 +69,7 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
           },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

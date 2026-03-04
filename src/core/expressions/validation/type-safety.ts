@@ -202,7 +202,7 @@ export class ExpressionTypeValidator {
         warnings,
         suggestions,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         errors: [
@@ -292,7 +292,7 @@ export class ExpressionTypeValidator {
         warnings,
         suggestions,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         errors: [

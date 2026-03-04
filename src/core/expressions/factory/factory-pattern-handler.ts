@@ -93,7 +93,7 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
 
       // Complex expression with KubernetesRef objects
       return this.handleComplexExpression(expression, dependencies, context);
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         celExpression: null,
@@ -237,7 +237,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
 
       // Complex expression with KubernetesRef objects
       return this.handleComplexExpression(expression, dependencies, context);
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         celExpression: null,

@@ -906,7 +906,7 @@ export class ConversionError extends TypeKroError {
  *
  * @example
  * ```ts
- * try { ... } catch (error) {
+ * try { ... } catch (error: unknown) {
  *   logger.error('Failed', ensureError(error));
  * }
  * ```

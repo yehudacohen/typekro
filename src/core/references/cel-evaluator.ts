@@ -63,7 +63,7 @@ export class CelEvaluator {
       const result = evaluate(expression.expression, celContext, functions);
 
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       throw new CelEvaluationError(expression, ensureError(error));
     }
   }
@@ -106,7 +106,7 @@ export class CelEvaluator {
         };
         return evaluate(parseResult.cst, celContext, functions);
       };
-    } catch (error) {
+    } catch (error: unknown) {
       throw new CelEvaluationError(expression, ensureError(error));
     }
   }
@@ -125,7 +125,7 @@ export class CelEvaluator {
           error: 'Failed to parse CEL expression',
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         error: error instanceof Error ? error.message : String(error),

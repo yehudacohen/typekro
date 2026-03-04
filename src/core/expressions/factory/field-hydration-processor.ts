@@ -301,7 +301,7 @@ export class FieldHydrationExpressionProcessor {
             dependencyCount: dependencies.length,
             requiresConversion: analysisResult.requiresConversion,
           });
-        } catch (error) {
+        } catch (error: unknown) {
           const fieldError = new ConversionError(
             `Failed to process field '${fieldName}': ${error instanceof Error ? error.message : String(error)}`,
             expressionSource,
@@ -345,7 +345,7 @@ export class FieldHydrationExpressionProcessor {
         allResourceReferences,
         allSchemaReferences,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const processingError = new ConversionError(
         `Failed to process status expressions: ${error instanceof Error ? error.message : String(error)}`,
         statusBuilder.toString(),
@@ -554,7 +554,7 @@ export class FieldHydrationExpressionProcessor {
       });
 
       return fieldExpressions;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to parse status builder function', ensureError(error));
 
       // Fallback: try to execute the function to get field names
@@ -574,7 +574,7 @@ export class FieldHydrationExpressionProcessor {
           }
           return fieldExpressions;
         }
-      } catch (fallbackError) {
+      } catch (fallbackError: unknown) {
         this.logger.error('Fallback field extraction also failed', ensureError(fallbackError));
       }
 
@@ -724,7 +724,7 @@ export class FieldHydrationExpressionProcessor {
       });
 
       return analysisResult;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to analyze field expression', ensureError(error), {
         expression: expressionSource.substring(0, 100),
       });

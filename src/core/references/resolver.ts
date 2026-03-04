@@ -478,7 +478,7 @@ export class ReferenceResolver {
       const value = this.extractFieldValue<T>(resource, ref.fieldPath);
       this.cache.set(cacheKey, value);
       return value as T;
-    } catch (error) {
+    } catch (error: unknown) {
       throw new ReferenceResolutionError(ref, ensureError(error));
     }
   }
@@ -621,7 +621,7 @@ export class ReferenceResolver {
       });
       this.cache.set(cacheKey, result);
       return result as T;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('CEL expression evaluation failed', ensureError(error), {
         expression: expr.expression,
         hasResourceKeyMapping: !!context.resourceKeyMapping,
@@ -687,7 +687,7 @@ export class ReferenceResolver {
           celExpr,
           evaluatedValue,
         });
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.warn('Failed to evaluate template placeholder', {
           placeholder: fullMatch,
           celExpr,
@@ -765,7 +765,7 @@ export class ReferenceResolver {
       };
 
       return kubernetesResource;
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string };
 
       if (k8sError.statusCode === 404) {
@@ -997,7 +997,7 @@ export class ReferenceResolver {
       });
 
       return true;
-    } catch (error) {
+    } catch (error: unknown) {
       readinessLogger.error('Resource readiness check failed', ensureError(error), {
         resourceId: resourceRef.resourceId,
         timeout,

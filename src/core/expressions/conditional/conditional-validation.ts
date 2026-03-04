@@ -239,7 +239,7 @@ export class ConditionalExpressionValidator {
               break;
           }
         }
-      } catch (error) {
+      } catch (error: unknown) {
         logger.warn('Validation rule failed with error', {
           ruleId: rule.id,
           error: error instanceof Error ? error.message : String(error),

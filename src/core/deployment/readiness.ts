@@ -142,7 +142,7 @@ export class ResourceReadinessChecker {
         );
 
         await new Promise((resolve) => setTimeout(resolve, delay));
-      } catch (error) {
+      } catch (error: unknown) {
         // Debug logging for API errors
         if (this.debugLogger) {
           this.debugLogger.logApiError(deployedResource, ensureError(error), {
@@ -187,7 +187,7 @@ export class ResourceReadinessChecker {
           Date.now() - startTime,
           attempt
         );
-      } catch (_error) {
+      } catch (_error: unknown) {
         // If we can't get final status, log timeout without it
         this.debugLogger.logTimeout(
           deployedResource,

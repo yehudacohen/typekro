@@ -90,7 +90,7 @@ export function statefulSet(
           };
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

@@ -308,7 +308,7 @@ export class KroResourceFactoryImpl<
       try {
         // Execute the deployment closure with mock context to trigger validation
         await closure(mockDeploymentContext);
-      } catch (error) {
+      } catch (error: unknown) {
         // If validation fails, throw the validation error immediately
         if (
           error instanceof Error &&
@@ -361,7 +361,7 @@ export class KroResourceFactoryImpl<
           name: closureName,
           resourceCount: results.length,
         });
-      } catch (error) {
+      } catch (error: unknown) {
         // Check if this is a KubernetesRef validation error and enhance it
         if (error instanceof Error && error.message.includes('KubernetesRef')) {
           this.logger.error(
@@ -606,7 +606,7 @@ export class KroResourceFactoryImpl<
           );
         })
       );
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { message?: string; body?: string | object; statusCode?: number };
       // If the CRD doesn't exist yet or there are no instances, return empty array
       const bodyString =
@@ -654,7 +654,7 @@ export class KroResourceFactoryImpl<
           namespace: this.namespace,
         },
       } as k8s.KubernetesObject);
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string };
       if (k8sError.statusCode !== 404) {
         throw new CRDInstanceError(
@@ -734,7 +734,7 @@ export class KroResourceFactoryImpl<
         conditions: rgd.status?.conditions || [],
         observedGeneration: rgd.status?.observedGeneration || 0,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string; body?: string | object };
       // Check for 404 in multiple ways since different API clients report it differently
       const bodyString =
@@ -883,7 +883,7 @@ ${Object.entries(spec as Record<string, any>)
       // Wait for the CRD to be created by Kro using DirectDeploymentEngine
       await this.waitForCRDReadyWithEngine(deploymentEngine);
       this.logger.info('CRD ready', { rgdName: this.rgdName });
-    } catch (error) {
+    } catch (error: unknown) {
       // Debug: Check the actual RGD status when it fails
       try {
         const kubeConfig = this.getKubeConfig();
@@ -907,7 +907,7 @@ ${Object.entries(spec as Record<string, any>)
           status: rgdResult.status,
           conditions: rgdResult.status?.conditions,
         });
-      } catch (statusError) {
+      } catch (statusError: unknown) {
         this.logger.error('Could not fetch RGD status for debugging', ensureError(statusError));
       }
 
@@ -1007,7 +1007,7 @@ ${Object.entries(spec as Record<string, any>)
           // Evaluate CEL expressions that contain only schema references
           const evaluatedValue = this.evaluateStaticCelExpression(fieldValue, spec);
           evaluatedFields[fieldName] = evaluatedValue;
-        } catch (error) {
+        } catch (error: unknown) {
           this.logger.warn('Failed to evaluate static CEL expression', {
             field: fieldName,
             expression: fieldValue.expression,
@@ -1064,7 +1064,7 @@ ${Object.entries(spec as Record<string, any>)
       const evaluator = compileExpression(scopeExpression);
       const result = evaluator(specRecord) as unknown;
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       // If evaluation fails, the expression might be an unquoted string like: http://kro-webapp-service
       // In this case, return it as-is (it's already a string value)
       if (!expression.includes('schema.spec.') && !expression.includes('spec.')) {
@@ -1201,7 +1201,7 @@ ${Object.entries(spec as Record<string, any>)
 
         // Update the status using object assignment to avoid type issues
         Object.assign(enhancedProxy.status, mergedStatus);
-      } catch (error) {
+      } catch (error: unknown) {
         hydrationLogger.error('Dynamic status hydration failed', ensureError(error));
         // Continue with static fields only if dynamic hydration fails
       }
@@ -1303,7 +1303,7 @@ ${Object.entries(spec as Record<string, any>)
             rgdStatusKeys,
             expectedCustomStatusFields,
           });
-        } catch (error) {
+        } catch (error: unknown) {
           readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
             rgdName: this.name,
             error: error instanceof Error ? error.message : String(error),
@@ -1356,7 +1356,7 @@ ${Object.entries(spec as Record<string, any>)
           isSynced,
           hasCustomStatusFields,
         });
-      } catch (error) {
+      } catch (error: unknown) {
         const k8sError = error as { statusCode?: number };
         if (k8sError.statusCode !== 404) {
           throw error;

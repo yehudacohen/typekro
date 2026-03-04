@@ -204,7 +204,7 @@ export function parseExpression(expression: string, options?: ParseOptions): EST
     }
 
     throw new ParserError('Failed to extract expression from parsed AST', 1, 0, expression);
-  } catch (error) {
+  } catch (error: unknown) {
     // Try parsing without wrapping (for statements or complex expressions)
     try {
       const ast = Parser.parse(expression, mergedOptions) as unknown as ESTreeNode & {
@@ -261,7 +261,7 @@ export function parseExpressionSafe(expression: string, options?: ParseOptions):
       errors: [],
       success: true,
     };
-  } catch (error) {
+  } catch (error: unknown) {
     const parserError =
       error instanceof ParserError
         ? error
@@ -317,7 +317,7 @@ export function parseScript(source: string, options?: ParseOptions): ESTreeNode 
 
   try {
     return Parser.parse(source, mergedOptions) as unknown as ESTreeNode;
-  } catch (error) {
+  } catch (error: unknown) {
     if (error instanceof SyntaxError) {
       throw ParserError.fromAcornError(
         error as SyntaxError & { loc?: { line: number; column: number } },
@@ -343,7 +343,7 @@ export function parseScriptSafe(source: string, options?: ParseOptions): ParseRe
       errors: [],
       success: true,
     };
-  } catch (error) {
+  } catch (error: unknown) {
     const parserError =
       error instanceof ParserError
         ? error

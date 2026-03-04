@@ -1394,7 +1394,7 @@ export function analyzeCompositionBody(
         logger.debug(`Resource ${id} found in AST but not registered at runtime`);
       }
     }
-  } catch (error) {
+  } catch (error: unknown) {
     const msg = `Failed to analyze composition function: ${error instanceof Error ? error.message : String(error)}`;
     logger.warn(msg);
     result.errors.push(msg);

@@ -40,7 +40,7 @@ export function daemonSet(resource: V1DaemonSet): Enhanced<V1DaemonSetSpec, V1Da
           ? `All ${desiredNumberScheduled} pods are ready`
           : `${numberReady}/${desiredNumberScheduled} pods ready`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: `Error checking DaemonSet status: ${error instanceof Error ? error.message : String(error)}`,

@@ -40,7 +40,7 @@ export function persistentVolumeClaim(
           ? 'PVC is bound to a volume'
           : `PVC is in ${status.phase} phase, expected Bound`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: `Error checking PVC status: ${error instanceof Error ? error.message : String(error)}`,

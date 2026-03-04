@@ -41,7 +41,7 @@ export function resourceQuota(
         ready: true,
         message: 'ResourceQuota is ready',
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

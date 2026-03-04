@@ -112,7 +112,7 @@ export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
           };
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

@@ -61,7 +61,7 @@ export function cronJob(resource: V1CronJob): Enhanced<V1CronJobSpec, V1CronJobS
         message: 'CronJob has not been scheduled yet',
         details: { active: active.length, suspended },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

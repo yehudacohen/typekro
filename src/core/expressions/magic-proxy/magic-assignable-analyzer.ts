@@ -158,7 +158,7 @@ export class MagicAssignableAnalyzer {
         sourceMap: conversionResult.sourceMap,
         valid: conversionResult.valid,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const conversionError = new ConversionError(
         `Failed to analyze MagicAssignable value: ${error instanceof Error ? error.message : String(error)}`,
         String(value),
@@ -276,7 +276,7 @@ export class MagicAssignableAnalyzer {
             requiresConversion = requiresConversion || fieldResult.requiresConversion;
             overallValid = overallValid && fieldResult.valid;
           }
-        } catch (error) {
+        } catch (error: unknown) {
           const fieldError = new ConversionError(
             `Failed to analyze field '${key}': ${error instanceof Error ? error.message : String(error)}`,
             String(value),
@@ -308,7 +308,7 @@ export class MagicAssignableAnalyzer {
         valid: overallValid,
         fieldResults,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const shapeError = new ConversionError(
         `Failed to analyze MagicAssignableShape: ${error instanceof Error ? error.message : String(error)}`,
         '[circular or complex object]',

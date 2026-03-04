@@ -474,7 +474,7 @@ export class PathResolver {
 
       // Read file content
       return fs.readFileSync(resolvedPath, 'utf-8');
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof YamlPathResolutionError) {
         throw error;
       }
@@ -637,7 +637,7 @@ export class PathResolver {
           'Check that the path is correct in the repository',
         ]
       );
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof GitContentError) {
         throw error;
       }
@@ -720,7 +720,7 @@ export class PathResolver {
       await this.walkDirectory(resolvedPath, resolvedPath, files, options, resourceName);
 
       return files;
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof YamlPathResolutionError) {
         throw error;
       }
@@ -805,7 +805,7 @@ export class PathResolver {
               relativePath,
               content,
             });
-          } catch (error) {
+          } catch (error: unknown) {
             // Log warning but continue processing other files
             logger.warn('Could not read file during YAML discovery', {
               fullPath,
@@ -926,7 +926,7 @@ export class PathResolver {
                 relativePath,
                 content: fileContent,
               });
-            } catch (error) {
+            } catch (error: unknown) {
               // Log warning but continue processing other files
               logger.warn('Could not fetch Git file during YAML discovery', {
                 path: item.path,
@@ -955,7 +955,7 @@ export class PathResolver {
       }
 
       return files;
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof GitContentError) {
         throw error;
       }
@@ -1023,7 +1023,7 @@ export class PathResolver {
 
         const regex = new RegExp(`^${regexPattern}$`);
         return regex.test(filePath);
-      } catch (_error) {
+      } catch (_error: unknown) {
         // If regex fails, fall back to simple extension matching
         if (pattern.startsWith('*.')) {
           const extension = pattern.substring(2);
@@ -1090,7 +1090,7 @@ export class PathResolver {
       }
 
       return content;
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof YamlPathResolutionError) {
         throw error;
       }

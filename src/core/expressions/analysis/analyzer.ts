@@ -343,7 +343,7 @@ export class JavaScriptToCelAnalyzer {
       // Cache the result
       this.cache.set(expression, context, result);
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       // If parsing fails, try to handle it as a special case
       const specialCaseResult = this.handleSpecialCases(expression, context);
       if (specialCaseResult) {
@@ -519,7 +519,7 @@ export class JavaScriptToCelAnalyzer {
 
       // Complex object/array containing KubernetesRef objects
       return this.analyzeComplexValue(expression, context);
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         celExpression: null,
@@ -606,7 +606,7 @@ export class JavaScriptToCelAnalyzer {
       }
 
       return celExpression;
-    } catch (_error) {
+    } catch (_error: unknown) {
       // Create detailed conversion error with source location
       const conversionError = ConversionError.forUnsupportedSyntax(
         originalExpression,
@@ -653,7 +653,7 @@ export class JavaScriptToCelAnalyzer {
           'Break complex functions into simple expressions that can be converted',
         ]
       );
-    } catch (error) {
+    } catch (error: unknown) {
       const errorMessage =
         error instanceof ParserError
           ? error.message
@@ -718,7 +718,7 @@ export class JavaScriptToCelAnalyzer {
         warnings: [],
         requiresConversion: true,
       };
-    } catch (_error) {
+    } catch (_error: unknown) {
       const originalExpression = `${ref.resourceId}.${ref.fieldPath}`;
       const sourceLocation = { line: 1, column: 1, length: originalExpression.length };
 
@@ -780,7 +780,7 @@ export class JavaScriptToCelAnalyzer {
           'Break the complex value into simpler individual expressions',
         ]
       );
-    } catch (error) {
+    } catch (error: unknown) {
       const originalExpression = JSON.stringify(value);
       const sourceLocation = { line: 1, column: 1, length: originalExpression.length };
 
@@ -880,7 +880,7 @@ export class JavaScriptToCelAnalyzer {
         expression,
         _type: ref._type,
       } as CelExpression;
-    } catch (error) {
+    } catch (error: unknown) {
       throw new ConversionError(
         `Failed to convert KubernetesRef to CEL: ${error instanceof Error ? error.message : String(error)}`,
         `${ref.resourceId}.${ref.fieldPath}`,
@@ -993,7 +993,7 @@ export class JavaScriptToCelAnalyzer {
         warnings: [],
         requiresConversion: true,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const originalExpression = String(expression);
       const sourceLocation = { line: 1, column: 1, length: originalExpression.length };
 
@@ -1114,7 +1114,7 @@ export class JavaScriptToCelAnalyzer {
           requiresConversion: true,
           resourceValidation,
         };
-      } catch (error) {
+      } catch (error: unknown) {
         // Fall through to return null
         const logger = getComponentLogger('expression-analyzer');
         logger.debug('Expression analysis failed, falling through to return null', { err: error });
@@ -1138,7 +1138,7 @@ export class JavaScriptToCelAnalyzer {
       // Acorn natively supports optional chaining (ES2020+)
       try {
         parseExpression(expression);
-      } catch (syntaxError) {
+      } catch (syntaxError: unknown) {
         const errorMessage =
           syntaxError instanceof ParserError
             ? syntaxError.message
@@ -1185,7 +1185,7 @@ export class JavaScriptToCelAnalyzer {
         warnings: [],
         requiresConversion: true,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         celExpression: null,
@@ -1265,7 +1265,7 @@ export class JavaScriptToCelAnalyzer {
         warnings: [],
         requiresConversion: true,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         celExpression: null,
@@ -1343,7 +1343,7 @@ export class JavaScriptToCelAnalyzer {
         warnings: [],
         requiresConversion: true,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         celExpression: null,
@@ -2008,7 +2008,7 @@ export class JavaScriptToCelAnalyzer {
     let path: string;
     try {
       path = this.extractMemberPath(node);
-    } catch (_error) {
+    } catch (_error: unknown) {
       // If path extraction fails, fall back to converting the object and property separately
       const objectExpr = this.convertASTNode(node.object, context);
       const propertyName =
@@ -3145,7 +3145,7 @@ export class JavaScriptToCelAnalyzer {
         try {
           const leftResult = this.convertASTNode(binaryExpr.left, context);
           leftExpr = leftResult.expression.replace(new RegExp(`\\b${param}\\b`, 'g'), param);
-        } catch (error) {
+        } catch (error: unknown) {
           const logger = getComponentLogger('expression-analyzer');
           logger.debug('Failed to convert left side of filter binary expression', { err: error });
           leftExpr = `${param}.property`;
@@ -3157,7 +3157,7 @@ export class JavaScriptToCelAnalyzer {
       try {
         const rightResult = this.convertASTNode(binaryExpr.right, context);
         rightExpr = rightResult.expression;
-      } catch (error) {
+      } catch (error: unknown) {
         const logger = getComponentLogger('expression-analyzer');
         logger.debug('Failed to convert right side of filter binary expression', { err: error });
         rightExpr = 'value';
@@ -4041,7 +4041,7 @@ export class JavaScriptToCelAnalyzer {
 
       // For non-string expressions that need conversion, return the factory result
       return factoryResult;
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
         celExpression: null,

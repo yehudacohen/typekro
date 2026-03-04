@@ -409,7 +409,7 @@ export class EventFilter {
         parent: `${parentResource.kind}/${parentResource.name}`,
         childCount: childResources.length,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to discover child resources', ensureError(error));
     }
 
@@ -563,7 +563,7 @@ export class EventFilter {
           namespace: pod.metadata?.namespace!,
           uid: pod.metadata?.uid!,
         }));
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to find pods for ReplicaSet', ensureError(error));
       return [];
     }

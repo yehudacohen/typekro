@@ -99,7 +99,7 @@ export class MagicProxyAnalyzer {
 
       // Handle primitives
       return this.analyzePrimitiveExpression(expression, context);
-    } catch (error) {
+    } catch (error: unknown) {
       return this.createErrorResult(expression, error, context);
     }
   }
@@ -220,7 +220,7 @@ export class MagicProxyAnalyzer {
       const ast = parseScript(expressionSource);
 
       return ast;
-    } catch (error) {
+    } catch (error: unknown) {
       // Convert ParserError to ConversionError for consistent error handling
       if (error instanceof ParserError) {
         throw new ConversionError(
@@ -307,7 +307,7 @@ export class MagicProxyAnalyzer {
       }
 
       return null;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Failed to extract KubernetesRef from member expression', { error });
       return null;
     }
@@ -492,7 +492,7 @@ export class MagicProxyAnalyzer {
               if (shouldExpandFully || this.mightContainKubernetesRef(propertyValue)) {
                 queue.push({ value: propertyValue, depth: depth + 1 });
               }
-            } catch (error) {
+            } catch (error: unknown) {
               // Ignore errors when accessing properties during analysis
               this.logger.debug('Ignored error when accessing property during analysis', {
                 err: error,
@@ -551,7 +551,7 @@ export class MagicProxyAnalyzer {
       try {
         const celExpression = this.convertSingleKubernetesRefToCel(ref, context);
         celExpressions.push(celExpression);
-      } catch (error) {
+      } catch (error: unknown) {
         // Log error but continue with other refs
         this.logger.warn(`Failed to convert KubernetesRef to CEL`, {
           resourceId: ref.resourceId,

@@ -220,7 +220,7 @@ export class EventMonitor {
         watchConnections: this.watchConnections.size,
         monitoredResources: this.monitoredResources.size,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to start event monitoring', ensureError(error));
       await this.stopMonitoring();
       throw error;
@@ -302,7 +302,7 @@ export class EventMonitor {
     if (this.options.includeChildResources && resourceIdentifier.uid) {
       // Use setTimeout to avoid blocking the main flow
       const timeoutId = setTimeout(() => {
-        this.discoverChildResources(resource).catch((error) => {
+        this.discoverChildResources(resource).catch((error: unknown) => {
           this.logger.warn('Child resource discovery failed', {
             error: ensureError(error),
             resourceId,
@@ -444,7 +444,7 @@ export class EventMonitor {
           });
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to discover child resources', ensureError(error), {
         parentId,
         parentKind: parentResource.kind,
@@ -477,7 +477,7 @@ export class EventMonitor {
           );
 
           childResources.push(...resources);
-        } catch (error) {
+        } catch (error: unknown) {
           this.logger.debug('Failed to list child resources of type', {
             error: ensureError(error),
             resourceType,
@@ -487,7 +487,7 @@ export class EventMonitor {
           // Continue with other resource types
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Error during child resource discovery', ensureError(error), {
         parentKind: parentResource.kind,
         parentName: parentResource.name,
@@ -565,7 +565,7 @@ export class EventMonitor {
           }
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Failed to list resources for owner reference check', {
         error: ensureError(error),
         resourceType,
@@ -777,7 +777,7 @@ export class EventMonitor {
         namespace: connection.namespace,
         resourceCount: connection.resources.size,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       // If monitoring has stopped, suppress all errors
       if (!this.isMonitoring) {
         this.logger.debug('Suppressed error during watch connection start (monitoring stopped)', {
@@ -859,7 +859,7 @@ export class EventMonitor {
         message: event.message?.substring(0, 100),
         hasCallback: !!this.options.progressCallback,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Error handling watch event', ensureError(error), {
         eventType: type,
         eventReason: event.reason,
@@ -892,7 +892,7 @@ export class EventMonitor {
       try {
         const reconnectPromise = this.attemptReconnection(connection);
         if (reconnectPromise && typeof reconnectPromise.catch === 'function') {
-          reconnectPromise.catch((reconnectError) => {
+          reconnectPromise.catch((reconnectError: unknown) => {
             // Ignore reconnection errors if monitoring has stopped
             if (!this.isMonitoring) {
               return;
@@ -904,7 +904,7 @@ export class EventMonitor {
             });
           });
         }
-      } catch (error) {
+      } catch (error: unknown) {
         // Ignore errors from attemptReconnection
         this.logger.debug('Ignored error from attemptReconnection', { err: error });
       }
@@ -1004,7 +1004,7 @@ export class EventMonitor {
         kind: connection.kind,
         namespace: connection.namespace,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       connection.isReconnecting = false;
 
       this.logger.warn('Reconnection attempt failed', {
@@ -1063,7 +1063,7 @@ export class EventMonitor {
       if (connection.request && typeof connection.request.abort === 'function') {
         try {
           connection.request.abort();
-        } catch (error) {
+        } catch (error: unknown) {
           // Ignore abort errors - expected during cleanup
           this.logger.debug('Ignored abort error during watch connection cleanup', { err: error });
         }
@@ -1096,7 +1096,7 @@ export class EventMonitor {
       if (connection.request && typeof connection.request.abort === 'function') {
         try {
           connection.request.abort();
-        } catch (error) {
+        } catch (error: unknown) {
           // Ignore abort errors - expected during cleanup
           this.logger.debug('Ignored abort error during field selector update', { err: error });
         }
@@ -1222,7 +1222,7 @@ export class EventMonitor {
       });
 
       return eventList.metadata?.resourceVersion || '0';
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to get resource version for time filtering', ensureError(error));
       // Don't throw - continue with default resource version
       return '0';

@@ -103,7 +103,7 @@ export class DirectDeploymentStrategy<
       }
 
       return deploymentResult;
-    } catch (error) {
+    } catch (error: unknown) {
       handleDeploymentError(error, 'Direct deployment failed');
     }
   }

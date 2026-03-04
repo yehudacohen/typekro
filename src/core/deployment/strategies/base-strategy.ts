@@ -231,7 +231,7 @@ export abstract class BaseDeploymentStrategy<
           ]);
           // Clear the timeout timer on success to prevent unhandled rejection
           if (hydrationTimer !== undefined) clearTimeout(hydrationTimer);
-        } catch (error) {
+        } catch (error: unknown) {
           this.logger.warn(
             'Status hydration failed or timed out, falling back to resource extraction',
             {
@@ -358,7 +358,7 @@ export abstract class BaseDeploymentStrategy<
                     deployedResource.manifest.metadata?.namespace || this.namespace || 'default',
                 },
               })) as KubernetesResource<unknown, unknown>;
-            } catch (error) {
+            } catch (error: unknown) {
               // Cluster read failed — fall back to the deployment manifest.
               // This is expected for resources that don't support GET (e.g., events).
               this.logger.debug('Cluster read failed, falling back to deployment manifest', {
@@ -477,7 +477,7 @@ export abstract class BaseDeploymentStrategy<
                   resourceKind: deployedResource.kind,
                   resourceName: deployedResource.name,
                 });
-              } catch (_error) {
+              } catch (_error: unknown) {
                 // Fall back to manifest if cluster query fails
                 resourceKeyMapping.set(originalKey, deployedResource.manifest);
                 this.logger.debug('Fallback to manifest for CEL mapping', {
@@ -518,7 +518,7 @@ export abstract class BaseDeploymentStrategy<
           instanceName,
           statusFields: Object.keys(status),
         });
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.warn('Failed to resolve CEL expressions in status, using unresolved status', {
           instanceName,
           error: error instanceof Error ? error.message : String(error),

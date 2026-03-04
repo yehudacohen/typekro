@@ -394,7 +394,7 @@ export class DebugLogger {
     const truncated = statusString.substring(0, this.options.maxStatusObjectSize - 20);
     try {
       return JSON.parse(`${truncated}...[truncated]"}`);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Failed to parse truncated status JSON, returning raw string', {
         err: error,
       });
