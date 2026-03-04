@@ -858,7 +858,7 @@ ${Object.entries(spec as Record<string, any>)
     const deployableRGD = {
       ...enhancedRGD,
       id: this.rgdName,
-    } as DeployableK8sResource<Enhanced<unknown, unknown>>;
+    } as DeployableK8sResource<Enhanced<Record<string, unknown>, Record<string, unknown>>>;
 
     // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
     preserveNonEnumerableProperties(enhancedRGD, deployableRGD);
