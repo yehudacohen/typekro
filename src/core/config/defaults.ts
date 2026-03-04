@@ -164,6 +164,23 @@ export const DEFAULT_FLUX_NAMESPACE = 'flux-system';
 // SECURITY LIMITS
 // =============================================================================
 
+// =============================================================================
+// OPTIONALITY / HYDRATION PHASE DURATIONS
+// =============================================================================
+
+/** Expected duration for "early" hydration phase fields (5 seconds) */
+export const DEFAULT_EARLY_HYDRATION_DURATION = 5_000;
+
+/** Expected duration for "late" hydration phase fields (30 seconds) */
+export const DEFAULT_LATE_HYDRATION_DURATION = 30_000;
+
+/** Maximum recursion depth for optionality analysis */
+export const DEFAULT_MAX_OPTIONALITY_DEPTH = 5;
+
+// =============================================================================
+// SECURITY LIMITS
+// =============================================================================
+
 /** Maximum allowed YAML content size in bytes (10 MB) */
 export const DEFAULT_MAX_YAML_CONTENT_SIZE = 10_485_760;
 

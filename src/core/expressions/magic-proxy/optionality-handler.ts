@@ -15,6 +15,11 @@
  */
 
 import { extractResourceReferences, isKubernetesRef } from '../../../utils/type-guards.js';
+import {
+  DEFAULT_EARLY_HYDRATION_DURATION,
+  DEFAULT_LATE_HYDRATION_DURATION,
+  DEFAULT_MAX_OPTIONALITY_DEPTH,
+} from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
 import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
@@ -295,7 +300,7 @@ const DEFAULT_OPTIONALITY_OPTIONS: Required<OptionalityHandlingOptions> = {
   conservative: true,
   useKroConditionals: true,
   generateHasChecks: true,
-  maxDepth: 5,
+  maxDepth: DEFAULT_MAX_OPTIONALITY_DEPTH,
   includeReasoning: true,
 };
 
@@ -1090,7 +1095,7 @@ export class EnhancedTypeOptionalityHandler {
       phases.push({
         name: 'early',
         fields: earlyFields,
-        expectedDuration: 5000, // 5 seconds
+        expectedDuration: DEFAULT_EARLY_HYDRATION_DURATION,
         dependencies: immediateFields.map((ref) => `${ref.resourceId}.${ref.fieldPath}`),
         isCritical: true,
       });
@@ -1100,7 +1105,7 @@ export class EnhancedTypeOptionalityHandler {
       phases.push({
         name: 'late',
         fields: lateFields,
-        expectedDuration: 30000, // 30 seconds
+        expectedDuration: DEFAULT_LATE_HYDRATION_DURATION,
         dependencies: [...immediateFields, ...earlyFields].map(
           (ref) => `${ref.resourceId}.${ref.fieldPath}`
         ),
