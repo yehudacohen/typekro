@@ -121,7 +121,7 @@ export class StatusHydrator {
       }
 
       return { success: true, resourceId, hydratedFields };
-    } catch (error) {
+    } catch (error: unknown) {
       const resourceId = enhanced.metadata?.name || 'unknown';
       this.logger.error('Failed to hydrate status', ensureError(error), { resourceId });
       return {
@@ -168,7 +168,7 @@ export class StatusHydrator {
       }
 
       return { success: true, resourceId, hydratedFields };
-    } catch (error) {
+    } catch (error: unknown) {
       const resourceId = enhanced.metadata?.name || 'unknown';
       return {
         success: false,
@@ -213,7 +213,7 @@ export class StatusHydrator {
           statusProxy[field] = statusRecord[field];
           hydratedFields.push(field);
           statusLogger.debug('Status field hydrated', { field, value: statusRecord[field] });
-        } catch (error) {
+        } catch (error: unknown) {
           statusLogger.debug('Failed to set status field', {
             field,
             error: ensureError(error).message,
@@ -250,7 +250,7 @@ export class StatusHydrator {
       if (!result.success) {
         proxyLogger.warn('Status hydration failed', { error: result.error?.message });
       }
-    } catch (error) {
+    } catch (error: unknown) {
       proxyLogger.error('Failed to hydrate Enhanced proxy status', ensureError(error));
     }
   }

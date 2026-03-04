@@ -250,7 +250,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
               const text = buffer.toString('utf-8');
               try {
                 return JSON.parse(text);
-              } catch (error) {
+              } catch (error: unknown) {
                 this.logger.debug('Failed to parse response body as JSON, returning raw text', {
                   err: error,
                 });

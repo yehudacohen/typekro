@@ -238,7 +238,7 @@ export class AlchemyDeploymentStrategy<
                 alchemyResourceId: resourceId,
                 alchemyResourceType: ResourceProvider.name,
               });
-            } catch (deployError) {
+            } catch (deployError: unknown) {
               const error = ensureError(deployError);
               this.logger.error('Failed to deploy individual resource through Alchemy', error, {
                 resourceKind: resource.manifest.kind,
@@ -260,7 +260,7 @@ export class AlchemyDeploymentStrategy<
               });
             }
           });
-        } catch (registrationError) {
+        } catch (registrationError: unknown) {
           const error = ensureError(registrationError);
           this.logger.error('Failed to register resource type with Alchemy', error, {
             resourceKind: resource.manifest.kind,
@@ -317,7 +317,7 @@ export class AlchemyDeploymentStrategy<
           timestamp: e.timestamp,
         })),
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Alchemy deployment strategy failed', ensureError(error));
       throw error;
     }
@@ -536,7 +536,7 @@ export class AlchemyDeploymentStrategy<
             });
           }
         }
-      } catch (extractionError) {
+      } catch (extractionError: unknown) {
         this.logger.debug('Could not extract kubeconfig from base strategy, using default', {
           error: ensureError(extractionError).message,
         });

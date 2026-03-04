@@ -84,7 +84,7 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
 
         // Execute Alchemy context function
         return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
-      } catch (error) {
+      } catch (error: unknown) {
         alchemyLogger.error('Error deploying resource through Alchemy', ensureError(error));
         throw error;
       }
@@ -164,7 +164,7 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
       namespace: props.namespace,
       ...props.options,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     logger.error('Error deleting resource', ensureError(error));
   }
   return context.destroy();
@@ -271,7 +271,7 @@ function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
     });
 
     return result;
-  } catch (contextError) {
+  } catch (contextError: unknown) {
     logger.error('Alchemy context function failed', ensureError(contextError), {
       alchemyType,
       errorMessage: ensureError(contextError).message,

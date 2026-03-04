@@ -57,7 +57,7 @@ export function namespace(resource: NamespaceConfig): Enhanced<V1NamespaceSpec, 
           details: { phase },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

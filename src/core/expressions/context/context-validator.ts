@@ -208,7 +208,7 @@ export class ContextExpressionValidator {
             suggestions.push(...result.suggestions);
           }
         }
-      } catch (error) {
+      } catch (error: unknown) {
         // Rule execution failed
         const issue: ValidationIssue = {
           ruleId: rule.id,

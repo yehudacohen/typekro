@@ -30,7 +30,7 @@ export function horizontalPodAutoscaler(
           ? `HPA is active with ${status.currentReplicas} current replicas`
           : 'HPA is not yet able to read metrics',
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: `Error checking HPA status: ${error instanceof Error ? error.message : String(error)}`,

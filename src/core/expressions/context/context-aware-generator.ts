@@ -158,7 +158,7 @@ export class ContextAwareCelGenerator {
         warnings,
         ...(config.includeDebugInfo ? { debugInfo } : {}),
       };
-    } catch (error) {
+    } catch (error: unknown) {
       throw new ConversionError(
         `Failed to generate CEL expression using ${strategy} strategy: ${error instanceof Error ? error.message : String(error)}`,
         kubernetesRefs.map((ref) => `${ref.resourceId}.${ref.fieldPath}`).join(', '),

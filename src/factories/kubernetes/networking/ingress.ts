@@ -71,7 +71,7 @@ export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, V1IngressS
           hasLoadBalancer: !!status?.loadBalancer,
         },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

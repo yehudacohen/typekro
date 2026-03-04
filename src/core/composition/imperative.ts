@@ -477,7 +477,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           }
 
           return combined;
-        } catch (error) {
+        } catch (error: unknown) {
           throw CompositionExecutionError.withResourceContext(
             `Failed to execute composition function: ${error instanceof Error ? error.message : String(error)}`,
             compositionName,
@@ -513,7 +513,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             );
           }
           return capturedStatus;
-        } catch (error) {
+        } catch (error: unknown) {
           if (error instanceof CompositionExecutionError) {
             throw error;
           }
@@ -588,7 +588,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
         enumerable: false,
         configurable: true,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       // If we can't add properties to the result object, log a warning but continue
       logger.warn('Could not store composition function for re-execution', {
         error: String(error),
@@ -596,7 +596,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
     }
 
     return result;
-  } catch (error) {
+  } catch (error: unknown) {
     const endTime = Date.now();
     CompositionDebugger.logPerformanceMetrics('Failed Composition', startTime, endTime, {
       error: error instanceof Error ? error.message : String(error),

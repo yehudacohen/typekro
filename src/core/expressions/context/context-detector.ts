@@ -730,7 +730,7 @@ export class ExpressionContextDetector {
           complexity += 0.2;
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       const logger = getComponentLogger('context-detector');
       logger.debug('Failed to calculate object complexity, using default', { err: error });
       complexity = 0.5; // Default complexity for non-enumerable objects

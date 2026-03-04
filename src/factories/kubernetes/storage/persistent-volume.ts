@@ -42,7 +42,7 @@ export function persistentVolume(resource: V1PersistentVolume): Enhanced<V1PvSpe
           details: { phase },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

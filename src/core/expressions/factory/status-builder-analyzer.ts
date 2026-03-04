@@ -379,7 +379,7 @@ export class StatusBuilderAnalyzer {
           if (!fieldResult.valid) {
             overallValid = false;
           }
-        } catch (error) {
+        } catch (error: unknown) {
           const fieldError = new ConversionError(
             `Failed to analyze status field '${property.name}': ${error instanceof Error ? error.message : String(error)}`,
             property.valueSource,
@@ -423,7 +423,7 @@ export class StatusBuilderAnalyzer {
         ast,
         returnStatement,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const analysisError = new ConversionError(
         `Failed to analyze status builder: ${error instanceof Error ? error.message : String(error)}`,
         statusBuilder.toString(),
@@ -494,7 +494,7 @@ export class StatusBuilderAnalyzer {
 
         dependencies.push(...fieldResult.dependencies);
         errors.push(...fieldResult.errors);
-      } catch (error) {
+      } catch (error: unknown) {
         errors.push(
           new ConversionError(
             `Failed to analyze field '${fieldName}': ${error instanceof Error ? error.message : String(error)}`,
@@ -572,7 +572,7 @@ export class StatusBuilderAnalyzer {
         errors: celResult.errors,
         requiresConversion: true,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const fieldError = new ConversionError(
         `Failed to analyze return object field '${fieldName}': ${error instanceof Error ? error.message : String(error)}`,
         String(fieldValue),
@@ -672,7 +672,7 @@ export class StatusBuilderAnalyzer {
         schemaProxy,
         depth
       );
-    } catch (error) {
+    } catch (error: unknown) {
       structureErrors.push(
         new ConversionError(
           `Failed to analyze nested structure: ${error instanceof Error ? error.message : String(error)}`,
@@ -740,7 +740,7 @@ export class StatusBuilderAnalyzer {
           // Static value - convert directly
           flattenedMappings[fullPath] = this.convertStaticValueToCel(value);
         }
-      } catch (error) {
+      } catch (error: unknown) {
         errors.push(
           new ConversionError(
             `Failed to analyze nested field '${fullPath}': ${error instanceof Error ? error.message : String(error)}`,
@@ -764,7 +764,7 @@ export class StatusBuilderAnalyzer {
   ): CelExpression {
     try {
       return this.generateStatusContextCelWithAdvancedFeatures(kubernetesRef, context);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Status context CEL generation using fallback', {
         resourceId: kubernetesRef.resourceId,
         fieldPath: kubernetesRef.fieldPath,
@@ -1183,7 +1183,7 @@ export class StatusBuilderAnalyzer {
           let valueSource: string;
           try {
             valueSource = this.getNodeSource(prop.value, originalSource);
-          } catch (error) {
+          } catch (error: unknown) {
             this.logger.debug('Failed to get node source for status builder property', {
               err: error,
             });
@@ -1228,7 +1228,7 @@ export class StatusBuilderAnalyzer {
                 };
               }
             }
-          } catch (error) {
+          } catch (error: unknown) {
             // If expression analysis fails, try static evaluation
             const staticValue = this.evaluateStaticValue(prop.value);
             if (staticValue !== null) {
@@ -1487,7 +1487,7 @@ export class StatusBuilderAnalyzer {
       });
 
       return ast as ESTreeNode;
-    } catch (error) {
+    } catch (error: unknown) {
       throw new ConversionError(
         `Failed to parse status builder function: ${error instanceof Error ? error.message : String(error)}`,
         source,
@@ -1794,7 +1794,7 @@ export class StatusBuilderAnalyzer {
         inferredType: analysisResult.inferredType ? String(analysisResult.inferredType) : undefined,
         confidence: this.calculateFieldConfidence(analysisResult, optionalityAnalysis),
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const fieldError = new ConversionError(
         `Failed to analyze field '${fieldName}': ${error instanceof Error ? error.message : String(error)}`,
         originalExpression,

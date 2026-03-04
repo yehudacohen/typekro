@@ -231,7 +231,7 @@ export class KubernetesClientProvider {
         clusterName: this.kubeConfig.getCurrentCluster()?.name,
         userName: this.kubeConfig.getCurrentUser()?.name,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to initialize Kubernetes client provider', ensureError(error));
       this.reset();
       throw new KubernetesClientError(
@@ -263,7 +263,7 @@ export class KubernetesClientProvider {
         skipTLSVerify: this.kubeConfig.getCurrentCluster()?.skipTLSVerify,
         runtime: isBunRuntime() ? 'bun' : 'node',
       });
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to initialize with pre-configured KubeConfig', ensureError(error));
       this.reset();
       throw new KubernetesClientError(
@@ -431,7 +431,7 @@ export class KubernetesClientProvider {
 
       this.logger.debug('Cluster availability check successful');
       return true;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Cluster availability check failed', {
         error: ensureError(error).message,
       });
@@ -507,7 +507,7 @@ export class KubernetesClientProvider {
         }
 
         return result;
-      } catch (error) {
+      } catch (error: unknown) {
         lastError = ensureError(error);
 
         if (attempt === maxAttempts || !retryableErrors(lastError)) {
@@ -580,7 +580,7 @@ export class KubernetesClientProvider {
           runtime: 'node',
         });
       }
-    } catch (error) {
+    } catch (error: unknown) {
       // Log detailed information about why client creation failed
       this.logger.error('API client creation failed', ensureError(error), {
         clientType,
@@ -705,7 +705,7 @@ export class KubernetesClientProvider {
 
         // Apply configuration modifications if provided
         this.applyConfigModifications(kc, config);
-      } catch (error) {
+      } catch (error: unknown) {
         /**
          * @security Mock credentials are only used in test environments.
          * In production, kubeconfig loading failures are fatal to prevent
@@ -808,7 +808,7 @@ export class KubernetesClientProvider {
         this.logger.debug('Applied context modification', {
           context: config.context,
         });
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.error('Failed to set context', ensureError(error), {
           requestedContext: config.context,
           availableContexts: kc.getContexts().map((c) => c.name),
@@ -856,7 +856,7 @@ export class KubernetesClientProvider {
     if (cluster?.server) {
       try {
         new URL(cluster.server);
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.warn('Invalid server URL format', {
           server: cluster.server,
           error: ensureError(error).message,

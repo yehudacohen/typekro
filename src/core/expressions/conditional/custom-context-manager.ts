@@ -308,7 +308,7 @@ export class CustomContextManager {
       if (this.isContextMatch(detectionResult, customContext)) {
         try {
           return this.processInCustomContext(contextName, expression, factoryContext, config);
-        } catch (error) {
+        } catch (error: unknown) {
           logger.warn('Failed to process in detected custom context', {
             contextName,
             error: error instanceof Error ? error.message : String(error),
@@ -359,7 +359,7 @@ export class CustomContextManager {
           try {
             const result = rule.validate(expression, context);
             results.push(result);
-          } catch (error) {
+          } catch (error: unknown) {
             results.push({
               isValid: false,
               message: `Validation rule '${rule.name}' failed: ${error}`,

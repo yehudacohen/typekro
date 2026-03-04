@@ -44,7 +44,7 @@ export function pod(resource: V1Pod): Enhanced<V1PodSpec, V1PodStatus> {
           ? `All ${totalContainers} containers are ready`
           : `${readyContainers}/${totalContainers} containers ready`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: `Error checking Pod status: ${error instanceof Error ? error.message : String(error)}`,

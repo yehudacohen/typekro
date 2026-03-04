@@ -31,7 +31,7 @@ export function replicaSet(resource: V1ReplicaSet): Enhanced<V1ReplicaSetSpec, V
           ? `All ${expectedReplicas} replicas are ready`
           : `${readyReplicas}/${expectedReplicas} replicas ready`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: `Error checking ReplicaSet status: ${error instanceof Error ? error.message : String(error)}`,

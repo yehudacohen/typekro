@@ -278,7 +278,7 @@ export class DirectResourceFactoryImpl<
 
       // Remove from tracking
       this.deployedInstances.delete(name);
-    } catch (error) {
+    } catch (error: unknown) {
       // If the deployment isn't found in the state, it may have already been cleaned up
       // or the deployment ID format changed. Log and remove from tracking anyway.
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -407,7 +407,7 @@ export class DirectResourceFactoryImpl<
                 namespace: deployedResource.namespace,
               });
             }
-          } catch (error) {
+          } catch (error: unknown) {
             // Resource not found or API error - consider it failed
             failedCount++;
             const healthError: DeploymentError = {
@@ -464,7 +464,7 @@ export class DirectResourceFactoryImpl<
         });
         return 'healthy';
       }
-    } catch (error) {
+    } catch (error: unknown) {
       healthLogger.error('Error checking factory health', ensureError(error));
       return 'failed';
     }
@@ -541,7 +541,7 @@ export class DirectResourceFactoryImpl<
             } else {
               degradedCount++;
             }
-          } catch (error) {
+          } catch (error: unknown) {
             failedCount++;
             const healthError: DeploymentError = {
               resourceId: deployedResource.id,
@@ -566,7 +566,7 @@ export class DirectResourceFactoryImpl<
         },
         errors: healthErrors,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       healthLogger.error('Error getting health details', ensureError(error));
       return {
         health: 'failed',
@@ -867,7 +867,7 @@ metadata:
 
           return reExecutionResult.resources;
         }
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.error(
           'Failed to re-execute composition, falling back to reference resolution',
           ensureError(error)
@@ -886,7 +886,7 @@ metadata:
         // to resolving the values from the provided spec.
         const resolvedResource = this.resolveSchemaReferencesToValues(resource, spec);
         resolvedResources[key] = resolvedResource as KubernetesResource;
-      } catch (error) {
+      } catch (error: unknown) {
         // If resolution fails, use the original resource
         this.logger.error('Failed to resolve references for resource', ensureError(error));
         resolvedResources[key] = resource;
@@ -960,7 +960,7 @@ metadata:
         resources: kubernetesResources,
         status: status as TStatus,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to re-execute composition', ensureError(error));
       return null;
     }

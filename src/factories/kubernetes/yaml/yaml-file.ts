@@ -523,7 +523,7 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                   namespace: manifest.metadata?.namespace || undefined,
                   apiVersion: manifest.apiVersion || 'v1',
                 });
-              } catch (replaceError) {
+              } catch (replaceError: unknown) {
                 logger.error(
                   'Failed to replace resource',
                   replaceError instanceof Error ? replaceError : undefined,

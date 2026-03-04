@@ -101,7 +101,7 @@ export class CRDManager {
       if (matchingCrd) {
         return matchingCrd.metadata?.name ?? null;
       }
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.warn('Failed to query CRDs, using heuristic for CRD name generation', {
         error: String(error),
       });
@@ -144,7 +144,7 @@ export class CRDManager {
         const { patchFluxCRDSchemas } = await import('../runtime-patches/crd-patcher.js');
         await patchFluxCRDSchemas(this.kubeClient);
         logger[logLevel]('Flux CRDs patched successfully');
-      } catch (error) {
+      } catch (error: unknown) {
         this.fluxCRDsPatchPromise = null;
         logger.warn(
           'Failed to auto-patch Flux CRDs - deployment may fail if CRDs lack proper schema',
@@ -276,7 +276,7 @@ export class CRDManager {
           crdName,
           establishedStatus: establishedCondition?.status || 'unknown',
         });
-      } catch (error) {
+      } catch (error: unknown) {
         if (
           error instanceof DOMException &&
           (error.name === 'AbortError' || error.name === 'TimeoutError')
@@ -292,7 +292,7 @@ export class CRDManager {
 
       try {
         await this.abortableDelay(pollInterval, abortSignal);
-      } catch (error) {
+      } catch (error: unknown) {
         if (
           error instanceof DOMException &&
           (error.name === 'AbortError' || error.name === 'TimeoutError')

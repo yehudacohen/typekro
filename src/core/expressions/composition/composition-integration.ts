@@ -354,7 +354,7 @@ export class CompositionExpressionAnalyzer {
         requiresCelConversion,
         conversionMetadata,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       throw new CompositionExecutionError(
         `Failed to analyze composition function: ${error instanceof Error ? error.message : String(error)}`,
         'unknown',
@@ -414,7 +414,7 @@ export class CompositionExpressionAnalyzer {
         kubernetesRefsInResources,
         requiresCelConversion: kubernetesRefsInResources.length > 0,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       throw new CompositionExecutionError(
         `Failed to analyze resource creation: ${error instanceof Error ? error.message : String(error)}`,
         'unknown',
@@ -615,7 +615,7 @@ export class CompositionExpressionAnalyzer {
           }
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       errors.push(
         `Status shape validation failed: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -1043,7 +1043,7 @@ export class CompositionIntegrationHooks {
           kubernetesRefsDetected: analysisResult.conversionMetadata.kubernetesRefsDetected,
         });
       }
-    } catch (error) {
+    } catch (error: unknown) {
       // Non-fatal error - composition can continue without pre-analysis
       this.logger.warn('Composition pre-analysis failed (non-fatal)', {
         error: error instanceof Error ? error.message : String(error),
@@ -1264,7 +1264,7 @@ export class CompositionIntegrationHooks {
     try {
       // Execute factory with side-effect tracking
       return this.handleSideEffectCreation(factoryFn, undefined, getCurrentCompositionContext());
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error(
         'Factory function failed in composition context',
         error instanceof Error ? error : undefined,
@@ -1311,7 +1311,7 @@ export function compositionUsesKubernetesRefs<
   try {
     const result = analyzer.analyzeCompositionFunction(compositionFn, schemaProxy);
     return result.requiresCelConversion;
-  } catch (error) {
+  } catch (error: unknown) {
     // If analysis fails, assume it might use KubernetesRef objects to be safe
     const logger = getComponentLogger('composition-integration');
     logger.debug('Composition analysis failed, assuming KubernetesRef usage', { err: error });

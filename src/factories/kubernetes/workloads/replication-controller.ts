@@ -54,7 +54,7 @@ export function replicationController(
           },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

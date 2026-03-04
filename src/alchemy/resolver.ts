@@ -247,7 +247,7 @@ export async function resolveAlchemyPromise(
     context.alchemyResourceCache.set(resourceId, resolvedResource);
 
     return resolvedResource;
-  } catch (error) {
+  } catch (error: unknown) {
     throw new TypeKroError(
       `Failed to resolve alchemy resource ${resourceId}: ${error instanceof Error ? error.message : String(error)}`,
       'ALCHEMY_RESOLUTION_FAILED',
@@ -302,7 +302,7 @@ function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): strin
   // Use the same deterministic ID generation as TypeKro resources
   try {
     return generateDeterministicResourceId(kind, name);
-  } catch (_error) {
+  } catch (_error: unknown) {
     // Fallback to a simple deterministic approach if generation fails
     const cleanKind = kind.toLowerCase().replace(/[^a-zA-Z0-9]/g, '');
     const cleanName = name.toLowerCase().replace(/[^a-zA-Z0-9]/g, '');

@@ -192,7 +192,7 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                     namespace: manifest.metadata?.namespace || undefined,
                     apiVersion: manifest.apiVersion || 'v1',
                   });
-                } catch (replaceError) {
+                } catch (replaceError: unknown) {
                   logger.error(
                     'Failed to replace resource',
                     replaceError instanceof Error ? replaceError : undefined,

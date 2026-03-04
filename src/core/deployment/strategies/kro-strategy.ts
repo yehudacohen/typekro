@@ -88,7 +88,7 @@ export class KroDeploymentStrategy<
         duration: 0, // Will be calculated by the base class
         errors: [],
       };
-    } catch (error) {
+    } catch (error: unknown) {
       handleDeploymentError(error, 'Kro deployment failed');
     }
   }
@@ -367,7 +367,7 @@ export class KroDeploymentStrategy<
             rgdStatusKeys,
             expectedCustomStatusFields,
           });
-        } catch (error) {
+        } catch (error: unknown) {
           logger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
             rgdName,
             error: error instanceof Error ? error.message : String(error),
@@ -420,7 +420,7 @@ export class KroDeploymentStrategy<
           isSynced,
           hasCustomStatusFields,
         });
-      } catch (error) {
+      } catch (error: unknown) {
         const k8sError = error as { statusCode?: number };
         if (k8sError.statusCode !== 404) {
           throw error;

@@ -219,7 +219,7 @@ export class ResourceAnalyzer {
 
       // Set overall conversion flag
       result.requiresConversion = result.convertedFields.length > 0;
-    } catch (error) {
+    } catch (error: unknown) {
       result.errors.push(
         new ConversionError(
           `Failed to analyze resource config: ${error instanceof Error ? error.message : String(error)}`,
@@ -314,7 +314,7 @@ export class ResourceAnalyzer {
       result.dependencies.push(...(analysisContext.dependencies || []));
 
       return celExpression;
-    } catch (error) {
+    } catch (error: unknown) {
       const conversionError = new ConversionError(
         `Failed to convert KubernetesRef at ${fieldPath}: ${error instanceof Error ? error.message : String(error)}`,
         `${ref.resourceId}.${ref.fieldPath}`,
@@ -364,7 +364,7 @@ export class ResourceAnalyzer {
       // No conversion needed or failed - return original
       result.errors.push(...conversionResult.errors);
       return expression;
-    } catch (error) {
+    } catch (error: unknown) {
       const conversionError = new ConversionError(
         `Failed to analyze expression at ${fieldPath}: ${error instanceof Error ? error.message : String(error)}`,
         expression,
@@ -1257,7 +1257,7 @@ class ResourceTypeValidator {
       } else {
         return this.validateResourceRef(ref, context, result);
       }
-    } catch (error) {
+    } catch (error: unknown) {
       result.valid = false;
       result.error = error instanceof Error ? error.message : String(error);
       return result;

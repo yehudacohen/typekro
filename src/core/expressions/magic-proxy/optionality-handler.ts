@@ -341,7 +341,7 @@ export class EnhancedTypeOptionalityHandler {
       }
 
       return results;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to analyze optionality requirements', ensureError(error));
       return [];
     }
@@ -391,7 +391,7 @@ export class EnhancedTypeOptionalityHandler {
         warnings: [],
         requiresConversion: true,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const conversionError = new ConversionError(
         `Failed to generate null-safe CEL expression: ${error instanceof Error ? error.message : String(error)}`,
         String(originalExpression),
@@ -438,7 +438,7 @@ export class EnhancedTypeOptionalityHandler {
       );
 
       return celResult;
-    } catch (error) {
+    } catch (error: unknown) {
       const conversionError = new ConversionError(
         `Failed to handle optional chaining: ${error instanceof Error ? error.message : String(error)}`,
         String(expression),
@@ -585,7 +585,7 @@ export class EnhancedTypeOptionalityHandler {
         warnings: [],
         requiresConversion: true,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const conversionError = new ConversionError(
         `Failed to generate optional chaining CEL: ${error instanceof Error ? error.message : String(error)}`,
         String(expression),
@@ -800,7 +800,7 @@ export class EnhancedTypeOptionalityHandler {
       });
 
       return nullSafetyMap;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to detect null-safety requirements', ensureError(error));
       return new Map();
     }
@@ -945,7 +945,7 @@ export class EnhancedTypeOptionalityHandler {
         hydrationDependentExpression,
         transitionHandlers,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to integrate with field hydration timing', ensureError(error));
       return {
         preHydrationExpression: null,
@@ -979,7 +979,7 @@ export class EnhancedTypeOptionalityHandler {
         valid: true,
         errors: [],
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const transitionError = new ConversionError(
         `Failed to handle undefined-to-defined transitions: ${error instanceof Error ? error.message : String(error)}`,
         String(expression),
@@ -1186,7 +1186,7 @@ export class EnhancedTypeOptionalityHandler {
         const phaseExpression = this.generatePhaseSpecificExpression(expression, phase, context);
 
         phaseExpressions.set(phase.name, phaseExpression);
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.error(
           `Failed to generate expression for phase ${phase.name}`,
           ensureError(error)
@@ -1716,7 +1716,7 @@ export class EnhancedTypeOptionalityHandler {
         expression: combinedExpression,
         type: this.inferExpressionType(expression, context),
       } as CelExpression;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error('Failed to generate CEL with has() checks', ensureError(error));
       return this.convertToBasicCel(expression, context);
     }

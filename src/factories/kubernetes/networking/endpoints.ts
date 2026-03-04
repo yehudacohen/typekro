@@ -34,7 +34,7 @@ export function endpoints(resource: V1Endpoints): V1Endpoints & Enhanced<V1Endpo
           details: { subsets: subsets.length },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

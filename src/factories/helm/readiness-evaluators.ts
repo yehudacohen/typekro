@@ -101,7 +101,7 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
         reason: 'Processing',
         message: `${prefix}HelmRelease is ${status.phase || 'processing'} (revision ${status.revision || 'unknown'})`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
@@ -157,7 +157,7 @@ export function createHelmRevisionReadinessEvaluator(
         reason: 'WrongRevision',
         message: `HelmRelease is ready but at revision ${currentRevision}, expected ${expectedRevision}`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
@@ -221,7 +221,7 @@ export function createHelmTestReadinessEvaluator(
         reason: 'TestsPending',
         message: 'Waiting for Helm tests to complete',
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
@@ -279,7 +279,7 @@ export function createHelmTimeoutReadinessEvaluator(
       }
 
       return baseStatus;
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
@@ -343,7 +343,7 @@ export function createComprehensiveHelmReadinessEvaluator(
         ready: true,
         message: `HelmRelease is fully ready (revision ${status?.revision || 'unknown'})${requireTests ? ' with tests passed' : ''}`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

@@ -179,7 +179,7 @@ export class DirectDeploymentEngine {
           signal.removeEventListener('abort', abortHandler);
           resolve(result);
         })
-        .catch((error) => {
+        .catch((error: unknown) => {
           signal.removeEventListener('abort', abortHandler);
           // If the signal was aborted, throw AbortError instead of the original error
           if (signal.aborted) {
@@ -305,7 +305,7 @@ export class DirectDeploymentEngine {
         const liveResource = await this.k8sApi.read(resourceRef);
         return this.readinessChecker.isResourceReady(liveResource);
       }
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Failed to check resource readiness', {
         error: ensureError(error),
         resourceId: deployedResource.id,
@@ -350,7 +350,7 @@ export class DirectDeploymentEngine {
       // Stop event monitoring immediately when timeout is reached
       // This prevents watch connections from continuing to run and throwing errors
       if (this.eventMonitor) {
-        this.eventMonitor.stopMonitoring().catch((error) => {
+        this.eventMonitor.stopMonitoring().catch((error: unknown) => {
           this.logger.debug('Error stopping event monitoring on timeout', {
             error: ensureError(error).message,
           });
@@ -402,7 +402,7 @@ export class DirectDeploymentEngine {
           // Start monitoring immediately to capture all deployment events
           await this.eventMonitor.startMonitoring([]);
           deploymentLogger.debug('Event monitoring started for deployment');
-        } catch (error) {
+        } catch (error: unknown) {
           deploymentLogger.warn('Failed to initialize event monitoring, continuing without it', {
             error: ensureError(error).message,
           });
@@ -547,7 +547,7 @@ export class DirectDeploymentEngine {
               resourceId,
               deployedResource,
             };
-          } catch (error) {
+          } catch (error: unknown) {
             resourceLogger.error('Resource deployment failed', ensureError(error));
             const failedResource: DeployedResource = {
               id: resourceId,
@@ -680,7 +680,7 @@ export class DirectDeploymentEngine {
         try {
           await this.eventMonitor.stopMonitoring();
           deploymentLogger.debug('Event monitoring stopped');
-        } catch (error) {
+        } catch (error: unknown) {
           deploymentLogger.warn('Failed to stop event monitoring cleanly', {
             error: ensureError(error).message,
           });
@@ -710,7 +710,7 @@ export class DirectDeploymentEngine {
         status,
         errors,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       // Re-throw circular dependency errors immediately - these are configuration errors
       if (error instanceof CircularDependencyError) {
         // Clean up abort controller and timeout before re-throwing
@@ -735,7 +735,7 @@ export class DirectDeploymentEngine {
       if (this.eventMonitor) {
         try {
           await this.eventMonitor.stopMonitoring();
-        } catch (cleanupError) {
+        } catch (cleanupError: unknown) {
           // Ignore cleanup errors in error path
           this.logger.debug('Ignored cleanup error stopping event monitor', { err: cleanupError });
         }
@@ -805,7 +805,7 @@ export class DirectDeploymentEngine {
       // Stop event monitoring immediately when timeout is reached
       // This prevents watch connections from continuing to run and throwing errors
       if (this.eventMonitor) {
-        this.eventMonitor.stopMonitoring().catch((error) => {
+        this.eventMonitor.stopMonitoring().catch((error: unknown) => {
           deploymentLogger.debug('Error stopping event monitoring on timeout', {
             error: ensureError(error).message,
           });
@@ -980,7 +980,7 @@ export class DirectDeploymentEngine {
               resourceId,
               deployedResource,
             };
-          } catch (error) {
+          } catch (error: unknown) {
             resourceLogger.error('Resource deployment failed', ensureError(error));
             const failedResource: DeployedResource = {
               id: resourceId,
@@ -1022,7 +1022,7 @@ export class DirectDeploymentEngine {
               name: closureInfo.name,
               result,
             };
-          } catch (error) {
+          } catch (error: unknown) {
             closureLogger.error('Closure execution failed', ensureError(error));
             return {
               success: false,
@@ -1177,7 +1177,7 @@ export class DirectDeploymentEngine {
         status,
         errors,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       // Re-throw circular dependency errors immediately - these are configuration errors
       if (error instanceof CircularDependencyError) {
         // Clean up abort controller and timeout before re-throwing
@@ -1257,7 +1257,7 @@ export class DirectDeploymentEngine {
         name: deployedRes.name,
         hasStatus: !!(liveResource as KubernetesObjectWithStatus).status,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       logger.warn('Failed to update resourceKeyMapping with live resource', {
         originalResourceId,
         error: error instanceof Error ? error.message : String(error),
@@ -1387,7 +1387,7 @@ export class DirectDeploymentEngine {
         hasReadinessEvaluator: !!enhancedResource.readinessEvaluator,
       });
       return resolvedResource;
-    } catch (error) {
+    } catch (error: unknown) {
       // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
       // one at a time. This is expected behavior, so we log at debug level instead of warn.
       const hasResourceKeyMapping =
@@ -1554,7 +1554,7 @@ export class DirectDeploymentEngine {
             },
           });
           return result;
-        } catch (readError) {
+        } catch (readError: unknown) {
           resourceLogger.warn('Failed to read existing resource after 409, falling back to patch', {
             error: ensureError(readError).message,
           });
@@ -1566,7 +1566,7 @@ export class DirectDeploymentEngine {
               'Resource patched successfully after 409 conflict (warn fallback)'
             );
             return result;
-          } catch (patchError) {
+          } catch (patchError: unknown) {
             resourceLogger.warn('Failed to patch resource after 409 conflict', {
               error: ensureError(patchError).message,
             });
@@ -1581,7 +1581,7 @@ export class DirectDeploymentEngine {
           const result = await patchResourceWithCorrectContentType(this.k8sApi, cleanResource);
           resourceLogger.debug('Resource patched successfully after 409 conflict');
           return result;
-        } catch (patchError) {
+        } catch (patchError: unknown) {
           resourceLogger.warn('Failed to patch resource after 409 conflict', {
             error: ensureError(patchError).message,
           });
@@ -1608,7 +1608,7 @@ export class DirectDeploymentEngine {
           const result = await this.k8sApi.create(cleanResource);
           resourceLogger.debug('Resource replaced successfully after 409 conflict');
           return result;
-        } catch (replaceError) {
+        } catch (replaceError: unknown) {
           resourceLogger.warn('Failed to replace resource after 409 conflict', {
             error: ensureError(replaceError).message,
           });
@@ -1697,7 +1697,7 @@ export class DirectDeploymentEngine {
         });
 
         return appliedResource;
-      } catch (error) {
+      } catch (error: unknown) {
         lastError = ensureError(error);
 
         // Check for 409 Conflict errors - resource already exists
@@ -1926,7 +1926,7 @@ export class DirectDeploymentEngine {
         // Wait before next check - use abortable delay
         try {
           await this.abortableDelay(DEFAULT_POLL_INTERVAL, abortSignal);
-        } catch (error) {
+        } catch (error: unknown) {
           if (
             error instanceof DOMException &&
             (error.name === 'AbortError' || error.name === 'TimeoutError')
@@ -1935,7 +1935,7 @@ export class DirectDeploymentEngine {
           }
           // Ignore other errors from delay
         }
-      } catch (error) {
+      } catch (error: unknown) {
         // Re-throw abort/timeout errors immediately
         if (
           error instanceof DOMException &&
@@ -1955,7 +1955,7 @@ export class DirectDeploymentEngine {
         // If we can't read the resource, it's not ready yet - use abortable delay
         try {
           await this.abortableDelay(DEFAULT_POLL_INTERVAL, abortSignal);
-        } catch (delayError) {
+        } catch (delayError: unknown) {
           if (
             delayError instanceof DOMException &&
             (delayError.name === 'AbortError' || delayError.name === 'TimeoutError')
@@ -2017,7 +2017,7 @@ export class DirectDeploymentEngine {
         } as k8s.KubernetesObject);
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
-      } catch (error) {
+      } catch (error: unknown) {
         // Log and collect errors for individual resource deletion failures
         this.logger.warn('Failed to delete resource during rollback', {
           error: ensureError(error),
@@ -2109,7 +2109,7 @@ export class DirectDeploymentEngine {
 
           // Resource still exists, wait and try again
           await new Promise((resolve) => setTimeout(resolve, DEFAULT_FAST_POLL_INTERVAL));
-        } catch (error) {
+        } catch (error: unknown) {
           // Resource not found, deletion successful
           if (isNotFoundError(error)) {
             deleteLogger.debug('Resource successfully deleted');
@@ -2126,7 +2126,7 @@ export class DirectDeploymentEngine {
         timeout,
         'deletion'
       );
-    } catch (error) {
+    } catch (error: unknown) {
       deleteLogger.error('Failed to delete resource', ensureError(error));
       throw error;
     }
@@ -2174,7 +2174,7 @@ export class DirectDeploymentEngine {
         status,
         errors,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       // This shouldn't happen now since rollbackDeployedResources handles its own errors
       return {
         deploymentId,

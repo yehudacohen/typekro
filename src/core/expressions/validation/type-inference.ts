@@ -173,7 +173,7 @@ export class CelTypeInferenceEngine {
         confidence: result.confidence,
         metadata: result.metadata,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         resultType: { typeName: 'unknown', optional: false, nullable: false },
         success: false,
@@ -846,7 +846,7 @@ export class CelTypeInferenceEngine {
       }
 
       return { typeName: 'unknown', optional: true, nullable: false };
-    } catch (error) {
+    } catch (error: unknown) {
       const logger = getComponentLogger('type-inference');
       logger.debug('Failed to infer resource field type, returning unknown', { err: error });
       return { typeName: 'unknown', optional: true, nullable: false };
@@ -1031,7 +1031,7 @@ export class CelTypeInferenceEngine {
       }
 
       return { typeName: 'unknown', optional: true, nullable: false };
-    } catch (error) {
+    } catch (error: unknown) {
       const logger = getComponentLogger('type-inference');
       logger.debug('Failed to infer schema field type, returning unknown', { err: error });
       return { typeName: 'unknown', optional: true, nullable: false };

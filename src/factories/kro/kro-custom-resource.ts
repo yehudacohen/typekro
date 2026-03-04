@@ -156,7 +156,7 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
           observedGeneration: status.observedGeneration,
         },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

@@ -294,7 +294,7 @@ export class ResourceReferenceValidator {
       // Cache the result
       this.validationCache.set(refKey, result);
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       const validationError = new ResourceValidationError(
         `Validation failed: ${error instanceof Error ? error.message : String(error)}`,
         refKey,

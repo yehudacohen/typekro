@@ -55,7 +55,7 @@ export function extractAcceptedMediaTypes(error: unknown): string[] {
     if (match && match[1]) {
       return match[1].split(', ').map((type: string) => type.trim());
     }
-  } catch (err) {
+  } catch (err: unknown) {
     logger.debug('Failed to extract media types from error, using defaults', { err });
   }
 

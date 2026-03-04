@@ -49,7 +49,7 @@ export function kroCustomResourceDefinition(
           details: { conditions, isKroCRD, crdName: liveCRD.metadata?.name },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

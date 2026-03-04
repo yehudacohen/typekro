@@ -135,7 +135,7 @@ export class ReadinessIntegrator {
       });
 
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       logger.error('Error creating readiness evaluator', ensureError(error), {
         factoryType: context.factoryType,
       });
@@ -272,7 +272,7 @@ export class ReadinessIntegrator {
 
         // Fallback to raw expression evaluation
         return this.evaluateRawExpression(processedExpression, liveResource, config);
-      } catch (error) {
+      } catch (error: unknown) {
         logger.error('Error evaluating readyWhen expression', ensureError(error), {
           resourceKind: liveResource?.kind,
         });
@@ -460,7 +460,7 @@ export class ReadinessIntegrator {
         message: `Field ${fieldPath} evaluated to ${ready}`,
         details: { fieldPath, value, resourceId: ref.resourceId },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'FieldEvaluationError',

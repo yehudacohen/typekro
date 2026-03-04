@@ -50,7 +50,7 @@ export function podDisruptionBudget(
           details: { currentHealthy, desiredHealthy, expectedPods },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',

@@ -118,7 +118,7 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
         message: `Waiting for RGD to become active (current state: ${status.state || 'unknown'})`,
         details: { state: status.state, conditions },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       // Log the error for debugging but don't let it crash the readiness evaluation
       rgdLogger.error('Unexpected error in readiness evaluator', ensureError(error), { liveRGD });
       return {

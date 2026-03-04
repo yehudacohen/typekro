@@ -67,7 +67,7 @@ export class ResourceRollbackManager {
           message: `Successfully rolled back ${resource.kind}/${resource.metadata?.name}`,
           timestamp: new Date(),
         });
-      } catch (error) {
+      } catch (error: unknown) {
         const resourceId = this.getResourceIdentifier(resource);
         errors.push({
           resourceId,
@@ -149,7 +149,7 @@ export class ResourceRollbackManager {
       if (config.timeout !== undefined) {
         await this.waitForResourceDeletion(resource, config.timeout);
       }
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string };
 
       // If resource is already gone (404), consider it successful
@@ -162,7 +162,7 @@ export class ResourceRollbackManager {
         try {
           await this.forceDeleteResource(resource);
           return;
-        } catch (_forceError) {
+        } catch (_forceError: unknown) {
           // If force deletion also fails, throw the original error
           throw error;
         }
@@ -255,7 +255,7 @@ export class ResourceRollbackManager {
 
         // Resource still exists, wait and try again
         await new Promise((resolve) => setTimeout(resolve, pollInterval));
-      } catch (error) {
+      } catch (error: unknown) {
         const k8sError = error as { statusCode?: number };
         if (k8sError.statusCode === 404) {
           // Resource is gone, deletion successful
