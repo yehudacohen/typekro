@@ -343,8 +343,9 @@ function template(
         // For CEL expressions, wrap in ${...}
         return `\${${value.expression}}`;
       }
-      // For literal values, just insert them directly
-      return String(value);
+      // For literal values, escape any ${...} sequences that could be
+      // misinterpreted as CEL expression placeholders during serialization
+      return String(value).replace(/\$\{/g, '\\${');
     }
     return '%s';
   });

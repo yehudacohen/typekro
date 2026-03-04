@@ -148,6 +148,45 @@ describe('CEL Expression Builder', () => {
     });
   });
 
+  describe('Cel.template() ${} escaping', () => {
+    it('should escape ${ in literal string values to prevent CEL injection', () => {
+      const template = Cel.template('Prefix: %s', 'Use ${foo} syntax');
+      // The literal value should have ${ escaped with backslash
+      // so convertTemplateToCelConcat won't misinterpret it as a CEL ref
+      expect(template.expression).toBe('Prefix: Use \\${foo} syntax');
+      // The \${ pattern means the $ is escaped — serialization will treat it as literal text
+    });
+
+    it('should handle literal values without ${ unchanged', () => {
+      const template = Cel.template('Hello %s', 'world');
+      expect(template.expression).toBe('Hello world');
+    });
+
+    it('should escape multiple ${ occurrences in a single literal', () => {
+      const template = Cel.template('Values: %s', '${a} and ${b}');
+      // Both ${ should be escaped
+      expect(template.expression).toBe('Values: \\${a} and \\${b}');
+    });
+
+    it('should not escape ${ produced from KubernetesRef proxy access', () => {
+      const deployment = simple.Deployment({
+        name: 'test',
+        image: 'nginx:latest',
+      });
+      // KubernetesRef values produce ${...} placeholders that should NOT be escaped
+      const template = Cel.template('Replicas: %s', deployment.status?.readyReplicas);
+      // The KubernetesRef produces a real ${ref} placeholder
+      expect(template.expression).toMatch(/\$\{deploymentTest\./);
+      expect(template.__isTemplate).toBe(true);
+    });
+
+    it('should preserve template flag for serialization', () => {
+      const template = Cel.template('Static text only');
+      expect(template.__isTemplate).toBe(true);
+      expect(template.expression).toBe('Static text only');
+    });
+  });
+
   describe('Typed convenience methods', () => {
     it('Cel.boolean() should produce a CelExpression with boolean type', () => {
       const database = simple.Deployment({
