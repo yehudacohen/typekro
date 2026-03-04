@@ -7,6 +7,14 @@ import type { CelExpression, RefOrValue, SerializationContext } from '../types.j
 
 const logger = getComponentLogger('cel');
 
+/**
+ * Escape a string for safe embedding in a CEL string literal.
+ * Prevents CEL injection by escaping backslashes first, then double quotes.
+ */
+function escapeCelString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 /** Patterns that indicate raw JavaScript operators were used instead of CEL operators.
  * Note: && and || are valid CEL operators, so only === and !== are flagged. */
 const SUSPICIOUS_JS_PATTERNS = [/===/, /!==/];
@@ -392,8 +400,8 @@ function concat(
     }
 
     if (typeof part === 'string') {
-      // Quote string literals for CEL
-      return `"${part}"`;
+      // Quote string literals for CEL, escaping special characters
+      return `"${escapeCelString(part)}"`;
     }
 
     if (typeof part === 'number' || typeof part === 'boolean') {
@@ -401,7 +409,7 @@ function concat(
     }
 
     // For other types, convert to string and quote
-    return `"${String(part)}"`;
+    return `"${escapeCelString(String(part))}"`;
   });
 
   const expression = celParts.join(' + ');
@@ -431,7 +439,7 @@ function cel<T = string>(
   for (let i = 0; i < strings.length; i++) {
     // Add the string literal part
     if (strings[i]) {
-      parts.push(`"${strings[i]?.replace(/"/g, '\\"')}"`);
+      parts.push(`"${escapeCelString(strings[i] ?? '')}"`);
     }
 
     // Add the interpolated value if it exists
@@ -448,7 +456,7 @@ function cel<T = string>(
       } else if (isCelExpression(value)) {
         parts.push(value.expression);
       } else if (typeof value === 'string') {
-        parts.push(`"${value.replace(/"/g, '\\"')}"`);
+        parts.push(`"${escapeCelString(value)}"`);
       } else {
         parts.push(String(value));
       }

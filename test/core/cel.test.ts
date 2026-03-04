@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-
-import { Cel, isCelExpression, toResourceGraph, simple } from '../../src/index.js';
+import { cel } from '../../src/core/references/cel.js';
+import { Cel, isCelExpression, simple, toResourceGraph } from '../../src/index.js';
 
 describe('CEL Expression Builder', () => {
   it('should create CEL expressions with type safety', () => {
@@ -97,5 +97,54 @@ describe('CEL Expression Builder', () => {
 
     expect(template.expression).toContain('Database');
     expect(template.expression).toContain('deploymentPostgres.');
+  });
+
+  describe('CEL string escaping', () => {
+    it('should escape double quotes in Cel.concat() string literals', () => {
+      const result = Cel.concat('hello "world"', '-suffix');
+      // Should produce: "hello \"world\"" + "-suffix"
+      expect(result.expression).toBe('"hello \\"world\\"" + "-suffix"');
+    });
+
+    it('should escape backslashes in Cel.concat() string literals', () => {
+      const result = Cel.concat('path\\to\\file', '-name');
+      // Should produce: "path\\to\\file" + "-name"
+      expect(result.expression).toBe('"path\\\\to\\\\file" + "-name"');
+    });
+
+    it('should escape both backslashes and quotes in Cel.concat()', () => {
+      const result = Cel.concat('say \\"hi\\"');
+      // Backslashes escaped first, then quotes
+      expect(result.expression).toBe('"say \\\\\\"hi\\\\\\""');
+    });
+
+    it('should escape double quotes in cel template tag string segments', () => {
+      const result = cel`prefix "quoted" suffix`;
+      expect(result.expression).toBe('"prefix \\"quoted\\" suffix"');
+    });
+
+    it('should escape backslashes in cel template tag string segments', () => {
+      const result = cel`path\\to\\file`;
+      expect(result.expression).toBe('"path\\\\to\\\\file"');
+    });
+
+    it('should escape double quotes in cel template tag interpolated strings', () => {
+      const value = 'hello "world"';
+      const result = cel`prefix ${value} suffix`;
+      expect(result.expression).toBe('"prefix " + "hello \\"world\\"" + " suffix"');
+    });
+
+    it('should escape backslashes in cel template tag interpolated strings', () => {
+      const value = 'back\\slash';
+      const result = cel`prefix ${value} suffix`;
+      expect(result.expression).toBe('"prefix " + "back\\\\slash" + " suffix"');
+    });
+
+    it('should handle Cel.concat() with non-string types containing special chars', () => {
+      // Non-string types are converted via String() then quoted
+      const obj = { toString: () => 'has "quotes"' };
+      const result = Cel.concat(obj as unknown as string);
+      expect(result.expression).toBe('"has \\"quotes\\""');
+    });
   });
 });

@@ -1,19 +1,55 @@
 /**
  * typekro - Define Kro resource graphs with full TypeScript safety.
  *
- * This is the single public entry point for the typekro package.
+ * ## Getting Started
+ *
+ * The two primary APIs are:
+ *
+ * - **{@link toResourceGraph}** (declarative) - Define a typed resource graph
+ *   with a schema, resource builder, and status builder:
+ *
+ *   ```ts
+ *   import { toResourceGraph, Cel } from 'typekro';
+ *   import { type } from 'arktype';
+ *
+ *   const graph = toResourceGraph(
+ *     { name: 'my-app', apiVersion: 'example.com/v1', kind: 'MyApp',
+ *       spec: type({ replicas: 'number' }),
+ *       status: type({ ready: 'boolean' }) },
+ *     (schema) => ({
+ *       deployment: createDeployment({ replicas: schema.spec.replicas }),
+ *     }),
+ *     (_schema, resources) => ({
+ *       ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
+ *     }),
+ *   );
+ *   ```
+ *
+ * - **{@link kubernetesComposition}** (imperative) - Define compositions
+ *   using native TypeScript with proxy-based schema and resource references:
+ *
+ *   ```ts
+ *   import { kubernetesComposition, createResource } from 'typekro';
+ *   ```
+ *
+ * ## Module Layout
+ *
  * Exports are organized into tiers from most-used to advanced:
  *
- *   1. ESSENTIAL — Core APIs every user needs
- *   2. COMPOSITION — Imperative composition and runtime bootstrap
- *   3. DEPLOYMENT — Engines, readiness, and deployers
- *   4. REFERENCES & SERIALIZATION — CEL, schema proxies, YAML generation
- *   5. ALCHEMY INTEGRATION — Alchemy-specific deployers and resolvers
- *   6. ADVANCED — Logging, K8s client, dependencies, errors, utilities
+ *   1. ESSENTIAL - Core APIs every user needs
+ *   2. COMPOSITION - Imperative composition and runtime bootstrap
+ *   3. DEPLOYMENT - Engines, readiness, and deployers
+ *   4. REFERENCES & SERIALIZATION - CEL, schema proxies, YAML generation
+ *   5. ALCHEMY INTEGRATION - Alchemy-specific deployers and resolvers
+ *   6. ADVANCED - Logging, K8s client, dependencies, errors, utilities
  *
  * For ecosystem-specific factories, use subpath imports:
+ *   ```ts
  *   import { helmRelease } from 'typekro/helm';
  *   import { simple } from 'typekro/simple';
+ *   ```
+ *
+ * @packageDocumentation
  */
 
 // =============================================================================
@@ -147,6 +183,7 @@ export {
   ConversionError,
   CRDInstanceError,
   DeploymentTimeoutError,
+  ensureError,
   formatArktypeError,
   formatCircularDependencyError,
   formatReferenceError,
