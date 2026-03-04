@@ -7,7 +7,7 @@
 
 import { containsKubernetesRefs, isCelExpression } from '../../utils/type-guards.js';
 import { runInStatusBuilderContext } from '../composition/context.js';
-import { DependencyResolver } from '../dependencies/index.js';
+
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
@@ -26,13 +26,10 @@ import {
 } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
-import { getResourceId } from '../resources/id.js';
 import type {
   DeploymentClosure,
-  DeploymentResourceGraph,
   FactoryForMode,
   FactoryOptions,
-  ResourceGraphResource,
   TypedResourceGraph,
 } from '../types/deployment.js';
 import type {
@@ -42,12 +39,7 @@ import type {
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
-import type {
-  DeployableK8sResource,
-  Enhanced,
-  KroCompatibleType,
-  KubernetesResource,
-} from '../types.js';
+import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
 import { generateKroSchemaFromArktype } from './schema.js';
@@ -481,42 +473,6 @@ function isLikelyStaticObject(obj: any): boolean {
   );
 
   return hasCommonStaticKeys && values.length <= 10; // Reasonable size for static config
-}
-
-/**
- * Create a ResourceGraph from resources for deployment
- */
-function _createResourceGraph(
-  name: string,
-  resources: Record<string, KubernetesResource>
-): DeploymentResourceGraph {
-  const dependencyResolver = new DependencyResolver();
-
-  // Deduplicate resources by reference (same resource may have multiple keys)
-  // This happens when resources are returned in status with variable names that differ from IDs
-  const uniqueResourcesSet = new Set(Object.values(resources));
-
-  const resourceArray = Array.from(uniqueResourcesSet).map((resource) => ({
-    ...resource,
-    id: getResourceId(resource),
-  }));
-
-  // Type assertion needed because we're converting KubernetesResource to DeployableK8sResource
-  // This is safe because the deployment engine handles the conversion internally
-  const deployableResources = resourceArray as DeployableK8sResource<Enhanced<unknown, unknown>>[];
-  const dependencyGraph = dependencyResolver.buildDependencyGraph(deployableResources);
-
-  // Convert to ResourceGraphResource format
-  const resourceGraphResources: ResourceGraphResource[] = deployableResources.map((resource) => ({
-    id: resource.id,
-    manifest: resource,
-  }));
-
-  return {
-    name,
-    resources: resourceGraphResources,
-    dependencyGraph,
-  };
 }
 
 // =============================================================================
