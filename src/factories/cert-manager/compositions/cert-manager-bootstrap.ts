@@ -1,5 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
+import { ensureVersionPrefix } from '../../../utils/string.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { certManagerHelmRelease, certManagerHelmRepository } from '../resources/helm.js';
 import {
@@ -8,14 +10,6 @@ import {
   CertManagerBootstrapStatusSchema,
 } from '../types.js';
 import { mapCertManagerConfigToHelmValues } from '../utils/helm-values-mapper.js';
-
-/**
- * Helper function to ensure version has 'v' prefix for image tags
- * Cert-manager Docker images require version tags with 'v' prefix (e.g., 'v1.19.3')
- */
-function ensureVersionPrefix(version: string): string {
-  return version.startsWith('v') ? version : `v${version}`;
-}
 
 /**
  * Cert-Manager Bootstrap Composition
@@ -288,7 +282,7 @@ export const certManagerBootstrap = kubernetesComposition(
     // Create HelmRepository for cert-manager charts
     const _helmRepository = certManagerHelmRepository({
       name: 'cert-manager-repo', // Use static name to avoid schema proxy issues
-      namespace: 'flux-system', // HelmRepositories should always be in flux-system
+      namespace: DEFAULT_FLUX_NAMESPACE, // HelmRepositories should always be in flux-system
       id: 'certManagerHelmRepository',
     });
 

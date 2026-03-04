@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { createResource } from '../../shared.js';
@@ -217,7 +218,7 @@ export const apisixBootstrap = kubernetesComposition(
     // Create HelmRepository for APISix charts
     const _helmRepository = apisixHelmRepository({
       name: 'apisix-repo',
-      namespace: 'flux-system',
+      namespace: DEFAULT_FLUX_NAMESPACE,
       url: 'https://charts.apiseven.com',
       interval: '1h',
       id: 'apisixHelmRepository',
@@ -227,7 +228,7 @@ export const apisixBootstrap = kubernetesComposition(
     // Chart v2.13.0 bundles the ingress controller as a subchart dependency
     const helmRelease = apisixHelmRelease({
       name: actualName,
-      namespace: 'flux-system',
+      namespace: DEFAULT_FLUX_NAMESPACE,
       targetNamespace: actualNamespace,
       chart: 'apisix',
       version: actualVersion,

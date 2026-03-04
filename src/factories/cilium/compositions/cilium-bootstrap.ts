@@ -7,6 +7,7 @@
 
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import {
   ciliumHelmRelease,
@@ -262,7 +263,7 @@ export const ciliumBootstrap = kubernetesComposition(
     // Create HelmRepository for Cilium charts
     const _helmRepository = ciliumHelmRepository({
       name: 'cilium-repo', // Use static name to avoid schema proxy issues
-      namespace: spec.namespace || 'flux-system',
+      namespace: spec.namespace || DEFAULT_FLUX_NAMESPACE,
       id: 'helmRepository',
     });
 
@@ -273,7 +274,7 @@ export const ciliumBootstrap = kubernetesComposition(
       version: spec.version || '1.18.1',
       values: helmValues,
       repositoryName: 'cilium-repo', // Match the repository name
-      repositoryNamespace: spec.namespace || 'flux-system',
+      repositoryNamespace: spec.namespace || DEFAULT_FLUX_NAMESPACE,
       id: 'helmRelease',
     });
 

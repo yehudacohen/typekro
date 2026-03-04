@@ -152,3 +152,10 @@ export const DEFAULT_MAX_STATUS_OBJECT_SIZE = 1_024;
 
 /** Default timeout for status query operations (10 seconds) */
 export const DEFAULT_STATUS_QUERY_TIMEOUT = 10_000;
+
+// =============================================================================
+// KUBERNETES NAMESPACE DEFAULTS
+// =============================================================================
+
+/** Default namespace for Flux-based Helm resources (HelmRepository, HelmRelease) */
+export const DEFAULT_FLUX_NAMESPACE = 'flux-system';

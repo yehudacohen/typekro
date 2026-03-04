@@ -3,6 +3,7 @@ import { helmRepository } from '../../../factories/helm/helm-repository.js';
 import { namespace } from '../../../factories/kubernetes/core/namespace.js';
 import { clusterRoleBinding } from '../../../factories/kubernetes/rbac/index.js';
 import { yamlFile } from '../../../factories/kubernetes/yaml/yaml-file.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../config/defaults.js';
 import { Cel } from '../../references/cel.js';
 import { fixCRDSchemaForK8s133 } from '../../runtime-patches/crd-schema-fix.js';
 import { kubernetesComposition } from '../imperative.js';
@@ -150,7 +151,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       // Helm Repository for Kro OCI charts
       helmRepository({
         name: 'kro-helm-repo',
-        namespace: 'flux-system',
+        namespace: DEFAULT_FLUX_NAMESPACE,
         url: 'oci://registry.k8s.io/kro/charts',
         interval: '5m',
         type: 'oci',

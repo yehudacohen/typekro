@@ -5,6 +5,7 @@
  * following the same patterns as cert-manager.
  */
 
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -62,7 +63,7 @@ export function apisixHelmRepository(
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url || 'https://charts.apiseven.com',
@@ -94,7 +95,7 @@ export function apisixHelmRelease(
     kind: 'HelmRelease',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       interval: config.interval || '5m',
@@ -106,7 +107,7 @@ export function apisixHelmRelease(
           sourceRef: {
             kind: 'HelmRepository' as const,
             name: config.repositoryName || `${config.name.replace('-release', '')}-repo`,
-            namespace: config.namespace || 'flux-system',
+            namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
           },
         },
       },

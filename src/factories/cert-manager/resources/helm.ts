@@ -7,6 +7,7 @@
  * while reusing existing readiness evaluators.
  */
 
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../../core/constants/brands.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import {
@@ -73,7 +74,7 @@ export function certManagerHelmRepository(
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url || 'https://charts.jetstack.io',
@@ -177,7 +178,7 @@ export function certManagerHelmRelease(
           sourceRef: {
             kind: 'HelmRepository' as const,
             name: config.repositoryName || 'cert-manager-repo',
-            namespace: 'flux-system', // HelmRepositories are typically in flux-system
+            namespace: DEFAULT_FLUX_NAMESPACE, // HelmRepositories are typically in flux-system
           },
         },
       },

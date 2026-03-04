@@ -1,14 +1,8 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { pebbleHelmRelease, pebbleHelmRepository } from '../resources/helm.js';
 import { PebbleBootstrapConfigSchema, PebbleBootstrapStatusSchema } from '../types.js';
 import { createDefaultPebbleTestingValues } from '../utils/helm-values-mapper.js';
-
-/**
- * Helper function to ensure version has 'v' prefix for image tags if needed
- */
-function _ensureVersionPrefix(version: string): string {
-  return version.startsWith('v') ? version : `v${version}`;
-}
 
 /**
  * Pebble ACME Test Server Bootstrap Composition
@@ -62,7 +56,7 @@ export const pebbleBootstrap = kubernetesComposition(
     // Create HelmRepository for Pebble chart
     const helmRepository = pebbleHelmRepository({
       name: `${spec.name}-repo`,
-      namespace: 'flux-system',
+      namespace: DEFAULT_FLUX_NAMESPACE,
       url: 'https://jupyterhub.github.io/helm-chart/',
       interval: '5m',
       id: 'pebbleHelmRepository',
@@ -81,7 +75,7 @@ export const pebbleBootstrap = kubernetesComposition(
       },
       repositoryRef: {
         name: `${spec.name}-repo`,
-        namespace: 'flux-system',
+        namespace: DEFAULT_FLUX_NAMESPACE,
       },
       values: mergedValues,
       interval: '5m',

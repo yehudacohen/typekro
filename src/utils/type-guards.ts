@@ -74,6 +74,32 @@ export function isMixedTemplate(
 }
 
 /**
+ * Check if a value contains any CelExpression objects at any nesting depth.
+ * Recursively traverses arrays and objects with circular reference protection.
+ */
+export function containsCelExpressions(value: unknown, visited?: WeakSet<object>): boolean {
+  if (isCelExpression(value)) {
+    return true;
+  }
+
+  if (Array.isArray(value)) {
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return value.some((item) => containsCelExpressions(item, seen));
+  }
+
+  if (value && typeof value === 'object') {
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return Object.values(value).some((val) => containsCelExpressions(val, seen));
+  }
+
+  return false;
+}
+
+/**
  * Check if a value contains any KubernetesRef objects (from magic proxy system).
  * This is used by the JavaScript to CEL analyzer to determine if an expression
  * needs conversion.

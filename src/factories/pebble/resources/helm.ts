@@ -6,6 +6,7 @@
  * and provide Pebble-specific configuration interfaces while reusing existing readiness evaluators.
  */
 
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -63,7 +64,7 @@ export function pebbleHelmRepository(
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url || 'https://jupyterhub.github.io/helm-chart/',
@@ -153,7 +154,7 @@ export function pebbleHelmRelease(
           sourceRef: {
             kind: 'HelmRepository',
             name: config.repositoryRef?.name || 'pebble-repo',
-            namespace: config.repositoryRef?.namespace || 'flux-system',
+            namespace: config.repositoryRef?.namespace || DEFAULT_FLUX_NAMESPACE,
           },
         },
       },
