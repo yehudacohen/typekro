@@ -177,6 +177,8 @@ export type { DependencyNode } from './core/dependencies/index.js';
 export { DependencyGraph, DependencyResolver } from './core/dependencies/index.js';
 // Error classes
 export {
+  type ArktypeValidationError,
+  type ArktypeValidationProblem,
   CircularDependencyError,
   CompositionExecutionError,
   ContextRegistrationError,

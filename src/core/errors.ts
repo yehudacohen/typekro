@@ -9,9 +9,10 @@ export class TypeKroError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    public readonly context?: Record<string, unknown>
+    public readonly context?: Record<string, unknown>,
+    options?: ErrorOptions
   ) {
-    super(message);
+    super(message, options);
     this.name = 'TypeKroError';
   }
 }
@@ -67,15 +68,56 @@ export class CircularDependencyError extends TypeKroError {
 }
 
 /**
- * Format Arktype validation errors with helpful context and suggestions
+ * Structural representation of a single Arktype validation problem.
+ *
+ * Compatible with `ArkError` from `@ark/schema` and plain mock objects used
+ * in tests. Only the subset of fields actually read by {@link formatArktypeError}
+ * is required.
+ */
+export interface ArktypeValidationProblem {
+  path?: readonly PropertyKey[];
+  expected?: string;
+  actual?: unknown;
+  code?: string;
+  message?: string;
+}
+/**
+ * Structural representation of an Arktype validation error result.
+ *
+ * Compatible with both `ArkErrors` from `@ark/schema` (which extends
+ * `ReadonlyArray<ArkError>` and has a `.summary` getter) and plain mock
+ * objects used in tests (which have an explicit `.problems` array).
+ *
+ * - Real `ArkErrors`: iterable array-like with `.summary`; no `.problems`
+ *   property — the errors ARE the array entries.
+ * - Test mocks: plain objects with `.summary` and `.problems`.
+ *
+ * {@link formatArktypeError} normalizes both shapes by preferring
+ * `.problems` when present, falling back to `Array.from()` for array-like
+ * inputs.
+ */
+export interface ArktypeValidationError {
+  summary: string;
+  problems?: readonly ArktypeValidationProblem[];
+  /** Allow array-like access (real ArkErrors extends ReadonlyArray) */
+  [Symbol.iterator]?: () => Iterator<ArktypeValidationProblem>;
+}
+
+/**
+ * Format Arktype validation errors with helpful context and suggestions.
+ *
+ * Accepts both real `ArkErrors` instances (array-like, no `.problems`) and
+ * plain mock objects with an explicit `.problems` array.
  */
 export function formatArktypeError(
-  error: any,
+  error: ArktypeValidationError,
   resourceKind: string,
   resourceName: string,
   _spec: unknown
 ): ValidationError {
-  const problems = error.problems || [];
+  const problems: readonly ArktypeValidationProblem[] =
+    error.problems ??
+    (Symbol.iterator in error ? Array.from(error as Iterable<ArktypeValidationProblem>) : []);
 
   if (problems.length === 0) {
     return new ValidationError(
@@ -89,9 +131,9 @@ export function formatArktypeError(
 
   // Get the first problem for detailed error
   const firstProblem = problems[0];
-  const fieldPath = firstProblem.path?.join('.') || 'root';
-  const expectedType = firstProblem.expected || 'unknown';
-  const actualValue = firstProblem.actual;
+  const fieldPath = firstProblem?.path?.join('.') || 'root';
+  const expectedType = firstProblem?.expected || 'unknown';
+  const actualValue = firstProblem?.actual;
 
   let message = `Invalid ${resourceKind} '${resourceName}' at field '${fieldPath}':`;
   message += `\n  Expected: ${expectedType}`;
@@ -100,23 +142,23 @@ export function formatArktypeError(
   const suggestions: string[] = [];
 
   // Add specific suggestions based on the error type
-  if (firstProblem.code === 'missing') {
+  if (firstProblem?.code === 'missing') {
     suggestions.push(`Add the required field '${fieldPath}' to your ${resourceKind} spec`);
     suggestions.push(`Example: { ${fieldPath}: ${getExampleValue(expectedType)} }`);
-  } else if (firstProblem.code === 'type') {
+  } else if (firstProblem?.code === 'type') {
     suggestions.push(`Change '${fieldPath}' to be of type ${expectedType}`);
     if (expectedType.includes('|')) {
       const options = expectedType.split('|').map((s: string) => s.trim());
       suggestions.push(`Valid options: ${options.join(', ')}`);
     }
-  } else if (firstProblem.code === 'format') {
+  } else if (firstProblem?.code === 'format') {
     suggestions.push(`Ensure '${fieldPath}' matches the expected format: ${expectedType}`);
   }
 
   // Add all problems if there are multiple
   if (problems.length > 1) {
     message += `\n\nAdditional validation errors:`;
-    problems.slice(1).forEach((problem: any, index: number) => {
+    problems.slice(1).forEach((problem: ArktypeValidationProblem, index: number) => {
       const path = problem.path?.join('.') || 'root';
       message += `\n  ${index + 2}. ${path}: ${problem.message}`;
     });
@@ -200,13 +242,14 @@ export class ResourceGraphFactoryError extends TypeKroError {
     message: string,
     public readonly factoryName: string,
     public readonly operation: 'deployment' | 'getInstance' | 'cleanup',
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'RESOURCE_GRAPH_FACTORY_ERROR', {
-      factoryName,
-      operation,
-      cause: cause?.message,
-    });
+    super(
+      message,
+      'RESOURCE_GRAPH_FACTORY_ERROR',
+      { factoryName, operation, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
     this.name = 'ResourceGraphFactoryError';
   }
 }
@@ -221,15 +264,14 @@ export class CRDInstanceError extends TypeKroError {
     public readonly kind: string,
     public readonly instanceName: string,
     public readonly operation: 'creation' | 'deletion' | 'statusResolution',
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'CRD_INSTANCE_ERROR', {
-      apiVersion,
-      kind,
-      instanceName,
-      operation,
-      cause: cause?.message,
-    });
+    super(
+      message,
+      'CRD_INSTANCE_ERROR',
+      { apiVersion, kind, instanceName, operation, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
     this.name = 'CRDInstanceError';
   }
 }
@@ -271,15 +313,14 @@ export class CompositionExecutionError extends TypeKroError {
       resourceKind?: string;
       factoryName?: string;
     },
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'COMPOSITION_EXECUTION_ERROR', {
-      compositionName,
-      phase,
-      resourceContext,
-      cause: cause?.message,
-      stack: cause?.stack,
-    });
+    super(
+      message,
+      'COMPOSITION_EXECUTION_ERROR',
+      { compositionName, phase, resourceContext, cause: cause?.message, stack: cause?.stack },
+      cause ? { cause } : undefined
+    );
     this.name = 'CompositionExecutionError';
   }
 
@@ -354,17 +395,22 @@ export class ContextRegistrationError extends TypeKroError {
       | 'duplicate-detection'
       | 'validation',
     public readonly suggestions?: string[],
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'CONTEXT_REGISTRATION_ERROR', {
-      resourceId,
-      resourceKind,
-      factoryName,
-      registrationPhase,
-      suggestions,
-      cause: cause?.message,
-      stack: cause?.stack,
-    });
+    super(
+      message,
+      'CONTEXT_REGISTRATION_ERROR',
+      {
+        resourceId,
+        resourceKind,
+        factoryName,
+        registrationPhase,
+        suggestions,
+        cause: cause?.message,
+        stack: cause?.stack,
+      },
+      cause ? { cause } : undefined
+    );
     this.name = 'ContextRegistrationError';
   }
 
@@ -592,15 +638,14 @@ export class KubernetesApiOperationError extends TypeKroError {
     public readonly resourceKind?: string,
     public readonly resourceName?: string,
     public readonly statusCode?: number,
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'KUBERNETES_API_OPERATION_ERROR', {
-      operation,
-      resourceKind,
-      resourceName,
-      statusCode,
-      cause: cause?.message,
-    });
+    super(
+      message,
+      'KUBERNETES_API_OPERATION_ERROR',
+      { operation, resourceKind, resourceName, statusCode, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
     this.name = 'KubernetesApiOperationError';
   }
 }
@@ -616,12 +661,14 @@ export class KubernetesClientError extends TypeKroError {
       | 'configuration'
       | 'client-creation'
       | 'cluster-availability',
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'KUBERNETES_CLIENT_ERROR', {
-      operation,
-      cause: cause?.message,
-    });
+    super(
+      message,
+      'KUBERNETES_CLIENT_ERROR',
+      { operation, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
     this.name = 'KubernetesClientError';
   }
 }
@@ -674,17 +721,22 @@ export class ConversionError extends TypeKroError {
       schemaFields?: string[];
     },
     public readonly suggestions?: string[],
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'CONVERSION_ERROR', {
-      originalExpression,
-      expressionType,
-      sourceLocation,
-      context,
-      suggestions,
-      cause: cause?.message,
-      stack: cause?.stack,
-    });
+    super(
+      message,
+      'CONVERSION_ERROR',
+      {
+        originalExpression,
+        expressionType,
+        sourceLocation,
+        context,
+        suggestions,
+        cause: cause?.message,
+        stack: cause?.stack,
+      },
+      cause ? { cause } : undefined
+    );
     this.name = 'ConversionError';
   }
 
