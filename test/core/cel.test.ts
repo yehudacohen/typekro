@@ -147,4 +147,71 @@ describe('CEL Expression Builder', () => {
       expect(result.expression).toBe('"has \\"quotes\\""');
     });
   });
+
+  describe('Typed convenience methods', () => {
+    it('Cel.boolean() should produce a CelExpression with boolean type', () => {
+      const database = simple.Deployment({
+        name: 'postgres',
+        image: 'postgres:13',
+        replicas: 1,
+      });
+
+      const boolResult = Cel.boolean(database.status?.readyReplicas, ' > 0');
+      const exprResult = Cel.expr<boolean>(database.status?.readyReplicas, ' > 0');
+
+      expect(isCelExpression(boolResult)).toBe(true);
+      expect(boolResult.expression).toBe(exprResult.expression);
+    });
+
+    it('Cel.str() should produce a CelExpression with string type', () => {
+      const database = simple.Deployment({
+        name: 'postgres',
+        image: 'postgres:13',
+        replicas: 1,
+      });
+
+      const strResult = Cel.str(database.status?.readyReplicas, ' + "-suffix"');
+      const exprResult = Cel.expr<string>(database.status?.readyReplicas, ' + "-suffix"');
+
+      expect(isCelExpression(strResult)).toBe(true);
+      expect(strResult.expression).toBe(exprResult.expression);
+    });
+
+    it('Cel.number() should produce a CelExpression with number type', () => {
+      const database = simple.Deployment({
+        name: 'postgres',
+        image: 'postgres:13',
+        replicas: 1,
+      });
+
+      const numResult = Cel.number(database.status?.readyReplicas);
+      const exprResult = Cel.expr<number>(database.status?.readyReplicas);
+
+      expect(isCelExpression(numResult)).toBe(true);
+      expect(numResult.expression).toBe(exprResult.expression);
+    });
+
+    it('convenience methods should be functionally identical to Cel.expr<T>()', () => {
+      const database = simple.Deployment({
+        name: 'postgres',
+        image: 'postgres:13',
+        replicas: 1,
+      });
+
+      // Boolean
+      const boolConvenience = Cel.boolean(database.status?.readyReplicas, ' > 0');
+      const boolExpr = Cel.expr<boolean>(database.status?.readyReplicas, ' > 0');
+      expect(boolConvenience.expression).toBe(boolExpr.expression);
+
+      // String
+      const strConvenience = Cel.str(database.status?.readyReplicas, ' + "-suffix"');
+      const strExpr = Cel.expr<string>(database.status?.readyReplicas, ' + "-suffix"');
+      expect(strConvenience.expression).toBe(strExpr.expression);
+
+      // Number
+      const numConvenience = Cel.number(database.status?.readyReplicas);
+      const numExpr = Cel.expr<number>(database.status?.readyReplicas);
+      expect(numConvenience.expression).toBe(numExpr.expression);
+    });
+  });
 });
