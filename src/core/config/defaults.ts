@@ -159,3 +159,13 @@ export const DEFAULT_STATUS_QUERY_TIMEOUT = 10_000;
 
 /** Default namespace for Flux-based Helm resources (HelmRepository, HelmRelease) */
 export const DEFAULT_FLUX_NAMESPACE = 'flux-system';
+
+// =============================================================================
+// SECURITY LIMITS
+// =============================================================================
+
+/** Maximum allowed YAML content size in bytes (10 MB) */
+export const DEFAULT_MAX_YAML_CONTENT_SIZE = 10_485_760;
+
+/** Maximum directory recursion depth for directory walking (prevents symlink loops / deep nesting) */
+export const DEFAULT_MAX_DIRECTORY_DEPTH = 20;

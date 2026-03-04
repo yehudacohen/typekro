@@ -6,7 +6,11 @@
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
-import { DEFAULT_HTTP_READ_TIMEOUT } from '../config/defaults.js';
+import {
+  DEFAULT_HTTP_READ_TIMEOUT,
+  DEFAULT_MAX_DIRECTORY_DEPTH,
+  DEFAULT_MAX_YAML_CONTENT_SIZE,
+} from '../config/defaults.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 
@@ -440,7 +444,7 @@ export class PathResolver {
         throw YamlPathResolutionError.fileNotFound(resourceName, localPath);
       }
 
-      // Check if it's a file (not a directory)
+      // Check if it's a file (not a directory) and enforce size limit
       const stats = fs.statSync(resolvedPath);
       if (!stats.isFile()) {
         throw new YamlPathResolutionError(
@@ -451,6 +455,19 @@ export class PathResolver {
             'Ensure the path points to a file, not a directory',
             'Use yamlDirectory() factory for directory processing',
             'Check that the path is correct',
+          ]
+        );
+      }
+
+      if (stats.size > DEFAULT_MAX_YAML_CONTENT_SIZE) {
+        throw new YamlPathResolutionError(
+          `File size ${stats.size} bytes exceeds maximum allowed size of ${DEFAULT_MAX_YAML_CONTENT_SIZE} bytes (${(DEFAULT_MAX_YAML_CONTENT_SIZE / 1_048_576).toFixed(0)} MB) for resource '${resourceName}': ${localPath}`,
+          resourceName,
+          localPath,
+          [
+            'Split large YAML files into smaller files',
+            'Use yamlDirectory() to load multiple smaller files',
+            'Check if the file contains unnecessary data that can be removed',
           ]
         );
       }
@@ -722,7 +739,9 @@ export class PathResolver {
   }
 
   /**
-   * Recursively walk a directory and collect YAML files
+   * Recursively walk a directory and collect YAML files.
+   * Enforces a maximum recursion depth to prevent issues with deeply nested
+   * directories or symlink loops.
    */
   private async walkDirectory(
     currentPath: string,
@@ -733,8 +752,19 @@ export class PathResolver {
       include: string[];
       exclude: string[];
     },
-    resourceName: string
+    resourceName: string,
+    currentDepth: number = 0,
+    maxDepth: number = DEFAULT_MAX_DIRECTORY_DEPTH
   ): Promise<void> {
+    if (currentDepth > maxDepth) {
+      logger.warn('Maximum directory recursion depth exceeded, skipping deeper traversal', {
+        currentPath,
+        maxDepth,
+        resourceName,
+      });
+      return;
+    }
+
     const entries = fs.readdirSync(currentPath, { withFileTypes: true });
 
     for (const entry of entries) {
@@ -743,7 +773,15 @@ export class PathResolver {
 
       if (entry.isDirectory()) {
         if (options.recursive) {
-          await this.walkDirectory(fullPath, basePath, files, options, resourceName);
+          await this.walkDirectory(
+            fullPath,
+            basePath,
+            files,
+            options,
+            resourceName,
+            currentDepth + 1,
+            maxDepth
+          );
         }
       } else if (entry.isFile()) {
         // Check if file matches include/exclude patterns
@@ -752,6 +790,15 @@ export class PathResolver {
           !this.matchesPatterns(relativePath, options.exclude)
         ) {
           try {
+            const fileStats = fs.statSync(fullPath);
+            if (fileStats.size > DEFAULT_MAX_YAML_CONTENT_SIZE) {
+              logger.warn('Skipping file that exceeds maximum content size during YAML discovery', {
+                fullPath,
+                fileSize: fileStats.size,
+                maxSize: DEFAULT_MAX_YAML_CONTENT_SIZE,
+              });
+              continue;
+            }
             const content = fs.readFileSync(fullPath, 'utf-8');
             files.push({
               path: fullPath,
@@ -771,7 +818,9 @@ export class PathResolver {
   }
 
   /**
-   * Discover YAML files in a Git repository directory
+   * Discover YAML files in a Git repository directory.
+   * Enforces a maximum recursion depth to prevent excessive API calls
+   * on deeply nested repositories.
    */
   private async discoverGitYamlFiles(
     gitPath: string,
@@ -780,8 +829,19 @@ export class PathResolver {
       include: string[];
       exclude: string[];
     },
-    resourceName: string
+    resourceName: string,
+    currentDepth: number = 0,
+    maxDepth: number = DEFAULT_MAX_DIRECTORY_DEPTH
   ): Promise<DiscoveredFile[]> {
+    if (currentDepth > maxDepth) {
+      logger.warn('Maximum Git directory recursion depth exceeded, skipping deeper traversal', {
+        gitPath,
+        maxDepth,
+        resourceName,
+      });
+      return [];
+    }
+
     const parsed = this.parseGitPath(gitPath, resourceName);
 
     // For now, we'll implement a simple approach using GitHub API
@@ -879,7 +939,9 @@ export class PathResolver {
           const subDirFiles = await this.discoverGitYamlFiles(
             `git:${parsed.host}/${parsed.owner}/${parsed.repo}/${item.path}@${parsed.ref}`,
             options,
-            resourceName
+            resourceName,
+            currentDepth + 1,
+            maxDepth
           );
 
           // Adjust relative paths for subdirectory files
@@ -1000,6 +1062,19 @@ export class PathResolver {
       }
 
       const content = await response.text();
+
+      if (content.length > DEFAULT_MAX_YAML_CONTENT_SIZE) {
+        throw new YamlPathResolutionError(
+          `HTTP response size ${content.length} bytes exceeds maximum allowed size of ${DEFAULT_MAX_YAML_CONTENT_SIZE} bytes (${(DEFAULT_MAX_YAML_CONTENT_SIZE / 1_048_576).toFixed(0)} MB) for resource '${resourceName}': ${url}`,
+          resourceName,
+          url,
+          [
+            'The remote resource is too large to process safely',
+            'Consider hosting a smaller version of the file',
+            'Split large YAML files into smaller files',
+          ]
+        );
+      }
 
       if (!content || content.trim().length === 0) {
         throw new YamlPathResolutionError(
