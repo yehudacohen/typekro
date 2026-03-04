@@ -1297,463 +1297,22 @@ export class DirectDeploymentEngine {
     });
 
     // 1. Resolve all references in the resource
-    let resolvedResource: KubernetesResource;
-    try {
-      resourceLogger.debug('Resolving resource references', {
-        originalMetadata: resource.metadata,
-      });
-      const resolveTimeout = options.timeout || DEFAULT_READINESS_TIMEOUT;
-      resolvedResource = (await Promise.race([
-        this.referenceResolver.resolveReferences(resource, context),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Reference resolution timeout')), resolveTimeout)
-        ),
-      ])) as KubernetesResource;
-      // Check for readinessEvaluator which may be on Enhanced resources
-      const enhancedResource = resolvedResource as KubernetesResource & {
-        readinessEvaluator?: (liveResource: unknown) => ResourceStatus;
-      };
-      resourceLogger.debug('References resolved successfully', {
-        resolvedMetadata: resolvedResource.metadata,
-        hasReadinessEvaluator: !!enhancedResource.readinessEvaluator,
-      });
-    } catch (error) {
-      // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
-      // one at a time. This is expected behavior, so we log at debug level instead of warn.
-      const hasResourceKeyMapping =
-        context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
-      if (hasResourceKeyMapping) {
-        resourceLogger.warn('Reference resolution failed, using original resource', {
-          error: ensureError(error).message,
-        });
-      } else {
-        resourceLogger.debug(
-          'Reference resolution skipped (no resourceKeyMapping), using original resource',
-          {
-            error: ensureError(error).message,
-          }
-        );
-      }
-      resolvedResource = resource;
-    }
+    const resolvedRef = await this.resolveResourceReferences(
+      resource,
+      context,
+      options,
+      resourceLogger
+    );
 
     // 2. Apply namespace if specified, but only if resource doesn't already have one
-    if (
-      options.namespace &&
-      resolvedResource.metadata &&
-      typeof resolvedResource.metadata.namespace !== 'string'
-    ) {
-      resourceLogger.debug('Applying namespace from deployment options', {
-        targetNamespace: options.namespace,
-        currentNamespace: resolvedResource.metadata.namespace,
-        currentNamespaceType: typeof resolvedResource.metadata.namespace,
-      });
-
-      // Create a completely new metadata object to avoid proxy issues
-      const newMetadata = {
-        ...resolvedResource.metadata,
-        namespace: options.namespace,
-      };
-
-      // Preserve the readiness evaluator when creating the new resource
-      const newResolvedResource = {
-        ...resolvedResource,
-        metadata: newMetadata,
-      };
-
-      // Copy the non-enumerable readiness evaluator if it exists
-      const resourceWithEvaluator = resolvedResource as KubernetesResource &
-        WithResourceId & {
-          readinessEvaluator?: (liveResource: unknown) => ResourceStatus;
-        };
-      const readinessEvaluator = resourceWithEvaluator.readinessEvaluator;
-      if (readinessEvaluator) {
-        Object.defineProperty(newResolvedResource, 'readinessEvaluator', {
-          value: readinessEvaluator,
-          enumerable: false,
-          configurable: true,
-          writable: false,
-        });
-      }
-
-      // Copy the non-enumerable __resourceId if it exists (used for cross-resource references)
-      const originalResourceId = resourceWithEvaluator.__resourceId;
-      if (originalResourceId) {
-        Object.defineProperty(newResolvedResource, '__resourceId', {
-          value: originalResourceId,
-          enumerable: false,
-          configurable: true,
-          writable: false,
-        });
-      }
-
-      resolvedResource = newResolvedResource;
-    }
+    const resolvedResource = this.applyNamespaceToResource(
+      resolvedRef,
+      options.namespace,
+      resourceLogger
+    );
 
     // 3. Apply the resource to the cluster (or simulate for dry run)
-    let appliedResource: k8s.KubernetesObject;
-
-    if (options.dryRun) {
-      // In dry run mode, don't actually create the resource
-      resourceLogger.debug('Dry run mode: simulating resource creation');
-      appliedResource = {
-        ...resolvedResource,
-        metadata: {
-          ...resolvedResource.metadata,
-          uid: 'dry-run-uid',
-        },
-      } as k8s.KubernetesObject;
-    } else {
-      // Apply resource with retry logic
-      const retryPolicy = options.retryPolicy || {
-        maxRetries: DEFAULT_MAX_RETRIES,
-        backoffMultiplier: DEFAULT_BACKOFF_MULTIPLIER,
-        initialDelay: DEFAULT_FAST_POLL_INTERVAL,
-        maxDelay: DEFAULT_MAX_RETRY_DELAY,
-      };
-
-      let lastError: Error | undefined;
-      for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
-        try {
-          resourceLogger.debug('Applying resource to cluster', { attempt });
-
-          // Check if resource already exists
-          let existing: k8s.KubernetesObject | undefined;
-          try {
-            // In the new API, methods return objects directly (no .body wrapper)
-            existing = await this.k8sApi.read({
-              apiVersion: resolvedResource.apiVersion,
-              kind: resolvedResource.kind,
-              metadata: {
-                name: resolvedResource.metadata?.name || '',
-                namespace: resolvedResource.metadata?.namespace || 'default',
-              },
-            });
-          } catch (error: unknown) {
-            // If it's a 404, the resource doesn't exist, which is expected for creation
-            const apiError = error as KubernetesApiError;
-            // Check for 404 in various error formats:
-            // - apiError.statusCode (direct property)
-            // - apiError.response?.statusCode (nested response)
-            // - apiError.body?.code (body code)
-            // - error message containing "HTTP-Code: 404"
-            const is404 =
-              apiError.statusCode === 404 ||
-              apiError.response?.statusCode === 404 ||
-              apiError.body?.code === 404 ||
-              (typeof apiError.message === 'string' && apiError.message.includes('HTTP-Code: 404'));
-
-            if (!is404) {
-              // Also check for "Unrecognized API version and kind" errors - these indicate
-              // the CRD is not installed yet, which should trigger CRD waiting logic
-              const isUnrecognizedApiError =
-                typeof apiError.message === 'string' &&
-                apiError.message.includes('Unrecognized API version and kind');
-
-              if (isUnrecognizedApiError) {
-                resourceLogger.debug('CRD not yet registered, will retry after CRD establishment', {
-                  error: ensureError(error).message,
-                });
-              } else {
-                resourceLogger.error('Error checking resource existence', ensureError(error));
-              }
-              throw error;
-            }
-            // 404 means resource doesn't exist - this is expected, we'll create it below
-          }
-
-          if (existing) {
-            // Resource exists, use patch for safer updates
-            // Log the full resource being patched, including non-standard fields like 'data' for Secrets
-            const patchPayload: Partial<KubernetesResource> = {
-              apiVersion: resolvedResource.apiVersion,
-              kind: resolvedResource.kind,
-              metadata: resolvedResource.metadata,
-            };
-
-            // Include spec if present (most resources)
-            if (resolvedResource.spec !== undefined) {
-              patchPayload.spec = resolvedResource.spec;
-            }
-
-            // Include data if present (Secrets)
-            if (resolvedResource.data !== undefined) {
-              patchPayload.data = resolvedResource.data;
-            }
-
-            // Include stringData if present (Secrets)
-            if (resolvedResource.stringData !== undefined) {
-              patchPayload.stringData = resolvedResource.stringData;
-            }
-
-            // Include rules if present (RBAC resources)
-            if (resolvedResource.rules !== undefined) {
-              // Ensure arrays are preserved (not converted to objects with numeric keys)
-              const rules = resolvedResource.rules;
-              patchPayload.rules = Array.isArray(rules) ? [...rules] : rules;
-            }
-
-            // Include subjects if present (ClusterRoleBinding, RoleBinding)
-            if (resolvedResource.subjects !== undefined) {
-              // Ensure arrays are preserved (not converted to objects with numeric keys)
-              const subjects = resolvedResource.subjects;
-              patchPayload.subjects = Array.isArray(subjects) ? [...subjects] : subjects;
-            }
-
-            // Include roleRef if present (ClusterRoleBinding, RoleBinding)
-            if (resolvedResource.roleRef !== undefined) {
-              patchPayload.roleRef = resolvedResource.roleRef;
-            }
-
-            // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
-            // Then use JSON.parse(JSON.stringify()) to strip proxy wrappers that structuredClone cannot handle
-            const jsonPayload =
-              typeof resolvedResource.toJSON === 'function'
-                ? resolvedResource.toJSON()
-                : patchPayload;
-
-            // Deep clone to remove any proxy wrappers that might cause serialization issues
-            const cleanPayload = JSON.parse(JSON.stringify(jsonPayload));
-
-            // Strip internal TypeKro fields that should not be sent to Kubernetes
-            // The 'id' field is used internally for resource mapping but is not a valid K8s field
-            delete cleanPayload.id;
-
-            // Redact sensitive fields from Secret resources before logging
-            if (cleanPayload.kind === 'Secret') {
-              const { data: _data, stringData: _stringData, ...safePayload } = cleanPayload;
-              resourceLogger.debug('Resource exists, patching', {
-                patchPayload: safePayload,
-                redacted: ['data', 'stringData'],
-              });
-            } else {
-              resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
-            }
-            // In the new API, methods return objects directly (no .body wrapper)
-            appliedResource = await patchResourceWithCorrectContentType(this.k8sApi, cleanPayload);
-          } else {
-            // Resource does not exist, create it
-            resourceLogger.debug('Resource does not exist, creating');
-
-            // Log Secret resource metadata (sensitive fields redacted)
-            if (resolvedResource.kind === 'Secret') {
-              resourceLogger.debug('Creating Secret resource', {
-                name: resolvedResource.metadata?.name,
-                namespace: resolvedResource.metadata?.namespace,
-                hasData: 'data' in resolvedResource,
-                hasStringData: 'stringData' in resolvedResource,
-                dataKeyCount: resolvedResource.data ? Object.keys(resolvedResource.data).length : 0,
-              });
-            }
-
-            // Explicitly call toJSON to ensure arrays are preserved via our custom toJSON implementation
-            // Then use JSON.parse(JSON.stringify()) to strip proxy wrappers that structuredClone cannot handle
-            const jsonResource =
-              typeof resolvedResource.toJSON === 'function'
-                ? resolvedResource.toJSON()
-                : resolvedResource;
-
-            // Deep clone to remove any proxy wrappers that might cause serialization issues
-            const cleanResource = JSON.parse(JSON.stringify(jsonResource));
-
-            // Strip internal TypeKro fields that should not be sent to Kubernetes
-            // The 'id' field is used internally for resource mapping but is not a valid K8s field
-            delete cleanResource.id;
-
-            // In the new API, methods return objects directly (no .body wrapper)
-            appliedResource = await this.k8sApi.create(cleanResource);
-          }
-
-          resourceLogger.debug('Resource applied successfully', {
-            appliedName: appliedResource.metadata?.name,
-            appliedNamespace: appliedResource.metadata?.namespace,
-            operation: existing ? 'patched' : 'created',
-            attempt,
-          });
-
-          // Success - break out of retry loop
-          break;
-        } catch (error) {
-          lastError = ensureError(error);
-
-          // Check for 409 Conflict errors - resource already exists
-          const apiError = error as KubernetesApiError;
-          const is409 =
-            apiError.statusCode === 409 ||
-            apiError.response?.statusCode === 409 ||
-            apiError.body?.code === 409 ||
-            (typeof apiError.message === 'string' && apiError.message.includes('HTTP-Code: 409'));
-
-          if (is409) {
-            const conflictStrategy = options.conflictStrategy || 'warn';
-            const resourceName = resolvedResource.metadata?.name || 'unknown';
-            const resourceKind = resolvedResource.kind || 'Unknown';
-            const resourceNamespace = resolvedResource.metadata?.namespace;
-            let conflictHandled = false;
-
-            resourceLogger.debug('Resource already exists (409)', {
-              name: resourceName,
-              kind: resourceKind,
-              conflictStrategy,
-            });
-
-            // Handle based on conflict strategy
-            switch (conflictStrategy) {
-              case 'fail':
-                // Throw error immediately - don't retry
-                throw new ResourceConflictError(resourceName, resourceKind, resourceNamespace);
-
-              case 'warn':
-                // Log warning and treat as success - fetch existing resource
-                resourceLogger.warn('Resource already exists, treating as success', {
-                  name: resourceName,
-                  kind: resourceKind,
-                  namespace: resourceNamespace,
-                });
-                try {
-                  // Fetch the existing resource to return it
-                  appliedResource = await this.k8sApi.read({
-                    apiVersion: resolvedResource.apiVersion,
-                    kind: resolvedResource.kind,
-                    metadata: {
-                      name: resourceName,
-                      namespace: resourceNamespace || 'default',
-                    },
-                  });
-                  conflictHandled = true;
-                } catch (readError) {
-                  resourceLogger.warn(
-                    'Failed to read existing resource after 409, falling back to patch',
-                    { error: ensureError(readError).message }
-                  );
-                  // Fall back to patch strategy
-                  try {
-                    const jsonResource =
-                      typeof resolvedResource.toJSON === 'function'
-                        ? resolvedResource.toJSON()
-                        : resolvedResource;
-                    const cleanResource = JSON.parse(JSON.stringify(jsonResource));
-                    delete cleanResource.id;
-
-                    appliedResource = await patchResourceWithCorrectContentType(
-                      this.k8sApi,
-                      cleanResource
-                    );
-                    resourceLogger.debug(
-                      'Resource patched successfully after 409 conflict (warn fallback)'
-                    );
-                    conflictHandled = true;
-                  } catch (patchError) {
-                    resourceLogger.warn('Failed to patch resource after 409 conflict', {
-                      error: ensureError(patchError).message,
-                    });
-                  }
-                }
-                break;
-
-              case 'patch':
-                // Attempt to patch the existing resource
-                try {
-                  const jsonResource =
-                    typeof resolvedResource.toJSON === 'function'
-                      ? resolvedResource.toJSON()
-                      : resolvedResource;
-                  const cleanResource = JSON.parse(JSON.stringify(jsonResource));
-                  delete cleanResource.id;
-
-                  appliedResource = await patchResourceWithCorrectContentType(
-                    this.k8sApi,
-                    cleanResource
-                  );
-                  resourceLogger.debug('Resource patched successfully after 409 conflict');
-                  conflictHandled = true;
-                } catch (patchError) {
-                  resourceLogger.warn('Failed to patch resource after 409 conflict', {
-                    error: ensureError(patchError).message,
-                  });
-                }
-                break;
-
-              case 'replace':
-                // Delete and recreate the resource
-                try {
-                  resourceLogger.debug('Deleting existing resource for replace strategy');
-                  await this.k8sApi.delete({
-                    apiVersion: resolvedResource.apiVersion,
-                    kind: resolvedResource.kind,
-                    metadata: {
-                      name: resourceName,
-                      namespace: resourceNamespace || 'default',
-                    },
-                  });
-
-                  // Wait a moment for deletion to propagate
-                  await new Promise((resolve) => setTimeout(resolve, DEFAULT_CONFLICT_RETRY_DELAY));
-
-                  // Create the new resource
-                  const jsonResource =
-                    typeof resolvedResource.toJSON === 'function'
-                      ? resolvedResource.toJSON()
-                      : resolvedResource;
-                  const cleanResource = JSON.parse(JSON.stringify(jsonResource));
-                  delete cleanResource.id;
-
-                  appliedResource = await this.k8sApi.create(cleanResource);
-                  resourceLogger.debug('Resource replaced successfully after 409 conflict');
-                  conflictHandled = true;
-                } catch (replaceError) {
-                  resourceLogger.warn('Failed to replace resource after 409 conflict', {
-                    error: ensureError(replaceError).message,
-                  });
-                }
-                break;
-            }
-
-            // If we successfully handled the conflict, break out of retry loop
-            if (conflictHandled) {
-              break;
-            }
-          }
-
-          resourceLogger.error('Failed to apply resource to cluster', lastError, { attempt });
-
-          // Check for HTTP 415 Unsupported Media Type errors
-          if (isUnsupportedMediaTypeError(error)) {
-            const acceptedTypes = extractAcceptedMediaTypes(error);
-            throw new UnsupportedMediaTypeError(
-              resolvedResource.metadata?.name || 'unknown',
-              resolvedResource.kind || 'Unknown',
-              acceptedTypes,
-              lastError
-            );
-          }
-
-          // If this was the last attempt, throw the error
-          if (attempt >= retryPolicy.maxRetries) {
-            throw new ResourceDeploymentError(
-              resolvedResource.metadata?.name || 'unknown',
-              resolvedResource.kind || 'Unknown',
-              lastError
-            );
-          }
-
-          // Calculate delay for next attempt
-          const delay = Math.min(
-            retryPolicy.initialDelay * retryPolicy.backoffMultiplier ** attempt,
-            retryPolicy.maxDelay
-          );
-
-          resourceLogger.debug('Retrying resource deployment', {
-            attempt: attempt + 1,
-            maxRetries: retryPolicy.maxRetries,
-            delay,
-          });
-
-          // Wait before retrying
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-      }
-    }
+    await this.applyResourceToCluster(resolvedResource, options, resourceLogger);
 
     // 4. Create deployed resource record
     const deployedResource: DeployedResource = {
@@ -1775,6 +1334,485 @@ export class DirectDeploymentEngine {
 
     resourceLogger.debug('Single resource deployment completed');
     return deployedResource;
+  }
+
+  /**
+   * Serialize a resource for sending to the Kubernetes API.
+   * Calls toJSON() if available (to preserve arrays via custom implementation),
+   * then deep-clones via JSON to strip proxy wrappers, and removes internal fields.
+   */
+  private serializeResourceForK8s(
+    resource: KubernetesResource | Partial<KubernetesResource>
+  ): Record<string, unknown> {
+    const toJSON = (resource as KubernetesResource).toJSON;
+    const jsonResource = typeof toJSON === 'function' ? toJSON.call(resource) : resource;
+
+    // Deep clone to remove any proxy wrappers that might cause serialization issues
+    const cleanResource: Record<string, unknown> = JSON.parse(JSON.stringify(jsonResource));
+
+    // Strip internal TypeKro fields that should not be sent to Kubernetes
+    // The 'id' field is used internally for resource mapping but is not a valid K8s field
+    delete cleanResource.id;
+
+    return cleanResource;
+  }
+
+  /**
+   * Resolve all references in a resource, with timeout and fallback behavior.
+   * Falls back to the original resource if resolution fails.
+   */
+  private async resolveResourceReferences(
+    resource: DeployableK8sResource<Enhanced<unknown, unknown>>,
+    context: ResolutionContext,
+    options: DeploymentOptions,
+    resourceLogger: ReturnType<typeof this.logger.child>
+  ): Promise<KubernetesResource> {
+    try {
+      resourceLogger.debug('Resolving resource references', {
+        originalMetadata: resource.metadata,
+      });
+      const resolveTimeout = options.timeout || DEFAULT_READINESS_TIMEOUT;
+      const resolvedResource = (await Promise.race([
+        this.referenceResolver.resolveReferences(resource, context),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Reference resolution timeout')), resolveTimeout)
+        ),
+      ])) as KubernetesResource;
+      // Check for readinessEvaluator which may be on Enhanced resources
+      const enhancedResource = resolvedResource as KubernetesResource & {
+        readinessEvaluator?: (liveResource: unknown) => ResourceStatus;
+      };
+      resourceLogger.debug('References resolved successfully', {
+        resolvedMetadata: resolvedResource.metadata,
+        hasReadinessEvaluator: !!enhancedResource.readinessEvaluator,
+      });
+      return resolvedResource;
+    } catch (error) {
+      // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
+      // one at a time. This is expected behavior, so we log at debug level instead of warn.
+      const hasResourceKeyMapping =
+        context.resourceKeyMapping && context.resourceKeyMapping.size > 0;
+      if (hasResourceKeyMapping) {
+        resourceLogger.warn('Reference resolution failed, using original resource', {
+          error: ensureError(error).message,
+        });
+      } else {
+        resourceLogger.debug(
+          'Reference resolution skipped (no resourceKeyMapping), using original resource',
+          {
+            error: ensureError(error).message,
+          }
+        );
+      }
+      return resource;
+    }
+  }
+
+  /**
+   * Apply a namespace to a resource if one is specified and the resource doesn't already have one.
+   * Preserves non-enumerable properties (readinessEvaluator, __resourceId) on the new object.
+   */
+  private applyNamespaceToResource(
+    resource: KubernetesResource,
+    namespace: string | undefined,
+    resourceLogger: ReturnType<typeof this.logger.child>
+  ): KubernetesResource {
+    if (!namespace || !resource.metadata || typeof resource.metadata.namespace === 'string') {
+      return resource;
+    }
+
+    resourceLogger.debug('Applying namespace from deployment options', {
+      targetNamespace: namespace,
+      currentNamespace: resource.metadata.namespace,
+      currentNamespaceType: typeof resource.metadata.namespace,
+    });
+
+    // Create a completely new metadata object to avoid proxy issues
+    const newMetadata = {
+      ...resource.metadata,
+      namespace,
+    };
+
+    // Preserve the readiness evaluator when creating the new resource
+    const newResource = {
+      ...resource,
+      metadata: newMetadata,
+    };
+
+    // Copy the non-enumerable readiness evaluator if it exists
+    const resourceWithEvaluator = resource as KubernetesResource &
+      WithResourceId & {
+        readinessEvaluator?: (liveResource: unknown) => ResourceStatus;
+      };
+    const readinessEvaluator = resourceWithEvaluator.readinessEvaluator;
+    if (readinessEvaluator) {
+      Object.defineProperty(newResource, 'readinessEvaluator', {
+        value: readinessEvaluator,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
+
+    // Copy the non-enumerable __resourceId if it exists (used for cross-resource references)
+    const originalResourceId = resourceWithEvaluator.__resourceId;
+    if (originalResourceId) {
+      Object.defineProperty(newResource, '__resourceId', {
+        value: originalResourceId,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
+
+    return newResource;
+  }
+
+  /**
+   * Build a patch payload from a resource, including special-cased fields for Secrets and RBAC resources.
+   */
+  private buildPatchPayload(resource: KubernetesResource): Record<string, unknown> {
+    const patchPayload: Partial<KubernetesResource> = {
+      apiVersion: resource.apiVersion,
+      kind: resource.kind,
+      metadata: resource.metadata,
+    };
+
+    // Include spec if present (most resources)
+    if (resource.spec !== undefined) {
+      patchPayload.spec = resource.spec;
+    }
+
+    // Include data if present (Secrets)
+    if (resource.data !== undefined) {
+      patchPayload.data = resource.data;
+    }
+
+    // Include stringData if present (Secrets)
+    if (resource.stringData !== undefined) {
+      patchPayload.stringData = resource.stringData;
+    }
+
+    // Include rules if present (RBAC resources)
+    if (resource.rules !== undefined) {
+      // Ensure arrays are preserved (not converted to objects with numeric keys)
+      const rules = resource.rules;
+      patchPayload.rules = Array.isArray(rules) ? [...rules] : rules;
+    }
+
+    // Include subjects if present (ClusterRoleBinding, RoleBinding)
+    if (resource.subjects !== undefined) {
+      // Ensure arrays are preserved (not converted to objects with numeric keys)
+      const subjects = resource.subjects;
+      patchPayload.subjects = Array.isArray(subjects) ? [...subjects] : subjects;
+    }
+
+    // Include roleRef if present (ClusterRoleBinding, RoleBinding)
+    if (resource.roleRef !== undefined) {
+      patchPayload.roleRef = resource.roleRef;
+    }
+
+    return this.serializeResourceForK8s(patchPayload);
+  }
+
+  /**
+   * Handle a 409 Conflict error based on the configured conflict strategy.
+   * Returns the applied resource if the conflict was handled, or undefined if it wasn't.
+   */
+  private async handleConflictStrategy(
+    resolvedResource: KubernetesResource,
+    conflictStrategy: NonNullable<DeploymentOptions['conflictStrategy']>,
+    resourceLogger: ReturnType<typeof this.logger.child>
+  ): Promise<k8s.KubernetesObject | undefined> {
+    const resourceName = resolvedResource.metadata?.name || 'unknown';
+    const resourceKind = resolvedResource.kind || 'Unknown';
+    const resourceNamespace = resolvedResource.metadata?.namespace;
+
+    resourceLogger.debug('Resource already exists (409)', {
+      name: resourceName,
+      kind: resourceKind,
+      conflictStrategy,
+    });
+
+    switch (conflictStrategy) {
+      case 'fail':
+        throw new ResourceConflictError(resourceName, resourceKind, resourceNamespace);
+
+      case 'warn': {
+        resourceLogger.warn('Resource already exists, treating as success', {
+          name: resourceName,
+          kind: resourceKind,
+          namespace: resourceNamespace,
+        });
+        try {
+          const result = await this.k8sApi.read({
+            apiVersion: resolvedResource.apiVersion,
+            kind: resolvedResource.kind,
+            metadata: {
+              name: resourceName,
+              namespace: resourceNamespace || 'default',
+            },
+          });
+          return result;
+        } catch (readError) {
+          resourceLogger.warn('Failed to read existing resource after 409, falling back to patch', {
+            error: ensureError(readError).message,
+          });
+          // Fall back to patch strategy
+          try {
+            const cleanResource = this.serializeResourceForK8s(resolvedResource);
+            const result = await patchResourceWithCorrectContentType(this.k8sApi, cleanResource);
+            resourceLogger.debug(
+              'Resource patched successfully after 409 conflict (warn fallback)'
+            );
+            return result;
+          } catch (patchError) {
+            resourceLogger.warn('Failed to patch resource after 409 conflict', {
+              error: ensureError(patchError).message,
+            });
+          }
+        }
+        return undefined;
+      }
+
+      case 'patch': {
+        try {
+          const cleanResource = this.serializeResourceForK8s(resolvedResource);
+          const result = await patchResourceWithCorrectContentType(this.k8sApi, cleanResource);
+          resourceLogger.debug('Resource patched successfully after 409 conflict');
+          return result;
+        } catch (patchError) {
+          resourceLogger.warn('Failed to patch resource after 409 conflict', {
+            error: ensureError(patchError).message,
+          });
+        }
+        return undefined;
+      }
+
+      case 'replace': {
+        try {
+          resourceLogger.debug('Deleting existing resource for replace strategy');
+          await this.k8sApi.delete({
+            apiVersion: resolvedResource.apiVersion,
+            kind: resolvedResource.kind,
+            metadata: {
+              name: resourceName,
+              namespace: resourceNamespace || 'default',
+            },
+          });
+
+          // Wait a moment for deletion to propagate
+          await new Promise((resolve) => setTimeout(resolve, DEFAULT_CONFLICT_RETRY_DELAY));
+
+          const cleanResource = this.serializeResourceForK8s(resolvedResource);
+          const result = await this.k8sApi.create(cleanResource);
+          resourceLogger.debug('Resource replaced successfully after 409 conflict');
+          return result;
+        } catch (replaceError) {
+          resourceLogger.warn('Failed to replace resource after 409 conflict', {
+            error: ensureError(replaceError).message,
+          });
+        }
+        return undefined;
+      }
+    }
+  }
+
+  /**
+   * Apply a resource to the Kubernetes cluster with retry logic, conflict handling,
+   * and support for both create and patch operations.
+   */
+  private async applyResourceToCluster(
+    resolvedResource: KubernetesResource,
+    options: DeploymentOptions,
+    resourceLogger: ReturnType<typeof this.logger.child>
+  ): Promise<k8s.KubernetesObject> {
+    if (options.dryRun) {
+      resourceLogger.debug('Dry run mode: simulating resource creation');
+      return {
+        ...resolvedResource,
+        metadata: {
+          ...resolvedResource.metadata,
+          uid: 'dry-run-uid',
+        },
+      } as k8s.KubernetesObject;
+    }
+
+    const retryPolicy = options.retryPolicy || {
+      maxRetries: DEFAULT_MAX_RETRIES,
+      backoffMultiplier: DEFAULT_BACKOFF_MULTIPLIER,
+      initialDelay: DEFAULT_FAST_POLL_INTERVAL,
+      maxDelay: DEFAULT_MAX_RETRY_DELAY,
+    };
+
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
+      try {
+        resourceLogger.debug('Applying resource to cluster', { attempt });
+
+        // Check if resource already exists
+        const existing = await this.checkResourceExists(resolvedResource, resourceLogger);
+
+        let appliedResource: k8s.KubernetesObject;
+        if (existing) {
+          // Resource exists, use patch for safer updates
+          const cleanPayload = this.buildPatchPayload(resolvedResource);
+
+          // Redact sensitive fields from Secret resources before logging
+          if (cleanPayload.kind === 'Secret') {
+            const { data: _data, stringData: _stringData, ...safePayload } = cleanPayload;
+            resourceLogger.debug('Resource exists, patching', {
+              patchPayload: safePayload,
+              redacted: ['data', 'stringData'],
+            });
+          } else {
+            resourceLogger.debug('Resource exists, patching', { patchPayload: cleanPayload });
+          }
+
+          appliedResource = await patchResourceWithCorrectContentType(this.k8sApi, cleanPayload);
+        } else {
+          // Resource does not exist, create it
+          resourceLogger.debug('Resource does not exist, creating');
+
+          // Log Secret resource metadata (sensitive fields redacted)
+          if (resolvedResource.kind === 'Secret') {
+            resourceLogger.debug('Creating Secret resource', {
+              name: resolvedResource.metadata?.name,
+              namespace: resolvedResource.metadata?.namespace,
+              hasData: 'data' in resolvedResource,
+              hasStringData: 'stringData' in resolvedResource,
+              dataKeyCount: resolvedResource.data ? Object.keys(resolvedResource.data).length : 0,
+            });
+          }
+
+          const cleanResource = this.serializeResourceForK8s(resolvedResource);
+          appliedResource = await this.k8sApi.create(cleanResource);
+        }
+
+        resourceLogger.debug('Resource applied successfully', {
+          appliedName: appliedResource.metadata?.name,
+          appliedNamespace: appliedResource.metadata?.namespace,
+          operation: existing ? 'patched' : 'created',
+          attempt,
+        });
+
+        return appliedResource;
+      } catch (error) {
+        lastError = ensureError(error);
+
+        // Check for 409 Conflict errors - resource already exists
+        const apiError = error as KubernetesApiError;
+        const is409 =
+          apiError.statusCode === 409 ||
+          apiError.response?.statusCode === 409 ||
+          apiError.body?.code === 409 ||
+          (typeof apiError.message === 'string' && apiError.message.includes('HTTP-Code: 409'));
+
+        if (is409) {
+          const conflictStrategy = options.conflictStrategy || 'warn';
+          const result = await this.handleConflictStrategy(
+            resolvedResource,
+            conflictStrategy,
+            resourceLogger
+          );
+          if (result) {
+            return result;
+          }
+        }
+
+        resourceLogger.error('Failed to apply resource to cluster', lastError, { attempt });
+
+        // Check for HTTP 415 Unsupported Media Type errors
+        if (isUnsupportedMediaTypeError(error)) {
+          const acceptedTypes = extractAcceptedMediaTypes(error);
+          throw new UnsupportedMediaTypeError(
+            resolvedResource.metadata?.name || 'unknown',
+            resolvedResource.kind || 'Unknown',
+            acceptedTypes,
+            lastError
+          );
+        }
+
+        // If this was the last attempt, throw the error
+        if (attempt >= retryPolicy.maxRetries) {
+          throw new ResourceDeploymentError(
+            resolvedResource.metadata?.name || 'unknown',
+            resolvedResource.kind || 'Unknown',
+            lastError
+          );
+        }
+
+        // Calculate delay for next attempt
+        const delay = Math.min(
+          retryPolicy.initialDelay * retryPolicy.backoffMultiplier ** attempt,
+          retryPolicy.maxDelay
+        );
+
+        resourceLogger.debug('Retrying resource deployment', {
+          attempt: attempt + 1,
+          maxRetries: retryPolicy.maxRetries,
+          delay,
+        });
+
+        // Wait before retrying
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    // This should be unreachable due to the throw in the last attempt, but TypeScript needs it
+    throw new ResourceDeploymentError(
+      resolvedResource.metadata?.name || 'unknown',
+      resolvedResource.kind || 'Unknown',
+      lastError || new Error('Unknown deployment error')
+    );
+  }
+
+  /**
+   * Check if a resource already exists in the cluster.
+   * Returns the existing resource if found, or undefined if it doesn't exist (404).
+   * Throws for unexpected errors (non-404).
+   */
+  private async checkResourceExists(
+    resource: KubernetesResource,
+    resourceLogger: ReturnType<typeof this.logger.child>
+  ): Promise<k8s.KubernetesObject | undefined> {
+    try {
+      return await this.k8sApi.read({
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        metadata: {
+          name: resource.metadata?.name || '',
+          namespace: resource.metadata?.namespace || 'default',
+        },
+      });
+    } catch (error: unknown) {
+      const apiError = error as KubernetesApiError;
+      // Check for 404 in various error formats
+      const is404 =
+        apiError.statusCode === 404 ||
+        apiError.response?.statusCode === 404 ||
+        apiError.body?.code === 404 ||
+        (typeof apiError.message === 'string' && apiError.message.includes('HTTP-Code: 404'));
+
+      if (is404) {
+        // 404 means resource doesn't exist - this is expected, we'll create it
+        return undefined;
+      }
+
+      // Check for "Unrecognized API version and kind" errors - CRD not installed yet
+      const isUnrecognizedApiError =
+        typeof apiError.message === 'string' &&
+        apiError.message.includes('Unrecognized API version and kind');
+
+      if (isUnrecognizedApiError) {
+        resourceLogger.debug('CRD not yet registered, will retry after CRD establishment', {
+          error: ensureError(error).message,
+        });
+      } else {
+        resourceLogger.error('Error checking resource existence', ensureError(error));
+      }
+      throw error;
+    }
   }
 
   /**
