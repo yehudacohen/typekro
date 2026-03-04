@@ -108,12 +108,3 @@ function resolveKey(specValue: string | undefined, envVarName: string, devDefaul
 
   return devDefault;
 }
-
-/**
- * Reset the warning state — exposed only for testing.
- *
- * @internal
- */
-export function _resetWarningState(): void {
-  devDefaultWarningEmitted = false;
-}
