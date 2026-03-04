@@ -381,4 +381,131 @@ describe('JavaScript Expression Analysis', () => {
       expect(analysis.statusMappings.storageReady?.expression).toContain('pvc.status.phase');
     });
   });
+
+  describe('Logical operator (||/&&) detection warnings', () => {
+    it('should warn when || is used with KubernetesRef proxy access', () => {
+      const deployment = simple.Deployment({
+        name: 'test-app',
+        image: 'nginx:latest',
+      });
+
+      const statusBuilder = (_schema: any, resources: any) => ({
+        replicas: resources.deployment.status.readyReplicas || 0,
+      });
+
+      const mockResources = { deployment };
+      const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
+
+      expect(analysis.warnings).toBeDefined();
+      expect(analysis.warnings.length).toBeGreaterThan(0);
+      expect(analysis.warnings[0]).toContain("'||'");
+      expect(analysis.warnings[0]).toContain('KubernetesRef proxies are always truthy');
+    });
+
+    it('should warn when && is used with KubernetesRef proxy access', () => {
+      const deployment = simple.Deployment({
+        name: 'test-app',
+        image: 'nginx:latest',
+      });
+
+      const service = simple.Service({
+        name: 'test-service',
+        ports: [{ port: 80 }],
+        selector: { app: 'test-app' },
+      });
+
+      const statusBuilder = (_schema: any, resources: any) => ({
+        allReady:
+          resources.deployment.status.readyReplicas > 0 &&
+          resources.service.status.loadBalancer !== null,
+      });
+
+      const mockResources = { deployment, service };
+      const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
+
+      expect(analysis.warnings).toBeDefined();
+      expect(analysis.warnings.length).toBeGreaterThan(0);
+      expect(analysis.warnings[0]).toContain("'&&'");
+      expect(analysis.warnings[0]).toContain('right-hand operand');
+    });
+
+    it('should not warn for static-only logical expressions', () => {
+      const statusBuilder = (_schema: any, _resources: any) => ({
+        ready: true,
+        phase: 'Running',
+        count: 42,
+      });
+
+      const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, {});
+
+      expect(analysis.warnings).toBeDefined();
+      expect(analysis.warnings.length).toBe(0);
+    });
+
+    it('should detect || in nested expressions like template literals', () => {
+      const deployment = simple.Deployment({
+        name: 'test-app',
+        image: 'nginx:latest',
+      });
+
+      const statusBuilder = (_schema: any, resources: any) => ({
+        message: `Replicas: ${resources.deployment.status.readyReplicas || 0}`,
+      });
+
+      const mockResources = { deployment };
+      const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
+
+      expect(analysis.warnings).toBeDefined();
+      expect(analysis.warnings.length).toBeGreaterThan(0);
+      expect(analysis.warnings[0]).toContain("'||'");
+    });
+
+    it('should include field name in warning message', () => {
+      const deployment = simple.Deployment({
+        name: 'test-app',
+        image: 'nginx:latest',
+      });
+
+      const statusBuilder = (_schema: any, resources: any) => ({
+        activeReplicas: resources.deployment.status.readyReplicas || 0,
+      });
+
+      const mockResources = { deployment };
+      const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
+
+      expect(analysis.warnings.length).toBeGreaterThan(0);
+      expect(analysis.warnings[0]).toContain('activeReplicas');
+    });
+
+    it('should detect multiple warnings for multiple fields', () => {
+      const deployment = simple.Deployment({
+        name: 'test-app',
+        image: 'nginx:latest',
+      });
+
+      const service = simple.Service({
+        name: 'test-service',
+        ports: [{ port: 80 }],
+        selector: { app: 'test-app' },
+      });
+
+      const statusBuilder = (_schema: any, resources: any) => ({
+        replicas: resources.deployment.status.readyReplicas || 0,
+        ready:
+          resources.deployment.status.readyReplicas > 0 &&
+          resources.service.status.loadBalancer !== null,
+        phase: 'Running', // No warning for static value
+      });
+
+      const mockResources = { deployment, service };
+      const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
+
+      expect(analysis.warnings.length).toBeGreaterThanOrEqual(2);
+      // Should have at least one || warning and one && warning
+      const orWarnings = analysis.warnings.filter((w: string) => w.includes("'||'"));
+      const andWarnings = analysis.warnings.filter((w: string) => w.includes("'&&'"));
+      expect(orWarnings.length).toBeGreaterThanOrEqual(1);
+      expect(andWarnings.length).toBeGreaterThanOrEqual(1);
+    });
+  });
 });
