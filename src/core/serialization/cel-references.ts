@@ -57,14 +57,15 @@ function convertTemplateToCelConcat(templateStr: string): string {
   const parts: string[] = [];
   let currentPos = 0;
 
-  const regex = /\$\{([^}]+)\}/g;
+  // Match ${...} placeholders, but skip escaped \${...} sequences
+  const regex = /(?<!\\)\$\{([^}]+)\}/g;
   let match: RegExpExecArray | null = regex.exec(templateStr);
 
   while (match !== null) {
     if (match.index > currentPos) {
       const literalPart = templateStr.slice(currentPos, match.index);
       if (literalPart) {
-        parts.push(`"${literalPart}"`);
+        parts.push(`"${escapeLiteralForCel(literalPart)}"`);
       }
     }
 
@@ -76,11 +77,22 @@ function convertTemplateToCelConcat(templateStr: string): string {
   if (currentPos < templateStr.length) {
     const literalPart = templateStr.slice(currentPos);
     if (literalPart) {
-      parts.push(`"${literalPart}"`);
+      parts.push(`"${escapeLiteralForCel(literalPart)}"`);
     }
   }
 
   return parts.join(' + ');
+}
+
+/**
+ * Escape a literal string part for safe embedding in a CEL string literal.
+ * Handles backslashes, double quotes, and escaped ${ sequences.
+ */
+function escapeLiteralForCel(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\') // Escape backslashes first
+    .replace(/"/g, '\\"') // Escape double quotes
+    .replace(/\\\\\$\{/g, '${'); // Restore \${ → ${ (remove the escape marker, now it's in a CEL string literal)
 }
 
 // ---------------------------------------------------------------------------
