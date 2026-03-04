@@ -54,13 +54,13 @@ export interface StatusFieldAnalysisResult {
   fieldName: string;
 
   /** Original JavaScript expression */
-  originalExpression: any;
+  originalExpression: unknown;
 
   /** Converted CEL expression */
   celExpression: CelExpression | null;
 
   /** KubernetesRef dependencies detected */
-  dependencies: KubernetesRef<any>[];
+  dependencies: KubernetesRef<unknown>[];
 
   /** Whether the expression requires conversion */
   requiresConversion: boolean;
@@ -84,7 +84,7 @@ export interface StatusFieldAnalysisResult {
   confidence: number;
 
   /** Static value for object expressions that can be evaluated at compile time */
-  staticValue?: any;
+  staticValue?: unknown;
 }
 
 /**
@@ -95,16 +95,16 @@ export interface StatusBuilderAnalysisResult {
   fieldAnalysis: Map<string, StatusFieldAnalysisResult>;
 
   /** Overall status mappings (field name -> CEL expression or static value) */
-  statusMappings: Record<string, CelExpression | any>;
+  statusMappings: Record<string, unknown>;
 
   /** All KubernetesRef dependencies found */
-  allDependencies: KubernetesRef<any>[];
+  allDependencies: KubernetesRef<unknown>[];
 
   /** All resource references */
-  resourceReferences: KubernetesRef<any>[];
+  resourceReferences: KubernetesRef<unknown>[];
 
   /** All schema references */
-  schemaReferences: KubernetesRef<any>[];
+  schemaReferences: KubernetesRef<unknown>[];
 
   /** Overall source mapping */
   sourceMap: SourceMapEntry[];
@@ -175,7 +175,7 @@ export interface PropertyAnalysis {
  */
 export interface StatusFieldHandlingInfo {
   /** The KubernetesRef being handled */
-  kubernetesRef: KubernetesRef<any>;
+  kubernetesRef: KubernetesRef<unknown>;
 
   /** Whether this field requires hydration */
   requiresHydration: boolean;
@@ -326,8 +326,8 @@ export class StatusBuilderAnalyzer {
 
       // Analyze each property in the returned object
       const fieldAnalysis = new Map<string, StatusFieldAnalysisResult>();
-      const statusMappings: Record<string, CelExpression | any> = {};
-      const allDependencies: KubernetesRef<any>[] = [];
+      const statusMappings: Record<string, unknown> = {};
+      const allDependencies: KubernetesRef<unknown>[] = [];
       const allSourceMap: SourceMapEntry[] = [];
       const allErrors: ConversionError[] = [];
 
@@ -460,16 +460,16 @@ export class StatusBuilderAnalyzer {
    * and detects KubernetesRef objects from the magic proxy system.
    */
   analyzeReturnObjectWithMagicProxy(
-    returnObject: any,
+    returnObject: unknown,
     resources: Record<string, Enhanced<any, any>>,
     schemaProxy?: SchemaProxy<any, any>
   ): {
     statusMappings: Record<string, CelExpression>;
-    dependencies: KubernetesRef<any>[];
+    dependencies: KubernetesRef<unknown>[];
     errors: ConversionError[];
   } {
-    const statusMappings: Record<string, CelExpression | any> = {};
-    const dependencies: KubernetesRef<any>[] = [];
+    const statusMappings: Record<string, CelExpression> = {};
+    const dependencies: KubernetesRef<unknown>[] = [];
     const errors: ConversionError[] = [];
 
     if (!returnObject || typeof returnObject !== 'object') {
@@ -513,12 +513,12 @@ export class StatusBuilderAnalyzer {
    */
   private analyzeReturnObjectField(
     fieldName: string,
-    fieldValue: any,
+    fieldValue: unknown,
     resources: Record<string, Enhanced<any, any>>,
     schemaProxy?: SchemaProxy<any, any>
   ): {
     celExpression: CelExpression | null;
-    dependencies: KubernetesRef<any>[];
+    dependencies: KubernetesRef<unknown>[];
     errors: ConversionError[];
     requiresConversion: boolean;
   } {
@@ -591,7 +591,7 @@ export class StatusBuilderAnalyzer {
   /**
    * Convert static values (no KubernetesRef objects) to CEL expressions
    */
-  private convertStaticValueToCel(value: any): CelExpression {
+  private convertStaticValueToCel(value: unknown): CelExpression {
     let celExpression: string;
     let type: string;
 
@@ -637,17 +637,17 @@ export class StatusBuilderAnalyzer {
    * Perform deep analysis of nested return object structures
    */
   analyzeNestedReturnObjectStructure(
-    returnObject: any,
+    returnObject: unknown,
     resources: Record<string, Enhanced<any, any>>,
     schemaProxy?: SchemaProxy<any, any>,
     depth: number = 0
   ): {
     flattenedMappings: Record<string, CelExpression>;
-    nestedDependencies: Map<string, KubernetesRef<any>[]>;
+    nestedDependencies: Map<string, KubernetesRef<unknown>[]>;
     structureErrors: ConversionError[];
   } {
     const flattenedMappings: Record<string, CelExpression> = {};
-    const nestedDependencies = new Map<string, KubernetesRef<any>[]>();
+    const nestedDependencies = new Map<string, KubernetesRef<unknown>[]>();
     const structureErrors: ConversionError[] = [];
 
     if (depth > this.options.maxDepth) {
@@ -689,10 +689,10 @@ export class StatusBuilderAnalyzer {
    * Recursively analyze object structure for KubernetesRef objects
    */
   private analyzeObjectStructureRecursively(
-    obj: any,
+    obj: unknown,
     pathPrefix: string,
     flattenedMappings: Record<string, CelExpression>,
-    nestedDependencies: Map<string, KubernetesRef<any>[]>,
+    nestedDependencies: Map<string, KubernetesRef<unknown>[]>,
     errors: ConversionError[],
     resources: Record<string, Enhanced<any, any>>,
     schemaProxy?: SchemaProxy<any, any>,
@@ -759,7 +759,7 @@ export class StatusBuilderAnalyzer {
    * taking into account the magic proxy system and field hydration timing.
    */
   generateStatusContextCel(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): CelExpression {
     try {
@@ -782,7 +782,7 @@ export class StatusBuilderAnalyzer {
    * Generate advanced status context CEL with full feature support
    */
   private generateStatusContextCelWithAdvancedFeatures(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): CelExpression {
     const isSchemaRef = kubernetesRef.resourceId === '__schema__';
@@ -826,7 +826,7 @@ export class StatusBuilderAnalyzer {
    * Analyze status field handling requirements
    */
   private analyzeStatusFieldHandlingRequirements(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): StatusFieldHandlingInfo {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -966,7 +966,7 @@ export class StatusBuilderAnalyzer {
    * Check if a field is optional in status context
    */
   private isFieldOptionalInStatusContext(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     _context: OptionalityContext
   ): boolean {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1006,7 +1006,7 @@ export class StatusBuilderAnalyzer {
    * Calculate priority for status field evaluation
    */
   private calculateStatusFieldPriority(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     _context: OptionalityContext
   ): number {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1066,7 +1066,7 @@ export class StatusBuilderAnalyzer {
    * Estimate field availability timing
    */
   private estimateFieldAvailability(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     _context: OptionalityContext
   ): FieldAvailabilityEstimate {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1098,7 +1098,7 @@ export class StatusBuilderAnalyzer {
    * Infer the type of a status field
    */
   private inferStatusFieldType(
-    kubernetesRef: KubernetesRef<any>,
+    kubernetesRef: KubernetesRef<unknown>,
     _context: OptionalityContext
   ): string {
     const fieldPath = kubernetesRef.fieldPath || '';
@@ -1130,17 +1130,22 @@ export class StatusBuilderAnalyzer {
    * Analyze a mixed object expression (contains both static and dynamic values)
    */
   private analyzeMixedObjectExpression(
-    objectNode: any,
+    objectNode: ESTreeNode,
     resources: Record<string, Enhanced<any, any>>,
     originalSource: string,
     schemaProxy?: SchemaProxy<any, any>
-  ): { valid: boolean; processedObject: any; dependencies: any[]; requiresConversion: boolean } {
+  ): {
+    valid: boolean;
+    processedObject: Record<string, unknown> | null;
+    dependencies: KubernetesRef<unknown>[];
+    requiresConversion: boolean;
+  } {
     if (objectNode.type !== 'ObjectExpression') {
       return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
     }
 
     const result: Record<string, unknown> = {};
-    const allDependencies: any[] = [];
+    const allDependencies: KubernetesRef<unknown>[] = [];
     let requiresConversion = false;
 
     for (const prop of objectNode.properties) {
@@ -1259,7 +1264,7 @@ export class StatusBuilderAnalyzer {
   /**
    * Evaluate a static object expression to a JavaScript object
    */
-  private evaluateStaticObjectExpression(objectNode: any): any {
+  private evaluateStaticObjectExpression(objectNode: ESTreeNode): Record<string, unknown> | null {
     if (objectNode.type !== 'ObjectExpression') {
       return null;
     }
@@ -1289,26 +1294,31 @@ export class StatusBuilderAnalyzer {
   /**
    * Evaluate a static value from an AST node
    */
-  private evaluateStaticValue(node: any): any {
+  private evaluateStaticValue(node: ESTreeNode): unknown {
     switch (node.type) {
       case 'Literal':
-        return node.value;
-      case 'UnaryExpression':
-        if (node.operator === '!' && node.argument?.type === 'Literal') {
-          return !node.argument.value;
+        return (node as ESTreeNode & { value: unknown }).value;
+      case 'UnaryExpression': {
+        const unary = node as ESTreeNode & {
+          operator: string;
+          argument?: ESTreeNode & { type: string; value?: unknown };
+        };
+        if (unary.operator === '!' && unary.argument?.type === 'Literal') {
+          return !unary.argument.value;
         }
         if (
-          node.operator === '-' &&
-          node.argument?.type === 'Literal' &&
-          typeof node.argument.value === 'number'
+          unary.operator === '-' &&
+          unary.argument?.type === 'Literal' &&
+          typeof unary.argument.value === 'number'
         ) {
-          return -node.argument.value;
+          return -unary.argument.value;
         }
         return null;
+      }
       case 'ObjectExpression':
         return this.evaluateStaticObjectExpression(node);
       case 'ArrayExpression': {
-        const arrayResult: any[] = [];
+        const arrayResult: unknown[] = [];
         for (const element of node.elements) {
           if (element === null) {
             arrayResult.push(null);
@@ -1340,24 +1350,31 @@ export class StatusBuilderAnalyzer {
   /**
    * Extract source code for an AST node using range information
    */
-  private getNodeSource(node: any, originalSource: string): string {
+  private getNodeSource(node: ESTreeNode, originalSource: string): string {
     if (!node || !node.type) {
       return '';
     }
+
+    // Acorn nodes have start/end properties not in ESTree types
+    const acornNode = node as ESTreeNode & {
+      start?: number;
+      end?: number;
+      range?: [number, number];
+    };
 
     // Try to use range information to extract the actual source
     let start: number | undefined;
     let end: number | undefined;
 
     // Check for start/end properties (acorn format)
-    if (typeof node.start === 'number' && typeof node.end === 'number') {
-      start = node.start;
-      end = node.end;
+    if (typeof acornNode.start === 'number' && typeof acornNode.end === 'number') {
+      start = acornNode.start;
+      end = acornNode.end;
     }
     // Check for range array (alternative format)
-    else if (Array.isArray(node.range) && node.range.length === 2) {
-      start = node.range[0];
-      end = node.range[1];
+    else if (Array.isArray(acornNode.range) && acornNode.range.length === 2) {
+      start = acornNode.range[0];
+      end = acornNode.range[1];
     }
 
     // If we have valid range information, extract the source
@@ -1376,50 +1393,59 @@ export class StatusBuilderAnalyzer {
     }
 
     // Fallback to manual reconstruction for specific node types
+    // These casts are necessary because ESTree uses discriminated unions on node.type,
+    // but we're switching on node.type as a string and accessing subtype-specific fields.
+    const n = node as ESTreeNode & Record<string, unknown>;
     switch (node.type) {
       case 'Literal':
-        return typeof node.value === 'string' ? `"${node.value}"` : String(node.value);
+        return typeof n.value === 'string' ? `"${n.value}"` : String(n.value);
       case 'Identifier':
-        return node.name;
+        return (n as unknown as Identifier).name;
       case 'BinaryExpression': {
-        const left = this.getNodeSource(node.left, originalSource);
-        const right = this.getNodeSource(node.right, originalSource);
-        return `${left} ${node.operator} ${right}`;
+        const left = this.getNodeSource(n.left as ESTreeNode, originalSource);
+        const right = this.getNodeSource(n.right as ESTreeNode, originalSource);
+        return `${left} ${n.operator} ${right}`;
       }
       case 'MemberExpression': {
-        const object = this.getNodeSource(node.object, originalSource);
-        if (node.computed) {
-          return `${object}[${this.getNodeSource(node.property, originalSource)}]`;
+        const object = this.getNodeSource(n.object as ESTreeNode, originalSource);
+        if (n.computed) {
+          return `${object}[${this.getNodeSource(n.property as ESTreeNode, originalSource)}]`;
         } else {
           const propertyName =
-            (node.property as Identifier).name || this.getNodeSource(node.property, originalSource);
+            (n.property as unknown as Identifier).name ||
+            this.getNodeSource(n.property as ESTreeNode, originalSource);
           return `${object}.${propertyName}`;
         }
       }
       case 'ConditionalExpression':
-        return `${this.getNodeSource(node.test, originalSource)} ? ${this.getNodeSource(node.consequent, originalSource)} : ${this.getNodeSource(node.alternate, originalSource)}`;
+        return `${this.getNodeSource(n.test as ESTreeNode, originalSource)} ? ${this.getNodeSource(n.consequent as ESTreeNode, originalSource)} : ${this.getNodeSource(n.alternate as ESTreeNode, originalSource)}`;
       case 'LogicalExpression':
-        return `${this.getNodeSource(node.left, originalSource)} ${node.operator} ${this.getNodeSource(node.right, originalSource)}`;
+        return `${this.getNodeSource(n.left as ESTreeNode, originalSource)} ${n.operator} ${this.getNodeSource(n.right as ESTreeNode, originalSource)}`;
       case 'CallExpression': {
-        const callee = this.getNodeSource(node.callee, originalSource);
-        const args = node.arguments
-          .map((arg: any) => this.getNodeSource(arg, originalSource))
+        const callee = this.getNodeSource(n.callee as ESTreeNode, originalSource);
+        const args = (n.arguments as ESTreeNode[])
+          .map((arg: ESTreeNode) => this.getNodeSource(arg, originalSource))
           .join(', ');
         return `${callee}(${args})`;
       }
       case 'ArrowFunctionExpression': {
-        const params = node.params.map((param: any) => param.name).join(', ');
-        const body = this.getNodeSource(node.body, originalSource);
+        const params = (n.params as ESTreeNode[])
+          .map((param: ESTreeNode) => (param as unknown as Identifier).name)
+          .join(', ');
+        const body = this.getNodeSource(n.body as ESTreeNode, originalSource);
         return `(${params}) => ${body}`;
       }
       case 'TemplateLiteral': {
         // Simplified template literal reconstruction
         let result = '`';
-        for (let i = 0; i < node.quasis.length; i++) {
-          const quasi = node.quasis[i];
+        const quasis = (n.quasis as Array<{ value?: { raw?: string; cooked?: string } }>) || [];
+        const expressions = (n.expressions as ESTreeNode[]) || [];
+        for (let i = 0; i < quasis.length; i++) {
+          const quasi = quasis[i];
           result += quasi?.value?.raw || quasi?.value?.cooked || '';
-          if (i < node.expressions.length) {
-            result += `\${${this.getNodeSource(node.expressions[i], originalSource)}}`;
+          const expr = expressions[i];
+          if (expr && i < expressions.length) {
+            result += `\${${this.getNodeSource(expr, originalSource)}}`;
           }
         }
         result += '`';
@@ -1434,7 +1460,7 @@ export class StatusBuilderAnalyzer {
   /**
    * Generate fallback status CEL expression
    */
-  private generateFallbackStatusCel(kubernetesRef: KubernetesRef<any>): CelExpression {
+  private generateFallbackStatusCel(kubernetesRef: KubernetesRef<unknown>): CelExpression {
     const isSchemaRef = kubernetesRef.resourceId === '__schema__';
     const basePath = isSchemaRef
       ? `schema.${kubernetesRef.fieldPath}`
@@ -1478,7 +1504,7 @@ export class StatusBuilderAnalyzer {
     originalSource: string
   ): ReturnStatementAnalysis | null {
     let foundReturnStatement: ReturnStatement | null = null;
-    let foundArrowFunction: any | null = null;
+    let foundArrowFunction: ESTreeNode | null = null;
 
     // Find the return statement or arrow function with implicit return
     estraverse.traverse(ast, {
@@ -1532,12 +1558,14 @@ export class StatusBuilderAnalyzer {
     }
 
     // Handle arrow function with implicit return
-    if (foundArrowFunction && foundArrowFunction.body?.type === 'ObjectExpression') {
-      const objectExpression = foundArrowFunction.body as ObjectExpression;
+    const arrowFn = foundArrowFunction as (ESTreeNode & { body?: ESTreeNode }) | null;
+    if (arrowFn && arrowFn.body?.type === 'ObjectExpression') {
+      const objectExpression = arrowFn.body as ObjectExpression;
       const properties = this.analyzeObjectProperties(objectExpression, originalSource);
 
       return {
-        node: foundArrowFunction,
+        // Arrow function implicit return is represented as a ReturnStatement equivalent
+        node: arrowFn as unknown as ReturnStatement,
         returnsObject: true,
         properties,
         sourceLocation: {
@@ -1821,12 +1849,12 @@ export class StatusBuilderAnalyzer {
   /**
    * Categorize dependencies into resource and schema references
    */
-  private categorizeDependencies(dependencies: KubernetesRef<any>[]): {
-    resourceReferences: KubernetesRef<any>[];
-    schemaReferences: KubernetesRef<any>[];
+  private categorizeDependencies(dependencies: KubernetesRef<unknown>[]): {
+    resourceReferences: KubernetesRef<unknown>[];
+    schemaReferences: KubernetesRef<unknown>[];
   } {
-    const resourceReferences: KubernetesRef<any>[] = [];
-    const schemaReferences: KubernetesRef<any>[] = [];
+    const resourceReferences: KubernetesRef<unknown>[] = [];
+    const schemaReferences: KubernetesRef<unknown>[] = [];
 
     for (const dep of dependencies) {
       if (dep.resourceId === '__schema__') {
@@ -1852,8 +1880,8 @@ export function analyzeStatusBuilderForToResourceGraph<TSpec extends Record<stri
   schemaProxy?: SchemaProxy<TSpec, any>,
   factoryType: 'direct' | 'kro' = 'kro'
 ): {
-  statusMappings: Record<string, CelExpression | any>;
-  dependencies: KubernetesRef<any>[];
+  statusMappings: Record<string, unknown>;
+  dependencies: KubernetesRef<unknown>[];
   hydrationOrder: string[];
   errors: ConversionError[];
   valid: boolean;
@@ -1973,13 +2001,13 @@ export function analyzeStatusBuilder<TSpec extends Record<string, any>, TStatus>
  * Convenience function to analyze return objects with magic proxy support
  */
 export function analyzeReturnObjectWithMagicProxy(
-  returnObject: any,
+  returnObject: unknown,
   resources: Record<string, Enhanced<any, any>>,
   schemaProxy?: SchemaProxy<any, any>,
   options?: StatusBuilderAnalysisOptions
 ): {
   statusMappings: Record<string, CelExpression>;
-  dependencies: KubernetesRef<any>[];
+  dependencies: KubernetesRef<unknown>[];
   errors: ConversionError[];
 } {
   const analyzer = new StatusBuilderAnalyzer(undefined, options);
@@ -1990,7 +2018,7 @@ export function analyzeReturnObjectWithMagicProxy(
  * Convenience function to generate status context-specific CEL
  */
 export function generateStatusContextCel(
-  kubernetesRef: KubernetesRef<any>,
+  kubernetesRef: KubernetesRef<unknown>,
   context: OptionalityContext,
   options?: StatusBuilderAnalysisOptions
 ): CelExpression {
