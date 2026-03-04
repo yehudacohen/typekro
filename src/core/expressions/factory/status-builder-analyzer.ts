@@ -85,6 +85,9 @@ export interface StatusFieldAnalysisResult {
 
   /** Static value for object expressions that can be evaluated at compile time */
   staticValue?: unknown;
+
+  /** Warnings about patterns that may produce unexpected results */
+  warnings: string[];
 }
 
 /**
@@ -114,6 +117,9 @@ export interface StatusBuilderAnalysisResult {
 
   /** Whether the analysis was successful */
   valid: boolean;
+
+  /** Warnings about patterns that may produce unexpected results (e.g., ||/&& with KubernetesRef) */
+  warnings: string[];
 
   /** Original status builder function source */
   originalSource: string;
@@ -410,6 +416,12 @@ export class StatusBuilderAnalyzer {
         overallValid,
       });
 
+      // Aggregate warnings from all field analyses
+      const allWarnings: string[] = [];
+      for (const fieldResult of fieldAnalysis.values()) {
+        allWarnings.push(...fieldResult.warnings);
+      }
+
       return {
         fieldAnalysis,
         statusMappings,
@@ -419,6 +431,7 @@ export class StatusBuilderAnalyzer {
         sourceMap: allSourceMap,
         errors: allErrors,
         valid: overallValid,
+        warnings: allWarnings,
         originalSource,
         ast,
         returnStatement,
@@ -448,6 +461,7 @@ export class StatusBuilderAnalyzer {
         sourceMap: [],
         errors: [analysisError],
         valid: false,
+        warnings: [],
         originalSource: statusBuilder.toString(),
       };
     }
@@ -1624,6 +1638,19 @@ export class StatusBuilderAnalyzer {
     const originalExpression = property.valueSource;
 
     try {
+      // Detect ||/&& operators that may produce unexpected results with KubernetesRef proxies
+      const logicalOpWarnings = this.detectLogicalOperatorWarnings(property.valueNode, fieldName);
+
+      if (logicalOpWarnings.length > 0) {
+        for (const warning of logicalOpWarnings) {
+          this.logger.warn(warning, {
+            fieldName,
+            component: 'status-builder-analyzer',
+            suggestion: 'Use Cel.expr() for conditional/fallback logic in status builders',
+          });
+        }
+      }
+
       // Check if this is a static literal value
       if (property.valueNode.type === 'Literal') {
         // Static literal - return as-is without CEL conversion
@@ -1639,6 +1666,7 @@ export class StatusBuilderAnalyzer {
           optionalityAnalysis: [],
           inferredType: typeof property.valueNode.value,
           confidence: 1.0,
+          warnings: logicalOpWarnings,
         };
       }
 
@@ -1657,6 +1685,7 @@ export class StatusBuilderAnalyzer {
           optionalityAnalysis: [],
           inferredType: 'undefined',
           confidence: 1.0,
+          warnings: logicalOpWarnings,
         };
       }
 
@@ -1680,6 +1709,7 @@ export class StatusBuilderAnalyzer {
           optionalityAnalysis: [],
           inferredType: 'boolean',
           confidence: 1.0,
+          warnings: logicalOpWarnings,
         };
       }
 
@@ -1701,6 +1731,7 @@ export class StatusBuilderAnalyzer {
             inferredType: 'object',
             confidence: 1.0,
             staticValue, // Store the evaluated static value
+            warnings: logicalOpWarnings,
           };
         } else {
           // This is a mixed object (contains both static and dynamic values)
@@ -1725,6 +1756,7 @@ export class StatusBuilderAnalyzer {
               inferredType: 'object',
               confidence: 1.0,
               staticValue: mixedObjectResult.processedObject,
+              warnings: logicalOpWarnings,
             };
           } else {
             // Mixed object analysis failed, return error
@@ -1746,6 +1778,7 @@ export class StatusBuilderAnalyzer {
               optionalityAnalysis: [],
               inferredType: 'object',
               confidence: 0.0,
+              warnings: logicalOpWarnings,
             };
           }
         }
@@ -1793,6 +1826,7 @@ export class StatusBuilderAnalyzer {
         optionalityAnalysis,
         inferredType: analysisResult.inferredType ? String(analysisResult.inferredType) : undefined,
         confidence: this.calculateFieldConfidence(analysisResult, optionalityAnalysis),
+        warnings: logicalOpWarnings,
       };
     } catch (error: unknown) {
       const fieldError = new ConversionError(
@@ -1813,6 +1847,7 @@ export class StatusBuilderAnalyzer {
         optionalityAnalysis: [],
         inferredType: undefined,
         confidence: 0,
+        warnings: [],
       };
     }
   }
@@ -1866,6 +1901,126 @@ export class StatusBuilderAnalyzer {
 
     return { resourceReferences, schemaReferences };
   }
+
+  /**
+   * Detect logical operators (||, &&) in an AST node that involve member expressions.
+   *
+   * In status builders, KubernetesRef proxy objects are always truthy, so:
+   * - `a || b` always returns `a` (the first KubernetesRef), silently discarding the fallback
+   * - `a && b` always returns `b` (the second KubernetesRef), silently discarding the first
+   *
+   * Users should use Cel.expr() for conditional logic instead.
+   */
+  private detectLogicalOperatorWarnings(node: ESTreeNode, fieldName: string): string[] {
+    const warnings: string[] = [];
+
+    const walk = (n: ESTreeNode): void => {
+      if (!n || typeof n !== 'object') return;
+
+      if (n.type === 'LogicalExpression' && (n.operator === '||' || n.operator === '&&')) {
+        const leftNode = (n as ESTreeNode & { left: ESTreeNode }).left;
+        const rightNode = (n as ESTreeNode & { right: ESTreeNode }).right;
+
+        // Check if either side involves a member expression (property access chain),
+        // which likely represents a KubernetesRef proxy access
+        const leftHasMember = this.containsMemberExpression(leftNode);
+        const rightHasMember = this.containsMemberExpression(rightNode);
+
+        if (leftHasMember || rightHasMember) {
+          const operator = n.operator as string;
+          const leftSrc = this.getNodeSource(leftNode, '');
+          const rightSrc = this.getNodeSource(rightNode, '');
+          const exprSrc = leftSrc && rightSrc ? `${leftSrc} ${operator} ${rightSrc}` : '';
+
+          if (operator === '||') {
+            warnings.push(
+              `Status field '${fieldName}' uses '||' operator${exprSrc ? ` (${exprSrc})` : ''}. ` +
+                `KubernetesRef proxies are always truthy, so the right-hand side is never reached. ` +
+                `Use Cel.expr() for fallback logic, e.g.: Cel.expr<Type>(ref, ' != "" ? ', ref, ' : "default"')`
+            );
+          } else {
+            warnings.push(
+              `Status field '${fieldName}' uses '&&' operator${exprSrc ? ` (${exprSrc})` : ''}. ` +
+                `KubernetesRef proxies are always truthy, so '&&' silently returns only the right-hand operand. ` +
+                `Use Cel.expr<boolean>() for logical AND, e.g.: Cel.expr<boolean>(refA, ' && ', refB)`
+            );
+          }
+        }
+
+        // Continue walking to find nested logical expressions
+        walk(leftNode);
+        walk(rightNode);
+      } else if (n.type === 'ConditionalExpression') {
+        const cond = n as ESTreeNode & {
+          test: ESTreeNode;
+          consequent: ESTreeNode;
+          alternate: ESTreeNode;
+        };
+        walk(cond.test);
+        walk(cond.consequent);
+        walk(cond.alternate);
+      } else if (n.type === 'BinaryExpression') {
+        const bin = n as ESTreeNode & { left: ESTreeNode; right: ESTreeNode };
+        walk(bin.left);
+        walk(bin.right);
+      } else if (n.type === 'UnaryExpression') {
+        const unary = n as ESTreeNode & { argument: ESTreeNode };
+        walk(unary.argument);
+      } else if (n.type === 'CallExpression') {
+        const call = n as ESTreeNode & { callee: ESTreeNode; arguments: ESTreeNode[] };
+        walk(call.callee);
+        for (const arg of call.arguments) {
+          walk(arg);
+        }
+      } else if (n.type === 'TemplateLiteral') {
+        const tpl = n as ESTreeNode & { expressions: ESTreeNode[] };
+        for (const expr of tpl.expressions) {
+          walk(expr);
+        }
+      }
+    };
+
+    walk(node);
+    return warnings;
+  }
+
+  /**
+   * Check if an AST node contains a MemberExpression (property access chain),
+   * which indicates it likely represents a KubernetesRef proxy access.
+   */
+  private containsMemberExpression(node: ESTreeNode): boolean {
+    if (!node || typeof node !== 'object') return false;
+    if (node.type === 'MemberExpression') return true;
+
+    // Check child nodes for common expression types
+    if (node.type === 'CallExpression') {
+      const call = node as ESTreeNode & { callee: ESTreeNode; arguments: ESTreeNode[] };
+      if (this.containsMemberExpression(call.callee)) return true;
+      return call.arguments.some((arg) => this.containsMemberExpression(arg));
+    }
+    if (node.type === 'LogicalExpression' || node.type === 'BinaryExpression') {
+      const bin = node as ESTreeNode & { left: ESTreeNode; right: ESTreeNode };
+      return this.containsMemberExpression(bin.left) || this.containsMemberExpression(bin.right);
+    }
+    if (node.type === 'UnaryExpression') {
+      const unary = node as ESTreeNode & { argument: ESTreeNode };
+      return this.containsMemberExpression(unary.argument);
+    }
+    if (node.type === 'ConditionalExpression') {
+      const cond = node as ESTreeNode & {
+        test: ESTreeNode;
+        consequent: ESTreeNode;
+        alternate: ESTreeNode;
+      };
+      return (
+        this.containsMemberExpression(cond.test) ||
+        this.containsMemberExpression(cond.consequent) ||
+        this.containsMemberExpression(cond.alternate)
+      );
+    }
+
+    return false;
+  }
 }
 
 /**
@@ -1884,6 +2039,7 @@ export function analyzeStatusBuilderForToResourceGraph<TSpec extends Record<stri
   dependencies: KubernetesRef<unknown>[];
   hydrationOrder: string[];
   errors: ConversionError[];
+  warnings: string[];
   valid: boolean;
   requiresConversion: boolean;
 } {
@@ -1912,6 +2068,7 @@ export function analyzeStatusBuilderForToResourceGraph<TSpec extends Record<stri
     dependencies: result.allDependencies,
     hydrationOrder,
     errors: result.errors,
+    warnings: result.warnings,
     valid: result.valid,
     requiresConversion,
   };
