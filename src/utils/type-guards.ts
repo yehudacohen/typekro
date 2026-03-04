@@ -73,27 +73,37 @@ export function isMixedTemplate(
   );
 }
 
+/** Maximum recursion depth for recursive object traversal (prevents stack overflow on deeply nested structures) */
+const MAX_RECURSION_DEPTH = 50;
+
 /**
  * Check if a value contains any CelExpression objects at any nesting depth.
- * Recursively traverses arrays and objects with circular reference protection.
+ * Recursively traverses arrays and objects with circular reference protection
+ * and a depth limit to prevent stack overflows.
  */
-export function containsCelExpressions(value: unknown, visited?: WeakSet<object>): boolean {
+export function containsCelExpressions(
+  value: unknown,
+  visited?: WeakSet<object>,
+  depth = 0
+): boolean {
   if (isCelExpression(value)) {
     return true;
   }
+
+  if (depth >= MAX_RECURSION_DEPTH) return false;
 
   if (Array.isArray(value)) {
     const seen = visited ?? new WeakSet<object>();
     if (seen.has(value)) return false;
     seen.add(value);
-    return value.some((item) => containsCelExpressions(item, seen));
+    return value.some((item) => containsCelExpressions(item, seen, depth + 1));
   }
 
   if (value && typeof value === 'object') {
     const seen = visited ?? new WeakSet<object>();
     if (seen.has(value)) return false;
     seen.add(value);
-    return Object.values(value).some((val) => containsCelExpressions(val, seen));
+    return Object.values(value).some((val) => containsCelExpressions(val, seen, depth + 1));
   }
 
   return false;
@@ -102,19 +112,31 @@ export function containsCelExpressions(value: unknown, visited?: WeakSet<object>
 /**
  * Check if a value contains any KubernetesRef objects (from magic proxy system).
  * This is used by the JavaScript to CEL analyzer to determine if an expression
- * needs conversion.
+ * needs conversion. Protected against circular references and deep nesting.
  */
-export function containsKubernetesRefs(value: unknown): boolean {
+export function containsKubernetesRefs(
+  value: unknown,
+  visited?: WeakSet<object>,
+  depth = 0
+): boolean {
   if (isKubernetesRef(value)) {
     return true;
   }
 
+  if (depth >= MAX_RECURSION_DEPTH) return false;
+
   if (Array.isArray(value)) {
-    return value.some((item) => containsKubernetesRefs(item));
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return value.some((item) => containsKubernetesRefs(item, seen, depth + 1));
   }
 
   if (value && typeof value === 'object') {
-    return Object.values(value).some((val) => containsKubernetesRefs(val));
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return Object.values(value).some((val) => containsKubernetesRefs(val, seen, depth + 1));
   }
 
   return false;
@@ -122,8 +144,13 @@ export function containsKubernetesRefs(value: unknown): boolean {
 
 /**
  * Recursively extracts all KubernetesRef objects from a resource definition.
+ * Protected against circular references and deep nesting.
  */
-export function extractResourceReferences(obj: unknown): KubernetesRef<unknown>[] {
+export function extractResourceReferences(
+  obj: unknown,
+  visited?: WeakSet<object>,
+  depth = 0
+): KubernetesRef<unknown>[] {
   const refs: KubernetesRef<unknown>[] = [];
 
   if (isKubernetesRef(obj)) {
@@ -131,13 +158,21 @@ export function extractResourceReferences(obj: unknown): KubernetesRef<unknown>[
     return refs;
   }
 
+  if (depth >= MAX_RECURSION_DEPTH) return refs;
+
   if (Array.isArray(obj)) {
-    obj.forEach((item) => {
-      refs.push(...extractResourceReferences(item));
-    });
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(obj)) return refs;
+    seen.add(obj);
+    for (const item of obj) {
+      refs.push(...extractResourceReferences(item, seen, depth + 1));
+    }
   } else if (obj && typeof obj === 'object') {
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(obj)) return refs;
+    seen.add(obj);
     for (const value of Object.values(obj)) {
-      refs.push(...extractResourceReferences(value));
+      refs.push(...extractResourceReferences(value, seen, depth + 1));
     }
   }
 
