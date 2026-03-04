@@ -3,6 +3,17 @@ import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { V1DeploymentSpec, V1DeploymentStatus } from '../types.js';
 
+/**
+ * Creates a Kubernetes Deployment resource with replica-based readiness evaluation.
+ *
+ * @param resource - The Deployment specification conforming to the Kubernetes V1Deployment API.
+ * @returns An Enhanced Deployment resource that tracks readiness based on ready and available replica counts.
+ * @example
+ * const app = deployment({
+ *   metadata: { name: 'my-app' },
+ *   spec: { replicas: 3, selector: { matchLabels: { app: 'my-app' } }, template: { ... } },
+ * });
+ */
 export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   // Capture expected replicas in closure for readiness evaluation
   // Handle the case where replicas might be a KubernetesRef (magic proxy) instead of a number

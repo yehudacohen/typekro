@@ -3,6 +3,17 @@ import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { V1ServiceSpec, V1ServiceStatus } from '../types.js';
 
+/**
+ * Creates a Kubernetes Service resource with type-aware readiness evaluation.
+ *
+ * @param resource - The Service specification conforming to the Kubernetes V1Service API.
+ * @returns An Enhanced Service resource that evaluates readiness based on service type (LoadBalancer waits for an external endpoint; ClusterIP and NodePort are ready immediately).
+ * @example
+ * const svc = service({
+ *   metadata: { name: 'my-svc' },
+ *   spec: { type: 'ClusterIP', ports: [{ port: 80 }], selector: { app: 'my-app' } },
+ * });
+ */
 export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceStatus> {
   // Capture service type in closure for readiness evaluation
   // Handle the case where type might be a KubernetesRef (magic proxy) instead of a string

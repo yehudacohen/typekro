@@ -6,11 +6,22 @@ export type V1ConfigMapData = NonNullable<V1ConfigMap['data']>;
 
 // ConfigMap spec type - ConfigMaps don't have a traditional spec, they have data
 // We use an empty spec type since ConfigMaps don't have a spec field in Kubernetes
-type ConfigMapSpec = {}
+type ConfigMapSpec = {};
 
 // ConfigMap status type - ConfigMaps don't have status
-type ConfigMapStatus = {}
+type ConfigMapStatus = {};
 
+/**
+ * Creates a Kubernetes ConfigMap resource that is considered ready immediately upon creation.
+ *
+ * @param resource - The ConfigMap specification conforming to the Kubernetes V1ConfigMap API.
+ * @returns An Enhanced ConfigMap resource. ConfigMaps have no spec or status fields; readiness is always true.
+ * @example
+ * const cfg = configMap({
+ *   metadata: { name: 'app-config' },
+ *   data: { DATABASE_HOST: 'db.example.com', LOG_LEVEL: 'info' },
+ * });
+ */
 export function configMap(resource: V1ConfigMap): Enhanced<ConfigMapSpec, ConfigMapStatus> {
   // ConfigMaps don't have a spec field in Kubernetes - data, binaryData, and immutable
   // are at the root level. We must NOT create a synthetic spec field or Kro will fail
