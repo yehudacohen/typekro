@@ -4,6 +4,17 @@ import { createResource } from '../../shared.js';
 
 export type V1IngressSpec = NonNullable<V1Ingress['spec']>;
 
+/**
+ * Creates a Kubernetes Ingress resource with multi-tier readiness evaluation.
+ *
+ * @param resource - The Ingress specification conforming to the Kubernetes V1Ingress API.
+ * @returns An Enhanced Ingress resource that evaluates readiness by checking for load balancer endpoints first, then falling back to observedGeneration matching.
+ * @example
+ * const ing = ingress({
+ *   metadata: { name: 'my-ingress' },
+ *   spec: { rules: [{ host: 'app.example.com', http: { paths: [{ path: '/', pathType: 'Prefix', backend: { service: { name: 'my-svc', port: { number: 80 } } } }] } }] },
+ * });
+ */
 export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, V1IngressStatus> {
   return createResource({
     ...resource,

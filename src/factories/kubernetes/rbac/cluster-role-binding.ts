@@ -3,15 +3,21 @@ import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 /**
- * Creates a ClusterRoleBinding resource.
+ * Creates a Kubernetes ClusterRoleBinding resource that is ready immediately upon creation.
  *
  * @security Binding to the `cluster-admin` ClusterRole grants unrestricted access
  * to the entire cluster. Prefer scoped roles with least-privilege permissions.
  * Audit all ClusterRoleBindings regularly and avoid `cluster-admin` in production
  * unless absolutely necessary.
  *
- * @param resource - The ClusterRoleBinding specification
- * @returns Enhanced ClusterRoleBinding resource
+ * @param resource - The ClusterRoleBinding specification conforming to the Kubernetes V1ClusterRoleBinding API.
+ * @returns An Enhanced ClusterRoleBinding resource. As a configuration object, readiness is always true.
+ * @example
+ * const binding = clusterRoleBinding({
+ *   metadata: { name: 'admin-binding' },
+ *   roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'admin' },
+ *   subjects: [{ kind: 'ServiceAccount', name: 'my-sa', namespace: 'default' }],
+ * });
  */
 export function clusterRoleBinding(
   resource: V1ClusterRoleBinding

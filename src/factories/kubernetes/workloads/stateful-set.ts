@@ -5,6 +5,17 @@ import { createResource } from '../../shared.js';
 export type V1StatefulSetSpec = NonNullable<V1StatefulSet['spec']>;
 export type V1StatefulSetStatus = NonNullable<V1StatefulSet['status']>;
 
+/**
+ * Creates a Kubernetes StatefulSet resource with update-strategy-aware readiness evaluation.
+ *
+ * @param resource - The StatefulSet specification conforming to the Kubernetes V1StatefulSet API.
+ * @returns An Enhanced StatefulSet resource that evaluates readiness differently for RollingUpdate (all replicas must be ready, current, and updated) vs OnDelete (all replicas must be ready) strategies.
+ * @example
+ * const db = statefulSet({
+ *   metadata: { name: 'postgres' },
+ *   spec: { replicas: 3, serviceName: 'postgres', selector: { matchLabels: { app: 'postgres' } }, template: { ... } },
+ * });
+ */
 export function statefulSet(
   resource: V1StatefulSet
 ): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus> {

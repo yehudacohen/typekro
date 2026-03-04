@@ -12,15 +12,21 @@ type SecretSpec = {};
 type SecretStatus = {};
 
 /**
- * Creates a Kubernetes Secret resource.
+ * Creates a Kubernetes Secret resource that is considered ready immediately upon creation.
  *
  * @security Do not hardcode sensitive values (passwords, tokens, keys) directly in source code.
  * Use environment variables, external secret management (e.g., Vault, Sealed Secrets, External
  * Secrets Operator), or Kubernetes Secret references instead. Secrets in Kubernetes are
- * base64-encoded, not encrypted — enable encryption at rest on the cluster.
+ * base64-encoded, not encrypted -- enable encryption at rest on the cluster.
  *
- * @param resource - The Secret specification
- * @returns Enhanced Secret resource
+ * @param resource - The Secret specification conforming to the Kubernetes V1Secret API, with an optional `id` field.
+ * @returns An Enhanced Secret resource. Secrets have no spec or status fields; readiness is always true.
+ * @example
+ * const tlsSecret = secret({
+ *   metadata: { name: 'tls-cert' },
+ *   type: 'kubernetes.io/tls',
+ *   data: { 'tls.crt': btoa(cert), 'tls.key': btoa(key) },
+ * });
  */
 export function secret(resource: V1Secret & { id?: string }): Enhanced<SecretSpec, SecretStatus> {
   // Secrets don't have a spec field in Kubernetes - data, stringData, type, and immutable

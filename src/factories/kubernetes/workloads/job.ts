@@ -5,6 +5,17 @@ import { createResource } from '../../shared.js';
 export type V1JobSpec = NonNullable<V1Job['spec']>;
 export type V1JobStatus = NonNullable<V1Job['status']>;
 
+/**
+ * Creates a Kubernetes Job resource with completion-based readiness evaluation.
+ *
+ * @param resource - The Job specification conforming to the Kubernetes V1Job API.
+ * @returns An Enhanced Job resource that tracks readiness based on successful completions, supporting both Indexed and NonIndexed completion modes.
+ * @example
+ * const migrate = job({
+ *   metadata: { name: 'db-migrate' },
+ *   spec: { template: { spec: { containers: [{ name: 'migrate', image: 'migrate:latest' }], restartPolicy: 'Never' } } },
+ * });
+ */
 export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
   // Capture configuration in closure for Job-specific readiness logic
   const expectedCompletions = resource.spec?.completions || 1;
