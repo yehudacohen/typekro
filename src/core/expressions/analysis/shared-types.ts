@@ -75,6 +75,15 @@ export interface AnalysisContext {
 }
 
 /**
+ * Callback type for AST node → CelExpression conversion.
+ * Used by extracted converter modules to recursively delegate back to the analyzer.
+ */
+export type ConvertNodeFn = (
+  node: import('estree').Node,
+  context: AnalysisContext
+) => CelExpression;
+
+/**
  * Generic validation warning
  */
 export interface ValidationWarning {
