@@ -64,7 +64,35 @@ import {
   TypeValidationError,
   type TypeValidationResult,
 } from '../validation/type-safety.js';
+import {
+  convertArrayAccess as convertArrayAccessFn,
+  extractArrowPredicate as extractArrowPredicateFn,
+  extractMemberPath as extractMemberPathFn,
+  getArg as getArgFn,
+  getPropertyName as getPropertyNameFn,
+  getSourceText as getSourceTextFn,
+  isComplexExpression as isComplexExpressionFn,
+} from './ast-helpers.js';
+// ── Extracted converter modules ─────────────────────────────────────
+import {
+  convertArrayExpression as convertArrayExpressionFn,
+  convertIdentifier as convertIdentifierFn,
+  convertLiteral as convertLiteralFn,
+  convertTemplateLiteral as convertTemplateLiteralFn,
+  convertUnaryExpression as convertUnaryExpressionFn,
+} from './ast-node-converters.js';
 import { type CacheOptions, type CacheStats, ExpressionCache } from './cache.js';
+import { convertCallExpression as convertCallExpressionFn } from './call-expression-converters.js';
+import {
+  addParenthesesIfNeeded as addParenthesesIfNeededFn,
+  convertToBooleanTest as convertToBooleanTestFn,
+  getMainOperator as getMainOperatorFn,
+  getOperatorPrecedence as getOperatorPrecedenceFn,
+  inferTypeFromFieldPath as inferTypeFromFieldPathFn,
+  isBooleanExpression as isBooleanExpressionFn,
+  isLeftAssociative as isLeftAssociativeFn,
+  mapOperatorToCel as mapOperatorToCelFn,
+} from './operator-utils.js';
 import { ParserError, parseExpression, parseScript } from './parser.js';
 // Shared types — extracted from this file to break circular deps with cache.ts / factory-pattern-handler.ts
 import type { AnalysisContext, CelConversionResult, ValidationWarning } from './shared-types.js';
@@ -1732,7 +1760,7 @@ export class JavaScriptToCelAnalyzer {
           [KUBERNETES_REF_BRAND]: true,
           resourceId: '__schema__',
           fieldPath,
-          _type: this.inferTypeFromFieldPath(fieldPath),
+          _type: inferTypeFromFieldPathFn(fieldPath),
         };
 
         // Only add if not already present
@@ -1979,7 +2007,7 @@ export class JavaScriptToCelAnalyzer {
 
     // Handle computed member access (array[index] or object['key'])
     if (node.computed) {
-      return this.convertArrayAccess(node, context);
+      return convertArrayAccessFn(node, context, this.convertASTNode.bind(this));
     }
 
     // Check if the object is a complex expression (like a method call result)
@@ -2075,7 +2103,7 @@ export class JavaScriptToCelAnalyzer {
         [KUBERNETES_REF_BRAND]: true as const,
         resourceId: resourceName,
         fieldPath: fieldPath,
-        _type: this.inferTypeFromFieldPath(fieldPath),
+        _type: inferTypeFromFieldPathFn(fieldPath),
       };
 
       // Add to dependencies
@@ -2139,23 +2167,14 @@ export class JavaScriptToCelAnalyzer {
    * Convert an expression to a proper boolean test for CEL conditionals
    */
   private convertToBooleanTest(expression: string): string {
-    // If it's already a comparison or boolean expression, use as-is
-    if (this.isBooleanExpression(expression)) {
-      return expression;
-    }
-
-    // For resource references and other values, check for truthiness
-    // This handles JavaScript's truthy/falsy semantics in CEL
-    return `${expression} != null && ${expression} != "" && ${expression} != false && ${expression} != 0`;
+    return convertToBooleanTestFn(expression);
   }
 
   /**
    * Check if an expression is already a boolean expression
    */
   private isBooleanExpression(expression: string): boolean {
-    // Check for comparison operators
-    const comparisonOperators = ['==', '!=', '>', '<', '>=', '<=', '&&', '||'];
-    return comparisonOperators.some((op) => expression.includes(` ${op} `));
+    return isBooleanExpressionFn(expression);
   }
 
   /**
@@ -2166,103 +2185,19 @@ export class JavaScriptToCelAnalyzer {
     parentOperator?: string,
     isLeftOperand?: boolean
   ): string {
-    // If no parent operator, no parentheses needed
-    if (!parentOperator) {
-      return expression;
-    }
-
-    // Get the precedence of operators in the expression
-    const expressionOperator = this.getMainOperator(expression);
-    if (!expressionOperator) {
-      return expression; // No operator found, likely a simple expression
-    }
-
-    const parentPrecedence = this.getOperatorPrecedence(parentOperator);
-    const expressionPrecedence = this.getOperatorPrecedence(expressionOperator);
-
-    // Add parentheses if expression has lower precedence than parent
-    // or if it's a right operand with equal precedence (for left-associative operators)
-    if (
-      expressionPrecedence < parentPrecedence ||
-      (expressionPrecedence === parentPrecedence &&
-        !isLeftOperand &&
-        this.isLeftAssociative(parentOperator))
-    ) {
-      return `(${expression})`;
-    }
-
-    return expression;
+    return addParenthesesIfNeededFn(expression, parentOperator, isLeftOperand);
   }
 
-  /**
-   * Get the main operator in an expression (the one with lowest precedence)
-   */
   private getMainOperator(expression: string): string | null {
-    // This is a simplified implementation - in a full parser, we'd need to handle
-    // nested expressions properly. For now, we'll look for operators outside of parentheses.
-
-    const operators = ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%'];
-    let depth = 0;
-    let mainOperator: string | null = null;
-    let lowestPrecedence = Infinity;
-
-    for (let i = 0; i < expression.length; i++) {
-      const char = expression[i];
-
-      if (char === '(') {
-        depth++;
-      } else if (char === ')') {
-        depth--;
-      } else if (depth === 0) {
-        // Check for operators at the top level
-        for (const op of operators) {
-          if (expression.substring(i, i + op.length) === op) {
-            const precedence = this.getOperatorPrecedence(op);
-            if (precedence <= lowestPrecedence) {
-              lowestPrecedence = precedence;
-              mainOperator = op;
-            }
-            i += op.length - 1; // Skip the operator
-            break;
-          }
-        }
-      }
-    }
-
-    return mainOperator;
+    return getMainOperatorFn(expression);
   }
 
-  /**
-   * Get operator precedence (lower number = lower precedence)
-   */
   private getOperatorPrecedence(operator: string): number {
-    const precedence: Record<string, number> = {
-      '||': 1,
-      '&&': 2,
-      '==': 3,
-      '!=': 3,
-      '<': 4,
-      '<=': 4,
-      '>': 4,
-      '>=': 4,
-      '+': 5,
-      '-': 5,
-      '*': 6,
-      '/': 6,
-      '%': 6,
-      '??': 1, // Same as ||
-      '?': 0, // Ternary has lowest precedence
-    };
-
-    return precedence[operator] ?? 10; // Unknown operators get high precedence
+    return getOperatorPrecedenceFn(operator);
   }
 
-  /**
-   * Check if an operator is left-associative
-   */
   private isLeftAssociative(operator: string): boolean {
-    // Most operators are left-associative, ternary is right-associative
-    return operator !== '?';
+    return isLeftAssociativeFn(operator);
   }
 
   /**
@@ -2274,10 +2209,7 @@ export class JavaScriptToCelAnalyzer {
     parentOperator?: string
   ): CelExpression {
     const result = this.convertASTNode(node, context);
-
-    // Add parentheses if needed for precedence
-    const expressionWithParens = this.addParenthesesIfNeeded(result.expression, parentOperator);
-
+    const expressionWithParens = addParenthesesIfNeededFn(result.expression, parentOperator);
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression: expressionWithParens,
@@ -2502,69 +2434,15 @@ export class JavaScriptToCelAnalyzer {
     node: ESTreeTemplateLiteral,
     context: AnalysisContext
   ): CelExpression {
-    let result = '';
-    const _dependencies: KubernetesRef<unknown>[] = [];
-
-    // Process each part of the template literal
-    for (let i = 0; i < node.quasis.length; i++) {
-      // Add the literal string part
-      const quasi = node.quasis[i];
-      const literalPart = quasi?.value.cooked ?? '';
-      result += literalPart;
-
-      // Add the interpolated expression if it exists
-      const exprNode = node.expressions[i];
-      if (i < node.expressions.length && exprNode) {
-        const expr = this.convertASTNode(exprNode, context);
-
-        // For template literals, we need to wrap expressions in ${}
-        result += `\${${expr.expression}}`;
-
-        // Track dependencies from the interpolated expression
-        // Note: We'd need to extract dependencies from the expression
-        // For now, we'll handle this in a future enhancement
-      }
-    }
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: result,
-      _type: 'string', // Template literals always produce strings
-    } as CelExpression;
+    return convertTemplateLiteralFn(node, context, this.convertASTNode.bind(this));
   }
 
   /**
    * Convert literal values (strings, numbers, booleans - no KubernetesRef objects)
    * This preserves literal values exactly as they are, without any KubernetesRef processing
    */
-  private convertLiteral(node: ESTreeLiteral, _context: AnalysisContext): CelExpression {
-    let literalValue: string;
-
-    if (typeof node.value === 'string') {
-      // Preserve string literals with proper quoting for CEL
-      literalValue = `"${node.value.replace(/"/g, '\\"')}"`;
-    } else if (typeof node.value === 'number') {
-      // Preserve numeric literals as-is
-      literalValue = String(node.value);
-    } else if (typeof node.value === 'boolean') {
-      // Preserve boolean literals as-is
-      literalValue = String(node.value);
-    } else if (node.value === null) {
-      // Preserve null literals
-      literalValue = 'null';
-    } else if (node.value === undefined) {
-      // Handle undefined (though this shouldn't appear in valid JS literals)
-      literalValue = 'null';
-    } else {
-      // For any other literal types, convert to string
-      literalValue = `"${String(node.value).replace(/"/g, '\\"')}"`;
-    }
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: literalValue,
-      _type: typeof node.value,
-    } as CelExpression;
+  private convertLiteral(node: ESTreeLiteral, context: AnalysisContext): CelExpression {
+    return convertLiteralFn(node, context);
   }
 
   /**
@@ -2574,252 +2452,15 @@ export class JavaScriptToCelAnalyzer {
     node: ESTreeCallExpression,
     context: AnalysisContext
   ): CelExpression {
-    // Handle global functions and Math methods
-    if (node.callee.type === 'Identifier') {
-      const functionName = node.callee.name;
-      return this.convertGlobalFunction(functionName, node.arguments, context);
-    }
-
-    // Handle Math.* functions
-    if (
-      node.callee.type === 'MemberExpression' &&
-      node.callee.object.type === 'Identifier' &&
-      node.callee.object.name === 'Math' &&
-      node.callee.property.type === 'Identifier'
-    ) {
-      const mathMethod = node.callee.property.name;
-      return this.convertMathFunction(mathMethod, node.arguments, context);
-    }
-
-    // Handle common JavaScript methods that can be converted to CEL
-    if (node.callee.type === 'MemberExpression' && node.callee.property.type === 'Identifier') {
-      const object = this.convertASTNode(node.callee.object, context);
-      const methodName = node.callee.property.name;
-
-      switch (methodName) {
-        case 'find':
-          return this.convertArrayFind(object, node.arguments, context);
-        case 'filter':
-          return this.convertArrayFilter(object, node.arguments, context);
-        case 'map':
-          return this.convertArrayMap(object, node.arguments, context);
-        case 'includes':
-          return this.convertStringIncludes(object, node.arguments, context);
-        case 'some':
-          return this.convertArraySome(object, node.arguments, context);
-        case 'every':
-          return this.convertArrayEvery(object, node.arguments, context);
-        case 'startsWith':
-          return this.convertStringStartsWith(object, node.arguments, context);
-        case 'endsWith':
-          return this.convertStringEndsWith(object, node.arguments, context);
-        case 'toLowerCase':
-          return this.convertStringToLowerCase(object, node.arguments, context);
-        case 'toUpperCase':
-          return this.convertStringToUpperCase(object, node.arguments, context);
-        case 'trim':
-          return this.convertStringTrim(object, node.arguments, context);
-        case 'substring':
-          return this.convertStringSubstring(object, node.arguments, context);
-        case 'slice':
-          return this.convertStringSlice(object, node.arguments, context);
-        case 'split':
-          return this.convertStringSplit(object, node.arguments, context);
-        case 'join':
-          return this.convertArrayJoin(object, node.arguments, context);
-        case 'flatMap':
-          return this.convertArrayFlatMap(object, node.arguments, context);
-        case 'length':
-          return this.convertLengthProperty(object, context);
-        case 'padStart':
-          return this.convertStringPadStart(object, node.arguments, context);
-        case 'padEnd':
-          return this.convertStringPadEnd(object, node.arguments, context);
-        case 'repeat':
-          return this.convertStringRepeat(object, node.arguments, context);
-        case 'replace':
-          return this.convertStringReplace(object, node.arguments, context);
-        case 'indexOf':
-          return this.convertStringIndexOf(object, node.arguments, context);
-        case 'lastIndexOf':
-          return this.convertStringLastIndexOf(object, node.arguments, context);
-        default:
-          throw new ConversionError(
-            `Unsupported method call: ${methodName}`,
-            methodName,
-            'function-call'
-          );
-      }
-    }
-
-    throw new ConversionError(`Unsupported call expression`, 'call expression', 'function-call');
+    return convertCallExpressionFn(node, context, this.convertASTNode.bind(this));
   }
 
   /**
    * Convert global functions like Number(), String(), Boolean()
    */
-  private convertGlobalFunction(
-    functionName: string,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    const convertedArgs = args.map((arg) => this.convertASTNode(arg, context));
+  // convertGlobalFunction — removed, now handled by call-expression-converters.ts
 
-    switch (functionName) {
-      case 'Number':
-        if (args.length === 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `double(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number',
-          } as CelExpression;
-        }
-        break;
-      case 'String':
-        if (args.length === 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `string(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'string',
-          } as CelExpression;
-        }
-        break;
-      case 'Boolean':
-        if (args.length === 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `bool(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'boolean',
-          } as CelExpression;
-        }
-        break;
-      case 'parseInt':
-        if (args.length >= 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `int(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number',
-          } as CelExpression;
-        }
-        break;
-      case 'parseFloat':
-        if (args.length >= 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `double(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number',
-          } as CelExpression;
-        }
-        break;
-    }
-
-    throw new ConversionError(
-      `Unsupported global function: ${functionName}`,
-      functionName,
-      'function-call'
-    );
-  }
-
-  /**
-   * Convert Math functions like Math.min(), Math.max(), Math.abs()
-   */
-  private convertMathFunction(
-    mathMethod: string,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    const convertedArgs = args.map((arg) => this.convertASTNode(arg, context));
-
-    switch (mathMethod) {
-      case 'min':
-        if (args.length >= 2) {
-          // CEL doesn't have a direct min function, so we'll use a conditional approach
-          // For now, we'll use a simple approach for 2 arguments
-          if (args.length === 2) {
-            return {
-              [CEL_EXPRESSION_BRAND]: true,
-              expression: `${convertedArgs[0]?.expression || 'null'} < ${convertedArgs[1]?.expression || 'null'} ? ${convertedArgs[0]?.expression || 'null'} : ${convertedArgs[1]?.expression || 'null'}`,
-              _type: 'number',
-            } as CelExpression;
-          } else {
-            // For more than 2 arguments, we'll create a nested conditional
-            let expression = convertedArgs[0]?.expression || 'null';
-            for (let i = 1; i < convertedArgs.length; i++) {
-              expression = `${expression} < ${convertedArgs[i]?.expression || 'null'} ? ${expression} : ${convertedArgs[i]?.expression || 'null'}`;
-            }
-            return {
-              [CEL_EXPRESSION_BRAND]: true,
-              expression,
-              _type: 'number',
-            } as CelExpression;
-          }
-        }
-        break;
-      case 'max':
-        if (args.length >= 2) {
-          if (args.length === 2) {
-            return {
-              [CEL_EXPRESSION_BRAND]: true,
-              expression: `${convertedArgs[0]?.expression || 'null'} > ${convertedArgs[1]?.expression || 'null'} ? ${convertedArgs[0]?.expression || 'null'} : ${convertedArgs[1]?.expression || 'null'}`,
-              _type: 'number',
-            } as CelExpression;
-          } else {
-            let expression = convertedArgs[0]?.expression || 'null';
-            for (let i = 1; i < convertedArgs.length; i++) {
-              expression = `${expression} > ${convertedArgs[i]?.expression || 'null'} ? ${expression} : ${convertedArgs[i]?.expression || 'null'}`;
-            }
-            return {
-              [CEL_EXPRESSION_BRAND]: true,
-              expression,
-              _type: 'number',
-            } as CelExpression;
-          }
-        }
-        break;
-      case 'abs':
-        if (args.length === 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `${convertedArgs[0]?.expression || 'null'} < 0 ? -${convertedArgs[0]?.expression || 'null'} : ${convertedArgs[0]?.expression || 'null'}`,
-            _type: 'number',
-          } as CelExpression;
-        }
-        break;
-      case 'floor':
-        if (args.length === 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `int(${convertedArgs[0]?.expression || 'null'})`,
-            _type: 'number',
-          } as CelExpression;
-        }
-        break;
-      case 'ceil':
-        if (args.length === 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `int(${convertedArgs[0]?.expression || 'null'} + 0.999999)`,
-            _type: 'number',
-          } as CelExpression;
-        }
-        break;
-      case 'round':
-        if (args.length === 1) {
-          return {
-            [CEL_EXPRESSION_BRAND]: true,
-            expression: `int(${convertedArgs[0]?.expression || 'null'} + 0.5)`,
-            _type: 'number',
-          } as CelExpression;
-        }
-        break;
-    }
-
-    throw new ConversionError(
-      `Unsupported Math function: ${mathMethod}`,
-      `Math.${mathMethod}`,
-      'function-call'
-    );
-  }
+  // convertMathFunction — removed, now handled by call-expression-converters.ts
 
   /**
    * Convert unary expressions like !x, +x, -x, !!x
@@ -2828,40 +2469,7 @@ export class JavaScriptToCelAnalyzer {
     node: ESTreeUnaryExpression,
     context: AnalysisContext
   ): CelExpression {
-    const operand = this.convertASTNode(node.argument, context);
-
-    switch (node.operator) {
-      case '!':
-        return {
-          [CEL_EXPRESSION_BRAND]: true,
-          expression: `!${operand.expression}`,
-          _type: 'boolean',
-        } as CelExpression;
-      case '+':
-        return {
-          [CEL_EXPRESSION_BRAND]: true,
-          expression: `double(${operand.expression})`,
-          _type: 'number',
-        } as CelExpression;
-      case '-':
-        return {
-          [CEL_EXPRESSION_BRAND]: true,
-          expression: `-${operand.expression}`,
-          _type: 'number',
-        } as CelExpression;
-      case 'typeof':
-        return {
-          [CEL_EXPRESSION_BRAND]: true,
-          expression: `type(${operand.expression})`,
-          _type: 'string',
-        } as CelExpression;
-      default:
-        throw new ConversionError(
-          `Unsupported unary operator: ${node.operator}`,
-          String(node.operator),
-          'javascript'
-        );
-    }
+    return convertUnaryExpressionFn(node, context, this.convertASTNode.bind(this));
   }
 
   /**
@@ -2871,136 +2479,42 @@ export class JavaScriptToCelAnalyzer {
     node: ESTreeArrayExpression,
     context: AnalysisContext
   ): CelExpression {
-    const elements = node.elements.map((element) => {
-      if (element === null) return 'null';
-      return this.convertASTNode(element, context).expression;
-    });
-
-    const expression = `[${elements.join(', ')}]`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
+    return convertArrayExpressionFn(node, context, this.convertASTNode.bind(this));
   }
 
   /**
    * Convert identifier expressions
    */
   private convertIdentifier(node: ESTreeIdentifier, context: AnalysisContext): CelExpression {
-    // For identifiers, we need to check if they refer to available references
-    const name = node.name;
-
-    // Check if this is a resource reference
-    if (context.availableReferences?.[name]) {
-      // This is a direct resource reference
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression: `resources.${name}`,
-        _type: undefined,
-      } as CelExpression;
-    }
-
-    // Check if this is a schema reference
-    if (name === 'schema') {
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression: 'schema',
-        _type: undefined,
-      } as CelExpression;
-    }
-
-    // For other identifiers, return as-is (might be local variables in complex expressions)
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: name,
-      _type: undefined,
-    } as CelExpression;
+    return convertIdentifierFn(node, context);
   }
 
   /**
    * Map JavaScript operators to CEL operators
    */
   private mapOperatorToCel(operator: string): string {
-    const mapping: Record<string, string> = {
-      '===': '==',
-      '!==': '!=',
-      '&&': '&&',
-      '||': '||',
-      '>': '>',
-      '<': '<',
-      '>=': '>=',
-      '<=': '<=',
-      '==': '==',
-      '!=': '!=',
-    };
-
-    return mapping[operator] || operator;
+    return mapOperatorToCelFn(operator);
   }
 
   /**
    * Extract member path from AST node
    */
   private extractMemberPath(node: ESTreeNode): string {
-    if (node.type === 'Identifier') {
-      return node.name;
-    }
-
-    if (node.type === 'MemberExpression') {
-      const object = this.extractMemberPath(node.object);
-
-      if (node.computed) {
-        // For computed access like array[0] or object['key'], we need special handling
-        // This is used for path extraction, so we'll represent it differently
-        const property = this.getSourceText(node.property);
-        const optionalMarker = node.optional ? '?.' : '';
-        return `${object}${optionalMarker}[${property}]`;
-      } else {
-        // For regular property access like object.property or object?.property
-        const property = this.getPropertyName(node.property);
-        const optionalMarker = node.optional ? '?.' : '.';
-        return `${object}${optionalMarker}${property}`;
-      }
-    }
-
-    if (node.type === 'ChainExpression') {
-      // Handle ChainExpression wrapper for optional chaining
-      return this.extractMemberPath(node.expression);
-    }
-
-    throw new ConversionError(
-      `Cannot extract path from node type: ${node.type}`,
-      String(node.type),
-      'member-access'
-    );
+    return extractMemberPathFn(node);
   }
 
   /**
    * Check if a node represents a complex expression that can't be handled as a simple path
    */
   private isComplexExpression(node: ESTreeNode): boolean {
-    if (node.type === 'CallExpression') {
-      return true;
-    }
-
-    if (node.type === 'MemberExpression') {
-      // Recursively check if the object is complex
-      return this.isComplexExpression(node.object);
-    }
-
-    return false;
+    return isComplexExpressionFn(node);
   }
 
   /**
    * Get source text from AST node (placeholder implementation)
    */
   private getSourceText(node: ESTreeNode): string {
-    // For now, return a placeholder - this would need access to original source
-    if (node.type === 'Literal') {
-      return String(node.value);
-    }
-    return '<expression>';
+    return getSourceTextFn(node);
   }
 
   /**
@@ -3012,23 +2526,17 @@ export class JavaScriptToCelAnalyzer {
     fieldPath: string,
     context: AnalysisContext
   ): CelExpression {
-    // Generate CEL expression for resource field reference using the correct format
-    // This should match the format used by getInnerCelPath
     const expression = `${resourceKey}.${fieldPath}`;
-
-    // Create a KubernetesRef object and add it to dependencies
     const ref: KubernetesRef<unknown> = {
       [KUBERNETES_REF_BRAND]: true,
       resourceId: resourceKey,
       fieldPath,
-      _type: this.inferTypeFromFieldPath(fieldPath),
+      _type: inferTypeFromFieldPathFn(fieldPath),
     };
-
     if (!context.dependencies) {
       context.dependencies = [];
     }
     context.dependencies.push(ref);
-
     return {
       [CEL_EXPRESSION_BRAND]: true,
       expression,
@@ -3040,13 +2548,12 @@ export class JavaScriptToCelAnalyzer {
    * Generate CEL expression for schema field reference
    */
   private getSchemaFieldReference(path: string, context: AnalysisContext): CelExpression {
-    // Create a KubernetesRef object for schema reference and add it to dependencies
     const fieldPath = path.substring('schema.'.length);
     const ref: KubernetesRef<unknown> = {
       [KUBERNETES_REF_BRAND]: true,
       resourceId: '__schema__',
       fieldPath,
-      _type: this.inferTypeFromFieldPath(fieldPath),
+      _type: inferTypeFromFieldPathFn(fieldPath),
     };
 
     if (!context.dependencies) {
@@ -3070,29 +2577,14 @@ export class JavaScriptToCelAnalyzer {
     param: string;
     arrow: ESTreeArrowFunction;
   } {
-    if (arg.type !== 'ArrowFunctionExpression') {
-      throw new ConversionError(
-        'Expected arrow function predicate',
-        String(arg.type),
-        'function-call'
-      );
-    }
-    const firstParam = arg.params[0];
-    const paramName = firstParam && firstParam.type === 'Identifier' ? firstParam.name : '_item';
-    return { param: paramName, arrow: arg };
+    return extractArrowPredicateFn(arg);
   }
 
   /**
    * Get the name of a MemberExpression's property, safely handling the Expression | PrivateIdentifier union.
    */
   private getPropertyName(prop: ESTreeExpression | { type: string; name: string }): string {
-    if ('name' in prop && (prop.type === 'Identifier' || prop.type === 'PrivateIdentifier')) {
-      return prop.name;
-    }
-    if (prop.type === 'Literal' && 'value' in prop) {
-      return String((prop as ESTreeSimpleLiteral).value);
-    }
-    return '<unknown>';
+    return getPropertyNameFn(prop);
   }
 
   /**
@@ -3102,868 +2594,17 @@ export class JavaScriptToCelAnalyzer {
     args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
     index: number
   ): ESTreeExpression | ESTreeSpreadElement {
-    const arg = args[index];
-    if (!arg) {
-      throw new ConversionError(`Expected argument at index ${index}`, '', 'function-call');
-    }
-    return arg;
+    return getArgFn(args, index);
   }
 
-  /**
-   * Convert array.find() method calls
-   */
-  private convertArrayFind(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'Array.find() requires exactly one argument',
-        'Array.find()',
-        'function-call'
-      );
-    }
-
-    // For simple property comparisons like c => c.type === "Available", we can convert to CEL
-    const arg = this.getArg(args, 0);
-    if (arg.type === 'ArrowFunctionExpression' && arg.body.type === 'BinaryExpression') {
-      const { param } = this.extractArrowPredicate(arg);
-      const binaryExpr = arg.body;
-
-      // Handle the left side (should be a member expression like c.type)
-      let leftExpr: string;
-      if (
-        binaryExpr.left.type === 'MemberExpression' &&
-        binaryExpr.left.object.type === 'Identifier' &&
-        binaryExpr.left.object.name === param
-      ) {
-        // Simple case: c.type
-        leftExpr = `${param}.${this.getPropertyName(binaryExpr.left.property)}`;
-      } else {
-        // More complex case - try to convert but replace parameter references
-        try {
-          const leftResult = this.convertASTNode(binaryExpr.left, context);
-          leftExpr = leftResult.expression.replace(new RegExp(`\\b${param}\\b`, 'g'), param);
-        } catch (error: unknown) {
-          const logger = getComponentLogger('expression-analyzer');
-          logger.debug('Failed to convert left side of filter binary expression', { err: error });
-          leftExpr = `${param}.property`;
-        }
-      }
-
-      // Handle the right side (usually a literal)
-      let rightExpr: string;
-      try {
-        const rightResult = this.convertASTNode(binaryExpr.right, context);
-        rightExpr = rightResult.expression;
-      } catch (error: unknown) {
-        const logger = getComponentLogger('expression-analyzer');
-        logger.debug('Failed to convert right side of filter binary expression', { err: error });
-        rightExpr = 'value';
-      }
-
-      const operator = this.convertBinaryOperator(binaryExpr.operator);
-      const expression = `${object.expression}.filter(${param}, ${leftExpr} ${operator} ${rightExpr})[0]`;
-
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression,
-        _type: undefined,
-      } as CelExpression;
-    }
-
-    // Complex find predicates are not yet supported
-    throw new ConversionError(
-      'Complex Array.find() predicates cannot be automatically converted to CEL. Only simple binary comparisons (e.g., c => c.type === "Available") are supported.',
-      `${object.expression}.find(...)`,
-      'function-call',
-      undefined,
-      undefined,
-      [
-        'Simplify the predicate to a binary comparison like: c => c.field === "value"',
-        'Use Cel.expr() to write the CEL filter expression directly',
-        'Example CEL: Cel.expr(array, \'.filter(x, x.field == "value")[0]\')',
-      ]
-    );
-  }
-
-  /**
-   * Convert array.filter() method calls
-   */
-  private convertArrayFilter(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'Array.filter() requires exactly one argument',
-        'Array.filter()',
-        'function-call'
-      );
-    }
-
-    // For simple property access like i => i.ip, we can convert to CEL
-    const arg = this.getArg(args, 0);
-    if (arg.type === 'ArrowFunctionExpression') {
-      const { param, arrow } = this.extractArrowPredicate(arg);
-
-      if (arrow.body.type === 'MemberExpression') {
-        // Simple property access: i => i.ip
-        const property = this.getPropertyName(arrow.body.property);
-        const expression = `${object.expression}.filter(${param}, has(${param}.${property}) && ${param}.${property} != null)`;
-
-        return {
-          [CEL_EXPRESSION_BRAND]: true,
-          expression,
-          _type: undefined,
-        } as CelExpression;
-      } else if (arrow.body.type === 'BinaryExpression') {
-        // Binary comparison: i => i.type === "Available"
-        const left = this.convertASTNode(arrow.body.left, context);
-        const operator = this.convertBinaryOperator(arrow.body.operator);
-        const right = this.convertASTNode(arrow.body.right, context);
-
-        // Replace parameter references with the iteration variable
-        const leftExpr = left.expression.replace(new RegExp(`\\b${param}\\b`, 'g'), param);
-        const rightExpr = right.expression;
-
-        const expression = `${object.expression}.filter(${param}, ${leftExpr} ${operator} ${rightExpr})`;
-
-        return {
-          [CEL_EXPRESSION_BRAND]: true,
-          expression,
-          _type: undefined,
-        } as CelExpression;
-      }
-    }
-
-    // Complex filter predicates are not yet supported
-    throw new ConversionError(
-      'Complex Array.filter() predicates cannot be automatically converted to CEL. Only simple property access (e.g., i => i.ip) and binary comparisons (e.g., i => i.type === "Available") are supported.',
-      `${object.expression}.filter(...)`,
-      'function-call',
-      undefined,
-      undefined,
-      [
-        'Simplify the predicate to a property access or binary comparison',
-        'Use Cel.expr() to write the CEL filter expression directly',
-        'Example CEL: Cel.expr(array, \'.filter(x, x.field == "value")\')',
-      ]
-    );
-  }
-
-  /**
-   * Convert string.includes() method calls
-   */
-  private convertStringIncludes(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'String.includes() requires exactly one argument',
-        'String.includes()',
-        'function-call'
-      );
-    }
-
-    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
-    const expression = `${object.expression}.contains(${searchValue.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert array.map() method calls
-   */
-  private convertArrayMap(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    _context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'Array.map() requires exactly one argument',
-        'Array.map()',
-        'function-call'
-      );
-    }
-
-    // For simple property access like c => c.name, we can convert to CEL
-    const arg = this.getArg(args, 0);
-    if (arg.type === 'ArrowFunctionExpression') {
-      const { param, arrow } = this.extractArrowPredicate(arg);
-      if (arrow.body.type !== 'MemberExpression') {
-        throw new ConversionError(
-          'Complex Array.map() predicates cannot be automatically converted to CEL.',
-          `${object.expression}.map(...)`,
-          'function-call'
-        );
-      }
-      const property = this.getPropertyName(arrow.body.property);
-      const expression = `${object.expression}.map(${param}, ${param}.${property})`;
-
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression,
-        _type: undefined,
-      } as CelExpression;
-    }
-
-    // Complex map predicates are not yet supported
-    throw new ConversionError(
-      'Complex Array.map() predicates cannot be automatically converted to CEL. Only simple property access (e.g., c => c.name) is supported.',
-      `${object.expression}.map(...)`,
-      'function-call',
-      undefined,
-      undefined,
-      [
-        'Simplify the predicate to a property access like: c => c.name',
-        'Use Cel.expr() to write the CEL map expression directly',
-        "Example CEL: Cel.expr(array, '.map(x, x.field)')",
-      ]
-    );
-  }
-
-  /**
-   * Convert array.some() method calls
-   */
-  private convertArraySome(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    _context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'Array.some() requires exactly one argument',
-        'Array.some()',
-        'function-call'
-      );
-    }
-
-    // Array.some() lambda conversion is not yet supported
-    throw new ConversionError(
-      'Array.some() predicates cannot be automatically converted to CEL. Lambda support for CEL .exists() macro is not yet implemented.',
-      `${object.expression}.some(...)`,
-      'function-call',
-      undefined,
-      undefined,
-      [
-        'Use Cel.expr() to write the CEL exists expression directly',
-        'Example CEL: Cel.expr(array, \'.exists(x, x.field == "value")\')',
-        'For simple existence checks, consider using .size() > 0',
-      ]
-    );
-  }
-
-  /**
-   * Convert array.every() method calls
-   */
-  private convertArrayEvery(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    _context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'Array.every() requires exactly one argument',
-        'Array.every()',
-        'function-call'
-      );
-    }
-
-    // Array.every() lambda conversion is not yet supported
-    throw new ConversionError(
-      'Array.every() predicates cannot be automatically converted to CEL. Lambda support for CEL .all() macro is not yet implemented.',
-      `${object.expression}.every(...)`,
-      'function-call',
-      undefined,
-      undefined,
-      [
-        'Use Cel.expr() to write the CEL all expression directly',
-        'Example CEL: Cel.expr(array, \'.all(x, x.field == "value")\')',
-        'For checking all elements match, consider alternative CEL patterns',
-      ]
-    );
-  }
-
-  /**
-   * Convert string.startsWith() method calls
-   */
-  private convertStringStartsWith(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'String.startsWith() requires exactly one argument',
-        'String.startsWith()',
-        'function-call'
-      );
-    }
-
-    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
-    const expression = `${object.expression}.startsWith(${searchValue.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.endsWith() method calls
-   */
-  private convertStringEndsWith(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'String.endsWith() requires exactly one argument',
-        'String.endsWith()',
-        'function-call'
-      );
-    }
-
-    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
-    const expression = `${object.expression}.endsWith(${searchValue.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.toLowerCase() method calls
-   */
-  private convertStringToLowerCase(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    _context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 0) {
-      throw new ConversionError(
-        'String.toLowerCase() requires no arguments',
-        'String.toLowerCase()',
-        'function-call'
-      );
-    }
-
-    const expression = `${object.expression}.lowerAscii()`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.toUpperCase() method calls
-   */
-  private convertStringToUpperCase(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    _context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 0) {
-      throw new ConversionError(
-        'String.toUpperCase() requires no arguments',
-        'String.toUpperCase()',
-        'function-call'
-      );
-    }
-
-    const expression = `${object.expression}.upperAscii()`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.trim() method calls
-   */
-  private convertStringTrim(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    _context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 0) {
-      throw new ConversionError(
-        'String.trim() requires no arguments',
-        'String.trim()',
-        'function-call'
-      );
-    }
-
-    // CEL doesn't have a direct trim function, so we'll use a placeholder
-    const expression = `${object.expression}.trim()`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.substring() method calls
-   */
-  private convertStringSubstring(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length < 1 || args.length > 2) {
-      throw new ConversionError(
-        'String.substring() requires 1 or 2 arguments',
-        'String.substring()',
-        'function-call'
-      );
-    }
-
-    const startIndex = this.convertASTNode(this.getArg(args, 0), context);
-    if (args.length === 1) {
-      const expression = `${object.expression}.substring(${startIndex.expression})`;
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression,
-        _type: undefined,
-      } as CelExpression;
-    } else {
-      const endIndex = this.convertASTNode(this.getArg(args, 1), context);
-      const expression = `${object.expression}.substring(${startIndex.expression}, ${endIndex.expression})`;
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression,
-        _type: undefined,
-      } as CelExpression;
-    }
-  }
-
-  /**
-   * Convert string.slice() method calls
-   */
-  private convertStringSlice(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length < 1 || args.length > 2) {
-      throw new ConversionError(
-        'String.slice() requires 1 or 2 arguments',
-        'String.slice()',
-        'function-call'
-      );
-    }
-
-    const startIndex = this.convertASTNode(this.getArg(args, 0), context);
-    if (args.length === 1) {
-      const expression = `${object.expression}.substring(${startIndex.expression})`;
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression,
-        _type: undefined,
-      } as CelExpression;
-    } else {
-      const endIndex = this.convertASTNode(this.getArg(args, 1), context);
-      const expression = `${object.expression}.substring(${startIndex.expression}, ${endIndex.expression})`;
-      return {
-        [CEL_EXPRESSION_BRAND]: true,
-        expression,
-        _type: undefined,
-      } as CelExpression;
-    }
-  }
-
-  /**
-   * Convert string.split() method calls
-   */
-  private convertStringSplit(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'String.split() requires exactly one argument',
-        'String.split()',
-        'function-call'
-      );
-    }
-
-    const separator = this.convertASTNode(this.getArg(args, 0), context);
-    const expression = `${object.expression}.split(${separator.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert array.join() method calls
-   */
-  private convertArrayJoin(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'Array.join() requires exactly one argument',
-        'Array.join()',
-        'function-call'
-      );
-    }
-
-    const separator = this.convertASTNode(this.getArg(args, 0), context);
-    const expression = `${object.expression}.join(${separator.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert array.flatMap() method calls
-   */
-  private convertArrayFlatMap(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    _context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'Array.flatMap() requires exactly one argument',
-        'Array.flatMap()',
-        'function-call'
-      );
-    }
-
-    const arg = this.getArg(args, 0);
-
-    // Handle arrow function: arr.flatMap(x => x.items)
-    if (arg.type === 'ArrowFunctionExpression') {
-      const { param, arrow } = this.extractArrowPredicate(arg);
-
-      if (arrow.body.type === 'MemberExpression') {
-        // Simple property access: x => x.items
-        const property = this.getPropertyName(arrow.body.property);
-        const expression = `${object.expression}.map(${param}, ${param}.${property}).flatten()`;
-
-        return {
-          [CEL_EXPRESSION_BRAND]: true,
-          expression,
-          _type: undefined,
-        } as CelExpression;
-      }
-    }
-
-    throw new ConversionError('Unsupported flatMap expression', 'Array.flatMap()', 'function-call');
-  }
-
-  /**
-   * Convert .length property access
-   */
-  private convertLengthProperty(object: CelExpression, _context: AnalysisContext): CelExpression {
-    const expression = `size(${object.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.padStart() method calls
-   */
-  private convertStringPadStart(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length < 1 || args.length > 2) {
-      throw new ConversionError(
-        'String.padStart() requires 1 or 2 arguments',
-        'String.padStart()',
-        'function-call'
-      );
-    }
-
-    const targetLength = this.convertASTNode(this.getArg(args, 0), context);
-    const padString =
-      args.length > 1 ? this.convertASTNode(this.getArg(args, 1), context) : { expression: '" "' };
-
-    // CEL doesn't have padStart, so we'll simulate it
-    const expression = `size(${object.expression}) >= ${targetLength.expression} ? ${object.expression} : (${padString.expression}.repeat(${targetLength.expression} - size(${object.expression})) + ${object.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: 'string',
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.padEnd() method calls
-   */
-  private convertStringPadEnd(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length < 1 || args.length > 2) {
-      throw new ConversionError(
-        'String.padEnd() requires 1 or 2 arguments',
-        'String.padEnd()',
-        'function-call'
-      );
-    }
-
-    const targetLength = this.convertASTNode(this.getArg(args, 0), context);
-    const padString =
-      args.length > 1 ? this.convertASTNode(this.getArg(args, 1), context) : { expression: '" "' };
-
-    // CEL doesn't have padEnd, so we'll simulate it
-    const expression = `size(${object.expression}) >= ${targetLength.expression} ? ${object.expression} : (${object.expression} + ${padString.expression}.repeat(${targetLength.expression} - size(${object.expression})))`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: 'string',
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.repeat() method calls
-   */
-  private convertStringRepeat(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'String.repeat() requires exactly one argument',
-        'String.repeat()',
-        'function-call'
-      );
-    }
-
-    const count = this.convertASTNode(this.getArg(args, 0), context);
-
-    // CEL doesn't have repeat, so we'll use a simple approach for small counts
-    const expression = `${object.expression}.repeat(${count.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: 'string',
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.replace() method calls
-   */
-  private convertStringReplace(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 2) {
-      throw new ConversionError(
-        'String.replace() requires exactly two arguments',
-        'String.replace()',
-        'function-call'
-      );
-    }
-
-    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
-    const replaceValue = this.convertASTNode(this.getArg(args, 1), context);
-
-    // CEL doesn't have replace, so we'll use a simple substitution
-    const expression = `${object.expression}.replace(${searchValue.expression}, ${replaceValue.expression})`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: 'string',
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.indexOf() method calls
-   */
-  private convertStringIndexOf(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'String.indexOf() requires exactly one argument',
-        'String.indexOf()',
-        'function-call'
-      );
-    }
-
-    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
-
-    // CEL doesn't have indexOf, so we'll use a conditional approach
-    const expression = `${object.expression}.contains(${searchValue.expression}) ? 0 : -1`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: 'number',
-    } as CelExpression;
-  }
-
-  /**
-   * Convert string.lastIndexOf() method calls
-   */
-  private convertStringLastIndexOf(
-    object: CelExpression,
-    args: readonly (ESTreeExpression | ESTreeSpreadElement)[],
-    context: AnalysisContext
-  ): CelExpression {
-    if (args.length !== 1) {
-      throw new ConversionError(
-        'String.lastIndexOf() requires exactly one argument',
-        'String.lastIndexOf()',
-        'function-call'
-      );
-    }
-
-    const searchValue = this.convertASTNode(this.getArg(args, 0), context);
-
-    // CEL doesn't have lastIndexOf, so we'll use a conditional approach
-    const expression = `${object.expression}.contains(${searchValue.expression}) ? size(${object.expression}) - size(${searchValue.expression}) : -1`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: 'number',
-    } as CelExpression;
-  }
-
-  /**
-   * Infer type from field path based on common Kubernetes patterns
-   */
-  private inferTypeFromFieldPath(
-    fieldPath: string
-  ): string | number | boolean | Record<string, unknown> | unknown[] {
-    // Common patterns for type inference
-    if (
-      fieldPath.includes('replicas') ||
-      fieldPath.includes('count') ||
-      fieldPath.includes('port')
-    ) {
-      return 0; // number
-    }
-    if (
-      fieldPath.includes('ready') ||
-      fieldPath.includes('available') ||
-      fieldPath.includes('enabled')
-    ) {
-      return false; // boolean
-    }
-    if (
-      fieldPath.includes('name') ||
-      fieldPath.includes('image') ||
-      fieldPath.includes('namespace')
-    ) {
-      return ''; // string
-    }
-    if (fieldPath.includes('labels') || fieldPath.includes('annotations')) {
-      return {}; // object
-    }
-    if (
-      fieldPath.includes('conditions') ||
-      fieldPath.includes('ingress') ||
-      fieldPath.includes('containers')
-    ) {
-      return []; // array
-    }
-
-    // Default to string for unknown fields
-    return '';
-  }
-
-  /**
-   * Convert binary operators to CEL equivalents
-   */
-  private convertBinaryOperator(operator: string): string {
-    const operatorMap: Record<string, string> = {
-      '===': '==',
-      '!==': '!=',
-      '==': '==',
-      '!=': '!=',
-      '<': '<',
-      '<=': '<=',
-      '>': '>',
-      '>=': '>=',
-      '+': '+',
-      '-': '-',
-      '*': '*',
-      '/': '/',
-      '%': '%',
-    };
-
-    const celOperator = operatorMap[operator];
-    if (!celOperator) {
-      throw new ConversionError(
-        `Unsupported binary operator: ${operator}`,
-        String(operator),
-        'binary-operation'
-      );
-    }
-    return celOperator;
-  }
-
-  /**
-   * Convert array access expressions with KubernetesRef support (array[0], array[index])
-   */
-  private convertArrayAccess(
-    node: ESTreeMemberExpression,
-    context: AnalysisContext
-  ): CelExpression {
-    // Convert the object being accessed (could be a KubernetesRef)
-    const object = this.convertASTNode(node.object, context);
-
-    // Convert the index/key expression
-    const property = this.convertASTNode(node.property, context);
-
-    // Generate CEL array access expression
-    const expression = `${object.expression}[${property.expression}]`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression,
-      _type: undefined,
-    } as CelExpression;
-  }
+  // ── Extracted converter methods ─────────────────────────────────────
+  // The following method categories have been extracted to separate modules:
+  // - String methods → string-method-converters.ts
+  // - Array methods → array-method-converters.ts
+  // - Call expressions (global fns, Math) → call-expression-converters.ts
+  // - Operator utils → operator-utils.ts
+  // - AST helpers → ast-helpers.ts
+  // - AST node converters → ast-node-converters.ts
 
   /**
    * Check if a value is a static literal that doesn't need conversion
