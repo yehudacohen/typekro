@@ -390,16 +390,10 @@ export class DebugLogger {
       return status;
     }
 
-    // Truncate and add indicator
-    const truncated = statusString.substring(0, this.options.maxStatusObjectSize - 20);
-    try {
-      return JSON.parse(`${truncated}...[truncated]"}`);
-    } catch (error: unknown) {
-      this.logger.debug('Failed to parse truncated status JSON, returning raw string', {
-        err: error,
-      });
-      return `${truncated}...[truncated]`;
-    }
+    // Return truncated string directly — attempting JSON.parse on an
+    // arbitrarily-cut JSON string produces invalid or corrupted data.
+    const truncated = statusString.substring(0, this.options.maxStatusObjectSize - 15);
+    return `${truncated}...[truncated]`;
   }
 
   /**

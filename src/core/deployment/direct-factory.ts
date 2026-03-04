@@ -1293,8 +1293,10 @@ function findUnresolvedReferences(
   resources: Record<string, KubernetesResource>
 ): UnresolvedReference[] {
   const refs: UnresolvedReference[] = [];
+  const visited = new WeakSet<object>();
+  const MAX_DEPTH = 50;
 
-  function walk(value: unknown, path: string): void {
+  function walk(value: unknown, path: string, depth: number): void {
     if (value == null || typeof value !== 'object') {
       // Check for __KUBERNETES_REF_ marker strings left in resolved primitives
       if (typeof value === 'string' && value.includes('__KUBERNETES_REF_')) {
@@ -1302,6 +1304,10 @@ function findUnresolvedReferences(
       }
       return;
     }
+
+    if (depth >= MAX_DEPTH) return;
+    if (visited.has(value)) return;
+    visited.add(value);
 
     if (isKubernetesRef(value)) {
       const ref = value as { resourceId?: string; fieldPath?: string };
@@ -1323,19 +1329,19 @@ function findUnresolvedReferences(
 
     if (Array.isArray(value)) {
       for (let i = 0; i < value.length; i++) {
-        walk(value[i], `${path}[${i}]`);
+        walk(value[i], `${path}[${i}]`, depth + 1);
       }
       return;
     }
 
     for (const [key, child] of Object.entries(value)) {
-      walk(child, path ? `${path}.${key}` : key);
+      walk(child, path ? `${path}.${key}` : key, depth + 1);
     }
   }
 
   for (const [resourceKey, resource] of Object.entries(resources)) {
     const label = `${resource.kind ?? 'Resource'}/${resource.metadata?.name ?? resourceKey}`;
-    walk(resource, label);
+    walk(resource, label, 0);
   }
 
   return refs;
