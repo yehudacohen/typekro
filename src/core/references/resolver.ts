@@ -134,46 +134,6 @@ export class ReferenceResolver {
   }
 
   /**
-   * Check if an object contains CEL expressions at any level
-   * CEL expressions have Symbol brands that cannot be cloned by structuredClone
-   */
-  private containsCelExpressions(obj: any, visited = new Set<any>()): boolean {
-    if (obj === null || obj === undefined) {
-      return false;
-    }
-
-    // Prevent infinite loops from circular references
-    if (visited.has(obj)) {
-      return false;
-    }
-
-    // Check if this object is a CEL expression
-    if (isCelExpression(obj)) {
-      return true;
-    }
-
-    // Recursively check arrays
-    if (Array.isArray(obj)) {
-      visited.add(obj);
-      const result = obj.some((item) => this.containsCelExpressions(item, visited));
-      visited.delete(obj);
-      return result;
-    }
-
-    // Recursively check object properties
-    if (typeof obj === 'object') {
-      visited.add(obj);
-      const result = Object.values(obj).some((value) =>
-        this.containsCelExpressions(value, visited)
-      );
-      visited.delete(obj);
-      return result;
-    }
-
-    return false;
-  }
-
-  /**
    * Selectively clone an object, preserving CEL expressions as-is
    * CEL expressions are immutable and don't need deep cloning
    * This avoids structuredClone failures on Symbol-branded objects

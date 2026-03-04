@@ -7,6 +7,7 @@
  * while reusing existing readiness evaluators.
  */
 
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -72,7 +73,7 @@ export function externalDnsHelmRepository(
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url || 'https://kubernetes-sigs.github.io/external-dns/',
@@ -147,7 +148,7 @@ export function externalDnsHelmRelease(
           sourceRef: {
             kind: 'HelmRepository' as const,
             name: config.repositoryName || 'external-dns-repo',
-            namespace: 'flux-system', // HelmRepositories are typically in flux-system
+            namespace: DEFAULT_FLUX_NAMESPACE, // HelmRepositories are typically in flux-system
           },
         },
       },

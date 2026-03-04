@@ -5,7 +5,11 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-import { containsKubernetesRefs, isCelExpression } from '../../utils/type-guards.js';
+import {
+  containsCelExpressions,
+  containsKubernetesRefs,
+  isCelExpression,
+} from '../../utils/type-guards.js';
 import { runInStatusBuilderContext } from '../composition/context.js';
 
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
@@ -163,25 +167,6 @@ function detectAndPreserveCelExpressions(
   }
 
   return { hasExistingCel, preservedMappings };
-}
-
-/**
- * Check if a value contains any CelExpression objects
- */
-function containsCelExpressions(value: unknown): boolean {
-  if (isCelExpression(value)) {
-    return true;
-  }
-
-  if (Array.isArray(value)) {
-    return value.some((item) => containsCelExpressions(item));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.values(value).some((val) => containsCelExpressions(val));
-  }
-
-  return false;
 }
 
 /**

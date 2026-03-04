@@ -1,3 +1,4 @@
+import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
 import type { Enhanced } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
@@ -102,10 +103,10 @@ export function helmRelease(
 
   if (config.sourceRef) {
     sourceRefName = config.sourceRef.name;
-    sourceRefNamespace = config.sourceRef.namespace || 'flux-system';
+    sourceRefNamespace = config.sourceRef.namespace || DEFAULT_FLUX_NAMESPACE;
   } else {
     // Auto-detect repository name from URL
-    sourceRefNamespace = 'flux-system';
+    sourceRefNamespace = DEFAULT_FLUX_NAMESPACE;
     if (config.chart.repository.includes('bitnami')) {
       sourceRefName = 'bitnami';
     } else if (config.chart.repository.startsWith('oci://')) {

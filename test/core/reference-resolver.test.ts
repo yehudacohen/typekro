@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { ReferenceResolver } from '../../src/index.js';
+import { containsCelExpressions } from '../../src/utils/type-guards.js';
 
 // Mock the Kubernetes client
 const mockKubeConfig = {
@@ -546,7 +547,6 @@ describe('ReferenceResolver', () => {
         expression: 'test.expression',
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
 
@@ -562,7 +562,6 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
 
@@ -577,7 +576,6 @@ describe('ReferenceResolver', () => {
         ],
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
 
@@ -592,28 +590,24 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(false);
     });
 
     it('should handle null and undefined', () => {
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(null)).toBe(false);
       expect(containsCelExpressions(undefined)).toBe(false);
     });
 
     it('should handle primitive values', () => {
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions('string')).toBe(false);
       expect(containsCelExpressions(42)).toBe(false);
       expect(containsCelExpressions(true)).toBe(false);
     });
 
     it('should handle circular references without infinite loop', () => {
-      const obj: any = { name: 'test' };
+      const obj: Record<string, unknown> = { name: 'test' };
       obj.circular = obj;
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(false);
     });
 
@@ -633,7 +627,6 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
   });

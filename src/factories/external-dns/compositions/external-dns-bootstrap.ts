@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
   externalDnsHelmRelease,
@@ -6,14 +7,6 @@ import {
   mapExternalDnsConfigToHelmValues,
 } from '../resources/helm.js';
 import { ExternalDnsBootstrapConfigSchema, ExternalDnsBootstrapStatusSchema } from '../types.js';
-
-/**
- * Helper function to ensure version has 'v' prefix for image tags
- * External-DNS Docker images require version tags with 'v' prefix (e.g., 'v0.14.0')
- */
-function _ensureVersionPrefix(version: string): string {
-  return version.startsWith('v') ? version : `v${version}`;
-}
 
 /**
  * External-DNS Bootstrap Composition
@@ -82,7 +75,7 @@ export const externalDnsBootstrap = kubernetesComposition(
     // Create HelmRepository for external-dns charts
     const _helmRepository = externalDnsHelmRepository({
       name: 'external-dns-repo', // Use static name to avoid schema proxy issues
-      namespace: 'flux-system', // HelmRepositories should always be in flux-system
+      namespace: DEFAULT_FLUX_NAMESPACE, // HelmRepositories should always be in flux-system
       id: 'externalDnsHelmRepository',
     });
 
