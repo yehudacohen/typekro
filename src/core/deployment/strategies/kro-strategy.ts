@@ -6,8 +6,9 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
-import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
+// NOTE: kroCustomResource and resourceGraphDefinition are loaded via dynamic import()
+// at point of use to avoid a core/ → factories/ static dependency.
+// This matches the pattern in kro-factory.ts.
 import { preserveNonEnumerableProperties } from '../../../utils/helpers.js';
 import {
   DEFAULT_DEPLOYMENT_TIMEOUT,
@@ -141,6 +142,10 @@ export class KroDeploymentStrategy<
     };
 
     // Wrap with resourceGraphDefinition factory to get Enhanced object with readiness evaluation
+    // Dynamic import avoids core/ → factories/ static dependency
+    const { resourceGraphDefinition } = await import(
+      '../../../factories/kro/resource-graph-definition.js'
+    );
     const enhancedRGD = resourceGraphDefinition(rgdManifest);
 
     // Create deployable resource
@@ -188,6 +193,8 @@ export class KroDeploymentStrategy<
     };
 
     // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
+    // Dynamic import avoids core/ → factories/ static dependency
+    const { kroCustomResource } = await import('../../../factories/kro/kro-custom-resource.js');
     const enhancedCustomResource = kroCustomResource({
       apiVersion: customResourceData.apiVersion,
       kind: customResourceData.kind,
