@@ -20,7 +20,7 @@
  */
 
 import { type } from 'arktype';
-import { typeKroRuntimeBootstrap } from '../src/core/composition/typekro-runtime/index.js';
+import { typeKroRuntimeBootstrap } from '../src/compositions/typekro-runtime/index.js';
 import { certManager, externalDns, kubernetesComposition, simple } from '../src/index.js';
 
 // Configuration - Update these for your environment

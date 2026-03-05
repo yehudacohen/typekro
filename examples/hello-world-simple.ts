@@ -16,7 +16,7 @@
  */
 
 import { type } from 'arktype';
-import { typeKroRuntimeBootstrap } from '../src/core/composition/typekro-runtime/index.js';
+import { typeKroRuntimeBootstrap } from '../src/compositions/typekro-runtime/index.js';
 import { kubernetesComposition, simple } from '../src/index.js';
 
 // Schema for our simple webapp

@@ -6,6 +6,14 @@
  * factory functions with sensible defaults and simplified configuration.
  */
 
+// Export TypeKro runtime bootstrap types (moved to src/compositions/)
+export type {
+  TypeKroRuntimeConfig,
+  TypeKroRuntimeSpec,
+  TypeKroRuntimeStatus,
+} from '../../compositions/typekro-runtime/index.js';
+// Export TypeKro runtime bootstrap composition
+export { typeKroRuntimeBootstrap } from '../../compositions/typekro-runtime/index.js';
 // Export composition-specific types — re-exported from factories/ for backward compatibility
 export type {
   WebServiceComponent,
@@ -26,11 +34,3 @@ export {
 } from './context.js';
 // Export imperative composition pattern
 export { kubernetesComposition } from './imperative.js';
-// Export TypeKro runtime bootstrap types
-export type {
-  TypeKroRuntimeConfig,
-  TypeKroRuntimeSpec,
-  TypeKroRuntimeStatus,
-} from './typekro-runtime/index.js';
-// Export TypeKro runtime bootstrap composition
-export { typeKroRuntimeBootstrap } from './typekro-runtime/index.js';

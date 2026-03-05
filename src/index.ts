@@ -94,6 +94,10 @@ export type * from './factories/kubernetes/types.js';
 // 2. COMPOSITION — Imperative composition and runtime bootstrap
 // =============================================================================
 
+export {
+  type TypeKroRuntimeConfig,
+  typeKroRuntimeBootstrap,
+} from './compositions/typekro-runtime/index.js';
 export { getCurrentCompositionContext } from './core/composition/context.js';
 export {
   clearCompositionDebugLogs,
@@ -103,11 +107,6 @@ export {
 } from './core/composition/imperative.js';
 export type { WebServiceComponent } from './core/composition/index.js';
 export { createWebService } from './core/composition/index.js';
-
-export {
-  type TypeKroRuntimeConfig,
-  typeKroRuntimeBootstrap,
-} from './core/composition/typekro-runtime/index.js';
 
 export { CompositionDebugger } from './core/composition-debugger.js';
 
