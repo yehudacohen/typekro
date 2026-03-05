@@ -1,12 +1,12 @@
-import { helmRelease } from '../../../factories/helm/helm-release.js';
-import { helmRepository } from '../../../factories/helm/helm-repository.js';
-import { namespace } from '../../../factories/kubernetes/core/namespace.js';
-import { clusterRoleBinding } from '../../../factories/kubernetes/rbac/index.js';
-import { yamlFile } from '../../../factories/kubernetes/yaml/yaml-file.js';
-import { DEFAULT_FLUX_NAMESPACE } from '../../config/defaults.js';
-import { Cel } from '../../references/cel.js';
-import { fixCRDSchemaForK8s133 } from '../../runtime-patches/crd-schema-fix.js';
-import { kubernetesComposition } from '../imperative.js';
+import { kubernetesComposition } from '../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
+import { Cel } from '../../core/references/cel.js';
+import { fixCRDSchemaForK8s133 } from '../../core/runtime-patches/crd-schema-fix.js';
+import { helmRelease } from '../../factories/helm/helm-release.js';
+import { helmRepository } from '../../factories/helm/helm-repository.js';
+import { namespace } from '../../factories/kubernetes/core/namespace.js';
+import { clusterRoleBinding } from '../../factories/kubernetes/rbac/index.js';
+import { yamlFile } from '../../factories/kubernetes/yaml/yaml-file.js';
 import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } from './types.js';
 
 /**

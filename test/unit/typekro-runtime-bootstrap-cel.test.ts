@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { typeKroRuntimeBootstrap } from '../../src/core/composition/typekro-runtime/index.js';
+import { typeKroRuntimeBootstrap } from '../../src/compositions/typekro-runtime/index.js';
 
 describe('TypeKro Runtime Bootstrap CEL Generation', () => {
   describe('Status field KubernetesRef creation', () => {
