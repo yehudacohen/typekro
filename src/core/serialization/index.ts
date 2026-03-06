@@ -13,7 +13,6 @@ export type {
 } from '../types/serialization.js';
 // CEL reference serialization
 export {
-  generateCelReference,
   getInnerCelPath,
   processResourceReferences,
   serializeStatusMappingsToCel,

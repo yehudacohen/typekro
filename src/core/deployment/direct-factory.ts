@@ -7,7 +7,11 @@
 
 import { toCamelCase } from '../../utils/string.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
-import { DEFAULT_DELETE_TIMEOUT, DEFAULT_FAST_POLL_INTERVAL } from '../config/defaults.js';
+import {
+  DEFAULT_DELETE_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_RECURSION_DEPTH,
+} from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
 import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
 import {
@@ -1294,7 +1298,6 @@ function findUnresolvedReferences(
 ): UnresolvedReference[] {
   const refs: UnresolvedReference[] = [];
   const visited = new WeakSet<object>();
-  const MAX_DEPTH = 50;
 
   function walk(value: unknown, path: string, depth: number): void {
     if (value == null || typeof value !== 'object') {
@@ -1305,7 +1308,7 @@ function findUnresolvedReferences(
       return;
     }
 
-    if (depth >= MAX_DEPTH) return;
+    if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return;
     if (visited.has(value)) return;
     visited.add(value);
 
