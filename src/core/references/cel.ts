@@ -469,7 +469,7 @@ function cel<T = string>(
   return {
     [CEL_EXPRESSION_BRAND]: true,
     expression,
-    _type: 'string' as any,
+    _type: 'string' as T,
   } as CelExpression<T> & T;
 }
 

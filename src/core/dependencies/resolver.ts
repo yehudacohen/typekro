@@ -5,13 +5,13 @@
  * topological ordering for deployment.
  */
 
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
-import { isCelExpression, isKubernetesRef } from './type-guards.js';
 
 export class DependencyResolver {
   private logger = getComponentLogger('dependency-resolver');

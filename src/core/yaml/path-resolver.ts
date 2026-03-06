@@ -562,7 +562,12 @@ export class PathResolver {
 
     try {
       // Use GitHub API to fetch file content
-      const apiUrl = `https://api.github.com/repos/${gitInfo.owner}/${gitInfo.repo}/contents/${gitInfo.path}?ref=${gitInfo.ref}`;
+      // Encode path components to prevent URL injection from user-supplied values
+      const encodedPath = gitInfo.path
+        .split('/')
+        .map((segment) => encodeURIComponent(segment))
+        .join('/');
+      const apiUrl = `https://api.github.com/repos/${encodeURIComponent(gitInfo.owner)}/${encodeURIComponent(gitInfo.repo)}/contents/${encodedPath}?ref=${encodeURIComponent(gitInfo.ref)}`;
 
       const response = await fetch(apiUrl, {
         headers: {

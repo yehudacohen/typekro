@@ -6,6 +6,7 @@
  */
 
 import { toCamelCase } from '../../utils/string.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import {
   DEFAULT_DELETE_TIMEOUT,
@@ -13,7 +14,6 @@ import {
   DEFAULT_MAX_RECURSION_DEPTH,
 } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
-import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
 import {
   ensureError,
   ResourceGraphFactoryError,
