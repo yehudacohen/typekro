@@ -1,5 +1,5 @@
 import type { V1MutatingWebhookConfiguration } from '@kubernetes/client-node';
-
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import { createResource } from '../../shared.js';
 
 export type V1MutatingWebhookConfigurationWebhooks = NonNullable<
@@ -12,8 +12,5 @@ export function mutatingWebhookConfiguration(resource: V1MutatingWebhookConfigur
     apiVersion: 'admissionregistration.k8s.io/v1',
     kind: 'MutatingWebhookConfiguration',
     metadata: resource.metadata ?? { name: 'unnamed-mutatingwebhook' },
-  }).withReadinessEvaluator(() => ({
-    ready: true,
-    message: 'MutatingWebhookConfiguration is ready (immediately ready resource)',
-  }));
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator('MutatingWebhookConfiguration'));
 }

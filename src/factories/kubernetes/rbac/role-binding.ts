@@ -1,4 +1,5 @@
 import type { V1RoleBinding } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -10,12 +11,7 @@ export function roleBinding(
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'RoleBinding',
     metadata: resource.metadata ?? { name: 'unnamed-rolebinding' },
-  }).withReadinessEvaluator((_liveResource: V1RoleBinding) => {
-    // RoleBindings are ready when they exist - they're configuration objects
-    // that don't have complex status conditions
-    return {
-      ready: true,
-      message: 'RoleBinding is ready',
-    };
-  }) as V1RoleBinding & Enhanced<V1RoleBinding, object>;
+  }).withReadinessEvaluator(
+    createAlwaysReadyEvaluator<V1RoleBinding>('RoleBinding')
+  ) as V1RoleBinding & Enhanced<V1RoleBinding, object>;
 }

@@ -1,4 +1,5 @@
 import type { V1StorageClass } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -13,12 +14,7 @@ export function storageClass(
       metadata: resource.metadata ?? { name: 'unnamed-storageclass' },
     },
     { scope: 'cluster' }
-  ).withReadinessEvaluator((_liveResource: V1StorageClass) => {
-    // StorageClasses are ready when they exist - they're configuration objects
-    // that don't have complex status conditions
-    return {
-      ready: true,
-      message: 'StorageClass is ready',
-    };
-  }) as V1StorageClass & Enhanced<V1StorageClass, object>;
+  ).withReadinessEvaluator(
+    createAlwaysReadyEvaluator<V1StorageClass>('StorageClass')
+  ) as V1StorageClass & Enhanced<V1StorageClass, object>;
 }

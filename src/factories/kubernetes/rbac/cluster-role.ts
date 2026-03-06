@@ -1,4 +1,5 @@
 import type { V1ClusterRole } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -11,12 +12,5 @@ export function clusterRole(resource: V1ClusterRole): Enhanced<V1ClusterRole, un
       metadata: resource.metadata ?? { name: 'unnamed-clusterrole' },
     },
     { scope: 'cluster' }
-  ).withReadinessEvaluator((_liveResource: V1ClusterRole) => {
-    // ClusterRoles are ready when they exist - they're configuration objects
-    // that don't have complex status conditions
-    return {
-      ready: true,
-      message: 'ClusterRole is ready',
-    };
-  });
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator<V1ClusterRole>('ClusterRole'));
 }

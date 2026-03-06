@@ -1,4 +1,5 @@
 import type { V1PriorityClass } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -13,11 +14,6 @@ export function priorityClass(
       metadata: resource.metadata ?? { name: 'unnamed-priorityclass' },
     },
     { scope: 'cluster' }
-  ).withReadinessEvaluator(() => {
-    // PriorityClass is a configuration resource - ready when it exists
-    return {
-      ready: true,
-      message: 'PriorityClass is ready when created (configuration resource)',
-    };
-  }) as V1PriorityClass & Enhanced<V1PriorityClass, object>;
+  ).withReadinessEvaluator(createAlwaysReadyEvaluator('PriorityClass')) as V1PriorityClass &
+    Enhanced<V1PriorityClass, object>;
 }

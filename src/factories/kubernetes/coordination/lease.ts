@@ -1,4 +1,5 @@
 import type { V1Lease } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -10,8 +11,5 @@ export function lease(resource: V1Lease): Enhanced<V1LeaseSpec, unknown> {
     apiVersion: 'coordination.k8s.io/v1',
     kind: 'Lease',
     metadata: resource.metadata ?? { name: 'unnamed-lease' },
-  }).withReadinessEvaluator(() => ({
-    ready: true,
-    message: 'Lease is ready (immediately ready resource)',
-  }));
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator('Lease'));
 }

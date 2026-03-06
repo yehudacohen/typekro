@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { createResource } from '../../shared.js';
@@ -257,10 +258,7 @@ export const apisixBootstrap = kubernetesComposition(
         controller: 'apisix.apache.org/apisix-ingress-controller',
       },
       id: 'apisixIngressClass',
-    }).withReadinessEvaluator(() => ({
-      ready: true,
-      message: 'IngressClass is ready when created (configuration resource)',
-    }));
+    }).withReadinessEvaluator(createAlwaysReadyEvaluator('IngressClass'));
 
     // Return status with CEL expressions referencing HelmRelease conditions
     // Flux HelmRelease v2 uses conditions array (not a phase field).

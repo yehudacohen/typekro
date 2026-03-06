@@ -9,8 +9,9 @@
  * - CiliumClusterwideEnvoyConfig (TODO)
  */
 
-import { createResource } from '../../shared.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
+import { createResource } from '../../shared.js';
 
 /**
  * CiliumIngressClass configuration options
@@ -89,10 +90,7 @@ export function CiliumIngressClass(config: CiliumIngressClassConfig): Kubernetes
       controller: 'cilium.io/ingress-controller',
     },
     id: config.id || `ciliumIngressClass-${config.name}`,
-  }).withReadinessEvaluator(() => ({
-    ready: true,
-    message: 'IngressClass is ready when created (configuration resource)',
-  }));
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator('IngressClass'));
 }
 
 /**
