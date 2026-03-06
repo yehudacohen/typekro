@@ -16,7 +16,12 @@ import {
 import { CompositionExecutionError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { toResourceGraph } from '../serialization/core.js';
-import type { CallableComposition, TypedResourceGraph } from '../types/deployment.js';
+import type {
+  CallableComposition,
+  NestedCompositionResource,
+  StatusProxy,
+  TypedResourceGraph,
+} from '../types/deployment.js';
 import type {
   KroCompatibleType,
   MagicAssignableShape,
@@ -190,7 +195,7 @@ function executeNestedCompositionWithSpec<
   parentContext: CompositionContext,
   spec: TSpec,
   compositionName: string
-): any {
+): NestedCompositionResource<TSpec, TStatus> {
   CompositionDebugger.log(
     'NESTED_COMPOSITION',
     `Executing nested composition with spec: ${compositionName}`
@@ -246,8 +251,8 @@ function executeNestedCompositionWithSpec<
 
   // Create a NestedCompositionResource to return
   // This is what enables: const db = databaseComposition({ name: 'mydb' }); db.spec; db.status.ready
-  const nestedCompositionResource = {
-    [NESTED_COMPOSITION_BRAND]: true,
+  const nestedCompositionResource: NestedCompositionResource<TSpec, TStatus> = {
+    [NESTED_COMPOSITION_BRAND]: true as const,
     spec,
     status: createStatusProxy<TStatus>(baseId, parentContext, result),
     __compositionId: uniqueExecutionName,
@@ -325,23 +330,29 @@ function createKubernetesRefProxy(resourceId: string, basePath: string, useAllow
  * @param nestedResult - The result of executing the nested composition
  * @param forCompositionProperty - If true, create KubernetesRef proxy for composition.status; if false, create for call result
  */
-function createStatusProxy<_TStatus>(
+function createStatusProxy<TStatus>(
   compositionName: string,
   parentContext: CompositionContext | null,
-  nestedResult?: TypedResourceGraph<any, any>,
+  _nestedResult?: TypedResourceGraph<KroCompatibleType, KroCompatibleType>,
   forCompositionProperty: boolean = false
-): any {
+): StatusProxy<TStatus> {
   // For CallableComposition.status property or nested composition results
   // within a parent context, create a KubernetesRef proxy using the
   // composition name as resource ID and 'status' as the base path.
+  // Cast is intentional: the proxy creates KubernetesRef shapes at runtime,
+  // but exposes TStatus to the compiler for type-safe property access.
   if (forCompositionProperty || parentContext) {
-    return createKubernetesRefProxy(compositionName, 'status');
+    return createKubernetesRefProxy(compositionName, 'status') as StatusProxy<TStatus>;
   }
 
   // For top-level composition calls (no parent context), use the strict
   // allowlist strategy so only KubernetesRef metadata properties are
   // returned directly from the target, and start from an empty base path.
-  return createKubernetesRefProxy(`${compositionName}-status`, '', /* useAllowlist */ true);
+  return createKubernetesRefProxy(
+    `${compositionName}-status`,
+    '',
+    /* useAllowlist */ true
+  ) as StatusProxy<TStatus>;
 }
 
 /**
@@ -723,8 +734,8 @@ export function kubernetesComposition<
     // Add toJSON to make the composition serializable
     // Only include enumerable properties, not metadata like _compositionFn
     Object.defineProperty(callableComposition, 'toJSON', {
-      value: function () {
-        const obj: any = {};
+      value: function (this: Record<string, unknown>) {
+        const obj: Record<string, unknown> = {};
         for (const key of Object.keys(this)) {
           obj[key] = this[key];
         }
@@ -788,12 +799,12 @@ export function kubernetesComposition<
     // Use compositionName (not callCompositionName) for status resourceId
     // This ensures ${nested-service.status.ready} instead of ${nested-service-call-18-status.ready}
     return {
-      [NESTED_COMPOSITION_BRAND]: true,
+      [NESTED_COMPOSITION_BRAND]: true as const,
       spec,
       status: createStatusProxy<TStatus>(compositionName, null, callResult),
       __compositionId: callCompositionName,
       __resources: callResult.resources,
-    };
+    } satisfies NestedCompositionResource<TSpec, TStatus>;
   }) as unknown as CallableComposition<TSpec, TStatus>; // Double cast needed: function shape doesn't overlap with CallableComposition
 
   // Create a set to track explicitly deleted properties
@@ -883,8 +894,8 @@ export function kubernetesComposition<
   // Add toJSON to make the composition serializable
   // Only include enumerable properties, not metadata like _compositionFn
   Object.defineProperty(callableComposition, 'toJSON', {
-    value: function () {
-      const obj: any = {};
+    value: function (this: Record<string, unknown>) {
+      const obj: Record<string, unknown> = {};
       for (const key of Object.keys(this)) {
         obj[key] = this[key];
       }
