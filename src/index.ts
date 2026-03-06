@@ -110,10 +110,9 @@ export {
   enableCompositionDebugging,
   getCompositionDebugLogs,
 } from './core/composition/imperative.js';
-export type { WebServiceComponent } from './core/composition/index.js';
-export { createWebService } from './core/composition/index.js';
-
 export { CompositionDebugger } from './core/composition-debugger.js';
+export type { WebServiceComponent } from './factories/simple/compositions/web-service.js';
+export { createWebService } from './factories/simple/compositions/web-service.js';
 
 // =============================================================================
 // 3. DEPLOYMENT — Engines, readiness, and deployers
