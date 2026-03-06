@@ -33,7 +33,7 @@ import { createExternalRefWithoutRegistration, createSchemaProxy } from '../refe
 import type {
   DeploymentClosure,
   FactoryForMode,
-  FactoryOptions,
+  PublicFactoryOptions,
   TypedResourceGraph,
 } from '../types/deployment.js';
 import type {
@@ -1164,7 +1164,7 @@ function createTypedResourceGraph<
 
     factory<TMode extends 'kro' | 'direct'>(
       mode: TMode,
-      factoryOptions?: FactoryOptions
+      factoryOptions?: PublicFactoryOptions
     ): FactoryForMode<TMode, TSpec, TStatus> {
       if (mode === 'direct') {
         // For direct factory, we need to re-analyze status mappings with direct factory context

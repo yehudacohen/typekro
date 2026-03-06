@@ -9,7 +9,9 @@ import type {
   DirectResourceFactory,
   FactoryForMode,
   FactoryOptions,
+  InternalFactoryOptions,
   KroResourceFactory,
+  PublicFactoryOptions,
   ResourceFactory,
   TypedResourceGraph,
 } from '../../src/core/types/deployment.js';
@@ -109,6 +111,89 @@ describe('Factory Pattern Types', () => {
       };
 
       expect(options.alchemyScope).toBe(mockScope);
+    });
+  });
+
+  describe('PublicFactoryOptions interface', () => {
+    it('should contain only user-facing fields', () => {
+      const options: PublicFactoryOptions = {
+        namespace: 'prod',
+        timeout: 60000,
+        waitForReady: true,
+        hydrateStatus: true,
+        skipTLSVerify: false,
+        eventMonitoring: { enabled: true },
+        debugLogging: { enabled: false },
+        autoFix: { fluxCRDs: true },
+      };
+
+      expect(options.namespace).toBe('prod');
+      expect(options.hydrateStatus).toBe(true);
+      expect(options.skipTLSVerify).toBe(false);
+      expect(options.eventMonitoring?.enabled).toBe(true);
+    });
+
+    it('should NOT expose internal fields', () => {
+      const options: PublicFactoryOptions = {};
+      // Compile-time check: these properties should not exist on PublicFactoryOptions
+      // @ts-expect-error compositionFn is internal-only
+      void options.compositionFn;
+      // @ts-expect-error compositionDefinition is internal-only
+      void options.compositionDefinition;
+      // @ts-expect-error compositionOptions is internal-only
+      void options.compositionOptions;
+      // @ts-expect-error factoryType is internal-only
+      void options.factoryType;
+      // @ts-expect-error statusMappings is internal-only
+      void options.statusMappings;
+      expect(options).toEqual({});
+    });
+
+    it('should be assignable to FactoryOptions', () => {
+      const publicOpts: PublicFactoryOptions = { namespace: 'test' };
+      // PublicFactoryOptions is a subset of FactoryOptions
+      const fullOpts: FactoryOptions = publicOpts;
+      expect(fullOpts.namespace).toBe('test');
+    });
+  });
+
+  describe('InternalFactoryOptions interface', () => {
+    it('should contain only internal fields', () => {
+      const internal: InternalFactoryOptions = {
+        compositionFn: (spec) => spec,
+        compositionDefinition: { name: 'test' },
+        compositionOptions: {},
+        factoryType: 'direct',
+        statusMappings: { ready: true },
+      };
+
+      expect(typeof internal.compositionFn).toBe('function');
+      expect(internal.factoryType).toBe('direct');
+      expect(internal.statusMappings).toEqual({ ready: true });
+    });
+
+    it('should work with empty options', () => {
+      const internal: InternalFactoryOptions = {};
+      expect(internal).toEqual({});
+    });
+  });
+
+  describe('FactoryOptions = PublicFactoryOptions & InternalFactoryOptions', () => {
+    it('should accept both public and internal fields', () => {
+      const options: FactoryOptions = {
+        // Public fields
+        namespace: 'prod',
+        timeout: 30000,
+        hydrateStatus: true,
+        // Internal fields
+        compositionFn: (spec) => spec,
+        factoryType: 'kro',
+        statusMappings: { phase: 'Ready' },
+      };
+
+      expect(options.namespace).toBe('prod');
+      expect(typeof options.compositionFn).toBe('function');
+      expect(options.factoryType).toBe('kro');
     });
   });
 

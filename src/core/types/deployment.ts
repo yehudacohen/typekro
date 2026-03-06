@@ -402,7 +402,7 @@ export interface TypedResourceGraph<
   // Factory creation with mode selection
   factory<TMode extends 'kro' | 'direct'>(
     mode: TMode,
-    options?: FactoryOptions
+    options?: PublicFactoryOptions
   ): FactoryForMode<TMode, TSpec, TStatus>;
 
   // Utility methods
@@ -459,7 +459,14 @@ export type CallableComposition<
  * status hydration, Alchemy scope binding, deployment closures, and
  * Kubernetes API configuration.
  */
-export interface FactoryOptions extends BaseDeploymentConfig {
+/**
+ * User-facing factory options for `TypedResourceGraph.factory()`.
+ *
+ * Contains only the settings that library consumers should configure
+ * when creating factories via `graph.factory('direct', options)` or
+ * `graph.factory('kro', options)`.
+ */
+export interface PublicFactoryOptions extends BaseDeploymentConfig {
   /** When false, Enhanced proxy status fields won't be populated with live cluster data */
   hydrateStatus?: boolean;
 
@@ -470,16 +477,6 @@ export interface FactoryOptions extends BaseDeploymentConfig {
 
   /** Deployment closures for direct-mode factories */
   closures?: Record<string, DeploymentClosure>;
-
-  // biome-ignore lint/suspicious/noExplicitAny: internal composition re-execution accepts arbitrary schemas
-  /** Re-execution function for the composition (internal use) */
-  compositionFn?: (spec: any) => any;
-  // biome-ignore lint/suspicious/noExplicitAny: holds the original definition shape which varies by composition
-  /** Original composition definition (internal use) */
-  compositionDefinition?: any;
-  // biome-ignore lint/suspicious/noExplicitAny: holds the original options shape which varies by composition
-  /** Original composition options (internal use) */
-  compositionOptions?: any;
 
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
@@ -499,12 +496,6 @@ export interface FactoryOptions extends BaseDeploymentConfig {
   /** Automatic environment fixes configuration */
   autoFix?: AutoFixConfig;
 
-  // Factory pattern integration for expression handling
-  /** Factory type for expression analysis and conversion */
-  factoryType?: 'direct' | 'kro';
-  /** Pre-analyzed status mappings for factory-specific handling */
-  statusMappings?: Record<string, unknown>;
-
   /**
    * HTTP request timeout configuration for Kubernetes API operations
    * Configures timeouts for different operation types (watch, GET, POST, PATCH, DELETE)
@@ -521,6 +512,37 @@ export interface FactoryOptions extends BaseDeploymentConfig {
    */
   httpTimeouts?: HttpTimeoutConfig;
 }
+
+/**
+ * Internal factory options used by the serialization and deployment engine.
+ *
+ * These fields are populated automatically when creating factories via
+ * `TypedResourceGraph.factory()` and should never be set by library consumers.
+ */
+export interface InternalFactoryOptions {
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition re-execution accepts arbitrary schemas
+  /** Re-execution function for the composition (internal use) */
+  compositionFn?: (spec: any) => any;
+  // biome-ignore lint/suspicious/noExplicitAny: holds the original definition shape which varies by composition
+  /** Original composition definition (internal use) */
+  compositionDefinition?: any;
+  // biome-ignore lint/suspicious/noExplicitAny: holds the original options shape which varies by composition
+  /** Original composition options (internal use) */
+  compositionOptions?: any;
+
+  /** Factory type for expression analysis and conversion (internal use) */
+  factoryType?: 'direct' | 'kro';
+  /** Pre-analyzed status mappings for factory-specific handling (internal use) */
+  statusMappings?: Record<string, unknown>;
+}
+
+/**
+ * Full factory options combining user-facing and internal fields.
+ *
+ * Internally the engine passes the complete set; the public API
+ * ({@link TypedResourceGraph.factory}) exposes only {@link PublicFactoryOptions}.
+ */
+export interface FactoryOptions extends PublicFactoryOptions, InternalFactoryOptions {}
 
 // Type mapping for factory selection
 export type FactoryForMode<
