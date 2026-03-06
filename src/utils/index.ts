@@ -6,11 +6,7 @@
  */
 
 // Object utilities (canonical location: utils/helpers.ts)
-export {
-  preserveNonEnumerableProperties,
-  removeUndefinedValues,
-  toPlainObject,
-} from './helpers';
+export { preserveNonEnumerableProperties, removeUndefinedValues } from './helpers';
 // String utilities (canonical location: utils/string.ts)
 export { calculateSimilarity, levenshteinDistance, pascalCase, toCamelCase } from './string';
 
@@ -21,6 +17,5 @@ export {
   isCelExpression,
   isKubernetesRef,
   isMixedTemplate,
-  isNestedCompositionResource,
   isResourceReference,
 } from './type-guards';
