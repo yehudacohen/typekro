@@ -394,7 +394,7 @@ export function mapExternalDnsConfigToHelmValues(
         'env',
       ].includes(key)
     ) {
-      values[key] = (config as any)[key];
+      values[key] = (config as Record<string, unknown>)[key];
     }
   });
 
