@@ -1,4 +1,7 @@
-import { DEFAULT_FLUX_NAMESPACE } from '../../core/config/defaults.js';
+import {
+  DEFAULT_FLUX_NAMESPACE,
+  WELL_KNOWN_HELM_REPOSITORIES,
+} from '../../core/config/defaults.js';
 import type { Enhanced } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
@@ -107,8 +110,18 @@ export function helmRelease(
   } else {
     // Auto-detect repository name from URL
     sourceRefNamespace = DEFAULT_FLUX_NAMESPACE;
-    if (config.chart.repository.includes('bitnami')) {
-      sourceRefName = 'bitnami';
+
+    // Check well-known repositories first
+    let wellKnownMatch: string | undefined;
+    for (const [pattern, name] of WELL_KNOWN_HELM_REPOSITORIES) {
+      if (config.chart.repository.includes(pattern)) {
+        wellKnownMatch = name;
+        break;
+      }
+    }
+
+    if (wellKnownMatch) {
+      sourceRefName = wellKnownMatch;
     } else if (config.chart.repository.startsWith('oci://')) {
       sourceRefName = `${config.name}-helm-repo`;
     } else {
