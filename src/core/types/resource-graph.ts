@@ -11,7 +11,8 @@ import type {
   DeploymentOperationStatus,
   DeploymentOptions,
   DeploymentResult,
-  FactoryForMode,
+  DirectResourceFactory,
+  KroResourceFactory,
   PublicFactoryOptions,
   RollbackResult,
 } from './deployment.js';
@@ -83,8 +84,10 @@ export interface ResourceGraph<
   /**
    * Create a factory for this resource graph that can create instances
    */
-  factory<TMode extends 'direct' | 'kro'>(
-    mode: TMode,
+  factory(mode: 'kro', options?: PublicFactoryOptions): KroResourceFactory<TSpec, TStatus>;
+  factory(mode: 'direct', options?: PublicFactoryOptions): DirectResourceFactory<TSpec, TStatus>;
+  factory(
+    mode: 'kro' | 'direct',
     options?: PublicFactoryOptions
-  ): FactoryForMode<TMode, TSpec, TStatus>;
+  ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus>;
 }

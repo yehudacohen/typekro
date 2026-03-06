@@ -32,7 +32,8 @@ import { getComponentLogger } from '../logging/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import type {
   DeploymentClosure,
-  FactoryForMode,
+  DirectResourceFactory,
+  KroResourceFactory,
   PublicFactoryOptions,
   TypedResourceGraph,
 } from '../types/deployment.js';
@@ -1162,10 +1163,10 @@ function createTypedResourceGraph<
       analyzedStatusMappings,
     },
 
-    factory<TMode extends 'kro' | 'direct'>(
-      mode: TMode,
+    factory(
+      mode: 'kro' | 'direct',
       factoryOptions?: PublicFactoryOptions
-    ): FactoryForMode<TMode, TSpec, TStatus> {
+    ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus> {
       if (mode === 'direct') {
         // For direct factory, we need to re-analyze status mappings with direct factory context
         let directStatusMappings = analyzedStatusMappings;
@@ -1220,7 +1221,7 @@ function createTypedResourceGraph<
             compositionDefinition: definition,
           }
         );
-        return directFactory as FactoryForMode<TMode, TSpec, TStatus>;
+        return directFactory;
       } else if (mode === 'kro') {
         // For Kro factory, use the already analyzed status mappings (which default to Kro pattern)
         const kroFactory = createKroResourceFactory<TSpec, TStatus>(
@@ -1235,7 +1236,7 @@ function createTypedResourceGraph<
             factoryType: 'kro',
           }
         );
-        return kroFactory as FactoryForMode<TMode, TSpec, TStatus>;
+        return kroFactory;
       } else {
         throw new ValidationError(
           `Unsupported factory mode: ${mode}`,

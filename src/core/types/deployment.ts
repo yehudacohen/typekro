@@ -399,11 +399,13 @@ export interface TypedResourceGraph<
   resources: KubernetesResource[];
   closures?: Record<string, DeploymentClosure>; // Deployment closures for direct mode
 
-  // Factory creation with mode selection
-  factory<TMode extends 'kro' | 'direct'>(
-    mode: TMode,
+  // Factory creation with mode selection — overloads provide exact return types
+  factory(mode: 'kro', options?: PublicFactoryOptions): KroResourceFactory<TSpec, TStatus>;
+  factory(mode: 'direct', options?: PublicFactoryOptions): DirectResourceFactory<TSpec, TStatus>;
+  factory(
+    mode: 'kro' | 'direct',
     options?: PublicFactoryOptions
-  ): FactoryForMode<TMode, TSpec, TStatus>;
+  ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus>;
 
   // Utility methods
   toYaml(): string;
