@@ -35,8 +35,10 @@ Reference tracking               Conditional logic           Reconciliation
 
 | Term | Meaning |
 |------|---------|
-| **Composition** | The result of `kubernetesComposition()` - a reusable template that defines resources and status |
-| **Composition Function** | The callback passed to `kubernetesComposition()` that creates resources |
+| **Composition** | The result of `kubernetesComposition()` or `toResourceGraph()` - a reusable template that defines resources and status |
+| **Composition Function** | The callback passed to `kubernetesComposition()` that creates resources and returns status |
+| **Resource Builder** | The callback passed to `toResourceGraph()` that creates resources (separate from status) |
+| **Status Builder** | The callback passed to `toResourceGraph()` that maps resource status to composition status |
 | **Schema Proxy** | The proxy for the `spec` parameter that creates `KubernetesRef` objects when you access `spec.name` |
 | **Magic Proxy** | The proxy wrapping resources that creates `KubernetesRef` objects when you access `deploy.status.ready` |
 | **Resource Factory** | Functions like `Deployment()`, `Service()` that create Kubernetes resources |

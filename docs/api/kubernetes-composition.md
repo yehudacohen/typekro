@@ -1,3 +1,35 @@
+# Composition APIs
+
+TypeKro provides two composition APIs for creating typed resource graphs. Both produce the same `TypedResourceGraph` output and support the same deployment modes.
+
+## Choosing Your API
+
+| | `kubernetesComposition` | `toResourceGraph` |
+|--|-------------------------|-------------------|
+| **Style** | Imperative — single function creates resources and returns status | Declarative — separate resource builder and status builder |
+| **Status expressions** | JavaScript expressions auto-converted to CEL | Explicit `Cel.expr()` / `Cel.template()` / resource references |
+| **Cross-resource refs** | Automatic via magic proxy (`deploy.status.readyReplicas`) | Explicit via `resources.deploy.status.readyReplicas` |
+| **Nested compositions** | Call compositions as functions inside the composition fn | Same |
+| **Best for** | Most applications — natural JS, less boilerplate | Advanced users who want full CEL control or complex status logic |
+
+### Decision Tree
+
+```
+Do you need explicit CEL control over status expressions?
+├── Yes → toResourceGraph
+└── No
+    Do you prefer a single-function "create resources + return status" pattern?
+    ├── Yes → kubernetesComposition (recommended default)
+    └── No
+        Do you want resource builder and status builder as separate concerns?
+        ├── Yes → toResourceGraph
+        └── Either works — start with kubernetesComposition
+```
+
+**Rule of thumb:** Start with `kubernetesComposition`. Switch to `toResourceGraph` if you need explicit `Cel.expr()` or find the single-function pattern limiting.
+
+---
+
 # kubernetesComposition API
 
 The primary API for creating typed resource graphs with full type safety and automatic CEL generation.
@@ -192,6 +224,88 @@ const deploy = Deployment({
 // Now you can reference it
 return { replicas: deploy.status.readyReplicas };
 ```
+
+---
+
+# toResourceGraph API
+
+The declarative API for creating typed resource graphs with explicit CEL expressions and separated concerns.
+
+## Syntax
+
+```typescript
+function toResourceGraph<TSpec, TStatus>(
+  definition: {
+    name: string;
+    apiVersion: string;
+    kind: string;
+    spec: ArkTypeSchema<TSpec>;
+    status: ArkTypeSchema<TStatus>;
+  },
+  resourceBuilder: (schema: SchemaProxy<TSpec, TStatus>) => Record<string, KubernetesResource>,
+  statusBuilder: (
+    schema: SchemaProxy<TSpec, TStatus>,
+    resources: EnhancedResources
+  ) => TStatus
+): TypedResourceGraph<TSpec, TStatus>
+```
+
+## Parameters
+
+### `definition`
+
+Same as `kubernetesComposition` — name, apiVersion, kind, spec schema, status schema.
+
+### `resourceBuilder`
+
+Function that receives the schema proxy and returns a record of named resources. Each key becomes the resource identifier used in the status builder.
+
+### `statusBuilder`
+
+Function that receives both the schema proxy and the deployed resources, returning the status object. Use `Cel.expr()`, `Cel.template()`, or direct resource references.
+
+## Basic Example
+
+```typescript
+import { type } from 'arktype';
+import { toResourceGraph, Cel } from 'typekro';
+import { createDeployment, createService } from 'typekro';
+
+const webApp = toResourceGraph(
+  {
+    name: 'webapp',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'WebApp',
+    spec: type({ name: 'string', image: 'string', replicas: 'number' }),
+    status: type({ ready: 'boolean', url: 'string' })
+  },
+  // Resource builder — creates resources keyed by identifier
+  (schema) => ({
+    deploy: createDeployment({
+      name: schema.spec.name,
+      image: schema.spec.image,
+      replicas: schema.spec.replicas,
+    }),
+    svc: createService({
+      name: schema.spec.name,
+      selector: { app: schema.spec.name },
+      ports: [{ port: 80 }],
+    }),
+  }),
+  // Status builder — maps resource status to composition status
+  (schema, resources) => ({
+    ready: Cel.expr<boolean>(resources.deploy.status.readyReplicas, ' > 0'),
+    url: Cel.template('http://%s', resources.svc.status.clusterIP),
+  })
+);
+```
+
+## When to Use toResourceGraph
+
+- You want **explicit CEL expressions** rather than auto-converted JavaScript
+- You prefer **separated concerns** — resource creation distinct from status mapping
+- You need **complex CEL patterns** that JavaScript auto-conversion doesn't support
+- You're building **reusable library compositions** where explicitness aids maintainability
 
 ## Next Steps
 
