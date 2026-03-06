@@ -2,7 +2,6 @@ import type * as k8s from '@kubernetes/client-node';
 import { PatchStrategy } from '@kubernetes/client-node';
 import * as yaml from 'js-yaml';
 import { DEFAULT_CRD_PATCH_TIMEOUT } from '../../../core/config/defaults.js';
-import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
 import { ResourceGraphFactoryError } from '../../../core/errors.js';
 import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
 import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
@@ -17,6 +16,7 @@ import type {
 } from '../../../core/types/deployment.js';
 import type { CRDManifest, KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
 
 const logger = getComponentLogger('yaml-file');

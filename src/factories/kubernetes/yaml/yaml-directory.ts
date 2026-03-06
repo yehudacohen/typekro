@@ -1,5 +1,4 @@
 import * as yaml from 'js-yaml';
-import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
 import { ResourceGraphFactoryError } from '../../../core/errors.js';
 import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
@@ -11,6 +10,7 @@ import type {
 } from '../../../core/types/deployment.js';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
 
 const logger = getComponentLogger('yaml-directory');
