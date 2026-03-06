@@ -492,7 +492,7 @@ function cel<T = string>(
  * url: Cel.template('https://%s/api', schema.spec.hostname)
  *
  * // Tagged template literal
- * greeting: Cel.cel`Hello ${schema.spec.name}`
+ * greeting: Cel.tag`Hello ${schema.spec.name}`
  *
  * // Conditional
  * phase: Cel.conditional(resources.deploy.status.readyReplicas, '"Ready"', '"Pending"')
@@ -508,7 +508,8 @@ export const Cel = {
   math,
   template,
   concat,
-  cel,
+  /** Tagged template literal for CEL expressions. Alias: standalone `cel` export. */
+  tag: cel,
 
   // Typed convenience methods — pre-bound type parameters for Cel.expr
   /** Create a boolean CEL expression. Shorthand for Cel.expr<boolean>(...). */
