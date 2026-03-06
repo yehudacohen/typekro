@@ -24,20 +24,12 @@ import type { SerializationContext } from '../types/serialization.js';
  * the resulting path is valid Kro CEL (e.g. `schema.spec.name`).
  *
  * @remarks
- * This is the authoritative implementation — {@link generateCelReference}
- * is an alias kept for backward-compatibility.
+ * This is the authoritative implementation.
  */
 export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
   const resourceId = ref.resourceId === '__schema__' ? 'schema' : ref.resourceId;
   return `${resourceId}.${ref.fieldPath}`;
 }
-
-/**
- * Alias for {@link getInnerCelPath} — kept for backward-compatibility.
- *
- * @deprecated Prefer {@link getInnerCelPath}.
- */
-export const generateCelReference = getInnerCelPath;
 
 // ---------------------------------------------------------------------------
 // Template → CEL concatenation

@@ -5,6 +5,7 @@
  * the codebase to safely check and narrow types at runtime.
  */
 
+import { DEFAULT_MAX_RECURSION_DEPTH } from '../core/config/defaults.js';
 import {
   CEL_EXPRESSION_BRAND,
   KUBERNETES_REF_BRAND,
@@ -72,9 +73,6 @@ export function isMixedTemplate(
   );
 }
 
-/** Maximum recursion depth for recursive object traversal (prevents stack overflow on deeply nested structures) */
-const MAX_RECURSION_DEPTH = 50;
-
 /**
  * Check if a value contains any CelExpression objects at any nesting depth.
  * Recursively traverses arrays and objects with circular reference protection
@@ -89,7 +87,7 @@ export function containsCelExpressions(
     return true;
   }
 
-  if (depth >= MAX_RECURSION_DEPTH) return false;
+  if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return false;
 
   if (Array.isArray(value)) {
     const seen = visited ?? new WeakSet<object>();
@@ -122,7 +120,7 @@ export function containsKubernetesRefs(
     return true;
   }
 
-  if (depth >= MAX_RECURSION_DEPTH) return false;
+  if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return false;
 
   if (Array.isArray(value)) {
     const seen = visited ?? new WeakSet<object>();
@@ -157,7 +155,7 @@ export function extractResourceReferences(
     return refs;
   }
 
-  if (depth >= MAX_RECURSION_DEPTH) return refs;
+  if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return refs;
 
   if (Array.isArray(obj)) {
     const seen = visited ?? new WeakSet<object>();
