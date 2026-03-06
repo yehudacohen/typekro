@@ -52,7 +52,9 @@ export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, V1IngressS
       // NOTE: metadata.resourceVersion and metadata.generation are set by the API server
       // on creation — they do NOT indicate controller processing. Only a controller-written
       // status.observedGeneration reliably indicates the controller has seen the resource.
-      const observedGeneration = (status as any)?.observedGeneration;
+      // observedGeneration is set by some ingress controllers but not in the K8s client-node types
+      const observedGeneration = (status as Record<string, unknown> | undefined)
+        ?.observedGeneration as number | undefined;
       if (observedGeneration !== undefined && observedGeneration === metadata?.generation) {
         return {
           ready: true,

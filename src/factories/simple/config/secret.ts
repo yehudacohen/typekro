@@ -60,13 +60,16 @@ export function Secret(config: SecretConfig): Enhanced<SecretSpec, SecretStatus>
     secretData = { ...secretData, ...config.data };
   }
 
-  return secret({
+  const secretArg: import('@kubernetes/client-node').V1Secret & { id?: string } = {
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),
       labels: { app: config.name },
     },
     data: secretData, // Always use data field with base64-encoded values
-    ...(config.id && { id: config.id }),
-  } as any);
+  };
+  if (config.id) {
+    secretArg.id = config.id;
+  }
+  return secret(secretArg);
 }
