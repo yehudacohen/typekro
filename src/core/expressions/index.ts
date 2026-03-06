@@ -5,7 +5,7 @@
  * For advanced or specialized APIs, import directly from sub-modules:
  *
  *   import { MagicAssignableAnalyzer } from './magic-proxy/magic-assignable-analyzer.js';
- *   import { CompositionExpressionAnalyzer } from './composition/composition-integration.js';
+ *   import { CompositionExpressionAnalyzer } from './composition/index.js';
  */
 
 export type { AnalysisContext, ExpressionValidationReport } from './analysis/analyzer.js';
