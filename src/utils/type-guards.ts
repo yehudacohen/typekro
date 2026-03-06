@@ -6,7 +6,6 @@
  */
 
 import {
-  BrandChecks,
   CEL_EXPRESSION_BRAND,
   KUBERNETES_REF_BRAND,
   MIXED_TEMPLATE_BRAND,
@@ -177,16 +176,4 @@ export function extractResourceReferences(
   }
 
   return refs;
-}
-
-/**
- * Type guard for NestedCompositionResource
- *
- * Uses a structural return type to avoid importing from deployment.ts,
- * which would create a circular dependency through the dependency resolver chain.
- */
-export function isNestedCompositionResource(
-  obj: unknown
-): obj is { readonly __compositionId: string; readonly spec: unknown; readonly status: unknown } {
-  return BrandChecks.isNestedComposition(obj);
 }
