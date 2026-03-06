@@ -1,4 +1,5 @@
 import type { V1ClusterRoleBinding } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -30,12 +31,7 @@ export function clusterRoleBinding(
       metadata: resource.metadata ?? { name: 'unnamed-clusterrolebinding' },
     },
     { scope: 'cluster' }
-  ).withReadinessEvaluator((_liveResource: V1ClusterRoleBinding) => {
-    // ClusterRoleBindings are ready when they exist - they're configuration objects
-    // that don't have complex status conditions
-    return {
-      ready: true,
-      message: 'ClusterRoleBinding is ready',
-    };
-  }) as V1ClusterRoleBinding & Enhanced<V1ClusterRoleBinding, object>;
+  ).withReadinessEvaluator(
+    createAlwaysReadyEvaluator<V1ClusterRoleBinding>('ClusterRoleBinding')
+  ) as V1ClusterRoleBinding & Enhanced<V1ClusterRoleBinding, object>;
 }

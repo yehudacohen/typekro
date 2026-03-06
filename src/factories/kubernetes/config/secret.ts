@@ -1,4 +1,5 @@
 import type { V1Secret } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -38,11 +39,5 @@ export function secret(resource: V1Secret & { id?: string }): Enhanced<SecretSpe
     kind: 'Secret',
     metadata: resource.metadata ?? { name: 'unnamed-secret' },
     // Note: No spec field - Secrets have data/stringData/type/immutable at root level
-  }).withReadinessEvaluator((_liveResource: V1Secret) => {
-    // Secrets are ready when they exist - they're just data storage
-    return {
-      ready: true,
-      message: 'Secret is ready when created',
-    };
-  });
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator<V1Secret>('Secret'));
 }

@@ -1,4 +1,5 @@
 import type { V1ConfigMap } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -32,11 +33,5 @@ export function configMap(resource: V1ConfigMap): Enhanced<ConfigMapSpec, Config
     kind: 'ConfigMap',
     metadata: resource.metadata ?? { name: 'unnamed-configmap' },
     // Note: No spec field - ConfigMaps have data/binaryData/immutable at root level
-  }).withReadinessEvaluator((_liveResource: V1ConfigMap) => {
-    // ConfigMaps are ready when they exist - they're just data storage
-    return {
-      ready: true,
-      message: 'ConfigMap is ready when created',
-    };
-  });
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator<V1ConfigMap>('ConfigMap'));
 }

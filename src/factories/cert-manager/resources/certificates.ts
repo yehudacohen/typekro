@@ -1,49 +1,26 @@
 // Cert-Manager Certificate Resources
+import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/evaluator-factories.js';
+import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
-import type { Enhanced } from '../../../core/types/index.js';
 import type { CertificateConfig, CertificateStatus } from '../types.js';
+
+/** Base condition-based evaluator for Certificate Ready condition. */
+const baseCertificateEvaluator = createConditionBasedReadinessEvaluator({ kind: 'Certificate' });
 
 /**
  * Certificate Readiness Evaluator
  *
- * Evaluates the readiness of a cert-manager Certificate resource based on its status conditions.
- * A Certificate is considered ready when it has a "Ready" condition with status "True".
- *
- * @param liveResource - The entire Certificate resource from Kubernetes
- * @returns ResourceStatus indicating if the certificate is ready
+ * Delegates to the standard condition-based evaluator, but when the Ready
+ * condition is missing, checks for an "Issuing" condition to provide a
+ * more informative intermediate-state message.
  */
-function certificateReadinessEvaluator(liveResource: any): {
-  ready: boolean;
-  message: string;
-  reason?: string;
-} {
-  // Extract status from the live resource
-  const status = liveResource?.status as CertificateStatus | undefined;
+function certificateReadinessEvaluator(liveResource: unknown): ResourceStatus {
+  const result = baseCertificateEvaluator(liveResource);
 
-  // Check if status exists
-  if (!status) {
-    return {
-      ready: false,
-      message: 'Certificate status not available',
-      reason: 'StatusMissing',
-    };
-  }
-
-  // Check if conditions exist
-  if (!status.conditions || status.conditions.length === 0) {
-    return {
-      ready: false,
-      message: 'Certificate conditions not available',
-      reason: 'ConditionsMissing',
-    };
-  }
-
-  // Look for Ready condition
-  const readyCondition = status.conditions.find((condition) => condition.type === 'Ready');
-
-  if (!readyCondition) {
-    // Check for Issuing condition if Ready is not present
-    const issuingCondition = status.conditions.find((condition) => condition.type === 'Issuing');
+  // When Ready condition is missing, check for Issuing condition
+  if (!result.ready && result.reason === 'ReadyConditionMissing') {
+    const resource = liveResource as { status?: CertificateStatus } | null | undefined;
+    const issuingCondition = resource?.status?.conditions?.find((c) => c.type === 'Issuing');
     if (issuingCondition && issuingCondition.status === 'True') {
       return {
         ready: false,
@@ -51,29 +28,9 @@ function certificateReadinessEvaluator(liveResource: any): {
         reason: 'Issuing',
       };
     }
-
-    return {
-      ready: false,
-      message: 'Certificate Ready condition not found',
-      reason: 'ReadyConditionMissing',
-    };
   }
 
-  // Check Ready condition status
-  if (readyCondition.status === 'True') {
-    return {
-      ready: true,
-      message: `Certificate is ready: ${readyCondition.message || 'Certificate is up to date and has not expired'}`,
-      reason: 'Ready',
-    };
-  }
-
-  // Certificate is not ready
-  return {
-    ready: false,
-    message: `Certificate is not ready: ${readyCondition.message || readyCondition.reason || 'Unknown reason'}`,
-    reason: readyCondition.reason || 'NotReady',
-  };
+  return result;
 }
 
 /**

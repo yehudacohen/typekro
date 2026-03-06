@@ -1,4 +1,5 @@
 import type { V1IngressClass } from '@kubernetes/client-node';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -10,11 +11,5 @@ export function ingressClass(resource: V1IngressClass): Enhanced<V1IngressClassS
     apiVersion: 'networking.k8s.io/v1',
     kind: 'IngressClass',
     metadata: resource.metadata ?? { name: 'unnamed-ingressclass' },
-  }).withReadinessEvaluator(() => {
-    // IngressClass is a configuration resource - ready when it exists
-    return {
-      ready: true,
-      message: 'IngressClass is ready when created (configuration resource)',
-    };
-  });
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator('IngressClass'));
 }
