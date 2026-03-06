@@ -160,6 +160,20 @@ export const DEFAULT_STATUS_QUERY_TIMEOUT = 10_000;
 /** Default namespace for Flux-based Helm resources (HelmRepository, HelmRelease) */
 export const DEFAULT_FLUX_NAMESPACE = 'flux-system';
 
+/**
+ * Well-known Helm repository URL patterns mapped to their canonical sourceRef names.
+ *
+ * When a HelmRelease config doesn't include an explicit `sourceRef`, the factory
+ * checks this map before falling back to generic URL-path extraction. Add entries
+ * here to support additional well-known repositories without hardcoding detection
+ * logic in individual factory functions.
+ *
+ * Keys are substring patterns matched against `chart.repository` via `String.includes()`.
+ */
+export const WELL_KNOWN_HELM_REPOSITORIES: ReadonlyMap<string, string> = new Map([
+  ['bitnami', 'bitnami'],
+]);
+
 // =============================================================================
 // SECURITY LIMITS
 // =============================================================================
