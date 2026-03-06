@@ -11,15 +11,21 @@ import type {
   DeploymentOperationStatus,
   DeploymentOptions,
   DeploymentResult,
+  FactoryForMode,
+  PublicFactoryOptions,
   RollbackResult,
 } from './deployment.js';
 import type { Enhanced } from './kubernetes.js';
 import type { SchemaMagicProxy } from './references.js';
+import type { KroCompatibleType, Scope } from './schema.js';
 
 /**
  * Represents a complete resource graph with deployment capabilities
  */
-export interface ResourceGraph<TSpec = any, TStatus = any> {
+export interface ResourceGraph<
+  TSpec extends KroCompatibleType = KroCompatibleType,
+  TStatus extends KroCompatibleType = KroCompatibleType,
+> {
   /**
    * The name of this resource graph
    */
@@ -28,6 +34,7 @@ export interface ResourceGraph<TSpec = any, TStatus = any> {
   /**
    * The resources in this graph
    */
+  // biome-ignore lint/suspicious/noExplicitAny: resources are heterogeneous — Enhanced types are invariant so any is required
   resources: Array<{
     id: string;
     manifest: Enhanced<any, any>;
@@ -51,7 +58,7 @@ export interface ResourceGraph<TSpec = any, TStatus = any> {
   /**
    * Deploy the resource graph through alchemy's resource management system
    */
-  deployWithAlchemy(scope: any, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
+  deployWithAlchemy(scope: Scope, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
 
   /**
    * Get the deployment status of this resource graph
@@ -78,6 +85,6 @@ export interface ResourceGraph<TSpec = any, TStatus = any> {
    */
   factory<TMode extends 'direct' | 'kro'>(
     mode: TMode,
-    options?: { namespace?: string }
-  ): Promise<any>;
+    options?: PublicFactoryOptions
+  ): FactoryForMode<TMode, TSpec, TStatus>;
 }

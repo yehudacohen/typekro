@@ -12,7 +12,7 @@ import type {
   RollbackResult,
 } from './deployment.js';
 import type { Enhanced } from './kubernetes.js';
-import type { KroCompatibleType, Prev, SchemaProxy } from './schema.js';
+import type { KroCompatibleType, Prev, SchemaProxy, Scope } from './schema.js';
 
 // Re-export schema types for backward compatibility (originally defined here)
 export type {
@@ -190,7 +190,7 @@ export interface ResourceGraphWithDeployment {
   /**
    * Deploy the resource graph through alchemy's resource management system
    */
-  deployWithAlchemy(scope: any, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
+  deployWithAlchemy(scope: Scope, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
 
   /**
    * Get the deployment status of this resource graph
