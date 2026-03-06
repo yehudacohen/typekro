@@ -2,11 +2,11 @@
 
 Complete reference for TypeKro APIs, functions, and types.
 
-## Core Composition API
+## Core Composition APIs
 
 ### [kubernetesComposition](./kubernetes-composition.md)
 
-The primary API for creating typed resource graphs.
+The imperative API — single function creates resources and returns status with automatic JavaScript-to-CEL conversion.
 
 ```typescript
 import { type } from 'arktype';
@@ -27,6 +27,28 @@ const webApp = kubernetesComposition(
   }
 );
 ```
+
+### [toResourceGraph](./kubernetes-composition.md#toResourceGraph-api)
+
+The declarative API — separate resource builder and status builder with explicit CEL expressions.
+
+```typescript
+import { type } from 'arktype';
+import { toResourceGraph, Cel, createDeployment } from 'typekro';
+
+const webApp = toResourceGraph(
+  { name: 'webapp', apiVersion: 'example.com/v1alpha1', kind: 'WebApp',
+    spec: type({ name: 'string' }), status: type({ ready: 'boolean' }) },
+  (schema) => ({
+    deploy: createDeployment({ name: schema.spec.name, image: 'nginx' }),
+  }),
+  (schema, resources) => ({
+    ready: Cel.expr<boolean>(resources.deploy.status.readyReplicas, ' > 0'),
+  })
+);
+```
+
+See the [Choosing Your API](./kubernetes-composition.md#choosing-your-api) section for a comparison and decision tree.
 
 ## Expression APIs
 
