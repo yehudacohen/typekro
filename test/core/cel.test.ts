@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { cel } from '../../src/core/references/cel.js';
-import { Cel, isCelExpression, simple, toResourceGraph } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import { isCelExpression } from '../../src/utils/index.js';
 
 describe('CEL Expression Builder', () => {
   it('should create CEL expressions with type safety', () => {

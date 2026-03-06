@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel } from '../src/core/references/index.js';
 import {
-  customResource,
   formatArktypeError,
   formatReferenceError,
-  simple,
   TypeKroReferenceError,
   ValidationError,
-  validateResourceGraph,
-} from '../src/index.js';
+} from '../src/core/errors.js';
+import { Cel } from '../src/core/references/index.js';
+import { customResource, simple, validateResourceGraph } from '../src/index.js';
 
 describe('Error Handling', () => {
   describe('Arktype Validation Errors', () => {

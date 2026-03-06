@@ -2005,7 +2005,7 @@ describe('Imperative Composition Pattern', () => {
     it('should handle resource registration errors gracefully', () => {
       // This test would require mocking the context to simulate registration failures
       // For now, we'll test that the error classes exist and can be instantiated
-      const { ContextRegistrationError } = require('../../src/index.js');
+      const { ContextRegistrationError } = require('../../src/core/errors.js');
 
       const error = ContextRegistrationError.forDuplicateResource(
         'test-resource',
@@ -2023,7 +2023,7 @@ describe('Imperative Composition Pattern', () => {
     });
 
     it('should provide context about which resource caused failures', () => {
-      const { CompositionExecutionError } = require('../../src/index.js');
+      const { CompositionExecutionError } = require('../../src/core/errors.js');
 
       const error = CompositionExecutionError.withResourceContext(
         'Test error message',
@@ -2046,7 +2046,7 @@ describe('Imperative Composition Pattern', () => {
     });
 
     it('should validate status objects and provide helpful error messages', () => {
-      const { CompositionExecutionError } = require('../../src/index.js');
+      const { CompositionExecutionError } = require('../../src/core/errors.js');
 
       const error = CompositionExecutionError.forStatusBuilding(
         'test-composition',

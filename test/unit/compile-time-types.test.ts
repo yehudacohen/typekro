@@ -18,6 +18,22 @@ import type {
   ResourceReadinessTimeoutError,
   UnsupportedMediaTypeError,
 } from '../../src/core/deployment/errors.js';
+import type {
+  CircularDependencyError,
+  CompositionExecutionError,
+  ContextRegistrationError,
+  ConversionError,
+  CRDInstanceError,
+  DeploymentTimeoutError,
+  KroSchemaValidationError,
+  KubernetesApiOperationError,
+  KubernetesClientError,
+  ResourceGraphFactoryError,
+  StatusHydrationError,
+  TypeKroError,
+  TypeKroReferenceError,
+  ValidationError,
+} from '../../src/core/errors.js';
 import type { CelEvaluationError } from '../../src/core/types/references.js';
 import type {
   CelExpression,
@@ -31,24 +47,7 @@ import type {
   RefOrValue,
   SchemaProxy,
 } from '../../src/index.js';
-import {
-  Cel,
-  type CircularDependencyError,
-  type CompositionExecutionError,
-  type ContextRegistrationError,
-  type ConversionError,
-  type CRDInstanceError,
-  type DeploymentTimeoutError,
-  type KroSchemaValidationError,
-  type KubernetesApiOperationError,
-  type KubernetesClientError,
-  type ResourceGraphFactoryError,
-  type StatusHydrationError,
-  type TypeKroError,
-  type TypeKroReferenceError,
-  toResourceGraph,
-  type ValidationError,
-} from '../../src/index.js';
+import { Cel, toResourceGraph } from '../../src/index.js';
 
 // =============================================================================
 // Test helpers — these functions exist only for type-level assertions.

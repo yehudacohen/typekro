@@ -6,8 +6,8 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { DependencyGraph } from '../../src/core/dependencies/index.js';
 import {
-  DependencyGraph,
   type DeployableK8sResource,
   type DeploymentResourceGraph,
   DirectDeploymentEngine,

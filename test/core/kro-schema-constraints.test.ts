@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import { createSchemaProxy } from '../../src/core/references/index.js';
 import type { KubernetesRef } from '../../src/index';
-import { createSchemaProxy } from '../../src/index';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Kro Schema Constraints', () => {

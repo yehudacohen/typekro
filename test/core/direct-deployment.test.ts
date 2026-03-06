@@ -4,6 +4,7 @@
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { type } from 'arktype';
+import { DependencyGraph } from '../../src/core/dependencies/index.js';
 import {
   configMap,
   daemonSet,
@@ -17,7 +18,6 @@ import {
 } from '../../src/factories/index.js';
 import {
   Cel,
-  DependencyGraph,
   type DeployableK8sResource,
   type DeployedResource,
   type DeploymentOptions,
