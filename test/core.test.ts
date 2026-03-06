@@ -5,13 +5,8 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import {
-  Cel,
-  isKubernetesRef,
-  simple,
-  toResourceGraph,
-  validateResourceGraph,
-} from '../src/index.js';
+import { Cel, simple, toResourceGraph, validateResourceGraph } from '../src/index.js';
+import { isKubernetesRef } from '../src/utils/index.js';
 
 // =============================================================================
 // 1. FACTORY AND PROXY SYSTEM TESTS

@@ -53,6 +53,14 @@
     "./pebble": {
       "import": "./dist/factories/pebble/index.js",
       "types": "./dist/factories/pebble/index.d.ts"
+    },
+    "./alchemy": {
+      "import": "./dist/alchemy/index.js",
+      "types": "./dist/alchemy/index.d.ts"
+    },
+    "./advanced": {
+      "import": "./dist/advanced/index.js",
+      "types": "./dist/advanced/index.d.ts"
     }
   },
   "files": [

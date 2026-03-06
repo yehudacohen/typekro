@@ -7,8 +7,7 @@ import {
   csiNode, // New Extensions Resources
   customResourceDefinition, // New Autoscaling V1 Resources
   horizontalPodAutoscalerV1, // New Networking Resources
-  ingressClass,
-  isKubernetesRef, // New Coordination Resources
+  ingressClass, // New Coordination Resources
   lease, // New Admission Resources
   mutatingWebhookConfiguration, // New Core Resources
   node, // New Priority and Runtime Resources
@@ -19,6 +18,7 @@ import {
   validatingWebhookConfiguration, // New Storage Resources
   volumeAttachment,
 } from '../../src/index';
+import { isKubernetesRef } from '../../src/utils/index.js';
 
 describe('New Resource Factory Coverage', () => {
   describe('Apps Resources', () => {

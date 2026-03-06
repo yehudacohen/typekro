@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { generateDeterministicResourceId, simple } from '../../src/index.js';
+import { generateDeterministicResourceId } from '../../src/core/resources/id.js';
+import { simple } from '../../src/index.js';
 
 describe('Deterministic Resource IDs', () => {
   it('should generate consistent IDs based on kind, namespace, and name', () => {

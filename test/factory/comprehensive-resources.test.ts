@@ -1,12 +1,23 @@
 import { describe, expect, it } from 'bun:test';
-import { clusterRole, clusterRoleBinding, // Apps resources
-  daemonSet, endpointSlice, // Networking resources
-  endpoints, // Utils
-  isKubernetesRef, limitRange, namespace, persistentVolume, // Core resources
+import {
+  clusterRole,
+  clusterRoleBinding, // Apps resources
+  daemonSet,
+  endpointSlice, // Networking resources
+  endpoints,
+  limitRange,
+  namespace,
+  persistentVolume, // Core resources
   pod, // Policy resources
-  podDisruptionBudget, replicaSet, resourceQuota, // RBAC resources
-  role, roleBinding, serviceAccount, // Storage resources
-  storageClass,  } from '../../src/index';
+  podDisruptionBudget,
+  replicaSet,
+  resourceQuota, // RBAC resources
+  role,
+  roleBinding,
+  serviceAccount, // Storage resources
+  storageClass,
+} from '../../src/index';
+import { isKubernetesRef } from '../../src/utils/index.js';
 
 describe('Comprehensive Resource Factory Coverage', () => {
   describe('RBAC Resources', () => {

@@ -7,8 +7,8 @@
 
 import { describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import { createSchemaProxy, isSchemaReference } from '../../src/core/references/index.js';
 import type { KubernetesRef } from '../../src/index';
-import { createSchemaProxy, isSchemaReference } from '../../src/index';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Schema Proxy Factory', () => {

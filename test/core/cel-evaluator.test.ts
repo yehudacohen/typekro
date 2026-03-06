@@ -4,7 +4,8 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
-import { CelEvaluationError, CelEvaluator } from '../../src/index.js';
+import { CelEvaluator } from '../../src/core/references/index.js';
+import { CelEvaluationError } from '../../src/index.js';
 
 describe('CelEvaluator', () => {
   let evaluator: CelEvaluator;

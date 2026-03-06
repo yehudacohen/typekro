@@ -34,19 +34,24 @@
  *
  * ## Module Layout
  *
- * Exports are organized into tiers from most-used to advanced:
+ * The main `'typekro'` entry exports the most commonly used APIs:
  *
- *   1. ESSENTIAL - Core APIs every user needs
+ *   1. ESSENTIAL - Core APIs every user needs (toResourceGraph, Cel, etc.)
  *   2. COMPOSITION - Imperative composition and runtime bootstrap
  *   3. DEPLOYMENT - Engines, readiness, and deployers
- *   4. REFERENCES & SERIALIZATION - CEL, schema proxies, YAML generation
- *   5. ALCHEMY INTEGRATION - Alchemy-specific deployers and resolvers
- *   6. ADVANCED - Logging, K8s client, dependencies, errors, utilities
  *
- * For ecosystem-specific factories, use subpath imports:
+ * Lower-level and specialized APIs are available via subpath imports:
+ *
  *   ```ts
+ *   // Ecosystem-specific factories
  *   import { helmRelease } from 'typekro/helm';
  *   import { simple } from 'typekro/simple';
+ *
+ *   // Alchemy framework integration
+ *   import { DirectTypeKroDeployer } from 'typekro/alchemy';
+ *
+ *   // Internal/advanced APIs (logging, K8s client, errors, CEL evaluator, etc.)
+ *   import { getComponentLogger, TypeKroError } from 'typekro/advanced';
  *   ```
  *
  * @packageDocumentation
@@ -123,124 +128,12 @@ export {
 } from './core/deployment/index.js';
 
 // =============================================================================
-// 4. REFERENCES & SERIALIZATION — CEL, schema proxies, YAML generation
+// 4–6: ADVANCED, ALCHEMY, INTERNALS — available via subpath imports
 // =============================================================================
-
-export {
-  CelEvaluator,
-  createResourcesProxy,
-  createSchemaProxy,
-  DeploymentMode,
-  isSchemaReference,
-  optimizeCelExpression,
-  optimizeStatusMappings,
-  ReferenceResolver,
-} from './core/references/index.js';
-// DeploymentMode is already exported as a value from './core/references/index.js' above.
-// TypeScript's value/type namespace separation allows consumers to use it as both:
-//   const mode: DeploymentMode = DeploymentMode.KRO;
-
-export {
-  getDependencyOrder,
-  visualizeDependencies,
-} from './core/serialization/index.js';
-
-// =============================================================================
-// 5. ALCHEMY INTEGRATION — Alchemy-specific deployers and resolvers
-// =============================================================================
-
-export {
-  createAlchemyResourceId,
-  DirectTypeKroDeployer,
-  ensureResourceTypeRegistered,
-  KroTypeKroDeployer,
-} from './alchemy/deployment.js';
-
-export {
-  buildResourceGraphWithDeferredResolution,
-  containsAlchemyPromises,
-  createAlchemyReferenceResolver,
-  extractAlchemyPromises,
-  hasMixedDependencies,
-  isAlchemyPromise,
-  resolveAllReferencesInAlchemyContext,
-  resolveReferencesWithAlchemy,
-} from './alchemy/resolver.js';
-
-// =============================================================================
-// 6. ADVANCED — Logging, K8s client, dependencies, errors, utilities
-// =============================================================================
-
-// Dependency graph
-export type { DependencyNode } from './core/dependencies/index.js';
-export { DependencyGraph, DependencyResolver } from './core/dependencies/index.js';
-// Error classes
-export {
-  type ArktypeValidationError,
-  type ArktypeValidationProblem,
-  CircularDependencyError,
-  CompositionExecutionError,
-  ContextRegistrationError,
-  ConversionError,
-  CRDInstanceError,
-  DeploymentTimeoutError,
-  ensureError,
-  formatArktypeError,
-  formatCircularDependencyError,
-  formatReferenceError,
-  KroSchemaValidationError,
-  KubernetesApiOperationError,
-  KubernetesClientError,
-  ResourceGraphFactoryError,
-  StatusHydrationError,
-  TypeKroError,
-  TypeKroReferenceError,
-  ValidationError,
-} from './core/errors.js';
-// Kubernetes client provider
-export type {
-  KubeConfigConsumer,
-  KubernetesApiConsumer,
-  KubernetesClientConfig,
-} from './core/kubernetes/client-provider.js';
-export {
-  createKubernetesClientProvider,
-  createKubernetesClientProviderWithKubeConfig,
-  getKubeConfig,
-  getKubernetesApi,
-  getKubernetesClientProvider,
-  KubernetesClientProvider,
-} from './core/kubernetes/client-provider.js';
-// Logging
-export type { LoggerConfig, LoggerContext, TypeKroLogger } from './core/logging/index.js';
-export {
-  createContextLogger,
-  createLogger,
-  getComponentLogger,
-  getDeploymentLogger,
-  getResourceLogger,
-  logger,
-} from './core/logging/index.js';
-// Resource ID generation
-export {
-  generateDeterministicResourceId,
-  generateResourceId,
-} from './core/resources/id.js';
-// YAML processing
-export type { DiscoveredFile, GitPathInfo, ResolvedContent } from './core/yaml/index.js';
-export {
-  GitContentError,
-  PathResolver,
-  pathResolver,
-  YamlPathResolutionError,
-  YamlProcessingError,
-} from './core/yaml/index.js';
-
-// Type guard and utility functions
-export {
-  containsKubernetesRefs,
-  extractResourceReferences,
-  isCelExpression,
-  isKubernetesRef,
-  isResourceReference,
-} from './utils/index.js';
+//
+// Lower-level APIs have been moved to dedicated subpath exports to reduce the
+// main entry point surface and improve IDE autocomplete:
+//
+//   import { ... } from 'typekro/alchemy';   // Alchemy framework integration
+//   import { ... } from 'typekro/advanced';   // CEL evaluator, logging, K8s client,
+//                                             // errors, dependency graph, utilities
