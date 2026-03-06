@@ -471,9 +471,10 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             combined[id] = resource;
           }
 
-          // Add deployment closures (cast them as Enhanced resources for compatibility)
+          // Add deployment closures (cast through unknown — closures are stored alongside
+          // Enhanced resources in the combined map for the serialization layer)
           for (const [id, closure] of Object.entries(context.closures)) {
-            combined[id] = closure as Enhanced<unknown, unknown>;
+            combined[id] = closure as unknown as Enhanced<unknown, unknown>;
           }
 
           return combined;

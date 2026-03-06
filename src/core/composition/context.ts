@@ -12,6 +12,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { DeploymentClosure } from '../types/deployment.js';
 import type { Enhanced } from '../types.js';
 
 // =============================================================================
@@ -26,7 +27,7 @@ export interface CompositionContext {
   /** Map of resource ID to Enhanced resource */
   resources: Record<string, Enhanced<any, any>>;
   /** Map of closure ID to deployment closure */
-  closures: Record<string, any>; // Using 'any' to avoid circular dependency with DeploymentClosure
+  closures: Record<string, DeploymentClosure>;
   /** Counter for generating unique resource IDs */
   resourceCounter: number;
   /** Counter for generating unique closure IDs */
@@ -38,7 +39,7 @@ export interface CompositionContext {
   /** Add a resource to the context */
   addResource(id: string, resource: Enhanced<any, any>): void;
   /** Add a deployment closure to the context */
-  addClosure(id: string, closure: any): void;
+  addClosure(id: string, closure: DeploymentClosure): void;
   /** Add a variable to resource ID mapping */
   addVariableMapping(variableName: string, resourceId: string): void;
   /** Generate a unique resource ID */
@@ -126,7 +127,10 @@ export function runWithCompositionContext<T>(context: CompositionContext, fn: ()
  * @param name Optional name for the closure (used for ID generation)
  * @returns The deployment closure, registered with context if active
  */
-export function registerDeploymentClosure<T>(closureFactory: () => T, name?: string): T {
+export function registerDeploymentClosure<T extends DeploymentClosure>(
+  closureFactory: () => T,
+  name?: string
+): T {
   const context = getCurrentCompositionContext();
 
   if (context) {
