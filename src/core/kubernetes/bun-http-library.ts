@@ -79,6 +79,21 @@ export interface HttpTimeoutConfig {
 }
 
 /**
+ * TLS-related options extracted from an https.Agent at runtime.
+ * Node.js stores these on agent.options but it's not part of the public type.
+ */
+interface AgentTlsOptions {
+  rejectUnauthorized?: boolean;
+  cert?: string | Buffer;
+  key?: string | Buffer;
+  ca?: string | Buffer | Array<string | Buffer>;
+  pfx?: string | Buffer;
+  passphrase?: string;
+  servername?: string;
+  ciphers?: string;
+}
+
+/**
  * Default timeout values for Kubernetes API operations
  * Based on kubectl defaults and operation characteristics
  */
@@ -193,7 +208,11 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
 
       // Extract TLS options from the agent if present
       // This is the key workaround for Bun's https.Agent issues
-      const agentOptions = agent ? (agent as any).options || {} : {};
+      // Node.js stores constructor options on agent.options (not in public types)
+      const agentOptions: AgentTlsOptions =
+        agent && 'options' in agent
+          ? (agent as unknown as { options: AgentTlsOptions }).options
+          : {};
 
       const options: https.RequestOptions = {
         hostname: url.hostname,
@@ -295,7 +314,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       }
 
       // Handle abort signal (if available - added in newer versions)
-      const signal = (request as any).getSignal?.();
+      const signal = (request as unknown as { getSignal?: () => AbortSignal }).getSignal?.();
       if (signal) {
         signal.addEventListener('abort', () => {
           req.destroy(new Error('Request aborted'));
