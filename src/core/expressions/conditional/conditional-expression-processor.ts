@@ -7,6 +7,7 @@
  */
 
 import { isKubernetesRef } from '../../../utils/type-guards.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/index.js';
@@ -128,7 +129,7 @@ export class ConditionalExpressionProcessor {
 
     // Detect KubernetesRef objects in the expression
     const detection = this.magicProxyDetector.detectKubernetesRefs(expression, {
-      maxDepth: config.maxDepth || 10,
+      maxDepth: config.maxDepth || DEFAULT_MAX_ANALYSIS_DEPTH,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
     });
@@ -231,7 +232,7 @@ export class ConditionalExpressionProcessor {
 
     // Detect KubernetesRef objects in the expression
     const detection = this.magicProxyDetector.detectKubernetesRefs(expression, {
-      maxDepth: config.maxDepth || 10,
+      maxDepth: config.maxDepth || DEFAULT_MAX_ANALYSIS_DEPTH,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
     });
@@ -331,7 +332,7 @@ export class ConditionalExpressionProcessor {
 
     // Detect KubernetesRef objects in the expression
     const detection = this.magicProxyDetector.detectKubernetesRefs(expression, {
-      maxDepth: config.maxDepth || 10,
+      maxDepth: config.maxDepth || DEFAULT_MAX_ANALYSIS_DEPTH,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
     });

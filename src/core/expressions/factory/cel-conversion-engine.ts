@@ -8,6 +8,7 @@
 
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { getCurrentCompositionContext } from '../../composition/context.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/index.js';
@@ -116,7 +117,7 @@ export class CelConversionEngine {
 
     // Detect KubernetesRef objects in the value
     const detection = this.magicProxyDetector.detectKubernetesRefs(value, {
-      maxDepth: config.maxDepth || 10,
+      maxDepth: config.maxDepth || DEFAULT_MAX_ANALYSIS_DEPTH,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
       trackMetrics: true,
@@ -181,7 +182,7 @@ export class CelConversionEngine {
    * @param maxDepth - Maximum depth to check
    * @returns Whether conversion is needed
    */
-  needsConversion(value: any, maxDepth = 10): boolean {
+  needsConversion(value: any, maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH): boolean {
     return this.magicProxyDetector.containsKubernetesRefs(value, maxDepth);
   }
 

@@ -18,6 +18,7 @@ import * as acorn from 'acorn';
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode, Identifier, ObjectExpression, ReturnStatement } from 'estree';
 import { containsKubernetesRefs } from '../../../utils/type-guards.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { ConversionError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
@@ -268,7 +269,7 @@ const DEFAULT_ANALYSIS_OPTIONS: Required<StatusBuilderAnalysisOptions> = {
   validateReferences: true,
   performOptionalityAnalysis: true,
   factoryType: 'kro',
-  maxDepth: 10,
+  maxDepth: DEFAULT_MAX_ANALYSIS_DEPTH,
   hydrationStates: new Map(),
   conservativeNullSafety: true,
 };
