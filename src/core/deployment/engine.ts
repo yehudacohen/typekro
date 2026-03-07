@@ -71,14 +71,30 @@ import {
   patchResourceWithCorrectContentType,
 } from './k8s-helpers.js';
 import { ResourceReadinessChecker } from './readiness.js';
-import { StatusHydrator } from './status-hydrator.js';
+
+/** Result of deploying a single resource or executing a closure within a level */
+interface LevelDeploymentResult {
+  success: boolean;
+  type?: 'closure' | undefined;
+  resourceId?: string | undefined;
+  name?: string | undefined;
+  deployedResource?: DeployedResource | undefined;
+  result?: unknown[] | undefined;
+  error?:
+    | {
+        resourceId: string;
+        phase: 'validation' | 'deployment';
+        error: Error;
+        timestamp: Date;
+      }
+    | undefined;
+}
 
 export class DirectDeploymentEngine {
   private dependencyResolver: DependencyResolver;
   private referenceResolver: ReferenceResolver;
   private k8sApi: k8s.KubernetesObjectApi;
   private readinessChecker: ResourceReadinessChecker;
-  private statusHydrator: StatusHydrator;
   private debugLogger?: DebugLogger;
   private eventMonitor?: EventMonitor;
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
@@ -102,7 +118,6 @@ export class DirectDeploymentEngine {
     // Pass HTTP timeout configuration if provided
     this.k8sApi = k8sApi || createBunCompatibleKubernetesObjectApi(kubeClient, httpTimeouts);
     this.readinessChecker = new ResourceReadinessChecker(this.k8sApi);
-    this.statusHydrator = new StatusHydrator(this.k8sApi);
     this.crdManager = new CRDManager(
       this.k8sApi,
       kubeClient,
@@ -237,25 +252,23 @@ export class DirectDeploymentEngine {
   public async isDeployedResourceReady(deployedResource: DeployedResource): Promise<boolean> {
     try {
       // Check if the deployed resource has a factory-provided readiness evaluator
-      const readinessEvaluator = (deployedResource.manifest as Enhanced<any, any>)
+      const readinessEvaluator = (deployedResource.manifest as Enhanced<unknown, unknown>)
         .readinessEvaluator;
 
+      // Create a resource reference for the API call (shared by both paths)
+      const resourceRef = {
+        apiVersion: deployedResource.manifest.apiVersion || '',
+        kind: deployedResource.kind,
+        metadata: {
+          name: deployedResource.name,
+          namespace: deployedResource.namespace,
+        },
+      };
+
+      // In the new API, methods return objects directly (no .body wrapper)
+      const liveResource = await this.k8sApi.read(resourceRef);
+
       if (readinessEvaluator) {
-        // Use the factory-provided readiness evaluator
-        // Create a resource reference for the API call
-        const resourceRef = {
-          apiVersion: deployedResource.manifest.apiVersion || '',
-          kind: deployedResource.kind,
-          metadata: {
-            name: deployedResource.name,
-            namespace: deployedResource.namespace,
-          },
-        };
-
-        // Get the live resource from the cluster
-        // In the new API, methods return objects directly (no .body wrapper)
-        const liveResource = await this.k8sApi.read(resourceRef);
-
         // Apply kind-specific enhancements before calling custom evaluator
         const enhancedResource = enhanceResourceForEvaluation(liveResource, deployedResource.kind);
 
@@ -290,21 +303,10 @@ export class DirectDeploymentEngine {
         }
 
         return readinessResult.ready;
-      } else {
-        // Fallback to generic readiness checker
-        const resourceRef = {
-          apiVersion: deployedResource.manifest.apiVersion || '',
-          kind: deployedResource.kind,
-          metadata: {
-            name: deployedResource.name,
-            namespace: deployedResource.namespace,
-          },
-        };
-
-        // In the new API, methods return objects directly (no .body wrapper)
-        const liveResource = await this.k8sApi.read(resourceRef);
-        return this.readinessChecker.isResourceReady(liveResource);
       }
+
+      // Fallback to generic readiness checker
+      return this.readinessChecker.isResourceReady(liveResource);
     } catch (error: unknown) {
       this.logger.debug('Failed to check resource readiness', {
         error: ensureError(error),
@@ -926,7 +928,7 @@ export class DirectDeploymentEngine {
         };
 
         // Prepare promises for both resources and closures
-        const levelPromises: Promise<any>[] = [];
+        const levelPromises: Promise<LevelDeploymentResult>[] = [];
 
         // Add resource deployment promises
         const resourcePromises = currentLevel.resources.map(async (resourceId) => {
@@ -2102,8 +2104,8 @@ export class DirectDeploymentEngine {
             apiVersion: resource.manifest.apiVersion || '',
             kind: resource.kind,
             metadata: {
-              name: resource.name!,
-              namespace: resource.namespace!,
+              name: resource.name,
+              namespace: resource.namespace,
             },
           });
 
