@@ -6,9 +6,15 @@
  */
 
 // Object utilities (canonical location: utils/helpers.ts)
-export { preserveNonEnumerableProperties, removeUndefinedValues } from './helpers';
+export { escapeRegExp, preserveNonEnumerableProperties, removeUndefinedValues } from './helpers';
 // String utilities (canonical location: utils/string.ts)
-export { calculateSimilarity, levenshteinDistance, pascalCase, toCamelCase } from './string';
+export {
+  calculateSimilarity,
+  ensureVersionPrefix,
+  levenshteinDistance,
+  pascalCase,
+  toCamelCase,
+} from './string';
 
 // Type guard functions
 export {
