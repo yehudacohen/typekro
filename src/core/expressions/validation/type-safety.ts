@@ -7,6 +7,7 @@
  */
 
 import type { Type } from 'arktype';
+import { escapeRegExp } from '../../../utils/helpers.js';
 import { TypeKroError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -453,12 +454,14 @@ export class ExpressionTypeValidator {
 
     for (const access of propertyAccesses) {
       const [object, property] = access.split('.');
-      if (object) {
+      if (object && property) {
         const objectType = availableTypes[object];
 
         if (objectType && (objectType.nullable || objectType.optional)) {
           // Check if optional chaining is used
-          const optionalChainPattern = new RegExp(`${object}\\?\\.${property}`);
+          const optionalChainPattern = new RegExp(
+            `${escapeRegExp(object)}\\?\\.${escapeRegExp(property)}`
+          );
           if (!optionalChainPattern.test(expression)) {
             return true;
           }
