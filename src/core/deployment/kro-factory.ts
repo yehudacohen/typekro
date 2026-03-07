@@ -1044,7 +1044,13 @@ ${Object.entries(spec as Record<string, any>)
    */
   private evaluateStaticCelExpression(celExpression: CelExpression, spec: TSpec): unknown {
     const expression = celExpression.expression;
-    const specRecord = spec as Record<string, unknown>;
+    // Use null-prototype object to prevent prototype chain access (defense-in-depth).
+    // angular-expressions has hasOwnProperty guards, but a null-prototype scope
+    // eliminates any residual risk from constructor/toString/__proto__ leaking.
+    // Object.freeze prevents expression-based mutation of the original spec data.
+    const specRecord = Object.freeze(
+      Object.assign(Object.create(null) as Record<string, unknown>, spec)
+    );
 
     // Build a scope expression by stripping schema.spec. or spec. prefixes so that
     // angular-expressions can resolve field references directly from the spec scope.

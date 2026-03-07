@@ -99,7 +99,7 @@ const FACTORY_KIND_MAP: Record<string, { apiVersion: string; kind: string }> = {
   ClusterRole: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole' },
   ClusterRoleBinding: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRoleBinding' },
   Namespace: { apiVersion: 'v1', kind: 'Namespace' },
-  HelmRelease: { apiVersion: 'helm.toolkit.fluxcd.io/v2beta1', kind: 'HelmRelease' },
+  HelmRelease: { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease' },
 };
 
 /**
