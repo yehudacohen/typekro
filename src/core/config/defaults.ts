@@ -181,6 +181,9 @@ export const WELL_KNOWN_HELM_REPOSITORIES: ReadonlyMap<string, string> = new Map
 /** Maximum recursion depth for object traversal (circular reference protection) */
 export const DEFAULT_MAX_RECURSION_DEPTH = 50;
 
+/** Maximum depth for expression/proxy analysis traversal */
+export const DEFAULT_MAX_ANALYSIS_DEPTH = 10;
+
 // =============================================================================
 // OPTIONALITY / HYDRATION PHASE DURATIONS
 // =============================================================================
