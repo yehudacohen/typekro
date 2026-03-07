@@ -34,9 +34,26 @@ export function getLoggerConfigFromEnv(): LoggerConfig {
   // Set custom destination if specified (validated against path traversal)
   if (process.env.TYPEKRO_LOG_DESTINATION) {
     const dest = process.env.TYPEKRO_LOG_DESTINATION;
+    // Reject path traversal sequences
     if (dest.includes('..')) {
       throw new TypeKroError(
         'TYPEKRO_LOG_DESTINATION must not contain path traversal sequences (..)',
+        'INVALID_CONFIG',
+        { destination: dest }
+      );
+    }
+    // Reject null bytes (can trick path resolution in some runtimes)
+    if (dest.includes('\0')) {
+      throw new TypeKroError(
+        'TYPEKRO_LOG_DESTINATION must not contain null bytes',
+        'INVALID_CONFIG',
+        { destination: '<contains null byte>' }
+      );
+    }
+    // Reject absolute paths to prevent writing to arbitrary filesystem locations
+    if (dest.startsWith('/') || /^[a-zA-Z]:\\/.test(dest)) {
+      throw new TypeKroError(
+        'TYPEKRO_LOG_DESTINATION must be a relative path, not an absolute path',
         'INVALID_CONFIG',
         { destination: dest }
       );
