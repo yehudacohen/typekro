@@ -13,6 +13,7 @@
  */
 
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { ConversionError } from '../../errors.js';
 import type { CelExpression, KubernetesRef, MagicAssignable } from '../../types/common.js';
@@ -106,7 +107,7 @@ const DEFAULT_ANALYSIS_OPTIONS: Required<MagicAssignableAnalysisOptions> = {
   deepAnalysis: true,
   validateTypes: true,
   optimizeStaticValues: true,
-  maxDepth: 10,
+  maxDepth: DEFAULT_MAX_ANALYSIS_DEPTH,
   includeSourceMapping: true,
 };
 

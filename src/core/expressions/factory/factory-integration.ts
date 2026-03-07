@@ -7,6 +7,7 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { KubernetesRef, MagicAssignable } from '../../types/index.js';
 import type {
@@ -139,7 +140,7 @@ export class FactoryExpressionAnalyzer {
 
     // Use enhanced magic proxy detection
     const detectionConfig: MagicProxyDetectionConfig = {
-      maxDepth: options.maxDepth || 10,
+      maxDepth: options.maxDepth || DEFAULT_MAX_ANALYSIS_DEPTH,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
       trackMetrics: true,
@@ -156,7 +157,7 @@ export class FactoryExpressionAnalyzer {
       context,
       result,
       magicProxyResult,
-      options.maxDepth || 10
+      options.maxDepth || DEFAULT_MAX_ANALYSIS_DEPTH
     );
 
     // Generate optimizations based on analysis

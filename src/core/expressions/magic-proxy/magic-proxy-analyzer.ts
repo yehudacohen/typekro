@@ -13,6 +13,7 @@
 import * as estraverse from 'estraverse';
 import type { Node as ESTreeNode, Identifier, MemberExpression } from 'estree';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
 import { ConversionError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
@@ -429,7 +430,7 @@ export class MagicProxyAnalyzer {
    */
   detectKubernetesRefs(
     value: any,
-    maxDepth: number = 10,
+    maxDepth: number = DEFAULT_MAX_ANALYSIS_DEPTH,
     currentDepth: number = 0
   ): KubernetesRef<any>[] {
     const refs: KubernetesRef<any>[] = [];

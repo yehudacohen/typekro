@@ -23,6 +23,7 @@ import type {
   ReturnStatement,
 } from 'estree';
 import { extractResourceReferences } from '../../../utils/type-guards.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { DependencyResolver } from '../../dependencies/index.js';
 import type { DeploymentPlan } from '../../dependencies/resolver.js';
 import { ConversionError, ensureError } from '../../errors.js';
@@ -205,7 +206,7 @@ const DEFAULT_PROCESSING_OPTIONS: Required<FieldHydrationProcessingOptions> = {
   deepAnalysis: true,
   validateReferences: true,
   includeSourceMapping: true,
-  maxAnalysisDepth: 10,
+  maxAnalysisDepth: DEFAULT_MAX_ANALYSIS_DEPTH,
   factoryType: 'kro',
 };
 

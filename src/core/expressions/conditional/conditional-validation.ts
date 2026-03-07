@@ -8,6 +8,7 @@
 
 import { levenshteinDistance } from '../../../utils/string.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
+import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { Enhanced } from '../../types/index.js';
 import type { FactoryExpressionContext } from '../analysis/types.js';
@@ -166,7 +167,7 @@ export class ConditionalExpressionValidator {
 
     // Detect KubernetesRef objects
     const detectionResult = this.magicProxyDetector.detectKubernetesRefs(expression, {
-      maxDepth: 10,
+      maxDepth: DEFAULT_MAX_ANALYSIS_DEPTH,
       includeDetailedPaths: true,
       analyzeReferenceSources: true,
     });
