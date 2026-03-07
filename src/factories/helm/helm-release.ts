@@ -2,6 +2,7 @@ import {
   DEFAULT_FLUX_NAMESPACE,
   WELL_KNOWN_HELM_REPOSITORIES,
 } from '../../core/config/defaults.js';
+import { getComponentLogger } from '../../core/logging/index.js';
 import type { Enhanced } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 import { helmReleaseReadinessEvaluator } from './readiness-evaluators.js';
@@ -224,6 +225,9 @@ export function simpleHelmChart(
   chart: string,
   values?: Record<string, any>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
+  getComponentLogger('helm-release').warn(
+    "simpleHelmChart() is deprecated. Use simple.HelmChart() instead — import { simple } from 'typekro'"
+  );
   return helmRelease({
     name,
     chart: { repository, name: chart },
