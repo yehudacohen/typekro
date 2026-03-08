@@ -333,7 +333,7 @@ export class MagicAssignableAnalyzer {
    * Check if a value is static (contains no KubernetesRef objects)
    * This is a performance optimization to avoid unnecessary analysis
    */
-  private isStaticValue(value: any): boolean {
+  private isStaticValue(value: unknown): boolean {
     // Null and undefined are static
     if (value === null || value === undefined) {
       return true;
@@ -362,14 +362,14 @@ export class MagicAssignableAnalyzer {
   /**
    * Check if a value contains KubernetesRef objects (recursively)
    */
-  private containsKubernetesRefs(value: any): boolean {
+  private containsKubernetesRefs(value: unknown): boolean {
     return containsKubernetesRefs(value);
   }
 
   /**
    * Check if a value is a nested object that should be analyzed as a shape
    */
-  private isNestedObject(value: any): boolean {
+  private isNestedObject(value: unknown): boolean {
     // Must be an object
     if (!value || typeof value !== 'object') {
       return false;
@@ -386,7 +386,7 @@ export class MagicAssignableAnalyzer {
     }
 
     // Must not be a CelExpression
-    if (value[CEL_EXPRESSION_BRAND]) {
+    if (CEL_EXPRESSION_BRAND in value && value[CEL_EXPRESSION_BRAND]) {
       return false;
     }
 

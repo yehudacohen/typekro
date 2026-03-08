@@ -8,7 +8,7 @@
 
 import type { Type } from 'arktype';
 import { escapeRegExp } from '../../../utils/helpers.js';
-import { TypeKroError, ensureError } from '../../errors.js';
+import { ensureError, TypeKroError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -36,7 +36,7 @@ export interface TypeInfo {
   unionTypes?: TypeInfo[];
 
   /** The original TypeScript type definition */
-  originalType?: any;
+  originalType?: unknown | undefined;
 }
 
 /**
@@ -531,7 +531,7 @@ export class ExpressionTypeValidator {
   /**
    * Convert a TypeScript type to TypeInfo
    */
-  private convertTypeToTypeInfo(type: any): TypeInfo {
+  private convertTypeToTypeInfo(type: unknown): TypeInfo {
     // This would integrate with the TypeScript compiler API
     // For now, return a basic conversion
     if (typeof type === 'string') {

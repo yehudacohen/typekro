@@ -46,10 +46,13 @@ export {
   createSchemaProxy,
   DeploymentMode,
   isSchemaReference,
-  optimizeCelExpression,
-  optimizeStatusMappings,
   ReferenceResolver,
 } from '../core/references/index.js';
+
+export {
+  optimizeCelExpression,
+  optimizeStatusMappings,
+} from '../core/serialization/cel-optimizer.js';
 
 export {
   getDependencyOrder,

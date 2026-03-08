@@ -22,7 +22,7 @@ import {
   type MagicProxyDetectionResult,
   MagicProxyDetector,
 } from '../magic-proxy/magic-proxy-detector.js';
-import { type CelConversionConfig, CelConversionEngine } from './cel-conversion-engine.js';
+import { type CelConversionConfig, celConversionEngine } from './cel-conversion-engine.js';
 import { ResourceAnalyzer } from './resource-analyzer.js';
 
 export type { ExpressionAnalysisResult, FactoryExpressionContext, FactoryAnalysisResult };
@@ -91,14 +91,11 @@ export class FactoryExpressionAnalyzer {
   private contextDetector: ExpressionContextDetector;
   private contextAwareGenerator: ContextAwareCelGenerator;
   private magicProxyDetector: MagicProxyDetector;
-  private celConversionEngine: CelConversionEngine;
-
   constructor() {
     this.resourceAnalyzer = new ResourceAnalyzer();
     this.contextDetector = new ExpressionContextDetector();
     this.contextAwareGenerator = new ContextAwareCelGenerator();
     this.magicProxyDetector = new MagicProxyDetector();
-    this.celConversionEngine = new CelConversionEngine();
   }
 
   /**
@@ -198,7 +195,7 @@ export class FactoryExpressionAnalyzer {
     });
 
     // Check if the value needs CEL conversion
-    if (options.enableCelConversion && this.celConversionEngine.needsConversion(value)) {
+    if (options.enableCelConversion && celConversionEngine.needsConversion(value)) {
       const conversionConfig: CelConversionConfig = {
         factoryType: context.factoryType,
         enableOptimization: true,
@@ -206,11 +203,7 @@ export class FactoryExpressionAnalyzer {
         includeDebugInfo: false,
       };
 
-      const conversionResult = this.celConversionEngine.convertValue(
-        value,
-        context,
-        conversionConfig
-      );
+      const conversionResult = celConversionEngine.convertValue(value, context, conversionConfig);
 
       if (conversionResult.wasConverted) {
         logger.debug('CEL conversion applied', {

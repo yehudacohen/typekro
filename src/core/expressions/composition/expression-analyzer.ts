@@ -16,7 +16,6 @@ import type {
   SchemaProxy,
 } from '../../types/serialization.js';
 import type { Enhanced } from '../../types.js';
-import { CelConversionEngine } from '../factory/cel-conversion-engine.js';
 import { MagicAssignableAnalyzer } from '../magic-proxy/magic-assignable-analyzer.js';
 import { CompositionContextTracker } from './context-tracker.js';
 import { MagicProxyScopeManager } from './scope-manager.js';
@@ -33,14 +32,12 @@ export type { CompositionAnalysisResult, CompositionPattern, PatternAnalysisConf
  */
 export class CompositionExpressionAnalyzer {
   private magicAssignableAnalyzer: MagicAssignableAnalyzer;
-  private celEngine: CelConversionEngine;
   private patternConfigs: Map<CompositionPattern, PatternAnalysisConfig>;
   private contextTracker: CompositionContextTracker;
   private scopeManager: MagicProxyScopeManager;
 
   constructor() {
     this.magicAssignableAnalyzer = new MagicAssignableAnalyzer();
-    this.celEngine = new CelConversionEngine();
     this.contextTracker = new CompositionContextTracker();
     this.scopeManager = new MagicProxyScopeManager();
 
@@ -586,9 +583,7 @@ export class CompositionExpressionAnalyzer {
         }
       }
     } catch (error: unknown) {
-      errors.push(
-        `Status shape validation failed: ${ensureError(error).message}`
-      );
+      errors.push(`Status shape validation failed: ${ensureError(error).message}`);
     }
 
     return {

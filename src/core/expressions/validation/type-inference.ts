@@ -6,7 +6,7 @@
  * to determine their result types and validates type compatibility.
  */
 
-import { TypeKroError, ensureError } from '../../errors.js';
+import { ensureError, TypeKroError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -1015,11 +1015,11 @@ export class CelTypeInferenceEngine {
     try {
       // Extract the field from the schema proxy
       const parts = fieldPath.split('.');
-      let current: any = schemaProxy;
+      let current: unknown = schemaProxy;
 
       for (const part of parts) {
         if (current && typeof current === 'object' && part in current) {
-          current = current[part];
+          current = (current as Record<string, unknown>)[part];
         } else {
           return { typeName: 'unknown', optional: true, nullable: false };
         }
@@ -1038,7 +1038,7 @@ export class CelTypeInferenceEngine {
     }
   }
 
-  private inferTypeFromValue(value: any): TypeInfo {
+  private inferTypeFromValue(value: unknown): TypeInfo {
     if (value === null) {
       return { typeName: 'null', optional: false, nullable: true };
     }
