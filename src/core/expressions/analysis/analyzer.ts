@@ -35,7 +35,7 @@ import {
   isKubernetesRef,
 } from '../../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -320,7 +320,7 @@ export class JavaScriptToCelAnalyzer {
           if (rv.errors) {
             for (const error of rv.errors) {
               const warningObj: ValidationWarning = {
-                message: error instanceof Error ? error.message : String(error),
+                message: ensureError(error).message,
                 type: 'resource_validation',
               };
               if (rv.suggestions.length > 0) {
@@ -384,7 +384,7 @@ export class JavaScriptToCelAnalyzer {
 
       // Create detailed error with source location from ParserError if available
       let sourceLocation = { line: 1, column: 1, length: expression.length };
-      let errorMessage = error instanceof Error ? error.message : String(error);
+      let errorMessage = ensureError(error).message;
 
       // Extract enhanced error information from ParserError
       if (error instanceof ParserError) {
@@ -400,7 +400,7 @@ export class JavaScriptToCelAnalyzer {
         expression,
         errorMessage,
         sourceLocation,
-        error instanceof Error ? error : undefined
+        ensureError(error)
       );
 
       const errorResult: CelConversionResult = {
@@ -555,7 +555,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [
           new ConversionError(
-            `Failed to analyze expression with refs: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to analyze expression with refs: ${ensureError(error).message}`,
             String(expression),
             'javascript'
           ),
@@ -814,9 +814,9 @@ export class JavaScriptToCelAnalyzer {
 
       const conversionError = ConversionError.forParsingFailure(
         originalExpression,
-        error instanceof Error ? error.message : String(error),
+        ensureError(error).message,
         sourceLocation,
-        error instanceof Error ? error : undefined
+        ensureError(error)
       );
 
       errors.push(conversionError);
@@ -910,7 +910,7 @@ export class JavaScriptToCelAnalyzer {
       } as CelExpression;
     } catch (error: unknown) {
       throw new ConversionError(
-        `Failed to convert KubernetesRef to CEL: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to convert KubernetesRef to CEL: ${ensureError(error).message}`,
         `${ref.resourceId}.${ref.fieldPath}`,
         'member-access'
       );
@@ -1030,7 +1030,7 @@ export class JavaScriptToCelAnalyzer {
         [originalExpression],
         0,
         sourceLocation,
-        error instanceof Error ? error : undefined
+        ensureError(error)
       );
 
       return {
@@ -1221,7 +1221,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [
           new ConversionError(
-            `Failed to handle optional chaining: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to handle optional chaining: ${ensureError(error).message}`,
             expression,
             'optional-chaining'
           ),
@@ -1301,7 +1301,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [
           new ConversionError(
-            `Failed to handle mixed optional chaining and nullish coalescing: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to handle mixed optional chaining and nullish coalescing: ${ensureError(error).message}`,
             expression,
             'optional-chaining'
           ),
@@ -1379,7 +1379,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [
           new ConversionError(
-            `Failed to handle nullish coalescing: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to handle nullish coalescing: ${ensureError(error).message}`,
             expression,
             'nullish-coalescing'
           ),
@@ -2690,7 +2690,7 @@ export class JavaScriptToCelAnalyzer {
         sourceMap: [],
         errors: [
           new ConversionError(
-            `Factory pattern expression analysis failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Factory pattern expression analysis failed: ${ensureError(error).message}`,
             String(expression),
             'javascript'
           ),

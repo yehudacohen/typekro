@@ -9,6 +9,7 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import { ensureError } from '../errors.js';
 import { createBunCompatibleApiextensionsV1Api } from '../kubernetes/bun-api-client.js';
 import { getErrorStatusCode } from '../kubernetes/errors.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -149,9 +150,7 @@ export async function patchFluxCRDSchemas(kubeConfig: k8s.KubeConfig): Promise<n
         patchedCount++;
       }
     } catch (error: unknown) {
-      logger.warn(
-        `Failed to patch CRD ${crdName}: ${error instanceof Error ? error.message : String(error)}, continuing...`
-      );
+      logger.warn(`Failed to patch CRD ${crdName}: ${ensureError(error).message}, continuing...`);
     }
   }
 

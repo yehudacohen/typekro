@@ -11,7 +11,7 @@
 
 import { extractResourceReferences, isKubernetesRef } from '../../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
-import { ConversionError, TypeKroError } from '../../errors.js';
+import { ConversionError, ensureError, TypeKroError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { AnalysisContext, CelConversionResult } from '../analysis/shared-types.js';
 
@@ -101,7 +101,7 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
         sourceMap: [],
         errors: [
           new ConversionError(
-            `Direct factory expression handling failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Direct factory expression handling failed: ${ensureError(error).message}`,
             String(expression),
             'javascript'
           ),
@@ -245,7 +245,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
         sourceMap: [],
         errors: [
           new ConversionError(
-            `Kro factory expression handling failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Kro factory expression handling failed: ${ensureError(error).message}`,
             String(expression),
             'javascript'
           ),

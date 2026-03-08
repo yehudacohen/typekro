@@ -237,7 +237,7 @@ export class KubernetesClientProvider {
       throw new KubernetesClientError(
         `Failed to initialize Kubernetes client provider: ${ensureError(error).message}`,
         'initialization',
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
   }
@@ -269,7 +269,7 @@ export class KubernetesClientProvider {
       throw new KubernetesClientError(
         `Failed to initialize with pre-configured KubeConfig: ${ensureError(error).message}`,
         'initialization',
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
   }
@@ -597,7 +597,7 @@ export class KubernetesClientProvider {
       throw new KubernetesClientError(
         `Failed to create ${clientType} API client: ${ensureError(error).message}`,
         'client-creation',
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
 
@@ -818,7 +818,7 @@ export class KubernetesClientProvider {
         throw new KubernetesClientError(
           `Context '${config.context}' not found in kubeconfig`,
           'configuration',
-          error instanceof Error ? error : new Error(String(error))
+          ensureError(error)
         );
       }
     }

@@ -285,7 +285,7 @@ export class DirectResourceFactoryImpl<
     } catch (error: unknown) {
       // If the deployment isn't found in the state, it may have already been cleaned up
       // or the deployment ID format changed. Log and remove from tracking anyway.
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = ensureError(error).message;
       if (errorMessage.includes('not found') || errorMessage.includes('Cannot rollback')) {
         this.deployedInstances.delete(name);
         // Don't throw - the instance is already gone
@@ -334,7 +334,7 @@ export class DirectResourceFactoryImpl<
           // Unexpected error — log and stop waiting for this namespace
           this.logger.warn('Error polling namespace deletion', {
             namespace: ns,
-            error: error instanceof Error ? error.message : String(error),
+            error: ensureError(error).message,
           });
           break;
         }
@@ -417,7 +417,7 @@ export class DirectResourceFactoryImpl<
             const healthError: DeploymentError = {
               resourceId: deployedResource.id,
               phase: 'readiness',
-              error: error instanceof Error ? error : new Error(String(error)),
+              error: ensureError(error),
               timestamp: new Date(),
             };
             healthErrors.push(healthError);
@@ -550,7 +550,7 @@ export class DirectResourceFactoryImpl<
             const healthError: DeploymentError = {
               resourceId: deployedResource.id,
               phase: 'readiness',
-              error: error instanceof Error ? error : new Error(String(error)),
+              error: ensureError(error),
               timestamp: new Date(),
             };
             healthErrors.push(healthError);
@@ -579,7 +579,7 @@ export class DirectResourceFactoryImpl<
           {
             resourceId: 'factory',
             phase: 'readiness',
-            error: error instanceof Error ? error : new Error(String(error)),
+            error: ensureError(error),
             timestamp: new Date(),
           },
         ],

@@ -6,7 +6,7 @@
  * to determine their result types and validates type compatibility.
  */
 
-import { TypeKroError } from '../../errors.js';
+import { TypeKroError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -179,7 +179,7 @@ export class CelTypeInferenceEngine {
         success: false,
         errors: [
           new TypeInferenceError(
-            `Type inference failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Type inference failed: ${ensureError(error).message}`,
             celExpression.expression
           ),
         ],

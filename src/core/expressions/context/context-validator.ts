@@ -6,6 +6,7 @@
  */
 
 import { extractResourceReferences } from '../../../utils/type-guards.js';
+import { ensureError } from '../../errors.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -213,7 +214,7 @@ export class ContextExpressionValidator {
         const issue: ValidationIssue = {
           ruleId: rule.id,
           severity: 'error',
-          message: `Rule execution failed: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Rule execution failed: ${ensureError(error).message}`,
           suggestions: [`Check the ${rule.name} rule implementation`],
         };
         errors.push(issue);

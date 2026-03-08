@@ -72,16 +72,16 @@ export class ResourceRollbackManager {
         errors.push({
           resourceId,
           phase: 'rollback' as const,
-          error: error instanceof Error ? error : new Error(String(error)),
+          error: ensureError(error),
           timestamp: new Date(),
         });
 
         this.emitEvent(config, {
           type: 'failed',
           resourceId,
-          message: `Failed to rollback ${resource.kind}/${resource.metadata?.name}: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Failed to rollback ${resource.kind}/${resource.metadata?.name}: ${ensureError(error).message}`,
           timestamp: new Date(),
-          error: error instanceof Error ? error : new Error(String(error)),
+          error: ensureError(error),
         });
 
         // Continue with remaining resources even if one fails

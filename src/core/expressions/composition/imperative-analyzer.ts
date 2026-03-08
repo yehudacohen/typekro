@@ -187,7 +187,7 @@ export function analyzeImperativeComposition(
               });
             }
           } catch (error: unknown) {
-            const errorMessage = `Failed to analyze property '${fullFieldName}': ${error instanceof Error ? error.message : String(error)}`;
+            const errorMessage = `Failed to analyze property '${fullFieldName}': ${ensureError(error).message}`;
             errors.push(errorMessage);
             logger.debug('Property analysis failed', {
               fieldName,
@@ -242,7 +242,7 @@ export function analyzeImperativeComposition(
       errors,
     };
   } catch (error: unknown) {
-    const errorMessage = `Failed to analyze imperative composition: ${error instanceof Error ? error.message : String(error)}`;
+    const errorMessage = `Failed to analyze imperative composition: ${ensureError(error).message}`;
     logger.error('Imperative composition analysis failed', ensureError(error));
 
     return {

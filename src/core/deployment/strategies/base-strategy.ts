@@ -7,7 +7,7 @@
 
 import { escapeRegExp } from '../../../utils/helpers.js';
 import { DEFAULT_HYDRATION_TIMEOUT_CAP, DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
-import { StatusHydrationError } from '../../errors.js';
+import { StatusHydrationError, ensureError } from '../../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { createResourcesProxy } from '../../references/schema-proxy.js';
@@ -236,7 +236,7 @@ export abstract class BaseDeploymentStrategy<
             'Status hydration failed or timed out, falling back to resource extraction',
             {
               instanceName,
-              error: error instanceof Error ? error.message : String(error),
+              error: ensureError(error).message,
             }
           );
 
@@ -521,7 +521,7 @@ export abstract class BaseDeploymentStrategy<
       } catch (error: unknown) {
         this.logger.warn('Failed to resolve CEL expressions in status, using unresolved status', {
           instanceName,
-          error: error instanceof Error ? error.message : String(error),
+          error: ensureError(error).message,
         });
       }
     }

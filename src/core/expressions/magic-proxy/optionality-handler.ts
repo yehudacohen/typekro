@@ -398,7 +398,7 @@ export class EnhancedTypeOptionalityHandler {
       };
     } catch (error: unknown) {
       const conversionError = new ConversionError(
-        `Failed to generate null-safe CEL expression: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to generate null-safe CEL expression: ${ensureError(error).message}`,
         String(originalExpression),
         'unknown'
       );
@@ -445,7 +445,7 @@ export class EnhancedTypeOptionalityHandler {
       return celResult;
     } catch (error: unknown) {
       const conversionError = new ConversionError(
-        `Failed to handle optional chaining: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to handle optional chaining: ${ensureError(error).message}`,
         String(expression),
         'optional-chaining'
       );
@@ -592,7 +592,7 @@ export class EnhancedTypeOptionalityHandler {
       };
     } catch (error: unknown) {
       const conversionError = new ConversionError(
-        `Failed to generate optional chaining CEL: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to generate optional chaining CEL: ${ensureError(error).message}`,
         String(expression),
         'optional-chaining'
       );
@@ -986,7 +986,7 @@ export class EnhancedTypeOptionalityHandler {
       };
     } catch (error: unknown) {
       const transitionError = new ConversionError(
-        `Failed to handle undefined-to-defined transitions: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to handle undefined-to-defined transitions: ${ensureError(error).message}`,
         String(expression),
         'unknown'
       );

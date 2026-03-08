@@ -1,4 +1,5 @@
 import type { V1Pod } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -47,7 +48,7 @@ export function pod(resource: V1Pod): Enhanced<V1PodSpec, V1PodStatus> {
     } catch (error: unknown) {
       return {
         ready: false,
-        reason: `Error checking Pod status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error checking Pod status: ${ensureError(error).message}`,
       };
     }
   });

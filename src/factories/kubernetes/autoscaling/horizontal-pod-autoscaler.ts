@@ -1,4 +1,5 @@
 import type { V2HorizontalPodAutoscaler } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -33,7 +34,7 @@ export function horizontalPodAutoscaler(
     } catch (error: unknown) {
       return {
         ready: false,
-        reason: `Error checking HPA status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error checking HPA status: ${ensureError(error).message}`,
       };
     }
   });

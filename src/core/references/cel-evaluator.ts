@@ -128,7 +128,7 @@ export class CelEvaluator {
     } catch (error: unknown) {
       return {
         valid: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: ensureError(error).message,
       };
     }
   }

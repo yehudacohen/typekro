@@ -11,7 +11,7 @@ import {
   DEFAULT_MAX_DIRECTORY_DEPTH,
   DEFAULT_MAX_YAML_CONTENT_SIZE,
 } from '../config/defaults.js';
-import { TypeKroError } from '../errors.js';
+import { ensureError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 
 const logger = getComponentLogger('yaml-path-resolver');
@@ -1101,7 +1101,7 @@ export class PathResolver {
       }
 
       throw new YamlPathResolutionError(
-        `Failed to resolve HTTP content for resource '${resourceName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to resolve HTTP content for resource '${resourceName}': ${ensureError(error).message}`,
         resourceName,
         url,
         [

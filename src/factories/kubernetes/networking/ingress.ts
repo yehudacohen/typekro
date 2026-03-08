@@ -1,4 +1,5 @@
 import type { V1Ingress, V1IngressStatus } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -77,7 +78,7 @@ export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, V1IngressS
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error checking Ingress status: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Error checking Ingress status: ${ensureError(error).message}`,
       };
     }
   });

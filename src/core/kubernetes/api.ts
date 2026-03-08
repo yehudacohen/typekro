@@ -228,7 +228,7 @@ export class KubernetesApi {
         manifest.kind,
         manifest.metadata?.name,
         (error as { statusCode?: number }).statusCode,
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
   }
@@ -263,7 +263,7 @@ export class KubernetesApi {
         kind,
         name,
         (error as { statusCode?: number }).statusCode,
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
   }
@@ -305,7 +305,7 @@ export class KubernetesApi {
         kind,
         name,
         (error as { statusCode?: number }).statusCode,
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
   }

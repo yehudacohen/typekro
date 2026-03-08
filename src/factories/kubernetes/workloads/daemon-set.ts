@@ -1,4 +1,5 @@
 import type { V1DaemonSet } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -43,7 +44,7 @@ export function daemonSet(resource: V1DaemonSet): Enhanced<V1DaemonSetSpec, V1Da
     } catch (error: unknown) {
       return {
         ready: false,
-        reason: `Error checking DaemonSet status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error checking DaemonSet status: ${ensureError(error).message}`,
       };
     }
   });

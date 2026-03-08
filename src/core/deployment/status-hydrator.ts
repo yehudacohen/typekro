@@ -128,7 +128,7 @@ export class StatusHydrator {
         success: false,
         resourceId,
         hydratedFields: [],
-        error: error instanceof Error ? error : new Error(String(error)),
+        error: ensureError(error),
       };
     }
   }
@@ -174,7 +174,7 @@ export class StatusHydrator {
         success: false,
         resourceId,
         hydratedFields: [],
-        error: error instanceof Error ? error : new Error(String(error)),
+        error: ensureError(error),
       };
     }
   }

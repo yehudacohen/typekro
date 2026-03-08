@@ -376,13 +376,13 @@ export class KroResourceFactoryImpl<
 
         this.logger.error('Closure execution failed', {
           name: closureName,
-          message: error instanceof Error ? error.message : String(error),
+          message: ensureError(error).message,
         });
         throw new ResourceGraphFactoryError(
-          `Failed to execute closure '${closureName}': ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to execute closure '${closureName}': ${ensureError(error).message}`,
           this.name,
           'deployment',
-          error instanceof Error ? error : undefined
+          ensureError(error)
         );
       }
     }
@@ -629,7 +629,7 @@ export class KroResourceFactoryImpl<
         this.schemaDefinition.kind,
         '*',
         'statusResolution',
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
   }
@@ -663,7 +663,7 @@ export class KroResourceFactoryImpl<
           this.schemaDefinition.kind,
           name,
           'deletion',
-          error instanceof Error ? error : new Error(String(error))
+          ensureError(error)
         );
       }
       // Instance already deleted, ignore 404
@@ -760,7 +760,7 @@ export class KroResourceFactoryImpl<
         `Failed to get RGD status: ${k8sError.message || String(error)}`,
         this.name,
         'getInstance',
-        error instanceof Error ? error : new Error(String(error))
+        ensureError(error)
       );
     }
   }
@@ -912,10 +912,10 @@ ${Object.entries(spec as Record<string, any>)
       }
 
       throw new ResourceGraphFactoryError(
-        `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to deploy RGD using DirectDeploymentEngine: ${ensureError(error).message}`,
         this.name,
         'deployment',
-        error instanceof Error ? error : undefined
+        ensureError(error)
       );
     }
   }
@@ -1312,7 +1312,7 @@ ${Object.entries(spec as Record<string, any>)
         } catch (error: unknown) {
           readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
             rgdName: this.name,
-            error: error instanceof Error ? error.message : String(error),
+            error: ensureError(error).message,
           });
           // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
           expectedCustomStatusFields = false;
