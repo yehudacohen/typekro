@@ -32,6 +32,20 @@
  *   import { kubernetesComposition, createResource } from 'typekro';
  *   ```
  *
+ * ## Which API should I use?
+ *
+ * | Consideration | `toResourceGraph` | `kubernetesComposition` |
+ * |---|---|---|
+ * | **Best for** | Kro ResourceGraphDefinitions, YAML/CRD output | Direct K8s deployments, complex orchestration |
+ * | **Status expressions** | CEL via `Cel.expr()` / `Cel.template()` | Native TypeScript |
+ * | **Conditional resources** | `includeWhen` on individual resources | `if`/`else` in composition function |
+ * | **Schema validation** | Built-in via arktype | Manual |
+ * | **Output format** | Serialisable YAML | In-memory resource objects |
+ *
+ * Both APIs share the same factory functions (`createResource`, `helmRelease`,
+ * `createDeployment`, etc.) so you can switch between them without rewriting
+ * resource definitions.
+ *
  * ## Module Layout
  *
  * The main `'typekro'` entry exports the most commonly used APIs:
