@@ -1790,8 +1790,8 @@ export class JavaScriptToCelAnalyzer {
     if (resourceMatches) {
       for (const match of resourceMatches) {
         const parts = match.split('.');
-        if (parts.length >= 3) {
-          const resourceId = parts[1]!;
+        const resourceId = parts[1];
+        if (parts.length >= 3 && resourceId) {
           const fieldPath = parts.slice(2).join('.');
 
           const ref: KubernetesRef<unknown> = {
@@ -1863,9 +1863,14 @@ export class JavaScriptToCelAnalyzer {
       match = pattern.exec(expression);
       while (match !== null) {
         const fullMatch = match[0];
-        const resourceId = match[1]!;
-        const baseField = match[2]!; // status, spec, or metadata
+        const resourceId = match[1];
+        const baseField = match[2]; // status, spec, or metadata
         const remainingPath = match[3];
+
+        if (!resourceId || !baseField) {
+          match = pattern.exec(expression);
+          continue;
+        }
 
         let fieldPath = baseField;
 
