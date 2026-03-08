@@ -233,7 +233,7 @@ export function createResourcesProxy<TResources extends Record<string, any>>(
         }
         if (prop === 'spec' || prop === 'status') {
           // Return a proxy that converts the MagicProxy field access to resource references
-          return createResourceMagicProxy(resourceKey, prop, target[prop]);
+          return createResourceMagicProxy(resourceKey, prop);
         }
         // For all other properties, return the original value
         return target[prop];
@@ -245,10 +245,10 @@ export function createResourcesProxy<TResources extends Record<string, any>>(
 }
 
 /**
- * Create a magic proxy that converts Enhanced MagicProxy field access to resource references
- * Uses recursive proxy creation similar to createSchemaRefFactory for deep nesting support
+ * Create a magic proxy that converts Enhanced MagicProxy field access to resource references.
+ * Delegates to createResourceRefFactory for deep nesting support.
  */
-function createResourceMagicProxy(resourceId: string, fieldType: string, _originalProxy: any): any {
+function createResourceMagicProxy(resourceId: string, fieldType: string): unknown {
   return createResourceRefFactory(resourceId, fieldType);
 }
 
