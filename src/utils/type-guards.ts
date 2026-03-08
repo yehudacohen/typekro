@@ -5,12 +5,15 @@
  * the codebase to safely check and narrow types at runtime.
  */
 
-import { DEFAULT_MAX_RECURSION_DEPTH } from '../core/config/defaults.js';
 import {
   CEL_EXPRESSION_BRAND,
   KUBERNETES_REF_BRAND,
   MIXED_TEMPLATE_BRAND,
-} from '../core/constants/brands.js';
+} from '../shared/brands.js';
+
+/** Must match MAX_RECURSION_DEPTH in core/config/defaults.ts */
+const MAX_RECURSION_DEPTH = 50;
+
 import type { CelExpression, KubernetesRef } from '../core/types/common.js';
 import type { ResourceReference } from '../core/types/references.js';
 
@@ -87,7 +90,7 @@ export function containsCelExpressions(
     return true;
   }
 
-  if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return false;
+  if (depth >= MAX_RECURSION_DEPTH) return false;
 
   if (Array.isArray(value)) {
     const seen = visited ?? new WeakSet<object>();
@@ -120,7 +123,7 @@ export function containsKubernetesRefs(
     return true;
   }
 
-  if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return false;
+  if (depth >= MAX_RECURSION_DEPTH) return false;
 
   if (Array.isArray(value)) {
     const seen = visited ?? new WeakSet<object>();
@@ -155,7 +158,7 @@ export function extractResourceReferences(
     return refs;
   }
 
-  if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return refs;
+  if (depth >= MAX_RECURSION_DEPTH) return refs;
 
   if (Array.isArray(obj)) {
     const seen = visited ?? new WeakSet<object>();
