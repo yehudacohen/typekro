@@ -9,7 +9,7 @@
  * - CiliumClusterwideEnvoyConfig (TODO)
  */
 
-import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { createResource } from '../../shared.js';
 

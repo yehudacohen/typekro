@@ -9,7 +9,7 @@ import { DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
-import { ensureReadinessEvaluator } from '../../readiness/evaluator.js';
+import { ensureReadinessEvaluator } from '../../readiness/index.js';
 import type {
   DeploymentResourceGraph,
   DeploymentResult,

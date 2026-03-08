@@ -1,5 +1,5 @@
 // Cert-Manager Issuer Resources
-import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/evaluator-factories.js';
+import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ClusterIssuerConfig, IssuerConfig, IssuerStatus } from '../types.js';

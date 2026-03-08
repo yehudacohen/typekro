@@ -1,5 +1,5 @@
 import type { V1LimitRange } from '@kubernetes/client-node';
-import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
