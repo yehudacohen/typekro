@@ -3,7 +3,7 @@ import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getInnerCelPath } from '../serialization/cel-references.js';
-import type { CelExpression, RefOrValue, SerializationContext } from '../types.js';
+import type { CelExpression, RefOrValue } from '../types.js';
 
 const logger = getComponentLogger('cel');
 
@@ -112,33 +112,10 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
  * phase: Cel.expr<string>`'running'`
  * ```
  */
-function expr<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T;
-function expr<T = unknown>(
-  context: SerializationContext,
-  ...parts: RefOrValue<unknown>[]
-): CelExpression<T> & T;
-function expr<T = unknown>(
-  contextOrFirstPart: SerializationContext | RefOrValue<unknown>,
-  ...parts: RefOrValue<unknown>[]
-): CelExpression<T> & T {
-  let _context: SerializationContext | undefined;
-  let actualParts: RefOrValue<unknown>[];
+function expr<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T {
+  validateExprParts(parts);
 
-  // Check if first argument is a context object
-  if (
-    contextOrFirstPart &&
-    typeof contextOrFirstPart === 'object' &&
-    'celPrefix' in contextOrFirstPart
-  ) {
-    _context = contextOrFirstPart as SerializationContext;
-    actualParts = parts;
-  } else {
-    actualParts = [contextOrFirstPart as RefOrValue<unknown>, ...parts];
-  }
-
-  validateExprParts(actualParts);
-
-  const celParts = actualParts.map((part) => {
+  const celParts = parts.map((part) => {
     if (isKubernetesRef(part)) {
       // Use inner reference without ${} wrapper for building expressions
       return getInnerCelPath(part);
@@ -172,41 +149,17 @@ function expr<T = unknown>(
  * Convenience method for joining parts with automatic spacing.
  * Useful for building readable CEL expressions.
  */
-function join<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T;
-function join<T = unknown>(
-  context: SerializationContext,
-  ...parts: RefOrValue<unknown>[]
-): CelExpression<T> & T;
-function join<T = unknown>(
-  contextOrFirstPart: SerializationContext | RefOrValue<unknown>,
-  ...parts: RefOrValue<unknown>[]
-): CelExpression<T> {
-  let context: SerializationContext | undefined;
-  let actualParts: RefOrValue<unknown>[];
-
-  // Check if first argument is a context object
-  if (
-    contextOrFirstPart &&
-    typeof contextOrFirstPart === 'object' &&
-    'celPrefix' in contextOrFirstPart
-  ) {
-    context = contextOrFirstPart as SerializationContext;
-    actualParts = parts;
-  } else {
-    actualParts = [contextOrFirstPart as RefOrValue<unknown>, ...parts];
-  }
-
+function join<T = unknown>(...parts: RefOrValue<unknown>[]): CelExpression<T> & T {
   // Add spaces between parts for readability
   const spacedParts: RefOrValue<unknown>[] = [];
-  for (let i = 0; i < actualParts.length; i++) {
-    spacedParts.push(actualParts[i]);
-    if (i < actualParts.length - 1) {
+  for (let i = 0; i < parts.length; i++) {
+    spacedParts.push(parts[i]);
+    if (i < parts.length - 1) {
       spacedParts.push(' ');
     }
   }
 
-  // Pass the generic type <T> to the expr call
-  return context ? expr<T>(context, ...spacedParts) : expr<T>(...spacedParts);
+  return expr<T>(...spacedParts);
 }
 
 // Common CEL value types
@@ -219,27 +172,8 @@ function conditional<T = unknown>(
   condition: RefOrValue<CelValue>,
   trueValue: RefOrValue<CelValue>,
   falseValue: RefOrValue<CelValue>
-): CelExpression<T> & T;
-function conditional<T = unknown>(
-  context: SerializationContext,
-  condition: RefOrValue<CelValue>,
-  trueValue: RefOrValue<CelValue>,
-  falseValue: RefOrValue<CelValue>
-): CelExpression<T> & T;
-function conditional<T = unknown>(
-  contextOrCondition: SerializationContext | RefOrValue<CelValue>,
-  conditionOrTrueValue: RefOrValue<CelValue>,
-  trueValueOrFalseValue: RefOrValue<CelValue>,
-  falseValue?: RefOrValue<CelValue>
-): CelExpression<T> {
-  if (falseValue !== undefined) {
-    // Context overload: Pass the generic type <T> to the expr call
-    const context = contextOrCondition as SerializationContext;
-    return expr<T>(context, conditionOrTrueValue, ' ? ', trueValueOrFalseValue, ' : ', falseValue);
-  } else {
-    // No context overload: Pass the generic type <T> to the expr call
-    return expr<T>(contextOrCondition, ' ? ', conditionOrTrueValue, ' : ', trueValueOrFalseValue);
-  }
+): CelExpression<T> & T {
+  return expr<T>(condition, ' ? ', trueValue, ' : ', falseValue);
 }
 
 /**
@@ -248,33 +182,8 @@ function conditional<T = unknown>(
 function math<T = unknown>(
   operation: string,
   ...operands: RefOrValue<CelValue>[]
-): CelExpression<T> & T;
-function math<T = unknown>(
-  context: SerializationContext,
-  operation: string,
-  ...operands: RefOrValue<CelValue>[]
-): CelExpression<T> & T;
-function math<T = unknown>(
-  contextOrOperation: SerializationContext | string,
-  operationOrFirstOperand?: string | RefOrValue<CelValue>,
-  ...operands: RefOrValue<CelValue>[]
 ): CelExpression<T> & T {
-  let context: SerializationContext | undefined;
-  let operation: string;
-  let actualOperands: RefOrValue<CelValue>[];
-
-  if (typeof contextOrOperation === 'string') {
-    // No context overload
-    operation = contextOrOperation;
-    actualOperands = operationOrFirstOperand ? [operationOrFirstOperand, ...operands] : operands;
-  } else {
-    // Context overload
-    context = contextOrOperation;
-    operation = operationOrFirstOperand as string;
-    actualOperands = operands;
-  }
-
-  const operandStrings = actualOperands.map((op) => {
+  const operandStrings = operands.map((op) => {
     if (isKubernetesRef(op)) {
       return getInnerCelPath(op);
     }
@@ -284,10 +193,7 @@ function math<T = unknown>(
     return String(op);
   });
 
-  const result = context
-    ? expr(context, `${operation}(${operandStrings.join(', ')})`)
-    : expr(`${operation}(${operandStrings.join(', ')})`);
-  return result as unknown as CelExpression<T> & T;
+  return expr<T>(`${operation}(${operandStrings.join(', ')})`);
 }
 
 /**
@@ -302,39 +208,14 @@ function math<T = unknown>(
 function template(
   templateString: string,
   ...values: RefOrValue<CelValue>[]
-): CelExpression<string> & string;
-function template(
-  context: SerializationContext,
-  templateString: string,
-  ...values: RefOrValue<CelValue>[]
-): CelExpression<string> & string;
-function template(
-  contextOrTemplateString: SerializationContext | string,
-  templateStringOrFirstValue?: string | RefOrValue<CelValue>,
-  ...values: RefOrValue<CelValue>[]
 ): CelExpression<string> & string {
-  let _context: SerializationContext | undefined;
-  let templateString: string;
-  let actualValues: RefOrValue<CelValue>[];
-
-  if (typeof contextOrTemplateString === 'string') {
-    // No context overload
-    templateString = contextOrTemplateString;
-    actualValues = templateStringOrFirstValue ? [templateStringOrFirstValue, ...values] : values;
-  } else {
-    // Context overload
-    _context = contextOrTemplateString;
-    templateString = templateStringOrFirstValue as string;
-    actualValues = values;
-  }
-
   let result = templateString;
   let valueIndex = 0;
 
   // Replace %s placeholders with ${...} CEL expressions
   result = result.replace(/%s/g, () => {
-    if (valueIndex < actualValues.length) {
-      const value = actualValues[valueIndex++];
+    if (valueIndex < values.length) {
+      const value = values[valueIndex++];
       if (isKubernetesRef(value)) {
         // For KubernetesRef, create a ${...} placeholder
         return `\${${getInnerCelPath(value)}}`;
@@ -367,31 +248,8 @@ function template(
  * - concat('http://', serviceName) -> "http://" + serviceName
  * - concat(prefix, '-', suffix) -> prefix + "-" + suffix
  */
-function concat(...parts: RefOrValue<CelValue>[]): CelExpression<string> & string;
-function concat(
-  context: SerializationContext,
-  ...parts: RefOrValue<CelValue>[]
-): CelExpression<string> & string;
-function concat(
-  contextOrFirstPart: SerializationContext | RefOrValue<CelValue>,
-  ...parts: RefOrValue<CelValue>[]
-): CelExpression<string> & string {
-  let _context: SerializationContext | undefined;
-  let actualParts: RefOrValue<CelValue>[];
-
-  // Check if first argument is a context object
-  if (
-    contextOrFirstPart &&
-    typeof contextOrFirstPart === 'object' &&
-    'celPrefix' in contextOrFirstPart
-  ) {
-    _context = contextOrFirstPart as SerializationContext;
-    actualParts = parts;
-  } else {
-    actualParts = [contextOrFirstPart as RefOrValue<CelValue>, ...parts];
-  }
-
-  const celParts = actualParts.map((part) => {
+function concat(...parts: RefOrValue<CelValue>[]): CelExpression<string> & string {
+  const celParts = parts.map((part) => {
     if (isKubernetesRef(part)) {
       return getInnerCelPath(part);
     }
@@ -531,30 +389,6 @@ export const Cel = {
     math<string>('string', value) as CelExpression<string> & string,
   int: (value: RefOrValue<CelValue>) => math<number>('int', value),
   double: (value: RefOrValue<CelValue>) => math<number>('double', value),
-
-  // Context-aware versions
-  withContext: (context: SerializationContext) => ({
-    expr: (...parts: RefOrValue<CelValue>[]) => expr(context, ...parts),
-    join: (...parts: RefOrValue<CelValue>[]) => join(context, ...parts),
-    conditional: (
-      condition: RefOrValue<CelValue>,
-      trueValue: RefOrValue<CelValue>,
-      falseValue: RefOrValue<CelValue>
-    ) => conditional(context, condition, trueValue, falseValue),
-    math: (operation: string, ...operands: RefOrValue<CelValue>[]) =>
-      math(context, operation, ...operands),
-    template: (templateString: string, ...values: RefOrValue<CelValue>[]) =>
-      template(context, templateString, ...values),
-    concat: (...parts: RefOrValue<CelValue>[]) => concat(context, ...parts),
-
-    min: (...values: RefOrValue<CelValue>[]) => math<number>(context, 'min', ...values),
-    max: (...values: RefOrValue<CelValue>[]) => math<number>(context, 'max', ...values),
-    size: (collection: RefOrValue<CelValue>) => math<number>(context, 'size', collection),
-    string: (value: RefOrValue<CelValue>) =>
-      math<string>(context, 'string', value) as CelExpression<string> & string,
-    int: (value: RefOrValue<CelValue>) => math<number>(context, 'int', value),
-    double: (value: RefOrValue<CelValue>) => math<number>(context, 'double', value),
-  }),
 };
 
 // Export cel as a standalone function for template literal usage
