@@ -865,6 +865,20 @@ export class KubernetesClientProvider {
         });
       }
     }
+
+    // Check for bearer token over HTTP (unencrypted)
+    const user = kc.getCurrentUser();
+    if (cluster?.server?.startsWith('http://') && user?.token) {
+      this.logger.warn(
+        'Bearer token configured for unencrypted HTTP connection - token may be intercepted',
+        {
+          server: cluster.server,
+          security: 'bearer-token-over-http',
+          recommendation: 'Use HTTPS endpoint to protect bearer token in transit',
+          securityRisk: 'Bearer tokens sent over HTTP are visible to network observers',
+        }
+      );
+    }
   }
 
   /**
