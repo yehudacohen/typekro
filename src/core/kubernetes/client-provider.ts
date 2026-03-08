@@ -493,7 +493,7 @@ export class KubernetesClientProvider {
       retryableErrors = this.defaultRetryableErrorCheck,
     } = options;
 
-    let lastError: Error;
+    let lastError: Error | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -532,7 +532,9 @@ export class KubernetesClientProvider {
       }
     }
 
-    throw lastError!;
+    // Unreachable when maxAttempts >= 1: either the operation succeeds (return)
+    // or the last attempt's catch block throws. This handles maxAttempts === 0.
+    throw lastError ?? new Error(`Retry failed: maxAttempts was ${maxAttempts}`);
   }
 
   /**
