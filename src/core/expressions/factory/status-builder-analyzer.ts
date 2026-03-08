@@ -20,7 +20,7 @@ import type { Node as ESTreeNode, Identifier, ObjectExpression, ReturnStatement 
 import { containsKubernetesRefs } from '../../../utils/type-guards.js';
 import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
@@ -388,7 +388,7 @@ export class StatusBuilderAnalyzer {
           }
         } catch (error: unknown) {
           const fieldError = new ConversionError(
-            `Failed to analyze status field '${property.name}': ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to analyze status field '${property.name}': ${ensureError(error).message}`,
             property.valueSource,
             'unknown'
           );
@@ -400,7 +400,7 @@ export class StatusBuilderAnalyzer {
             fieldName: property.name,
             reason: 'Field contains patterns that cannot be converted to CEL',
             fallbackBehavior: 'Static evaluation will be used',
-            error: error instanceof Error ? error.message : String(error),
+            error: ensureError(error).message,
           });
         }
       }
@@ -439,7 +439,7 @@ export class StatusBuilderAnalyzer {
       };
     } catch (error: unknown) {
       const analysisError = new ConversionError(
-        `Failed to analyze status builder: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze status builder: ${ensureError(error).message}`,
         statusBuilder.toString(),
         'function-call'
       );
@@ -449,7 +449,7 @@ export class StatusBuilderAnalyzer {
         {
           reason: 'Status builder contains patterns that cannot be converted to CEL expressions',
           fallbackBehavior: 'Static evaluation will be used instead',
-          error: error instanceof Error ? error.message : String(error),
+          error: ensureError(error).message,
         }
       );
 
@@ -512,7 +512,7 @@ export class StatusBuilderAnalyzer {
       } catch (error: unknown) {
         errors.push(
           new ConversionError(
-            `Failed to analyze field '${fieldName}': ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to analyze field '${fieldName}': ${ensureError(error).message}`,
             String(fieldValue),
             'unknown'
           )
@@ -589,7 +589,7 @@ export class StatusBuilderAnalyzer {
       };
     } catch (error: unknown) {
       const fieldError = new ConversionError(
-        `Failed to analyze return object field '${fieldName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze return object field '${fieldName}': ${ensureError(error).message}`,
         String(fieldValue),
         'unknown'
       );
@@ -690,7 +690,7 @@ export class StatusBuilderAnalyzer {
     } catch (error: unknown) {
       structureErrors.push(
         new ConversionError(
-          `Failed to analyze nested structure: ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to analyze nested structure: ${ensureError(error).message}`,
           String(returnObject),
           'unknown'
         )
@@ -758,7 +758,7 @@ export class StatusBuilderAnalyzer {
       } catch (error: unknown) {
         errors.push(
           new ConversionError(
-            `Failed to analyze nested field '${fullPath}': ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to analyze nested field '${fullPath}': ${ensureError(error).message}`,
             String(value),
             'unknown'
           )
@@ -785,7 +785,7 @@ export class StatusBuilderAnalyzer {
         fieldPath: kubernetesRef.fieldPath,
         reason: 'Reference pattern cannot be converted to CEL',
         fallbackBehavior: 'Static reference will be used',
-        error: error instanceof Error ? error.message : String(error),
+        error: ensureError(error).message,
       });
 
       // Return a safe fallback
@@ -1504,7 +1504,7 @@ export class StatusBuilderAnalyzer {
       return ast as ESTreeNode;
     } catch (error: unknown) {
       throw new ConversionError(
-        `Failed to parse status builder function: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to parse status builder function: ${ensureError(error).message}`,
         source,
         'javascript'
       );
@@ -1831,7 +1831,7 @@ export class StatusBuilderAnalyzer {
       };
     } catch (error: unknown) {
       const fieldError = new ConversionError(
-        `Failed to analyze field '${fieldName}': ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze field '${fieldName}': ${ensureError(error).message}`,
         originalExpression,
         'unknown'
       );

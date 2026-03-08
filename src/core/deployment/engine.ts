@@ -907,7 +907,7 @@ export class DirectDeploymentEngine {
     } catch (error: unknown) {
       logger.warn('Failed to update resourceKeyMapping with live resource', {
         originalResourceId,
-        error: error instanceof Error ? error.message : String(error),
+        error: ensureError(error).message,
       });
     }
   }
@@ -1595,7 +1595,7 @@ export class DirectDeploymentEngine {
         this.emitEvent(options, {
           type: 'resource-status',
           resourceId: deployedResource.id,
-          message: `Unable to read resource status: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Unable to read resource status: ${ensureError(error).message}`,
           timestamp: new Date(),
         });
 

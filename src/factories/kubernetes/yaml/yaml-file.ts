@@ -2,7 +2,7 @@ import type * as k8s from '@kubernetes/client-node';
 import { PatchStrategy } from '@kubernetes/client-node';
 import * as yaml from 'js-yaml';
 import { DEFAULT_CRD_PATCH_TIMEOUT } from '../../../core/config/defaults.js';
-import { ResourceGraphFactoryError } from '../../../core/errors.js';
+import { ensureError, ResourceGraphFactoryError } from '../../../core/errors.js';
 import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
 import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
 import { isKubernetesError } from '../../../core/kubernetes/type-guards.js';
@@ -202,19 +202,14 @@ async function applyCRDWithSchemaFix(
       logger.warn('CRD validation error during server-side apply — falling back to existing CRD', {
         crdName,
         statusCode,
-        message:
-          errDetails?.body?.message ?? (error instanceof Error ? error.message : String(error)),
+        message: errDetails?.body?.message ?? ensureError(error).message,
         note: 'This may happen if the CRD has stored versions that cannot be updated. The existing CRD will be used as-is, which may cause field stripping if the schema is incomplete.',
       });
     } else {
-      logger.error(
-        'Failed to apply CRD with schema fix',
-        error instanceof Error ? error : new Error(String(error)),
-        {
-          crdName,
-          statusCode,
-        }
-      );
+      logger.error('Failed to apply CRD with schema fix', ensureError(error), {
+        crdName,
+        statusCode,
+      });
       throw error;
     }
   }
@@ -298,7 +293,7 @@ async function applyCRDSchemaJsonPatch(
     // Log but don't fail - the CRD may still work
     logger.warn('Failed to apply JSON patch to CRD schema', {
       crdName,
-      error: error instanceof Error ? error.message : String(error),
+      error: ensureError(error).message,
       note: 'The CRD may still work, but values might be stripped',
     });
   }
@@ -466,7 +461,7 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
           });
         } catch (error: unknown) {
           // Extract status code from various error formats
-          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorMessage = ensureError(error).message;
           const statusCode =
             getErrorStatusCode(error) ||
             (errorMessage.includes('HTTP-Code: 409') ? 409 : undefined);
@@ -524,11 +519,9 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                   apiVersion: manifest.apiVersion || 'v1',
                 });
               } catch (replaceError: unknown) {
-                logger.error(
-                  'Failed to replace resource',
-                  replaceError instanceof Error ? replaceError : undefined,
-                  { resourceName }
-                );
+                logger.error('Failed to replace resource', ensureError(replaceError), {
+                  resourceName,
+                });
                 throw replaceError;
               }
             } else {

@@ -6,7 +6,7 @@
  */
 
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -160,7 +160,7 @@ export class ContextAwareCelGenerator {
       };
     } catch (error: unknown) {
       throw new ConversionError(
-        `Failed to generate CEL expression using ${strategy} strategy: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to generate CEL expression using ${strategy} strategy: ${ensureError(error).message}`,
         kubernetesRefs.map((ref) => `${ref.resourceId}.${ref.fieldPath}`).join(', '),
         'unknown'
       );

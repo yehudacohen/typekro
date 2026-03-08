@@ -7,7 +7,7 @@
 
 // Phase 4 alchemy integration
 import type * as k8s from '@kubernetes/client-node';
-import { TypeKroError } from '../core/errors.js';
+import { ensureError, TypeKroError } from '../core/errors.js';
 import { generateDeterministicResourceId } from '../core/resources/id.js';
 import type { ResolutionContext } from '../core/types/deployment.js';
 import type { KubernetesResource } from '../core/types/kubernetes.js';
@@ -249,9 +249,9 @@ export async function resolveAlchemyPromise(
     return resolvedResource;
   } catch (error: unknown) {
     throw new TypeKroError(
-      `Failed to resolve alchemy resource ${resourceId}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to resolve alchemy resource ${resourceId}: ${ensureError(error).message}`,
       'ALCHEMY_RESOLUTION_FAILED',
-      { resourceId, cause: error instanceof Error ? error.message : String(error) }
+      { resourceId, cause: ensureError(error).message }
     );
   }
 }

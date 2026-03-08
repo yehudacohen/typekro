@@ -8,7 +8,7 @@
 import { extractResourceReferences } from '../../../utils/type-guards.js';
 import type { CompositionContext } from '../../composition/context.js';
 import { getCurrentCompositionContext } from '../../composition/context.js';
-import { CompositionExecutionError } from '../../errors.js';
+import { CompositionExecutionError, ensureError } from '../../errors.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type {
   KroCompatibleType,
@@ -326,11 +326,11 @@ export class CompositionExpressionAnalyzer {
       };
     } catch (error: unknown) {
       throw new CompositionExecutionError(
-        `Failed to analyze composition function: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze composition function: ${ensureError(error).message}`,
         'unknown',
         'validation',
         undefined,
-        error instanceof Error ? error : undefined
+        ensureError(error)
       );
     }
   }
@@ -386,11 +386,11 @@ export class CompositionExpressionAnalyzer {
       };
     } catch (error: unknown) {
       throw new CompositionExecutionError(
-        `Failed to analyze resource creation: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze resource creation: ${ensureError(error).message}`,
         'unknown',
         'resource-creation',
         undefined,
-        error instanceof Error ? error : undefined
+        ensureError(error)
       );
     }
   }
@@ -587,7 +587,7 @@ export class CompositionExpressionAnalyzer {
       }
     } catch (error: unknown) {
       errors.push(
-        `Status shape validation failed: ${error instanceof Error ? error.message : String(error)}`
+        `Status shape validation failed: ${ensureError(error).message}`
       );
     }
 

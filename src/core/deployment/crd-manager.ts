@@ -149,7 +149,7 @@ export class CRDManager {
         logger.warn(
           'Failed to auto-patch Flux CRDs - deployment may fail if CRDs lack proper schema',
           {
-            error: error instanceof Error ? error.message : String(error),
+            error: ensureError(error).message,
             suggestion: 'Ensure RBAC permissions to patch CRDs, or set autoFix.fluxCRDs: false',
           }
         );

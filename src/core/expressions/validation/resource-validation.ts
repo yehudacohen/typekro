@@ -7,7 +7,7 @@
  */
 
 import { calculateSimilarity } from '../../../utils/string.js';
-import { TypeKroError } from '../../errors.js';
+import { TypeKroError, ensureError } from '../../errors.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -296,7 +296,7 @@ export class ResourceReferenceValidator {
       return result;
     } catch (error: unknown) {
       const validationError = new ResourceValidationError(
-        `Validation failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Validation failed: ${ensureError(error).message}`,
         refKey,
         'INVALID_FIELD_PATH'
       );

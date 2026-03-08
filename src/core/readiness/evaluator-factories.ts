@@ -11,6 +11,7 @@
  * - Phase-Based: Single status.phase field comparison
  */
 
+import { ensureError } from '../errors.js';
 import type { ReadinessEvaluator, ResourceStatus } from '../types/kubernetes.js';
 
 // =============================================================================
@@ -149,7 +150,7 @@ export function createConditionBasedReadinessEvaluator(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ${kind} readiness: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Error evaluating ${kind} readiness: ${ensureError(error).message}`,
       };
     }
   };
@@ -229,7 +230,7 @@ export function createPhaseBasedReadinessEvaluator<T = unknown>(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ${kind} readiness: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Error evaluating ${kind} readiness: ${ensureError(error).message}`,
       };
     }
   };

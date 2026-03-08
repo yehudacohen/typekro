@@ -13,7 +13,7 @@ import {
   KUBERNETES_REF_BRAND,
   NESTED_COMPOSITION_BRAND,
 } from '../constants/brands.js';
-import { CompositionExecutionError } from '../errors.js';
+import { CompositionExecutionError, ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type {
@@ -491,13 +491,13 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           return combined;
         } catch (error: unknown) {
           throw CompositionExecutionError.withResourceContext(
-            `Failed to execute composition function: ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to execute composition function: ${ensureError(error).message}`,
             compositionName,
             'resource-creation',
             'composition-function',
             'composition',
             'kubernetesComposition',
-            error instanceof Error ? error : undefined
+            ensureError(error)
           );
         }
       },
@@ -535,7 +535,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             'status-object',
             'MagicAssignableShape<TStatus>',
             capturedStatus,
-            error instanceof Error ? error : undefined
+            ensureError(error)
           );
         }
       },
@@ -611,7 +611,7 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
   } catch (error: unknown) {
     const endTime = Date.now();
     CompositionDebugger.logPerformanceMetrics('Failed Composition', startTime, endTime, {
-      error: error instanceof Error ? error.message : String(error),
+      error: ensureError(error).message,
     });
 
     if (error instanceof CompositionExecutionError) {
@@ -619,11 +619,11 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
     }
 
     throw new CompositionExecutionError(
-      `Composition execution failed: ${error instanceof Error ? error.message : String(error)}`,
+      `Composition execution failed: ${ensureError(error).message}`,
       compositionName,
       'context-setup',
       undefined,
-      error instanceof Error ? error : undefined
+      ensureError(error)
     );
   }
 }

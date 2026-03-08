@@ -8,6 +8,7 @@
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import type { CompositionContext } from '../../composition/context.js';
 import { getCurrentCompositionContext } from '../../composition/context.js';
+import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type {
@@ -61,7 +62,7 @@ export class CompositionIntegrationHooks {
     } catch (error: unknown) {
       // Non-fatal error - composition can continue without pre-analysis
       this.logger.warn('Composition pre-analysis failed (non-fatal)', {
-        error: error instanceof Error ? error.message : String(error),
+        error: ensureError(error).message,
       });
     }
   }
@@ -280,11 +281,9 @@ export class CompositionIntegrationHooks {
       // Execute factory with side-effect tracking
       return this.handleSideEffectCreation(factoryFn, undefined, getCurrentCompositionContext());
     } catch (error: unknown) {
-      this.logger.error(
-        'Factory function failed in composition context',
-        error instanceof Error ? error : undefined,
-        { factoryName }
-      );
+      this.logger.error('Factory function failed in composition context', ensureError(error), {
+        factoryName,
+      });
       throw error;
     }
   }

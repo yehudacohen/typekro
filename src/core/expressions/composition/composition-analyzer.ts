@@ -17,6 +17,7 @@
 
 import { Parser } from 'acorn';
 import * as estraverse from 'estraverse';
+import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 
 const logger = getComponentLogger('composition-analyzer');
@@ -1395,7 +1396,7 @@ export function analyzeCompositionBody(
       }
     }
   } catch (error: unknown) {
-    const msg = `Failed to analyze composition function: ${error instanceof Error ? error.message : String(error)}`;
+    const msg = `Failed to analyze composition function: ${ensureError(error).message}`;
     logger.warn(msg);
     result.errors.push(msg);
   }

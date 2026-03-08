@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import { ResourceGraphFactoryError } from '../../../core/errors.js';
+import { ensureError, ResourceGraphFactoryError } from '../../../core/errors.js';
 import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
@@ -193,11 +193,9 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
                     apiVersion: manifest.apiVersion || 'v1',
                   });
                 } catch (replaceError: unknown) {
-                  logger.error(
-                    'Failed to replace resource',
-                    replaceError instanceof Error ? replaceError : undefined,
-                    { resourceName }
-                  );
+                  logger.error('Failed to replace resource', ensureError(replaceError), {
+                    resourceName,
+                  });
                   throw replaceError;
                 }
               } else {

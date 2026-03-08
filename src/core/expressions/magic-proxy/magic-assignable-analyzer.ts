@@ -15,7 +15,7 @@
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
 import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import type { CelExpression, KubernetesRef, MagicAssignable } from '../../types/common.js';
 import type { MagicAssignableShape } from '../../types/serialization.js';
 import {
@@ -161,7 +161,7 @@ export class MagicAssignableAnalyzer {
       };
     } catch (error: unknown) {
       const conversionError = new ConversionError(
-        `Failed to analyze MagicAssignable value: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze MagicAssignable value: ${ensureError(error).message}`,
         String(value),
         'magic-assignable'
       );
@@ -279,7 +279,7 @@ export class MagicAssignableAnalyzer {
           }
         } catch (error: unknown) {
           const fieldError = new ConversionError(
-            `Failed to analyze field '${key}': ${error instanceof Error ? error.message : String(error)}`,
+            `Failed to analyze field '${key}': ${ensureError(error).message}`,
             String(value),
             'magic-assignable-shape'
           );
@@ -311,7 +311,7 @@ export class MagicAssignableAnalyzer {
       };
     } catch (error: unknown) {
       const shapeError = new ConversionError(
-        `Failed to analyze MagicAssignableShape: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze MagicAssignableShape: ${ensureError(error).message}`,
         '[circular or complex object]',
         'magic-assignable-shape'
       );

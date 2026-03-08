@@ -15,7 +15,7 @@ import type { Node as ESTreeNode, Identifier, MemberExpression } from 'estree';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { MagicProxy } from '../../types/references.js';
@@ -231,7 +231,7 @@ export class MagicProxyAnalyzer {
         );
       }
       throw new ConversionError(
-        `Failed to parse JavaScript expression: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Failed to parse JavaScript expression: ${ensureError(error).message}`,
         expressionSource,
         'javascript'
       );
@@ -673,7 +673,7 @@ export class MagicProxyAnalyzer {
     _context: MagicProxyAnalysisContext
   ): MagicProxyAnalysisResult {
     const conversionError = new ConversionError(
-      `Magic proxy analysis failed: ${error instanceof Error ? error.message : String(error)}`,
+      `Magic proxy analysis failed: ${ensureError(error).message}`,
       String(expression),
       'javascript'
     );

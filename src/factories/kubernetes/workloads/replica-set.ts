@@ -1,4 +1,5 @@
 import type { V1ReplicaSet } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -34,7 +35,7 @@ export function replicaSet(resource: V1ReplicaSet): Enhanced<V1ReplicaSetSpec, V
     } catch (error: unknown) {
       return {
         ready: false,
-        reason: `Error checking ReplicaSet status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error checking ReplicaSet status: ${ensureError(error).message}`,
       };
     }
   });

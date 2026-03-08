@@ -16,7 +16,12 @@ import {
   DEFAULT_RGD_TIMEOUT,
 } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
-import { DeploymentTimeoutError, ResourceGraphFactoryError, TypeKroError } from '../../errors.js';
+import {
+  DeploymentTimeoutError,
+  ensureError,
+  ResourceGraphFactoryError,
+  TypeKroError,
+} from '../../errors.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { getResourceId } from '../../resources/id.js';
@@ -377,7 +382,7 @@ export class KroDeploymentStrategy<
         } catch (error: unknown) {
           logger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
             rgdName,
-            error: error instanceof Error ? error.message : String(error),
+            error: ensureError(error).message,
           });
           // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
           expectedCustomStatusFields = false;

@@ -8,7 +8,7 @@
 
 import type { Type } from 'arktype';
 import { escapeRegExp } from '../../../utils/helpers.js';
-import { TypeKroError } from '../../errors.js';
+import { TypeKroError, ensureError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -208,7 +208,7 @@ export class ExpressionTypeValidator {
         valid: false,
         errors: [
           new TypeValidationError(
-            `Type validation failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Type validation failed: ${ensureError(error).message}`,
             expression,
             { typeName: 'unknown', optional: false, nullable: false },
             { typeName: 'unknown', optional: false, nullable: false }
@@ -298,7 +298,7 @@ export class ExpressionTypeValidator {
         valid: false,
         errors: [
           new TypeValidationError(
-            `KubernetesRef validation failed: ${error instanceof Error ? error.message : String(error)}`,
+            `KubernetesRef validation failed: ${ensureError(error).message}`,
             `${ref.resourceId}.${ref.fieldPath}`,
             { typeName: 'unknown', optional: false, nullable: false },
             { typeName: 'unknown', optional: false, nullable: false }

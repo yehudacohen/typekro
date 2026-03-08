@@ -1,4 +1,5 @@
 import type { V1PersistentVolumeClaim } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -43,7 +44,7 @@ export function persistentVolumeClaim(
     } catch (error: unknown) {
       return {
         ready: false,
-        reason: `Error checking PVC status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error checking PVC status: ${ensureError(error).message}`,
       };
     }
   });

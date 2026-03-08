@@ -9,7 +9,7 @@
  */
 
 import { containsKubernetesRefs, isKubernetesRef } from '../../../utils/type-guards.js';
-import { ConversionError } from '../../errors.js';
+import { ConversionError, ensureError } from '../../errors.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
@@ -222,7 +222,7 @@ export class ResourceAnalyzer {
     } catch (error: unknown) {
       result.errors.push(
         new ConversionError(
-          `Failed to analyze resource config: ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to analyze resource config: ${ensureError(error).message}`,
           JSON.stringify(config),
           'unknown'
         )
@@ -316,7 +316,7 @@ export class ResourceAnalyzer {
       return celExpression;
     } catch (error: unknown) {
       const conversionError = new ConversionError(
-        `Failed to convert KubernetesRef at ${fieldPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to convert KubernetesRef at ${fieldPath}: ${ensureError(error).message}`,
         `${ref.resourceId}.${ref.fieldPath}`,
         'member-access'
       );
@@ -366,7 +366,7 @@ export class ResourceAnalyzer {
       return expression;
     } catch (error: unknown) {
       const conversionError = new ConversionError(
-        `Failed to analyze expression at ${fieldPath}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to analyze expression at ${fieldPath}: ${ensureError(error).message}`,
         expression,
         'javascript'
       );
@@ -1259,7 +1259,7 @@ class ResourceTypeValidator {
       }
     } catch (error: unknown) {
       result.valid = false;
-      result.error = error instanceof Error ? error.message : String(error);
+      result.error = ensureError(error).message;
       return result;
     }
   }
