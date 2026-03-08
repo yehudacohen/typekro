@@ -57,7 +57,7 @@ function parseYamlManifests(yamlContent: string): KubernetesResource[] {
  * @param kubeConfig - Optional KubeConfig for CRD schema patching
  */
 async function applyWithServerSideApply(
-  kubernetesApi: any,
+  kubernetesApi: k8s.KubernetesObjectApi,
   manifest: KubernetesResource,
   fieldManager: string,
   forceConflicts: boolean,
@@ -132,7 +132,7 @@ async function applyWithServerSideApply(
  * @param kubeConfig - Optional KubeConfig for ApiextensionsV1Api (for JSON patching)
  */
 async function applyCRDWithSchemaFix(
-  kubernetesApi: any,
+  kubernetesApi: k8s.KubernetesObjectApi,
   manifest: KubernetesResource,
   fieldManager: string,
   forceConflicts: boolean,
@@ -243,7 +243,7 @@ async function applyCRDSchemaJsonPatch(
     logger.debug('Read current CRD successfully', { crdName });
 
     // Generate patches based on what the current CRD is missing
-    const patches: any[] = [];
+    const patches: Array<{ op: string; path: string; value: unknown }> = [];
     // V1CustomResourceDefinition has spec.versions properly typed — no cast needed
     const versions = currentCrd.spec?.versions || [];
 

@@ -254,7 +254,7 @@ function isInCidr(ip: number, network: number, prefixLen: number): boolean {
 function ipv4ToIntChecked(ip: string): number {
   const result = ipv4ToInt(ip);
   if (result === null) {
-    throw new Error(`Invalid hardcoded IPv4 address: ${ip}`);
+    throw new TypeKroError(`Invalid hardcoded IPv4 address: ${ip}`, 'INVALID_IPV4_ADDRESS');
   }
   return result;
 }
