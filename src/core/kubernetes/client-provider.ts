@@ -166,7 +166,7 @@ export class KubernetesClientProvider {
   private initialized = false;
 
   // Client cache to avoid recreating clients unnecessarily
-  private clientCache = new Map<string, any>();
+  private clientCache = new Map<string, k8s.ApiType>();
 
   private constructor() {}
 
@@ -553,7 +553,7 @@ export class KubernetesClientProvider {
     // Check if we have a cached client
     if (this.clientCache.has(clientType)) {
       this.logger.debug('Using cached API client', { clientType });
-      return this.clientCache.get(clientType);
+      return this.clientCache.get(clientType) as T;
     }
 
     let client: T;
