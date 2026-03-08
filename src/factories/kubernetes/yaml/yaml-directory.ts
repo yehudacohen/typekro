@@ -1,7 +1,6 @@
 import * as yaml from 'js-yaml';
-import { ensureError, ResourceGraphFactoryError } from '../../../core/errors.js';
+import { ResourceGraphFactoryError } from '../../../core/errors.js';
 import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
-import { getComponentLogger } from '../../../core/logging/index.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
   AppliedResource,
@@ -12,8 +11,7 @@ import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
-
-const logger = getComponentLogger('yaml-directory');
+import { handleConflict } from './conflict-handler.js';
 
 /**
  * Parse YAML content into Kubernetes manifests
@@ -138,70 +136,8 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
           } catch (error: unknown) {
             // Handle conflicts based on deployment strategy
             if (getErrorStatusCode(error) === 409) {
-              const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
-
-              if (strategy === 'skipIfExists') {
-                logger.info('Skipping existing resource (409 conflict)', {
-                  resourceName,
-                  strategy,
-                });
-                allResults.push({
-                  kind: manifest.kind || 'Unknown',
-                  name: manifest.metadata?.name || 'unknown',
-                  namespace: manifest.metadata?.namespace || undefined,
-                  apiVersion: manifest.apiVersion || 'v1',
-                });
-              } else if (strategy === 'replace') {
-                logger.info('Replacing existing resource (409 conflict)', {
-                  resourceName,
-                  strategy,
-                });
-                // Try to update/replace the resource
-                try {
-                  if (deploymentContext.kubernetesApi) {
-                    // Check if resource exists first
-                    let existing: any;
-                    try {
-                      // In the new API, methods return objects directly (no .body wrapper)
-                      existing = await deploymentContext.kubernetesApi.read({
-                        apiVersion: manifest.apiVersion,
-                        kind: manifest.kind,
-                        metadata: {
-                          name: manifest.metadata?.name || '',
-                          namespace: manifest.metadata?.namespace || 'default',
-                        },
-                      });
-                    } catch (error: unknown) {
-                      // If it's a 404, the resource doesn't exist
-                      if (getErrorStatusCode(error) !== 404) {
-                        throw error;
-                      }
-                    }
-
-                    if (existing) {
-                      // Resource exists, use patch for safer updates
-                      await deploymentContext.kubernetesApi.patch(manifest);
-                    } else {
-                      // Resource does not exist, create it
-                      await deploymentContext.kubernetesApi.create(manifest);
-                    }
-                  }
-                  allResults.push({
-                    kind: manifest.kind || 'Unknown',
-                    name: manifest.metadata?.name || 'unknown',
-                    namespace: manifest.metadata?.namespace || undefined,
-                    apiVersion: manifest.apiVersion || 'v1',
-                  });
-                } catch (replaceError: unknown) {
-                  logger.error('Failed to replace resource', ensureError(replaceError), {
-                    resourceName,
-                  });
-                  throw replaceError;
-                }
-              } else {
-                // strategy === 'fail' (default behavior)
-                throw error;
-              }
+              const result = await handleConflict(error, manifest, strategy, deploymentContext);
+              allResults.push(result);
             } else {
               // Non-conflict errors should always be thrown
               throw error;

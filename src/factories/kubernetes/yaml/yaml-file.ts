@@ -18,6 +18,7 @@ import type { CRDManifest, KubernetesResource } from '../../../core/types/kubern
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
+import { handleConflict } from './conflict-handler.js';
 
 const logger = getComponentLogger('yaml-file');
 
@@ -470,64 +471,14 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
           // Note: 422 validation errors are NOT handled here - they should fail hard
           // as they indicate a real problem with the manifest
           if (statusCode === 409) {
-            const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
-
-            if (strategy === 'skipIfExists') {
-              logger.info('Skipping existing resource (409 conflict)', { resourceName, strategy });
-              results.push({
-                kind: manifest.kind || 'Unknown',
-                name: manifest.metadata?.name || 'unknown',
-                namespace: manifest.metadata?.namespace || undefined,
-                apiVersion: manifest.apiVersion || 'v1',
-              });
-            } else if (strategy === 'replace') {
-              logger.info('Replacing existing resource (409 conflict)', { resourceName, strategy });
-              // Try to update/replace the resource
-              try {
-                if (deploymentContext.kubernetesApi) {
-                  // Check if resource exists first
-                  let existing: any;
-                  try {
-                    // In the new API, methods return objects directly (no .body wrapper)
-                    existing = await deploymentContext.kubernetesApi.read({
-                      apiVersion: manifest.apiVersion,
-                      kind: manifest.kind,
-                      metadata: {
-                        name: manifest.metadata?.name || '',
-                        namespace: manifest.metadata?.namespace || 'default',
-                      },
-                    });
-                  } catch (error: unknown) {
-                    // If it's a 404, the resource doesn't exist
-                    if (getErrorStatusCode(error) !== 404) {
-                      throw error;
-                    }
-                  }
-
-                  if (existing) {
-                    // Resource exists, use patch for safer updates
-                    await deploymentContext.kubernetesApi.patch(manifest);
-                  } else {
-                    // Resource does not exist, create it
-                    await deploymentContext.kubernetesApi.create(manifest);
-                  }
-                }
-                results.push({
-                  kind: manifest.kind || 'Unknown',
-                  name: manifest.metadata?.name || 'unknown',
-                  namespace: manifest.metadata?.namespace || undefined,
-                  apiVersion: manifest.apiVersion || 'v1',
-                });
-              } catch (replaceError: unknown) {
-                logger.error('Failed to replace resource', ensureError(replaceError), {
-                  resourceName,
-                });
-                throw replaceError;
-              }
-            } else {
-              // strategy === 'fail' (default behavior)
-              throw error;
-            }
+            const effectiveStrategy = strategy === 'serverSideApply' ? 'replace' : strategy;
+            const result = await handleConflict(
+              error,
+              manifest,
+              effectiveStrategy,
+              deploymentContext
+            );
+            results.push(result);
           } else {
             // Non-conflict errors should always be thrown
             throw error;
