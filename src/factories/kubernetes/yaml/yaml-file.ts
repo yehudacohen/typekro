@@ -304,7 +304,8 @@ export interface YamlFileConfig {
   name: string;
   path: string; // Supports: "./local/file.yaml", "git:github.com/org/repo/path/file.yaml"
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
-  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail' | 'serverSideApply'; // Default: 'replace'
+  /** @default 'replace' */
+  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail' | 'serverSideApply';
   /**
    * Optional transform function to apply to each manifest before deployment.
    * Useful for applying fixes or modifications to external manifests.
