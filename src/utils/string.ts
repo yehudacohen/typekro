@@ -40,25 +40,31 @@ export function pascalCase(str: string): string {
  * Useful for suggesting similar names when a user makes a typo.
  */
 export function levenshteinDistance(str1: string, str2: string): number {
-  const matrix: number[][] = Array(str2.length + 1)
+  const rows = str2.length + 1;
+  const cols = str1.length + 1;
+  const matrix: number[][] = Array(rows)
     .fill(null)
-    .map(() => Array(str1.length + 1).fill(0));
+    .map(() => Array(cols).fill(0) as number[]);
 
-  for (let i = 0; i <= str1.length; i++) matrix[0]![i] = i;
-  for (let j = 0; j <= str2.length; j++) matrix[j]![0] = j;
+  // Safe: matrix[0] always exists since rows >= 1
+  const firstRow = matrix[0] as number[];
+  for (let i = 0; i <= str1.length; i++) firstRow[i] = i;
+  for (let j = 0; j <= str2.length; j++) (matrix[j] as number[])[0] = j;
 
   for (let j = 1; j <= str2.length; j++) {
+    const currentRow = matrix[j] as number[];
+    const previousRow = matrix[j - 1] as number[];
     for (let i = 1; i <= str1.length; i++) {
       const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
-      matrix[j]![i] = Math.min(
-        matrix[j]?.[i - 1]! + 1, // deletion
-        matrix[j - 1]?.[i]! + 1, // insertion
-        matrix[j - 1]?.[i - 1]! + indicator // substitution
+      currentRow[i] = Math.min(
+        (currentRow[i - 1] ?? 0) + 1, // deletion
+        (previousRow[i] ?? 0) + 1, // insertion
+        (previousRow[i - 1] ?? 0) + indicator // substitution
       );
     }
   }
 
-  return matrix[str2.length]?.[str1.length]!;
+  return (matrix[str2.length] as number[])[str1.length] ?? 0;
 }
 
 /**

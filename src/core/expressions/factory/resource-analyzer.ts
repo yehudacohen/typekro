@@ -358,7 +358,8 @@ export class ResourceAnalyzer {
         result.convertedFields.push(fieldPath);
         result.errors.push(...conversionResult.errors);
 
-        return conversionResult.celExpression!;
+        // celExpression is non-null when valid && requiresConversion
+        return conversionResult.celExpression ?? expression;
       }
 
       // No conversion needed or failed - return original
