@@ -113,7 +113,7 @@ export class ExpressionContextDetector {
   /**
    * Detect the context of a JavaScript expression
    */
-  detectContext(expression: any, config: ContextDetectionConfig = {}): ContextDetectionResult {
+  detectContext(expression: unknown, config: ContextDetectionConfig = {}): ContextDetectionResult {
     const kubernetesRefs = this.extractKubernetesRefs(expression);
     const hasKubernetesRefs = kubernetesRefs.length > 0;
 
@@ -160,7 +160,7 @@ export class ExpressionContextDetector {
    */
   detectContextFromFunction(
     functionName: string,
-    args: any[],
+    args: unknown[],
     config: ContextDetectionConfig = {}
   ): ContextDetectionResult {
     // Analyze function name patterns
@@ -205,12 +205,12 @@ export class ExpressionContextDetector {
   /**
    * Analyze the structure of the expression
    */
-  private analyzeExpressionStructure(expression: any): StructureAnalysis {
+  private analyzeExpressionStructure(expression: unknown): StructureAnalysis {
     const analysis: StructureAnalysis = {
       type: typeof expression,
       isFunction: typeof expression === 'function',
       isString: typeof expression === 'string',
-      isObject: expression && typeof expression === 'object',
+      isObject: expression !== null && typeof expression === 'object',
       isArray: Array.isArray(expression),
       hasTemplateLiteral: false,
       hasConditional: false,
@@ -237,7 +237,7 @@ export class ExpressionContextDetector {
       analysis.complexity = this.calculateFunctionComplexity(functionString);
     } else if (expression && typeof expression === 'object') {
       // Analyze object structure
-      analysis.complexity = this.calculateObjectComplexity(expression);
+      analysis.complexity = this.calculateObjectComplexity(expression as Record<string, unknown>);
     }
 
     return analysis;
@@ -247,7 +247,7 @@ export class ExpressionContextDetector {
    * Analyze the content of the expression for context clues
    */
   private analyzeExpressionContent(
-    expression: any,
+    expression: unknown,
     kubernetesRefs: KubernetesRef<any>[]
   ): ContentAnalysis {
     const analysis: ContentAnalysis = {
@@ -595,7 +595,7 @@ export class ExpressionContextDetector {
    * Detect status builder context
    */
   private detectStatusBuilderContext(
-    args: any[],
+    args: unknown[],
     config: ContextDetectionConfig
   ): ContextDetectionResult {
     return {
@@ -617,7 +617,7 @@ export class ExpressionContextDetector {
    * Detect resource builder context
    */
   private detectResourceBuilderContext(
-    args: any[],
+    args: unknown[],
     config: ContextDetectionConfig
   ): ContextDetectionResult {
     return {
@@ -639,7 +639,7 @@ export class ExpressionContextDetector {
    * Detect conditional context
    */
   private detectConditionalContext(
-    args: any[],
+    args: unknown[],
     config: ContextDetectionConfig
   ): ContextDetectionResult {
     return {
@@ -661,7 +661,7 @@ export class ExpressionContextDetector {
    * Detect readiness context
    */
   private detectReadinessContext(
-    args: any[],
+    args: unknown[],
     config: ContextDetectionConfig
   ): ContextDetectionResult {
     return {
@@ -717,7 +717,7 @@ export class ExpressionContextDetector {
   /**
    * Calculate complexity of an object
    */
-  private calculateObjectComplexity(obj: any): number {
+  private calculateObjectComplexity(obj: Record<string, unknown>): number {
     let complexity = 0;
 
     try {

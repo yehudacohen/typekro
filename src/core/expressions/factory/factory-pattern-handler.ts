@@ -27,7 +27,7 @@ export interface FactoryExpressionHandler {
   /**
    * Handle expressions containing KubernetesRef objects
    */
-  handleExpression(expression: any, context: AnalysisContext): CelConversionResult;
+  handleExpression(expression: unknown, context: AnalysisContext): CelConversionResult;
 
   /**
    * Convert a KubernetesRef to appropriate format for this factory pattern
@@ -51,7 +51,7 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
     return 'direct';
   }
 
-  handleExpression(expression: any, context: AnalysisContext): CelConversionResult {
+  handleExpression(expression: unknown, context: AnalysisContext): CelConversionResult {
     try {
       // For direct deployment, we still need to generate CEL expressions
       // but they will be evaluated by the direct deployment engine
@@ -157,7 +157,7 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
   }
 
   private handleComplexExpression(
-    _expression: any,
+    _expression: unknown,
     dependencies: KubernetesRef<any>[],
     _context: AnalysisContext
   ): CelConversionResult {
@@ -196,7 +196,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
     return 'kro';
   }
 
-  handleExpression(expression: any, context: AnalysisContext): CelConversionResult {
+  handleExpression(expression: unknown, context: AnalysisContext): CelConversionResult {
     try {
       // For Kro deployment, we need to generate CEL expressions
       // that will be evaluated by the Kro controller
@@ -300,7 +300,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
   }
 
   private handleComplexExpression(
-    _expression: any,
+    _expression: unknown,
     dependencies: KubernetesRef<any>[],
     _context: AnalysisContext
   ): CelConversionResult {
@@ -373,7 +373,7 @@ export class FactoryPatternHandlerFactory {
  * aware expression handling.
  */
 export function handleExpressionWithFactoryPattern(
-  expression: any,
+  expression: unknown,
   context: AnalysisContext
 ): CelConversionResult {
   const handler = FactoryPatternHandlerFactory.createHandlerFromContext(context);
