@@ -1,4 +1,5 @@
 import type { V1ReplicationController } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -58,8 +59,8 @@ export function replicationController(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ReplicationController readiness: ${error}`,
-        details: { expectedReplicas, error: String(error) },
+        message: `Error evaluating ReplicationController readiness: ${ensureError(error).message}`,
+        details: { expectedReplicas, error: ensureError(error).message },
       };
     }
   });

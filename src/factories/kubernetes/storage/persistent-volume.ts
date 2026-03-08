@@ -1,4 +1,5 @@
 import type { V1PersistentVolume } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -46,8 +47,8 @@ export function persistentVolume(resource: V1PersistentVolume): Enhanced<V1PvSpe
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating PersistentVolume readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating PersistentVolume readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

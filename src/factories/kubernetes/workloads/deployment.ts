@@ -1,4 +1,5 @@
 import type { V1Deployment } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { V1DeploymentSpec, V1DeploymentStatus } from '../types.js';
@@ -73,8 +74,11 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating deployment readiness: ${error}`,
-        details: { expectedReplicas: staticExpectedReplicas ?? 1, error: String(error) },
+        message: `Error evaluating deployment readiness: ${ensureError(error).message}`,
+        details: {
+          expectedReplicas: staticExpectedReplicas ?? 1,
+          error: ensureError(error).message,
+        },
       };
     }
   });

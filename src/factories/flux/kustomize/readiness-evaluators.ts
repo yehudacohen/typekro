@@ -1,3 +1,4 @@
+import { ensureError } from '../../../core/errors.js';
 import type {
   KubernetesCondition,
   ReadinessEvaluator,
@@ -81,7 +82,7 @@ export const kustomizationReadinessEvaluator: ReadinessEvaluator<any> = (
     return {
       ready: false,
       reason: 'EvaluationError',
-      message: `Error evaluating Kustomization readiness: ${error}`,
+      message: `Error evaluating Kustomization readiness: ${ensureError(error).message}`,
     };
   }
 };

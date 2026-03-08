@@ -1,4 +1,5 @@
 import type { V1Namespace } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -61,8 +62,8 @@ export function namespace(resource: NamespaceConfig): Enhanced<V1NamespaceSpec, 
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating namespace readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating namespace readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

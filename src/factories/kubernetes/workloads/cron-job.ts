@@ -1,4 +1,5 @@
 import type { V1CronJob } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -65,8 +66,8 @@ export function cronJob(resource: V1CronJob): Enhanced<V1CronJobSpec, V1CronJobS
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating CronJob readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating CronJob readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

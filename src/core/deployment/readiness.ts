@@ -158,7 +158,7 @@ export class ResourceReadinessChecker {
           emitEvent({
             type: 'progress',
             resourceId: deployedResource.id,
-            message: `Error checking readiness for ${deployedResource.kind}/${deployedResource.name}: ${error}`,
+            message: `Error checking readiness for ${deployedResource.kind}/${deployedResource.name}: ${ensureError(error).message}`,
             timestamp: new Date(),
           });
         }

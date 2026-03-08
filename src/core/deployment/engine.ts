@@ -828,7 +828,7 @@ export class DirectDeploymentEngine {
       const duration = Date.now() - startTime;
       this.emitEvent(options, {
         type: 'failed',
-        message: `Deployment with closures failed: ${error}`,
+        message: `Deployment with closures failed: ${ensureError(error).message}`,
         timestamp: new Date(),
         error: ensureError(error),
       });

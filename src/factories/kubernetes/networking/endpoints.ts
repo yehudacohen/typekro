@@ -1,4 +1,5 @@
 import type { V1Endpoints } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -38,8 +39,8 @@ export function endpoints(resource: V1Endpoints): V1Endpoints & Enhanced<V1Endpo
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating Endpoints readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating Endpoints readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   }) as V1Endpoints & Enhanced<V1Endpoints, object>;

@@ -526,7 +526,7 @@ export class PathResolver {
       }
 
       throw new YamlPathResolutionError(
-        `Failed to read file for resource '${resourceName}': ${localPath}. ${error}`,
+        `Failed to read file for resource '${resourceName}': ${localPath}. ${ensureError(error).message}`,
         resourceName,
         localPath,
         [
@@ -692,7 +692,7 @@ export class PathResolver {
 
       // Handle network and other errors
       throw new GitContentError(
-        `Network error fetching Git content for resource '${resourceName}': ${error}`,
+        `Network error fetching Git content for resource '${resourceName}': ${ensureError(error).message}`,
         resourceName,
         `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}/${gitInfo.path}@${gitInfo.ref}`,
         [
@@ -774,7 +774,7 @@ export class PathResolver {
       }
 
       throw new YamlPathResolutionError(
-        `Failed to discover files in directory for resource '${resourceName}': ${dirPath}. ${error}`,
+        `Failed to discover files in directory for resource '${resourceName}': ${dirPath}. ${ensureError(error).message}`,
         resourceName,
         dirPath,
         [
@@ -1025,7 +1025,7 @@ export class PathResolver {
       }
 
       throw new GitContentError(
-        `Network error discovering Git directory for resource '${resourceName}': ${error}`,
+        `Network error discovering Git directory for resource '${resourceName}': ${ensureError(error).message}`,
         resourceName,
         gitPath,
         [

@@ -1,4 +1,5 @@
 import type { V1PodDisruptionBudget } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -54,8 +55,8 @@ export function podDisruptionBudget(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating PodDisruptionBudget readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating PodDisruptionBudget readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

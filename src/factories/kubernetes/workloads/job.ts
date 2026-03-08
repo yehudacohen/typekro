@@ -1,4 +1,5 @@
 import type { V1Job } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -116,8 +117,13 @@ export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating Job readiness: ${error}`,
-        details: { expectedCompletions, parallelism, completionMode, error: String(error) },
+        message: `Error evaluating Job readiness: ${ensureError(error).message}`,
+        details: {
+          expectedCompletions,
+          parallelism,
+          completionMode,
+          error: ensureError(error).message,
+        },
       };
     }
   });

@@ -162,8 +162,8 @@ export function resourceGraphDefinition(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ResourceGraphDefinition readiness: ${error}`,
-        details: { error: String(error), liveRGD: liveRGD },
+        message: `Error evaluating ResourceGraphDefinition readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message, liveRGD: liveRGD },
       };
     }
   });
