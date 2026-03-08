@@ -462,6 +462,22 @@ function isLikelyStaticObject(obj: any): boolean {
 }
 
 // =============================================================================
+// Internal helpers exported for testing
+// =============================================================================
+
+/** @internal Exported for testing only */
+export {
+  separateResourcesAndClosures,
+  createStubResource,
+  detectAndPreserveCelExpressions,
+  mergePreservedCelExpressions,
+  analyzeStatusMappingTypes,
+  analyzeValueType,
+  isLikelyStaticObject,
+  FACTORY_KIND_MAP,
+};
+
+// =============================================================================
 // NEW FACTORY PATTERN API
 // =============================================================================
 /**
