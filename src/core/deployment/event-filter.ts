@@ -553,16 +553,16 @@ export class EventFilter {
         labelSelector: `app=${replicaSet.name}`,
       });
 
-      return pods.items
-        .filter(
-          (pod: k8s.V1Pod) => pod.metadata?.name && pod.metadata?.namespace && pod.metadata?.uid
-        )
-        .map((pod: k8s.V1Pod) => ({
-          kind: 'Pod',
-          name: pod.metadata?.name!,
-          namespace: pod.metadata?.namespace!,
-          uid: pod.metadata?.uid!,
-        }));
+      const results: ResourceIdentifier[] = [];
+      for (const pod of pods.items) {
+        const name = pod.metadata?.name;
+        const namespace = pod.metadata?.namespace;
+        const uid = pod.metadata?.uid;
+        if (name && namespace && uid) {
+          results.push({ kind: 'Pod', name, namespace, uid });
+        }
+      }
+      return results;
     } catch (error: unknown) {
       this.logger.error('Failed to find pods for ReplicaSet', ensureError(error));
       return [];
