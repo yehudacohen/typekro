@@ -26,174 +26,200 @@ import type {
 } from '../types.js';
 
 // =============================================================================
-// CILIUM NETWORK POLICY FACTORY
+// CILIUM POLICY READINESS EVALUATOR FACTORY
 // =============================================================================
 
 /**
- * Embedded readiness evaluator for CiliumNetworkPolicy
- *
- * Evaluates policy readiness based on:
- * - Policy acceptance by Cilium agent
- * - Endpoint selection and rule application
- * - Error conditions and validation status
+ * Grace period (in seconds) before a Cilium policy without status is considered ready.
+ * Cilium policies don't always populate status immediately — if the resource has existed
+ * for longer than this threshold without errors, it is treated as successfully applied.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- CiliumNetworkPolicy is a CRD without typed client
-export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator<any> = (
-  resource: any
-): ResourceStatus => {
-  const status = resource.status as CiliumResourceStatus | undefined;
+const CILIUM_STATUS_GRACE_PERIOD_SECONDS = 5;
 
-  // Check if status exists - for CiliumNetworkPolicy, no status often means it's been accepted
-  // but not yet processed by the Cilium agent. We'll consider this ready after a brief period.
-  if (!status) {
-    // If the resource exists and has been applied, consider it ready
-    // CiliumNetworkPolicy doesn't always populate status immediately
-    if (resource.metadata?.creationTimestamp) {
-      const createdTime = new Date(resource.metadata.creationTimestamp);
-      const now = new Date();
-      const ageInSeconds = (now.getTime() - createdTime.getTime()) / 1000;
+/** Options for creating a Cilium policy readiness evaluator. */
+interface CiliumPolicyEvaluatorOptions {
+  /** Resource kind name for messages (e.g., 'CiliumNetworkPolicy') */
+  kind: string;
+  /**
+   * Optional suffix appended to certain messages to indicate scope.
+   * For example, ' cluster-wide' for CiliumClusterwideNetworkPolicy.
+   */
+  scopeSuffix?: string;
+}
 
-      // If the policy has existed for more than 5 seconds without errors, consider it ready
-      if (ageInSeconds > 5) {
-        return {
-          ready: true,
-          message: 'CiliumNetworkPolicy applied successfully (no status reported)',
-          details: {
-            phase: 'applied',
-            ageInSeconds: Math.round(ageInSeconds),
-          },
-        };
+/**
+ * Creates a readiness evaluator for Cilium policy resources.
+ *
+ * Evaluates readiness through a multi-level check:
+ * 1. **No status** — falls back to age-based readiness after a grace period
+ * 2. **Conditions** — checks Ready and Valid conditions (standard Cilium pattern)
+ * 3. **State field** — falls back to `status.state` string comparison
+ *
+ * Both CiliumNetworkPolicy and CiliumClusterwideNetworkPolicy share this
+ * exact readiness logic, differing only in their message labels.
+ *
+ * @param options - Configuration for the evaluator
+ * @returns A ReadinessEvaluator for the specified Cilium policy kind
+ */
+function createCiliumPolicyReadinessEvaluator(
+  options: CiliumPolicyEvaluatorOptions
+): ReadinessEvaluator<unknown> {
+  const { kind, scopeSuffix = '' } = options;
+
+  return (resource: unknown): ResourceStatus => {
+    const res = resource as {
+      metadata?: { creationTimestamp?: string };
+      status?: CiliumResourceStatus;
+    };
+    const status = res.status;
+
+    // 1. No status — fall back to age-based readiness
+    if (!status) {
+      if (res.metadata?.creationTimestamp) {
+        const createdTime = new Date(res.metadata.creationTimestamp);
+        const now = new Date();
+        const ageInSeconds = (now.getTime() - createdTime.getTime()) / 1000;
+
+        if (ageInSeconds > CILIUM_STATUS_GRACE_PERIOD_SECONDS) {
+          return {
+            ready: true,
+            message: `${kind} applied successfully (no status reported)`,
+            details: {
+              phase: 'applied',
+              ageInSeconds: Math.round(ageInSeconds),
+            },
+          };
+        }
       }
+
+      return {
+        ready: false,
+        message: `${kind} status not available`,
+        details: { phase: 'pending' },
+      };
     }
 
-    return {
-      ready: false,
-      message: 'CiliumNetworkPolicy status not available',
-      details: { phase: 'pending' },
-    };
-  }
+    // 2. Condition-based checks
+    if (status.conditions) {
+      // Check for Ready condition (standard Kubernetes pattern)
+      const readyCondition = status.conditions.find((c) => c.type === 'Ready');
 
-  // Check for error conditions
-  if (status.conditions) {
-    // Check for Ready condition first (standard Kubernetes pattern)
-    const readyCondition = status.conditions.find((c) => c.type === 'Ready');
+      if (readyCondition) {
+        if (readyCondition.status === 'True') {
+          return {
+            ready: true,
+            message: `${kind} is ready and applied${scopeSuffix}`,
+            details: {
+              lastTransition: readyCondition.lastTransitionTime,
+            },
+          };
+        }
 
-    if (readyCondition) {
-      if (readyCondition.status === 'True') {
-        return {
-          ready: true,
-          message: 'CiliumNetworkPolicy is ready and applied',
-          details: {
-            lastTransition: readyCondition.lastTransitionTime,
-          },
-        };
-      } else {
-        // Handle specific error reasons, prefer message over reason
-        let message = 'CiliumNetworkPolicy not ready';
+        // Not-ready: prefer message over reason for detail
+        let message = `${kind} not ready`;
         if (readyCondition.message) {
-          message = `CiliumNetworkPolicy not ready: ${readyCondition.message}`;
+          message = `${kind} not ready: ${readyCondition.message}`;
         } else if (readyCondition.reason === 'InvalidEndpointSelector') {
-          message = 'CiliumNetworkPolicy not ready: Invalid endpoint selector';
+          message = `${kind} not ready: Invalid endpoint selector`;
         } else if (readyCondition.reason) {
-          message = `CiliumNetworkPolicy not ready: ${readyCondition.reason}`;
+          message = `${kind} not ready: ${readyCondition.reason}`;
         }
 
         return {
           ready: false,
           message,
+          details: { condition: readyCondition },
+        };
+      }
+
+      // Check for validation errors (Cilium uses 'Valid' condition)
+      const invalidCondition = status.conditions.find(
+        (c) => c.type === 'Valid' && c.status === 'False'
+      );
+
+      if (invalidCondition) {
+        return {
+          ready: false,
+          message: `${kind} validation failed: ${invalidCondition.message || invalidCondition.reason || 'Unknown error'}`,
           details: {
-            condition: readyCondition,
+            condition: invalidCondition,
+            state: status.state,
+          },
+        };
+      }
+
+      // Check for valid condition (Cilium uses 'Valid' instead of 'Ready')
+      const validCondition = status.conditions.find(
+        (c) => c.type === 'Valid' && c.status === 'True'
+      );
+
+      if (validCondition) {
+        return {
+          ready: true,
+          message: `${kind} is valid and applied${scopeSuffix}`,
+          details: {
+            condition: validCondition,
+            state: status.state,
+            lastTransition: validCondition.lastTransitionTime,
           },
         };
       }
     }
 
-    // Check for validation errors (Cilium-specific)
-    const invalidCondition = status.conditions.find(
-      (c) => c.type === 'Valid' && c.status === 'False'
-    );
-
-    if (invalidCondition) {
-      return {
-        ready: false,
-        message: `CiliumNetworkPolicy validation failed: ${invalidCondition.message || invalidCondition.reason || 'Unknown error'}`,
-        details: {
-          condition: invalidCondition,
-          state: status.state,
-        },
-      };
+    // 3. State field fallback
+    if (status.state) {
+      switch (status.state.toLowerCase()) {
+        case 'ready':
+        case 'applied':
+          return {
+            ready: true,
+            message: `${kind} is ready`,
+            details: { state: status.state },
+          };
+        case 'error':
+        case 'failed':
+          return {
+            ready: false,
+            message: `${kind} failed: ${status.message || 'Unknown error'}`,
+            details: { state: status.state },
+          };
+        case 'pending':
+        case 'applying':
+          return {
+            ready: false,
+            message: `${kind} is being applied${scopeSuffix}`,
+            details: { state: status.state },
+          };
+        default:
+          return {
+            ready: false,
+            message: `${kind} in unknown state: ${status.state}`,
+            details: { state: status.state },
+          };
+      }
     }
 
-    // Check for valid condition (Cilium uses 'Valid' instead of 'Ready')
-    const validCondition = status.conditions.find((c) => c.type === 'Valid' && c.status === 'True');
-
-    if (validCondition) {
-      return {
-        ready: true,
-        message: 'CiliumNetworkPolicy is valid and applied',
-        details: {
-          condition: validCondition,
-          state: status.state,
-          lastTransition: validCondition.lastTransitionTime,
-        },
-      };
-    }
-
-    // Note: This block is unreachable (readyCondition is handled above) but preserved for defensive coding
-    if (readyCondition) {
-      const cond = readyCondition as unknown as import('../types.js').Condition;
-      return {
-        ready: true,
-        message: 'CiliumNetworkPolicy is ready and applied',
-        details: {
-          condition: cond,
-          state: status.state,
-          lastTransition: cond.lastTransitionTime,
-        },
-      };
-    }
-  }
-
-  // Check state field as fallback
-  if (status.state) {
-    switch (status.state.toLowerCase()) {
-      case 'ready':
-      case 'applied':
-        return {
-          ready: true,
-          message: 'CiliumNetworkPolicy is ready',
-          details: { state: status.state },
-        };
-      case 'error':
-      case 'failed':
-        return {
-          ready: false,
-          message: `CiliumNetworkPolicy failed: ${status.message || 'Unknown error'}`,
-          details: { state: status.state },
-        };
-      case 'pending':
-      case 'applying':
-        return {
-          ready: false,
-          message: 'CiliumNetworkPolicy is being applied',
-          details: { state: status.state },
-        };
-      default:
-        return {
-          ready: false,
-          message: `CiliumNetworkPolicy in unknown state: ${status.state}`,
-          details: { state: status.state },
-        };
-    }
-  }
-
-  // Default to not ready if we can't determine status
-  return {
-    ready: false,
-    message: 'CiliumNetworkPolicy status unclear',
-    details: { status },
+    // Default to not ready
+    return {
+      ready: false,
+      message: `${kind} status unclear`,
+      details: { status },
+    };
   };
-};
+}
+
+// =============================================================================
+// CILIUM NETWORK POLICY FACTORY
+// =============================================================================
+
+/**
+ * Readiness evaluator for CiliumNetworkPolicy.
+ *
+ * Evaluates policy readiness based on conditions (Ready/Valid),
+ * state field, and age-based fallback for resources without status.
+ */
+export const ciliumNetworkPolicyReadinessEvaluator: ReadinessEvaluator<unknown> =
+  createCiliumPolicyReadinessEvaluator({ kind: 'CiliumNetworkPolicy' });
 
 /**
  * Factory function for CiliumNetworkPolicy
@@ -357,138 +383,16 @@ export function ciliumNetworkPolicy(
 // =============================================================================
 
 /**
- * Embedded readiness evaluator for CiliumClusterwideNetworkPolicy
+ * Readiness evaluator for CiliumClusterwideNetworkPolicy.
  *
- * Evaluates cluster-wide policy readiness based on:
- * - Policy acceptance across all nodes
- * - Node selector validation
- * - Cluster-wide rule application status
+ * Uses the same multi-level readiness logic as CiliumNetworkPolicy
+ * with "cluster-wide" scope messaging.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- CiliumClusterwideNetworkPolicy is a CRD without typed client
-export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluator<any> = (
-  resource: any
-): ResourceStatus => {
-  const status = resource.status as CiliumResourceStatus | undefined;
-
-  // Check if status exists - for CiliumClusterwideNetworkPolicy, no status often means it's been accepted
-  // but not yet processed by the Cilium agent. We'll consider this ready after a brief period.
-  if (!status) {
-    // If the resource exists and has been applied, consider it ready
-    // CiliumClusterwideNetworkPolicy doesn't always populate status immediately
-    if (resource.metadata?.creationTimestamp) {
-      const createdTime = new Date(resource.metadata.creationTimestamp);
-      const now = new Date();
-      const ageInSeconds = (now.getTime() - createdTime.getTime()) / 1000;
-
-      // If the policy has existed for more than 5 seconds without errors, consider it ready
-      if (ageInSeconds > 5) {
-        return {
-          ready: true,
-          message: 'CiliumClusterwideNetworkPolicy applied successfully (no status reported)',
-          details: {
-            phase: 'applied',
-            ageInSeconds: Math.round(ageInSeconds),
-          },
-        };
-      }
-    }
-
-    return {
-      ready: false,
-      message: 'CiliumClusterwideNetworkPolicy status not available',
-      details: { phase: 'pending' },
-    };
-  }
-
-  // Check for error conditions
-  if (status.conditions) {
-    // Check for validation errors first
-    const invalidCondition = status.conditions.find(
-      (c) => c.type === 'Valid' && c.status === 'False'
-    );
-
-    if (invalidCondition) {
-      return {
-        ready: false,
-        message: `CiliumClusterwideNetworkPolicy validation failed: ${invalidCondition.message || invalidCondition.reason || 'Unknown error'}`,
-        details: {
-          condition: invalidCondition,
-          state: status.state,
-        },
-      };
-    }
-
-    // Check for valid condition (Cilium uses 'Valid' instead of 'Ready')
-    const validCondition = status.conditions.find((c) => c.type === 'Valid' && c.status === 'True');
-
-    if (validCondition) {
-      return {
-        ready: true,
-        message: 'CiliumClusterwideNetworkPolicy is valid and applied cluster-wide',
-        details: {
-          condition: validCondition,
-          state: status.state,
-          lastTransition: validCondition.lastTransitionTime,
-        },
-      };
-    }
-
-    // Also check for Ready condition as fallback
-    const readyCondition = status.conditions.find((c) => c.type === 'Ready' && c.status === 'True');
-
-    if (readyCondition) {
-      return {
-        ready: true,
-        message: 'CiliumClusterwideNetworkPolicy is ready and applied cluster-wide',
-        details: {
-          condition: readyCondition,
-          state: status.state,
-          lastTransition: readyCondition.lastTransitionTime,
-        },
-      };
-    }
-  }
-
-  // Check state field as fallback
-  if (status.state) {
-    switch (status.state.toLowerCase()) {
-      case 'ready':
-      case 'applied':
-        return {
-          ready: true,
-          message: 'CiliumClusterwideNetworkPolicy is ready',
-          details: { state: status.state },
-        };
-      case 'error':
-      case 'failed':
-        return {
-          ready: false,
-          message: `CiliumClusterwideNetworkPolicy failed: ${status.message || 'Unknown error'}`,
-          details: { state: status.state },
-        };
-      case 'pending':
-      case 'applying':
-        return {
-          ready: false,
-          message: 'CiliumClusterwideNetworkPolicy is being applied cluster-wide',
-          details: { state: status.state },
-        };
-      default:
-        return {
-          ready: false,
-          message: `CiliumClusterwideNetworkPolicy in unknown state: ${status.state}`,
-          details: { state: status.state },
-        };
-    }
-  }
-
-  // Default to not ready if we can't determine status
-  return {
-    ready: false,
-    message: 'CiliumClusterwideNetworkPolicy status unclear',
-    details: { status },
-  };
-};
+export const ciliumClusterwideNetworkPolicyReadinessEvaluator: ReadinessEvaluator<unknown> =
+  createCiliumPolicyReadinessEvaluator({
+    kind: 'CiliumClusterwideNetworkPolicy',
+    scopeSuffix: ' cluster-wide',
+  });
 
 /**
  * Factory function for CiliumClusterwideNetworkPolicy
