@@ -19,6 +19,18 @@ import { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
 import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
 import type { TypeKroDeployer, TypeKroResource, TypeKroResourceProps } from './types.js';
 
+/**
+ * Serializable resource properties stored by Alchemy after deployment.
+ * These are the clean, cloneable fields that represent deployed state.
+ */
+interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
+  resource: T;
+  namespace: string;
+  deployedResource: T;
+  ready: boolean;
+  deployedAt: number;
+}
+
 // Global registry to track registered resource types
 const REGISTERED_TYPES = new Map<string, unknown>();
 
@@ -28,6 +40,11 @@ const REGISTERED_TYPES = new Map<string, unknown>();
  * This function ensures each resource type is registered only once,
  * avoiding "Resource already exists" errors while maintaining type safety.
  */
+// Return type is intentionally `any` because alchemy's Provider/Handler types have complex
+// `this` context bindings (Context<any, any>) that cannot be cleanly represented without `any`.
+// Callers invoke the returned provider as a regular function, but alchemy's internal types
+// require `this: Context<...>` which is bound at runtime by the alchemy framework.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown>>(
   resource: T
 ): any {
@@ -176,7 +193,7 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
 async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   deployer: TypeKroDeployer
-): Promise<{ resourceProperties: any }> {
+): Promise<{ resourceProperties: DeployedResourceProperties<T> }> {
   // Deploy using the created deployer - pass the original resource with KubernetesRef objects
   // The deployer will handle reference resolution internally
   const deployedResource = await deployer.deploy(props.resource, {
@@ -207,10 +224,10 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
  * Log deployment success and context details
  */
 function _logDeploymentSuccess<T extends Enhanced<unknown, unknown>>(
-  logger: any,
+  logger: TypeKroLogger,
   alchemyType: string,
   props: TypeKroResourceProps<T>,
-  resourceProperties: any,
+  resourceProperties: DeployedResourceProperties<T>,
   context: Context<TypeKroResource<T>>
 ): void {
   // Log successful deployment
@@ -256,8 +273,8 @@ function _logDeploymentSuccess<T extends Enhanced<unknown, unknown>>(
  */
 function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
   context: Context<TypeKroResource<T>>,
-  resourceProperties: any,
-  logger: any,
+  resourceProperties: DeployedResourceProperties<T>,
+  logger: TypeKroLogger,
   alchemyType: string
 ): TypeKroResource<T> {
   try {
