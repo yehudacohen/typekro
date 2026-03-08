@@ -4,12 +4,14 @@ import { kustomizationReadinessEvaluator } from './readiness-evaluators.js';
 export interface KustomizationConfig {
   name: string;
   namespace?: string;
+  /** @default '5m' */
   interval?: string;
   source: {
     kind: 'GitRepository' | 'Bucket' | 'OCIRepository';
     name: string;
     namespace?: string;
   };
+  /** @default './' */
   path?: string; // Path within the source repository
   patches?: Array<{
     target?: {

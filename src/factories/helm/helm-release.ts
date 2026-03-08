@@ -11,6 +11,7 @@ import type { HelmReleaseSpec, HelmReleaseStatus } from './types.js';
 export interface HelmReleaseConfig {
   name: string;
   namespace?: string;
+  /** @default '5m' */
   interval?: string;
   chart: {
     repository: string;
@@ -24,7 +25,9 @@ export interface HelmReleaseConfig {
    */
   sourceRef?: {
     name: string;
+    /** @default 'flux-system' */
     namespace?: string;
+    /** @default 'HelmRepository' */
     kind?: 'HelmRepository';
   };
   values?: Record<string, any>;

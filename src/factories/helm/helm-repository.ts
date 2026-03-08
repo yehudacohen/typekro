@@ -20,6 +20,7 @@ export interface HelmRepositoryConfig {
   name: string;
   namespace?: string;
   url: string;
+  /** @default '5m' */
   interval?: string;
   type?: 'default' | 'oci';
   id?: string;

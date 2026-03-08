@@ -32,11 +32,15 @@ function parseYamlManifests(yamlContent: string): KubernetesResource[] {
 export interface YamlDirectoryConfig {
   name: string;
   path: string; // Supports: "./local/dir", "git:github.com/org/repo/path/dir"
+  /** @default true */
   recursive?: boolean;
+  /** @default ['**\/*.yaml', '**\/*.yml'] */
   include?: string[]; // Glob patterns
+  /** @default [] */
   exclude?: string[]; // Glob patterns
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
-  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail'; // Default: 'replace'
+  /** @default 'replace' */
+  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail';
 }
 
 /**
