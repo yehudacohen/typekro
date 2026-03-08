@@ -494,7 +494,7 @@ export interface APISixHelmValues {
   };
 
   // Custom values override
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**

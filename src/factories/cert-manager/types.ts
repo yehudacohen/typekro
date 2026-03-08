@@ -1312,5 +1312,5 @@ export interface CertManagerHelmValues {
   };
 
   // Additional custom values
-  [key: string]: any;
+  [key: string]: unknown;
 }

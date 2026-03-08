@@ -1,20 +1,21 @@
 /**
  * CEL Conversion Engine Tests
- * 
+ *
  * Tests the automatic conversion of JavaScript expressions containing
  * KubernetesRef objects to appropriate CEL expressions.
  */
 
-import { describe, expect, test, beforeEach } from 'bun:test';
-import { 
+import { beforeEach, describe, expect, test } from 'bun:test';
+import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
+import {
   CelConversionEngine,
   convertToCel,
   kubernetesRefToCel,
-  needsCelConversion
+  needsCelConversion,
 } from '../../../src/core/expressions/factory/cel-conversion-engine.js';
-import { KUBERNETES_REF_BRAND, BrandChecks } from '../../../src/core/constants/brands.js';
-import type { KubernetesRef, CelExpression } from '../../../src/core/types/index.js';
-import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
+import type { CelExpression, KubernetesRef } from '../../../src/core/types/index.js';
+import { isCelExpression } from '../../../src/utils/type-guards.js';
 
 describe('CEL Conversion Engine', () => {
   let engine: CelConversionEngine;
@@ -28,7 +29,7 @@ describe('CEL Conversion Engine', () => {
     return {
       [KUBERNETES_REF_BRAND]: true,
       resourceId,
-      fieldPath
+      fieldPath,
     } as KubernetesRef<any>;
   }
 
@@ -37,7 +38,7 @@ describe('CEL Conversion Engine', () => {
     return {
       factoryType,
       factoryName: 'TestFactory',
-      analysisEnabled: true
+      analysisEnabled: true,
     };
   }
 
@@ -50,8 +51,10 @@ describe('CEL Conversion Engine', () => {
 
       expect(result.wasConverted).toBe(true);
       expect(result.strategy).toBe('direct');
-      expect(BrandChecks.isCelExpression(result.converted)).toBe(true);
-      expect((result.converted as unknown as CelExpression<any>).expression).toBe('my-deployment.status.readyReplicas');
+      expect(isCelExpression(result.converted)).toBe(true);
+      expect((result.converted as unknown as CelExpression<any>).expression).toBe(
+        'my-deployment.status.readyReplicas'
+      );
     });
 
     test('should preserve KubernetesRef for direct factory', () => {
@@ -72,7 +75,9 @@ describe('CEL Conversion Engine', () => {
       const result = engine.convertValue(schemaRef, context);
 
       expect(result.wasConverted).toBe(true);
-      expect((result.converted as unknown as CelExpression<any>).expression).toBe('schema.spec.name');
+      expect((result.converted as unknown as CelExpression<any>).expression).toBe(
+        'schema.spec.name'
+      );
     });
 
     test('should handle static values without conversion', () => {
@@ -93,7 +98,7 @@ describe('CEL Conversion Engine', () => {
       const obj = {
         name: 'static-name',
         port: ref,
-        replicas: 3
+        replicas: 3,
       };
       const context = createContext('kro');
 
@@ -103,8 +108,10 @@ describe('CEL Conversion Engine', () => {
       expect(result.strategy).toBe('cel-expression');
       expect(result.converted).toHaveProperty('name', 'static-name');
       expect(result.converted).toHaveProperty('replicas', 3);
-      expect(BrandChecks.isCelExpression((result.converted as any).port)).toBe(true);
-      expect(((result.converted as any).port as CelExpression<any>).expression).toBe('my-service.spec.ports[0].port');
+      expect(isCelExpression((result.converted as any).port)).toBe(true);
+      expect(((result.converted as any).port as CelExpression<any>).expression).toBe(
+        'my-service.spec.ports[0].port'
+      );
     });
 
     test('should convert arrays with KubernetesRef elements', () => {
@@ -118,11 +125,11 @@ describe('CEL Conversion Engine', () => {
       expect(result.wasConverted).toBe(true);
       expect(result.strategy).toBe('cel-expression');
       expect(Array.isArray(result.converted)).toBe(true);
-      
+
       const convertedArray = result.converted as any[];
-      expect(BrandChecks.isCelExpression(convertedArray[0])).toBe(true);
+      expect(isCelExpression(convertedArray[0])).toBe(true);
       expect(convertedArray[1]).toBe('static-value');
-      expect(BrandChecks.isCelExpression(convertedArray[2])).toBe(true);
+      expect(isCelExpression(convertedArray[2])).toBe(true);
     });
 
     test('should handle nested objects with KubernetesRef objects', () => {
@@ -131,12 +138,12 @@ describe('CEL Conversion Engine', () => {
         metadata: {
           name: ref,
           labels: {
-            app: 'static-app'
-          }
+            app: 'static-app',
+          },
         },
         spec: {
-          replicas: 3
-        }
+          replicas: 3,
+        },
       };
       const context = createContext('kro');
 
@@ -144,9 +151,9 @@ describe('CEL Conversion Engine', () => {
 
       expect(result.wasConverted).toBe(true);
       expect(result.strategy).toBe('cel-expression');
-      
+
       const converted = result.converted as any;
-      expect(BrandChecks.isCelExpression(converted.metadata.name)).toBe(true);
+      expect(isCelExpression(converted.metadata.name)).toBe(true);
       expect(converted.metadata.labels.app).toBe('static-app');
       expect(converted.spec.replicas).toBe(3);
     });
@@ -159,7 +166,7 @@ describe('CEL Conversion Engine', () => {
       const obj = {
         name: ref1,
         status: ref2,
-        static: 'value'
+        static: 'value',
       };
       const context = createContext('kro');
 
@@ -172,7 +179,7 @@ describe('CEL Conversion Engine', () => {
 
     test('should handle large objects efficiently', () => {
       const largeObj: Record<string, any> = {};
-      
+
       // Create a large object with some KubernetesRef objects
       for (let i = 0; i < 100; i++) {
         if (i % 10 === 0) {
@@ -208,7 +215,7 @@ describe('CEL Conversion Engine', () => {
     test('should respect maximum depth limits', () => {
       const ref = createMockRef('deep-resource', 'spec.name');
       const deepObj = {
-        l1: { l2: { l3: { l4: { l5: { deepRef: ref } } } } }
+        l1: { l2: { l3: { l4: { l5: { deepRef: ref } } } } },
       };
       const context = createContext('kro');
 
@@ -223,9 +230,9 @@ describe('CEL Conversion Engine', () => {
       const ref = createMockRef('my-resource', 'spec.name');
       const context = createContext('kro');
 
-      const result = engine.convertValue(ref, context, { 
+      const result = engine.convertValue(ref, context, {
         enableOptimization: true,
-        preserveStatic: true 
+        preserveStatic: true,
       });
 
       expect(result.wasConverted).toBe(true);
@@ -241,7 +248,7 @@ describe('CEL Conversion Engine', () => {
       const result = convertToCel(ref, context);
 
       expect(result.wasConverted).toBe(true);
-      expect(BrandChecks.isCelExpression(result.converted)).toBe(true);
+      expect(isCelExpression(result.converted)).toBe(true);
     });
 
     test('should work with kubernetesRefToCel utility', () => {
@@ -250,7 +257,7 @@ describe('CEL Conversion Engine', () => {
 
       const celExpr = kubernetesRefToCel(ref, context);
 
-      expect(BrandChecks.isCelExpression(celExpr)).toBe(true);
+      expect(isCelExpression(celExpr)).toBe(true);
       expect(celExpr.expression).toBe('test-resource.status.ready');
     });
 
@@ -284,11 +291,11 @@ describe('CEL Conversion Engine', () => {
 
     test('should handle mixed factory types correctly', () => {
       const ref = createMockRef('my-resource', 'spec.name');
-      
+
       const kroResult = engine.convertValue(ref, createContext('kro'));
       const directResult = engine.convertValue(ref, createContext('direct'));
 
-      expect(BrandChecks.isCelExpression(kroResult.converted)).toBe(true);
+      expect(isCelExpression(kroResult.converted)).toBe(true);
       expect(directResult.converted).toBe(ref); // Preserved as-is
     });
 
@@ -320,27 +327,29 @@ describe('CEL Conversion Engine', () => {
       const nameRef = createMockRef('__schema__', 'spec.name');
       const imageRef = createMockRef('__schema__', 'spec.image');
       const replicasRef = createMockRef('__schema__', 'spec.replicas');
-      
+
       const factoryConfig = {
         metadata: {
           name: nameRef,
-          labels: { app: nameRef }
+          labels: { app: nameRef },
         },
         spec: {
           replicas: replicasRef,
           template: {
             spec: {
-              containers: [{
-                name: nameRef,
-                image: imageRef,
-                env: [
-                  { name: 'APP_NAME', value: nameRef },
-                  { name: 'STATIC_VAR', value: 'static-value' }
-                ]
-              }]
-            }
-          }
-        }
+              containers: [
+                {
+                  name: nameRef,
+                  image: imageRef,
+                  env: [
+                    { name: 'APP_NAME', value: nameRef },
+                    { name: 'STATIC_VAR', value: 'static-value' },
+                  ],
+                },
+              ],
+            },
+          },
+        },
       };
 
       const context = createContext('kro');
@@ -360,12 +369,12 @@ describe('CEL Conversion Engine', () => {
               level4: {
                 level5: {
                   ref,
-                  static: 'value'
-                }
-              }
-            }
-          }
-        }
+                  static: 'value',
+                },
+              },
+            },
+          },
+        },
       };
 
       const context = createContext('kro');
