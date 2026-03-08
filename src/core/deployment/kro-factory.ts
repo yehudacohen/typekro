@@ -88,7 +88,7 @@ export class KroResourceFactoryImpl<
   private readonly resources: Record<string, KubernetesResource>;
   private readonly closures: Record<string, DeploymentClosure>;
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
-  private readonly statusMappings: any;
+  private readonly statusMappings: Record<string, unknown>;
   private readonly alchemyScope: Scope | undefined;
   private readonly logger = getComponentLogger('kro-factory');
   private readonly factoryOptions: FactoryOptions;
@@ -110,7 +110,7 @@ export class KroResourceFactoryImpl<
     this.resources = resources;
     this.closures = options.closures || {};
     this.schemaDefinition = schemaDefinition;
-    this.statusMappings = statusMappings;
+    this.statusMappings = statusMappings as Record<string, unknown>;
     this.factoryOptions = options;
     this.schema = createSchemaProxy<TSpec, TStatus>();
 
@@ -1444,14 +1444,14 @@ export function createKroResourceFactory<
   name: string,
   resources: Record<string, KubernetesResource>,
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
-  statusMappings: any,
+  statusMappings: Record<string, unknown>,
   options: FactoryOptions = {}
 ): KroResourceFactory<TSpec, TStatus> {
   return new KroResourceFactoryImpl<TSpec, TStatus>(
     name,
     resources,
     schemaDefinition,
-    statusMappings,
+    statusMappings as MagicAssignableShape<TStatus>,
     options
   );
 }
