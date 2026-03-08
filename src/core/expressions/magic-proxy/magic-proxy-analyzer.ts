@@ -79,12 +79,16 @@ export class MagicProxyAnalyzer {
    * - Other objects: analyzed for nested KubernetesRef objects
    */
   analyzeExpressionWithRefs(
-    expression: any,
+    expression: unknown,
     context: MagicProxyAnalysisContext
   ): MagicProxyAnalysisResult {
     try {
       // Handle KubernetesRef objects directly
-      if (expression && typeof expression === 'object' && expression.__brand === 'KubernetesRef') {
+      if (
+        expression &&
+        typeof expression === 'object' &&
+        (expression as Record<string, unknown>).__brand === 'KubernetesRef'
+      ) {
         return this.analyzeKubernetesRefDirectly(expression as KubernetesRef<any>, context);
       }
 
@@ -163,7 +167,7 @@ export class MagicProxyAnalyzer {
    * Analyze object expressions
    */
   private analyzeObjectExpression(
-    obj: any,
+    obj: unknown,
     context: MagicProxyAnalysisContext
   ): MagicProxyAnalysisResult {
     const refs = this.detectKubernetesRefs(obj);
@@ -194,7 +198,7 @@ export class MagicProxyAnalyzer {
    * Analyze primitive expressions
    */
   private analyzePrimitiveExpression(
-    _value: any,
+    _value: unknown,
     _context: MagicProxyAnalysisContext
   ): MagicProxyAnalysisResult {
     return {
@@ -429,7 +433,7 @@ export class MagicProxyAnalyzer {
    * preventing infinite recursion on complex object graphs.
    */
   detectKubernetesRefs(
-    value: any,
+    value: unknown,
     maxDepth: number = DEFAULT_MAX_ANALYSIS_DEPTH,
     currentDepth: number = 0
   ): KubernetesRef<any>[] {
@@ -437,7 +441,7 @@ export class MagicProxyAnalyzer {
     const visited = new WeakSet();
 
     // Use a queue for breadth-first traversal
-    const queue: Array<{ value: any; depth: number }> = [{ value, depth: currentDepth }];
+    const queue: Array<{ value: unknown; depth: number }> = [{ value, depth: currentDepth }];
 
     while (queue.length > 0) {
       const { value: currentValue, depth } = queue.shift()!;
@@ -486,10 +490,11 @@ export class MagicProxyAnalyzer {
         }
 
         // Add object properties to the queue
-        for (const key in currentValue) {
-          if (Object.hasOwn(currentValue, key)) {
+        const currentRecord = currentValue as Record<string, unknown>;
+        for (const key in currentRecord) {
+          if (Object.hasOwn(currentRecord, key)) {
             try {
-              const propertyValue = currentValue[key];
+              const propertyValue = currentRecord[key];
               if (shouldExpandFully || this.mightContainKubernetesRef(propertyValue)) {
                 queue.push({ value: propertyValue, depth: depth + 1 });
               }
@@ -668,8 +673,8 @@ export class MagicProxyAnalyzer {
    * Create error result for failed analysis
    */
   private createErrorResult(
-    expression: any,
-    error: any,
+    expression: unknown,
+    error: unknown,
     _context: MagicProxyAnalysisContext
   ): MagicProxyAnalysisResult {
     const conversionError = new ConversionError(
@@ -706,7 +711,7 @@ export class MagicProxyAnalyzer {
    * This is used for optimization when we're beyond maxDepth but still
    * want to find deeply nested KubernetesRef objects.
    */
-  private mightContainKubernetesRef(value: any): boolean {
+  private mightContainKubernetesRef(value: unknown): boolean {
     // If it's already a KubernetesRef, we'll find it
     if (this.isKubernetesRef(value)) {
       return true;
@@ -810,7 +815,7 @@ export class MagicProxyUtils {
   /**
    * Check if a value contains any KubernetesRef objects
    */
-  static containsKubernetesRefs(value: any): boolean {
+  static containsKubernetesRefs(value: unknown): boolean {
     const analyzer = new MagicProxyAnalyzer();
     const refs = analyzer.detectKubernetesRefs(value);
     return refs.length > 0;
@@ -819,7 +824,7 @@ export class MagicProxyUtils {
   /**
    * Extract all KubernetesRef objects from a value
    */
-  static extractKubernetesRefs(value: any): KubernetesRef<any>[] {
+  static extractKubernetesRefs(value: unknown): KubernetesRef<any>[] {
     const analyzer = new MagicProxyAnalyzer();
     return analyzer.detectKubernetesRefs(value);
   }
@@ -835,14 +840,14 @@ export class MagicProxyUtils {
   /**
    * Check if a value is a schema reference
    */
-  static isSchemaReference(value: any): boolean {
+  static isSchemaReference(value: unknown): boolean {
     return MagicProxyUtils.isKubernetesRef(value) && value.resourceId === '__schema__';
   }
 
   /**
    * Check if a value is a resource reference
    */
-  static isResourceReference(value: any): boolean {
+  static isResourceReference(value: unknown): boolean {
     return MagicProxyUtils.isKubernetesRef(value) && value.resourceId !== '__schema__';
   }
 

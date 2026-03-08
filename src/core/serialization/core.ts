@@ -190,7 +190,7 @@ function mergePreservedCelExpressions(
   for (const [path, celExpression] of Object.entries(preservedMappings)) {
     // Handle nested paths by setting the value at the correct location
     const pathParts = path.split('.');
-    let current: any = mergedMappings;
+    let current: Record<string, unknown> = mergedMappings;
 
     for (let i = 0; i < pathParts.length - 1; i++) {
       const part = pathParts[i];
@@ -199,7 +199,7 @@ function mergePreservedCelExpressions(
       if (!current[part] || typeof current[part] !== 'object') {
         current[part] = {};
       }
-      current = current[part];
+      current = current[part] as Record<string, unknown>;
     }
 
     const finalKey = pathParts[pathParts.length - 1];
@@ -232,7 +232,7 @@ function analyzeStatusMappingTypes(
     string,
     {
       type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
-      value: any;
+      value: unknown;
       requiresConversion: boolean;
       confidence: number;
     }
@@ -246,7 +246,7 @@ function analyzeStatusMappingTypes(
     string,
     {
       type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
-      value: any;
+      value: unknown;
       requiresConversion: boolean;
       confidence: number;
     }
@@ -316,9 +316,9 @@ function analyzeStatusMappingTypes(
 /**
  * Analyze a single value to determine its type and conversion requirements
  */
-function analyzeValueType(value: any): {
+function analyzeValueType(value: unknown): {
   type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
-  value: any;
+  value: unknown;
   requiresConversion: boolean;
   confidence: number;
 } {
@@ -439,7 +439,7 @@ function analyzeValueType(value: any): {
 /**
  * Determine if an object is likely to be static data rather than an expression
  */
-function isLikelyStaticObject(obj: any): boolean {
+function isLikelyStaticObject(obj: unknown): boolean {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
     return false;
   }

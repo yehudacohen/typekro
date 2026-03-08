@@ -87,7 +87,7 @@ export class MagicProxyDetector {
    * @returns Detection result
    */
   detectKubernetesRefs(
-    value: any,
+    value: unknown,
     config: MagicProxyDetectionConfig = {},
     basePath = ''
   ): MagicProxyDetectionResult {
@@ -140,7 +140,7 @@ export class MagicProxyDetector {
    * @param maxDepth - Maximum depth to check
    * @returns Whether KubernetesRef objects were found
    */
-  containsKubernetesRefs(value: any, maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH): boolean {
+  containsKubernetesRefs(value: unknown, maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH): boolean {
     return this.fastScanForRefs(value, 0, maxDepth);
   }
 
@@ -151,7 +151,10 @@ export class MagicProxyDetector {
    * @param maxDepth - Maximum depth to extract
    * @returns Array of KubernetesRef objects
    */
-  extractKubernetesRefs(value: any, maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH): KubernetesRef<any>[] {
+  extractKubernetesRefs(
+    value: unknown,
+    maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH
+  ): KubernetesRef<any>[] {
     const refs: KubernetesRef<any>[] = [];
     this.extractRefs(value, refs, 0, maxDepth);
     return refs;
@@ -216,7 +219,7 @@ export class MagicProxyDetector {
   }
 
   private scanValue(
-    value: any,
+    value: unknown,
     result: MagicProxyDetectionResult,
     config: MagicProxyDetectionConfig,
     currentPath: string,
@@ -280,7 +283,7 @@ export class MagicProxyDetector {
     }
   }
 
-  private fastScanForRefs(value: any, depth: number, maxDepth: number): boolean {
+  private fastScanForRefs(value: unknown, depth: number, maxDepth: number): boolean {
     if (depth >= maxDepth) {
       return false;
     }
@@ -301,7 +304,7 @@ export class MagicProxyDetector {
   }
 
   private extractRefs(
-    value: any,
+    value: unknown,
     refs: KubernetesRef<any>[],
     depth: number,
     maxDepth: number
@@ -338,7 +341,7 @@ export const magicProxyDetector = new MagicProxyDetector();
  * @returns Detection result
  */
 export function detectMagicProxyRefs(
-  value: any,
+  value: unknown,
   config?: MagicProxyDetectionConfig
 ): MagicProxyDetectionResult {
   return magicProxyDetector.detectKubernetesRefs(value, config);
@@ -351,7 +354,7 @@ export function detectMagicProxyRefs(
  * @param maxDepth - Maximum depth to check
  * @returns Whether KubernetesRef objects were found
  */
-export function containsMagicProxyRefs(value: any, maxDepth?: number): boolean {
+export function containsMagicProxyRefs(value: unknown, maxDepth?: number): boolean {
   return magicProxyDetector.containsKubernetesRefs(value, maxDepth);
 }
 
@@ -362,7 +365,7 @@ export function containsMagicProxyRefs(value: any, maxDepth?: number): boolean {
  * @param maxDepth - Maximum depth to extract
  * @returns Array of KubernetesRef objects
  */
-export function extractMagicProxyRefs(value: any, maxDepth?: number): KubernetesRef<any>[] {
+export function extractMagicProxyRefs(value: unknown, maxDepth?: number): KubernetesRef<any>[] {
   return magicProxyDetector.extractKubernetesRefs(value, maxDepth);
 }
 

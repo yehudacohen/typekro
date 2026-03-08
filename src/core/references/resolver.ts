@@ -96,7 +96,7 @@ export class ReferenceResolver {
    * - Function values (structuredClone cannot clone functions)
    * BUT preserve KubernetesRef and CEL expression objects intact
    */
-  private filterInternalFields(obj: any): any {
+  private filterInternalFields(obj: unknown): unknown {
     if (obj === null || obj === undefined || typeof obj !== 'object') {
       return obj;
     }
@@ -111,7 +111,7 @@ export class ReferenceResolver {
     }
 
     // Create new object without non-cloneable fields
-    const filtered: any = {};
+    const filtered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       // Skip fields starting with __ as they are internal
       if (key.startsWith('__')) {
@@ -138,13 +138,13 @@ export class ReferenceResolver {
    * CEL expressions are immutable and don't need deep cloning
    * This avoids structuredClone failures on Symbol-branded objects
    */
-  private selectiveClone(obj: any, visited = new Set<any>()): any {
+  private selectiveClone(obj: unknown, visited = new Set<object>()): unknown {
     if (obj === null || obj === undefined) {
       return obj;
     }
 
     // Prevent infinite loops from circular references
-    if (visited.has(obj)) {
+    if (typeof obj === 'object' && visited.has(obj)) {
       return obj;
     }
 
@@ -165,7 +165,7 @@ export class ReferenceResolver {
     // Clone plain objects recursively
     if (typeof obj === 'object') {
       visited.add(obj);
-      const cloned: any = {};
+      const cloned: Record<string | symbol, unknown> = {};
 
       // Clone string-keyed properties
       for (const [key, value] of Object.entries(obj)) {
@@ -175,7 +175,7 @@ export class ReferenceResolver {
       // Preserve Symbol-keyed properties (like KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND)
       const symbols = Object.getOwnPropertySymbols(obj);
       for (const sym of symbols) {
-        cloned[sym] = obj[sym];
+        cloned[sym] = (obj as Record<symbol, unknown>)[sym];
       }
 
       visited.delete(obj);
@@ -264,18 +264,22 @@ export class ReferenceResolver {
   /**
    * Quick check if a resource has any references
    */
-  private hasReferences(obj: any, visited = new Set<any>()): boolean {
+  private hasReferences(obj: unknown, visited = new Set<object>()): boolean {
     if (obj === null || obj === undefined) {
+      return false;
+    }
+
+    if (isKubernetesRef(obj) || isCelExpression(obj)) {
+      return true;
+    }
+
+    if (typeof obj !== 'object') {
       return false;
     }
 
     // Prevent infinite loops from circular references
     if (visited.has(obj)) {
       return false;
-    }
-
-    if (isKubernetesRef(obj) || isCelExpression(obj)) {
-      return true;
     }
 
     if (Array.isArray(obj)) {
@@ -285,20 +289,16 @@ export class ReferenceResolver {
       return result;
     }
 
-    if (typeof obj === 'object') {
-      visited.add(obj);
-      const result = Object.values(obj).some((value) => this.hasReferences(value, visited));
-      visited.delete(obj);
-      return result;
-    }
-
-    return false;
+    visited.add(obj);
+    const result = Object.values(obj).some((value) => this.hasReferences(value, visited));
+    visited.delete(obj);
+    return result;
   }
 
   /**
    * Restore Symbol brands that were lost during JSON serialization
    */
-  private restoreBrands(obj: any, visited = new Set<any>()): void {
+  private restoreBrands(obj: unknown, visited = new Set<object>()): void {
     if (obj === null || obj === undefined || typeof obj !== 'object') {
       return;
     }
@@ -308,12 +308,14 @@ export class ReferenceResolver {
       return;
     }
 
+    const record = obj as Record<string, unknown>;
+
     // Check if this looks like a KubernetesRef (has resourceId and fieldPath)
     if (
-      obj.resourceId &&
-      obj.fieldPath &&
-      typeof obj.resourceId === 'string' &&
-      typeof obj.fieldPath === 'string'
+      record.resourceId &&
+      record.fieldPath &&
+      typeof record.resourceId === 'string' &&
+      typeof record.fieldPath === 'string'
     ) {
       // Restore the KubernetesRef brand
       Object.defineProperty(obj, Symbol.for('TypeKro.KubernetesRef'), {
@@ -323,7 +325,7 @@ export class ReferenceResolver {
     }
 
     // Check if this looks like a CelExpression (has expression property)
-    if (obj.expression && typeof obj.expression === 'string') {
+    if (record.expression && typeof record.expression === 'string') {
       // Restore the CelExpression brand
       Object.defineProperty(obj, Symbol.for('TypeKro.CelExpression'), {
         value: true,
