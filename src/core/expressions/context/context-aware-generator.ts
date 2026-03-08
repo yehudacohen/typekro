@@ -572,8 +572,3 @@ export class ContextAwareCelGenerator {
     }
   }
 }
-
-/**
- * Default context-aware CEL generator instance
- */
-export const contextAwareCelGenerator = new ContextAwareCelGenerator();
