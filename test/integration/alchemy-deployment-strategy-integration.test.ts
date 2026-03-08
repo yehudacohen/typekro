@@ -15,11 +15,11 @@ import type * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
 import { DependencyGraph } from '../../src/core/dependencies/graph.js';
+import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import {
   AlchemyDeploymentStrategy,
   DirectDeploymentStrategy,
-} from '../../src/core/deployment/deployment-strategies.js';
-import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
+} from '../../src/core/deployment/strategies/index.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
 import { simple } from '../../src/index.js';
 import {
