@@ -116,7 +116,10 @@ function arktypeJsonToKroFields(node: unknown, prefix = ''): Record<string, stri
 // ---------------------------------------------------------------------------
 
 /**
- * Converts an Arktype schema to a Kro-compatible schema definition.
+ * Convert an Arktype schema to a Kro-compatible schema definition.
+ *
+ * **Low-level**: accepts raw Arktype `Type` objects directly. For
+ * type-safe usage with `SchemaDefinition`, prefer {@link generateKroSchemaFromArktype}.
  *
  * Status fields use user-defined mappings from the StatusBuilder function
  * instead of auto-generated CEL expressions.
@@ -163,7 +166,11 @@ export function arktypeToKroSchema(
 }
 
 /**
- * Generate Kro schema from resources (simple, without Arktype)
+ * Generate a minimal Kro schema from a resource map (no Arktype).
+ *
+ * Creates a schema with a default `name` spec field and an empty status.
+ * Use this when you don't have Arktype type definitions. For typed schemas,
+ * use {@link generateKroSchemaFromArktype} instead.
  */
 export function generateKroSchema(
   name: string,
@@ -184,7 +191,14 @@ export function generateKroSchema(
 }
 
 /**
- * Generate Kro schema from Arktype definition
+ * Generate a Kro schema from an Arktype-based `SchemaDefinition`.
+ *
+ * **Recommended** for most users. Accepts the same `SchemaDefinition` used
+ * in `toResourceGraph()` and produces a flat Kro schema with properly
+ * typed spec/status fields.
+ *
+ * @see {@link arktypeToKroSchema} for the low-level variant.
+ * @see {@link generateKroSchema} for a simple variant without Arktype.
  */
 export function generateKroSchemaFromArktype<
   TSpec extends KroCompatibleType,

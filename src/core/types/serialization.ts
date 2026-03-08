@@ -259,11 +259,15 @@ export interface CompositionFactory<
 // =============================================================================
 
 export interface SerializationOptions {
+  /** Kubernetes namespace for the serialized ResourceGraphDefinition. */
   namespace?: string;
+  /** Number of spaces for YAML indentation. @default 2 */
   indent?: number;
+  /** Maximum line width for YAML output. @default 120 */
   lineWidth?: number;
+  /** Disable YAML anchors/aliases. @default true */
   noRefs?: boolean;
-  /** When true, adds kro.run/allow-breaking-changes annotation to RGD metadata */
+  /** When true, adds kro.run/allow-breaking-changes annotation to RGD metadata. @default false */
   allowBreakingChanges?: boolean;
 }
 
