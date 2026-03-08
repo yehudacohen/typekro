@@ -107,7 +107,7 @@ export class KubernetesApi {
     }
 
     // Validate TLS configuration
-    this.validateTLSConfiguration(apiServer, caCert, skipTLSVerify);
+    this.validateTLSConfiguration(apiServer, caCert, skipTLSVerify, !!apiToken);
 
     return {
       apiServer,
@@ -123,7 +123,8 @@ export class KubernetesApi {
   private validateTLSConfiguration(
     apiServer: string,
     caCert?: string,
-    skipTLSVerify?: boolean
+    skipTLSVerify?: boolean,
+    hasToken?: boolean
   ): void {
     // Check if connecting to HTTPS endpoint without proper TLS configuration
     if (apiServer.startsWith('https://')) {
@@ -161,6 +162,17 @@ export class KubernetesApi {
         apiServer,
         recommendation: 'Use HTTPS endpoint for secure connections',
       });
+      if (hasToken) {
+        this.logger.warn(
+          'Bearer token sent over unencrypted HTTP connection - token may be intercepted',
+          {
+            component: 'kubernetes-api',
+            security: 'bearer-token-over-http',
+            apiServer,
+            recommendation: 'Use HTTPS endpoint to protect bearer token in transit',
+          }
+        );
+      }
     }
   }
 
