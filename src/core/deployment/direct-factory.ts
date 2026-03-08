@@ -5,6 +5,7 @@
  * internal dependency resolution engine, without requiring the Kro controller.
  */
 
+import * as yaml from 'js-yaml';
 import { toCamelCase } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
@@ -684,59 +685,45 @@ export class DirectResourceFactoryImpl<
       );
     }
 
-    // Generate individual Kubernetes resource YAML manifests (not RGD)
+    // Generate individual Kubernetes resource YAML manifests (not RGD).
+    // Uses js-yaml for safe serialization — avoids YAML injection via string interpolation.
     const yamlParts = Object.values(resolvedResources).map((resource) => {
       // Remove TypeKro-specific fields and generate clean Kubernetes YAML
       const cleanResource = { ...resource } as KubernetesResource & { id?: string };
       delete cleanResource.id; // Remove TypeKro id field
 
-      // Simple YAML serialization for Kubernetes resources
-      let yamlContent = `apiVersion: ${cleanResource.apiVersion}
-kind: ${cleanResource.kind}
-metadata:
-  name: ${cleanResource.metadata?.name}
-  namespace: ${this.namespace}`;
-
-      // Add labels if present
-      if (cleanResource.metadata?.labels) {
-        yamlContent += `\n  labels:\n${Object.entries(cleanResource.metadata.labels)
-          .map(([k, v]) => `    ${k}: ${v}`)
-          .join('\n')}`;
-      }
+      // Build a clean manifest object for yaml.dump
+      const manifest: Record<string, unknown> = {
+        apiVersion: cleanResource.apiVersion,
+        kind: cleanResource.kind,
+        metadata: {
+          name: cleanResource.metadata?.name,
+          namespace: this.namespace,
+          ...(cleanResource.metadata?.labels
+            ? { labels: cleanResource.metadata.labels }
+            : undefined),
+        },
+      };
 
       // Handle different resource types
       const resourceWithSpec = cleanResource as KubernetesResource & {
         spec?: Record<string, unknown>;
       };
       if (resourceWithSpec.spec) {
-        yamlContent += `\nspec:\n${Object.entries(resourceWithSpec.spec)
-          .map(
-            ([key, value]) =>
-              `  ${key}: ${
-                typeof value === 'object'
-                  ? JSON.stringify(value, null, 2)
-                      .split('\n')
-                      .map((line, i) => (i === 0 ? line : `  ${line}`))
-                      .join('\n')
-                  : value
-              }`
-          )
-          .join('\n')}`;
+        manifest.spec = resourceWithSpec.spec;
       }
 
       const resourceWithData = cleanResource as KubernetesResource & {
         data?: Record<string, string | unknown>;
       };
       if (resourceWithData.data) {
-        yamlContent += `\ndata:\n${Object.entries(resourceWithData.data)
-          .map(
-            ([key, value]) =>
-              `  ${key}: ${typeof value === 'string' ? JSON.stringify(value) : value}`
-          )
-          .join('\n')}`;
+        manifest.data = resourceWithData.data;
       }
 
-      return yamlContent;
+      // JSON round-trip strips non-serializable values (functions, symbols, proxies)
+      // that may remain in resolved resources before safe YAML serialization.
+      const safeManifest = JSON.parse(JSON.stringify(manifest));
+      return yaml.dump(safeManifest, { lineWidth: -1, noRefs: true, sortKeys: false }).trimEnd();
     });
 
     return yamlParts.join('\n---\n');

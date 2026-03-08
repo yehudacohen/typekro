@@ -882,13 +882,33 @@ export class KubernetesClientProvider {
   }
 
   /**
-   * Check if two configurations are the same
+   * Check if two configurations are structurally equivalent.
+   * Compares identity fields without serializing sensitive credential material
+   * (tokens, certificates, keys) to avoid leaking secrets into memory strings.
    */
   private isSameConfig(config?: KubernetesClientConfig): boolean {
     if (!this.config && !config) return true;
     if (!this.config || !config) return false;
 
-    return JSON.stringify(this.config) === JSON.stringify(config);
+    return (
+      this.config.server === config.server &&
+      this.config.context === config.context &&
+      this.config.skipTLSVerify === config.skipTLSVerify &&
+      this.config.loadFromDefault === config.loadFromDefault &&
+      this.config.kubeconfigPath === config.kubeconfigPath &&
+      this.config.cluster?.name === config.cluster?.name &&
+      this.config.cluster?.server === config.cluster?.server &&
+      this.config.cluster?.skipTLSVerify === config.cluster?.skipTLSVerify &&
+      this.config.user?.name === config.user?.name &&
+      // Compare credential presence without serializing values
+      !!this.config.user?.token === !!config.user?.token &&
+      !!this.config.user?.certData === !!config.user?.certData &&
+      !!this.config.user?.certFile === !!config.user?.certFile &&
+      !!this.config.user?.keyData === !!config.user?.keyData &&
+      !!this.config.user?.keyFile === !!config.user?.keyFile &&
+      !!this.config.cluster?.caData === !!config.cluster?.caData &&
+      !!this.config.cluster?.caFile === !!config.cluster?.caFile
+    );
   }
 
   /**

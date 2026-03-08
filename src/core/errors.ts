@@ -318,7 +318,7 @@ export class CompositionExecutionError extends TypeKroError {
     super(
       message,
       'COMPOSITION_EXECUTION_ERROR',
-      { compositionName, phase, resourceContext, cause: cause?.message, stack: cause?.stack },
+      { compositionName, phase, resourceContext, cause: cause?.message },
       cause ? { cause } : undefined
     );
     this.name = 'CompositionExecutionError';
@@ -407,7 +407,6 @@ export class ContextRegistrationError extends TypeKroError {
         registrationPhase,
         suggestions,
         cause: cause?.message,
-        stack: cause?.stack,
       },
       cause ? { cause } : undefined
     );
@@ -733,7 +732,6 @@ export class ConversionError extends TypeKroError {
         context,
         suggestions,
         cause: cause?.message,
-        stack: cause?.stack,
       },
       cause ? { cause } : undefined
     );

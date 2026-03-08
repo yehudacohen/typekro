@@ -313,12 +313,18 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         });
       }
 
-      // Handle abort signal (if available - added in newer versions)
+      // Handle abort signal (if available - added in newer versions).
+      // Use { once: true } to automatically remove the listener after firing,
+      // preventing memory growth when the AbortSignal outlives the request.
       const signal = (request as unknown as { getSignal?: () => AbortSignal }).getSignal?.();
       if (signal) {
-        signal.addEventListener('abort', () => {
-          req.destroy(new Error('Request aborted'));
-        });
+        signal.addEventListener(
+          'abort',
+          () => {
+            req.destroy(new Error('Request aborted'));
+          },
+          { once: true }
+        );
       }
 
       // Send body if present
