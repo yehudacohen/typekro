@@ -318,7 +318,7 @@ export class KroResourceFactoryImpl<
         }
         // For other errors, wrap them with context
         throw new ResourceGraphFactoryError(
-          `Failed to validate closure '${closureName}': ${error}`,
+          `Failed to validate closure '${closureName}': ${ensureError(error).message}`,
           this.name,
           'deployment'
         );

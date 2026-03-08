@@ -1,4 +1,5 @@
 import type { V1ResourceQuota } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -45,8 +46,8 @@ export function resourceQuota(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ResourceQuota readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating ResourceQuota readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

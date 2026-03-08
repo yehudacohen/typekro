@@ -5,6 +5,7 @@
  * checking Helm installation and upgrade phases for proper readiness.
  */
 
+import { ensureError } from '../../core/errors.js';
 import type {
   KubernetesCondition,
   ReadinessEvaluator,
@@ -105,7 +106,7 @@ export function createLabeledHelmReleaseEvaluator(label?: string): ReadinessEval
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ${prefix}HelmRelease readiness: ${error}`,
+        message: `Error evaluating ${prefix}HelmRelease readiness: ${ensureError(error).message}`,
       };
     }
   };
@@ -161,7 +162,7 @@ export function createHelmRevisionReadinessEvaluator(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating Helm revision readiness: ${error}`,
+        message: `Error evaluating Helm revision readiness: ${ensureError(error).message}`,
       };
     }
   };
@@ -225,7 +226,7 @@ export function createHelmTestReadinessEvaluator(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating Helm test readiness: ${error}`,
+        message: `Error evaluating Helm test readiness: ${ensureError(error).message}`,
       };
     }
   };
@@ -283,7 +284,7 @@ export function createHelmTimeoutReadinessEvaluator(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating Helm timeout readiness: ${error}`,
+        message: `Error evaluating Helm timeout readiness: ${ensureError(error).message}`,
       };
     }
   };
@@ -347,7 +348,7 @@ export function createComprehensiveHelmReadinessEvaluator(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error in comprehensive Helm readiness evaluation: ${error}`,
+        message: `Error in comprehensive Helm readiness evaluation: ${ensureError(error).message}`,
       };
     }
   };

@@ -1,4 +1,5 @@
 import type { V1Service } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { V1ServiceSpec, V1ServiceStatus } from '../types.js';
@@ -79,8 +80,8 @@ export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceS
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating service readiness: ${error}`,
-        details: { serviceType, error: String(error) },
+        message: `Error evaluating service readiness: ${ensureError(error).message}`,
+        details: { serviceType, error: ensureError(error).message },
       };
     }
   });

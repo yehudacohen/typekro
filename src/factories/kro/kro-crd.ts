@@ -3,6 +3,7 @@
  */
 
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node';
+import { ensureError } from '../../core/errors.js';
 import type { Enhanced, ResourceStatus } from '../../core/types/index.js';
 import type {
   V1CustomResourceDefinitionSpec,
@@ -53,8 +54,8 @@ export function kroCustomResourceDefinition(
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating Kro CRD readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating Kro CRD readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });
