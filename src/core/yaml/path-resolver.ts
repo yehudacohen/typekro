@@ -250,14 +250,23 @@ function isInCidr(ip: number, network: number, prefixLen: number): boolean {
   return (ip & mask) === (network & mask);
 }
 
+/** Parse a known-valid IPv4 address to an integer, throwing on failure. */
+function ipv4ToIntChecked(ip: string): number {
+  const result = ipv4ToInt(ip);
+  if (result === null) {
+    throw new Error(`Invalid hardcoded IPv4 address: ${ip}`);
+  }
+  return result;
+}
+
 /** Private/reserved IPv4 CIDR ranges that are blocked. */
 const BLOCKED_IPV4_CIDRS: Array<{ network: number; prefix: number }> = [
-  { network: ipv4ToInt('10.0.0.0')!, prefix: 8 }, // RFC 1918
-  { network: ipv4ToInt('172.16.0.0')!, prefix: 12 }, // RFC 1918
-  { network: ipv4ToInt('192.168.0.0')!, prefix: 16 }, // RFC 1918
-  { network: ipv4ToInt('127.0.0.0')!, prefix: 8 }, // Loopback
-  { network: ipv4ToInt('169.254.0.0')!, prefix: 16 }, // Link-local
-  { network: ipv4ToInt('0.0.0.0')!, prefix: 8 }, // "This" network
+  { network: ipv4ToIntChecked('10.0.0.0'), prefix: 8 }, // RFC 1918
+  { network: ipv4ToIntChecked('172.16.0.0'), prefix: 12 }, // RFC 1918
+  { network: ipv4ToIntChecked('192.168.0.0'), prefix: 16 }, // RFC 1918
+  { network: ipv4ToIntChecked('127.0.0.0'), prefix: 8 }, // Loopback
+  { network: ipv4ToIntChecked('169.254.0.0'), prefix: 16 }, // Link-local
+  { network: ipv4ToIntChecked('0.0.0.0'), prefix: 8 }, // "This" network
 ];
 
 /** Blocked IPv6 addresses / prefixes. */
@@ -527,15 +536,20 @@ export class PathResolver {
     // Match git: URLs with optional @ref suffix
     const match = gitPath.match(/^git:([^/]+)\/([^/]+)\/([^/]+)\/(.+?)(?:@(.+))?$/);
 
-    if (!match) {
+    const host = match?.[1];
+    const owner = match?.[2];
+    const repo = match?.[3];
+    const gitFilePath = match?.[4];
+
+    if (!host || !owner || !repo || !gitFilePath) {
       throw YamlPathResolutionError.invalidGitUrl(resourceName, gitPath);
     }
 
     return {
-      host: match[1]!,
-      owner: match[2]!,
-      repo: match[3]!,
-      path: match[4]!,
+      host,
+      owner,
+      repo,
+      path: gitFilePath,
       ref: match[5] || 'main',
     };
   }
