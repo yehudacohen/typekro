@@ -582,7 +582,7 @@ export class PathResolver {
       if (!response.ok) {
         if (response.status === 404) {
           // Check if it's the repository or the path that's not found
-          const repoCheckUrl = `https://api.github.com/repos/${gitInfo.owner}/${gitInfo.repo}`;
+          const repoCheckUrl = `https://api.github.com/repos/${encodeURIComponent(gitInfo.owner)}/${encodeURIComponent(gitInfo.repo)}`;
           const repoResponse = await fetch(repoCheckUrl, {
             headers: {
               Accept: 'application/vnd.github.v3+json',
@@ -776,6 +776,17 @@ export class PathResolver {
       const fullPath = path.join(currentPath, entry.name);
       const relativePath = path.relative(basePath, fullPath);
 
+      // Skip symbolic links to prevent path traversal and symlink loop attacks.
+      // Symlinks could point outside the base directory or create circular references.
+      if (entry.isSymbolicLink()) {
+        logger.warn('Skipping symbolic link during directory walk', {
+          path: fullPath,
+          resourceName,
+          reason: 'Symbolic links are not followed to prevent path traversal',
+        });
+        continue;
+      }
+
       if (entry.isDirectory()) {
         if (options.recursive) {
           await this.walkDirectory(
@@ -866,7 +877,12 @@ export class PathResolver {
 
     try {
       // Use GitHub API to list directory contents
-      const apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/${parsed.path}?ref=${parsed.ref}`;
+      // Encode path components to prevent URL injection from user-supplied values
+      const encodedDirPath = parsed.path
+        .split('/')
+        .map((segment) => encodeURIComponent(segment))
+        .join('/');
+      const apiUrl = `https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/contents/${encodedDirPath}?ref=${encodeURIComponent(parsed.ref)}`;
 
       const response = await fetch(apiUrl, {
         headers: {
