@@ -141,7 +141,7 @@ function createStubResource(
  * and preserves them without conversion, ensuring backward compatibility.
  */
 function detectAndPreserveCelExpressions(
-  statusMappings: any,
+  statusMappings: Record<string, unknown>,
   preservedExpressions: Record<string, unknown> = {},
   path: string = ''
 ): { hasExistingCel: boolean; preservedMappings: Record<string, unknown> } {
@@ -161,7 +161,11 @@ function detectAndPreserveCelExpressions(
       preservedMappings[currentPath] = value;
     } else if (value && typeof value === 'object' && !Array.isArray(value)) {
       // Recursively check nested objects
-      const nestedResult = detectAndPreserveCelExpressions(value, preservedMappings, currentPath);
+      const nestedResult = detectAndPreserveCelExpressions(
+        value as Record<string, unknown>,
+        preservedMappings,
+        currentPath
+      );
       hasExistingCel = hasExistingCel || nestedResult.hasExistingCel;
       Object.assign(preservedMappings, nestedResult.preservedMappings);
     }
@@ -217,7 +221,7 @@ function mergePreservedCelExpressions(
  * - Which fields are complex expressions that might need analysis
  */
 function analyzeStatusMappingTypes(
-  statusMappings: any,
+  statusMappings: Record<string, unknown>,
   path: string = ''
 ): {
   kubernetesRefFields: string[];
@@ -288,7 +292,10 @@ function analyzeStatusMappingTypes(
       !isCelExpression(value) &&
       !containsKubernetesRefs(value)
     ) {
-      const nestedAnalysis = analyzeStatusMappingTypes(value, currentPath);
+      const nestedAnalysis = analyzeStatusMappingTypes(
+        value as Record<string, unknown>,
+        currentPath
+      );
       kubernetesRefFields.push(...nestedAnalysis.kubernetesRefFields);
       celExpressionFields.push(...nestedAnalysis.celExpressionFields);
       staticValueFields.push(...nestedAnalysis.staticValueFields);
@@ -771,7 +778,9 @@ function analyzeAndConvertStatusMappings<
     });
 
     // Backward compatibility: detect and preserve existing CEL expressions
-    const { hasExistingCel, preservedMappings } = detectAndPreserveCelExpressions(statusMappings);
+    const { hasExistingCel, preservedMappings } = detectAndPreserveCelExpressions(
+      statusMappings as Record<string, unknown>
+    );
 
     if (hasExistingCel) {
       logMigrationOpportunities(statusMappings, preservedMappings, serializationLogger);
@@ -1240,7 +1249,7 @@ function reanalyzeStatusForDirectFactory<
 
     if (directAnalysisResult.errors.length === 0) {
       const { preservedMappings: directPreservedMappings } = detectAndPreserveCelExpressions(
-        analysisResults.statusMappings
+        analysisResults.statusMappings as Record<string, unknown>
       );
       const result = mergePreservedCelExpressions(
         directAnalysisResult.statusMappings,
