@@ -273,7 +273,7 @@ export interface CiliumNetworkPolicy {
     namespace?: string;
     labels?: Record<string, string>;
     annotations?: Record<string, string>;
-    [key: string]: any;
+    [key: string]: unknown;
   };
   spec: CiliumNetworkPolicySpec;
   status?: CiliumNetworkPolicyStatus;
@@ -290,7 +290,7 @@ export interface CiliumClusterwideNetworkPolicy {
     name: string;
     labels?: Record<string, string>;
     annotations?: Record<string, string>;
-    [key: string]: any;
+    [key: string]: unknown;
   };
   spec: CiliumClusterwideNetworkPolicySpec;
   status?: CiliumClusterwideNetworkPolicyStatus;
@@ -1118,7 +1118,7 @@ export interface CiliumHelmValues {
   };
 
   // Allow additional custom values
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // =============================================================================

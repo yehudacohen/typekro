@@ -270,5 +270,5 @@ export interface ExternalDnsHelmValues {
   }>;
 
   // Additional custom values
-  [key: string]: any;
+  [key: string]: unknown;
 }

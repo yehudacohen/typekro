@@ -80,7 +80,7 @@ export interface ContextMetadata {
   factoryType?: 'direct' | 'kro';
 
   /** Additional context-specific properties */
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /**
