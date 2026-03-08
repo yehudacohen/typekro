@@ -1091,6 +1091,33 @@ metadata:
   }
 
   /**
+   * Traverse a spec object using dot-separated path parts, returning the resolved value.
+   * Shared by both KubernetesRef resolution (Case 1) and template marker resolution (Case 4).
+   */
+  private traverseSpec(
+    spec: TSpec,
+    pathParts: string[],
+    logPath: string
+  ): { found: true; value: unknown } | { found: false } {
+    let currentValue: unknown = spec;
+    this.logger.trace('Traversing spec with path parts', { pathParts });
+    for (const part of pathParts) {
+      if (currentValue && typeof currentValue === 'object' && part in currentValue) {
+        currentValue = (currentValue as Record<string, unknown>)[part];
+      } else {
+        this.logger.warn('Path part not found in spec', {
+          path: logPath,
+          part,
+          availableKeys:
+            currentValue && typeof currentValue === 'object' ? Object.keys(currentValue) : [],
+        });
+        return { found: false };
+      }
+    }
+    return { found: true, value: currentValue };
+  }
+
+  /**
    * Resolve schema references and CEL expressions to actual values for direct deployment.
    * This is the final, corrected version that handles both direct proxies and Cel.expr wrappers.
    */
@@ -1105,33 +1132,15 @@ metadata:
     if (isKubernetesRef(resource) && resource.resourceId === '__schema__') {
       this.logger.trace('Found schema KubernetesRef', { path, fieldPath: resource.fieldPath });
       const pathParts = resource.fieldPath.split('.');
-      let currentValue: any = spec;
-      // Skip the first part ('spec') and traverse the spec object
-      this.logger.trace('Traversing spec with path parts', { pathParts: pathParts.slice(1) });
-      for (const part of pathParts.slice(1)) {
-        if (currentValue && typeof currentValue === 'object' && part in currentValue) {
-          const oldValue = currentValue;
-          currentValue = currentValue[part];
-          this.logger.trace('Successfully traversed spec part', {
-            part,
-            oldValue: JSON.stringify(oldValue),
-            newValue: JSON.stringify(currentValue),
-          });
-        } else {
-          this.logger.warn('Path part not found in spec, returning original reference', {
-            path,
-            part,
-            spec: JSON.stringify(spec),
-          });
-          return resource;
-          // Path not found, return original
-        }
+      const resolved = this.traverseSpec(spec, pathParts.slice(1), path);
+      if (resolved.found) {
+        this.logger.trace('Resolved schema KubernetesRef to value', {
+          path,
+          resolvedValue: resolved.value,
+        });
+        return resolved.value;
       }
-      this.logger.trace('Resolved schema KubernetesRef to value', {
-        path,
-        resolvedValue: currentValue,
-      });
-      return currentValue;
+      return resource;
     }
 
     // Case 2: Handle CelExpression objects (e.g., Cel.expr(schema.spec.name, '-db'))
@@ -1224,27 +1233,15 @@ metadata:
 
           // The first part should be 'spec' or 'status'
           if (pathParts[0] === 'spec') {
-            // Traverse the spec object using the remaining path parts
-            let currentValue: any = spec;
-            for (const part of pathParts.slice(1)) {
-              if (currentValue && typeof currentValue === 'object' && part in currentValue) {
-                currentValue = currentValue[part];
-              } else {
-                this.logger.warn('Schema path not found in spec', {
-                  path,
-                  fieldPath,
-                  part,
-                  availableKeys: currentValue ? Object.keys(currentValue) : [],
-                });
-                return _match; // Keep original marker if path not found
-              }
+            const resolved = this.traverseSpec(spec, pathParts.slice(1), path);
+            if (resolved.found) {
+              this.logger.trace('Resolved schema marker to value', {
+                fieldPath,
+                resolvedValue: resolved.value,
+              });
+              return String(resolved.value);
             }
-
-            this.logger.trace('Resolved schema marker to value', {
-              fieldPath,
-              resolvedValue: currentValue,
-            });
-            return String(currentValue);
+            return _match; // Keep original marker if path not found
           } else {
             // Status references or other paths - keep as-is for now
             this.logger.trace('Keeping non-spec schema reference marker', {

@@ -86,24 +86,26 @@ export const pebbleBootstrap = kubernetesComposition(
     return {
       ready:
         (helmRepository.status.conditions?.some(
-          (c: any) => c.type === 'Ready' && c.status === 'True'
+          (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
         ) &&
           helmRelease.status.conditions?.some(
-            (c: any) => c.type === 'Ready' && c.status === 'True'
+            (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
           )) ||
         false,
       phase:
-        helmRelease.status.conditions?.find((c: any) => c.type === 'Ready')?.status === 'True'
+        helmRelease.status.conditions?.find(
+          (c: { type: string; status: string }) => c.type === 'Ready'
+        )?.status === 'True'
           ? 'Ready'
           : 'Pending',
       version: spec.version || 'latest',
       pebbleReady:
         helmRelease.status.conditions?.some(
-          (c: any) => c.type === 'Ready' && c.status === 'True'
+          (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
         ) || false,
       corednsReady:
         helmRelease.status.conditions?.some(
-          (c: any) => c.type === 'Ready' && c.status === 'True'
+          (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
         ) || false,
       acmeEndpoint: `https://${spec.name}.${spec.namespace || 'default'}.svc.cluster.local/dir`,
       managementEndpoint: `https://${spec.name}.${spec.namespace || 'default'}.svc.cluster.local:15000`,
