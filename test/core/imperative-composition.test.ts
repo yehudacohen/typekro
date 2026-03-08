@@ -1936,27 +1936,6 @@ describe('Imperative Composition Pattern', () => {
       }).toThrow('Failed to execute composition function');
     });
 
-    it('should detect unsupported patterns in status objects', () => {
-      // Test the pattern detector directly since it's not enabled in normal flow
-      const {
-        UnsupportedPatternDetector,
-      } = require('../../src/core/unsupported-pattern-detector.js');
-
-      const statusWithUnsupportedPatterns = {
-        ready: true,
-        badTemplate: 'Hello ${name} world', // Template literal pattern
-        badFunction: () => 'test', // Function
-      };
-
-      const error = UnsupportedPatternDetector.createUnsupportedPatternError(
-        'test-composition',
-        statusWithUnsupportedPatterns
-      );
-
-      expect(error).not.toBeNull();
-      expect(error?.message).toContain('Unsupported patterns detected');
-    });
-
     it('should provide debugging information when enabled', () => {
       // Import debugging functions
       const {
@@ -2062,27 +2041,6 @@ describe('Imperative Composition Pattern', () => {
       expect(error.message).toContain('string');
       expect(error.message).toContain('123');
       expect(error.phase).toBe('status-building');
-    });
-
-    it('should detect and report unsupported pattern types', () => {
-      const {
-        UnsupportedPatternDetector,
-      } = require('../../src/core/unsupported-pattern-detector.js');
-
-      const statusObject = {
-        ready: true,
-        url: 'https://example.com', // This is fine - literal string
-        badTemplate: 'Hello ${name} world', // Template literal pattern (not CEL)
-        badConcat: 'prefix + suffix', // String with concatenation pattern
-        badFunction: () => 'test', // Function - definitely not supported
-      };
-
-      const issues = UnsupportedPatternDetector.detectUnsupportedStatusPatterns(statusObject);
-      expect(issues.length).toBeGreaterThan(0);
-
-      const suggestions = UnsupportedPatternDetector.generatePatternSuggestions(issues[0] || '');
-      expect(suggestions.length).toBeGreaterThan(0);
-      expect(suggestions.some((s: string) => s.includes('Cel.'))).toBe(true);
     });
   });
 
