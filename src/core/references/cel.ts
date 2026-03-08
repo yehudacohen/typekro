@@ -382,12 +382,24 @@ export const Cel = {
     expr<number>(...parts),
 
   // Common CEL functions as utilities
+
+  /** CEL `min()` — returns the smallest of the given values. */
   min: (...values: RefOrValue<CelValue>[]) => math<number>('min', ...values),
+
+  /** CEL `max()` — returns the largest of the given values. */
   max: (...values: RefOrValue<CelValue>[]) => math<number>('max', ...values),
+
+  /** CEL `size()` — returns the length of a list, map, or string. */
   size: (collection: RefOrValue<CelValue>) => math<number>('size', collection),
+
+  /** CEL `string()` — converts a value to its string representation. */
   string: (value: RefOrValue<CelValue>) =>
     math<string>('string', value) as CelExpression<string> & string,
+
+  /** CEL `int()` — converts a value to an integer. */
   int: (value: RefOrValue<CelValue>) => math<number>('int', value),
+
+  /** CEL `double()` — converts a value to a floating-point number. */
   double: (value: RefOrValue<CelValue>) => math<number>('double', value),
 };
 
