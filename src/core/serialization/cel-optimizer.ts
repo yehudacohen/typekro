@@ -110,9 +110,6 @@ export function optimizeCelExpression(
   expression: CelExpression<unknown> | string,
   context: EvaluationContext
 ): EvaluationResult {
-  const optimizations: string[] = [];
-  const wasOptimized = false;
-
   if (typeof expression === 'string') {
     return {
       expression,
@@ -129,37 +126,27 @@ export function optimizeCelExpression(
     };
   }
 
-  let optimizedExpression = expression.expression;
-
-  // Pattern 1: Simple string concatenation with known values
-  // Example: "http://" + resourceName where resourceName is known
-  // NOTE: We should NOT optimize resource references in CEL expressions because they need to be
-  // resolved at runtime by Kro, not at compile time. Resource references like deployment.metadata.name
-  // should remain as CEL expressions for Kro to evaluate against live Kubernetes resources.
-
-  // Pattern 2: Conditional expressions with known boolean values
-  // Example: condition ? "value1" : "value2" where condition can be evaluated
+  // Validate referenced resources exist (informational warnings only).
+  // Actual CEL optimization is not performed — resource references must remain
+  // as CEL expressions for Kro to evaluate against live Kubernetes resources.
+  const optimizations: string[] = [];
   const conditionalPattern =
-    /([a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z0-9.]*) ([><=!]+) (\d+) \? "([^"]*)" : "([^"]*)"/g;
-  optimizedExpression = optimizedExpression.replace(
-    conditionalPattern,
-    (match, leftSide, _operator, _rightSide, _trueValue, _falseValue) => {
-      // For now, we can't evaluate the condition at compile time without actual resource status
-      // But we can validate that the reference exists
-      const resourceId = leftSide.split('.')[0];
-      const resource = Object.values(context.resources).find((r) => r.id === resourceId);
-
-      if (!resource) {
-        optimizations.push(`Warning: Referenced resource '${resourceId}' not found`);
-      }
-
-      return match; // Return unchanged for now
+    /([a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z0-9.]*) [><=!]+ \d+ \? "[^"]*" : "[^"]*"/g;
+  for (
+    let match = conditionalPattern.exec(expression.expression);
+    match !== null;
+    match = conditionalPattern.exec(expression.expression)
+  ) {
+    const resourceId = match[1]?.split('.')[0];
+    const resource = Object.values(context.resources).find((r) => r.id === resourceId);
+    if (!resource) {
+      optimizations.push(`Warning: Referenced resource '${resourceId}' not found`);
     }
-  );
+  }
 
   return {
-    expression: optimizedExpression,
-    wasOptimized,
+    expression: expression.expression,
+    wasOptimized: false,
     optimizations,
   };
 }
