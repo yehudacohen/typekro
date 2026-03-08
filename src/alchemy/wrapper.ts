@@ -10,11 +10,12 @@ import { generateDeterministicResourceId as _generateDeterministicResourceId } f
 /**
  * Utility to check if a factory is alchemy-managed
  */
-export function isAlchemyWrapped(factory: any): boolean {
+export function isAlchemyWrapped(factory: unknown): factory is { isAlchemyManaged: true } {
   return (
     factory !== null &&
     factory !== undefined &&
     typeof factory === 'object' &&
+    'isAlchemyManaged' in factory &&
     factory.isAlchemyManaged === true
   );
 }

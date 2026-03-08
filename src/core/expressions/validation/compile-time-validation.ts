@@ -916,7 +916,7 @@ export interface CompileTimeValidationContext {
   skipCache?: boolean;
 
   /** TypeScript compiler options */
-  compilerOptions?: any;
+  compilerOptions?: Record<string, unknown> | undefined;
 }
 
 /**

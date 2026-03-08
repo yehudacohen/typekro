@@ -21,7 +21,7 @@ import {
   type CompositionAnalysisResult,
 } from '../expressions/composition/composition-analyzer.js';
 import { analyzeImperativeComposition } from '../expressions/composition/imperative-analyzer.js';
-import { CelConversionEngine } from '../expressions/factory/cel-conversion-engine.js';
+import { celConversionEngine } from '../expressions/factory/cel-conversion-engine.js';
 import { CelToJavaScriptMigrationHelper } from '../expressions/factory/migration-helpers.js';
 import {
   analyzeStatusBuilderForToResourceGraph,
@@ -1037,7 +1037,6 @@ function convertKubernetesRefsToCel(
   statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): { convertedStatusMappings: Record<string, unknown>; hasConversions: boolean } {
-  const celConversionEngine = new CelConversionEngine();
   const convertedStatusMappings: Record<string, unknown> = {};
   let hasConversions = false;
 

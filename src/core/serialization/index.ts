@@ -11,6 +11,8 @@ export type {
   SerializationOptions,
   ValidationResult,
 } from '../types/serialization.js';
+// CEL optimization
+export { optimizeCelExpression, optimizeStatusMappings } from './cel-optimizer.js';
 // CEL reference serialization
 export {
   getInnerCelPath,

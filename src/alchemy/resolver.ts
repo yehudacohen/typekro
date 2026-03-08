@@ -480,7 +480,7 @@ export function hasMixedDependencies(resources: Record<string, unknown>): boolea
  * Recursively check if an object contains TypeKro references
  */
 function hasTypeKroReferencesRecursive(
-  obj: any,
+  obj: unknown,
   visited: WeakSet<object> = new WeakSet()
 ): boolean {
   if (isKubernetesRef(obj) || isCelExpression(obj)) {
