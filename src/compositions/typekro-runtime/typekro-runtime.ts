@@ -48,7 +48,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   // v2.7.5 is the latest stable version with fixes for schema validation issues
   const fluxVersion = config.fluxVersion || 'v2.7.5';
   const kroVersion = config.kroVersion || '0.8.5';
-  const targetNamespace = config.namespace || 'flux-system';
+  const targetNamespace = config.namespace || DEFAULT_FLUX_NAMESPACE;
 
   return kubernetesComposition(
     {

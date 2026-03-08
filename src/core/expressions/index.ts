@@ -31,10 +31,7 @@ export type {
   CelGenerationConfig,
   CelGenerationResult,
 } from './context/context-aware-generator.js';
-export {
-  ContextAwareCelGenerator,
-  contextAwareCelGenerator,
-} from './context/context-aware-generator.js';
+export { ContextAwareCelGenerator } from './context/context-aware-generator.js';
 export type {
   CelGenerationStrategy,
   ContextDetectionConfig,
@@ -53,10 +50,7 @@ export type {
   ValidationIssue,
   ValidationSeverity,
 } from './context/context-validator.js';
-export {
-  ContextExpressionValidator,
-  contextValidator,
-} from './context/context-validator.js';
+export { ContextExpressionValidator } from './context/context-validator.js';
 export type { CelConversionConfig, CelConversionResult } from './factory/cel-conversion-engine.js';
 // =============================================================================
 // CEL CONVERSION

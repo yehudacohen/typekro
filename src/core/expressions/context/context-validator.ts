@@ -598,8 +598,3 @@ export class ContextExpressionValidator {
     return Math.max(0, Math.min(1, baseConfidence - errorPenalty - warningPenalty));
   }
 }
-
-/**
- * Default context validator instance
- */
-export const contextValidator = new ContextExpressionValidator();

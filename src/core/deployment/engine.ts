@@ -1780,17 +1780,6 @@ export class DirectDeploymentEngine {
   }
 
   /**
-   * Wait for resource readiness (legacy method for compatibility)
-   */
-  async waitForResourceReadiness(
-    resource: DeployedResource,
-    options: DeploymentOptions
-  ): Promise<void> {
-    // Legacy method - no abort signal support
-    return this.waitForResourceReady(resource, options, undefined);
-  }
-
-  /**
    * Rollback a deployment by ID
    */
   async rollback(deploymentId: string): Promise<RollbackResult> {
