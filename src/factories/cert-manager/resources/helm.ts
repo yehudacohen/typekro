@@ -8,8 +8,8 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../../core/constants/brands.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   type HelmRepositorySpec,
@@ -198,14 +198,12 @@ export function certManagerHelmRelease(
 function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(
     JSON.stringify(values, (_key, value) => {
-      // Check if this is a KubernetesRef object (uses Symbol brand, not string property)
-      if (value && typeof value === 'object' && KUBERNETES_REF_BRAND in value) {
-        // Return undefined to skip this value - it's a schema proxy reference
+      // Skip KubernetesRef objects — schema proxy references can't be used in Helm values
+      if (isKubernetesRef(value)) {
         return undefined;
       }
-      // Check if this is a CelExpression object (uses Symbol brand, not string property)
-      if (value && typeof value === 'object' && CEL_EXPRESSION_BRAND in value) {
-        // Return undefined to skip this value - it's a CEL expression
+      // Skip CelExpression objects — CEL expressions can't be used in Helm values
+      if (isCelExpression(value)) {
         return undefined;
       }
       return value;
