@@ -1,6 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import { createAlwaysReadyEvaluator } from '../../../core/readiness/evaluator-factories.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { createResource } from '../../shared.js';

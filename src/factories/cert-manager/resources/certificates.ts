@@ -1,5 +1,5 @@
 // Cert-Manager Certificate Resources
-import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/evaluator-factories.js';
+import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { CertificateConfig, CertificateStatus } from '../types.js';

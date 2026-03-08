@@ -9,7 +9,7 @@ import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { DependencyGraph } from '../core/dependencies/index.js';
 import { ResourceDeploymentError } from '../core/deployment/errors.js';
 import { getComponentLogger } from '../core/logging/index.js';
-import { ensureReadinessEvaluator } from '../core/readiness/evaluator.js';
+import { ensureReadinessEvaluator } from '../core/readiness/index.js';
 import { generateDeterministicResourceId, getResourceId } from '../core/resources/id.js';
 import type { DeploymentOptions, DeploymentResourceGraph } from '../core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.js';
