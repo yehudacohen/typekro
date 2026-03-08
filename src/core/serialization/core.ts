@@ -475,7 +475,853 @@ export {
   analyzeValueType,
   isLikelyStaticObject,
   FACTORY_KIND_MAP,
+  validateResourceGraphName,
+  findResourceByKey,
+  analyzeAndConvertStatusMappings,
+  processCompositionBodyAnalysis,
+  reanalyzeStatusForDirectFactory,
+  wrapWithResourceGraphProxy,
 };
+
+export type { StatusAnalysisResult, CompositionBodyAnalysisResult };
+
+// =============================================================================
+// Extracted helper: Resource graph name validation
+// =============================================================================
+
+/**
+ * Validate a resource graph name and return the Kubernetes-compatible form.
+ *
+ * @throws {ValidationError} if the name is empty, whitespace-only, not DNS-compliant,
+ *   or exceeds the 253-character Kubernetes limit.
+ * @returns The validated, lowercase-hyphenated Kubernetes name.
+ *
+ * @internal Exported for testing only
+ */
+function validateResourceGraphName(name: string | undefined | null): string {
+  if (!name || typeof name !== 'string') {
+    throw new ValidationError(
+      `Invalid resource graph name: ${JSON.stringify(name)}. Resource graph name must be a non-empty string.`,
+      'ResourceGraphDefinition',
+      String(name),
+      'name',
+      ['Provide a non-empty string for the resource graph name']
+    );
+  }
+
+  const trimmedName = name.trim();
+  if (trimmedName.length === 0) {
+    throw new ValidationError(
+      `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`,
+      'ResourceGraphDefinition',
+      name,
+      'name',
+      ['Provide a non-whitespace resource graph name']
+    );
+  }
+
+  const kubernetesName = trimmedName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+
+  if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
+    throw new ValidationError(
+      `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`,
+      'ResourceGraphDefinition',
+      name,
+      'name',
+      [
+        'Use lowercase alphanumeric characters and hyphens only',
+        'Must start and end with an alphanumeric character',
+      ]
+    );
+  }
+
+  if (kubernetesName.length > 253) {
+    throw new ValidationError(
+      `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`,
+      'ResourceGraphDefinition',
+      name,
+      'name',
+      ['Shorten the resource graph name to stay under 253 characters']
+    );
+  }
+
+  return kubernetesName;
+}
+
+// =============================================================================
+// Extracted helper: Resource key lookup (cross-composition access)
+// =============================================================================
+
+/**
+ * Find a resource by key name in a resources map.
+ *
+ * Implements multiple matching strategies for cross-composition magic proxy
+ * access (e.g. `composition.database`):
+ * 1. Direct match by generated resource ID (exact)
+ * 2. Smart pattern matching — name parts + kind-based (fuzzy, logged)
+ * 3. Case-insensitive match on resource ID (fuzzy, logged)
+ * 4. Partial matching — key parts contained in resource ID (fuzzy, logged)
+ *
+ * Strategies 2-4 emit a debug-level warning so users can diagnose unexpected
+ * cross-composition references. Strategy 1 is the only silent/exact match.
+ *
+ * @internal Exported for testing only
+ */
+function findResourceByKey(
+  key: string | symbol,
+  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  logger?: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): KubernetesResource | undefined {
+  if (typeof key !== 'string') return undefined;
+
+  // Strategy 1: Direct match by generated resource ID (exact — no warning)
+  if (resourcesWithKeys[key]) {
+    return resourcesWithKeys[key];
+  }
+
+  // Strategy 2: Smart pattern matching for common cases
+  const keyLower = key.toLowerCase();
+  const keyParts = key.split(/[-_]/).map((p) => p.toLowerCase());
+
+  for (const [resourceId, resource] of Object.entries(resourcesWithKeys)) {
+    const kind = resource.kind.toLowerCase();
+    let name = '';
+    if (resource.metadata.name && typeof resource.metadata.name === 'string') {
+      name = resource.metadata.name.toLowerCase();
+    } else if (resource.metadata.name && typeof resource.metadata.name === 'object') {
+      continue;
+    }
+    const resourceIdLower = resourceId.toLowerCase();
+
+    const nameParts = name.split(/[-_]/).map((p) => p.toLowerCase());
+    const hasCommonParts = keyParts.some((keyPart) =>
+      nameParts.some((namePart) => keyPart.includes(namePart) || namePart.includes(keyPart))
+    );
+
+    if (hasCommonParts) {
+      if (
+        keyParts.includes(kind) ||
+        (keyParts.includes('deployment') && kind === 'deployment') ||
+        (keyParts.includes('service') && kind === 'service')
+      ) {
+        logger?.debug('findResourceByKey: fuzzy match (strategy 2: pattern+kind)', {
+          requestedKey: key,
+          matchedResourceId: resourceId,
+          matchedKind: resource.kind,
+        });
+        return resource;
+      }
+    }
+
+    if (keyParts.includes(kind)) {
+      const nameInResourceId = nameParts.some((part) => resourceIdLower.includes(part));
+      if (nameInResourceId) {
+        logger?.debug('findResourceByKey: fuzzy match (strategy 2: kind+name)', {
+          requestedKey: key,
+          matchedResourceId: resourceId,
+          matchedKind: resource.kind,
+        });
+        return resource;
+      }
+    }
+
+    const semanticPatterns: Record<string, string[]> = {
+      database: ['deployment', 'statefulset'],
+      db: ['deployment', 'statefulset'],
+      cache: ['deployment', 'statefulset'],
+      redis: ['deployment', 'statefulset'],
+      service: ['service'],
+      svc: ['service'],
+      ingress: ['ingress'],
+      configmap: ['configmap'],
+      secret: ['secret'],
+    };
+
+    for (const [pattern, kinds] of Object.entries(semanticPatterns)) {
+      if (keyParts.includes(pattern) && kinds.includes(kind)) {
+        logger?.debug('findResourceByKey: fuzzy match (strategy 2: semantic pattern)', {
+          requestedKey: key,
+          matchedResourceId: resourceId,
+          matchedKind: resource.kind,
+          semanticPattern: pattern,
+        });
+        return resource;
+      }
+    }
+  }
+
+  // Strategy 3: Case-insensitive match on generated resource ID
+  for (const [resourceKey, resource] of Object.entries(resourcesWithKeys)) {
+    if (resourceKey.toLowerCase() === keyLower) {
+      logger?.debug('findResourceByKey: fuzzy match (strategy 3: case-insensitive)', {
+        requestedKey: key,
+        matchedResourceId: resourceKey,
+        matchedKind: resource.kind,
+      });
+      return resource;
+    }
+  }
+
+  // Strategy 4: Partial matching - find resources that contain key parts in their ID
+  for (const [resourceKey, resource] of Object.entries(resourcesWithKeys)) {
+    const resourceKeyLower = resourceKey.toLowerCase();
+    if (keyParts.some((part) => part.length > 2 && resourceKeyLower.includes(part))) {
+      logger?.debug('findResourceByKey: fuzzy match (strategy 4: partial key)', {
+        requestedKey: key,
+        matchedResourceId: resourceKey,
+        matchedKind: resource.kind,
+      });
+      return resource;
+    }
+  }
+
+  return undefined;
+}
+
+// =============================================================================
+// Extracted helper: Status builder analysis and CEL conversion
+// =============================================================================
+
+/**
+ * Result of analyzing and converting status builder output.
+ *
+ * @internal Exported for testing only
+ */
+interface StatusAnalysisResult {
+  /** The status mapping values returned by the builder (raw, before conversion). */
+  statusMappings: MagicAssignableShape<KroCompatibleType>;
+  /** The final analyzed/converted status mappings (CEL expressions resolved). */
+  analyzedStatusMappings: Record<string, unknown>;
+  /** Field-level analysis of the status mappings. */
+  mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
+  /** Whether imperative analysis succeeded and provided CEL expressions. */
+  imperativeAnalysisSucceeded: boolean;
+}
+
+/**
+ * Analyze a status builder function and convert JavaScript expressions to CEL.
+ *
+ * This encapsulates the full pipeline:
+ * 1. Execute the status builder in a context that returns KubernetesRef objects
+ * 2. If imperative, try status builder analysis or fall back to imperative analysis
+ * 3. If declarative, analyze directly
+ * 4. Detect and preserve existing CEL expressions
+ * 5. Convert KubernetesRef objects to CEL via CelConversionEngine
+ * 6. Log migration opportunities
+ *
+ * @internal Exported for testing only
+ */
+function analyzeAndConvertStatusMappings<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+>(
+  definition: ResourceGraphDefinition<TSpec, TStatus>,
+  statusBuilder: (
+    schema: SchemaProxy<TSpec, TStatus>,
+    resources: TResources
+  ) => MagicAssignableShape<TStatus>,
+  schema: SchemaProxy<TSpec, TStatus>,
+  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): StatusAnalysisResult {
+  let statusMappings: MagicAssignableShape<TStatus>;
+  let analyzedStatusMappings: Record<string, unknown> = {};
+  let mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
+  let imperativeAnalysisSucceeded = false;
+
+  try {
+    statusMappings = runInStatusBuilderContext(() =>
+      statusBuilder(schema, resourcesWithKeys as TResources)
+    );
+
+    const originalCompositionFn = (statusMappings as Record<string, unknown>)
+      .__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
+
+    if (originalCompositionFn) {
+      const imperativeResult = analyzeImperativeStatusMappings(
+        definition,
+        statusBuilder,
+        schema,
+        resourcesWithKeys,
+        statusMappings,
+        originalCompositionFn,
+        serializationLogger
+      );
+      analyzedStatusMappings = imperativeResult.analyzedStatusMappings;
+      imperativeAnalysisSucceeded = imperativeResult.imperativeAnalysisSucceeded;
+    } else {
+      analyzedStatusMappings = analyzeDeclarativeStatusMappings(
+        statusBuilder,
+        schema,
+        resourcesWithKeys,
+        statusMappings,
+        serializationLogger
+      );
+    }
+
+    // Comprehensive analysis of the final status mappings
+    mappingAnalysis = analyzeStatusMappingTypes(analyzedStatusMappings);
+
+    serializationLogger.debug('Status mapping analysis complete', {
+      kubernetesRefFields: mappingAnalysis.kubernetesRefFields.length,
+      celExpressionFields: mappingAnalysis.celExpressionFields.length,
+      staticValueFields: mappingAnalysis.staticValueFields.length,
+      complexExpressionFields: mappingAnalysis.complexExpressionFields.length,
+    });
+
+    // Backward compatibility: detect and preserve existing CEL expressions
+    const { hasExistingCel, preservedMappings } = detectAndPreserveCelExpressions(statusMappings);
+
+    if (hasExistingCel) {
+      logMigrationOpportunities(statusMappings, preservedMappings, serializationLogger);
+    }
+
+    // Convert KubernetesRef objects to CEL expressions
+    const conversionResult = convertKubernetesRefsToCel(
+      definition.name,
+      statusMappings,
+      serializationLogger
+    );
+
+    // Merge converted and preserved mappings
+    if (conversionResult.hasConversions) {
+      if (!imperativeAnalysisSucceeded) {
+        analyzedStatusMappings = mergePreservedCelExpressions(
+          conversionResult.convertedStatusMappings,
+          preservedMappings
+        );
+      }
+      serializationLogger.debug('Successfully converted JavaScript expressions to CEL', {
+        convertedFields: Object.keys(conversionResult.convertedStatusMappings).filter(
+          (key) =>
+            conversionResult.convertedStatusMappings[key] !==
+            (statusMappings as Record<string, unknown>)[key]
+        ).length,
+        preservedFields: Object.keys(preservedMappings).length,
+        staticFields: mappingAnalysis.staticValueFields.length,
+      });
+    } else if (hasExistingCel) {
+      if (!imperativeAnalysisSucceeded) {
+        analyzedStatusMappings = mergePreservedCelExpressions(
+          statusMappings as Record<string, unknown>,
+          preservedMappings
+        );
+      }
+      serializationLogger.debug('Preserved existing CEL expressions without conversion', {
+        preservedFields: Object.keys(preservedMappings).length,
+        staticFields: mappingAnalysis.staticValueFields.length,
+        complexFields: mappingAnalysis.complexExpressionFields.length,
+      });
+    } else {
+      if (!imperativeAnalysisSucceeded) {
+        analyzedStatusMappings = statusMappings as Record<string, unknown>;
+      }
+      serializationLogger.debug(
+        'Status builder contains only static values and complex expressions',
+        {
+          staticFields: mappingAnalysis.staticValueFields.length,
+          complexFields: mappingAnalysis.complexExpressionFields.length,
+          totalFields: Object.keys(mappingAnalysis.analysisDetails).length,
+        }
+      );
+    }
+  } catch (error: unknown) {
+    serializationLogger.error('Failed to analyze status builder', ensureError(error));
+    statusMappings = runInStatusBuilderContext(() =>
+      statusBuilder(schema, resourcesWithKeys as TResources)
+    );
+    analyzedStatusMappings = statusMappings as Record<string, unknown>;
+    mappingAnalysis = {
+      kubernetesRefFields: [],
+      celExpressionFields: [],
+      staticValueFields: [],
+      complexExpressionFields: [],
+      analysisDetails: {},
+    };
+  }
+
+  return {
+    statusMappings: statusMappings!,
+    analyzedStatusMappings,
+    mappingAnalysis: mappingAnalysis!,
+    imperativeAnalysisSucceeded,
+  };
+}
+
+/**
+ * Analyze status mappings from an imperative composition (has __originalCompositionFn).
+ *
+ * @internal
+ */
+function analyzeImperativeStatusMappings<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+>(
+  definition: ResourceGraphDefinition<TSpec, TStatus>,
+  statusBuilder: (
+    schema: SchemaProxy<TSpec, TStatus>,
+    resources: TResources
+  ) => MagicAssignableShape<TStatus>,
+  schema: SchemaProxy<TSpec, TStatus>,
+  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  statusMappings: MagicAssignableShape<TStatus>,
+  originalCompositionFn: (...args: unknown[]) => unknown,
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): { analyzedStatusMappings: Record<string, unknown>; imperativeAnalysisSucceeded: boolean } {
+  let analyzedStatusMappings: Record<string, unknown> = {};
+  let imperativeAnalysisSucceeded = false;
+
+  serializationLogger.debug(
+    'Detected imperative composition, checking for existing KubernetesRef objects'
+  );
+
+  let hasKubernetesRefs = containsKubernetesRefs(statusMappings);
+  let hasCelExpressions = containsCelExpressions(statusMappings);
+  const needsPreAnalysis = (statusMappings as Record<string, unknown>).__needsPreAnalysis === true;
+
+  serializationLogger.debug('Imperative composition analysis', {
+    hasKubernetesRefs,
+    hasCelExpressions,
+    needsPreAnalysis,
+    statusMappings: JSON.stringify(statusMappings, null, 2),
+  });
+
+  if (hasKubernetesRefs || hasCelExpressions || needsPreAnalysis) {
+    serializationLogger.debug(
+      'Status object already contains KubernetesRef objects or CelExpression objects, using direct analysis'
+    );
+
+    try {
+      const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
+        statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
+        resourcesWithKeys as Record<string, Enhanced<any, any>>,
+        schema,
+        'kro'
+      );
+
+      if (statusBuilderAnalysis.requiresConversion) {
+        analyzedStatusMappings = statusBuilderAnalysis.statusMappings;
+        imperativeAnalysisSucceeded = true;
+        serializationLogger.debug('Using status builder analysis for imperative composition', {
+          fieldCount: Object.keys(analyzedStatusMappings).length,
+        });
+      } else {
+        analyzedStatusMappings = statusMappings as Record<string, unknown>;
+        serializationLogger.debug('No conversion required, using original status mappings');
+      }
+    } catch (statusAnalysisError: unknown) {
+      serializationLogger.debug(
+        'Status builder analysis failed, falling back to imperative analysis',
+        {
+          error: ensureError(statusAnalysisError).message,
+        }
+      );
+      hasKubernetesRefs = false;
+      hasCelExpressions = false;
+    }
+  }
+
+  if (!hasKubernetesRefs && !hasCelExpressions) {
+    serializationLogger.debug(
+      'No KubernetesRef objects or CelExpression objects found, analyzing original composition function'
+    );
+
+    try {
+      const imperativeAnalysis = analyzeImperativeComposition(
+        originalCompositionFn,
+        resourcesWithKeys as Record<string, Enhanced<any, any>>,
+        { factoryType: 'kro' }
+      );
+
+      serializationLogger.debug('Imperative composition analysis complete', {
+        statusFieldCount: Object.keys(imperativeAnalysis.statusMappings).length,
+        hasJavaScriptExpressions: imperativeAnalysis.hasJavaScriptExpressions,
+      });
+
+      if (imperativeAnalysis.hasJavaScriptExpressions) {
+        analyzedStatusMappings = imperativeAnalysis.statusMappings;
+        imperativeAnalysisSucceeded = true;
+        serializationLogger.debug(
+          'Using analyzed imperative composition mappings with CEL expressions',
+          {
+            fieldCount: Object.keys(analyzedStatusMappings).length,
+          }
+        );
+      } else {
+        analyzedStatusMappings = statusMappings as Record<string, unknown>;
+        serializationLogger.debug(
+          'No JavaScript expressions found, using original status mappings'
+        );
+      }
+    } catch (imperativeAnalysisError: unknown) {
+      serializationLogger.debug(
+        'Imperative composition analysis failed, using executed status mappings',
+        {
+          error: ensureError(imperativeAnalysisError).message,
+        }
+      );
+      analyzedStatusMappings = statusMappings as Record<string, unknown>;
+    }
+  }
+
+  return { analyzedStatusMappings, imperativeAnalysisSucceeded };
+}
+
+/**
+ * Analyze status mappings from a regular (declarative) status builder.
+ *
+ * @internal
+ */
+function analyzeDeclarativeStatusMappings<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+>(
+  statusBuilder: (
+    schema: SchemaProxy<TSpec, TStatus>,
+    resources: TResources
+  ) => MagicAssignableShape<TStatus>,
+  schema: SchemaProxy<TSpec, TStatus>,
+  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  statusMappings: MagicAssignableShape<TStatus>,
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): Record<string, unknown> {
+  try {
+    const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
+      statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
+      resourcesWithKeys as Record<string, Enhanced<any, any>>,
+      schema,
+      'kro'
+    );
+
+    serializationLogger.debug('Status builder analysis complete', {
+      statusFieldCount: Object.keys(statusBuilderAnalysis.statusMappings).length,
+      dependencyCount: statusBuilderAnalysis.dependencies.length,
+      hasJavaScriptExpressions: statusBuilderAnalysis.dependencies.length > 0,
+    });
+
+    if (statusBuilderAnalysis.dependencies.length > 0) {
+      serializationLogger.debug('Using analyzed status mappings with CEL expressions', {
+        fieldCount: Object.keys(statusBuilderAnalysis.statusMappings).length,
+      });
+      return statusBuilderAnalysis.statusMappings;
+    }
+
+    return statusMappings as Record<string, unknown>;
+  } catch (analysisError: unknown) {
+    serializationLogger.debug('Status builder analysis failed, using executed status mappings', {
+      error: ensureError(analysisError).message,
+    });
+    return statusMappings as Record<string, unknown>;
+  }
+}
+
+/**
+ * Convert KubernetesRef objects in status mappings to CEL expressions.
+ *
+ * @internal
+ */
+function convertKubernetesRefsToCel(
+  definitionName: string,
+  statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): { convertedStatusMappings: Record<string, unknown>; hasConversions: boolean } {
+  const celConversionEngine = new CelConversionEngine();
+  const convertedStatusMappings: Record<string, unknown> = {};
+  let hasConversions = false;
+
+  for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+    if (containsKubernetesRefs(fieldValue)) {
+      const conversionResult = celConversionEngine.convertValue(
+        fieldValue,
+        { factoryType: 'kro', factoryName: definitionName, analysisEnabled: true },
+        { factoryType: 'kro', preserveStatic: false }
+      );
+
+      if (conversionResult.wasConverted) {
+        convertedStatusMappings[fieldName] = conversionResult.converted;
+        hasConversions = true;
+        serializationLogger.debug('Converted field to CEL expression', {
+          fieldName,
+          strategy: conversionResult.strategy,
+          referencesConverted: conversionResult.metrics.referencesConverted,
+        });
+      } else {
+        convertedStatusMappings[fieldName] = fieldValue;
+      }
+    } else {
+      convertedStatusMappings[fieldName] = fieldValue;
+    }
+  }
+
+  return { convertedStatusMappings, hasConversions };
+}
+
+/**
+ * Log migration opportunities for existing CEL expressions.
+ *
+ * @internal
+ */
+function logMigrationOpportunities(
+  statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
+  preservedMappings: Record<string, unknown>,
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): void {
+  serializationLogger.debug(
+    'Found existing CEL expressions, preserving for backward compatibility',
+    {
+      preservedCount: Object.keys(preservedMappings).length,
+    }
+  );
+
+  try {
+    const migrationHelper = new CelToJavaScriptMigrationHelper();
+    const migrationAnalysis = migrationHelper.analyzeMigrationOpportunities(
+      statusMappings as Record<string, unknown>
+    );
+
+    if (migrationAnalysis.migrationFeasibility.migratableExpressions > 0) {
+      serializationLogger.info('Migration opportunities detected for CEL expressions', {
+        totalExpressions: migrationAnalysis.migrationFeasibility.totalExpressions,
+        migratableExpressions: migrationAnalysis.migrationFeasibility.migratableExpressions,
+        overallConfidence: Math.round(
+          migrationAnalysis.migrationFeasibility.overallConfidence * 100
+        ),
+      });
+
+      const highConfidenceSuggestions = migrationAnalysis.suggestions.filter(
+        (s) => s.confidence >= 0.8 && s.isSafe
+      );
+      if (highConfidenceSuggestions.length > 0) {
+        serializationLogger.info('High-confidence migration suggestions available', {
+          suggestions: highConfidenceSuggestions.map((s) => ({
+            original: s.originalCel,
+            suggested: s.suggestedJavaScript,
+            confidence: Math.round(s.confidence * 100),
+          })),
+        });
+      }
+    }
+  } catch (migrationError: unknown) {
+    serializationLogger.error(
+      'Failed to analyze migration opportunities',
+      ensureError(migrationError)
+    );
+  }
+}
+
+// =============================================================================
+// Extracted helper: Composition body analysis (AST-based)
+// =============================================================================
+
+/**
+ * Result of analyzing the composition function body for control flow patterns.
+ *
+ * @internal Exported for testing only
+ */
+interface CompositionBodyAnalysisResult {
+  /** The analysis result from the composition body analyzer, or null if unavailable. */
+  compositionAnalysis: CompositionAnalysisResult | null;
+  /**
+   * Mutable flag tracking whether `applyAnalysisToResources` has been called.
+   * Wrapped in an object so Biome doesn't hoist it to `const`.
+   */
+  analysisState: { appliedToResources: boolean };
+}
+
+/**
+ * Analyze the composition function body for control flow patterns
+ * (if-statements -> includeWhen, for-of loops -> forEach, ternary -> template overrides,
+ * collection aggregates -> status overrides).
+ *
+ * This MUST run before validation because:
+ * 1. Stub resources need to exist before resource ID validation
+ * 2. Status overrides (e.g. .map().join()) need to replace raw marker strings
+ *    before CEL expression validation
+ *
+ * @internal Exported for testing only
+ */
+function processCompositionBodyAnalysis(
+  statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
+  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  analyzedStatusMappings: Record<string, unknown>,
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): CompositionBodyAnalysisResult {
+  let compositionAnalysis: CompositionAnalysisResult | null = null;
+  const analysisState = { appliedToResources: false };
+
+  const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
+    ?.__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
+
+  if (originalCompositionFnForAnalysis) {
+    try {
+      const resourceIds = new Set(Object.keys(resourcesWithKeys));
+      compositionAnalysis = analyzeCompositionBody(originalCompositionFnForAnalysis, resourceIds);
+
+      // Create stub resources for factory calls that weren't registered at runtime
+      for (const unregistered of compositionAnalysis.unregisteredFactories) {
+        if (!resourceIds.has(unregistered.resourceId)) {
+          const stub = createStubResource(unregistered.factoryName, unregistered.resourceId);
+          if (stub) {
+            resourcesWithKeys[unregistered.resourceId] = stub as Enhanced<unknown, unknown>;
+            resourceIds.add(unregistered.resourceId);
+            serializationLogger.debug('Created stub resource for unregistered factory', {
+              resourceId: unregistered.resourceId,
+              factoryName: unregistered.factoryName,
+            });
+          }
+        }
+      }
+
+      // Apply status overrides before validation
+      if (compositionAnalysis.statusOverrides.length > 0) {
+        for (const override of compositionAnalysis.statusOverrides) {
+          analyzedStatusMappings[override.propertyPath] = override.celExpression;
+          serializationLogger.debug('Applied status override before validation', {
+            propertyPath: override.propertyPath,
+            celExpression: override.celExpression,
+          });
+        }
+      }
+    } catch (analysisError: unknown) {
+      serializationLogger.debug(
+        'Composition body analysis failed (non-fatal), proceeding without control flow detection',
+        { error: ensureError(analysisError).message }
+      );
+    }
+  }
+
+  return { compositionAnalysis, analysisState };
+}
+
+// =============================================================================
+// Extracted helper: Direct factory status re-analysis
+// =============================================================================
+
+/**
+ * Re-analyze status mappings specifically for the direct factory pattern.
+ *
+ * When the factory mode is `'direct'`, the status mappings may need different
+ * treatment than the Kro pattern (which is the default analysis target).
+ *
+ * @internal Exported for testing only
+ */
+function reanalyzeStatusForDirectFactory<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+>(
+  analysisResults: {
+    hasKubernetesRefs: boolean;
+    statusMappings: MagicAssignableShape<KroCompatibleType>;
+  },
+  analyzedStatusMappings: Record<string, unknown>,
+  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  schema: SchemaProxy<TSpec, TStatus>,
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): Record<string, unknown> {
+  if (!analysisResults.hasKubernetesRefs) {
+    return analyzedStatusMappings;
+  }
+
+  try {
+    serializationLogger.debug('Re-analyzing status mappings for direct factory pattern');
+    const directStatusAnalyzer = new StatusBuilderAnalyzer(undefined, {
+      factoryType: 'direct',
+      performOptionalityAnalysis: true,
+      includeSourceMapping: true,
+    });
+    const directAnalysisResult = directStatusAnalyzer.analyzeReturnObjectWithMagicProxy(
+      analysisResults.statusMappings,
+      resourcesWithKeys,
+      schema
+    );
+
+    if (directAnalysisResult.errors.length === 0) {
+      const { preservedMappings: directPreservedMappings } = detectAndPreserveCelExpressions(
+        analysisResults.statusMappings
+      );
+      const result = mergePreservedCelExpressions(
+        directAnalysisResult.statusMappings,
+        directPreservedMappings
+      );
+      serializationLogger.debug('Successfully re-analyzed status mappings for direct factory');
+      return result;
+    }
+  } catch (error: unknown) {
+    serializationLogger.error(
+      'Failed to re-analyze status mappings for direct factory, using default analysis',
+      ensureError(error)
+    );
+  }
+
+  return analyzedStatusMappings;
+}
+
+// =============================================================================
+// Extracted helper: Cross-composition magic proxy
+// =============================================================================
+
+/**
+ * Wrap a base resource graph object with a Proxy that enables cross-composition
+ * resource access (e.g. `composition.database`).
+ *
+ * The Proxy intercepts property access for unknown keys and delegates to
+ * `findResourceByKey` to locate matching resources, then creates an external
+ * ref for them.
+ *
+ * @internal Exported for testing only
+ */
+function wrapWithResourceGraphProxy<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+>(
+  baseResourceGraph: TypedResourceGraph<TSpec, TStatus>,
+  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  logger?: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+): TypedResourceGraph<TSpec, TStatus> {
+  return new Proxy(baseResourceGraph, {
+    get(target, prop, receiver) {
+      if (prop in target) {
+        return Reflect.get(target, prop, receiver);
+      }
+
+      const matchingResource = findResourceByKey(prop, resourcesWithKeys, logger);
+      if (matchingResource?.metadata.name) {
+        return createExternalRefWithoutRegistration(
+          matchingResource.apiVersion,
+          matchingResource.kind,
+          matchingResource.metadata.name,
+          matchingResource.metadata.namespace
+        );
+      }
+
+      return undefined;
+    },
+
+    ownKeys(target) {
+      return Reflect.ownKeys(target);
+    },
+
+    getOwnPropertyDescriptor(target, prop) {
+      if (prop in target) {
+        return Reflect.getOwnPropertyDescriptor(target, prop);
+      }
+
+      const matchingResource = findResourceByKey(prop, resourcesWithKeys, logger);
+      if (matchingResource) {
+        return {
+          configurable: true,
+          enumerable: false,
+          value: undefined,
+        };
+      }
+
+      return undefined;
+    },
+  }) as TypedResourceGraph<TSpec, TStatus>;
+}
 
 // =============================================================================
 // NEW FACTORY PATTERN API
@@ -540,7 +1386,16 @@ export function toResourceGraph<
 }
 
 /**
- * Create a typed resource graph implementation
+ * Create a typed resource graph implementation.
+ *
+ * Orchestrates the full pipeline:
+ * 1. Validate definition name
+ * 2. Execute resource builder to get Enhanced<> resources and closures
+ * 3. Analyze status builder and convert JS expressions to CEL
+ * 4. Analyze composition body for control flow (includeWhen/forEach)
+ * 5. Validate and optimize CEL expressions
+ * 6. Build the TypedResourceGraph result object
+ * 7. Wrap with cross-composition magic proxy
  */
 function createTypedResourceGraph<
   TSpec extends KroCompatibleType,
@@ -559,57 +1414,10 @@ function createTypedResourceGraph<
     name: definition.name,
   });
 
-  // Validate resource graph name early
-  if (!definition.name || typeof definition.name !== 'string') {
-    throw new ValidationError(
-      `Invalid resource graph name: ${JSON.stringify(definition.name)}. Resource graph name must be a non-empty string.`,
-      'ResourceGraphDefinition',
-      String(definition.name),
-      'name',
-      ['Provide a non-empty string for the resource graph name']
-    );
-  }
+  // 1. Validate name
+  validateResourceGraphName(definition.name);
 
-  const trimmedName = definition.name.trim();
-  if (trimmedName.length === 0) {
-    throw new ValidationError(
-      `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`,
-      'ResourceGraphDefinition',
-      definition.name,
-      'name',
-      ['Provide a non-whitespace resource graph name']
-    );
-  }
-
-  // Validate that the name will convert to a valid Kubernetes resource name
-  const kubernetesName = trimmedName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
-
-  if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-    throw new ValidationError(
-      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`,
-      'ResourceGraphDefinition',
-      definition.name,
-      'name',
-      [
-        'Use lowercase alphanumeric characters and hyphens only',
-        'Must start and end with an alphanumeric character',
-      ]
-    );
-  }
-
-  if (kubernetesName.length > 253) {
-    throw new ValidationError(
-      `Invalid resource graph name: "${definition.name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`,
-      'ResourceGraphDefinition',
-      definition.name,
-      'name',
-      ['Shorten the resource graph name to stay under 253 characters']
-    );
-  }
-
-  // Apply default apiVersion if not specified
-  // Note: This should be just the version part (e.g., 'v1alpha1'), not the full API version
-  // The full API version (kro.run/v1alpha1) is constructed when creating instances
+  // 2. Build schema definition and execute resource builder
   const schemaDefinition: SchemaDefinition<TSpec, TStatus> = {
     apiVersion: definition.apiVersion || 'v1alpha1',
     kind: definition.kind,
@@ -619,401 +1427,27 @@ function createTypedResourceGraph<
 
   const schema = createSchemaProxy<TSpec, TStatus>();
   const builderResult = resourceBuilder(schema);
-
-  // Separate Enhanced<> resources from deployment closures
   const { resources: resourcesWithKeys, closures } = separateResourcesAndClosures(builderResult);
 
-  // NEW: Analyze status builder for JavaScript expressions with KubernetesRef detection
-  let statusMappings: MagicAssignableShape<TStatus>;
-  let analyzedStatusMappings: Record<string, unknown> = {};
-  let mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
-  let imperativeAnalysisSucceeded = false;
-
-  try {
-    // Execute the status builder in a context where Enhanced resource proxies
-    // return KubernetesRef objects, enabling JavaScript-to-CEL conversion.
-    statusMappings = runInStatusBuilderContext(() =>
-      statusBuilder(schema, resourcesWithKeys as TResources)
+  // 3. Analyze status builder and convert JS expressions to CEL
+  const { statusMappings, analyzedStatusMappings, mappingAnalysis } =
+    analyzeAndConvertStatusMappings(
+      definition,
+      statusBuilder,
+      schema,
+      resourcesWithKeys,
+      serializationLogger
     );
 
-    // Check if this is from an imperative composition with original expressions
-    // __originalCompositionFn is injected at runtime by imperative.ts (not part of the status schema)
-    const originalCompositionFn = (statusMappings as Record<string, unknown>)
-      .__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
+  // 4. Analyze composition body for control flow patterns (must run before validation)
+  const { compositionAnalysis, analysisState } = processCompositionBodyAnalysis(
+    statusMappings,
+    resourcesWithKeys,
+    analyzedStatusMappings,
+    serializationLogger
+  );
 
-    // Debug logging removed for cleaner output
-
-    if (originalCompositionFn) {
-      serializationLogger.debug(
-        'Detected imperative composition, checking for existing KubernetesRef objects'
-      );
-
-      // First, check if the status object already contains KubernetesRef objects or CelExpression objects
-      // If so, we can use those directly instead of parsing the JavaScript source code
-      let hasKubernetesRefs = containsKubernetesRefs(statusMappings);
-      let hasCelExpressions = containsCelExpressions(statusMappings);
-      const needsPreAnalysis =
-        (statusMappings as Record<string, unknown>).__needsPreAnalysis === true;
-
-      serializationLogger.debug('Imperative composition analysis', {
-        hasKubernetesRefs,
-        hasCelExpressions,
-        needsPreAnalysis,
-        statusMappings: JSON.stringify(statusMappings, null, 2),
-      });
-
-      if (hasKubernetesRefs || hasCelExpressions || needsPreAnalysis) {
-        serializationLogger.debug(
-          'Status object already contains KubernetesRef objects or CelExpression objects, using direct analysis'
-        );
-
-        // Use the status builder analyzer to process the existing KubernetesRef objects
-        try {
-          const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
-            statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
-            resourcesWithKeys as Record<string, Enhanced<any, any>>,
-            schema,
-            'kro'
-          );
-
-          if (statusBuilderAnalysis.requiresConversion) {
-            analyzedStatusMappings = statusBuilderAnalysis.statusMappings;
-            imperativeAnalysisSucceeded = true;
-            serializationLogger.debug('Using status builder analysis for imperative composition', {
-              fieldCount: Object.keys(analyzedStatusMappings).length,
-            });
-          } else {
-            analyzedStatusMappings = statusMappings as Record<string, unknown>;
-            serializationLogger.debug('No conversion required, using original status mappings');
-          }
-        } catch (statusAnalysisError: unknown) {
-          serializationLogger.debug(
-            'Status builder analysis failed, falling back to imperative analysis',
-            {
-              error: ensureError(statusAnalysisError).message,
-            }
-          );
-          // Fall back to imperative analysis
-          hasKubernetesRefs = false;
-          hasCelExpressions = false;
-        }
-      }
-
-      if (!hasKubernetesRefs && !hasCelExpressions) {
-        serializationLogger.debug(
-          'No KubernetesRef objects or CelExpression objects found, analyzing original composition function'
-        );
-
-        // For imperative compositions, we need to analyze the original composition function
-        // to detect JavaScript expressions that should be converted to CEL
-
-        try {
-          const imperativeAnalysis = analyzeImperativeComposition(
-            originalCompositionFn,
-            resourcesWithKeys as Record<string, Enhanced<any, any>>,
-            { factoryType: 'kro' }
-          );
-
-          serializationLogger.debug('Imperative analysis result', {
-            statusFieldCount: Object.keys(imperativeAnalysis.statusMappings).length,
-            hasJavaScriptExpressions: imperativeAnalysis.hasJavaScriptExpressions,
-            errorCount: imperativeAnalysis.errors.length,
-          });
-
-          serializationLogger.debug('Imperative composition analysis complete', {
-            statusFieldCount: Object.keys(imperativeAnalysis.statusMappings).length,
-            hasJavaScriptExpressions: imperativeAnalysis.hasJavaScriptExpressions,
-          });
-
-          if (imperativeAnalysis.hasJavaScriptExpressions) {
-            analyzedStatusMappings = imperativeAnalysis.statusMappings;
-            imperativeAnalysisSucceeded = true;
-            serializationLogger.debug(
-              'Using analyzed imperative composition mappings with CEL expressions',
-              {
-                fieldCount: Object.keys(analyzedStatusMappings).length,
-              }
-            );
-          } else {
-            analyzedStatusMappings = statusMappings as Record<string, unknown>;
-            serializationLogger.debug(
-              'No JavaScript expressions found, using original status mappings'
-            );
-          }
-        } catch (imperativeAnalysisError: unknown) {
-          serializationLogger.debug(
-            'Imperative composition analysis failed, using executed status mappings',
-            {
-              error: ensureError(imperativeAnalysisError).message,
-            }
-          );
-          analyzedStatusMappings = statusMappings as Record<string, unknown>;
-        }
-      }
-    } else {
-      // Regular status builder - try to analyze it directly
-      try {
-        const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
-          statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
-          resourcesWithKeys as Record<string, Enhanced<any, any>>,
-          schema,
-          'kro'
-        );
-
-        serializationLogger.debug('Status builder analysis complete', {
-          statusFieldCount: Object.keys(statusBuilderAnalysis.statusMappings).length,
-          dependencyCount: statusBuilderAnalysis.dependencies.length,
-          hasJavaScriptExpressions: statusBuilderAnalysis.dependencies.length > 0,
-        });
-
-        if (statusBuilderAnalysis.dependencies.length > 0) {
-          analyzedStatusMappings = statusBuilderAnalysis.statusMappings;
-          serializationLogger.debug('Using analyzed status mappings with CEL expressions', {
-            fieldCount: Object.keys(analyzedStatusMappings).length,
-          });
-        } else {
-          analyzedStatusMappings = statusMappings as Record<string, unknown>;
-        }
-      } catch (analysisError: unknown) {
-        serializationLogger.debug(
-          'Status builder analysis failed, using executed status mappings',
-          {
-            error: ensureError(analysisError).message,
-          }
-        );
-        analyzedStatusMappings = statusMappings as Record<string, unknown>;
-      }
-    }
-
-    // COMPREHENSIVE ANALYSIS: Analyze the final status mappings
-    mappingAnalysis = analyzeStatusMappingTypes(analyzedStatusMappings);
-
-    serializationLogger.debug('Final mapping analysis result', {
-      kubernetesRefFields: mappingAnalysis.kubernetesRefFields.length,
-      celExpressionFields: mappingAnalysis.celExpressionFields.length,
-      staticValueFields: mappingAnalysis.staticValueFields.length,
-      complexExpressionFields: mappingAnalysis.complexExpressionFields.length,
-    });
-
-    serializationLogger.debug('Status mapping analysis complete', {
-      kubernetesRefFields: mappingAnalysis.kubernetesRefFields.length,
-      celExpressionFields: mappingAnalysis.celExpressionFields.length,
-      staticValueFields: mappingAnalysis.staticValueFields.length,
-      complexExpressionFields: mappingAnalysis.complexExpressionFields.length,
-    });
-
-    // BACKWARD COMPATIBILITY: Detect and preserve existing CEL expressions
-    const { hasExistingCel, preservedMappings } = detectAndPreserveCelExpressions(statusMappings);
-
-    if (hasExistingCel) {
-      serializationLogger.debug(
-        'Found existing CEL expressions, preserving for backward compatibility',
-        {
-          preservedCount: Object.keys(preservedMappings).length,
-        }
-      );
-
-      // MIGRATION HELPER: Provide migration suggestions for existing CEL expressions
-      try {
-        const migrationHelper = new CelToJavaScriptMigrationHelper();
-        const migrationAnalysis = migrationHelper.analyzeMigrationOpportunities(
-          statusMappings as Record<string, unknown>
-        );
-
-        if (migrationAnalysis.migrationFeasibility.migratableExpressions > 0) {
-          serializationLogger.info('Migration opportunities detected for CEL expressions', {
-            totalExpressions: migrationAnalysis.migrationFeasibility.totalExpressions,
-            migratableExpressions: migrationAnalysis.migrationFeasibility.migratableExpressions,
-            overallConfidence: Math.round(
-              migrationAnalysis.migrationFeasibility.overallConfidence * 100
-            ),
-          });
-
-          // Log migration suggestions for high-confidence migrations
-          const highConfidenceSuggestions = migrationAnalysis.suggestions.filter(
-            (s) => s.confidence >= 0.8 && s.isSafe
-          );
-          if (highConfidenceSuggestions.length > 0) {
-            serializationLogger.info('High-confidence migration suggestions available', {
-              suggestions: highConfidenceSuggestions.map((s) => ({
-                original: s.originalCel,
-                suggested: s.suggestedJavaScript,
-                confidence: Math.round(s.confidence * 100),
-              })),
-            });
-          }
-        }
-      } catch (migrationError: unknown) {
-        serializationLogger.error(
-          'Failed to analyze migration opportunities',
-          ensureError(migrationError)
-        );
-      }
-    }
-
-    // The issue is that JavaScript expressions are evaluated before we can analyze them
-    // We need to re-execute the status builder with a special proxy that intercepts expressions
-    // and converts them to CEL expressions before evaluation
-
-    // For now, let's use a simpler approach: detect KubernetesRef objects in the raw status mappings
-    // and convert them directly to CEL expressions
-    const celConversionEngine = new CelConversionEngine();
-
-    // Convert the status mappings to CEL expressions for Kro factories
-    const convertedStatusMappings: Record<string, unknown> = {};
-    let hasConversions = false;
-
-    for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
-      // Check if this field contains KubernetesRef objects
-      if (containsKubernetesRefs(fieldValue)) {
-        // Convert to CEL expression
-        const conversionResult = celConversionEngine.convertValue(
-          fieldValue,
-          { factoryType: 'kro', factoryName: definition.name, analysisEnabled: true },
-          { factoryType: 'kro', preserveStatic: false }
-        );
-
-        if (conversionResult.wasConverted) {
-          convertedStatusMappings[fieldName] = conversionResult.converted;
-          hasConversions = true;
-          serializationLogger.debug('Converted field to CEL expression', {
-            fieldName,
-            strategy: conversionResult.strategy,
-            referencesConverted: conversionResult.metrics.referencesConverted,
-          });
-        } else {
-          convertedStatusMappings[fieldName] = fieldValue;
-        }
-      } else {
-        // Keep static values as-is
-        convertedStatusMappings[fieldName] = fieldValue;
-      }
-    }
-
-    if (hasConversions) {
-      // Only overwrite if imperative analysis hasn't already provided CEL expressions
-      if (!imperativeAnalysisSucceeded) {
-        // Merge converted CEL expressions with preserved ones (preserved take precedence)
-        analyzedStatusMappings = mergePreservedCelExpressions(
-          convertedStatusMappings,
-          preservedMappings
-        );
-      }
-      serializationLogger.debug('Successfully converted JavaScript expressions to CEL', {
-        convertedFields: Object.keys(convertedStatusMappings).filter(
-          (key) => convertedStatusMappings[key] !== (statusMappings as Record<string, unknown>)[key]
-        ).length,
-        preservedFields: Object.keys(preservedMappings).length,
-        staticFields: mappingAnalysis.staticValueFields.length,
-      });
-    } else {
-      // No KubernetesRef objects found, but may have existing CEL expressions or static values
-      if (hasExistingCel) {
-        // Only overwrite if imperative analysis hasn't already provided CEL expressions
-        if (!imperativeAnalysisSucceeded) {
-          // Merge original mappings with preserved CEL expressions
-          analyzedStatusMappings = mergePreservedCelExpressions(
-            statusMappings as Record<string, unknown>,
-            preservedMappings
-          );
-        }
-        serializationLogger.debug('Preserved existing CEL expressions without conversion', {
-          preservedFields: Object.keys(preservedMappings).length,
-          staticFields: mappingAnalysis.staticValueFields.length,
-          complexFields: mappingAnalysis.complexExpressionFields.length,
-        });
-      } else {
-        // No KubernetesRef objects or CEL expressions, use status mappings as-is
-        if (!imperativeAnalysisSucceeded) {
-          analyzedStatusMappings = statusMappings as Record<string, unknown>;
-        }
-        serializationLogger.debug(
-          'Status builder contains only static values and complex expressions',
-          {
-            staticFields: mappingAnalysis.staticValueFields.length,
-            complexFields: mappingAnalysis.complexExpressionFields.length,
-            totalFields: Object.keys(mappingAnalysis.analysisDetails).length,
-          }
-        );
-      }
-    }
-  } catch (error: unknown) {
-    serializationLogger.error('Failed to analyze status builder', ensureError(error));
-    // Fallback to executing status builder normally
-    statusMappings = runInStatusBuilderContext(() =>
-      statusBuilder(schema, resourcesWithKeys as TResources)
-    );
-    analyzedStatusMappings = statusMappings as Record<string, unknown>;
-    // Create empty analysis for fallback
-    mappingAnalysis = {
-      kubernetesRefFields: [],
-      celExpressionFields: [],
-      staticValueFields: [],
-      complexExpressionFields: [],
-      analysisDetails: {},
-    };
-  }
-
-  // Kro v0.8.x: Analyze composition function body for control flow patterns
-  // (if-statements → includeWhen, for-of loops → forEach, ternary → template overrides,
-  //  collection aggregates → status overrides)
-  // This MUST run before validation because:
-  // 1. Stub resources need to exist before resource ID validation
-  // 2. Status overrides (e.g. .map().join()) need to replace raw marker strings
-  //    before CEL expression validation
-  let compositionAnalysis: CompositionAnalysisResult | null = null;
-  // Mutable flag: track whether applyAnalysisToResources has been called.
-  // Wrapped in an object so Biome doesn't hoist it to `const`.
-  const analysisState = { appliedToResources: false };
-  const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
-    ?.__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
-
-  if (originalCompositionFnForAnalysis) {
-    try {
-      const resourceIds = new Set(Object.keys(resourcesWithKeys));
-      compositionAnalysis = analyzeCompositionBody(originalCompositionFnForAnalysis, resourceIds);
-
-      // Create stub resources for factory calls that weren't registered at runtime
-      // (e.g., inside if-branches where the condition evaluated to false because
-      // the schema proxy's value didn't match the comparison literal)
-      for (const unregistered of compositionAnalysis.unregisteredFactories) {
-        if (!resourceIds.has(unregistered.resourceId)) {
-          const stub = createStubResource(unregistered.factoryName, unregistered.resourceId);
-          if (stub) {
-            resourcesWithKeys[unregistered.resourceId] = stub as Enhanced<unknown, unknown>;
-            resourceIds.add(unregistered.resourceId);
-            serializationLogger.debug('Created stub resource for unregistered factory', {
-              resourceId: unregistered.resourceId,
-              factoryName: unregistered.factoryName,
-            });
-          }
-        }
-      }
-
-      // Apply status overrides to analyzedStatusMappings BEFORE validation.
-      // These are collection aggregates (e.g. workers.map(w => w.metadata.name).join(', '))
-      // and ternary expressions in the return statement that evaluated to literals at runtime
-      // but should be CEL expressions in the Kro output.
-      // Without this, the validator sees raw marker strings and rejects lambda variables
-      // (like 'w') as non-existent resource references.
-      if (compositionAnalysis.statusOverrides.length > 0) {
-        for (const override of compositionAnalysis.statusOverrides) {
-          analyzedStatusMappings[override.propertyPath] = override.celExpression;
-          serializationLogger.debug('Applied status override before validation', {
-            propertyPath: override.propertyPath,
-            celExpression: override.celExpression,
-          });
-        }
-      }
-    } catch (analysisError: unknown) {
-      serializationLogger.debug(
-        'Composition body analysis failed (non-fatal), proceeding without control flow detection',
-        { error: ensureError(analysisError).message }
-      );
-    }
-  }
-
-  // Validate resource IDs and CEL expressions
+  // 5. Validate resource IDs and CEL expressions
   const validation = validateResourceGraphDefinition(resourcesWithKeys, analyzedStatusMappings);
   if (!validation.isValid) {
     const errorMessages = validation.errors.map((err) => `${err.field}: ${err.error}`).join('\n');
@@ -1026,7 +1460,6 @@ function createTypedResourceGraph<
     );
   }
 
-  // Log warnings if any
   if (validation.warnings.length > 0) {
     serializationLogger.warn('ResourceGraphDefinition validation warnings', {
       warnings: validation.warnings.map((w) => ({
@@ -1044,134 +1477,27 @@ function createTypedResourceGraph<
     evaluationContext
   );
 
-  // Log optimizations if any
   if (optimizations.length > 0) {
     serializationLogger.info('CEL expression optimizations applied', { optimizations });
   }
 
-  // schemaDefinition is already created above with default apiVersion handling
-
-  /**
-   * Find a resource by key name in the resources map
-   * This enables cross-composition magic proxy access like composition.database
-   */
-  function findResourceByKey(key: string | symbol): KubernetesResource | undefined {
-    if (typeof key !== 'string') return undefined;
-
-    // Strategy 1: Direct match by generated resource ID
-    if (resourcesWithKeys[key]) {
-      return resourcesWithKeys[key];
-    }
-
-    // Strategy 2: Smart pattern matching for common cases
-    const keyLower = key.toLowerCase();
-    const keyParts = key.split(/[-_]/).map((p) => p.toLowerCase()); // Split on hyphens and underscores
-
-    for (const [resourceId, resource] of Object.entries(resourcesWithKeys)) {
-      const kind = resource.kind.toLowerCase();
-      // Handle case where metadata.name might be a KubernetesRef object
-      let name = '';
-      if (resource.metadata.name && typeof resource.metadata.name === 'string') {
-        name = resource.metadata.name.toLowerCase();
-      } else if (resource.metadata.name && typeof resource.metadata.name === 'object') {
-        // Skip resources with unresolved references for now
-        continue;
-      }
-      const resourceIdLower = resourceId.toLowerCase();
-
-      // Pattern 1: Key parts match resource name parts
-      // e.g., 'my-deployment' matches 'test-deployment' if 'deployment' appears in both
-      const nameParts = name.split(/[-_]/).map((p) => p.toLowerCase());
-      const hasCommonParts = keyParts.some((keyPart) =>
-        nameParts.some((namePart) => keyPart.includes(namePart) || namePart.includes(keyPart))
-      );
-
-      if (hasCommonParts) {
-        // Also check if the kinds match logically
-        if (
-          keyParts.includes(kind) ||
-          (keyParts.includes('deployment') && kind === 'deployment') ||
-          (keyParts.includes('service') && kind === 'service')
-        ) {
-          return resource;
-        }
-      }
-
-      // Pattern 2: Key contains kind and resource ID contains resource name parts
-      if (keyParts.includes(kind)) {
-        const nameInResourceId = nameParts.some((part) => resourceIdLower.includes(part));
-        if (nameInResourceId) {
-          return resource;
-        }
-      }
-
-      // Pattern 3: Common semantic patterns
-      const semanticPatterns: Record<string, string[]> = {
-        database: ['deployment', 'statefulset'],
-        db: ['deployment', 'statefulset'],
-        cache: ['deployment', 'statefulset'],
-        redis: ['deployment', 'statefulset'],
-        service: ['service'],
-        svc: ['service'],
-        ingress: ['ingress'],
-        configmap: ['configmap'],
-        secret: ['secret'],
-      };
-
-      for (const [pattern, kinds] of Object.entries(semanticPatterns)) {
-        if (keyParts.includes(pattern) && kinds.includes(kind)) {
-          return resource;
-        }
-      }
-    }
-
-    // Strategy 3: Case-insensitive match on generated resource ID
-    for (const [resourceKey, resource] of Object.entries(resourcesWithKeys)) {
-      if (resourceKey.toLowerCase() === keyLower) {
-        return resource;
-      }
-    }
-
-    // Strategy 4: Partial matching - find resources that contain key parts in their ID
-    for (const [resourceKey, resource] of Object.entries(resourcesWithKeys)) {
-      const resourceKeyLower = resourceKey.toLowerCase();
-      if (keyParts.some((part) => part.length > 2 && resourceKeyLower.includes(part))) {
-        return resource;
-      }
-    }
-
-    return undefined;
-  }
-
-  // Create a composition function that can re-execute with actual spec values.
-  // This enables the direct factory to re-run the resource builder with real values
-  // so that conditional branches (ternaries, if-statements, spread conditionals)
-  // evaluate correctly — e.g., `schema.spec.enableRedis ? { redis: ... } : {}`
-  // will actually skip the redis resource when enableRedis is false.
+  // 6. Build the composition re-execution function for direct factory
   const declarativeCompositionFn = (spec: TSpec): MagicAssignableShape<TStatus> => {
-    // Create a plain schema object with actual values (not a magic proxy).
-    // This means conditional checks like `schema.spec.enableRedis` will see
-    // the real boolean value instead of a truthy KubernetesRef proxy.
     const actualSchema = { spec, status: {} } as SchemaProxy<TSpec, TStatus>;
     const resources = resourceBuilder(actualSchema);
     return statusBuilder(actualSchema, resources);
   };
 
-  // Create the base TypedResourceGraph object
-  // Deduplicate resources by reference (same resource may have multiple keys)
-  // This happens when resources are returned in status with variable names that differ from IDs
+  // 7. Assemble the TypedResourceGraph result object
   const uniqueResourcesSet = new Set(Object.values(resourcesWithKeys));
 
   const baseResourceGraph = {
     name: definition.name,
     resources: Array.from(uniqueResourcesSet),
     schema,
-    // Store closures for access during factory creation
     closures,
-    // Store composition function for re-execution with actual values (direct factory)
     _compositionFn: declarativeCompositionFn,
     _definition: definition,
-    // Store analysis results for factory-specific processing
     _analysisResults: {
       mappingAnalysis,
       hasKubernetesRefs: mappingAnalysis.kubernetesRefFields.length > 0,
@@ -1184,44 +1510,15 @@ function createTypedResourceGraph<
       factoryOptions?: PublicFactoryOptions
     ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus> {
       if (mode === 'direct') {
-        // For direct factory, we need to re-analyze status mappings with direct factory context
-        let directStatusMappings = analyzedStatusMappings;
+        const directStatusMappings = reanalyzeStatusForDirectFactory(
+          this._analysisResults,
+          analyzedStatusMappings,
+          resourcesWithKeys,
+          schema,
+          serializationLogger
+        );
 
-        if (this._analysisResults.hasKubernetesRefs) {
-          try {
-            serializationLogger.debug('Re-analyzing status mappings for direct factory pattern');
-            const directStatusAnalyzer = new StatusBuilderAnalyzer(undefined, {
-              factoryType: 'direct',
-              performOptionalityAnalysis: true,
-              includeSourceMapping: true,
-            });
-            const directAnalysisResult = directStatusAnalyzer.analyzeReturnObjectWithMagicProxy(
-              this._analysisResults.statusMappings,
-              resourcesWithKeys,
-              schema
-            );
-
-            if (directAnalysisResult.errors.length === 0) {
-              // Merge with preserved CEL expressions
-              const { preservedMappings: directPreservedMappings } =
-                detectAndPreserveCelExpressions(this._analysisResults.statusMappings);
-              directStatusMappings = mergePreservedCelExpressions(
-                directAnalysisResult.statusMappings,
-                directPreservedMappings
-              );
-              serializationLogger.debug(
-                'Successfully re-analyzed status mappings for direct factory'
-              );
-            }
-          } catch (error: unknown) {
-            serializationLogger.error(
-              'Failed to re-analyze status mappings for direct factory, using default analysis',
-              ensureError(error)
-            );
-          }
-        }
-
-        const directFactory = createDirectResourceFactory<TSpec, TStatus>(
+        return createDirectResourceFactory<TSpec, TStatus>(
           definition.name,
           resourcesWithKeys,
           schemaDefinition,
@@ -1229,18 +1526,13 @@ function createTypedResourceGraph<
           {
             ...factoryOptions,
             closures,
-            // Pass the factory-specific status mappings
             statusMappings: directStatusMappings,
-            // Pass composition function for re-execution with actual values
-            // Use closure-captured variables directly instead of (this as any) to maintain type safety
             compositionFn: declarativeCompositionFn,
             compositionDefinition: definition,
           }
         );
-        return directFactory;
       } else if (mode === 'kro') {
-        // For Kro factory, use the already analyzed status mappings (which default to Kro pattern)
-        const kroFactory = createKroResourceFactory<TSpec, TStatus>(
+        return createKroResourceFactory<TSpec, TStatus>(
           definition.name,
           resourcesWithKeys,
           schemaDefinition,
@@ -1248,11 +1540,9 @@ function createTypedResourceGraph<
           {
             ...factoryOptions,
             closures,
-            // Indicate this is for Kro factory pattern
             factoryType: 'kro',
           }
         );
-        return kroFactory;
       } else {
         throw new ValidationError(
           `Unsupported factory mode: ${mode}`,
@@ -1265,12 +1555,7 @@ function createTypedResourceGraph<
     },
 
     toYaml(): string {
-      // Kro v0.8.x: Use the pre-computed composition body analysis.
-      // The analysis was run in createTypedResourceGraph() BEFORE validation
-      // so that stub resources and status overrides are available for validation.
-      // Here we apply resource directives (includeWhen, forEach, readyWhen)
-      // and template overrides to the resources before YAML serialization.
-      // Guard: only apply once even if toYaml() is called multiple times.
+      // Apply composition body analysis results (guard: only once)
       if (compositionAnalysis && !analysisState.appliedToResources) {
         analysisState.appliedToResources = true;
         if (
@@ -1286,7 +1571,6 @@ function createTypedResourceGraph<
         }
       }
 
-      // Generate ResourceGraphDefinition YAML with user-defined status mappings
       const kroSchema = generateKroSchemaFromArktype(
         definition.name,
         schemaDefinition,
@@ -1294,27 +1578,18 @@ function createTypedResourceGraph<
         optimizedStatusMappings
       );
 
-      // Kro v0.8.x: set custom API group on schema if provided
       if (definition.group) {
         kroSchema.group = definition.group;
       }
 
-      // Inject status overrides directly into the schema status section.
-      // These are ternary expressions that evaluated to literals at runtime
-      // but should be CEL conditionals in the Kro YAML output.
-      // We inject here (not into optimizedStatusMappings) because the
-      // separateStatusFields classifier treats schema-only CEL as "static"
-      // and filters it out.
-      // Convert double quotes to single quotes in CEL string literals to avoid
-      // js-yaml double-quote escaping issues (quotingType: '"' causes inner
-      // double quotes to be backslash-escaped, breaking the CEL expression).
+      // Inject status overrides into schema status section.
+      // Convert "..." to '...' in CEL string literals for YAML compatibility.
       const statusOverrides = compositionAnalysis?.statusOverrides ?? [];
       if (statusOverrides.length > 0) {
         if (!kroSchema.status) {
           kroSchema.status = {};
         }
         for (const override of statusOverrides) {
-          // Convert "..." to '...' in CEL string literals for YAML compatibility
           const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
           kroSchema.status[override.propertyPath] = yamlSafe;
         }
@@ -1324,52 +1599,10 @@ function createTypedResourceGraph<
     },
   };
 
-  // Wrap with cross-composition magic proxy for resource access
-  return new Proxy(baseResourceGraph, {
-    get(target, prop, receiver) {
-      // Handle existing properties normally
-      if (prop in target) {
-        return Reflect.get(target, prop, receiver);
-      }
-
-      // For unknown properties, check if it's a resource key and create external ref
-      const matchingResource = findResourceByKey(prop);
-      if (matchingResource?.metadata.name) {
-        return createExternalRefWithoutRegistration(
-          matchingResource.apiVersion,
-          matchingResource.kind,
-          matchingResource.metadata.name,
-          matchingResource.metadata.namespace
-        );
-      }
-
-      // Return undefined for non-existent properties (standard JavaScript behavior)
-      return undefined;
-    },
-
-    // Ensure proper enumeration of properties
-    ownKeys(target) {
-      return Reflect.ownKeys(target);
-    },
-
-    // Ensure proper property descriptor handling
-    getOwnPropertyDescriptor(target, prop) {
-      // For existing properties, return normal descriptor
-      if (prop in target) {
-        return Reflect.getOwnPropertyDescriptor(target, prop);
-      }
-
-      // For resource properties, indicate they exist but are not enumerable
-      const matchingResource = findResourceByKey(prop);
-      if (matchingResource) {
-        return {
-          configurable: true,
-          enumerable: false, // Don't enumerate resource properties in for..in loops
-          value: undefined, // Value will be computed by get trap
-        };
-      }
-
-      return undefined;
-    },
-  }) as TypedResourceGraph<TSpec, TStatus>;
+  // 8. Wrap with cross-composition magic proxy
+  return wrapWithResourceGraphProxy(
+    baseResourceGraph as TypedResourceGraph<TSpec, TStatus>,
+    resourcesWithKeys,
+    serializationLogger
+  );
 }
