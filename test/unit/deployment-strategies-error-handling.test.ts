@@ -8,7 +8,10 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { DirectDeploymentStrategy, KroDeploymentStrategy,  } from '../../src/core/deployment/deployment-strategies.js';
+import {
+  DirectDeploymentStrategy,
+  KroDeploymentStrategy,
+} from '../../src/core/deployment/strategies/index.js';
 
 describe('Deployment Strategy Error Handling (Unit Tests)', () => {
   let mockDeploymentEngine: any;
@@ -141,9 +144,7 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
             ...resource,
             status: {
               state: 'ACTIVE',
-              conditions: [
-                { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
-              ],
+              conditions: [{ type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' }],
               // Add custom status fields to make the readiness check pass
               customField: 'ready',
               url: 'http://test-app.example.com',
@@ -157,9 +158,7 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
             ...resource,
             status: {
               state: 'ACTIVE',
-              conditions: [
-                { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
-              ],
+              conditions: [{ type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' }],
               // Add custom status fields to make the readiness check pass
               customField: 'ready',
               url: 'http://test-app.example.com',
@@ -210,9 +209,7 @@ describe('Deployment Strategy Error Handling (Unit Tests)', () => {
             ...resource,
             status: {
               state: 'ACTIVE',
-              conditions: [
-                { type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' },
-              ],
+              conditions: [{ type: 'InstanceSynced', status: 'True', reason: 'AllResourcesReady' }],
             },
           }),
         }),

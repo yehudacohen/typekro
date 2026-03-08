@@ -3,7 +3,6 @@
  */
 
 export type * from '../types/deployment.js';
-export * from './deployment-strategies.js';
 export { createDirectResourceFactory } from './direct-factory.js';
 export { DirectDeploymentEngine } from './engine.js';
 export {
@@ -22,3 +21,4 @@ export {
 // Shared utilities and strategies
 export * from './shared-utilities.js';
 export { StatusHydrator } from './status-hydrator.js';
+export * from './strategies/index.js';

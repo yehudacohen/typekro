@@ -16,6 +16,24 @@ import { getComponentLogger } from '../logging/index.js';
 
 const logger = getComponentLogger('yaml-path-resolver');
 
+/** Shape of a single item in a GitHub Contents API response */
+interface GitHubContentItem {
+  type: string;
+  name: string;
+  path: string;
+  content?: string;
+  encoding?: string;
+}
+
+/** Validates that a value matches the expected GitHub content item shape */
+function isGitHubContentItem(value: unknown): value is GitHubContentItem {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.type === 'string' && typeof obj.name === 'string' && typeof obj.path === 'string'
+  );
+}
+
 /**
  * Information parsed from a git: URL
  */
@@ -639,10 +657,21 @@ export class PathResolver {
         );
       }
 
-      const data = await response.json();
+      const data: unknown = await response.json();
 
-      // GitHub API returns base64-encoded content for files
-      if (data.type === 'file' && data.content) {
+      if (!isGitHubContentItem(data)) {
+        throw new GitContentError(
+          `Invalid GitHub API response for resource '${resourceName}': expected an object with type, name, and path fields`,
+          resourceName,
+          `git:${gitInfo.host}/${gitInfo.owner}/${gitInfo.repo}/${gitInfo.path}@${gitInfo.ref}`,
+          [
+            'The GitHub API returned an unexpected response format',
+            'Check GitHub API status and try again',
+          ]
+        );
+      }
+
+      if (data.type === 'file' && typeof data.content === 'string') {
         return Buffer.from(data.content, 'base64').toString('utf-8');
       }
 
@@ -922,9 +951,9 @@ export class PathResolver {
         );
       }
 
-      const data = await response.json();
+      const data: unknown = await response.json();
 
-      if (!Array.isArray(data)) {
+      if (!Array.isArray(data) || !data.every(isGitHubContentItem)) {
         throw new GitContentError(
           `Expected directory listing from Git repository for resource '${resourceName}', but got a file`,
           resourceName,
