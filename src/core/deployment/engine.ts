@@ -333,443 +333,9 @@ export class DirectDeploymentEngine {
     graph: DeploymentResourceGraph,
     options: DeploymentOptions
   ): Promise<DeploymentResult> {
-    const deploymentId = this.generateDeploymentId();
-    const startTime = Date.now();
-    const deployedResources: DeployedResource[] = [];
-
-    // Create an AbortController for this deployment to enable proper cancellation
-    const deploymentAbortController = this.createTrackedAbortController();
-    const abortSignal = deploymentAbortController.signal;
-
-    // Set up timeout-based abort if timeout is specified
-    const timeout = options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT;
-    const timeoutId = setTimeout(() => {
-      this.logger.debug('Deployment timeout reached, aborting operations', {
-        deploymentId,
-        timeout,
-      });
-
-      // Stop event monitoring immediately when timeout is reached
-      // This prevents watch connections from continuing to run and throwing errors
-      if (this.eventMonitor) {
-        this.eventMonitor.stopMonitoring().catch((error: unknown) => {
-          this.logger.debug('Error stopping event monitoring on timeout', {
-            error: ensureError(error).message,
-          });
-        });
-      }
-
-      deploymentAbortController.abort();
-    }, timeout);
-    const errors: DeploymentError[] = [];
-    const deploymentLogger = this.logger.child({
-      deploymentId,
-      resourceCount: graph.resources.length,
-    });
-    deploymentLogger.info('Starting deployment', { options });
-
-    try {
-      this.emitEvent(options, {
-        type: 'started',
-        message: `Starting deployment of ${graph.resources.length} resources`,
-        timestamp: new Date(),
-      });
-
-      // 1. Validate no cycles in dependency graph
-      deploymentLogger.debug('Validating dependency graph', {
-        dependencyGraph: graph.dependencyGraph,
-      });
-      this.dependencyResolver.validateNoCycles(graph.dependencyGraph);
-
-      // 2. Analyze deployment order and identify parallel stages
-      deploymentLogger.debug('Analyzing deployment order for parallel execution');
-      const deploymentPlan = this.dependencyResolver.analyzeDeploymentOrder(graph.dependencyGraph);
-      deploymentLogger.debug('Deployment plan determined', {
-        levels: deploymentPlan.levels.length,
-        totalResources: deploymentPlan.totalResources,
-        maxParallelism: deploymentPlan.maxParallelism,
-      });
-
-      // 3. Initialize and start event monitoring if enabled
-      if (options.eventMonitoring?.enabled) {
-        try {
-          this.eventMonitor = createEventMonitor(this.kubeClient, {
-            namespace: options.namespace || 'default',
-            eventTypes: options.eventMonitoring.eventTypes || ['Warning', 'Error'],
-            includeChildResources: options.eventMonitoring.includeChildResources ?? true,
-            startTime: new Date(startTime),
-            ...(options.progressCallback && { progressCallback: options.progressCallback }),
-          });
-
-          // Start monitoring immediately to capture all deployment events
-          await this.eventMonitor.startMonitoring([]);
-          deploymentLogger.debug('Event monitoring started for deployment');
-        } catch (error: unknown) {
-          deploymentLogger.warn('Failed to initialize event monitoring, continuing without it', {
-            error: ensureError(error).message,
-          });
-        }
-      }
-
-      // 3.1. Initialize debug logging if enabled
-      if (options.debugLogging?.enabled) {
-        this.debugLogger = createDebugLoggerFromDeploymentOptions(options);
-        this.readinessChecker.setDebugLogger(this.debugLogger);
-        deploymentLogger.debug('Debug logging initialized');
-      }
-
-      // 4. Create resolution context with resourceKeyMapping for cross-resource references
-      // The resourceKeyMapping maps original resource IDs (like 'webappDeployment') to their manifests
-      // This allows the reference resolver to find resources by their original IDs during deployment
-      const resourceKeyMapping = new Map<string, unknown>();
-      for (const resource of graph.resources) {
-        const manifest = resource.manifest as KubernetesResource & WithResourceId;
-        const originalResourceId = manifest.__resourceId;
-        if (originalResourceId) {
-          // Convert the Enhanced proxy to a plain object for reliable field extraction
-          // The proxy's toJSON method returns a clean object without proxy behavior
-          const plainManifest =
-            typeof manifest.toJSON === 'function'
-              ? manifest.toJSON()
-              : JSON.parse(JSON.stringify(manifest));
-          resourceKeyMapping.set(originalResourceId, plainManifest);
-          deploymentLogger.debug('Added resource to resourceKeyMapping', {
-            originalResourceId,
-            kind: manifest.kind,
-            name: manifest.metadata?.name,
-          });
-        }
-      }
-
-      const context: ResolutionContext = {
-        deployedResources,
-        kubeClient: this.kubeClient,
-        resourceKeyMapping,
-        ...(options.namespace && { namespace: options.namespace }),
-        timeout: options.timeout || DEFAULT_READINESS_TIMEOUT,
-      };
-
-      // 5. Deploy resources in parallel stages
-      for (let levelIndex = 0; levelIndex < deploymentPlan.levels.length; levelIndex++) {
-        const currentLevel = deploymentPlan.levels[levelIndex];
-        if (!currentLevel) {
-          continue;
-        }
-
-        const levelLogger = deploymentLogger.child({
-          level: levelIndex + 1,
-          resourceCount: currentLevel.length,
-        });
-        levelLogger.debug(
-          `Deploying level ${levelIndex + 1} with ${currentLevel.length} resources in parallel`
-        );
-
-        // Track performance metrics for this level
-        const levelStartTime = Date.now();
-
-        // Deploy all resources in this level in parallel
-        const levelPromises = currentLevel.map(async (resourceId) => {
-          const resourceLogger = deploymentLogger.child({ resourceId });
-          resourceLogger.debug('Starting resource deployment');
-
-          const resource = graph.resources.find((r) => r.id === resourceId);
-          if (!resource) {
-            resourceLogger.error('Resource not found in graph');
-            const error = new Error(`Resource with id '${resourceId}' not found in graph`);
-            return {
-              success: false,
-              resourceId,
-              error: {
-                resourceId,
-                phase: 'validation' as const,
-                error,
-                timestamp: new Date(),
-              },
-            };
-          }
-
-          resourceLogger.debug('Found resource in graph', {
-            resourceId: resource.id,
-            kind: resource.manifest?.kind,
-            name: resource.manifest?.metadata?.name,
-          });
-
-          try {
-            resourceLogger.debug('Calling deploySingleResource');
-
-            // Wait for CRD establishment if this is a custom resource
-            await this.crdManager.waitForCRDIfCustomResource(
-              resource.manifest,
-              options,
-              resourceLogger,
-              abortSignal
-            );
-
-            // FIX: Unconditionally ensure the readiness evaluator is attached just before deployment.
-            const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
-
-            // Add resource to event monitoring before deployment to capture creation events
-            // NOTE: This is fire-and-forget to avoid blocking the deployment path.
-            // The event monitor's watch connection management can cause deadlocks when
-            // many resources contend for the same connection during parallel deployment.
-            if (this.eventMonitor) {
-              const preDeployedResource: DeployedResource = {
-                id: resourceId,
-                kind: resourceWithEvaluator.kind,
-                name: resourceWithEvaluator.metadata?.name || 'unknown',
-                namespace:
-                  resourceWithEvaluator.metadata?.namespace || options.namespace || 'default',
-                manifest: resourceWithEvaluator,
-                status: 'deployed',
-                deployedAt: new Date(),
-              };
-              this.eventMonitor.addResources([preDeployedResource]).then(
-                () => {
-                  resourceLogger.debug('Added resource to event monitoring before deployment');
-                },
-                (error: unknown) => {
-                  resourceLogger.warn(
-                    'Failed to add resource to event monitoring, continuing deployment',
-                    { error: ensureError(error).message }
-                  );
-                }
-              );
-            }
-
-            const deployedResource = await this.deploySingleResource(
-              resourceWithEvaluator,
-              context,
-              options,
-              abortSignal
-            );
-            resourceLogger.debug('Resource deployed successfully');
-
-            return {
-              success: true,
-              resourceId,
-              deployedResource,
-            };
-          } catch (error: unknown) {
-            resourceLogger.error('Resource deployment failed', ensureError(error));
-            const failedResource: DeployedResource = {
-              id: resourceId,
-              kind: resource.manifest.kind,
-              name: resource.manifest.metadata?.name || 'unknown',
-              namespace: resource.manifest.metadata?.namespace || 'default',
-              manifest: resource.manifest,
-              status: 'failed',
-              deployedAt: new Date(),
-              error: ensureError(error),
-            };
-            return {
-              success: false,
-              resourceId,
-              deployedResource: failedResource,
-              error: {
-                resourceId,
-                phase: 'deployment' as const,
-                error: ensureError(error),
-                timestamp: new Date(),
-              },
-            };
-          }
-        });
-
-        // Wait for all resources in this level to complete
-        const levelResults = await Promise.allSettled(levelPromises);
-
-        // Process results and handle errors
-        let levelHasFailures = false;
-        for (const result of levelResults) {
-          if (result.status === 'fulfilled') {
-            const deploymentResult = result.value;
-            if (deploymentResult.success && deploymentResult.deployedResource) {
-              deployedResources.push(deploymentResult.deployedResource);
-
-              await this.updateResourceKeyMappingWithLiveResource(
-                deploymentResult.deployedResource,
-                resourceKeyMapping,
-                deploymentLogger
-              );
-            } else {
-              levelHasFailures = true;
-              if (deploymentResult.error) {
-                errors.push(deploymentResult.error);
-              }
-              if (deploymentResult.deployedResource) {
-                deployedResources.push(deploymentResult.deployedResource);
-              }
-            }
-          } else {
-            // Promise was rejected
-            levelHasFailures = true;
-            levelLogger.error('Unexpected promise rejection in parallel deployment', result.reason);
-          }
-        }
-
-        // Resources are now added to event monitoring before deployment (see individual resource deployment above)
-
-        // Handle rollback if there are failures and rollback is enabled
-        if (levelHasFailures && options.rollbackOnFailure) {
-          levelLogger.warn('Level deployment failed, initiating rollback');
-          await this.rollbackDeployedResources(deployedResources, options);
-
-          const duration = Date.now() - startTime;
-          this.emitEvent(options, {
-            type: 'rollback',
-            message: `Deployment failed and rolled back in ${duration}ms`,
-            timestamp: new Date(),
-          });
-          return {
-            deploymentId,
-            resources: deployedResources,
-            dependencyGraph: graph.dependencyGraph,
-            duration,
-            status: 'failed',
-            errors,
-          };
-        }
-
-        // Calculate level performance metrics
-        const levelDuration = Date.now() - levelStartTime;
-        const successfulCount = levelResults.filter(
-          (r) => r.status === 'fulfilled' && r.value.success
-        ).length;
-        const failedCount = levelResults.filter(
-          (r) => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)
-        ).length;
-
-        levelLogger.info(`Level ${levelIndex + 1} deployment completed`, {
-          successful: successfulCount,
-          failed: failedCount,
-          duration: levelDuration,
-          parallelism: currentLevel.length,
-          averageTimePerResource: Math.round(levelDuration / currentLevel.length),
-        });
-      }
-
-      const duration = Date.now() - startTime;
-      const successfulResources = deployedResources.filter((r) => r.status !== 'failed');
-      const status =
-        errors.length === 0 ? 'success' : successfulResources.length > 0 ? 'partial' : 'failed';
-
-      // Log comprehensive performance metrics
-      deploymentLogger.info('Parallel deployment performance metrics', {
-        totalDuration: duration,
-        totalResources: deploymentPlan.totalResources,
-        parallelLevels: deploymentPlan.levels.length,
-        maxParallelism: deploymentPlan.maxParallelism,
-        averageTimePerResource: Math.round(duration / deploymentPlan.totalResources),
-        successfulResources: successfulResources.length,
-        failedResources: errors.length,
-        parallelismEfficiency: Math.round(
-          (deploymentPlan.totalResources /
-            deploymentPlan.levels.length /
-            deploymentPlan.maxParallelism) *
-            100
-        ),
-        status,
-      });
-
-      this.emitEvent(options, {
-        type: status === 'success' ? 'completed' : 'failed',
-        message: `Deployment ${status} in ${duration}ms (${deploymentPlan.levels.length} parallel levels, max ${deploymentPlan.maxParallelism} concurrent)`,
-        timestamp: new Date(),
-      });
-
-      // Stop event monitoring
-      if (this.eventMonitor) {
-        try {
-          await this.eventMonitor.stopMonitoring();
-          deploymentLogger.debug('Event monitoring stopped');
-        } catch (error: unknown) {
-          deploymentLogger.warn('Failed to stop event monitoring cleanly', {
-            error: ensureError(error).message,
-          });
-        }
-      }
-
-      // Clean up abort controller and timeout
-      clearTimeout(timeoutId);
-      this.removeTrackedAbortController(deploymentAbortController);
-
-      // Store deployment state for rollback
-      this.deploymentState.set(deploymentId, {
-        deploymentId,
-        resources: deployedResources,
-        dependencyGraph: graph.dependencyGraph,
-        startTime: new Date(startTime),
-        endTime: new Date(),
-        status: status === 'success' ? 'completed' : status === 'partial' ? 'completed' : 'failed',
-        options,
-      });
-
-      return {
-        deploymentId,
-        resources: deployedResources,
-        dependencyGraph: graph.dependencyGraph,
-        duration,
-        status,
-        errors,
-      };
-    } catch (error: unknown) {
-      // Re-throw circular dependency errors immediately - these are configuration errors
-      if (error instanceof CircularDependencyError) {
-        // Clean up abort controller and timeout before re-throwing
-        clearTimeout(timeoutId);
-        this.removeTrackedAbortController(deploymentAbortController);
-        throw error;
-      }
-
-      // Clean up abort controller and timeout
-      clearTimeout(timeoutId);
-      this.removeTrackedAbortController(deploymentAbortController);
-
-      const duration = Date.now() - startTime;
-      this.emitEvent(options, {
-        type: 'failed',
-        message: `Deployment failed: ${error}`,
-        timestamp: new Date(),
-        error: ensureError(error),
-      });
-
-      // Stop event monitoring on error
-      if (this.eventMonitor) {
-        try {
-          await this.eventMonitor.stopMonitoring();
-        } catch (cleanupError: unknown) {
-          // Ignore cleanup errors in error path
-          this.logger.debug('Ignored cleanup error stopping event monitor', { err: cleanupError });
-        }
-      }
-
-      // Store deployment state even for failed deployments (for rollback)
-      this.deploymentState.set(deploymentId, {
-        deploymentId,
-        resources: deployedResources,
-        dependencyGraph: graph.dependencyGraph,
-        startTime: new Date(startTime),
-        endTime: new Date(),
-        status: 'failed',
-        options,
-      });
-
-      return {
-        deploymentId,
-        resources: deployedResources,
-        dependencyGraph: graph.dependencyGraph,
-        duration,
-        status: 'failed',
-        errors: [
-          {
-            resourceId: 'deployment',
-            phase: 'deployment',
-            error: ensureError(error),
-            timestamp: new Date(),
-          },
-        ],
-      };
-    }
+    // Delegate to deployWithClosures with no closures and a dummy spec.
+    // The closure integration code is a no-op when the closures map is empty.
+    return this.deployWithClosures(graph, {}, options, undefined);
   }
 
   /**
@@ -844,7 +410,35 @@ export class DirectDeploymentEngine {
         maxParallelism: deploymentPlan.maxParallelism,
       });
 
-      // 3. Analyze closure dependencies and integrate into deployment plan
+      // 3. Initialize and start event monitoring if enabled
+      if (options.eventMonitoring?.enabled) {
+        try {
+          this.eventMonitor = createEventMonitor(this.kubeClient, {
+            namespace: options.namespace || 'default',
+            eventTypes: options.eventMonitoring.eventTypes || ['Warning', 'Error'],
+            includeChildResources: options.eventMonitoring.includeChildResources ?? true,
+            startTime: new Date(startTime),
+            ...(options.progressCallback && { progressCallback: options.progressCallback }),
+          });
+
+          // Start monitoring immediately to capture all deployment events
+          await this.eventMonitor.startMonitoring([]);
+          deploymentLogger.debug('Event monitoring started for deployment');
+        } catch (error: unknown) {
+          deploymentLogger.warn('Failed to initialize event monitoring, continuing without it', {
+            error: ensureError(error).message,
+          });
+        }
+      }
+
+      // 3.1. Initialize debug logging if enabled
+      if (options.debugLogging?.enabled) {
+        this.debugLogger = createDebugLoggerFromDeploymentOptions(options);
+        this.readinessChecker.setDebugLogger(this.debugLogger);
+        deploymentLogger.debug('Debug logging initialized');
+      }
+
+      // 4. Analyze closure dependencies and integrate into deployment plan
       const closureDependencies = analyzeClosureDependencies(
         closures,
         spec,
@@ -969,6 +563,33 @@ export class DirectDeploymentEngine {
             );
 
             const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
+
+            // Add resource to event monitoring before deployment to capture creation events
+            // NOTE: This is fire-and-forget to avoid blocking the deployment path.
+            if (this.eventMonitor) {
+              const preDeployedResource: DeployedResource = {
+                id: resourceId,
+                kind: resourceWithEvaluator.kind,
+                name: resourceWithEvaluator.metadata?.name || 'unknown',
+                namespace:
+                  resourceWithEvaluator.metadata?.namespace || options.namespace || 'default',
+                manifest: resourceWithEvaluator,
+                status: 'deployed',
+                deployedAt: new Date(),
+              };
+              this.eventMonitor.addResources([preDeployedResource]).then(
+                () => {
+                  resourceLogger.debug('Added resource to event monitoring before deployment');
+                },
+                (error: unknown) => {
+                  resourceLogger.warn(
+                    'Failed to add resource to event monitoring, continuing deployment',
+                    { error: ensureError(error).message }
+                  );
+                }
+              );
+            }
+
             const deployedResource = await this.deploySingleResource(
               resourceWithEvaluator,
               context,
@@ -1156,6 +777,18 @@ export class DirectDeploymentEngine {
         timestamp: new Date(),
       });
 
+      // Stop event monitoring
+      if (this.eventMonitor) {
+        try {
+          await this.eventMonitor.stopMonitoring();
+          deploymentLogger.debug('Event monitoring stopped');
+        } catch (error: unknown) {
+          deploymentLogger.warn('Failed to stop event monitoring cleanly', {
+            error: ensureError(error).message,
+          });
+        }
+      }
+
       // Clean up abort controller and timeout
       clearTimeout(timeoutId);
       this.removeTrackedAbortController(deploymentAbortController);
@@ -1199,6 +832,18 @@ export class DirectDeploymentEngine {
         timestamp: new Date(),
         error: ensureError(error),
       });
+
+      // Stop event monitoring on error
+      if (this.eventMonitor) {
+        try {
+          await this.eventMonitor.stopMonitoring();
+        } catch (cleanupError: unknown) {
+          // Ignore cleanup errors in error path
+          this.logger.debug('Ignored cleanup error stopping event monitor', {
+            err: cleanupError,
+          });
+        }
+      }
 
       // Store deployment state even for failed deployments (for rollback)
       this.deploymentState.set(deploymentId, {
