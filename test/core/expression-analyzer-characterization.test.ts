@@ -23,14 +23,58 @@ import {
   runWithCompositionContext,
 } from '../../src/core/composition/context.js';
 import { CompositionExecutionError } from '../../src/core/errors.js';
+import type { CompositionAnalysisResult } from '../../src/core/expressions/composition/expression-analyzer.js';
 import { CompositionExpressionAnalyzer } from '../../src/core/expressions/composition/expression-analyzer.js';
+import type { KubernetesRef } from '../../src/core/types/common.js';
+import type { Enhanced } from '../../src/core/types/kubernetes.js';
+import type {
+  KroCompatibleType,
+  MagicAssignableShape,
+  SchemaProxy,
+} from '../../src/core/types/serialization.js';
 import { KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
-function ref(resourceId: string, fieldPath: string) {
+/** Minimal schema proxy stub accepted by all analyzer methods. */
+type TestSpec = Record<string, unknown>;
+type TestStatus = Record<string, unknown>;
+function mockSchemaProxy(): SchemaProxy<TestSpec, TestStatus> {
+  return { spec: {} } as SchemaProxy<TestSpec, TestStatus>;
+}
+
+/** Strongly-typed KubernetesRef factory. */
+function ref(resourceId: string, fieldPath: string): KubernetesRef<unknown> {
   return {
     [KUBERNETES_REF_BRAND]: true as const,
     resourceId,
     fieldPath,
+  };
+}
+
+/** Cast a plain object to Enhanced for test mocking (the real type is a complex intersection). */
+function mockEnhanced(obj: Record<string, unknown>): Enhanced<unknown, unknown> {
+  return obj as Enhanced<unknown, unknown>;
+}
+
+/** Cast a plain object to MagicAssignableShape for status shape tests. */
+function mockShape(obj: Record<string, unknown>): MagicAssignableShape<TestStatus> {
+  return obj as MagicAssignableShape<TestStatus>;
+}
+
+/** Build a typed analysis result for getPatternRecommendations tests. */
+function mockAnalysisResult(
+  overrides: Partial<CompositionAnalysisResult<KroCompatibleType>> = {}
+): CompositionAnalysisResult<KroCompatibleType> {
+  return {
+    statusShape: {} as MagicAssignableShape<KroCompatibleType>,
+    kubernetesRefs: [],
+    referencedResources: [],
+    requiresCelConversion: false,
+    conversionMetadata: {
+      expressionsAnalyzed: 0,
+      kubernetesRefsDetected: 0,
+      celExpressionsGenerated: 0,
+    },
+    ...overrides,
   };
 }
 
@@ -117,8 +161,8 @@ describe('CompositionExpressionAnalyzer', () => {
   describe('analyzeCompositionFunction', () => {
     it('analyzes a simple composition with no refs', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
 
       const result = analyzer.analyzeCompositionFunction(compositionFn, schemaProxy);
 
@@ -129,9 +173,9 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('detects KubernetesRef objects in status shape', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
+      const schemaProxy = mockSchemaProxy();
       const testRef = ref('deploy', 'status.readyReplicas');
-      const compositionFn = (_spec: any) => ({
+      const compositionFn = (_spec: TestSpec) => ({
         replicas: testRef,
       });
 
@@ -143,11 +187,11 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('extracts referenced resources from context', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
+      const schemaProxy = mockSchemaProxy();
       const ctx = createCompositionContext('test');
-      ctx.addResource('myDeploy', { metadata: { name: 'test' } } as any);
+      ctx.addResource('myDeploy', mockEnhanced({ metadata: { name: 'test' } }));
 
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
       const result = analyzer.analyzeCompositionFunction(compositionFn, schemaProxy, ctx);
 
       expect(result.referencedResources).toContain('myDeploy');
@@ -155,8 +199,8 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('throws CompositionExecutionError when composition function throws', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => {
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => {
         throw new Error('boom');
       };
 
@@ -167,8 +211,8 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('includes conversionMetadata in result', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
 
       const result = analyzer.analyzeCompositionFunction(compositionFn, schemaProxy);
 
@@ -182,8 +226,8 @@ describe('CompositionExpressionAnalyzer', () => {
   describe('analyzeCompositionFunctionWithPattern', () => {
     it('detects pattern automatically when not provided', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
 
       const result = analyzer.analyzeCompositionFunctionWithPattern(compositionFn, schemaProxy);
 
@@ -193,8 +237,8 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('uses explicit pattern when provided', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
 
       const result = analyzer.analyzeCompositionFunctionWithPattern(
         compositionFn,
@@ -207,9 +251,9 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('tracks resource creation for imperative pattern with context', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
+      const schemaProxy = mockSchemaProxy();
       const ctx = createCompositionContext('test');
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
 
       const result = analyzer.analyzeCompositionFunctionWithPattern(
         compositionFn,
@@ -224,8 +268,8 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('does not track resource creation for declarative pattern', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
 
       const result = analyzer.analyzeCompositionFunctionWithPattern(
         compositionFn,
@@ -240,8 +284,8 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('imperative without context falls through to non-tracking branch', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => ({ phase: 'ready' });
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => ({ phase: 'ready' });
 
       // No context provided — even though pattern is imperative, trackResourceCreation
       // requires context to be truthy
@@ -258,8 +302,8 @@ describe('CompositionExpressionAnalyzer', () => {
   describe('analyzeResourceCreation', () => {
     it('returns empty when no context is available', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
-      const compositionFn = (_spec: any) => ({});
+      const schemaProxy = mockSchemaProxy();
+      const compositionFn = (_spec: TestSpec) => ({});
 
       const result = analyzer.analyzeResourceCreation(compositionFn, schemaProxy);
 
@@ -270,12 +314,12 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('detects resources added during composition function execution', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
+      const schemaProxy = mockSchemaProxy();
       const ctx = createCompositionContext('test');
 
-      const compositionFn = (_spec: any) => {
+      const compositionFn = (_spec: TestSpec) => {
         // Simulate adding a resource during composition
-        ctx.addResource('newDeploy', { metadata: { name: 'new' } } as any);
+        ctx.addResource('newDeploy', mockEnhanced({ metadata: { name: 'new' } }));
         return {};
       };
 
@@ -286,9 +330,9 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('throws CompositionExecutionError when composition function throws', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const schemaProxy = { spec: {} } as any;
+      const schemaProxy = mockSchemaProxy();
       const ctx = createCompositionContext('test');
-      const compositionFn = (_spec: any) => {
+      const compositionFn = (_spec: TestSpec) => {
         throw new Error('creation failed');
       };
 
@@ -301,7 +345,7 @@ describe('CompositionExpressionAnalyzer', () => {
   describe('processCompositionStatus', () => {
     it('returns status shape unchanged for direct factory type', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const shape = { phase: 'ready', count: 42 } as any;
+      const shape = mockShape({ phase: 'ready', count: 42 });
 
       const result = analyzer.processCompositionStatus(shape, 'direct');
 
@@ -310,7 +354,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('processes status shape for kro factory type', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const shape = { phase: 'ready' } as any;
+      const shape = mockShape({ phase: 'ready' });
 
       const result = analyzer.processCompositionStatus(shape, 'kro');
 
@@ -320,7 +364,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('defaults to kro factory type', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const shape = { phase: 'ready' } as any;
+      const shape = mockShape({ phase: 'ready' });
 
       // No factory type specified — defaults to 'kro'
       const result = analyzer.processCompositionStatus(shape);
@@ -332,7 +376,7 @@ describe('CompositionExpressionAnalyzer', () => {
   describe('processCompositionByPattern', () => {
     it('delegates to processCompositionStatus for imperative (convertTocel: true)', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const shape = { phase: 'ready' } as any;
+      const shape = mockShape({ phase: 'ready' });
 
       // Both patterns have convertTocel: true, so this always processes
       const result = analyzer.processCompositionByPattern(shape, 'imperative');
@@ -342,7 +386,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('delegates to processCompositionStatus for declarative (convertTocel: true)', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const shape = { phase: 'ready' } as any;
+      const shape = mockShape({ phase: 'ready' });
 
       const result = analyzer.processCompositionByPattern(shape, 'declarative');
 
@@ -351,7 +395,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('defaults to kro factory type', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const shape = { simple: 'value' } as any;
+      const shape = mockShape({ simple: 'value' });
 
       // Should not throw — defaults to kro
       const result = analyzer.processCompositionByPattern(shape, 'declarative');
@@ -364,7 +408,7 @@ describe('CompositionExpressionAnalyzer', () => {
     it('returns comprehensive result with metadata', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       const ctx = createCompositionContext('test');
-      const shape = { phase: 'ready' } as any;
+      const shape = mockShape({ phase: 'ready' });
 
       const result = analyzer.buildCompositionStatus(shape, ctx);
 
@@ -382,7 +426,7 @@ describe('CompositionExpressionAnalyzer', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       const ctx = createCompositionContext('test');
       const schemaRef = ref('__schema__', 'spec.name');
-      const shape = { name: schemaRef } as any;
+      const shape = mockShape({ name: schemaRef });
 
       const result = analyzer.buildCompositionStatus(shape, ctx);
 
@@ -393,7 +437,7 @@ describe('CompositionExpressionAnalyzer', () => {
     it('returns shape unchanged for direct factory type', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       const ctx = createCompositionContext('test');
-      const shape = { phase: 'ready' } as any;
+      const shape = mockShape({ phase: 'ready' });
 
       const result = analyzer.buildCompositionStatus(shape, ctx, 'direct');
 
@@ -405,7 +449,7 @@ describe('CompositionExpressionAnalyzer', () => {
   describe('validateStatusShape', () => {
     it('returns valid for shapes with no KubernetesRefs', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const shape = { phase: 'ready', count: 42 } as any;
+      const shape = mockShape({ phase: 'ready', count: 42 });
 
       const result = analyzer.validateStatusShape(shape);
 
@@ -416,7 +460,7 @@ describe('CompositionExpressionAnalyzer', () => {
     it('reports scope errors for non-schema KubernetesRefs (scope manager has no active scope)', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       const testRef = ref('deploy', 'status.readyReplicas');
-      const shape = { replicas: testRef } as any;
+      const shape = mockShape({ replicas: testRef });
 
       const result = analyzer.validateStatusShape(shape);
 
@@ -429,7 +473,7 @@ describe('CompositionExpressionAnalyzer', () => {
     it('__schema__ refs also fail scope validation (scope manager does not special-case them)', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       const schemaRef = ref('__schema__', 'spec.name');
-      const shape = { name: schemaRef } as any;
+      const shape = mockShape({ name: schemaRef });
 
       const result = analyzer.validateStatusShape(shape);
 
@@ -441,7 +485,7 @@ describe('CompositionExpressionAnalyzer', () => {
     it('adds warnings for missing resources in context', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       const testRef = ref('missingDeploy', 'status.phase');
-      const shape = { phase: testRef } as any;
+      const shape = mockShape({ phase: testRef });
       const ctx = createCompositionContext('test');
 
       const result = analyzer.validateStatusShape(shape, ctx);
@@ -453,11 +497,16 @@ describe('CompositionExpressionAnalyzer', () => {
     it('getter that throws is handled gracefully by analyzeMagicAssignableShape', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       // A getter that throws — the underlying analysis swallows it
-      const badShape = {
-        get phase() {
-          throw new Error('getter exploded');
-        },
-      } as any;
+      const badShape = mockShape(
+        Object.create(null, {
+          phase: {
+            get() {
+              throw new Error('getter exploded');
+            },
+            enumerable: true,
+          },
+        })
+      );
 
       const result = analyzer.validateStatusShape(badShape);
 
@@ -510,17 +559,7 @@ describe('CompositionExpressionAnalyzer', () => {
   describe('getPatternRecommendations', () => {
     it('recommends declarative when imperative has no refs', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const analysisResult = {
-        statusShape: {} as any,
-        kubernetesRefs: [],
-        referencedResources: [],
-        requiresCelConversion: false,
-        conversionMetadata: {
-          expressionsAnalyzed: 0,
-          kubernetesRefsDetected: 0,
-          celExpressionsGenerated: 0,
-        },
-      };
+      const analysisResult = mockAnalysisResult();
 
       const recommendations = analyzer.getPatternRecommendations('imperative', analysisResult);
 
@@ -529,8 +568,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('recommends breaking up when imperative has >10 referenced resources', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const analysisResult = {
-        statusShape: {} as any,
+      const analysisResult = mockAnalysisResult({
         kubernetesRefs: [ref('a', 'status.x')],
         referencedResources: Array.from({ length: 11 }, (_, i) => `res${i}`),
         requiresCelConversion: true,
@@ -539,7 +577,7 @@ describe('CompositionExpressionAnalyzer', () => {
           kubernetesRefsDetected: 1,
           celExpressionsGenerated: 11,
         },
-      };
+      });
 
       const recommendations = analyzer.getPatternRecommendations('imperative', analysisResult);
 
@@ -548,8 +586,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('recommends imperative when declarative has refs', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const analysisResult = {
-        statusShape: {} as any,
+      const analysisResult = mockAnalysisResult({
         kubernetesRefs: [ref('deploy', 'status.phase')],
         referencedResources: ['deploy'],
         requiresCelConversion: true,
@@ -558,7 +595,7 @@ describe('CompositionExpressionAnalyzer', () => {
           kubernetesRefsDetected: 1,
           celExpressionsGenerated: 1,
         },
-      };
+      });
 
       const recommendations = analyzer.getPatternRecommendations('declarative', analysisResult);
 
@@ -567,17 +604,7 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('returns no recommendations for declarative with no refs', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const analysisResult = {
-        statusShape: {} as any,
-        kubernetesRefs: [],
-        referencedResources: [],
-        requiresCelConversion: false,
-        conversionMetadata: {
-          expressionsAnalyzed: 0,
-          kubernetesRefsDetected: 0,
-          celExpressionsGenerated: 0,
-        },
-      };
+      const analysisResult = mockAnalysisResult();
 
       const recommendations = analyzer.getPatternRecommendations('declarative', analysisResult);
 
@@ -589,11 +616,11 @@ describe('CompositionExpressionAnalyzer', () => {
     it('extracts branded KubernetesRef objects from resource', () => {
       const analyzer = new CompositionExpressionAnalyzer();
       const testRef = ref('deploy', 'status.phase');
-      const resource = {
+      const resource = mockEnhanced({
         status: {
           phase: testRef,
         },
-      } as any;
+      });
 
       const refs = analyzer.extractKubernetesRefsFromResource(resource);
 
@@ -602,10 +629,10 @@ describe('CompositionExpressionAnalyzer', () => {
 
     it('returns empty array for resource with no refs', () => {
       const analyzer = new CompositionExpressionAnalyzer();
-      const resource = {
+      const resource = mockEnhanced({
         metadata: { name: 'test' },
         status: { phase: 'Running' },
-      } as any;
+      });
 
       const refs = analyzer.extractKubernetesRefsFromResource(resource);
 
@@ -615,6 +642,7 @@ describe('CompositionExpressionAnalyzer', () => {
     it('handles null/undefined resource gracefully', () => {
       const analyzer = new CompositionExpressionAnalyzer();
 
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing null input for graceful handling
       const refs = analyzer.extractKubernetesRefsFromResource(null as any);
 
       expect(refs).toEqual([]);
