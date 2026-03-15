@@ -6,7 +6,25 @@
  */
 
 import { TypeKroError } from '../../errors.js';
-import type { CompileTimeErrorType, CompileTimeWarningType } from './compile-time-types.js';
+
+/**
+ * Error type categories for compile-time validation.
+ * Defined here (alongside the error classes) to avoid a circular dependency
+ * with compile-time-types.ts.
+ */
+export type CompileTimeErrorType =
+  | 'TYPE_INCOMPATIBILITY'
+  | 'UNSUPPORTED_SYNTAX'
+  | 'GENERIC_CONSTRAINT_VIOLATION'
+  | 'CIRCULAR_TYPE_REFERENCE'
+  | 'MISSING_TYPE_INFORMATION';
+
+export type CompileTimeWarningType =
+  | 'POTENTIAL_RUNTIME_ERROR'
+  | 'PERFORMANCE_IMPACT'
+  | 'DEPRECATED_FEATURE'
+  | 'TYPE_ASSERTION_USED'
+  | 'IMPLICIT_ANY';
 
 /**
  * Compile-time error

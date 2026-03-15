@@ -7,8 +7,8 @@
 
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
-// Forward-reference types that are defined in other decomposed files.
-// These are imported by consumers via the barrel re-export.
+// Import error/warning classes and their type discriminants from compile-time-errors.
+// Note: one-directional import (types → errors) with no reverse dependency.
 import type { CompileTimeError, CompileTimeWarning } from './compile-time-errors.js';
 import type { TypeInfo } from './type-safety.js';
 
@@ -153,19 +153,8 @@ export type CompatibilityIssueType =
   | 'UNION_TYPE_INCOMPATIBILITY'
   | 'CONSTRAINT_VIOLATION';
 
-export type CompileTimeErrorType =
-  | 'TYPE_INCOMPATIBILITY'
-  | 'UNSUPPORTED_SYNTAX'
-  | 'GENERIC_CONSTRAINT_VIOLATION'
-  | 'CIRCULAR_TYPE_REFERENCE'
-  | 'MISSING_TYPE_INFORMATION';
-
-export type CompileTimeWarningType =
-  | 'POTENTIAL_RUNTIME_ERROR'
-  | 'PERFORMANCE_IMPACT'
-  | 'DEPRECATED_FEATURE'
-  | 'TYPE_ASSERTION_USED'
-  | 'IMPLICIT_ANY';
+// CompileTimeErrorType and CompileTimeWarningType are defined in compile-time-errors.ts
+// and re-exported from the barrel index. They are imported above for use in this file.
 
 /**
  * Compile-time validation context
