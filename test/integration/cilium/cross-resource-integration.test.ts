@@ -5,35 +5,45 @@
  * and integration with TypeKro features for Cilium networking resources.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
-import { ciliumNetworkPolicy, ciliumClusterwideNetworkPolicy } from '../../../src/factories/cilium/resources/networking.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCoreV1ApiClient } from '../shared-kubeconfig.js';
-import { isCiliumInstalled } from './setup-cilium.js';
+import {
+  ciliumClusterwideNetworkPolicy,
+  ciliumNetworkPolicy,
+} from '../../../src/factories/cilium/resources/networking.js';
+import {
+  createCoreV1ApiClient,
+  createKubernetesObjectApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from '../shared-kubeconfig.js';
+import { ensureCiliumInstalled, isCiliumInstalled } from './setup-cilium.js';
 
 const NAMESPACE = 'typekro-test-cross-resource';
 const clusterAvailable = isClusterAvailable();
 
-// Check if both cluster and Cilium are available
+// Ensure Cilium is bootstrapped, then verify it's available
 let ciliumAvailable = false;
 if (clusterAvailable) {
   try {
+    await ensureCiliumInstalled();
     ciliumAvailable = await isCiliumInstalled();
   } catch (error) {
-    console.warn('Could not check Cilium availability:', error);
+    console.warn('Could not bootstrap/check Cilium availability:', error);
     ciliumAvailable = false;
   }
 }
 
-const describeOrSkip = (clusterAvailable && ciliumAvailable) ? describe : describe.skip;
-
 if (!clusterAvailable) {
   console.log('⏭️  Skipping Cilium Cross-Resource Integration Tests: No cluster available');
 } else if (!ciliumAvailable) {
-  console.log('⏭️  Skipping Cilium Cross-Resource Integration Tests: Cilium not installed in cluster');
+  console.log('⏭️  Skipping Cilium Cross-Resource Integration Tests: Cilium bootstrap failed');
 }
+
+const describeOrSkip = clusterAvailable && ciliumAvailable ? describe : describe.skip;
 
 describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -44,21 +54,34 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
   beforeAll(async () => {
     if (!clusterAvailable) return;
 
-    console.log('🚀 SETUP: Connecting to existing cluster for Cilium cross-resource integration tests...');
+    console.log(
+      '🚀 SETUP: Connecting to existing cluster for Cilium cross-resource integration tests...'
+    );
 
     kubeConfig = getIntegrationTestKubeConfig();
     _k8sApi = createKubernetesObjectApiClient(kubeConfig);
     coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE;
 
-    // Create test namespace if it doesn't exist
-    try {
-      await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-      console.log(`📦 Created test namespace: ${testNamespace}`);
-    } catch (error: any) {
-      if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
-        console.log(`📦 Test namespace ${testNamespace} already exists`);
-      } else {
+    // Create test namespace, waiting for any prior terminating namespace to clear
+    const maxWait = 60000;
+    const startWait = Date.now();
+    while (Date.now() - startWait < maxWait) {
+      try {
+        await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
+        console.log(`📦 Created test namespace: ${testNamespace}`);
+        break;
+      } catch (error: any) {
+        const msg = error.body?.message || error.message || '';
+        if (msg.includes('being deleted')) {
+          console.log(`⏳ Waiting for terminating namespace ${testNamespace} to clear...`);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          continue;
+        }
+        if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
+          console.log(`📦 Test namespace ${testNamespace} already exists`);
+          break;
+        }
         throw error;
       }
     }
@@ -69,31 +92,75 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
   afterAll(async () => {
     if (!clusterAvailable || !coreApi) return;
 
-    // Clean up test namespace
+    const k8sApi = createKubernetesObjectApiClient(kubeConfig);
+
+    // 1. Delete RGDs FIRST — Kro controller will cascade-delete instances and their child resources
+    const rgdNames = ['multi-policy-app'];
+    for (const name of rgdNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name },
+        });
+        console.log(`🗑️ Deleted RGD: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(`⚠️ Could not delete RGD ${name}: ${error.message}`);
+        }
+      }
+    }
+
+    // 2. Wait for Kro to cascade-delete instances and child resources
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    // 3. Clean up any orphaned cluster-scoped CiliumClusterwideNetworkPolicies
+    const clusterPolicyNames = [
+      'test-cluster-policy',
+      'complex-app-cluster-security',
+      'test-multi-policy-cluster-policy',
+    ];
+    for (const name of clusterPolicyNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'cilium.io/v2',
+          kind: 'CiliumClusterwideNetworkPolicy',
+          metadata: { name },
+        });
+        console.log(`🗑️ Deleted CiliumClusterwideNetworkPolicy: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(
+            `⚠️ Could not delete CiliumClusterwideNetworkPolicy ${name}: ${error.message}`
+          );
+        }
+      }
+    }
+
+    // 4. Clean up test namespace and wait for completion (deletes all namespaced resources)
     try {
-      await coreApi.deleteNamespace({ name: testNamespace });
-      console.log(`🗑️ Deleted test namespace: ${testNamespace}`);
+      await deleteNamespaceAndWait(testNamespace, kubeConfig);
     } catch (error: any) {
-      // Ignore errors during cleanup
       console.log(`⚠️ Could not delete test namespace: ${error.message}`);
     }
   });
 
   describe('Cross-Resource References and Dependency Resolution', () => {
-    
     it('should handle cross-resource references between Kubernetes and Cilium resources', async () => {
-      console.log('🚀 Testing cross-resource references between Kubernetes and Cilium resources...');
+      console.log(
+        '🚀 Testing cross-resource references between Kubernetes and Cilium resources...'
+      );
 
       const NetworkPolicyWithReferencesSpec = type({
         appName: 'string',
-        targetPort: 'number'
+        targetPort: 'number',
       });
 
       const NetworkPolicyWithReferencesStatus = type({
         ready: 'boolean',
         policyName: 'string',
         targetApp: 'string',
-        targetPort: 'number'
+        targetPort: 'number',
       });
 
       const networkPolicyComposition = kubernetesComposition(
@@ -102,7 +169,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'NetworkPolicyWithReferences',
           spec: NetworkPolicyWithReferencesSpec,
-          status: NetworkPolicyWithReferencesStatus
+          status: NetworkPolicyWithReferencesStatus,
         },
         (spec) => {
           // Create Cilium network policy with cross-references
@@ -111,29 +178,35 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
             kind: 'CiliumNetworkPolicy',
             metadata: {
               name: `${spec.appName}-cross-ref-policy`,
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { app: spec.appName }
+                matchLabels: { app: spec.appName },
               },
-              ingress: [{
-                fromEndpoints: [{
-                  matchLabels: { role: 'frontend' }
-                }],
-                toPorts: [{
-                  ports: [{ port: '8080', protocol: 'TCP' }]
-                }]
-              }]
+              ingress: [
+                {
+                  fromEndpoints: [
+                    {
+                      matchLabels: { role: 'frontend' },
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '8080', protocol: 'TCP' }],
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'networkPolicy'
+            id: 'networkPolicy',
           });
 
           return {
             ready: true, // Static value for integration test
             policyName: `${spec.appName}-cross-ref-policy`,
             targetApp: spec.appName,
-            targetPort: spec.targetPort
+            targetPort: spec.targetPort,
           };
         }
       );
@@ -146,7 +219,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
 
       const deploymentResult = await directFactory.deploy({
         appName: 'test-cross-ref-app',
-        targetPort: 8080
+        targetPort: 8080,
       });
 
       expect(deploymentResult).toBeDefined();
@@ -159,7 +232,9 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
       expect(deploymentResult.status.targetApp).toBe('test-cross-ref-app');
       expect(deploymentResult.status.targetPort).toBe(8080);
 
-      console.log('✅ Cross-resource references between Kubernetes and Cilium resources successful');
+      console.log(
+        '✅ Cross-resource references between Kubernetes and Cilium resources successful'
+      );
     });
 
     it('should handle dependency resolution with multiple Cilium policies', async () => {
@@ -168,14 +243,14 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
       const MultiPolicyAppSpec = type({
         name: 'string',
         tier: 'string',
-        enableGlobalPolicy: 'boolean'
+        enableGlobalPolicy: 'boolean',
       });
 
       const MultiPolicyAppStatus = type({
         ready: 'boolean',
         namespacePolicyName: 'string',
         clusterPolicyName: 'string',
-        policiesApplied: 'number'
+        policiesApplied: 'number',
       });
 
       const multiPolicyComposition = kubernetesComposition(
@@ -184,7 +259,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'MultiPolicyApp',
           spec: MultiPolicyAppSpec,
-          status: MultiPolicyAppStatus
+          status: MultiPolicyAppStatus,
         },
         (spec) => {
           // Create namespace-scoped policy
@@ -193,53 +268,65 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
             kind: 'CiliumNetworkPolicy',
             metadata: {
               name: `${spec.name}-namespace-policy`,
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { 
+                matchLabels: {
                   app: spec.name,
-                  tier: spec.tier
-                }
+                  tier: spec.tier,
+                },
               },
-              ingress: [{
-                fromEndpoints: [{
-                  matchLabels: { tier: spec.tier }
-                }],
-                toPorts: [{
-                  ports: [{ port: '8080', protocol: 'TCP' }]
-                }]
-              }]
+              ingress: [
+                {
+                  fromEndpoints: [
+                    {
+                      matchLabels: { tier: spec.tier },
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '8080', protocol: 'TCP' }],
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'namespacePolicy'
+            id: 'namespacePolicy',
           });
 
           // Conditionally create cluster-wide policy
-          const _clusterPolicy = spec.enableGlobalPolicy ? ciliumClusterwideNetworkPolicy({
-            apiVersion: 'cilium.io/v2',
-            kind: 'CiliumClusterwideNetworkPolicy',
-            metadata: {
-              name: `${spec.name}-cluster-policy`
-            },
-            spec: {
-              endpointSelector: {
-                matchLabels: { app: spec.name }
-              },
-              ingress: [{
-                fromEntities: ['host'],
-                toPorts: [{
-                  ports: [{ port: '9090', protocol: 'TCP' }]
-                }]
-              }]
-            },
-            id: 'clusterPolicy'
-          }) : null;
+          const _clusterPolicy = spec.enableGlobalPolicy
+            ? ciliumClusterwideNetworkPolicy({
+                apiVersion: 'cilium.io/v2',
+                kind: 'CiliumClusterwideNetworkPolicy',
+                metadata: {
+                  name: `${spec.name}-cluster-policy`,
+                },
+                spec: {
+                  endpointSelector: {
+                    matchLabels: { app: spec.name },
+                  },
+                  ingress: [
+                    {
+                      fromEntities: ['host'],
+                      toPorts: [
+                        {
+                          ports: [{ port: '9090', protocol: 'TCP' }],
+                        },
+                      ],
+                    },
+                  ],
+                },
+                id: 'clusterPolicy',
+              })
+            : null;
 
           return {
             ready: true, // Static value for integration test
             namespacePolicyName: `${spec.name}-namespace-policy`,
             clusterPolicyName: spec.enableGlobalPolicy ? `${spec.name}-cluster-policy` : 'none',
-            policiesApplied: spec.enableGlobalPolicy ? 2 : 1
+            policiesApplied: spec.enableGlobalPolicy ? 2 : 1,
           };
         }
       );
@@ -254,7 +341,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
       const deploymentResult = await kroFactory.deploy({
         name: 'test-multi-policy',
         tier: 'backend',
-        enableGlobalPolicy: true
+        enableGlobalPolicy: true,
       });
 
       expect(deploymentResult).toBeDefined();
@@ -263,30 +350,30 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
       expect(deploymentResult.spec.enableGlobalPolicy).toBe(true);
 
       // Verify dependency resolution worked correctly
-      expect(deploymentResult.status.namespacePolicyName).toBe('test-multi-policy-namespace-policy');
+      expect(deploymentResult.status.namespacePolicyName).toBe(
+        'test-multi-policy-namespace-policy'
+      );
       expect(deploymentResult.status.clusterPolicyName).toBe('test-multi-policy-cluster-policy');
       expect(deploymentResult.status.policiesApplied).toBe(2);
 
       console.log('✅ Dependency resolution with multiple Cilium policies successful');
     });
-
   });
 
   describe('Serialization and YAML Generation', () => {
-    
     it('should generate valid YAML for complex Cilium compositions', async () => {
       console.log('🚀 Testing YAML generation for complex Cilium compositions...');
 
       const ComplexNetworkingSpec = type({
         appName: 'string',
         environment: 'string',
-        securityLevel: 'string'
+        securityLevel: 'string',
       });
 
       const ComplexNetworkingStatus = type({
         ready: 'boolean',
         securityPoliciesCount: 'number',
-        networkingConfigured: 'boolean'
+        networkingConfigured: 'boolean',
       });
 
       const complexNetworkingComposition = kubernetesComposition(
@@ -295,7 +382,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'ComplexNetworking',
           spec: ComplexNetworkingSpec,
-          status: ComplexNetworkingStatus
+          status: ComplexNetworkingStatus,
         },
         (spec) => {
           // Create multiple network policies with different configurations
@@ -304,31 +391,39 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
             kind: 'CiliumNetworkPolicy',
             metadata: {
               name: `${spec.appName}-ingress-policy`,
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { 
+                matchLabels: {
                   app: spec.appName,
-                  environment: spec.environment
-                }
+                  environment: spec.environment,
+                },
               },
-              ingress: [{
-                fromEndpoints: [{
-                  matchLabels: { role: 'frontend' }
-                }],
-                toPorts: [{
-                  ports: [{ port: '8080', protocol: 'TCP' }],
-                  rules: {
-                    http: [{
-                      method: 'GET',
-                      path: '/api/.*'
-                    }]
-                  }
-                }]
-              }]
+              ingress: [
+                {
+                  fromEndpoints: [
+                    {
+                      matchLabels: { role: 'frontend' },
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '8080', protocol: 'TCP' }],
+                      rules: {
+                        http: [
+                          {
+                            method: 'GET',
+                            path: '/api/.*',
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'ingressPolicy'
+            id: 'ingressPolicy',
           });
 
           const _egressPolicy = ciliumNetworkPolicy({
@@ -336,68 +431,90 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
             kind: 'CiliumNetworkPolicy',
             metadata: {
               name: `${spec.appName}-egress-policy`,
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { 
+                matchLabels: {
                   app: spec.appName,
-                  environment: spec.environment
-                }
+                  environment: spec.environment,
+                },
               },
-              egress: [{
-                toEndpoints: [{
-                  matchLabels: { role: 'database' }
-                }],
-                toPorts: [{
-                  ports: [{ port: '5432', protocol: 'TCP' }]
-                }]
-              }, {
-                toFQDNs: [{
-                  matchPattern: '*.amazonaws.com'
-                }],
-                toPorts: [{
-                  ports: [{ port: '443', protocol: 'TCP' }]
-                }]
-              }]
+              egress: [
+                {
+                  toEndpoints: [
+                    {
+                      matchLabels: { role: 'database' },
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '5432', protocol: 'TCP' }],
+                    },
+                  ],
+                },
+                {
+                  toFQDNs: [
+                    {
+                      matchPattern: '*.amazonaws.com',
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '443', protocol: 'TCP' }],
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'egressPolicy'
+            id: 'egressPolicy',
           });
 
           // Conditional cluster-wide policy for high security environments
-          const _clusterSecurityPolicy = spec.securityLevel === 'high' ? ciliumClusterwideNetworkPolicy({
-            apiVersion: 'cilium.io/v2',
-            kind: 'CiliumClusterwideNetworkPolicy',
-            metadata: {
-              name: `${spec.appName}-cluster-security`
-            },
-            spec: {
-              endpointSelector: {
-                matchLabels: { 
-                  app: spec.appName,
-                  'security-level': 'high'
-                }
-              },
-              ingress: [{
-                fromEntities: ['host'],
-                toPorts: [{
-                  ports: [{ port: '22', protocol: 'TCP' }]
-                }]
-              }],
-              egress: [{
-                toEntities: ['world'],
-                toPorts: [{
-                  ports: [{ port: '443', protocol: 'TCP' }]
-                }]
-              }]
-            },
-            id: 'clusterSecurityPolicy'
-          }) : null;
+          const _clusterSecurityPolicy =
+            spec.securityLevel === 'high'
+              ? ciliumClusterwideNetworkPolicy({
+                  apiVersion: 'cilium.io/v2',
+                  kind: 'CiliumClusterwideNetworkPolicy',
+                  metadata: {
+                    name: `${spec.appName}-cluster-security`,
+                  },
+                  spec: {
+                    endpointSelector: {
+                      matchLabels: {
+                        app: spec.appName,
+                        'security-level': 'high',
+                      },
+                    },
+                    ingress: [
+                      {
+                        fromEntities: ['host'],
+                        toPorts: [
+                          {
+                            ports: [{ port: '22', protocol: 'TCP' }],
+                          },
+                        ],
+                      },
+                    ],
+                    egress: [
+                      {
+                        toEntities: ['world'],
+                        toPorts: [
+                          {
+                            ports: [{ port: '443', protocol: 'TCP' }],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                  id: 'clusterSecurityPolicy',
+                })
+              : null;
 
           return {
             ready: true, // Static value for integration test
             securityPoliciesCount: 2, // Always 2 for this test (ingress + egress policies)
-            networkingConfigured: true
+            networkingConfigured: true,
           };
         }
       );
@@ -420,7 +537,7 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
       const deploymentResult = await directFactory.deploy({
         appName: 'complex-app',
         environment: 'production',
-        securityLevel: 'high'
+        securityLevel: 'high',
       });
 
       expect(deploymentResult).toBeDefined();
@@ -428,55 +545,63 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
       expect(deploymentResult.status.networkingConfigured).toBe(true);
 
       console.log('✅ YAML generation for complex Cilium compositions successful');
-    });
-
+    }, 600000); // 10 minutes - CiliumNetworkPolicy deployment can be slow under contention
   });
 
   describe('TypeKro Feature Integration', () => {
-    
     it('should validate TypeScript type safety and IDE experience', () => {
       console.log('🧪 Testing TypeScript type safety and IDE experience...');
 
       // Test that all factory functions are properly typed
       const networkPolicy = ciliumNetworkPolicy({
-            apiVersion: 'cilium.io/v2',
-            kind: 'CiliumNetworkPolicy',
+        apiVersion: 'cilium.io/v2',
+        kind: 'CiliumNetworkPolicy',
         metadata: {
           name: 'test-policy',
-          namespace: 'default'
+          namespace: 'default',
         },
         spec: {
           endpointSelector: {
-            matchLabels: { app: 'test' }
+            matchLabels: { app: 'test' },
           },
-          ingress: [{
-            fromEndpoints: [{
-              matchLabels: { role: 'frontend' }
-            }],
-            toPorts: [{
-              ports: [{ port: '8080', protocol: 'TCP' }]
-            }]
-          }]
-        }
+          ingress: [
+            {
+              fromEndpoints: [
+                {
+                  matchLabels: { role: 'frontend' },
+                },
+              ],
+              toPorts: [
+                {
+                  ports: [{ port: '8080', protocol: 'TCP' }],
+                },
+              ],
+            },
+          ],
+        },
       });
 
       const clusterPolicy = ciliumClusterwideNetworkPolicy({
-            apiVersion: 'cilium.io/v2',
-            kind: 'CiliumClusterwideNetworkPolicy',
+        apiVersion: 'cilium.io/v2',
+        kind: 'CiliumClusterwideNetworkPolicy',
         metadata: {
-          name: 'test-cluster-policy'
+          name: 'test-cluster-policy',
         },
         spec: {
           endpointSelector: {
-            matchLabels: { tier: 'system' }
+            matchLabels: { tier: 'system' },
           },
-          ingress: [{
-            fromEntities: ['host'],
-            toPorts: [{
-              ports: [{ port: '9090', protocol: 'TCP' }]
-            }]
-          }]
-        }
+          ingress: [
+            {
+              fromEntities: ['host'],
+              toPorts: [
+                {
+                  ports: [{ port: '9090', protocol: 'TCP' }],
+                },
+              ],
+            },
+          ],
+        },
       });
 
       // Verify type safety - these should all be properly typed
@@ -493,7 +618,5 @@ describeOrSkip('Cilium Cross-Resource Integration Tests', () => {
 
       console.log('✅ TypeScript type safety and IDE experience validation successful');
     });
-
   });
-
 });

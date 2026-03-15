@@ -22,7 +22,7 @@ function createMockKubernetesRef<T>(
     resourceId,
     fieldPath,
     _type: type,
-  } as any;
+  } as unknown as KubernetesRef<T>;
 }
 
 describe('Context-Aware Conversion', () => {

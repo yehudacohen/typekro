@@ -144,6 +144,8 @@ export interface APISixBootstrapConfig {
   // etcd configuration
   etcd?: {
     enabled?: boolean;
+    /** Number of etcd replicas. Defaults to 1 for single-node clusters. */
+    replicaCount?: number;
     image?: {
       repository?: string;
       tag?: string;
@@ -440,6 +442,8 @@ export interface APISixHelmValues {
   // etcd configuration
   etcd?: {
     enabled?: boolean;
+    /** Number of etcd replicas. */
+    replicaCount?: number;
     image?: {
       repository?: string;
       tag?: string;

@@ -10,6 +10,7 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { copyResourceMetadata } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { SerializationContext } from '../types/serialization.js';
 
@@ -29,62 +30,6 @@ import type { SerializationContext } from '../types/serialization.js';
 export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
   const resourceId = ref.resourceId === '__schema__' ? 'schema' : ref.resourceId;
   return `${resourceId}.${ref.fieldPath}`;
-}
-
-// ---------------------------------------------------------------------------
-// Template → CEL concatenation
-// ---------------------------------------------------------------------------
-
-/**
- * Convert a template string with `${...}` placeholders to a CEL concatenation
- * expression.
- *
- * @example
- * ```
- * convertTemplateToCelConcat("https://${schema.spec.hostname}")
- * // → '"https://" + schema.spec.hostname'
- * ```
- */
-function convertTemplateToCelConcat(templateStr: string): string {
-  const parts: string[] = [];
-  let currentPos = 0;
-
-  // Match ${...} placeholders, but skip escaped \${...} sequences
-  const regex = /(?<!\\)\$\{([^}]+)\}/g;
-  let match: RegExpExecArray | null = regex.exec(templateStr);
-
-  while (match !== null) {
-    if (match.index > currentPos) {
-      const literalPart = templateStr.slice(currentPos, match.index);
-      if (literalPart) {
-        parts.push(`"${escapeLiteralForCel(literalPart)}"`);
-      }
-    }
-
-    parts.push(match[1] || '');
-    currentPos = match.index + match[0].length;
-    match = regex.exec(templateStr);
-  }
-
-  if (currentPos < templateStr.length) {
-    const literalPart = templateStr.slice(currentPos);
-    if (literalPart) {
-      parts.push(`"${escapeLiteralForCel(literalPart)}"`);
-    }
-  }
-
-  return parts.join(' + ');
-}
-
-/**
- * Escape a literal string part for safe embedding in a CEL string literal.
- * Handles backslashes, double quotes, and escaped ${ sequences.
- */
-function escapeLiteralForCel(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\') // Escape backslashes first
-    .replace(/"/g, '\\"') // Escape double quotes
-    .replace(/\\\\\$\{/g, '${'); // Restore \${ → ${ (remove the escape marker, now it's in a CEL string literal)
 }
 
 // ---------------------------------------------------------------------------
@@ -185,9 +130,10 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
 
   if (isCelExpression(obj)) {
     if (obj.__isTemplate) {
-      const templateExpr = obj.expression;
-      const celExpression = convertTemplateToCelConcat(templateExpr);
-      return `\${${celExpression}}`;
+      // Template expressions from Cel.template() are already in Kro's mixed-template
+      // format (e.g. "http://${schema.spec.name}.${service.metadata.namespace}").
+      // Pass them through as-is — do NOT convert to CEL concat or re-wrap.
+      return obj.expression;
     }
     return `\${${obj.expression}}`;
   }
@@ -210,16 +156,9 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
       result[key] = processResourceReferences(value, context);
     }
 
-    // Preserve the readinessEvaluator function if it exists (non-enumerable)
-    const originalObj = obj as { readinessEvaluator?: (...args: unknown[]) => unknown };
-    if (originalObj.readinessEvaluator && typeof originalObj.readinessEvaluator === 'function') {
-      Object.defineProperty(result, 'readinessEvaluator', {
-        value: originalObj.readinessEvaluator,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
-    }
+    // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
+    // Also migrates legacy non-enumerable properties from source
+    copyResourceMetadata(obj, result);
 
     return result;
   }
@@ -248,8 +187,10 @@ export function serializeStatusMappingsToCel(
 
     if (isCelExpression(value)) {
       if (value.__isTemplate) {
-        const celExpression = convertTemplateToCelConcat(value.expression);
-        return `\${${celExpression}}`;
+        // Template expressions from Cel.template() are already in Kro's mixed-template
+        // format (e.g. "http://${schema.spec.name}.${service.metadata.namespace}").
+        // Pass them through as-is — do NOT convert to CEL concat or re-wrap.
+        return value.expression;
       }
       return `\${${value.expression}}`;
     }

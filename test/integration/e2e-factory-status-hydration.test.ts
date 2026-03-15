@@ -364,10 +364,10 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
 
     it('should handle null/undefined status mappings', () => {
       const { staticFields: staticNull, dynamicFields: dynamicNull } = separateStatusFields(
-        null as any
+        null as unknown as Record<string, unknown>
       );
       const { staticFields: staticUndef, dynamicFields: dynamicUndef } = separateStatusFields(
-        undefined as any
+        undefined as unknown as Record<string, unknown>
       );
 
       expect(Object.keys(staticNull)).toEqual([]);

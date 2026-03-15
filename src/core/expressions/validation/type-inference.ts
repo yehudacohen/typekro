@@ -6,145 +6,42 @@
  * to determine their result types and validates type compatibility.
  */
 
-import { ensureError, TypeKroError } from '../../errors.js';
-import { getComponentLogger } from '../../logging/index.js';
+import { ensureError } from '../../errors.js';
 import type { CelExpression } from '../../types/common.js';
-import type { Enhanced } from '../../types/kubernetes.js';
-import type { SchemaProxy } from '../../types/serialization.js';
-import { type TypeInfo, TypeValidationError, type TypeValidationResult } from './type-safety.js';
+import { inferResourceFieldType, inferSchemaFieldType } from './kubernetes-field-types.js';
+import type {
+  CelFunctionSignature,
+  CelOperatorSignature,
+  CelTypeInferenceResult,
+  ExpressionAnalysisResult,
+  TypeInferenceContext,
+  TypeInferenceMetadata,
+} from './type-inference-types.js';
+import { TypeInferenceError, TypeInferenceWarning } from './type-inference-types.js';
+import type { TypeInfo, TypeValidationResult } from './type-safety.js';
+import { TypeValidationError } from './type-safety.js';
 
-/**
- * CEL expression type inference result
- */
-export interface CelTypeInferenceResult {
-  /** Inferred result type of the CEL expression */
-  resultType: TypeInfo;
-
-  /** Whether the type inference was successful */
-  success: boolean;
-
-  /** Type inference errors */
-  errors: TypeInferenceError[];
-
-  /** Type inference warnings */
-  warnings: TypeInferenceWarning[];
-
-  /** Confidence level of the inference (0-1) */
-  confidence: number;
-
-  /** Additional type information */
-  metadata: TypeInferenceMetadata;
-}
-
-/**
- * Type inference error
- */
-export class TypeInferenceError extends TypeKroError {
-  constructor(
-    message: string,
-    public readonly celExpression: string,
-    public readonly location?: { start: number; end: number }
-  ) {
-    super(message, 'TYPE_INFERENCE_ERROR', {
-      celExpression,
-      location,
-    });
-    this.name = 'TypeInferenceError';
-  }
-
-  static forUnknownFunction(
-    celExpression: string,
-    functionName: string,
-    location?: { start: number; end: number }
-  ): TypeInferenceError {
-    return new TypeInferenceError(`Unknown CEL function: ${functionName}`, celExpression, location);
-  }
-
-  static forIncompatibleOperands(
-    celExpression: string,
-    operator: string,
-    leftType: TypeInfo,
-    rightType: TypeInfo,
-    location?: { start: number; end: number }
-  ): TypeInferenceError {
-    return new TypeInferenceError(
-      `Incompatible operands for operator '${operator}': ${leftType.typeName} and ${rightType.typeName}`,
-      celExpression,
-      location
-    );
-  }
-
-  static forUnresolvableReference(
-    celExpression: string,
-    reference: string,
-    location?: { start: number; end: number }
-  ): TypeInferenceError {
-    return new TypeInferenceError(
-      `Cannot resolve reference: ${reference}`,
-      celExpression,
-      location
-    );
-  }
-}
-
-/**
- * Type inference warning
- */
-export class TypeInferenceWarning {
-  constructor(
-    public readonly message: string,
-    public readonly celExpression: string,
-    public readonly location?: { start: number; end: number }
-  ) {}
-
-  static forPotentialNullDereference(
-    celExpression: string,
-    reference: string,
-    location?: { start: number; end: number }
-  ): TypeInferenceWarning {
-    return new TypeInferenceWarning(
-      `Potential null dereference: ${reference}`,
-      celExpression,
-      location
-    );
-  }
-
-  static forImplicitTypeConversion(
-    celExpression: string,
-    fromType: string,
-    toType: string,
-    location?: { start: number; end: number }
-  ): TypeInferenceWarning {
-    return new TypeInferenceWarning(
-      `Implicit type conversion from ${fromType} to ${toType}`,
-      celExpression,
-      location
-    );
-  }
-}
-
-/**
- * Type inference metadata
- */
-export interface TypeInferenceMetadata {
-  /** CEL functions used in the expression */
-  functionsUsed: string[];
-
-  /** Resource references found in the expression */
-  resourceReferences: string[];
-
-  /** Schema references found in the expression */
-  schemaReferences: string[];
-
-  /** Whether the expression uses optional chaining */
-  usesOptionalChaining: boolean;
-
-  /** Whether the expression can return null */
-  canReturnNull: boolean;
-
-  /** Complexity score of the expression (0-10) */
-  complexityScore: number;
-}
+export {
+  getMetadataFieldType,
+  getSpecFieldType,
+  getStatusFieldType,
+  inferResourceFieldType,
+  inferSchemaFieldType,
+  inferTypeFromValue,
+} from './kubernetes-field-types.js';
+export type {
+  CelFunctionSignature,
+  CelOperatorSignature,
+  CelTypeInferenceResult,
+  ExpressionAnalysisResult,
+  TypeInferenceContext,
+  TypeInferenceMetadata,
+} from './type-inference-types.js';
+// Re-export everything from sub-modules for backward compatibility
+export {
+  TypeInferenceError,
+  TypeInferenceWarning,
+} from './type-inference-types.js';
 
 /**
  * CEL type inference engine
@@ -506,8 +403,8 @@ export class CelTypeInferenceEngine {
       };
     }
 
-    // Infer field type
-    const fieldType = this.inferResourceFieldType(resource, fieldPath);
+    // Infer field type using standalone function
+    const fieldType = inferResourceFieldType(resource, fieldPath);
 
     // Check for optional chaining
     if (reference.includes('?')) {
@@ -564,8 +461,8 @@ export class CelTypeInferenceEngine {
       };
     }
 
-    // Infer schema field type
-    const fieldType = this.inferSchemaFieldType(context.schemaProxy, fieldPath);
+    // Infer schema field type using standalone function
+    const fieldType = inferSchemaFieldType(context.schemaProxy, fieldPath);
 
     return {
       type: fieldType,
@@ -828,244 +725,6 @@ export class CelTypeInferenceEngine {
     return sourceType.typeName !== targetType.typeName && targetType.typeName !== 'any';
   }
 
-  private inferResourceFieldType(resource: Enhanced<any, any>, fieldPath: string): TypeInfo {
-    try {
-      const parts = fieldPath.split('.');
-
-      // Handle common Kubernetes resource field patterns
-      if (parts[0] === 'metadata') {
-        return this.getMetadataFieldType(parts.slice(1));
-      }
-
-      if (parts[0] === 'spec') {
-        return this.getSpecFieldType(resource, parts.slice(1));
-      }
-
-      if (parts[0] === 'status') {
-        return this.getStatusFieldType(resource, parts.slice(1));
-      }
-
-      return { typeName: 'unknown', optional: true, nullable: false };
-    } catch (error: unknown) {
-      const logger = getComponentLogger('type-inference');
-      logger.debug('Failed to infer resource field type, returning unknown', { err: error });
-      return { typeName: 'unknown', optional: true, nullable: false };
-    }
-  }
-
-  private getMetadataFieldType(fieldParts: string[]): TypeInfo {
-    const fieldName = fieldParts[0];
-
-    if (!fieldName) {
-      return { typeName: 'unknown', optional: true, nullable: false };
-    }
-
-    // Common metadata fields
-    const metadataTypes: Record<string, TypeInfo> = {
-      name: { typeName: 'string', optional: false, nullable: false },
-      namespace: { typeName: 'string', optional: true, nullable: false },
-      labels: { typeName: 'Record<string, string>', optional: true, nullable: false },
-      annotations: { typeName: 'Record<string, string>', optional: true, nullable: false },
-      uid: { typeName: 'string', optional: true, nullable: false },
-      resourceVersion: { typeName: 'string', optional: true, nullable: false },
-      generation: { typeName: 'number', optional: true, nullable: false },
-      creationTimestamp: { typeName: 'string', optional: true, nullable: false },
-    };
-
-    if (fieldName in metadataTypes) {
-      const baseType = metadataTypes[fieldName];
-      if (!baseType) {
-        return { typeName: 'string', optional: true, nullable: false };
-      }
-
-      // Handle nested access (e.g., labels.app)
-      if (fieldParts.length > 1) {
-        if (baseType.typeName.startsWith('Record<')) {
-          return { typeName: 'string', optional: true, nullable: false };
-        }
-      }
-
-      return baseType;
-    }
-
-    return { typeName: 'string', optional: true, nullable: false };
-  }
-
-  private getSpecFieldType(resource: Enhanced<any, any>, fieldParts: string[]): TypeInfo {
-    const resourceKind = resource.constructor.name;
-    const fieldName = fieldParts[0];
-
-    if (!fieldName) {
-      return { typeName: 'unknown', optional: true, nullable: false };
-    }
-
-    // Common spec fields by resource type
-    const specFieldTypes: Record<string, Record<string, TypeInfo>> = {
-      Deployment: {
-        replicas: { typeName: 'number', optional: true, nullable: false },
-        selector: { typeName: 'object', optional: false, nullable: false },
-        template: { typeName: 'object', optional: false, nullable: false },
-        strategy: { typeName: 'object', optional: true, nullable: false },
-      },
-      Service: {
-        type: { typeName: 'string', optional: true, nullable: false },
-        ports: { typeName: 'array', optional: false, nullable: false },
-        selector: { typeName: 'Record<string, string>', optional: true, nullable: false },
-        clusterIP: { typeName: 'string', optional: true, nullable: false },
-      },
-      ConfigMap: {
-        data: { typeName: 'Record<string, string>', optional: true, nullable: false },
-        binaryData: { typeName: 'Record<string, string>', optional: true, nullable: false },
-      },
-    };
-
-    const resourceFields = specFieldTypes[resourceKind];
-    if (resourceFields && fieldName in resourceFields) {
-      const baseType = resourceFields[fieldName];
-
-      // Handle nested access
-      if (fieldParts.length > 1 && baseType) {
-        if (baseType.typeName.startsWith('Record<')) {
-          return { typeName: 'string', optional: true, nullable: false };
-        }
-        if (baseType.typeName === 'array') {
-          return { typeName: 'object', optional: true, nullable: false };
-        }
-        if (baseType.typeName === 'object') {
-          return { typeName: 'unknown', optional: true, nullable: false };
-        }
-      }
-
-      return baseType || { typeName: 'unknown', optional: true, nullable: false };
-    }
-
-    return { typeName: 'unknown', optional: true, nullable: false };
-  }
-
-  private getStatusFieldType(resource: Enhanced<any, any>, fieldParts: string[]): TypeInfo {
-    const resourceKind = resource.constructor.name;
-    const fieldName = fieldParts[0];
-
-    if (!fieldName) {
-      return { typeName: 'unknown', optional: true, nullable: false };
-    }
-
-    // Common status fields by resource type
-    const statusFieldTypes: Record<string, Record<string, TypeInfo>> = {
-      Deployment: {
-        replicas: { typeName: 'number', optional: true, nullable: false },
-        readyReplicas: { typeName: 'number', optional: true, nullable: false },
-        availableReplicas: { typeName: 'number', optional: true, nullable: false },
-        unavailableReplicas: { typeName: 'number', optional: true, nullable: false },
-        updatedReplicas: { typeName: 'number', optional: true, nullable: false },
-        conditions: { typeName: 'array', optional: true, nullable: false },
-        observedGeneration: { typeName: 'number', optional: true, nullable: false },
-      },
-      Service: {
-        loadBalancer: { typeName: 'object', optional: true, nullable: false },
-        conditions: { typeName: 'array', optional: true, nullable: false },
-      },
-      Pod: {
-        phase: { typeName: 'string', optional: true, nullable: false },
-        conditions: { typeName: 'array', optional: true, nullable: false },
-        hostIP: { typeName: 'string', optional: true, nullable: false },
-        podIP: { typeName: 'string', optional: true, nullable: false },
-        startTime: { typeName: 'string', optional: true, nullable: false },
-        containerStatuses: { typeName: 'array', optional: true, nullable: false },
-      },
-    };
-
-    const resourceFields = statusFieldTypes[resourceKind];
-    if (resourceFields && fieldName in resourceFields) {
-      const baseType = resourceFields[fieldName];
-
-      // Handle nested access
-      if (fieldParts.length > 1 && baseType) {
-        if (baseType.typeName === 'object') {
-          // Handle specific nested objects
-          if (fieldName === 'loadBalancer' && fieldParts[1] === 'ingress') {
-            return { typeName: 'array', optional: true, nullable: false };
-          }
-          return { typeName: 'unknown', optional: true, nullable: false };
-        }
-        if (baseType.typeName === 'array') {
-          // Array access like conditions[0] or length
-          if (fieldParts[1] === 'length') {
-            return { typeName: 'number', optional: false, nullable: false };
-          }
-          return { typeName: 'object', optional: true, nullable: false };
-        }
-      }
-
-      return baseType || { typeName: 'unknown', optional: true, nullable: true };
-    }
-
-    // Status fields are generally optional and may be null during resource creation
-    return { typeName: 'unknown', optional: true, nullable: true };
-  }
-
-  private inferSchemaFieldType(
-    schemaProxy: SchemaProxy<any, any> | undefined,
-    fieldPath: string
-  ): TypeInfo {
-    if (!schemaProxy) {
-      return { typeName: 'unknown', optional: false, nullable: false };
-    }
-
-    try {
-      // Extract the field from the schema proxy
-      const parts = fieldPath.split('.');
-      let current: unknown = schemaProxy;
-
-      for (const part of parts) {
-        if (current && typeof current === 'object' && part in current) {
-          current = (current as Record<string, unknown>)[part];
-        } else {
-          return { typeName: 'unknown', optional: true, nullable: false };
-        }
-      }
-
-      // Infer type from the schema field
-      if (current !== undefined) {
-        return this.inferTypeFromValue(current);
-      }
-
-      return { typeName: 'unknown', optional: true, nullable: false };
-    } catch (error: unknown) {
-      const logger = getComponentLogger('type-inference');
-      logger.debug('Failed to infer schema field type, returning unknown', { err: error });
-      return { typeName: 'unknown', optional: true, nullable: false };
-    }
-  }
-
-  private inferTypeFromValue(value: unknown): TypeInfo {
-    if (value === null) {
-      return { typeName: 'null', optional: false, nullable: true };
-    }
-
-    if (value === undefined) {
-      return { typeName: 'undefined', optional: true, nullable: false };
-    }
-
-    const type = typeof value;
-
-    switch (type) {
-      case 'string':
-        return { typeName: 'string', optional: false, nullable: false };
-      case 'number':
-        return { typeName: 'number', optional: false, nullable: false };
-      case 'boolean':
-        return { typeName: 'boolean', optional: false, nullable: false };
-      case 'object':
-        if (Array.isArray(value)) {
-          return { typeName: 'array', optional: false, nullable: false };
-        }
-        return { typeName: 'object', optional: false, nullable: false };
-      default:
-        return { typeName: 'unknown', optional: false, nullable: false };
-    }
-  }
-
   private unifyTypes(type1: TypeInfo, type2: TypeInfo): TypeInfo {
     if (type1.typeName === type2.typeName) return type1;
 
@@ -1110,46 +769,4 @@ export class CelTypeInferenceEngine {
       metadata.usesOptionalChaining = true;
     }
   }
-}
-
-/**
- * Type inference context
- */
-export interface TypeInferenceContext {
-  /** Available resources for type lookup */
-  availableResources: Record<string, Enhanced<any, any>>;
-
-  /** Schema proxy for schema type lookup */
-  schemaProxy?: SchemaProxy<any, any>;
-
-  /** Factory type affects available functions */
-  factoryType: 'direct' | 'kro';
-}
-
-/**
- * Expression analysis result
- */
-interface ExpressionAnalysisResult {
-  type: TypeInfo;
-  errors: TypeInferenceError[];
-  warnings: TypeInferenceWarning[];
-  confidence: number;
-  metadata: TypeInferenceMetadata;
-}
-
-/**
- * CEL function signature
- */
-interface CelFunctionSignature {
-  parameters: TypeInfo[];
-  returnType: TypeInfo;
-}
-
-/**
- * CEL operator signature
- */
-interface CelOperatorSignature {
-  leftType: TypeInfo;
-  rightType: TypeInfo;
-  returnType: TypeInfo;
 }

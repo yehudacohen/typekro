@@ -729,6 +729,6 @@ describeOrSkip('Kro v0.8.x Features E2E Integration Tests', () => {
 
         await factory.deleteInstance('test-decl');
       });
-    });
+    }, 600000); // 10 minutes - Kro reconciliation + deployment readiness under contention
   });
 });

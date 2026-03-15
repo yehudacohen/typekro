@@ -15,6 +15,27 @@ import { vi } from 'vitest';
 import { EventMonitor } from '../../src/core/deployment/event-monitor.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
 
+/**
+ * Type-safe access to EventMonitor private properties for testing.
+ */
+function monitorInternals(monitor: EventMonitor) {
+  const m = monitor as unknown as Record<string, unknown>;
+  return {
+    get isMonitoring(): boolean {
+      return m.isMonitoring as boolean;
+    },
+    get watchConnections(): { size: number } {
+      return m.watchConnections as { size: number };
+    },
+    get monitoredResources(): { size: number } {
+      return m.monitoredResources as { size: number };
+    },
+    get childDiscoveryTimeouts(): { size: number } {
+      return m.childDiscoveryTimeouts as { size: number };
+    },
+  };
+}
+
 describe('No Hang Integration Test', () => {
   let eventMonitor: EventMonitor;
   let mockK8sApi: k8s.CoreV1Api;
@@ -25,14 +46,14 @@ describe('No Hang Integration Test', () => {
     mockK8sApi = {
       getAPIResources: vi.fn().mockResolvedValue({ body: { resources: [] } }),
       listNamespacedEvent: vi.fn().mockResolvedValue({ body: { items: [] } }),
-    } as any;
+    } as unknown as k8s.CoreV1Api;
 
     mockKubeConfig = {
       makeApiClient: vi.fn().mockReturnValue(mockK8sApi),
       getCurrentContext: vi.fn().mockReturnValue('test-context'),
       getCurrentCluster: vi.fn().mockReturnValue({ server: 'https://test-server' }),
       getCurrentUser: vi.fn().mockReturnValue({ name: 'test-user' }),
-    } as any;
+    } as unknown as k8s.KubeConfig;
   });
 
   afterEach(() => {
@@ -65,7 +86,7 @@ describe('No Hang Integration Test', () => {
             return mockRequest;
           }),
         removeAllListeners: vi.fn(),
-      } as any as k8s.Watch;
+      } as unknown as k8s.Watch;
     };
 
     eventMonitor = new EventMonitor(
@@ -112,8 +133,9 @@ describe('No Hang Integration Test', () => {
     await eventMonitor.startMonitoring(testResources);
 
     // Verify monitoring is active
-    expect((eventMonitor as any).isMonitoring).toBe(true);
-    expect((eventMonitor as any).watchConnections.size).toBeGreaterThan(0);
+    const internals = monitorInternals(eventMonitor);
+    expect(internals.isMonitoring).toBe(true);
+    expect(internals.watchConnections.size).toBeGreaterThan(0);
 
     // Measure time for stopMonitoring - it should complete quickly
     const startTime = Date.now();
@@ -127,10 +149,10 @@ describe('No Hang Integration Test', () => {
     expect(cleanupTime).toBeLessThan(100);
 
     // Verify cleanup was thorough
-    expect((eventMonitor as any).isMonitoring).toBe(false);
-    expect((eventMonitor as any).watchConnections.size).toBe(0);
-    expect((eventMonitor as any).monitoredResources.size).toBe(0);
-    expect((eventMonitor as any).childDiscoveryTimeouts.size).toBe(0);
+    expect(internals.isMonitoring).toBe(false);
+    expect(internals.watchConnections.size).toBe(0);
+    expect(internals.monitoredResources.size).toBe(0);
+    expect(internals.childDiscoveryTimeouts.size).toBe(0);
   });
 
   it('should handle cleanup even when sockets are in various states', async () => {
@@ -165,7 +187,7 @@ describe('No Hang Integration Test', () => {
       return {
         watch: vi.fn().mockResolvedValue(mockRequest),
         removeAllListeners: vi.fn(),
-      } as any as k8s.Watch;
+      } as unknown as k8s.Watch;
     };
 
     eventMonitor = new EventMonitor(
@@ -199,8 +221,8 @@ describe('No Hang Integration Test', () => {
     await eventMonitor.stopMonitoring();
 
     // Verify complete cleanup
-    expect((eventMonitor as any).isMonitoring).toBe(false);
-    expect((eventMonitor as any).watchConnections.size).toBe(0);
+    expect(monitorInternals(eventMonitor).isMonitoring).toBe(false);
+    expect(monitorInternals(eventMonitor).watchConnections.size).toBe(0);
   });
 
   it('should be safe to call stopMonitoring before startMonitoring', async () => {
@@ -209,7 +231,7 @@ describe('No Hang Integration Test', () => {
     // Should be safe to call stopMonitoring on uninitialized monitor
     await eventMonitor.stopMonitoring();
 
-    expect((eventMonitor as any).isMonitoring).toBe(false);
+    expect(monitorInternals(eventMonitor).isMonitoring).toBe(false);
   });
 
   it('should be safe to call stopMonitoring after stopMonitoring', async () => {
@@ -221,7 +243,7 @@ describe('No Hang Integration Test', () => {
           on: vi.fn(),
         }),
         removeAllListeners: vi.fn(),
-      }) as any as k8s.Watch;
+      }) as unknown as k8s.Watch;
 
     eventMonitor = new EventMonitor(
       mockK8sApi,
@@ -250,6 +272,6 @@ describe('No Hang Integration Test', () => {
     // Should be safe to call stopMonitoring again after normal stop
     await eventMonitor.stopMonitoring();
 
-    expect((eventMonitor as any).isMonitoring).toBe(false);
+    expect(monitorInternals(eventMonitor).isMonitoring).toBe(false);
   });
 });

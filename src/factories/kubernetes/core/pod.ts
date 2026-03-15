@@ -6,7 +6,7 @@ import { createResource } from '../../shared.js';
 export type V1PodSpec = NonNullable<V1Pod['spec']>;
 export type V1PodStatus = NonNullable<V1Pod['status']>;
 
-export function pod(resource: V1Pod): Enhanced<V1PodSpec, V1PodStatus> {
+export function pod(resource: V1Pod & { id?: string }): Enhanced<V1PodSpec, V1PodStatus> {
   return createResource({
     ...resource,
     apiVersion: 'v1',

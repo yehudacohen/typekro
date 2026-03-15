@@ -15,6 +15,7 @@ import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Readiness Evaluation Integration', () => {
   // Create a minimal mock for testing readiness evaluation
@@ -50,8 +51,8 @@ describe('Readiness Evaluation Integration', () => {
     const enhanced = deployment(deploymentResource);
 
     // Verify the enhanced resource has a readiness evaluator
-    expect((enhanced as any).readinessEvaluator).toBeDefined();
-    expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+    expect(getReadinessEvaluator(enhanced)).toBeDefined();
+    expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
 
     // Create a mock deployed resource
     const deployedResource: DeployedResource = {
@@ -86,7 +87,10 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation directly
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as any).waitForResourceReady(deployedResource, options);
+    await (engine as unknown as Record<string, Function>).waitForResourceReady(
+      deployedResource,
+      options
+    );
 
     // Check that custom readiness evaluation was used
     const readyEvent = events.find((e) => e.type === 'resource-ready');
@@ -113,8 +117,8 @@ describe('Readiness Evaluation Integration', () => {
     const enhanced = service(serviceResource);
 
     // Verify the enhanced resource has a readiness evaluator
-    expect((enhanced as any).readinessEvaluator).toBeDefined();
-    expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+    expect(getReadinessEvaluator(enhanced)).toBeDefined();
+    expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
 
     // Create a mock deployed resource
     const deployedResource: DeployedResource = {
@@ -149,7 +153,10 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation directly
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as any).waitForResourceReady(deployedResource, options);
+    await (engine as unknown as Record<string, Function>).waitForResourceReady(
+      deployedResource,
+      options
+    );
 
     // Check that custom readiness evaluation was used
     const readyEvent = events.find((e) => e.type === 'resource-ready');
@@ -220,7 +227,10 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation directly
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as any).waitForResourceReady(deployedResource, options);
+    await (engine as unknown as Record<string, Function>).waitForResourceReady(
+      deployedResource,
+      options
+    );
 
     // Check that we got both status and ready events
     const statusEvents = events.filter((e) => e.type === 'resource-status');
@@ -282,12 +292,15 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation - should use default evaluator
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as any).waitForResourceReady(deployedResource, options);
+    await (engine as unknown as Record<string, Function>).waitForResourceReady(
+      deployedResource,
+      options
+    );
 
     // Should complete without errors using the default ConfigMap readiness evaluator
     const readyEvent = events.find((e) => e.type === 'resource-ready');
     expect(readyEvent).toBeDefined();
-    expect(readyEvent.message).toContain('ConfigMap is ready when created');
+    expect(readyEvent.message).toContain('ConfigMap is ready (configuration resource)');
   });
 
   it('should handle custom evaluator errors gracefully', async () => {
@@ -336,7 +349,10 @@ describe('Readiness Evaluation Integration', () => {
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
     await expect(
-      (engine as any).waitForResourceReady(deployedResource, options)
+      (engine as unknown as Record<string, Function>).waitForResourceReady(
+        deployedResource,
+        options
+      )
     ).rejects.toThrow();
 
     // Should have emitted a status event about the API error
@@ -363,7 +379,7 @@ describe('Readiness Evaluation Integration', () => {
     };
 
     const enhanced = deployment(deploymentResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     // Test not ready state
     const notReadyResult = evaluator({

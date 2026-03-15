@@ -3,7 +3,9 @@ import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
-export function serviceAccount(resource: V1ServiceAccount): Enhanced<V1ServiceAccount, unknown> {
+export function serviceAccount(
+  resource: V1ServiceAccount & { id?: string }
+): Enhanced<V1ServiceAccount, unknown> {
   return createResource<V1ServiceAccount, object>({
     ...resource,
     apiVersion: 'v1',

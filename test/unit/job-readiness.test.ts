@@ -236,7 +236,7 @@ describe('Job Factory with Readiness Evaluation', () => {
     const enhanced = job(resource);
 
     // Pass malformed resource that will cause an error
-    const malformedResource = null as any;
+    const malformedResource = null as unknown;
 
     const status = enhanced.readinessEvaluator!(malformedResource);
     expect(status.ready).toBe(false);

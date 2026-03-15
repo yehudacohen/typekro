@@ -7,6 +7,7 @@
  */
 
 import { TypeKroError } from '../errors.js';
+import { getReadinessEvaluator, setReadinessEvaluator } from '../metadata/index.js';
 import type { Enhanced } from '../types/kubernetes.js';
 import { ReadinessEvaluatorRegistry } from './registry.js';
 
@@ -22,8 +23,8 @@ import { ReadinessEvaluatorRegistry } from './registry.js';
  * @throws {TypeKroError} If no readiness evaluator can be resolved.
  */
 export function ensureReadinessEvaluator<T extends Enhanced<unknown, unknown>>(resource: T): T {
-  // First: Check if resource already has attached evaluator
-  if (typeof resource.readinessEvaluator === 'function') {
+  // First: Check if resource already has attached evaluator (via WeakMap metadata)
+  if (typeof getReadinessEvaluator(resource) === 'function') {
     return resource;
   }
 
@@ -32,12 +33,7 @@ export function ensureReadinessEvaluator<T extends Enhanced<unknown, unknown>>(r
   const evaluator = registry.getEvaluatorForKind(resource.kind);
 
   if (evaluator) {
-    Object.defineProperty(resource, 'readinessEvaluator', {
-      value: evaluator,
-      enumerable: false,
-      configurable: true,
-      writable: false,
-    });
+    setReadinessEvaluator(resource, evaluator);
     return resource;
   }
 

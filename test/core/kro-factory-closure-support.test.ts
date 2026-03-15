@@ -4,14 +4,18 @@
  */
 
 import { beforeAll, describe, expect, it } from 'bun:test';
+import type { KubeConfig, V1Deployment } from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { toResourceGraph } from '../../src/core/serialization/core.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 import { yamlDirectory, yamlFile } from '../../src/factories/kubernetes/yaml/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable,  } from '../integration/shared-kubeconfig.js';
+import {
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from '../integration/shared-kubeconfig.js';
 
 describe('KroResourceFactory Closure Support', () => {
-  let kubeConfig: any;
+  let kubeConfig: KubeConfig | undefined;
 
   beforeAll(async () => {
     if (isClusterAvailable()) {
@@ -22,7 +26,7 @@ describe('KroResourceFactory Closure Support', () => {
         makeApiClient: () => null,
         getCurrentContext: () => 'mock-context',
         getCurrentCluster: () => ({ server: 'mock-server' }),
-      };
+      } as unknown as KubeConfig;
     }
   });
 
@@ -68,7 +72,7 @@ describe('KroResourceFactory Closure Support', () => {
                 },
               },
             },
-          } as any),
+          } as unknown as V1Deployment),
         }),
         () => ({
           ready: true,
@@ -123,7 +127,7 @@ describe('KroResourceFactory Closure Support', () => {
                 },
               },
             },
-          } as any),
+          } as unknown as Parameters<typeof deployment>[0]),
         }),
         () => ({
           ready: true,
@@ -188,7 +192,7 @@ describe('KroResourceFactory Closure Support', () => {
                 },
               },
             },
-          } as any),
+          } as unknown as Parameters<typeof deployment>[0]),
         }),
         () => ({
           ready: true,
@@ -301,7 +305,7 @@ describe('KroResourceFactory Closure Support', () => {
                 },
               },
             },
-          } as any),
+          } as unknown as Parameters<typeof deployment>[0]),
         }),
         () => ({
           ready: true,

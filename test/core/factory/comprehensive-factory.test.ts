@@ -8,9 +8,8 @@
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { simple } from '../../../src/index.js';
-import { Cel } from '../../../src/core/references/index.js';
-import { toResourceGraph } from '../../../src/core/serialization/core.js';
+import type { Scope } from '../../../src/core/types/schema.js';
+import { Cel, simple, toResourceGraph } from '../../../src/index.js';
 
 // Mock alchemy scope for testing - simplified mock that doesn't fully implement Scope
 class MockAlchemyScope {
@@ -245,7 +244,7 @@ describe('Comprehensive Factory Tests', () => {
 
       const alchemyFactory = await graph.factory('direct', {
         namespace: 'test',
-        alchemyScope: mockAlchemyScope as any, // Mock scope for testing
+        alchemyScope: mockAlchemyScope as unknown as Scope, // Mock scope for testing
       });
 
       expect(alchemyFactory.isAlchemyManaged).toBe(true);
@@ -267,7 +266,7 @@ describe('Comprehensive Factory Tests', () => {
           replicas: 2,
           environment: 'production',
           // Missing required fields or invalid values would be caught here
-        } as any);
+        } as unknown as Parameters<typeof factory.toYaml>[0]);
 
         expect(typeof yaml).toBe('string');
       } catch (error) {
@@ -383,7 +382,7 @@ describe('Comprehensive Factory Tests', () => {
 
       const alchemyFactory = await graph.factory('kro', {
         namespace: 'test',
-        alchemyScope: mockAlchemyScope as any, // Mock scope for testing
+        alchemyScope: mockAlchemyScope as unknown as Scope, // Mock scope for testing
       });
 
       expect(alchemyFactory.isAlchemyManaged).toBe(true);
@@ -484,7 +483,7 @@ describe('Comprehensive Factory Tests', () => {
 
       const alchemyFactory = await graph.factory('direct', {
         namespace: 'test',
-        alchemyScope: mockAlchemyScope as any, // Mock scope for testing
+        alchemyScope: mockAlchemyScope as unknown as Scope, // Mock scope for testing
       });
 
       // Test deployment with alchemy (should fail gracefully in test environment)

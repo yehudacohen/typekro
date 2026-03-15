@@ -17,6 +17,7 @@
 import { type Options, Parser } from 'acorn';
 import type { Node as ESTreeNode } from 'estree';
 import { TypeKroError } from '../../errors.js';
+import { validateFnToStringEnvironment } from './fn-toString-self-test.js';
 
 /**
  * Custom error class for parser errors with enhanced information
@@ -149,6 +150,21 @@ export const DEFAULT_PARSER_OPTIONS: Options = {
 };
 
 /**
+ * Lazy one-time validation of fn.toString() environment.
+ *
+ * Called on the first parse operation to detect incompatible build configurations
+ * (mangling, dead code elimination, etc.) before they cause subtle analysis failures.
+ * Subsequent calls are no-ops.
+ */
+let fnToStringValidated = false;
+
+function ensureFnToStringValidated(): void {
+  if (fnToStringValidated) return;
+  fnToStringValidated = true;
+  validateFnToStringEnvironment();
+}
+
+/**
  * Merge user options with default options
  */
 function mergeOptions(userOptions?: ParseOptions): Options {
@@ -182,6 +198,7 @@ function mergeOptions(userOptions?: ParseOptions): Options {
  * ```
  */
 export function parseExpression(expression: string, options?: ParseOptions): ESTreeNode {
+  ensureFnToStringValidated();
   const mergedOptions = mergeOptions(options);
 
   try {
@@ -313,6 +330,7 @@ export function canParse(expression: string, options?: ParseOptions): boolean {
  * @throws ParserError if parsing fails
  */
 export function parseScript(source: string, options?: ParseOptions): ESTreeNode {
+  ensureFnToStringValidated();
   const mergedOptions = mergeOptions(options);
 
   try {

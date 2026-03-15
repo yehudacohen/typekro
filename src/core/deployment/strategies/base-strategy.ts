@@ -7,12 +7,13 @@
 
 import { escapeRegExp } from '../../../utils/helpers.js';
 import { DEFAULT_HYDRATION_TIMEOUT_CAP, DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
-import { StatusHydrationError, ensureError } from '../../errors.js';
+import { ensureError, StatusHydrationError } from '../../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../../kubernetes/bun-api-client.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { getResourceId } from '../../metadata/index.js';
 import { createResourcesProxy } from '../../references/schema-proxy.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
-import type { Enhanced, KubernetesResource, WithResourceId } from '../../types/kubernetes.js';
+import type { Enhanced, KubernetesResource } from '../../types/kubernetes.js';
 import type {
   KroCompatibleType,
   SchemaDefinition,
@@ -176,24 +177,52 @@ export abstract class BaseDeploymentStrategy<
         if (deploymentResult.status === 'partial') {
           const resourcesById = new Map(deploymentResult.resources.map((r) => [r.id, r]));
 
-          const failedResources = deploymentResult.errors.map((err) => {
-            const resource = resourcesById.get(err.resourceId);
-            return {
-              id: err.resourceId,
-              kind: resource?.kind || 'Unknown',
-              name: resource?.name || 'unknown',
-              error: err.error?.message || String(err.error),
-            };
-          });
-          const successCount = deploymentResult.resources
-            ? deploymentResult.resources.length - deploymentResult.errors.length
-            : 0;
-
-          throw StatusHydrationError.forPartialDeployment(
-            instanceName,
-            failedResources,
-            successCount
+          // Separate closure failures from actual resource failures.
+          // Closure failures (yamlFile downloads, etc.) should not block status hydration
+          // when all actual K8s resources deployed successfully.
+          const closureFailures = deploymentResult.errors.filter((err) =>
+            err.resourceId.startsWith('closure-')
           );
+          const resourceFailures = deploymentResult.errors.filter(
+            (err) => !err.resourceId.startsWith('closure-')
+          );
+
+          if (resourceFailures.length > 0) {
+            // Actual resource failures — cannot hydrate status
+            const failedResources = deploymentResult.errors.map((err) => {
+              const resource = resourcesById.get(err.resourceId);
+              return {
+                id: err.resourceId,
+                kind: resource?.kind || 'Unknown',
+                name: resource?.name || 'unknown',
+                error: err.error?.message || String(err.error),
+              };
+            });
+            const successCount = deploymentResult.resources
+              ? deploymentResult.resources.length - deploymentResult.errors.length
+              : 0;
+
+            throw StatusHydrationError.forPartialDeployment(
+              instanceName,
+              failedResources,
+              successCount
+            );
+          }
+
+          // Only closures failed — log warnings but proceed with status hydration
+          // since all actual resources needed for status computation deployed fine
+          if (closureFailures.length > 0) {
+            this.logger.warn(
+              `Deployment partially succeeded: ${closureFailures.length} closure(s) failed but all resources deployed. Proceeding with status hydration.`,
+              {
+                instanceName,
+                closureFailures: closureFailures.map((err) => ({
+                  id: err.resourceId,
+                  error: err.error?.message || String(err.error),
+                })),
+              }
+            );
+          }
         }
       }
 
@@ -398,7 +427,7 @@ export abstract class BaseDeploymentStrategy<
     // Call the status builder to get the computed status
     // Wrap enhanced resources with proxy to enable resource reference magic
     const resourcesProxy = createResourcesProxy(enhancedResources);
-    const computedStatus = this.statusBuilder!(
+    const computedStatus = this.statusBuilder?.(
       schemaProxy as SchemaProxy<TSpec, TStatus>,
       resourcesProxy
     );
@@ -436,7 +465,7 @@ export abstract class BaseDeploymentStrategy<
 
         for (const deployedResource of deployedResources) {
           // Extract the original resource key from __resourceId or the deployment ID pattern
-          const manifestResourceId = (deployedResource.manifest as WithResourceId).__resourceId;
+          const manifestResourceId = getResourceId(deployedResource.manifest);
           const resourceIdPattern = new RegExp(
             `^${escapeRegExp(camelCaseInstanceName)}Resource\\d+(.+)$`
           );

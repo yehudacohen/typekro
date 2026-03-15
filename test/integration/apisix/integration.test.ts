@@ -51,11 +51,12 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
   try {
     await networkingApi.deleteIngressClass({ name: 'apisix' });
     console.log('Deleted orphaned IngressClass: apisix');
-  } catch (error: any) {
-    if (error.statusCode === 404 || error.body?.reason === 'NotFound') {
+  } catch (error: unknown) {
+    const err = error as { statusCode?: number; body?: { reason?: string }; message?: string };
+    if (err.statusCode === 404 || err.body?.reason === 'NotFound') {
       console.log('IngressClass apisix not found (already clean)');
     } else {
-      console.warn('Failed to delete IngressClass apisix:', error.message);
+      console.warn('Failed to delete IngressClass apisix:', err.message);
     }
   }
 
@@ -74,11 +75,12 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
     try {
       await apiExtApi.deleteCustomResourceDefinition({ name: crdName });
       console.log(`Deleted orphaned CRD: ${crdName}`);
-    } catch (error: any) {
-      if (error.statusCode === 404 || error.body?.reason === 'NotFound') {
+    } catch (error: unknown) {
+      const err = error as { statusCode?: number; body?: { reason?: string }; message?: string };
+      if (err.statusCode === 404 || err.body?.reason === 'NotFound') {
         // Already gone
       } else {
-        console.warn(`Failed to delete CRD ${crdName}:`, error.message);
+        console.warn(`Failed to delete CRD ${crdName}:`, err.message);
       }
     }
   }
@@ -91,9 +93,9 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
       namespace: 'flux-system',
       plural: 'helmrepositories',
     });
-    const items = (repos as any).items || [];
+    const items = ((repos as Record<string, unknown>).items as Record<string, unknown>[]) || [];
     for (const item of items) {
-      const name = item.metadata?.name;
+      const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
       if (name && name.includes('apisix')) {
         try {
           await customObjectsApi.deleteNamespacedCustomObject({
@@ -104,16 +106,18 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
             name,
           });
           console.log(`Deleted orphaned HelmRepository: ${name}`);
-        } catch (deleteError: any) {
-          if (deleteError.statusCode !== 404) {
-            console.warn(`Failed to delete HelmRepository ${name}:`, deleteError.message);
+        } catch (deleteError: unknown) {
+          const err = deleteError as { statusCode?: number; message?: string };
+          if (err.statusCode !== 404) {
+            console.warn(`Failed to delete HelmRepository ${name}:`, err.message);
           }
         }
       }
     }
-  } catch (error: any) {
-    if (error.statusCode !== 404) {
-      console.warn('Failed to list HelmRepositories:', error.message);
+  } catch (error: unknown) {
+    const err = error as { statusCode?: number; message?: string };
+    if (err.statusCode !== 404) {
+      console.warn('Failed to list HelmRepositories:', err.message);
     }
   }
 
@@ -125,9 +129,9 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
       namespace: 'flux-system',
       plural: 'helmreleases',
     });
-    const items = (releases as any).items || [];
+    const items = ((releases as Record<string, unknown>).items as Record<string, unknown>[]) || [];
     for (const item of items) {
-      const name = item.metadata?.name;
+      const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
       if (name && name.includes('apisix')) {
         try {
           await customObjectsApi.deleteNamespacedCustomObject({
@@ -138,16 +142,18 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
             name,
           });
           console.log(`Deleted orphaned HelmRelease: ${name}`);
-        } catch (deleteError: any) {
-          if (deleteError.statusCode !== 404) {
-            console.warn(`Failed to delete HelmRelease ${name}:`, deleteError.message);
+        } catch (deleteError: unknown) {
+          const err = deleteError as { statusCode?: number; message?: string };
+          if (err.statusCode !== 404) {
+            console.warn(`Failed to delete HelmRelease ${name}:`, err.message);
           }
         }
       }
     }
-  } catch (error: any) {
-    if (error.statusCode !== 404) {
-      console.warn('Failed to list HelmReleases:', error.message);
+  } catch (error: unknown) {
+    const err = error as { statusCode?: number; message?: string };
+    if (err.statusCode !== 404) {
+      console.warn('Failed to list HelmReleases:', err.message);
     }
   }
 
@@ -195,9 +201,10 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
         namespace: 'flux-system',
         plural: 'helmreleases',
       });
-      const items = (releases as any).items || [];
+      const items =
+        ((releases as Record<string, unknown>).items as Record<string, unknown>[]) || [];
       for (const item of items) {
-        const name = item.metadata?.name;
+        const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
         if (name && name.includes('apisix')) {
           try {
             await customObjectsApi.deleteNamespacedCustomObject({
@@ -208,14 +215,16 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
               name,
             });
             console.log(`Deleted HelmRelease: ${name}`);
-          } catch (e: any) {
-            if (e.statusCode !== 404)
-              console.warn(`Failed to delete HelmRelease ${name}:`, e.message);
+          } catch (e: unknown) {
+            const err = e as { statusCode?: number; message?: string };
+            if (err.statusCode !== 404)
+              console.warn(`Failed to delete HelmRelease ${name}:`, err.message);
           }
         }
       }
-    } catch (e: any) {
-      console.warn('Failed to list HelmReleases for cleanup:', e.message);
+    } catch (e: unknown) {
+      const err = e as { statusCode?: number; message?: string };
+      console.warn('Failed to list HelmReleases for cleanup:', err.message);
     }
 
     // Clean up HelmRepositories
@@ -226,9 +235,9 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
         namespace: 'flux-system',
         plural: 'helmrepositories',
       });
-      const items = (repos as any).items || [];
+      const items = ((repos as Record<string, unknown>).items as Record<string, unknown>[]) || [];
       for (const item of items) {
-        const name = item.metadata?.name;
+        const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
         if (name && name.includes('apisix')) {
           try {
             await customObjectsApi.deleteNamespacedCustomObject({
@@ -239,22 +248,25 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
               name,
             });
             console.log(`Deleted HelmRepository: ${name}`);
-          } catch (e: any) {
-            if (e.statusCode !== 404)
-              console.warn(`Failed to delete HelmRepository ${name}:`, e.message);
+          } catch (e: unknown) {
+            const err = e as { statusCode?: number; message?: string };
+            if (err.statusCode !== 404)
+              console.warn(`Failed to delete HelmRepository ${name}:`, err.message);
           }
         }
       }
-    } catch (e: any) {
-      console.warn('Failed to list HelmRepositories for cleanup:', e.message);
+    } catch (e: unknown) {
+      const err = e as { statusCode?: number; message?: string };
+      console.warn('Failed to list HelmRepositories for cleanup:', err.message);
     }
 
     // Clean up IngressClass
     try {
       await networkingApi.deleteIngressClass({ name: 'apisix' });
       console.log('Deleted IngressClass: apisix');
-    } catch (e: any) {
-      if (e.statusCode !== 404) console.warn('Failed to delete IngressClass:', e.message);
+    } catch (e: unknown) {
+      const err = e as { statusCode?: number; message?: string };
+      if (err.statusCode !== 404) console.warn('Failed to delete IngressClass:', err.message);
     }
 
     // Clean up the APISIX namespace
@@ -318,11 +330,12 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       namespace: 'flux-system',
       plural: 'helmrepositories',
     });
-    const apisixRepo = (repos as any).items.find(
-      (repo: any) => repo.metadata.name === 'apisix-repo'
-    );
+    const repoItems = (repos as Record<string, unknown>).items as Record<string, unknown>[];
+    const apisixRepo = repoItems.find(
+      (repo) => (repo.metadata as Record<string, unknown>)?.name === 'apisix-repo'
+    ) as Record<string, unknown> | undefined;
     expect(apisixRepo).toBeDefined();
-    expect(apisixRepo.spec.url).toBe('https://charts.apiseven.com');
+    expect((apisixRepo!.spec as Record<string, unknown>).url).toBe('https://charts.apiseven.com');
     console.log('HelmRepository apisix-repo created and configured');
 
     // Step 2: Verify single HelmRelease was created (v2.13.0 bundles ingress controller as subchart)
@@ -333,11 +346,19 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       namespace: 'flux-system',
       plural: 'helmreleases',
     });
-    const apisixRelease = (releases as any).items.find((r: any) => r.metadata.name === 'apisix');
+    const releaseItems = (releases as Record<string, unknown>).items as Record<string, unknown>[];
+    const apisixRelease = releaseItems.find(
+      (r) => (r.metadata as Record<string, unknown>)?.name === 'apisix'
+    ) as Record<string, unknown> | undefined;
     expect(apisixRelease).toBeDefined();
-    expect(apisixRelease.spec.chart.spec.chart).toBe('apisix');
-    expect(apisixRelease.spec.chart.spec.version).toBe('2.13.0');
-    expect(apisixRelease.spec.targetNamespace).toBe(apisixNamespace);
+    const releaseSpec = apisixRelease!.spec as Record<string, unknown>;
+    const chartSpec = (releaseSpec.chart as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    expect(chartSpec.chart).toBe('apisix');
+    expect(chartSpec.version).toBe('2.13.0');
+    expect(releaseSpec.targetNamespace).toBe(apisixNamespace);
     console.log('HelmRelease created with chart apisix@2.13.0');
 
     // Step 3: Verify IngressClass was created

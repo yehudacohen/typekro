@@ -6,7 +6,7 @@ export type V1CustomResourceDefinitionSpec = NonNullable<V1CustomResourceDefinit
 export type V1CustomResourceDefinitionStatus = NonNullable<V1CustomResourceDefinition['status']>;
 
 export function customResourceDefinition(
-  resource: V1CustomResourceDefinition
+  resource: V1CustomResourceDefinition & { id?: string }
 ): Enhanced<V1CustomResourceDefinitionSpec, V1CustomResourceDefinitionStatus> {
   return createResource({
     ...resource,

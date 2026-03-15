@@ -6,7 +6,9 @@ import { createResource } from '../../shared.js';
 export type V1ReplicaSetSpec = NonNullable<V1ReplicaSet['spec']>;
 export type V1ReplicaSetStatus = NonNullable<V1ReplicaSet['status']>;
 
-export function replicaSet(resource: V1ReplicaSet): Enhanced<V1ReplicaSetSpec, V1ReplicaSetStatus> {
+export function replicaSet(
+  resource: V1ReplicaSet & { id?: string }
+): Enhanced<V1ReplicaSetSpec, V1ReplicaSetStatus> {
   return createResource({
     ...resource,
     apiVersion: 'apps/v1',

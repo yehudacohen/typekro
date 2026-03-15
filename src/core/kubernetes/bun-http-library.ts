@@ -12,14 +12,14 @@
  * to https.request instead of using the agent.
  */
 
+import * as http from 'node:http';
+import * as https from 'node:https';
 import type {
   HttpLibrary,
   RequestContext,
   ResponseContext,
 } from '@kubernetes/client-node/dist/gen/http/http.js';
 import { from, type Observable } from '@kubernetes/client-node/dist/gen/rxjsStub.js';
-import * as http from 'http';
-import * as https from 'https';
 import {
   DEFAULT_HTTP_DELETE_TIMEOUT,
   DEFAULT_HTTP_READ_TIMEOUT,
@@ -180,9 +180,6 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
         return this.timeouts.update;
       case 'DELETE':
         return this.timeouts.delete;
-      case 'GET':
-      case 'HEAD':
-      case 'OPTIONS':
       default:
         return this.timeouts.default;
     }
@@ -210,9 +207,7 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // This is the key workaround for Bun's https.Agent issues
       // Node.js stores constructor options on agent.options (not in public types)
       const agentOptions: AgentTlsOptions =
-        agent && 'options' in agent
-          ? (agent as unknown as { options: AgentTlsOptions }).options
-          : {};
+        agent && 'options' in agent ? (Reflect.get(agent, 'options') as AgentTlsOptions) : {};
 
       const options: https.RequestOptions = {
         hostname: url.hostname,
@@ -316,7 +311,8 @@ export class BunCompatibleHttpLibrary implements HttpLibrary {
       // Handle abort signal (if available - added in newer versions).
       // Use { once: true } to automatically remove the listener after firing,
       // preventing memory growth when the AbortSignal outlives the request.
-      const signal = (request as unknown as { getSignal?: () => AbortSignal }).getSignal?.();
+      const getSignal = Reflect.get(request, 'getSignal') as (() => AbortSignal) | undefined;
+      const signal = getSignal?.();
       if (signal) {
         signal.addEventListener(
           'abort',

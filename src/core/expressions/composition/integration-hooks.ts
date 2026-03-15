@@ -10,6 +10,7 @@ import type { CompositionContext } from '../../composition/context.js';
 import { getCurrentCompositionContext } from '../../composition/context.js';
 import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { getResourceId } from '../../metadata/index.js';
 import type { KubernetesRef } from '../../types/common.js';
 import type {
   KroCompatibleType,
@@ -17,7 +18,6 @@ import type {
   SchemaProxy,
 } from '../../types/serialization.js';
 import type { Enhanced } from '../../types.js';
-import { hasResourceId } from '../../types.js';
 import { CompositionContextTracker } from './context-tracker.js';
 import { CompositionExpressionAnalyzer } from './expression-analyzer.js';
 import { MagicProxyScopeManager } from './scope-manager.js';
@@ -293,8 +293,9 @@ export class CompositionIntegrationHooks {
    */
   private generateResourceIdFromResource(resource: Enhanced<unknown, unknown>): string {
     // Try to extract ID from common resource properties
-    if (hasResourceId(resource) && resource.__resourceId) {
-      return resource.__resourceId;
+    const resourceId = getResourceId(resource);
+    if (resourceId) {
+      return resourceId;
     }
 
     if (resource.metadata?.name) {

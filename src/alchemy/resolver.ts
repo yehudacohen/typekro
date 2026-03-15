@@ -262,11 +262,11 @@ export async function resolveAlchemyPromise(
 function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): string {
   // Try to get the resource ID from alchemy symbols
   if (RESOURCE_ID_SYMBOL in resource) {
-    return String((resource as unknown as Record<symbol, unknown>)[RESOURCE_ID_SYMBOL]);
+    return String(Reflect.get(resource, RESOURCE_ID_SYMBOL));
   }
 
   if (RESOURCE_FQN_SYMBOL in resource) {
-    return String((resource as unknown as Record<symbol, unknown>)[RESOURCE_FQN_SYMBOL]);
+    return String(Reflect.get(resource, RESOURCE_FQN_SYMBOL));
   }
 
   // For alchemy promises, try to get the resourceId property
@@ -277,7 +277,7 @@ function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): strin
   // Try to extract kind and name from the resource for deterministic ID
   const kind =
     RESOURCE_TYPE_SYMBOL in resource
-      ? String((resource as unknown as Record<symbol, unknown>)[RESOURCE_TYPE_SYMBOL])
+      ? String(Reflect.get(resource, RESOURCE_TYPE_SYMBOL))
       : 'resourceType' in resource && typeof resource.resourceType === 'string'
         ? resource.resourceType
         : 'Resource';

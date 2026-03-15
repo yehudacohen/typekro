@@ -3,48 +3,65 @@
  *
  * ## Getting Started
  *
- * The two primary APIs are:
+ * TypeKro provides two composition APIs. Both produce the same output and support
+ * the same deployment modes (`direct` and `kro`).
  *
- * - **{@link toResourceGraph}** (declarative) - Define a typed resource graph
- *   with a schema, resource builder, and status builder:
+ * ### Recommended: {@link kubernetesComposition}
  *
- *   ```ts
- *   import { toResourceGraph, Cel } from 'typekro';
- *   import { type } from 'arktype';
+ * Single function creates resources and returns status. Status expressions are
+ * natural JavaScript, auto-converted to CEL:
  *
- *   const graph = toResourceGraph(
- *     { name: 'my-app', apiVersion: 'example.com/v1', kind: 'MyApp',
- *       spec: type({ replicas: 'number' }),
- *       status: type({ ready: 'boolean' }) },
- *     (schema) => ({
- *       deployment: createDeployment({ replicas: schema.spec.replicas }),
- *     }),
- *     (_schema, resources) => ({
- *       ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
- *     }),
- *   );
- *   ```
+ * ```ts
+ * import { kubernetesComposition, simple } from 'typekro';
+ * import { type } from 'arktype';
  *
- * - **{@link kubernetesComposition}** (imperative) - Define compositions
- *   using native TypeScript with proxy-based schema and resource references:
+ * const app = kubernetesComposition(
+ *   { name: 'my-app', apiVersion: 'example.com/v1', kind: 'MyApp',
+ *     spec: type({ replicas: 'number', image: 'string' }),
+ *     status: type({ ready: 'boolean' }) },
+ *   (spec) => {
+ *     const deploy = simple.Deployment({
+ *       id: 'deploy', name: 'my-app', image: spec.image, replicas: spec.replicas,
+ *     });
+ *     return { ready: deploy.status.readyReplicas >= spec.replicas };
+ *   },
+ * );
+ * ```
  *
- *   ```ts
- *   import { kubernetesComposition, createResource } from 'typekro';
- *   ```
+ * ### Advanced: {@link toResourceGraph}
+ *
+ * Separate resource builder and status builder with explicit CEL expressions:
+ *
+ * ```ts
+ * import { toResourceGraph, Cel, createDeployment } from 'typekro';
+ * import { type } from 'arktype';
+ *
+ * const graph = toResourceGraph(
+ *   { name: 'my-app', apiVersion: 'example.com/v1', kind: 'MyApp',
+ *     spec: type({ replicas: 'number' }),
+ *     status: type({ ready: 'boolean' }) },
+ *   (schema) => ({
+ *     deployment: createDeployment({ replicas: schema.spec.replicas }),
+ *   }),
+ *   (_schema, resources) => ({
+ *     ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
+ *   }),
+ * );
+ * ```
  *
  * ## Which API should I use?
  *
- * | Consideration | `toResourceGraph` | `kubernetesComposition` |
+ * | | `kubernetesComposition` | `toResourceGraph` |
  * |---|---|---|
- * | **Best for** | Kro ResourceGraphDefinitions, YAML/CRD output | Direct K8s deployments, complex orchestration |
- * | **Status expressions** | CEL via `Cel.expr()` / `Cel.template()` | Native TypeScript |
- * | **Conditional resources** | `includeWhen` on individual resources | `if`/`else` in composition function |
- * | **Schema validation** | Built-in via arktype | Manual |
- * | **Output format** | Serialisable YAML | In-memory resource objects |
+ * | **Recommended for** | Most applications (default) | Explicit CEL control |
+ * | **Status expressions** | Natural JavaScript (auto-converted to CEL) | Explicit `Cel.expr()` / `Cel.template()` |
+ * | **Resource factories** | `simple.Deployment()`, `simple.Service()` | `createDeployment()`, `createService()` |
+ * | **Cross-resource refs** | `deploy.status.readyReplicas` (magic proxy) | `resources.deploy.status.readyReplicas` |
+ * | **Conditional resources** | `if`/`else` in composition function | `includeWhen` on individual resources |
+ * | **Schema validation** | Built-in via arktype | Built-in via arktype |
  *
- * Both APIs share the same factory functions (`createResource`, `helmRelease`,
- * `createDeployment`, etc.) so you can switch between them without rewriting
- * resource definitions.
+ * **Rule of thumb:** Start with `kubernetesComposition`. Switch to `toResourceGraph`
+ * only if you need explicit CEL control or prefer separated concerns.
  *
  * ## Module Layout
  *
@@ -114,6 +131,7 @@ export type * from './factories/kubernetes/types.js';
 // =============================================================================
 
 export {
+  type RbacMode,
   type TypeKroRuntimeConfig,
   typeKroRuntimeBootstrap,
 } from './compositions/typekro-runtime/index.js';

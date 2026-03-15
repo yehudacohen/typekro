@@ -1,8 +1,17 @@
 import type { V1Service } from '@kubernetes/client-node';
 import { ensureError } from '../../../core/errors.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { V1ServiceSpec, V1ServiceStatus } from '../types.js';
+
+// Self-register with semantic aliases for fuzzy resource key matching.
+registerFactory({
+  factoryName: 'Service',
+  kind: 'Service',
+  apiVersion: 'v1',
+  semanticAliases: ['service', 'svc'],
+});
 
 /**
  * Creates a Kubernetes Service resource with type-aware readiness evaluation.
@@ -15,7 +24,9 @@ import type { V1ServiceSpec, V1ServiceStatus } from '../types.js';
  *   spec: { type: 'ClusterIP', ports: [{ port: 80 }], selector: { app: 'my-app' } },
  * });
  */
-export function service(resource: V1Service): Enhanced<V1ServiceSpec, V1ServiceStatus> {
+export function service(
+  resource: V1Service & { id?: string }
+): Enhanced<V1ServiceSpec, V1ServiceStatus> {
   // Capture service type in closure for readiness evaluation
   // Handle the case where type might be a KubernetesRef (magic proxy) instead of a string
   const rawType = resource.spec?.type;

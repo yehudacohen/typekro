@@ -216,17 +216,17 @@ describe('DirectResourceFactory Alchemy Integration', () => {
 
           // Verify resource type naming patterns (if resources exist in state)
           if (deploymentResources.length > 0) {
-            const deploymentResource = deploymentResources[0] as any;
+            const deploymentResource = deploymentResources[0] as Record<string, unknown>;
             expect(deploymentResource.kind).toBe('kubernetes::Deployment');
           }
 
           if (serviceResources.length > 0) {
-            const serviceResource = serviceResources[0] as any;
+            const serviceResource = serviceResources[0] as Record<string, unknown>;
             expect(serviceResource.kind).toBe('kubernetes::Service');
           }
 
           if (configMapResources.length > 0) {
-            const configMapResource = configMapResources[0] as any;
+            const configMapResource = configMapResources[0] as Record<string, unknown>;
             expect(configMapResource.kind).toBe('kubernetes::ConfigMap');
           }
 

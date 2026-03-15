@@ -3,6 +3,7 @@
  * Handles local files, directories, and Git repositories
  */
 
+import * as dns from 'node:dns/promises';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
@@ -309,7 +310,7 @@ function isPrivateIp(ip: string): boolean {
     if (BLOCKED_IPV6_PREFIXES.some((prefix) => lower.startsWith(prefix))) return true;
     // IPv4-mapped IPv6 (::ffff:a.b.c.d)
     const v4Mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(lower);
-    if (v4Mapped && v4Mapped[1]) {
+    if (v4Mapped?.[1]) {
       return isPrivateIp(v4Mapped[1]);
     }
     return false;
@@ -394,6 +395,78 @@ function validateUrlSafety(url: string, resourceName: string): void {
       resourceName,
       url,
       `Suspicious numeric hostname: ${hostname}`
+    );
+  }
+}
+
+/**
+ * Resolve a hostname via DNS and validate that all resolved IPs are public.
+ *
+ * This mitigates DNS rebinding attacks where a domain initially resolves to a
+ * public IP during validation but is later changed to resolve to a private IP.
+ * By resolving the DNS ourselves and validating the result, the resolved IP
+ * can be used for the actual fetch.
+ *
+ * @returns The first valid public IP address the hostname resolves to.
+ * @throws {SsrfProtectionError} if the hostname resolves to a private/reserved IP.
+ */
+async function resolveAndValidateHostname(
+  hostname: string,
+  resourceName: string,
+  url: string
+): Promise<string> {
+  // Skip DNS resolution for IP literals — they were already validated by validateUrlSafety
+  if (net.isIP(hostname)) {
+    return hostname;
+  }
+
+  try {
+    // Resolve hostname to IP addresses
+    const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
+    const addresses6 = await dns.resolve6(hostname).catch(() => [] as string[]);
+    const allAddresses = [...addresses, ...addresses6];
+
+    if (allAddresses.length === 0) {
+      throw new SsrfProtectionError(
+        `DNS resolution failed for hostname '${hostname}' in resource '${resourceName}': no addresses returned`,
+        resourceName,
+        url,
+        `DNS resolution failed: ${hostname}`
+      );
+    }
+
+    // Validate ALL resolved IPs are public
+    for (const ip of allAddresses) {
+      if (isPrivateIp(ip)) {
+        throw new SsrfProtectionError(
+          `DNS rebinding protection: hostname '${hostname}' resolves to private IP '${ip}' for resource '${resourceName}'`,
+          resourceName,
+          url,
+          `DNS resolves to private IP: ${hostname} -> ${ip}`
+        );
+      }
+    }
+
+    // Return the first valid address for the fetch
+    const firstAddress = allAddresses[0];
+    if (!firstAddress) {
+      throw new SsrfProtectionError(
+        `DNS resolution returned empty result for hostname '${hostname}'`,
+        resourceName,
+        url,
+        `DNS resolution empty: ${hostname}`
+      );
+    }
+    return firstAddress;
+  } catch (error: unknown) {
+    if (error instanceof SsrfProtectionError) {
+      throw error;
+    }
+    throw new SsrfProtectionError(
+      `DNS resolution failed for hostname '${hostname}' in resource '${resourceName}': ${ensureError(error).message}`,
+      resourceName,
+      url,
+      `DNS resolution error: ${hostname}`
     );
   }
 }
@@ -1106,8 +1179,27 @@ export class PathResolver {
     // SSRF protection: validate URL before fetching
     validateUrlSafety(url, resourceName);
 
+    // DNS rebinding mitigation: resolve hostname and validate resolved IPs
+    // are not private/reserved, then use the resolved IP for the actual fetch
+    // to close the TOCTOU gap (hostname could resolve to a different IP between
+    // validation and fetch).
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+    const resolvedIp = await resolveAndValidateHostname(hostname, resourceName, url);
+
+    // Build a fetch URL that uses the resolved IP instead of the hostname,
+    // so the fetch cannot be redirected to a different IP via DNS rebinding.
+    // Set the Host header so the remote server can still route the request.
+    const fetchUrl = new URL(url);
+    const isIpLiteral = net.isIP(hostname) !== 0;
+    if (!isIpLiteral) {
+      // Replace hostname with validated IP; use bracket notation for IPv6
+      fetchUrl.hostname = net.isIPv6(resolvedIp) ? `[${resolvedIp}]` : resolvedIp;
+    }
+
     try {
-      const response = await fetch(url, {
+      const response = await fetch(fetchUrl.toString(), {
+        headers: isIpLiteral ? {} : { Host: hostname },
         signal: AbortSignal.timeout(DEFAULT_HTTP_READ_TIMEOUT),
       });
 

@@ -35,7 +35,6 @@ export interface ResourceGraph<
   /**
    * The resources in this graph
    */
-  // biome-ignore lint/suspicious/noExplicitAny: resources are heterogeneous — Enhanced types are invariant so any is required
   resources: Array<{
     id: string;
     manifest: Enhanced<any, any>;

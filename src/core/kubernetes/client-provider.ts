@@ -1,13 +1,34 @@
 /**
  * Kubernetes Client Provider
  *
- * Single source of truth for all Kubernetes API interactions.
- * Manages KubeConfig loading and KubernetesObjectApi client instantiation
- * with consistent configuration across the entire application.
+ * Manages KubeConfig loading and Kubernetes API client instantiation
+ * with consistent configuration, security settings, and lifecycle management.
  *
- * This provider implements the singleton pattern and serves as the central
- * authority for all Kubernetes API client creation, ensuring consistent
- * configuration, security settings, and lifecycle management.
+ * ## Usage Patterns
+ *
+ * ### Recommended: Deployment-Scoped Providers
+ *
+ * Create a fresh provider per deployment/factory to ensure isolation between
+ * concurrent deployments. Use `KubernetesClientManager` (in
+ * `deployment/client-provider-manager.ts`) which handles this automatically:
+ *
+ * ```ts
+ * // Via factory options (handles provider lifecycle for you)
+ * const factory = graph.factory('direct', { namespace: 'prod' });
+ *
+ * // Manual scoped provider
+ * const provider = createKubernetesClientProvider({ skipTLSVerify: false });
+ * const api = provider.getKubernetesApi();
+ * ```
+ *
+ * ### Deprecated: Singleton Pattern
+ *
+ * The `getInstance()` / `getKubernetesClientProvider()` singleton and its
+ * convenience functions (`getKubernetesApi()`, `getCoreV1Api()`, etc.) are
+ * deprecated. They share a single provider instance across all deployments,
+ * preventing concurrent deployments from using different configurations and
+ * making cleanup error-prone. Use `createKubernetesClientProvider()` or
+ * `createKubernetesClientProviderWithKubeConfig()` instead.
  */
 
 import * as k8s from '@kubernetes/client-node';
@@ -171,7 +192,11 @@ export class KubernetesClientProvider {
   private constructor() {}
 
   /**
-   * Get the singleton instance of KubernetesClientProvider
+   * Get the singleton instance of KubernetesClientProvider.
+   *
+   * @deprecated Use {@link createInstance} for deployment-scoped provider instances.
+   * The singleton pattern prevents concurrent deployments from using different
+   * configurations. See `KubernetesClientManager` for the recommended pattern.
    */
   static getInstance(): KubernetesClientProvider {
     if (!KubernetesClientProvider.instance) {
@@ -983,7 +1008,14 @@ export class KubernetesClientProvider {
 }
 
 /**
- * Convenience function to get the singleton instance
+ * Convenience function to get the singleton instance.
+ *
+ * @deprecated Use {@link createKubernetesClientProvider} or
+ * {@link createKubernetesClientProviderWithKubeConfig} instead to create
+ * deployment-scoped provider instances. The singleton pattern prevents
+ * concurrent deployments from using different configurations and makes
+ * cleanup error-prone. See `KubernetesClientManager` for the recommended
+ * per-factory pattern.
  */
 export function getKubernetesClientProvider(): KubernetesClientProvider {
   return KubernetesClientProvider.getInstance();
@@ -1014,8 +1046,11 @@ export function createKubernetesClientProviderWithKubeConfig(
 }
 
 /**
- * Convenience function to get a configured Kubernetes API client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured Kubernetes API client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getKubernetesApi()` on the instance instead.
  */
 export function getKubernetesApi(config?: KubernetesClientConfig): k8s.KubernetesObjectApi {
   const provider = getKubernetesClientProvider();
@@ -1026,8 +1061,11 @@ export function getKubernetesApi(config?: KubernetesClientConfig): k8s.Kubernete
 }
 
 /**
- * Convenience function to get a configured KubeConfig
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured KubeConfig.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getKubeConfig()` on the instance instead.
  */
 export function getKubeConfig(config?: KubernetesClientConfig): k8s.KubeConfig {
   const provider = getKubernetesClientProvider();
@@ -1038,8 +1076,11 @@ export function getKubeConfig(config?: KubernetesClientConfig): k8s.KubeConfig {
 }
 
 /**
- * Convenience function to get a configured CoreV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured CoreV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getCoreV1Api()` on the instance instead.
  */
 export function getCoreV1Api(config?: KubernetesClientConfig): k8s.CoreV1Api {
   const provider = getKubernetesClientProvider();
@@ -1050,8 +1091,11 @@ export function getCoreV1Api(config?: KubernetesClientConfig): k8s.CoreV1Api {
 }
 
 /**
- * Convenience function to get a configured AppsV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured AppsV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getAppsV1Api()` on the instance instead.
  */
 export function getAppsV1Api(config?: KubernetesClientConfig): k8s.AppsV1Api {
   const provider = getKubernetesClientProvider();
@@ -1062,8 +1106,11 @@ export function getAppsV1Api(config?: KubernetesClientConfig): k8s.AppsV1Api {
 }
 
 /**
- * Convenience function to get a configured CustomObjectsApi client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured CustomObjectsApi client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getCustomObjectsApi()` on the instance instead.
  */
 export function getCustomObjectsApi(config?: KubernetesClientConfig): k8s.CustomObjectsApi {
   const provider = getKubernetesClientProvider();
@@ -1074,8 +1121,11 @@ export function getCustomObjectsApi(config?: KubernetesClientConfig): k8s.Custom
 }
 
 /**
- * Convenience function to get a configured BatchV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured BatchV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getBatchV1Api()` on the instance instead.
  */
 export function getBatchV1Api(config?: KubernetesClientConfig): k8s.BatchV1Api {
   const provider = getKubernetesClientProvider();
@@ -1086,8 +1136,11 @@ export function getBatchV1Api(config?: KubernetesClientConfig): k8s.BatchV1Api {
 }
 
 /**
- * Convenience function to get a configured NetworkingV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured NetworkingV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getNetworkingV1Api()` on the instance instead.
  */
 export function getNetworkingV1Api(config?: KubernetesClientConfig): k8s.NetworkingV1Api {
   const provider = getKubernetesClientProvider();
@@ -1098,8 +1151,11 @@ export function getNetworkingV1Api(config?: KubernetesClientConfig): k8s.Network
 }
 
 /**
- * Convenience function to get a configured RbacAuthorizationV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured RbacAuthorizationV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getRbacAuthorizationV1Api()` on the instance instead.
  */
 export function getRbacAuthorizationV1Api(
   config?: KubernetesClientConfig
@@ -1112,8 +1168,11 @@ export function getRbacAuthorizationV1Api(
 }
 
 /**
- * Convenience function to get a configured StorageV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured StorageV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getStorageV1Api()` on the instance instead.
  */
 export function getStorageV1Api(config?: KubernetesClientConfig): k8s.StorageV1Api {
   const provider = getKubernetesClientProvider();
@@ -1124,8 +1183,11 @@ export function getStorageV1Api(config?: KubernetesClientConfig): k8s.StorageV1A
 }
 
 /**
- * Convenience function to get a configured ApiExtensionsV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured ApiExtensionsV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getApiExtensionsV1Api()` on the instance instead.
  */
 export function getApiExtensionsV1Api(config?: KubernetesClientConfig): k8s.ApiextensionsV1Api {
   const provider = getKubernetesClientProvider();
@@ -1136,8 +1198,11 @@ export function getApiExtensionsV1Api(config?: KubernetesClientConfig): k8s.Apie
 }
 
 /**
- * Convenience function to check cluster availability
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to check cluster availability.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.isClusterAvailable()` on the instance instead.
  */
 export async function isClusterAvailable(config?: KubernetesClientConfig): Promise<boolean> {
   const provider = getKubernetesClientProvider();
@@ -1148,8 +1213,11 @@ export async function isClusterAvailable(config?: KubernetesClientConfig): Promi
 }
 
 /**
- * Convenience function to wait for cluster readiness
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to wait for cluster readiness.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.waitForClusterReady()` on the instance instead.
  */
 export async function waitForClusterReady(
   timeout?: number,
@@ -1164,8 +1232,11 @@ export async function waitForClusterReady(
 }
 
 /**
- * Convenience function to execute operations with retry logic
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to execute operations with retry logic.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.withRetry()` on the instance instead.
  */
 export async function withRetry<T>(
   operation: () => Promise<T>,

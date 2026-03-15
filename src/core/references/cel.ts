@@ -56,15 +56,11 @@ function validateExprParts(parts: RefOrValue<unknown>[]): void {
 
       for (const pattern of SUSPICIOUS_JS_PATTERNS) {
         if (pattern.test(part)) {
-          logger.warn(
-            'Cel.expr() argument contains a JavaScript operator which is not valid in CEL. Use CEL equivalents instead: === -> ==, !== -> !=.',
-            {
-              argumentIndex: i,
-              pattern: pattern.source,
-              input: part,
-            }
+          throw new TypeKroError(
+            `Cel.expr() argument at index ${i} contains JavaScript operator '${pattern.source}' which is not valid in CEL. ` +
+              'Use CEL equivalents instead: === -> ==, !== -> !=.',
+            'CEL_INVALID_JS_OPERATOR'
           );
-          break;
         }
       }
 

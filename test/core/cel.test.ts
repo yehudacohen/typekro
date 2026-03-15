@@ -188,6 +188,39 @@ describe('CEL Expression Builder', () => {
     });
   });
 
+  describe('Cel.expr() throws on JavaScript-only operators', () => {
+    it('throws on === operator', () => {
+      expect(() => Cel.expr('status === "Ready"')).toThrow("contains JavaScript operator '==='");
+    });
+
+    it('throws on !== operator', () => {
+      expect(() => Cel.expr('status !== "Failed"')).toThrow("contains JavaScript operator '!=='");
+    });
+
+    it('throws on === in any argument position', () => {
+      const database = simple.Deployment({
+        name: 'postgres',
+        image: 'postgres:13',
+        replicas: 1,
+      });
+      expect(() => Cel.expr(database.status?.readyReplicas, ' === 1')).toThrow(
+        "contains JavaScript operator '==='"
+      );
+    });
+
+    it('does not throw on == (valid CEL operator)', () => {
+      expect(() => Cel.expr('status == "Ready"')).not.toThrow();
+    });
+
+    it('does not throw on != (valid CEL operator)', () => {
+      expect(() => Cel.expr('status != "Failed"')).not.toThrow();
+    });
+
+    it('error message includes the offending operator', () => {
+      expect(() => Cel.expr('x === y')).toThrow('===');
+    });
+  });
+
   describe('Typed convenience methods', () => {
     it('Cel.boolean() should produce a CelExpression with boolean type', () => {
       const database = simple.Deployment({

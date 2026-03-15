@@ -4,7 +4,7 @@ import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export function storageClass(
-  resource: V1StorageClass
+  resource: V1StorageClass & { id?: string }
 ): V1StorageClass & Enhanced<V1StorageClass, object> {
   return createResource<V1StorageClass, object>(
     {

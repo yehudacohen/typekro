@@ -558,24 +558,29 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
           const directResourceIds = Object.keys(directState);
 
           // Verify that our File resources are registered in alchemy state
-          const configFileState = Object.values(directState).find(
-            (state: any) =>
-              state.kind === 'fs::File' && state.output?.path === testResource.configFile.path
-          ) as any;
-          const logFileState = Object.values(directState).find(
-            (state: any) =>
-              state.kind === 'fs::File' && state.output?.path === testResource.logFile.path
-          ) as any;
+          const stateEntries = Object.values(directState) as Record<string, unknown>[];
+          const configFileState = stateEntries.find(
+            (state) =>
+              state.kind === 'fs::File' &&
+              (state.output as Record<string, unknown>)?.path === testResource.configFile.path
+          );
+          const logFileState = stateEntries.find(
+            (state) =>
+              state.kind === 'fs::File' &&
+              (state.output as Record<string, unknown>)?.path === testResource.logFile.path
+          );
 
           expect(configFileState).toBeDefined();
           expect(configFileState?.status).toBe('created');
-          expect(configFileState?.output.content).toContain(
+          expect((configFileState?.output as Record<string, unknown>)?.content).toContain(
             'DirectResourceFactory alchemy integration working!'
           );
 
           expect(logFileState).toBeDefined();
           expect(logFileState?.status).toBe('created');
-          expect(logFileState?.output.content).toContain('DirectResourceFactory test started');
+          expect((logFileState?.output as Record<string, unknown>)?.content).toContain(
+            'DirectResourceFactory test started'
+          );
 
           console.log(
             `✅ DirectResourceFactory alchemy state validation passed - ${directResourceIds.length} resources in state`
@@ -803,24 +808,29 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
             const kroResourceIds = Object.keys(kroState);
 
             // Verify that our File resources are registered in alchemy state
-            const kroConfigFileState = Object.values(kroState).find(
-              (state: any) =>
-                state.kind === 'fs::File' && state.output?.path === kroTestResource.configFile.path
-            ) as any;
-            const kroLogFileState = Object.values(kroState).find(
-              (state: any) =>
-                state.kind === 'fs::File' && state.output?.path === kroTestResource.logFile.path
-            ) as any;
+            const kroStateEntries = Object.values(kroState) as Record<string, unknown>[];
+            const kroConfigFileState = kroStateEntries.find(
+              (state) =>
+                state.kind === 'fs::File' &&
+                (state.output as Record<string, unknown>)?.path === kroTestResource.configFile.path
+            );
+            const kroLogFileState = kroStateEntries.find(
+              (state) =>
+                state.kind === 'fs::File' &&
+                (state.output as Record<string, unknown>)?.path === kroTestResource.logFile.path
+            );
 
             expect(kroConfigFileState).toBeDefined();
             expect(kroConfigFileState?.status).toBe('created');
-            expect(kroConfigFileState?.output.content).toContain(
+            expect((kroConfigFileState?.output as Record<string, unknown>)?.content).toContain(
               'KroResourceFactory alchemy integration working!'
             );
 
             expect(kroLogFileState).toBeDefined();
             expect(kroLogFileState?.status).toBe('created');
-            expect(kroLogFileState?.output.content).toContain('KroResourceFactory test started');
+            expect((kroLogFileState?.output as Record<string, unknown>)?.content).toContain(
+              'KroResourceFactory test started'
+            );
 
             console.log(
               `✅ KroResourceFactory alchemy state validation passed - ${kroResourceIds.length} resources in state`
@@ -983,7 +993,7 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
             replicas: 1,
             environment: 'invalid-environment', // Not in union type
             message: 'Test message',
-          } as any;
+          } as unknown as WebAppSpec;
 
           try {
             factory.toYaml(invalidSpec);

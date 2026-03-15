@@ -62,7 +62,8 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
     );
 
     const yamlOutput = factory.toYaml();
-    const parsedYaml = yaml.load(yamlOutput) as any;
+    // biome-ignore lint/suspicious/noExplicitAny: YAML parsed output has deeply nested dynamic structure
+    const parsedYaml = yaml.load(yamlOutput) as Record<string, any>;
     const generatedSchemaSpec = parsedYaml.spec.schema.spec;
 
     expect(generatedSchemaSpec.appTags).toBe('[]string');
@@ -71,7 +72,7 @@ describe.skip('Comprehensive End-to-End Schema Test (needs API update)', () => {
 
     const resourceTemplate = parsedYaml.spec.resources[0].template;
     const envVars = resourceTemplate.spec.template.spec.containers[0].env;
-    const poolSizeVar = envVars.find((e: any) => e.name === 'DB_POOL_SIZE');
+    const poolSizeVar = envVars.find((e: Record<string, unknown>) => e.name === 'DB_POOL_SIZE');
     expect(poolSizeVar.value).toBe('${string(schema.spec.database.connection.poolSize)}');
   });
 });
@@ -121,7 +122,8 @@ describe.skip('Cross-Resource Reference Test (needs API update)', () => {
     );
 
     const yamlOutput: string = resourceGraph.toYaml();
-    const parsedYaml = yaml.load(yamlOutput) as any;
+    // biome-ignore lint/suspicious/noExplicitAny: YAML parsed output has deeply nested dynamic structure
+    const parsedYaml = yaml.load(yamlOutput) as Record<string, any>;
 
     // --- THIS IS THE CORRECTED SECTION ---
 
@@ -130,13 +132,13 @@ describe.skip('Cross-Resource Reference Test (needs API update)', () => {
     const configMapId = 'configmapAppConfig';
 
     const deploymentTemplate = parsedYaml.spec.resources.find(
-      (r: any) => r.id === deploymentId
+      (r: Record<string, unknown>) => r.id === deploymentId
     ).template;
 
     // 2. Assert that the deployment's environment variable contains the correct
     //    CEL reference to the ConfigMap's camelCase resource ID.
     const greetingEnv = deploymentTemplate.spec.template.spec.containers[0].env.find(
-      (e: any) => e.name === 'APP_GREETING'
+      (e: Record<string, unknown>) => e.name === 'APP_GREETING'
     );
     expect(greetingEnv.value).toBe(`\${${configMapId}.data.greeting}`);
   });

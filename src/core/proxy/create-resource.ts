@@ -21,13 +21,57 @@ import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.
 import { TypeKroError } from '../errors.js';
 import { conditionalExpressionIntegrator } from '../expressions/conditional/conditional-integration.js';
 import { getComponentLogger } from '../logging/index.js';
+import {
+  getResourceId as getMetadataResourceId,
+  getReadinessEvaluator,
+  setReadinessEvaluator,
+  setResourceId,
+} from '../metadata/index.js';
 import { ReadinessEvaluatorRegistry } from '../readiness/index.js';
+import { isKnownFactory, registerFactory } from '../resources/factory-registry.js';
 import { generateDeterministicResourceId } from '../resources/id.js';
 import type { Enhanced, KubernetesResource, MagicProxy, ReadinessEvaluator } from '../types.js';
 import { validateResourceId } from '../validation/cel-validator.js';
+import { detectStatusFieldTypo } from './known-status-fields.js';
 
 // Check for the debug environment variable
 const IS_DEBUG_MODE = isDebugMode();
+
+// Track which kinds have been auto-registered to avoid redundant registry lookups.
+const autoRegisteredKinds = new Set<string>();
+
+// ---------------------------------------------------------------------------
+// Data-driven proxy root-field configuration (Phase 3.4)
+// ---------------------------------------------------------------------------
+// Each entry describes how a root-level Kubernetes resource field should be
+// handled by the Enhanced proxy's `get` trap.  Adding support for a new
+// root-level field is a single entry here instead of a new if-branch.
+//
+// `proxyMode`:
+//   - 'property'     — wrap value (defaulting to `defaultValue`) with
+//                       `createPropertyProxy` so nested field accesses produce
+//                       KubernetesRef chains.
+//   - 'value-or-ref' — return the raw value if defined; otherwise return a
+//                       KubernetesRef via `createRefFactory`.  Used for scalar
+//                       fields that may be references in composition context.
+// ---------------------------------------------------------------------------
+
+interface ProxyFieldConfig {
+  readonly proxyMode: 'property' | 'value-or-ref';
+  /** Fallback when the target field is nullish.  Ignored for 'value-or-ref'. */
+  readonly defaultValue?: unknown;
+}
+
+const PROXY_ROOT_FIELDS = new Map<string, ProxyFieldConfig>([
+  ['data', { proxyMode: 'property', defaultValue: {} }],
+  ['stringData', { proxyMode: 'property', defaultValue: {} }],
+  ['rules', { proxyMode: 'property', defaultValue: [] }],
+  ['roleRef', { proxyMode: 'property', defaultValue: {} }],
+  ['subjects', { proxyMode: 'property', defaultValue: [] }],
+  ['provisioner', { proxyMode: 'value-or-ref' }],
+  ['parameters', { proxyMode: 'property', defaultValue: {} }],
+  ['subsets', { proxyMode: 'property', defaultValue: [] }],
+]);
 
 /**
  * Deep clone a value, stripping functions (which are non-serializable proxies).
@@ -119,7 +163,8 @@ function createRefFactory(resourceId: string, basePath: string): unknown {
 function createPropertyProxy<T extends object>(
   resourceId: string,
   basePath: string,
-  target: T
+  target: T,
+  kind?: string
 ): MagicProxy<T> {
   if (IS_DEBUG_MODE) {
     debugLogger.debug('Proxy created', { resourceId, basePath });
@@ -169,6 +214,17 @@ function createPropertyProxy<T extends object>(
       if (prop in obj) {
         return obj[prop as keyof T];
       } else {
+        // Runtime typo detection for status field access (Phase 2.12).
+        // Only fires in debug mode, for known K8s kinds, when accessing status fields.
+        if (IS_DEBUG_MODE && basePath === 'status' && kind) {
+          const suggestion = detectStatusFieldTypo(kind, prop);
+          if (suggestion) {
+            debugLogger.warn(
+              `Possible typo: '${prop}' accessed on ${kind} status but not found in known fields. Did you mean '${suggestion}'?`,
+              { resourceId, kind, accessedField: prop, suggestedField: suggestion }
+            );
+          }
+        }
         return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
       }
     },
@@ -185,11 +241,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
   resourceId: string,
   resource: KubernetesResource<TSpec, TStatus>
 ): Enhanced<TSpec, TStatus> {
-  Object.defineProperty(resource, '__resourceId', {
-    value: resourceId,
-    enumerable: false,
-    configurable: true,
-  });
+  setResourceId(resource, resourceId);
 
   // Cache proxies to ensure the same proxy is returned each time
   let specProxy: MagicProxy<TSpec> | undefined;
@@ -212,7 +264,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
               key !== 'readinessEvaluator' &&
               key !== 'id'
             ) {
-              result[key] = deepCloneValue((target as unknown as Record<string, unknown>)[key]);
+              result[key] = deepCloneValue(Reflect.get(target, key));
             }
           }
           return result;
@@ -228,7 +280,7 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
       if (prop === 'status') {
         if (!statusProxy) {
           const status = target.status ?? ({} as TStatus);
-          statusProxy = createPropertyProxy(resourceId, 'status', status);
+          statusProxy = createPropertyProxy(resourceId, 'status', status, target.kind);
         }
         return statusProxy;
       }
@@ -254,41 +306,31 @@ function createGenericProxyResource<TSpec extends object, TStatus extends object
       if (prop === 'id') {
         return resourceId;
       }
-      // Handle common Kubernetes resource fields as magic proxies
-      if (prop === 'data' && 'data' in target) {
-        const data = target.data ?? {};
-        return createPropertyProxy(resourceId, 'data', data);
+      // Serve metadata from WeakMap store (backward compatibility for .readinessEvaluator / .__resourceId)
+      // Check both proxy (receiver) and target since metadata may be set on either
+      if (prop === 'readinessEvaluator') {
+        return getReadinessEvaluator(receiver) ?? getReadinessEvaluator(target);
       }
-      if (prop === 'stringData' && 'stringData' in target) {
-        const stringData = target.stringData ?? {};
-        return createPropertyProxy(resourceId, 'stringData', stringData);
+      if (prop === '__resourceId') {
+        return getMetadataResourceId(receiver) ?? getMetadataResourceId(target);
       }
-      if (prop === 'rules' && 'rules' in target) {
-        const rules = target.rules ?? [];
-        return createPropertyProxy(resourceId, 'rules', rules);
-      }
-      if (prop === 'roleRef' && 'roleRef' in target) {
-        const roleRef = target.roleRef ?? {};
-        return createPropertyProxy(resourceId, 'roleRef', roleRef);
-      }
-      if (prop === 'subjects' && 'subjects' in target) {
-        const subjects = target.subjects ?? [];
-        return createPropertyProxy(resourceId, 'subjects', subjects);
-      }
-      if (prop === 'provisioner' && 'provisioner' in target) {
-        const provisioner = target.provisioner;
-        if (provisioner !== undefined) {
-          return provisioner;
+      // Handle common Kubernetes resource fields as magic proxies (data-driven).
+      // See PROXY_ROOT_FIELDS above for the full registry.
+      if (typeof prop === 'string') {
+        const fieldConfig = PROXY_ROOT_FIELDS.get(prop);
+        if (fieldConfig && prop in target) {
+          if (fieldConfig.proxyMode === 'property') {
+            const value = Reflect.get(target, prop) ?? fieldConfig.defaultValue;
+            // All property-mode fields are objects (Record/Array), safe to cast
+            return createPropertyProxy(resourceId, prop, value as Record<string, unknown>);
+          }
+          // 'value-or-ref': return raw value when defined, otherwise a reference
+          const value = Reflect.get(target, prop);
+          if (value !== undefined) {
+            return value;
+          }
+          return createRefFactory(resourceId, prop);
         }
-        return createRefFactory(resourceId, 'provisioner');
-      }
-      if (prop === 'parameters' && 'parameters' in target) {
-        const parameters = target.parameters ?? {};
-        return createPropertyProxy(resourceId, 'parameters', parameters);
-      }
-      if (prop === 'subsets' && 'subsets' in target) {
-        const subsets = target.subsets ?? [];
-        return createPropertyProxy(resourceId, 'subsets', subsets);
       }
       if (typeof prop === 'string' && prop.startsWith('$')) {
         return createRefFactory(resourceId, prop.substring(1));
@@ -401,7 +443,28 @@ export function createResource<TSpec extends object, TStatus extends object>(
     resourceId = generateDeterministicResourceId(resource.kind, name, namespace);
   }
 
+  // Auto-register the factory in the central FactoryRegistry the first time
+  // we see a given kind, but ONLY if the factory doesn't already have an
+  // explicit registration (which may include semantic aliases that we must
+  // not overwrite).
+  if (!autoRegisteredKinds.has(resource.kind)) {
+    autoRegisteredKinds.add(resource.kind);
+    if (!isKnownFactory(resource.kind)) {
+      registerFactory({
+        factoryName: resource.kind,
+        kind: resource.kind,
+        apiVersion: resource.apiVersion,
+      });
+    }
+  }
+
   const enhanced = createGenericProxyResource(resourceId, resource);
+
+  // Also store metadata for the PROXY itself (not just the target).
+  // This is critical because downstream code (e.g. getResourceId, getReadinessEvaluator)
+  // receives the proxy but the WeakMap entry was set on the target at line 194.
+  // Without this, WeakMap lookups on the proxy return undefined.
+  setResourceId(enhanced, resourceId);
 
   // Auto-register with composition context if active (but not for external references)
   const context = getCurrentCompositionContext();
@@ -420,13 +483,8 @@ export function createResource<TSpec extends object, TStatus extends object>(
         'factory-defined'
       );
 
-      // Attach to individual resource instance
-      Object.defineProperty(this, 'readinessEvaluator', {
-        value: evaluator,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
+      // Attach to individual resource instance via WeakMap
+      setReadinessEvaluator(this, evaluator);
 
       return this as Enhanced<TSpec, TStatus>;
     },

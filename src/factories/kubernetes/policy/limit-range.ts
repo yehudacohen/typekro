@@ -5,7 +5,9 @@ import { createResource } from '../../shared.js';
 
 export type V1LimitRangeSpec = NonNullable<V1LimitRange['spec']>;
 
-export function limitRange(resource: V1LimitRange): Enhanced<V1LimitRangeSpec, unknown> {
+export function limitRange(
+  resource: V1LimitRange & { id?: string }
+): Enhanced<V1LimitRangeSpec, unknown> {
   return createResource({
     ...resource,
     apiVersion: 'v1',

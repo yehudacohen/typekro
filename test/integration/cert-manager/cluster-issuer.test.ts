@@ -159,7 +159,8 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     });
 
     expect(clusterIssuerResource).toBeDefined();
-    const issuerBody = clusterIssuerResource as any;
+    // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+    const issuerBody = clusterIssuerResource as Record<string, any>;
     expect(issuerBody.kind).toBe('ClusterIssuer');
     expect(issuerBody.metadata.name).toBe(uniqueName);
     expect(issuerBody.spec.selfSigned).toEqual({});
@@ -275,7 +276,8 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     });
 
     expect(clusterIssuerResource).toBeDefined();
-    const issuerBody = clusterIssuerResource as any;
+    // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+    const issuerBody = clusterIssuerResource as Record<string, any>;
     expect(issuerBody.kind).toBe('ClusterIssuer');
     expect(issuerBody.metadata.name).toBe(issuerName);
     expect(issuerBody.spec.selfSigned).toEqual({});
@@ -290,7 +292,8 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     });
 
     expect(certificateResource).toBeDefined();
-    const certBody = certificateResource as any;
+    // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+    const certBody = certificateResource as Record<string, any>;
     expect(certBody.kind).toBe('Certificate');
     expect(certBody.metadata.name).toBe(certName);
     expect(certBody.spec.secretName).toBe(secretName);

@@ -9,6 +9,7 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import type * as k8s from '@kubernetes/client-node';
 import { DependencyGraph } from '../../src/core/dependencies/index.js';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import type {
@@ -18,6 +19,7 @@ import type {
   DeploymentResourceGraph,
 } from '../../src/core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
+import type { Scope } from '../../src/core/types/schema.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
 
 // ============================================================================
@@ -182,11 +184,14 @@ describe('DirectDeploymentEngine.deployWithClosures', () => {
   let mockK8sApi: ReturnType<typeof createMockK8sApi>;
   let engine: DirectDeploymentEngine;
   let defaultOptions: DeploymentOptions;
-  const mockKubeConfig = { makeApiClient: mock(() => ({})) } as any;
+  const mockKubeConfig = { makeApiClient: mock(() => ({})) } as unknown as k8s.KubeConfig;
 
   beforeEach(() => {
     mockK8sApi = createMockK8sApi();
-    engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi as any);
+    engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as unknown as k8s.KubernetesObjectApi
+    );
     defaultOptions = {
       mode: 'direct',
       namespace: 'test-namespace',
@@ -413,7 +418,7 @@ describe('DirectDeploymentEngine.deployWithClosures', () => {
     it('should forward alchemyScope when provided', async () => {
       const graph = createEmptyResourceGraph();
       let receivedScope: unknown;
-      const mockScope = { id: 'mock-scope' } as any;
+      const mockScope = { id: 'mock-scope' } as unknown as Scope;
 
       const closures: Record<string, DeploymentClosure> = {
         checkScope: async (ctx: DeploymentContext) => {
@@ -1103,7 +1108,7 @@ describe('DirectDeploymentEngine.deployWithClosures', () => {
           getNodes: () => {
             throw new Error('Unexpected graph error');
           },
-        } as any,
+        } as unknown as DeploymentResourceGraph['dependencyGraph'],
       };
 
       // This should not throw — the outer catch should handle it

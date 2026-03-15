@@ -6,7 +6,9 @@ export type V1MutatingWebhookConfigurationWebhooks = NonNullable<
   V1MutatingWebhookConfiguration['webhooks']
 >;
 
-export function mutatingWebhookConfiguration(resource: V1MutatingWebhookConfiguration) {
+export function mutatingWebhookConfiguration(
+  resource: V1MutatingWebhookConfiguration & { id?: string }
+) {
   return createResource({
     ...resource,
     apiVersion: 'admissionregistration.k8s.io/v1',

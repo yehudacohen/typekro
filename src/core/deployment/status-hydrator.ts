@@ -6,7 +6,8 @@ import {
 } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import type { DeployedResource, Enhanced, KubernetesResource, WithResourceId } from '../types.js';
+import { getResourceId } from '../metadata/index.js';
+import type { DeployedResource, Enhanced, KubernetesResource } from '../types.js';
 
 /**
  * Options for status hydration
@@ -187,8 +188,7 @@ export class StatusHydrator {
     status: TStatus,
     hydratedFields: string[]
   ): void {
-    const resourceId =
-      (enhanced as WithResourceId).__resourceId || enhanced.metadata?.name || 'unknown';
+    const resourceId = getResourceId(enhanced) || enhanced.metadata?.name || 'unknown';
     const statusLogger = this.logger.child({ resourceId });
 
     statusLogger.debug('Populating enhanced status', {

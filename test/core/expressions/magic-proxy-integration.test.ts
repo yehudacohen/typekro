@@ -169,22 +169,29 @@ describe('Magic Proxy Integration Tests', () => {
             id: 'service',
           }),
         }),
-        (schema, resources) => ({
-          // Complex JavaScript expressions with multiple resource references
-          ready:
-            (resources.deployment! as any).status?.readyReplicas === schema.spec.replicas &&
-            (resources.deployment! as any).status?.availableReplicas > 0,
-          endpoint: (resources.service! as any).status?.loadBalancer?.ingress?.[0]?.ip
-            ? `http://${(resources.service! as any).status.loadBalancer.ingress[0].ip}`
-            : 'http://localhost',
-          health: {
-            deployment:
-              (resources.deployment! as any).status?.conditions?.find(
-                (c: any) => c.type === 'Available'
-              )?.status === 'True',
-            service: (resources.deployment! as any).status?.availableReplicas > 0,
-          },
-        })
+        (schema, resources) => {
+          // Cast resources to allow deep property access in status builder expressions
+          const deploy = resources.deployment as unknown as Record<string, Record<string, unknown>>;
+          const svc = resources.service as unknown as Record<string, Record<string, unknown>>;
+          return {
+            // Complex JavaScript expressions with multiple resource references
+            ready:
+              deploy.status?.readyReplicas === schema.spec.replicas &&
+              (deploy.status?.availableReplicas as number) > 0,
+            endpoint: (svc.status as Record<string, unknown>)?.loadBalancer
+              ? `http://${((svc.status as Record<string, unknown>).loadBalancer as Record<string, unknown[]>).ingress[0]}`
+              : 'http://localhost',
+            health: {
+              deployment:
+                (
+                  (deploy.status?.conditions as unknown[])?.find(
+                    (c: unknown) => (c as Record<string, unknown>).type === 'Available'
+                  ) as Record<string, unknown> | undefined
+                )?.status === 'True',
+              service: (deploy.status?.availableReplicas as number) > 0,
+            },
+          };
+        }
       );
 
       expect(graph).toBeDefined();
@@ -218,7 +225,9 @@ describe('Magic Proxy Integration Tests', () => {
         }),
       };
 
-      const result = kubernetesComposition(definition as any, (spec: typeof mockSpec) => {
+      const result = (
+        kubernetesComposition as (...args: unknown[]) => ReturnType<typeof kubernetesComposition>
+      )(definition, (spec: typeof mockSpec) => {
         // Create resources with JavaScript expressions
         const deployment = simple.Deployment({
           name: spec.name,
@@ -273,8 +282,8 @@ describe('Magic Proxy Integration Tests', () => {
         }),
       };
 
-      const databaseComposition = kubernetesComposition(
-        databaseDefinition as any,
+      const databaseComposition = (kubernetesComposition as Function)(
+        databaseDefinition,
         (spec: { name: string; storage: string }) => {
           const deployment = simple.Deployment({
             name: `${spec.name}-db`,
@@ -291,6 +300,7 @@ describe('Magic Proxy Integration Tests', () => {
             name: `${spec.name}-db`,
             ports: [{ port: 5432, targetPort: 5432 }],
             selector: { app: `${spec.name}-db` },
+            id: 'service',
           });
 
           return {
@@ -309,14 +319,17 @@ describe('Magic Proxy Integration Tests', () => {
 
   describe('Factory Function Integration', () => {
     it('should handle JavaScript expressions in factory function configurations', () => {
-      const mockSchemaProxy: SchemaProxy<any, any> = {
+      const mockSchemaProxy = {
         spec: {
           name: 'test-app',
           replicas: 3,
           image: 'nginx:latest',
         },
         status: {},
-      } as any;
+      } as unknown as SchemaProxy<
+        { name: string; replicas: number; image: string },
+        Record<string, unknown>
+      >;
 
       // Test simple.Deployment with JavaScript expressions
       const deployment = simple.Deployment({
@@ -344,7 +357,7 @@ describe('Magic Proxy Integration Tests', () => {
         status: {
           readyReplicas: 1,
         },
-      } as any;
+      };
 
       const mockService = {
         metadata: {
@@ -353,7 +366,7 @@ describe('Magic Proxy Integration Tests', () => {
         status: {
           readyReplicas: 1,
         },
-      } as any;
+      };
 
       // Test deployment with references to other resources
       const deployment = simple.Deployment({

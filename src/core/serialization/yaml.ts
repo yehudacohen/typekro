@@ -12,6 +12,13 @@ import {
   isCelExpression,
   isKubernetesRef,
 } from '../../utils/type-guards.js';
+import {
+  getForEach,
+  getIncludeWhen,
+  getReadyWhen,
+  getResourceId,
+  getTemplateOverrides,
+} from '../metadata/index.js';
 import { generateDeterministicResourceId } from '../resources/id.js';
 import type {
   KroExternalRef,
@@ -28,11 +35,56 @@ import { generateKroSchema } from './schema.js';
 
 /**
  * Read a non-enumerable property from an Enhanced resource.
- * These properties (includeWhen, readyWhen, __externalRef, __resourceId)
- * are defined as non-enumerable to avoid serialization but are still accessible.
+ *
+ * Used only for `__externalRef` which is NOT part of the WeakMap migration
+ * (it's an enumerable direct-assign property). Tier 2 properties (includeWhen,
+ * readyWhen, forEach, __templateOverrides) use WeakMap getters instead.
  */
 function readNonEnumerable<T>(resource: KubernetesResource, key: string): T | undefined {
-  return (resource as unknown as Record<string, unknown>)[key] as T | undefined;
+  return Reflect.get(resource, key) as T | undefined;
+}
+
+/**
+ * Read a Tier 2 metadata property from a resource.
+ * Checks WeakMap metadata first, falls back to legacy non-enumerable property.
+ *
+ * The fallback MUST validate the value is an array because Enhanced proxy
+ * resources intercept ALL property access and return KubernetesRef proxies
+ * (functions) for unknown keys. Without this guard, accessing `.includeWhen`
+ * on a proxy resource would return a truthy proxy function — causing a
+ * spurious self-referencing `includeWhen` condition in the Kro YAML.
+ */
+function readIncludeWhen(resource: KubernetesResource): unknown[] | undefined {
+  const fromWeakMap = getIncludeWhen(resource);
+  if (fromWeakMap) return fromWeakMap;
+  const legacy = readNonEnumerable<unknown[]>(resource, 'includeWhen');
+  return Array.isArray(legacy) ? legacy : undefined;
+}
+
+function readReadyWhen(resource: KubernetesResource): unknown[] | undefined {
+  const fromWeakMap = getReadyWhen(resource);
+  if (fromWeakMap) return fromWeakMap;
+  const legacy = readNonEnumerable<unknown[]>(resource, 'readyWhen');
+  return Array.isArray(legacy) ? legacy : undefined;
+}
+
+function readForEachDimensions(resource: KubernetesResource): Record<string, string>[] | undefined {
+  const fromWeakMap = getForEach(resource);
+  if (fromWeakMap) return fromWeakMap;
+  const legacy = readNonEnumerable<Record<string, string>[]>(resource, 'forEach');
+  return Array.isArray(legacy) ? legacy : undefined;
+}
+
+function readTemplateOverrides(
+  resource: KubernetesResource
+): Array<{ propertyPath: string; celExpression: string }> | undefined {
+  return (
+    getTemplateOverrides(resource) ??
+    readNonEnumerable<Array<{ propertyPath: string; celExpression: string }>>(
+      resource,
+      '__templateOverrides'
+    )
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -343,18 +395,18 @@ function applyTemplateOverrides(
 ): void {
   for (const { propertyPath, celExpression } of overrides) {
     const parts = propertyPath.split('.');
-    let target: Record<string, unknown> = template;
+    let target: Record<string, unknown> | undefined = template;
 
     // Walk to the parent of the target property
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
       if (!part) continue;
-      const next = target[part];
+      const next = target![part];
       if (next && typeof next === 'object' && !Array.isArray(next)) {
         target = next as Record<string, unknown>;
       } else {
         // Path doesn't exist in the template — skip this override
-        target = undefined as unknown as Record<string, unknown>;
+        target = undefined;
         break;
       }
     }
@@ -410,7 +462,7 @@ function buildResourceEntry(
     const entry: KroResourceTemplate = { id, externalRef: extRef };
 
     // externalRef can still have includeWhen (but NOT forEach — mutually exclusive)
-    const rawIncludeWhen = readNonEnumerable<unknown>(resource, 'includeWhen');
+    const rawIncludeWhen = readIncludeWhen(resource);
     const includeWhen = resolveIncludeWhen(rawIncludeWhen);
     if (includeWhen) {
       entry.includeWhen = includeWhen;
@@ -426,7 +478,7 @@ function buildResourceEntry(
   };
 
   // forEach — collection dimensions (populated by proxy layer / AST analysis)
-  const forEach = readNonEnumerable<Record<string, string>[]>(resource, 'forEach');
+  const forEach = readForEachDimensions(resource);
   const hasForEach = forEach !== undefined && forEach.length > 0;
   if (hasForEach) {
     entry.forEach = forEach;
@@ -455,22 +507,20 @@ function buildResourceEntry(
 
   // Template overrides — ternary expressions in factory args that evaluated to
   // literals at runtime but should be CEL conditionals in the output.
-  const templateOverrides = readNonEnumerable<
-    Array<{ propertyPath: string; celExpression: string }>
-  >(resource, '__templateOverrides');
+  const templateOverrides = readTemplateOverrides(resource);
   if (templateOverrides && templateOverrides.length > 0 && entry.template) {
     applyTemplateOverrides(entry.template as Record<string, unknown>, templateOverrides);
   }
 
   // includeWhen — conditional resource creation (convert raw values to CEL)
-  const rawIncludeWhen = readNonEnumerable<unknown>(resource, 'includeWhen');
+  const rawIncludeWhen = readIncludeWhen(resource);
   const includeWhen = resolveIncludeWhen(rawIncludeWhen);
   if (includeWhen) {
     entry.includeWhen = includeWhen;
   }
 
   // readyWhen — resource readiness conditions (convert callbacks/refs to CEL)
-  const rawReadyWhen = readNonEnumerable<unknown>(resource, 'readyWhen');
+  const rawReadyWhen = readReadyWhen(resource);
   const readyWhen = resolveReadyWhen(rawReadyWhen, id, hasForEach);
   if (readyWhen) {
     entry.readyWhen = readyWhen;
@@ -515,7 +565,7 @@ export function serializeResourceGraphToYaml(
   for (const [resourceName, resource] of Object.entries(resources)) {
     // Use the embedded resource ID if available, otherwise generate deterministic one
     const resourceId =
-      readNonEnumerable<string>(resource, '__resourceId') ||
+      getResourceId(resource) ||
       generateDeterministicResourceId(
         resource.kind || 'Resource',
         resource.metadata?.name || resourceName,

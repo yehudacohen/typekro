@@ -16,6 +16,67 @@ import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { AnalysisContext, CelConversionResult } from '../analysis/shared-types.js';
 
 /**
+ * Duck-type check for KubernetesRef-like objects.
+ *
+ * The canonical `isKubernetesRef()` requires the `KUBERNETES_REF_BRAND` symbol
+ * which is only present on objects created by the magic proxy system. However,
+ * the factory pattern handler also needs to recognise plain objects that carry
+ * `resourceId` and `fieldPath` string properties (e.g. objects constructed in
+ * tests or by external integrations). This helper provides that relaxed check.
+ */
+function isDuckTypedKubernetesRef(obj: unknown): obj is KubernetesRef<unknown> {
+  if ((typeof obj !== 'object' && typeof obj !== 'function') || obj === null) {
+    return false;
+  }
+  const record = obj as Record<string, unknown>;
+  return typeof record.resourceId === 'string' && typeof record.fieldPath === 'string';
+}
+
+/**
+ * Recursively extract duck-typed KubernetesRef objects from a value.
+ *
+ * Unlike `extractResourceReferences` (which relies on `isKubernetesRef` with
+ * the brand symbol), this walks the object tree using `isDuckTypedKubernetesRef`
+ * so that plain objects with `resourceId` / `fieldPath` are discovered.
+ */
+function extractDuckTypedRefs(
+  value: unknown,
+  visited?: WeakSet<object>,
+  depth = 0
+): KubernetesRef<unknown>[] {
+  const refs: KubernetesRef<unknown>[] = [];
+  const MAX_DEPTH = 50;
+
+  if (isDuckTypedKubernetesRef(value)) {
+    refs.push(value);
+    return refs;
+  }
+
+  if (depth >= MAX_DEPTH) return refs;
+
+  if (Array.isArray(value)) {
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(value)) return refs;
+    seen.add(value);
+    for (const item of value) {
+      refs.push(...extractDuckTypedRefs(item, seen, depth + 1));
+    }
+    return refs;
+  }
+
+  if (value !== null && typeof value === 'object') {
+    const seen = visited ?? new WeakSet<object>();
+    if (seen.has(value)) return refs;
+    seen.add(value);
+    for (const val of Object.values(value)) {
+      refs.push(...extractDuckTypedRefs(val, seen, depth + 1));
+    }
+  }
+
+  return refs;
+}
+
+/**
  * Factory pattern types supported by TypeKro
  */
 export type FactoryPatternType = 'direct' | 'kro';
@@ -62,8 +123,9 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
         return this.handleStringExpression(expression, context);
       }
 
-      if (isKubernetesRef(expression)) {
-        // Direct KubernetesRef object
+      // Check brand-based first, then fall back to duck-type detection
+      if (isKubernetesRef(expression) || isDuckTypedKubernetesRef(expression)) {
+        // Direct KubernetesRef object (branded or duck-typed)
         const celExpression = this.convertKubernetesRef(expression, context);
         return {
           valid: true,
@@ -77,7 +139,11 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
       }
 
       // For other types, check if they contain KubernetesRef objects
-      const dependencies = this.extractKubernetesRefs(expression);
+      // Try brand-based extraction first, then duck-type extraction as fallback
+      let dependencies = this.extractKubernetesRefs(expression);
+      if (dependencies.length === 0) {
+        dependencies = extractDuckTypedRefs(expression);
+      }
       if (dependencies.length === 0) {
         // No KubernetesRef objects - no conversion needed
         return {
@@ -206,8 +272,9 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
         return this.handleStringExpression(expression, context);
       }
 
-      if (isKubernetesRef(expression)) {
-        // Direct KubernetesRef object
+      // Check brand-based first, then fall back to duck-type detection
+      if (isKubernetesRef(expression) || isDuckTypedKubernetesRef(expression)) {
+        // Direct KubernetesRef object (branded or duck-typed)
         const celExpression = this.convertKubernetesRef(expression, context);
         return {
           valid: true,
@@ -221,7 +288,11 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
       }
 
       // For other types, check if they contain KubernetesRef objects
-      const dependencies = this.extractKubernetesRefs(expression);
+      // Try brand-based extraction first, then duck-type extraction as fallback
+      let dependencies = this.extractKubernetesRefs(expression);
+      if (dependencies.length === 0) {
+        dependencies = extractDuckTypedRefs(expression);
+      }
       if (dependencies.length === 0) {
         // No KubernetesRef objects - no conversion needed
         return {

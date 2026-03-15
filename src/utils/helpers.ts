@@ -12,7 +12,7 @@
  * - String utilities → `src/utils/string.ts`
  */
 
-import type { WithResourceId } from '../core/types/kubernetes.js';
+import { copyResourceMetadata } from '../core/metadata/index.js';
 
 /**
  * Recursively removes `undefined` values from an object tree.
@@ -45,36 +45,22 @@ export function removeUndefinedValues<T>(obj: T): T {
 }
 
 /**
- * Preserve non-enumerable internal properties (readinessEvaluator, __resourceId) from a source
- * object onto a target object.  This is needed after object spread (`{...source, ...overrides}`)
- * because spread only copies enumerable own properties.
+ * Preserve resource metadata from a source object onto a target object.
+ * This is needed after object spread (`{...source, ...overrides}`) because
+ * metadata stored in the WeakMap is keyed by object identity.
  *
- * @param source The original object that may have non-enumerable properties
- * @param target The new object (result of spread) that needs the properties restored
+ * @param source The original object that may have metadata in the WeakMap
+ * @param target The new object (result of spread) that needs the metadata copied
  */
 export function preserveNonEnumerableProperties<T extends Record<string, unknown>>(
   source: T,
   target: T
 ): void {
-  const readinessEvaluator = (source as Record<string, unknown>).readinessEvaluator;
-  if (typeof readinessEvaluator === 'function') {
-    Object.defineProperty(target, 'readinessEvaluator', {
-      value: readinessEvaluator,
-      enumerable: false,
-      configurable: true,
-      writable: false,
-    });
-  }
-
-  const resourceId = (source as WithResourceId).__resourceId;
-  if (resourceId !== undefined) {
-    Object.defineProperty(target, '__resourceId', {
-      value: resourceId,
-      enumerable: false,
-      configurable: true,
-      writable: false,
-    });
-  }
+  // All metadata (resourceId, readinessEvaluator, includeWhen, readyWhen,
+  // forEach, templateOverrides) is stored in the WeakMap. copyResourceMetadata
+  // transfers it from source to target and also migrates any legacy
+  // non-enumerable properties found on the source object.
+  copyResourceMetadata(source, target);
 }
 
 /**

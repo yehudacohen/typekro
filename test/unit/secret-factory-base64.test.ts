@@ -138,7 +138,7 @@ describe('Secret Factory Base64 Encoding', () => {
     expect(secretResource.metadata?.name).toBe('test-secret');
     expect(secretResource.metadata?.namespace).toBe('test-namespace');
     expect(secretResource.metadata?.labels?.app).toBe('test-secret');
-    expect((secretResource as any).id).toBe('mySecretId');
+    expect((secretResource as unknown as Record<string, unknown>).id).toBe('mySecretId');
   });
 
   it('should handle stringData without namespace', () => {
@@ -157,8 +157,8 @@ describe('Secret Factory Base64 Encoding', () => {
     const secretResource = Secret({
       name: 'test-secret',
       stringData: {
-        number: '123' as any,
-        boolean: 'true' as any,
+        number: '123' as unknown as string,
+        boolean: 'true' as unknown as string,
       },
     });
 

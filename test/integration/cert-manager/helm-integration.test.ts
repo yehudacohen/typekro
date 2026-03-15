@@ -78,8 +78,12 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
         // Wait a bit for the repository to be processed
         await new Promise((resolve) => setTimeout(resolve, 5000));
 
-        expect((createdRepo as any).spec.url).toBe('https://charts.jetstack.io');
-        expect((createdRepo as any).metadata?.name).toBe('cert-manager-repo-direct-test');
+        const repoObj = createdRepo as unknown as Record<string, unknown>;
+        expect(repoObj.spec).toBeDefined();
+        expect((repoObj.spec as Record<string, unknown>).url).toBe('https://charts.jetstack.io');
+        expect((repoObj.metadata as Record<string, unknown> | undefined)?.name).toBe(
+          'cert-manager-repo-direct-test'
+        );
 
         // Clean up - use deleteResourceIfExists to handle missing resources gracefully
         await deleteResourceIfExists(k8sApi, {
@@ -164,8 +168,15 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
 
         // Validate the core structure - these should be consistent regardless of whether
         // the resource was just created or already existed
-        expect((createdRepo as any).spec.url).toBe('https://charts.jetstack.io');
-        expect((createdRelease as any).spec.chart.spec.chart).toBe('cert-manager');
+        const repoObj2 = createdRepo as unknown as Record<string, unknown>;
+        expect((repoObj2.spec as Record<string, unknown>).url).toBe('https://charts.jetstack.io');
+        const releaseObj = createdRelease as unknown as Record<string, unknown>;
+        expect(
+          (
+            ((releaseObj.spec as Record<string, unknown>).chart as Record<string, unknown>)
+              .spec as Record<string, unknown>
+          ).chart
+        ).toBe('cert-manager');
         // Note: spec.values may differ if resource already existed with different values
         // The important thing is that the resource exists and has the correct chart reference
 
@@ -370,7 +381,7 @@ describeOrSkip('Cert-Manager Helm Integration', () => {
             },
           },
         },
-      } as any; // Use 'any' to test validation with invalid types
+      } as unknown as Parameters<typeof validateCertManagerHelmValues>[0]; // Cast to test validation with invalid types
 
       const invalidResult = validateCertManagerHelmValues(invalidConfig);
       expect(invalidResult.valid).toBe(false);

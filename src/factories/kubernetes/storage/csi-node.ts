@@ -5,7 +5,7 @@ import { createResource } from '../../shared.js';
 
 export type V1CSINodeSpec = NonNullable<V1CSINode['spec']>;
 
-export function csiNode(resource: V1CSINode): Enhanced<V1CSINodeSpec, unknown> {
+export function csiNode(resource: V1CSINode & { id?: string }): Enhanced<V1CSINodeSpec, unknown> {
   return createResource({
     ...resource,
     apiVersion: 'storage.k8s.io/v1',

@@ -203,10 +203,15 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
     timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
   });
 
-  // Create clean, serializable versions for Alchemy storage
-  // Only serialize the data that Alchemy needs to store, not the functional parts
-  const cleanResource = structuredClone(props.resource);
-  const cleanDeployedResource = structuredClone(deployedResource);
+  // Create clean, serializable versions for Alchemy storage.
+  // We use JSON.parse(JSON.stringify()) deliberately instead of structuredClone because:
+  // 1. Enhanced<> resources contain non-cloneable values (Symbols like pino.chindings,
+  //    KUBERNETES_REF_BRAND, plus functions like readinessEvaluator) that cause
+  //    structuredClone to throw "Cannot serialize unique symbol" errors.
+  // 2. JSON round-trip strips symbols, functions, and undefined values — which is
+  //    exactly the behavior we want for creating clean Alchemy state entries.
+  const cleanResource = JSON.parse(JSON.stringify(props.resource)) as T;
+  const cleanDeployedResource = JSON.parse(JSON.stringify(deployedResource)) as T;
 
   // Create the resource properties for Alchemy
   const resourceProperties = {

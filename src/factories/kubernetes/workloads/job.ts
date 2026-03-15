@@ -17,7 +17,7 @@ export type V1JobStatus = NonNullable<V1Job['status']>;
  *   spec: { template: { spec: { containers: [{ name: 'migrate', image: 'migrate:latest' }], restartPolicy: 'Never' } } },
  * });
  */
-export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
+export function job(resource: V1Job & { id?: string }): Enhanced<V1JobSpec, V1JobStatus> {
   // Capture configuration in closure for Job-specific readiness logic
   const expectedCompletions = resource.spec?.completions || 1;
   const parallelism = resource.spec?.parallelism || 1;

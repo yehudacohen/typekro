@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1Deployment } from '@kubernetes/client-node';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Deployment Factory with Readiness Evaluation', () => {
   it('should create deployment with readiness evaluator', () => {
@@ -25,8 +26,8 @@ describe('Deployment Factory with Readiness Evaluation', () => {
     const enhanced = deployment(deploymentResource);
 
     expect(enhanced).toBeDefined();
-    expect((enhanced as any).readinessEvaluator).toBeDefined();
-    expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+    expect(getReadinessEvaluator(enhanced)).toBeDefined();
+    expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
   });
 
   it('should evaluate deployment as not ready when status is missing', () => {
@@ -45,7 +46,7 @@ describe('Deployment Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = deployment(deploymentResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const result = evaluator({ status: null });
 
@@ -71,7 +72,7 @@ describe('Deployment Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = deployment(deploymentResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       status: {
@@ -104,7 +105,7 @@ describe('Deployment Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = deployment(deploymentResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       status: {
@@ -141,7 +142,7 @@ describe('Deployment Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = deployment(deploymentResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       status: {
@@ -172,7 +173,7 @@ describe('Deployment Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = deployment(deploymentResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     // Pass malformed resource that might cause errors
     const result = evaluator(null);

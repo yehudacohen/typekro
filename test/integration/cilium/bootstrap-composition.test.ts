@@ -5,27 +5,38 @@
  * with real Kubernetes deployments using both kro and direct factory patterns.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
-import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues } from '../../../src/factories/cilium/resources/helm.js';
 import { Cel } from '../../../src/core/references/cel.js';
+import {
+  ciliumHelmRelease,
+  ciliumHelmRepository,
+  mapCiliumConfigToHelmValues,
+} from '../../../src/factories/cilium/resources/helm.js';
 // import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCoreV1ApiClient } from '../shared-kubeconfig.js';
-import { isCiliumInstalled } from './setup-cilium.js';
+import {
+  createCoreV1ApiClient,
+  createKubernetesObjectApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from '../shared-kubeconfig.js';
+import { ensureCiliumInstalled, isCiliumInstalled } from './setup-cilium.js';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
 const NAMESPACE = 'typekro-test-bootstrap'; // Use unique namespace for this test file
 const clusterAvailable = isClusterAvailable();
 
-// Check if both cluster and Cilium are available
+// Ensure Cilium is bootstrapped, then verify it's available
 let ciliumAvailable = false;
 if (clusterAvailable) {
   try {
+    await ensureCiliumInstalled();
     ciliumAvailable = await isCiliumInstalled();
   } catch (error) {
-    console.warn('Could not check Cilium availability:', error);
+    console.warn('Could not bootstrap/check Cilium availability:', error);
     ciliumAvailable = false;
   }
 }
@@ -33,10 +44,10 @@ if (clusterAvailable) {
 if (!clusterAvailable) {
   console.log('⏭️  Skipping Cilium Bootstrap Composition Integration: No cluster available');
 } else if (!ciliumAvailable) {
-  console.log('⏭️  Skipping Cilium Bootstrap Composition Integration: Cilium not installed in cluster');
+  console.log('⏭️  Skipping Cilium Bootstrap Composition Integration: Cilium bootstrap failed');
 }
 
-const describeOrSkip = (clusterAvailable && ciliumAvailable) ? describe : describe.skip;
+const describeOrSkip = clusterAvailable && ciliumAvailable ? describe : describe.skip;
 
 // Test schemas for bootstrap composition
 const CiliumStackSpec = type({
@@ -83,14 +94,25 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
     coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE; // Use the standard test namespace
 
-    // Create test namespace if it doesn't exist
-    try {
-      await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-      console.log(`📦 Created test namespace: ${testNamespace}`);
-    } catch (error: any) {
-      if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
-        console.log(`📦 Test namespace ${testNamespace} already exists`);
-      } else {
+    // Create test namespace, waiting for any prior terminating namespace to clear
+    const maxWait = 60000;
+    const startWait = Date.now();
+    while (Date.now() - startWait < maxWait) {
+      try {
+        await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
+        console.log(`📦 Created test namespace: ${testNamespace}`);
+        break;
+      } catch (error: any) {
+        const msg = error.body?.message || error.message || '';
+        if (msg.includes('being deleted')) {
+          console.log(`⏳ Waiting for terminating namespace ${testNamespace} to clear...`);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          continue;
+        }
+        if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
+          console.log(`📦 Test namespace ${testNamespace} already exists`);
+          break;
+        }
         throw error;
       }
     }
@@ -101,12 +123,52 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
   afterAll(async () => {
     if (!clusterAvailable || !coreApi) return;
 
-    // Clean up test namespace
+    const k8sApi = createKubernetesObjectApiClient(kubeConfig);
+
+    // Clean up HelmReleases in kube-system created by the bootstrap deploy test.
+    // IMPORTANT: Suspend first to prevent Flux helm-controller from uninstalling
+    // the Helm release (which would remove Cilium pods from the cluster).
+    const helmReleaseNames = ['cilium-direct', 'cilium-test'];
+    for (const name of helmReleaseNames) {
+      try {
+        // Suspend to prevent Flux from acting on deletion
+        await k8sApi.patch(
+          {
+            apiVersion: 'helm.toolkit.fluxcd.io/v2',
+            kind: 'HelmRelease',
+            metadata: { name, namespace: 'kube-system' },
+          },
+          undefined as any, // patchBody not used when using options.body
+          undefined, // pretty
+          undefined, // dryRun
+          undefined, // fieldManager
+          undefined, // force
+          {
+            headers: { 'Content-Type': 'application/merge-patch+json' },
+            body: { spec: { suspend: true } },
+          } as any
+        );
+      } catch (_error: any) {
+        // Ignore patch errors — HelmRelease may not exist
+      }
+      try {
+        await k8sApi.delete({
+          apiVersion: 'helm.toolkit.fluxcd.io/v2',
+          kind: 'HelmRelease',
+          metadata: { name, namespace: 'kube-system' },
+        });
+        console.log(`🗑️ Deleted HelmRelease: ${name} from kube-system`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(`⚠️ Could not delete HelmRelease ${name}: ${error.message}`);
+        }
+      }
+    }
+
+    // Clean up test namespace and wait for completion (deletes HelmRepositories and other namespaced resources)
     try {
-      await coreApi.deleteNamespace({ name: testNamespace });
-      console.log(`🗑️ Deleted test namespace: ${testNamespace}`);
+      await deleteNamespaceAndWait(testNamespace, kubeConfig);
     } catch (error: any) {
-      // Ignore errors during cleanup
       console.log(`⚠️ Could not delete test namespace: ${error.message}`);
     }
   });
@@ -271,15 +333,15 @@ describeOrSkip('Cilium Bootstrap Composition Integration', () => {
       expect(deploymentResult.spec.enableEncryption).toBe(true);
 
       console.log('✅ Direct factory bootstrap composition deployment successful');
-    });
+    }, 600000); // 10 minutes - HelmRelease chart pull + pod readiness under contention
 
     // SKIP: Kro factory test - Kro controller has a known limitation with HelmRelease spec.values
     // The Kro controller tries to extract CEL expressions from all fields including spec.values,
     // but HelmRelease uses x-kubernetes-preserve-unknown-fields: true for values, so there's no
     // schema for nested fields like 'cluster'. This causes the error:
-    // "failed to extract CEL expressions from schema for resource helmRelease: 
+    // "failed to extract CEL expressions from schema for resource helmRelease:
     //  error getting field schema for path spec.values.cluster: schema not found for field cluster"
-    // 
+    //
     // Workaround: Use direct deployment strategy for HelmRelease resources with complex values.
     // See: .kiro/specs/tech-debt-q1-2026/conflict-handling-design.md for details.
     it.skip('should deploy bootstrap composition using kro factory with .deploy()', async () => {

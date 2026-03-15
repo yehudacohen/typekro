@@ -239,7 +239,6 @@ const infrastructureStack = kubernetesComposition(
     const apisixInstance = apisix.apisixBootstrap({
       name: 'apisix',
       namespace: 'apisix-system',
-      version: '2.8.0',
       ingressController: {
         enabled: true,
         config: {

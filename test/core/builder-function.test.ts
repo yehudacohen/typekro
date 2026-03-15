@@ -160,11 +160,12 @@ describe('Builder Function Support', () => {
 
       // Schema should have been passed to builder
       expect(capturedSchema).toBeDefined();
-      expect((capturedSchema as any).spec).toBeDefined();
-      expect((capturedSchema as any).status).toBeDefined();
+      expect((capturedSchema as unknown as Record<string, unknown>).spec).toBeDefined();
+      expect((capturedSchema as unknown as Record<string, unknown>).status).toBeDefined();
 
       // Schema references should be KubernetesRef objects
-      const nameRef = (capturedSchema as any).spec.name;
+      const nameRef = (capturedSchema as unknown as Record<string, Record<string, unknown>>).spec
+        .name;
       expect(isKubernetesRef(nameRef)).toBe(true);
       expect(nameRef).toHaveProperty('resourceId', '__schema__');
       expect(nameRef).toHaveProperty('fieldPath', 'spec.name');

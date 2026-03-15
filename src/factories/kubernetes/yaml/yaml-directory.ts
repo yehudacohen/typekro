@@ -31,6 +31,8 @@ function parseYamlManifests(yamlContent: string): KubernetesResource[] {
 
 export interface YamlDirectoryConfig {
   name: string;
+  /** Resource graph identifier. Required when `name` is dynamic (e.g. from schema references). */
+  id?: string;
   path: string; // Supports: "./local/dir", "git:github.com/org/repo/path/dir"
   /** @default true */
   recursive?: boolean;

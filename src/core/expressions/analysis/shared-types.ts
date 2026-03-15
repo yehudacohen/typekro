@@ -33,11 +33,9 @@ export interface AnalysisContext {
   type: 'status' | 'resource' | 'condition' | 'readiness';
 
   /** Available resource references from magic proxy system */
-  // biome-ignore lint/suspicious/noExplicitAny: Enhanced requires flexible spec/status types for analysis contexts
   availableReferences: Record<string, Enhanced<any, any>>;
 
   /** Schema proxy for schema field references */
-  // biome-ignore lint/suspicious/noExplicitAny: SchemaProxy requires flexible spec/status types
   schemaProxy?: SchemaProxy<any, any>;
 
   /** Factory pattern being used (affects CEL generation strategy) */
@@ -133,4 +131,53 @@ export interface CelConversionResult {
 
   /** Aggregated warnings from all validation results */
   warnings: ValidationWarning[];
+}
+
+/**
+ * Comprehensive expression validation report
+ */
+export interface ExpressionValidationReport {
+  /** Original expression */
+  expression: string;
+
+  /** Conversion result */
+  conversionResult: CelConversionResult;
+
+  /** Type validation result */
+  typeValidation?: TypeValidationResult;
+
+  /** Resource validation results */
+  resourceValidation?: ResourceValidationResult[];
+
+  /** Validation summary */
+  summary: ValidationSummary;
+}
+
+/**
+ * Validation summary
+ */
+export interface ValidationSummary {
+  /** Overall validation status */
+  valid: boolean;
+
+  /** Total number of errors */
+  totalErrors: number;
+
+  /** Total number of warnings */
+  totalWarnings: number;
+
+  /** Whether the expression requires conversion */
+  requiresConversion: boolean;
+
+  /** Whether there are type-related issues */
+  hasTypeIssues: boolean;
+
+  /** Whether there are resource reference issues */
+  hasResourceIssues: boolean;
+
+  /** Whether there are compile-time type issues */
+  hasCompileTimeIssues: boolean;
+
+  /** Overall confidence score (0-1) */
+  confidence: number;
 }

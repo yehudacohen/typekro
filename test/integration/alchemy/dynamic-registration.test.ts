@@ -9,6 +9,7 @@ import {
   ensureResourceTypeRegistered,
   inferAlchemyTypeFromTypeKroResource,
 } from '../../../src/alchemy/deployment.js';
+import { getReadinessEvaluator } from '../../../src/core/metadata/index.js';
 import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 import { deployment } from '../../../src/factories/kubernetes/workloads/deployment.js';
 
@@ -80,7 +81,7 @@ describe('Dynamic Alchemy Resource Registration', () => {
     it('should validate resource kind is present', () => {
       const invalidResource: Enhanced<any, any> = {
         ...mockDeployment,
-        kind: undefined as any,
+        kind: undefined as unknown as string,
       };
 
       expect(() => inferAlchemyTypeFromTypeKroResource(invalidResource)).toThrow(
@@ -167,7 +168,7 @@ describe('Dynamic Alchemy Resource Registration', () => {
 
   describe('DirectTypeKroDeployer', () => {
     it('should create a deployer instance', () => {
-      const mockEngine = {} as any; // Mock DirectDeploymentEngine
+      const mockEngine = {} as unknown as ConstructorParameters<typeof DirectTypeKroDeployer>[0]; // Mock DirectDeploymentEngine
       const deployer = new DirectTypeKroDeployer(mockEngine);
       expect(deployer).toBeDefined();
     });
@@ -179,7 +180,7 @@ describe('Dynamic Alchemy Resource Registration', () => {
           resources: [],
           errors: [],
         }),
-      } as any;
+      } as unknown as ConstructorParameters<typeof DirectTypeKroDeployer>[0];
       const deployer = new DirectTypeKroDeployer(mockEngine);
 
       const result = await deployer.deploy(mockDeployment, {
@@ -191,12 +192,12 @@ describe('Dynamic Alchemy Resource Registration', () => {
 
       // The result should have the same properties as the original deployment
       expect(result.kind).toBe(mockDeployment.kind);
-      expect(result.metadata?.name).toBe(mockDeployment.metadata?.name as any);
+      expect(result.metadata?.name).toBe(mockDeployment.metadata?.name as unknown as string);
       expect(result.spec?.replicas).toBe(mockDeployment.spec?.replicas);
 
-      // The result should now have a readiness evaluator
-      expect(result).toHaveProperty('readinessEvaluator');
-      expect(typeof (result as any).readinessEvaluator).toBe('function');
+      // The result should now have a readiness evaluator (stored in WeakMap metadata)
+      expect(getReadinessEvaluator(result)).toBeDefined();
+      expect(typeof getReadinessEvaluator(result)).toBe('function');
     });
   });
 
@@ -210,6 +211,82 @@ describe('Dynamic Alchemy Resource Registration', () => {
     it('should handle registration without errors', () => {
       // Test that registration works without throwing
       expect(() => clearRegisteredTypes()).not.toThrow();
+    });
+  });
+
+  describe('Resource Serialization Safety', () => {
+    it('should safely serialize Enhanced resources with symbol properties', () => {
+      // Enhanced resources contain non-cloneable properties:
+      // - Symbol-keyed properties (KUBERNETES_REF_BRAND, pino.chindings)
+      // - Functions (readinessEvaluator)
+      // - undefined values
+      // Regression test: structuredClone throws "Cannot serialize unique symbol"
+      // on these objects, but JSON round-trip safely strips them.
+      const resourceWithSymbols = {
+        ...mockDeployment,
+        [Symbol.for('pino.chindings')]: '{"component":"test"}',
+        [Symbol.for('TypeKro.KubernetesRef')]: true,
+      };
+
+      // JSON round-trip should NOT throw (unlike structuredClone)
+      expect(() => {
+        JSON.parse(JSON.stringify(resourceWithSymbols));
+      }).not.toThrow();
+
+      // structuredClone WOULD throw on symbol-keyed objects
+      expect(() => {
+        structuredClone(resourceWithSymbols);
+      }).toThrow();
+
+      // The serialized result should have the data fields but not symbols/functions
+      const serialized = JSON.parse(JSON.stringify(resourceWithSymbols));
+      expect(serialized.apiVersion).toBe('apps/v1');
+      expect(serialized.kind).toBe('Deployment');
+      expect(serialized.metadata?.name).toBe('test-deployment');
+    });
+
+    it('should strip undefined values during serialization', () => {
+      // JSON.stringify strips undefined values, which is desired behavior
+      // for Kubernetes API payloads where undefined fields should be omitted
+      const resourceWithUndefined = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'test', namespace: undefined },
+        data: { key: 'value', missing: undefined },
+      };
+
+      const serialized = JSON.parse(JSON.stringify(resourceWithUndefined));
+
+      // undefined values should be stripped
+      expect(serialized.metadata.namespace).toBeUndefined();
+      expect(serialized.data.missing).toBeUndefined();
+      expect('namespace' in serialized.metadata).toBe(false);
+      expect('missing' in serialized.data).toBe(false);
+
+      // defined values should be preserved
+      expect(serialized.metadata.name).toBe('test');
+      expect(serialized.data.key).toBe('value');
+    });
+
+    it('should strip function properties during serialization', () => {
+      // Enhanced resources have readinessEvaluator functions that must be stripped
+      const resourceWithFunctions = {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'test' },
+        readinessEvaluator: () => ({ ready: true, message: 'ok' }),
+        someMethod: () => 42,
+      };
+
+      const serialized = JSON.parse(JSON.stringify(resourceWithFunctions));
+
+      // Functions should be stripped
+      expect(serialized.readinessEvaluator).toBeUndefined();
+      expect(serialized.someMethod).toBeUndefined();
+
+      // Data properties should be preserved
+      expect(serialized.apiVersion).toBe('apps/v1');
+      expect(serialized.kind).toBe('Deployment');
     });
   });
 });

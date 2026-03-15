@@ -3,7 +3,9 @@ import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
-export function endpoints(resource: V1Endpoints): V1Endpoints & Enhanced<V1Endpoints, object> {
+export function endpoints(
+  resource: V1Endpoints & { id?: string }
+): V1Endpoints & Enhanced<V1Endpoints, object> {
   return createResource<V1Endpoints, object>({
     ...resource,
     apiVersion: 'v1',

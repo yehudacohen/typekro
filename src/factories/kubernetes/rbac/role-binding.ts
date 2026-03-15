@@ -4,7 +4,7 @@ import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export function roleBinding(
-  resource: V1RoleBinding
+  resource: V1RoleBinding & { id?: string }
 ): V1RoleBinding & Enhanced<V1RoleBinding, object> {
   return createResource<V1RoleBinding, object>({
     ...resource,

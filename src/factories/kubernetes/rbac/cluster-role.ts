@@ -3,7 +3,9 @@ import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
-export function clusterRole(resource: V1ClusterRole): Enhanced<V1ClusterRole, unknown> {
+export function clusterRole(
+  resource: V1ClusterRole & { id?: string }
+): Enhanced<V1ClusterRole, unknown> {
   return createResource<V1ClusterRole, object>(
     {
       ...resource,

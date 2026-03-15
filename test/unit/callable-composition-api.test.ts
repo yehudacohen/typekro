@@ -152,9 +152,9 @@ describe('Callable Composition API', () => {
       expect(phaseRef).toBeDefined();
 
       // Should have the nested composition flag for CEL generation
-      expect((readyRef as any).__nestedComposition).toBe(true);
-      expect((connectionRef as any).__nestedComposition).toBe(true);
-      expect((phaseRef as any).__nestedComposition).toBe(true);
+      expect((readyRef as unknown as Record<string, unknown>).__nestedComposition).toBe(true);
+      expect((connectionRef as unknown as Record<string, unknown>).__nestedComposition).toBe(true);
+      expect((phaseRef as unknown as Record<string, unknown>).__nestedComposition).toBe(true);
     });
   });
 

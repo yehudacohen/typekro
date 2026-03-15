@@ -3,7 +3,12 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { kroCustomResource, kroCustomResourceDefinition, resourceGraphDefinition,  } from '../../src/factories/kro/index.js';
+import {
+  kroCustomResource,
+  kroCustomResourceDefinition,
+  resourceGraphDefinition,
+} from '../../src/factories/kro/index.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Kro Factory Integration', () => {
   it('should demonstrate complete Kro workflow with all factory types', () => {
@@ -100,14 +105,14 @@ describe('Kro Factory Integration', () => {
     });
 
     // Verify all resources are created with readiness evaluators
-    expect((rgd as any).readinessEvaluator).toBeDefined();
-    expect((crd as any).readinessEvaluator).toBeDefined();
-    expect((webappInstance as any).readinessEvaluator).toBeDefined();
+    expect(getReadinessEvaluator(rgd)).toBeDefined();
+    expect(getReadinessEvaluator(crd)).toBeDefined();
+    expect(getReadinessEvaluator(webappInstance)).toBeDefined();
 
     // Test the complete workflow readiness evaluation
 
     // 1. RGD should be ready when state is Active with proper conditions
-    const rgdResult = (rgd as any).readinessEvaluator({
+    const rgdResult = requireReadinessEvaluator(rgd)({
       status: {
         state: 'Active',
         conditions: [
@@ -120,7 +125,7 @@ describe('Kro Factory Integration', () => {
     expect(rgdResult.ready).toBe(true);
 
     // 2. CRD should be ready when established
-    const crdResult = (crd as any).readinessEvaluator({
+    const crdResult = requireReadinessEvaluator(crd)({
       metadata: { name: 'webapplications.kro.run' },
       status: {
         conditions: [
@@ -132,7 +137,7 @@ describe('Kro Factory Integration', () => {
     expect(crdResult.ready).toBe(true);
 
     // 3. Custom resource instance should be ready when ACTIVE
-    const instanceResult = (webappInstance as any).readinessEvaluator({
+    const instanceResult = requireReadinessEvaluator(webappInstance)({
       status: {
         state: 'ACTIVE',
         conditions: [{ type: 'Ready', status: 'True' }],
@@ -181,9 +186,9 @@ describe('Kro Factory Integration', () => {
     });
 
     // Test error handling for all factory types
-    const rgdError = (rgd as any).readinessEvaluator(null);
-    const customResourceError = (customResource as any).readinessEvaluator(null);
-    const crdError = (crd as any).readinessEvaluator(null);
+    const rgdError = requireReadinessEvaluator(rgd)(null);
+    const customResourceError = requireReadinessEvaluator(customResource)(null);
+    const crdError = requireReadinessEvaluator(crd)(null);
 
     // All should handle errors gracefully
     expect(rgdError.ready).toBe(false);
@@ -210,7 +215,7 @@ describe('Kro Factory Integration', () => {
       spec: { schema: { apiVersion: 'v1alpha1', kind: 'WebApp' }, resources: [] },
     });
 
-    let rgdStatus = (rgd as any).readinessEvaluator({
+    let rgdStatus = requireReadinessEvaluator(rgd)({
       status: { state: 'processing', conditions: [] },
     });
     expect(rgdStatus.ready).toBe(false);
@@ -229,7 +234,7 @@ describe('Kro Factory Integration', () => {
       },
     });
 
-    let crdStatus = (crd as any).readinessEvaluator({
+    let crdStatus = requireReadinessEvaluator(crd)({
       metadata: { name: 'webapps.kro.run' },
       status: {
         conditions: [
@@ -249,7 +254,7 @@ describe('Kro Factory Integration', () => {
       spec: { name: 'my-webapp', replicas: 2 },
     });
 
-    let webappStatus = (webapp as any).readinessEvaluator({
+    let webappStatus = requireReadinessEvaluator(webapp)({
       status: {
         state: 'PROGRESSING',
         conditions: [{ type: 'Ready', status: 'False', reason: 'CreatingResources' }],
@@ -261,7 +266,7 @@ describe('Kro Factory Integration', () => {
     // 4. Now everything becomes ready
 
     // RGD becomes ready
-    rgdStatus = (rgd as any).readinessEvaluator({
+    rgdStatus = requireReadinessEvaluator(rgd)({
       status: {
         state: 'Active',
         conditions: [
@@ -274,7 +279,7 @@ describe('Kro Factory Integration', () => {
     expect(rgdStatus.ready).toBe(true);
 
     // CRD becomes established
-    crdStatus = (crd as any).readinessEvaluator({
+    crdStatus = requireReadinessEvaluator(crd)({
       metadata: { name: 'webapps.kro.run' },
       status: {
         conditions: [
@@ -286,7 +291,7 @@ describe('Kro Factory Integration', () => {
     expect(crdStatus.ready).toBe(true);
 
     // Custom resource becomes active
-    webappStatus = (webapp as any).readinessEvaluator({
+    webappStatus = requireReadinessEvaluator(webapp)({
       status: {
         state: 'ACTIVE',
         conditions: [{ type: 'Ready', status: 'True' }],

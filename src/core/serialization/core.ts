@@ -5,13 +5,6 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-import {
-  containsCelExpressions,
-  containsKubernetesRefs,
-  isCelExpression,
-} from '../../utils/type-guards.js';
-import { runInStatusBuilderContext } from '../composition/context.js';
-
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
@@ -20,16 +13,11 @@ import {
   applyAnalysisToResources,
   type CompositionAnalysisResult,
 } from '../expressions/composition/composition-analyzer.js';
-import { analyzeImperativeComposition } from '../expressions/composition/imperative-analyzer.js';
-import { celConversionEngine } from '../expressions/factory/cel-conversion-engine.js';
-import { CelToJavaScriptMigrationHelper } from '../expressions/factory/migration-helpers.js';
-import {
-  analyzeStatusBuilderForToResourceGraph,
-  StatusBuilderAnalyzer,
-  type StatusBuilderFunction,
-} from '../expressions/factory/status-builder-analyzer.js';
+import { StatusBuilderAnalyzer } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
+import { setResourceId } from '../metadata/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
+import { getKindInfo, getSemanticCandidateKinds } from '../resources/factory-registry.js';
 import type {
   DeploymentClosure,
   DirectResourceFactory,
@@ -48,6 +36,7 @@ import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.j
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
 import { generateKroSchemaFromArktype } from './schema.js';
+import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
 /**
@@ -78,31 +67,6 @@ function separateResourcesAndClosures<
 }
 
 /**
- * Map of factory names to Kubernetes apiVersion/kind for creating stub resources.
- * Used when the AST analyzer detects factory calls that didn't execute at runtime
- * (e.g. inside if-branches that weren't taken due to proxy evaluation).
- */
-const FACTORY_KIND_MAP: Record<string, { apiVersion: string; kind: string }> = {
-  Deployment: { apiVersion: 'apps/v1', kind: 'Deployment' },
-  ConfigMap: { apiVersion: 'v1', kind: 'ConfigMap' },
-  Service: { apiVersion: 'v1', kind: 'Service' },
-  Ingress: { apiVersion: 'networking.k8s.io/v1', kind: 'Ingress' },
-  StatefulSet: { apiVersion: 'apps/v1', kind: 'StatefulSet' },
-  DaemonSet: { apiVersion: 'apps/v1', kind: 'DaemonSet' },
-  Job: { apiVersion: 'batch/v1', kind: 'Job' },
-  CronJob: { apiVersion: 'batch/v1', kind: 'CronJob' },
-  Secret: { apiVersion: 'v1', kind: 'Secret' },
-  PersistentVolumeClaim: { apiVersion: 'v1', kind: 'PersistentVolumeClaim' },
-  ServiceAccount: { apiVersion: 'v1', kind: 'ServiceAccount' },
-  Role: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role' },
-  RoleBinding: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'RoleBinding' },
-  ClusterRole: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRole' },
-  ClusterRoleBinding: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'ClusterRoleBinding' },
-  Namespace: { apiVersion: 'v1', kind: 'Namespace' },
-  HelmRelease: { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease' },
-};
-
-/**
  * Create a minimal stub resource object for factory calls that were detected
  * by AST analysis but didn't execute at runtime.
  *
@@ -115,7 +79,7 @@ function createStubResource(
   factoryName: string,
   resourceId: string
 ): Record<string, unknown> | null {
-  const kindInfo = FACTORY_KIND_MAP[factoryName];
+  const kindInfo = getKindInfo(factoryName);
   if (!kindInfo) return null;
 
   const stub: Record<string, unknown> = {
@@ -124,349 +88,23 @@ function createStubResource(
     metadata: { name: resourceId, labels: {} },
   };
 
-  // Set __resourceId as non-enumerable
-  Object.defineProperty(stub, '__resourceId', {
-    value: resourceId,
-    enumerable: false,
-    configurable: true,
-  });
+  // Store resource ID in WeakMap metadata
+  setResourceId(stub, resourceId);
 
   return stub;
 }
 
-/**
- * Detect and preserve existing CEL expressions for backward compatibility
- *
- * This function recursively checks status mappings for existing CEL expressions
- * and preserves them without conversion, ensuring backward compatibility.
- */
-function detectAndPreserveCelExpressions(
-  statusMappings: Record<string, unknown>,
-  preservedExpressions: Record<string, unknown> = {},
-  path: string = ''
-): { hasExistingCel: boolean; preservedMappings: Record<string, unknown> } {
-  let hasExistingCel = false;
-  const preservedMappings = { ...preservedExpressions };
+// =============================================================================
+// Re-exported helpers (canonical source: status-analysis-helpers.ts)
+// =============================================================================
 
-  if (!statusMappings || typeof statusMappings !== 'object') {
-    return { hasExistingCel, preservedMappings };
-  }
-
-  for (const [key, value] of Object.entries(statusMappings)) {
-    const currentPath = path ? `${path}.${key}` : key;
-
-    if (isCelExpression(value)) {
-      // Found existing CEL expression - preserve it
-      hasExistingCel = true;
-      preservedMappings[currentPath] = value;
-    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-      // Recursively check nested objects
-      const nestedResult = detectAndPreserveCelExpressions(
-        value as Record<string, unknown>,
-        preservedMappings,
-        currentPath
-      );
-      hasExistingCel = hasExistingCel || nestedResult.hasExistingCel;
-      Object.assign(preservedMappings, nestedResult.preservedMappings);
-    }
-  }
-
-  return { hasExistingCel, preservedMappings };
-}
-
-/**
- * Merge preserved CEL expressions with analyzed mappings
- *
- * This ensures that existing CEL expressions take precedence over
- * newly analyzed JavaScript expressions for backward compatibility.
- */
-function mergePreservedCelExpressions(
-  analyzedMappings: Record<string, unknown>,
-  preservedMappings: Record<string, unknown>
-): Record<string, unknown> {
-  const mergedMappings = { ...analyzedMappings };
-
-  // Preserved CEL expressions take precedence
-  for (const [path, celExpression] of Object.entries(preservedMappings)) {
-    // Handle nested paths by setting the value at the correct location
-    const pathParts = path.split('.');
-    let current: Record<string, unknown> = mergedMappings;
-
-    for (let i = 0; i < pathParts.length - 1; i++) {
-      const part = pathParts[i];
-      if (!part) continue;
-
-      if (!current[part] || typeof current[part] !== 'object') {
-        current[part] = {};
-      }
-      current = current[part] as Record<string, unknown>;
-    }
-
-    const finalKey = pathParts[pathParts.length - 1];
-    if (finalKey) {
-      current[finalKey] = celExpression;
-    }
-  }
-
-  return mergedMappings;
-}
-
-/**
- * Comprehensive analysis of status mappings to categorize different types of expressions
- *
- * This function provides detailed analysis of status mappings to determine:
- * - Which fields contain KubernetesRef objects (need conversion)
- * - Which fields are existing CEL expressions (preserve as-is)
- * - Which fields are static values (no conversion needed)
- * - Which fields are complex expressions that might need analysis
- */
-function analyzeStatusMappingTypes(
-  statusMappings: Record<string, unknown>,
-  path: string = ''
-): {
-  kubernetesRefFields: string[];
-  celExpressionFields: string[];
-  staticValueFields: string[];
-  complexExpressionFields: string[];
-  analysisDetails: Record<
-    string,
-    {
-      type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
-      value: unknown;
-      requiresConversion: boolean;
-      confidence: number;
-    }
-  >;
-} {
-  const kubernetesRefFields: string[] = [];
-  const celExpressionFields: string[] = [];
-  const staticValueFields: string[] = [];
-  const complexExpressionFields: string[] = [];
-  const analysisDetails: Record<
-    string,
-    {
-      type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
-      value: unknown;
-      requiresConversion: boolean;
-      confidence: number;
-    }
-  > = {};
-
-  if (!statusMappings || typeof statusMappings !== 'object') {
-    return {
-      kubernetesRefFields,
-      celExpressionFields,
-      staticValueFields,
-      complexExpressionFields,
-      analysisDetails,
-    };
-  }
-
-  for (const [key, value] of Object.entries(statusMappings)) {
-    const currentPath = path ? `${path}.${key}` : key;
-
-    // Analyze the value type and requirements
-    const analysis = analyzeValueType(value);
-    analysisDetails[currentPath] = analysis;
-
-    switch (analysis.type) {
-      case 'kubernetesRef':
-        kubernetesRefFields.push(currentPath);
-        break;
-      case 'celExpression':
-        celExpressionFields.push(currentPath);
-        break;
-      case 'staticValue':
-        staticValueFields.push(currentPath);
-        break;
-      case 'complexExpression':
-        complexExpressionFields.push(currentPath);
-        break;
-    }
-
-    // Recursively analyze nested objects
-    if (
-      value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      !isCelExpression(value) &&
-      !containsKubernetesRefs(value)
-    ) {
-      const nestedAnalysis = analyzeStatusMappingTypes(
-        value as Record<string, unknown>,
-        currentPath
-      );
-      kubernetesRefFields.push(...nestedAnalysis.kubernetesRefFields);
-      celExpressionFields.push(...nestedAnalysis.celExpressionFields);
-      staticValueFields.push(...nestedAnalysis.staticValueFields);
-      complexExpressionFields.push(...nestedAnalysis.complexExpressionFields);
-      Object.assign(analysisDetails, nestedAnalysis.analysisDetails);
-    }
-  }
-
-  return {
-    kubernetesRefFields,
-    celExpressionFields,
-    staticValueFields,
-    complexExpressionFields,
-    analysisDetails,
-  };
-}
-
-/**
- * Analyze a single value to determine its type and conversion requirements
- */
-function analyzeValueType(value: unknown): {
-  type: 'kubernetesRef' | 'celExpression' | 'staticValue' | 'complexExpression';
-  value: unknown;
-  requiresConversion: boolean;
-  confidence: number;
-} {
-  // Check for existing CEL expressions first (highest priority)
-  if (isCelExpression(value)) {
-    return {
-      type: 'celExpression',
-      value,
-      requiresConversion: false,
-      confidence: 1.0,
-    };
-  }
-
-  // Check for KubernetesRef objects (need conversion)
-  if (containsKubernetesRefs(value)) {
-    return {
-      type: 'kubernetesRef',
-      value,
-      requiresConversion: true,
-      confidence: 1.0,
-    };
-  }
-
-  // Check for primitive static values
-  if (
-    value === null ||
-    value === undefined ||
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean'
-  ) {
-    return {
-      type: 'staticValue',
-      value,
-      requiresConversion: false,
-      confidence: 1.0,
-    };
-  }
-
-  // Check for arrays of static values
-  if (Array.isArray(value)) {
-    const hasKubernetesRefs = value.some((item) => containsKubernetesRefs(item));
-    const hasCelExpressions = value.some((item) => isCelExpression(item));
-
-    if (hasKubernetesRefs) {
-      return {
-        type: 'kubernetesRef',
-        value,
-        requiresConversion: true,
-        confidence: 0.9,
-      };
-    } else if (hasCelExpressions) {
-      return {
-        type: 'celExpression',
-        value,
-        requiresConversion: false,
-        confidence: 0.9,
-      };
-    } else {
-      return {
-        type: 'staticValue',
-        value,
-        requiresConversion: false,
-        confidence: 0.8,
-      };
-    }
-  }
-
-  // Check for plain objects (might be complex expressions or static data)
-  if (value && typeof value === 'object') {
-    const hasKubernetesRefs = containsKubernetesRefs(value);
-    const hasCelExpressions = Object.values(value).some((v) => isCelExpression(v));
-
-    if (hasKubernetesRefs) {
-      return {
-        type: 'kubernetesRef',
-        value,
-        requiresConversion: true,
-        confidence: 0.8,
-      };
-    } else if (hasCelExpressions) {
-      return {
-        type: 'celExpression',
-        value,
-        requiresConversion: false,
-        confidence: 0.8,
-      };
-    } else {
-      // Could be static data or complex expression - analyze further
-      const isLikelyStatic = isLikelyStaticObject(value);
-      if (isLikelyStatic) {
-        return {
-          type: 'staticValue',
-          value,
-          requiresConversion: false,
-          confidence: 0.7,
-        };
-      } else {
-        return {
-          type: 'complexExpression',
-          value,
-          requiresConversion: false, // Conservative - don't convert unless we're sure
-          confidence: 0.5,
-        };
-      }
-    }
-  }
-
-  // Unknown type - treat as complex expression
-  return {
-    type: 'complexExpression',
-    value,
-    requiresConversion: false,
-    confidence: 0.3,
-  };
-}
-
-/**
- * Determine if an object is likely to be static data rather than an expression
- */
-function isLikelyStaticObject(obj: unknown): boolean {
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    return false;
-  }
-
-  // Check if all values are primitive types
-  const values = Object.values(obj);
-  const allPrimitive = values.every(
-    (value) =>
-      value === null ||
-      value === undefined ||
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean'
-  );
-
-  if (allPrimitive) {
-    return true;
-  }
-
-  // Check for common static object patterns
-  const keys = Object.keys(obj);
-  const hasCommonStaticKeys = keys.some((key) =>
-    ['name', 'id', 'type', 'kind', 'version', 'label', 'tag'].includes(key.toLowerCase())
-  );
-
-  return hasCommonStaticKeys && values.length <= 10; // Reasonable size for static config
-}
+import {
+  analyzeStatusMappingTypes,
+  analyzeValueType,
+  detectAndPreserveCelExpressions,
+  isLikelyStaticObject,
+  mergePreservedCelExpressions,
+} from './status-analysis-helpers.js';
 
 // =============================================================================
 // Internal helpers exported for testing
@@ -481,7 +119,6 @@ export {
   analyzeStatusMappingTypes,
   analyzeValueType,
   isLikelyStaticObject,
-  FACTORY_KIND_MAP,
   validateResourceGraphName,
   findResourceByKey,
   analyzeAndConvertStatusMappings,
@@ -632,25 +269,16 @@ function findResourceByKey(
       }
     }
 
-    const semanticPatterns: Record<string, string[]> = {
-      database: ['deployment', 'statefulset'],
-      db: ['deployment', 'statefulset'],
-      cache: ['deployment', 'statefulset'],
-      redis: ['deployment', 'statefulset'],
-      service: ['service'],
-      svc: ['service'],
-      ingress: ['ingress'],
-      configmap: ['configmap'],
-      secret: ['secret'],
-    };
-
-    for (const [pattern, kinds] of Object.entries(semanticPatterns)) {
-      if (keyParts.includes(pattern) && kinds.includes(kind)) {
+    // Semantic alias matching — delegated to the central FactoryRegistry.
+    // Custom factories can register their own aliases via registerFactory().
+    for (const part of keyParts) {
+      const candidateKinds = getSemanticCandidateKinds(part);
+      if (candidateKinds?.includes(kind)) {
         logger?.debug('findResourceByKey: fuzzy match (strategy 2: semantic pattern)', {
           requestedKey: key,
           matchedResourceId: resourceId,
           matchedKind: resource.kind,
-          semanticPattern: pattern,
+          semanticPattern: part,
         });
         return resource;
       }
@@ -732,392 +360,15 @@ function analyzeAndConvertStatusMappings<
   resourcesWithKeys: Record<string, Enhanced<any, any>>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): StatusAnalysisResult {
-  let statusMappings: MagicAssignableShape<TStatus>;
-  let analyzedStatusMappings: Record<string, unknown> = {};
-  let mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
-  let imperativeAnalysisSucceeded = false;
-
-  try {
-    statusMappings = runInStatusBuilderContext(() =>
-      statusBuilder(schema, resourcesWithKeys as TResources)
-    );
-
-    const originalCompositionFn = (statusMappings as Record<string, unknown>)
-      .__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
-
-    if (originalCompositionFn) {
-      const imperativeResult = analyzeImperativeStatusMappings(
-        definition,
-        statusBuilder,
-        schema,
-        resourcesWithKeys,
-        statusMappings,
-        originalCompositionFn,
-        serializationLogger
-      );
-      analyzedStatusMappings = imperativeResult.analyzedStatusMappings;
-      imperativeAnalysisSucceeded = imperativeResult.imperativeAnalysisSucceeded;
-    } else {
-      analyzedStatusMappings = analyzeDeclarativeStatusMappings(
-        statusBuilder,
-        schema,
-        resourcesWithKeys,
-        statusMappings,
-        serializationLogger
-      );
-    }
-
-    // Comprehensive analysis of the final status mappings
-    mappingAnalysis = analyzeStatusMappingTypes(analyzedStatusMappings);
-
-    serializationLogger.debug('Status mapping analysis complete', {
-      kubernetesRefFields: mappingAnalysis.kubernetesRefFields.length,
-      celExpressionFields: mappingAnalysis.celExpressionFields.length,
-      staticValueFields: mappingAnalysis.staticValueFields.length,
-      complexExpressionFields: mappingAnalysis.complexExpressionFields.length,
-    });
-
-    // Backward compatibility: detect and preserve existing CEL expressions
-    const { hasExistingCel, preservedMappings } = detectAndPreserveCelExpressions(
-      statusMappings as Record<string, unknown>
-    );
-
-    if (hasExistingCel) {
-      logMigrationOpportunities(statusMappings, preservedMappings, serializationLogger);
-    }
-
-    // Convert KubernetesRef objects to CEL expressions
-    const conversionResult = convertKubernetesRefsToCel(
-      definition.name,
-      statusMappings,
-      serializationLogger
-    );
-
-    // Merge converted and preserved mappings
-    if (conversionResult.hasConversions) {
-      if (!imperativeAnalysisSucceeded) {
-        analyzedStatusMappings = mergePreservedCelExpressions(
-          conversionResult.convertedStatusMappings,
-          preservedMappings
-        );
-      }
-      serializationLogger.debug('Successfully converted JavaScript expressions to CEL', {
-        convertedFields: Object.keys(conversionResult.convertedStatusMappings).filter(
-          (key) =>
-            conversionResult.convertedStatusMappings[key] !==
-            (statusMappings as Record<string, unknown>)[key]
-        ).length,
-        preservedFields: Object.keys(preservedMappings).length,
-        staticFields: mappingAnalysis.staticValueFields.length,
-      });
-    } else if (hasExistingCel) {
-      if (!imperativeAnalysisSucceeded) {
-        analyzedStatusMappings = mergePreservedCelExpressions(
-          statusMappings as Record<string, unknown>,
-          preservedMappings
-        );
-      }
-      serializationLogger.debug('Preserved existing CEL expressions without conversion', {
-        preservedFields: Object.keys(preservedMappings).length,
-        staticFields: mappingAnalysis.staticValueFields.length,
-        complexFields: mappingAnalysis.complexExpressionFields.length,
-      });
-    } else {
-      if (!imperativeAnalysisSucceeded) {
-        analyzedStatusMappings = statusMappings as Record<string, unknown>;
-      }
-      serializationLogger.debug(
-        'Status builder contains only static values and complex expressions',
-        {
-          staticFields: mappingAnalysis.staticValueFields.length,
-          complexFields: mappingAnalysis.complexExpressionFields.length,
-          totalFields: Object.keys(mappingAnalysis.analysisDetails).length,
-        }
-      );
-    }
-  } catch (error: unknown) {
-    serializationLogger.error('Failed to analyze status builder', ensureError(error));
-    statusMappings = runInStatusBuilderContext(() =>
-      statusBuilder(schema, resourcesWithKeys as TResources)
-    );
-    analyzedStatusMappings = statusMappings as Record<string, unknown>;
-    mappingAnalysis = {
-      kubernetesRefFields: [],
-      celExpressionFields: [],
-      staticValueFields: [],
-      complexExpressionFields: [],
-      analysisDetails: {},
-    };
-  }
-
-  return {
-    statusMappings: statusMappings!,
-    analyzedStatusMappings,
-    mappingAnalysis: mappingAnalysis!,
-    imperativeAnalysisSucceeded,
-  };
-}
-
-/**
- * Analyze status mappings from an imperative composition (has __originalCompositionFn).
- *
- * @internal
- */
-function analyzeImperativeStatusMappings<
-  TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
->(
-  definition: ResourceGraphDefinition<TSpec, TStatus>,
-  statusBuilder: (
-    schema: SchemaProxy<TSpec, TStatus>,
-    resources: TResources
-  ) => MagicAssignableShape<TStatus>,
-  schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
-  statusMappings: MagicAssignableShape<TStatus>,
-  originalCompositionFn: (...args: unknown[]) => unknown,
-  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
-): { analyzedStatusMappings: Record<string, unknown>; imperativeAnalysisSucceeded: boolean } {
-  let analyzedStatusMappings: Record<string, unknown> = {};
-  let imperativeAnalysisSucceeded = false;
-
-  serializationLogger.debug(
-    'Detected imperative composition, checking for existing KubernetesRef objects'
+  // Delegate to the decomposed pipeline (Phase 2.9).
+  // The pipeline produces the same result shape as the original function.
+  return runStatusAnalysisPipeline(
+    definition,
+    statusBuilder,
+    schema,
+    resourcesWithKeys,
+    serializationLogger
   );
-
-  let hasKubernetesRefs = containsKubernetesRefs(statusMappings);
-  let hasCelExpressions = containsCelExpressions(statusMappings);
-  const needsPreAnalysis = (statusMappings as Record<string, unknown>).__needsPreAnalysis === true;
-
-  serializationLogger.debug('Imperative composition analysis', {
-    hasKubernetesRefs,
-    hasCelExpressions,
-    needsPreAnalysis,
-    statusMappings: JSON.stringify(statusMappings, null, 2),
-  });
-
-  if (hasKubernetesRefs || hasCelExpressions || needsPreAnalysis) {
-    serializationLogger.debug(
-      'Status object already contains KubernetesRef objects or CelExpression objects, using direct analysis'
-    );
-
-    try {
-      const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
-        statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
-        resourcesWithKeys as Record<string, Enhanced<any, any>>,
-        schema,
-        'kro'
-      );
-
-      if (statusBuilderAnalysis.requiresConversion) {
-        analyzedStatusMappings = statusBuilderAnalysis.statusMappings;
-        imperativeAnalysisSucceeded = true;
-        serializationLogger.debug('Using status builder analysis for imperative composition', {
-          fieldCount: Object.keys(analyzedStatusMappings).length,
-        });
-      } else {
-        analyzedStatusMappings = statusMappings as Record<string, unknown>;
-        serializationLogger.debug('No conversion required, using original status mappings');
-      }
-    } catch (statusAnalysisError: unknown) {
-      serializationLogger.debug(
-        'Status builder analysis failed, falling back to imperative analysis',
-        {
-          error: ensureError(statusAnalysisError).message,
-        }
-      );
-      hasKubernetesRefs = false;
-      hasCelExpressions = false;
-    }
-  }
-
-  if (!hasKubernetesRefs && !hasCelExpressions) {
-    serializationLogger.debug(
-      'No KubernetesRef objects or CelExpression objects found, analyzing original composition function'
-    );
-
-    try {
-      const imperativeAnalysis = analyzeImperativeComposition(
-        originalCompositionFn,
-        resourcesWithKeys as Record<string, Enhanced<any, any>>,
-        { factoryType: 'kro' }
-      );
-
-      serializationLogger.debug('Imperative composition analysis complete', {
-        statusFieldCount: Object.keys(imperativeAnalysis.statusMappings).length,
-        hasJavaScriptExpressions: imperativeAnalysis.hasJavaScriptExpressions,
-      });
-
-      if (imperativeAnalysis.hasJavaScriptExpressions) {
-        analyzedStatusMappings = imperativeAnalysis.statusMappings;
-        imperativeAnalysisSucceeded = true;
-        serializationLogger.debug(
-          'Using analyzed imperative composition mappings with CEL expressions',
-          {
-            fieldCount: Object.keys(analyzedStatusMappings).length,
-          }
-        );
-      } else {
-        analyzedStatusMappings = statusMappings as Record<string, unknown>;
-        serializationLogger.debug(
-          'No JavaScript expressions found, using original status mappings'
-        );
-      }
-    } catch (imperativeAnalysisError: unknown) {
-      serializationLogger.debug(
-        'Imperative composition analysis failed, using executed status mappings',
-        {
-          error: ensureError(imperativeAnalysisError).message,
-        }
-      );
-      analyzedStatusMappings = statusMappings as Record<string, unknown>;
-    }
-  }
-
-  return { analyzedStatusMappings, imperativeAnalysisSucceeded };
-}
-
-/**
- * Analyze status mappings from a regular (declarative) status builder.
- *
- * @internal
- */
-function analyzeDeclarativeStatusMappings<
-  TSpec extends KroCompatibleType,
-  TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
->(
-  statusBuilder: (
-    schema: SchemaProxy<TSpec, TStatus>,
-    resources: TResources
-  ) => MagicAssignableShape<TStatus>,
-  schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
-  statusMappings: MagicAssignableShape<TStatus>,
-  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
-): Record<string, unknown> {
-  try {
-    const statusBuilderAnalysis = analyzeStatusBuilderForToResourceGraph(
-      statusBuilder as StatusBuilderFunction<TSpec, MagicAssignableShape<TStatus>>,
-      resourcesWithKeys as Record<string, Enhanced<any, any>>,
-      schema,
-      'kro'
-    );
-
-    serializationLogger.debug('Status builder analysis complete', {
-      statusFieldCount: Object.keys(statusBuilderAnalysis.statusMappings).length,
-      dependencyCount: statusBuilderAnalysis.dependencies.length,
-      hasJavaScriptExpressions: statusBuilderAnalysis.dependencies.length > 0,
-    });
-
-    if (statusBuilderAnalysis.dependencies.length > 0) {
-      serializationLogger.debug('Using analyzed status mappings with CEL expressions', {
-        fieldCount: Object.keys(statusBuilderAnalysis.statusMappings).length,
-      });
-      return statusBuilderAnalysis.statusMappings;
-    }
-
-    return statusMappings as Record<string, unknown>;
-  } catch (analysisError: unknown) {
-    serializationLogger.debug('Status builder analysis failed, using executed status mappings', {
-      error: ensureError(analysisError).message,
-    });
-    return statusMappings as Record<string, unknown>;
-  }
-}
-
-/**
- * Convert KubernetesRef objects in status mappings to CEL expressions.
- *
- * @internal
- */
-function convertKubernetesRefsToCel(
-  definitionName: string,
-  statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
-  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
-): { convertedStatusMappings: Record<string, unknown>; hasConversions: boolean } {
-  const convertedStatusMappings: Record<string, unknown> = {};
-  let hasConversions = false;
-
-  for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
-    if (containsKubernetesRefs(fieldValue)) {
-      const conversionResult = celConversionEngine.convertValue(
-        fieldValue,
-        { factoryType: 'kro', factoryName: definitionName, analysisEnabled: true },
-        { factoryType: 'kro', preserveStatic: false }
-      );
-
-      if (conversionResult.wasConverted) {
-        convertedStatusMappings[fieldName] = conversionResult.converted;
-        hasConversions = true;
-        serializationLogger.debug('Converted field to CEL expression', {
-          fieldName,
-          strategy: conversionResult.strategy,
-          referencesConverted: conversionResult.metrics.referencesConverted,
-        });
-      } else {
-        convertedStatusMappings[fieldName] = fieldValue;
-      }
-    } else {
-      convertedStatusMappings[fieldName] = fieldValue;
-    }
-  }
-
-  return { convertedStatusMappings, hasConversions };
-}
-
-/**
- * Log migration opportunities for existing CEL expressions.
- *
- * @internal
- */
-function logMigrationOpportunities(
-  statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
-  preservedMappings: Record<string, unknown>,
-  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
-): void {
-  serializationLogger.debug(
-    'Found existing CEL expressions, preserving for backward compatibility',
-    {
-      preservedCount: Object.keys(preservedMappings).length,
-    }
-  );
-
-  try {
-    const migrationHelper = new CelToJavaScriptMigrationHelper();
-    const migrationAnalysis = migrationHelper.analyzeMigrationOpportunities(
-      statusMappings as Record<string, unknown>
-    );
-
-    if (migrationAnalysis.migrationFeasibility.migratableExpressions > 0) {
-      serializationLogger.info('Migration opportunities detected for CEL expressions', {
-        totalExpressions: migrationAnalysis.migrationFeasibility.totalExpressions,
-        migratableExpressions: migrationAnalysis.migrationFeasibility.migratableExpressions,
-        overallConfidence: Math.round(
-          migrationAnalysis.migrationFeasibility.overallConfidence * 100
-        ),
-      });
-
-      const highConfidenceSuggestions = migrationAnalysis.suggestions.filter(
-        (s) => s.confidence >= 0.8 && s.isSafe
-      );
-      if (highConfidenceSuggestions.length > 0) {
-        serializationLogger.info('High-confidence migration suggestions available', {
-          suggestions: highConfidenceSuggestions.map((s) => ({
-            original: s.originalCel,
-            suggested: s.suggestedJavaScript,
-            confidence: Math.round(s.confidence * 100),
-          })),
-        });
-      }
-    }
-  } catch (migrationError: unknown) {
-    serializationLogger.error(
-      'Failed to analyze migration opportunities',
-      ensureError(migrationError)
-    );
-  }
 }
 
 // =============================================================================

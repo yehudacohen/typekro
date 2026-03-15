@@ -31,7 +31,7 @@ describe('Error Handling', () => {
               engine: 'invalid-engine', // Should be 'postgresql' or 'mysql'
               version: '13',
               replicas: 'not-a-number', // Should be number
-            } as any,
+            } as unknown as Record<string, unknown>,
           }
         );
       }).toThrow(ValidationError);
@@ -54,7 +54,7 @@ describe('Error Handling', () => {
             metadata: { name: 'test-db' },
             spec: {
               // Missing required fields
-            } as any,
+            } as unknown as Record<string, unknown>,
           }
         );
       } catch (error) {

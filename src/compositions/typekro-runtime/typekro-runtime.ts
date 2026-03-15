@@ -5,9 +5,14 @@ import { fixCRDSchemaForK8s133 } from '../../core/runtime-patches/crd-schema-fix
 import { helmRelease } from '../../factories/helm/helm-release.js';
 import { helmRepository } from '../../factories/helm/helm-repository.js';
 import { namespace } from '../../factories/kubernetes/core/namespace.js';
-import { clusterRoleBinding } from '../../factories/kubernetes/rbac/index.js';
+import { clusterRole, clusterRoleBinding } from '../../factories/kubernetes/rbac/index.js';
 import { yamlFile } from '../../factories/kubernetes/yaml/yaml-file.js';
-import { type TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } from './types.js';
+import {
+  type RbacMode,
+  type TypeKroRuntimeConfig,
+  TypeKroRuntimeSpec,
+  TypeKroRuntimeStatus,
+} from './types.js';
 
 /**
  * Bootstrap TypeKro runtime with essential components
@@ -49,6 +54,7 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   const fluxVersion = config.fluxVersion || 'v2.7.5';
   const kroVersion = config.kroVersion || '0.8.5';
   const targetNamespace = config.namespace || DEFAULT_FLUX_NAMESPACE;
+  const rbacMode: RbacMode = config.rbac || 'cluster-admin';
 
   return kubernetesComposition(
     {
@@ -98,55 +104,27 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
         fieldManager: 'typekro-bootstrap',
         forceConflicts: true,
         manifestTransform: fixCRDSchemaForK8s133,
+        // Idempotent bootstrap: if the Flux install YAML can't be downloaded (e.g., DNS
+        // failure, air-gapped environment) but Flux is already running on the cluster,
+        // skip the download and proceed. This prevents bootstrap from failing when
+        // re-running against a cluster that already has Flux installed.
+        skipIfFetchFails: async (k8sApi) => {
+          try {
+            await k8sApi.read({
+              apiVersion: 'apiextensions.k8s.io/v1',
+              kind: 'CustomResourceDefinition',
+              metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' },
+            });
+            return true; // Flux CRDs exist — already installed
+          } catch {
+            return false; // CRDs not found — need the download
+          }
+        },
       });
 
-      // Fix incomplete RBAC from standard Flux install - add missing service accounts to cluster-reconciler
-      clusterRoleBinding({
-        metadata: {
-          name: 'cluster-reconciler',
-          labels: {
-            'app.kubernetes.io/instance': 'flux-system',
-            'app.kubernetes.io/part-of': 'flux',
-          },
-        },
-        roleRef: {
-          apiGroup: 'rbac.authorization.k8s.io',
-          kind: 'ClusterRole',
-          name: 'cluster-admin',
-        },
-        subjects: [
-          {
-            kind: 'ServiceAccount',
-            name: 'kustomize-controller',
-            namespace: targetNamespace,
-          },
-          {
-            kind: 'ServiceAccount',
-            name: 'helm-controller',
-            namespace: targetNamespace,
-          },
-          {
-            kind: 'ServiceAccount',
-            name: 'source-controller',
-            namespace: targetNamespace,
-          },
-          {
-            kind: 'ServiceAccount',
-            name: 'notification-controller',
-            namespace: targetNamespace,
-          },
-          {
-            kind: 'ServiceAccount',
-            name: 'image-reflector-controller',
-            namespace: targetNamespace,
-          },
-          {
-            kind: 'ServiceAccount',
-            name: 'image-automation-controller',
-            namespace: targetNamespace,
-          },
-        ],
-      });
+      // RBAC for Flux controllers.
+      // Configurable via config.rbac: 'cluster-admin' (default), 'scoped', or { clusterRoleRef }.
+      createFluxRbac(rbacMode, targetNamespace);
 
       // Helm Repository for Kro OCI charts
       helmRepository({
@@ -193,4 +171,258 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
       };
     }
   );
+}
+
+// ---------------------------------------------------------------------------
+// RBAC helpers
+// ---------------------------------------------------------------------------
+
+/** The six Flux CD controller service accounts that need cluster-level permissions. */
+const FLUX_SERVICE_ACCOUNTS = [
+  'kustomize-controller',
+  'helm-controller',
+  'source-controller',
+  'notification-controller',
+  'image-reflector-controller',
+  'image-automation-controller',
+] as const;
+
+/**
+ * Create RBAC resources for Flux controllers based on the chosen mode.
+ *
+ * - `cluster-admin`: Single ClusterRoleBinding → built-in `cluster-admin`.
+ * - `scoped`: Creates a dedicated ClusterRole with Flux-minimum permissions,
+ *   then binds all controllers to it.
+ * - `{ clusterRoleRef }`: Single ClusterRoleBinding → user-provided ClusterRole.
+ */
+function createFluxRbac(mode: RbacMode, targetNamespace: string): void {
+  const roleName = resolveClusterRoleName(mode);
+
+  if (mode === 'scoped') {
+    createScopedFluxClusterRole();
+  }
+
+  clusterRoleBinding({
+    metadata: {
+      name: 'cluster-reconciler',
+      labels: {
+        'app.kubernetes.io/instance': 'flux-system',
+        'app.kubernetes.io/part-of': 'flux',
+      },
+    },
+    roleRef: {
+      apiGroup: 'rbac.authorization.k8s.io',
+      kind: 'ClusterRole',
+      name: roleName,
+    },
+    subjects: FLUX_SERVICE_ACCOUNTS.map((sa) => ({
+      kind: 'ServiceAccount' as const,
+      name: sa,
+      namespace: targetNamespace,
+    })),
+  });
+}
+
+/** Determine which ClusterRole to bind to based on the RBAC mode. */
+function resolveClusterRoleName(mode: RbacMode): string {
+  if (mode === 'cluster-admin') return 'cluster-admin';
+  if (mode === 'scoped') return 'typekro-flux-controllers';
+  return mode.clusterRoleRef;
+}
+
+/**
+ * Create a scoped ClusterRole with the minimum permissions required for Flux
+ * controllers to manage HelmReleases, Kustomizations, GitRepositories,
+ * HelmRepositories, and their target resources.
+ *
+ * This covers the core Flux reconciliation loop but may NOT cover every
+ * possible resource type that a Helm chart could create. Users deploying
+ * charts that create CRDs or other cluster-scoped resources may need to
+ * use `cluster-admin` or a custom ClusterRole with additional permissions.
+ */
+function createScopedFluxClusterRole(): void {
+  clusterRole({
+    metadata: {
+      name: 'typekro-flux-controllers',
+      labels: {
+        'app.kubernetes.io/instance': 'flux-system',
+        'app.kubernetes.io/part-of': 'flux',
+        'app.kubernetes.io/managed-by': 'typekro',
+      },
+    },
+    rules: [
+      // Core Kubernetes resources that Helm charts commonly create
+      {
+        apiGroups: [''],
+        resources: [
+          'namespaces',
+          'pods',
+          'services',
+          'configmaps',
+          'secrets',
+          'serviceaccounts',
+          'persistentvolumeclaims',
+          'events',
+        ],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Apps API (Deployments, StatefulSets, DaemonSets, ReplicaSets)
+      {
+        apiGroups: ['apps'],
+        resources: ['deployments', 'statefulsets', 'daemonsets', 'replicasets'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Batch API (Jobs, CronJobs)
+      {
+        apiGroups: ['batch'],
+        resources: ['jobs', 'cronjobs'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // RBAC resources
+      {
+        apiGroups: ['rbac.authorization.k8s.io'],
+        resources: ['roles', 'rolebindings', 'clusterroles', 'clusterrolebindings'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Networking
+      {
+        apiGroups: ['networking.k8s.io'],
+        resources: ['ingresses', 'networkpolicies'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Autoscaling
+      {
+        apiGroups: ['autoscaling'],
+        resources: ['horizontalpodautoscalers'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Policy
+      {
+        apiGroups: ['policy'],
+        resources: ['poddisruptionbudgets'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Flux source-controller CRDs
+      {
+        apiGroups: ['source.toolkit.fluxcd.io'],
+        resources: [
+          'gitrepositories',
+          'helmrepositories',
+          'helmcharts',
+          'ocirepositories',
+          'buckets',
+        ],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Flux source-controller status and finalizers
+      {
+        apiGroups: ['source.toolkit.fluxcd.io'],
+        resources: [
+          'gitrepositories/status',
+          'helmrepositories/status',
+          'helmcharts/status',
+          'ocirepositories/status',
+          'buckets/status',
+          'gitrepositories/finalizers',
+          'helmrepositories/finalizers',
+          'helmcharts/finalizers',
+          'ocirepositories/finalizers',
+          'buckets/finalizers',
+        ],
+        verbs: ['get', 'update', 'patch'],
+      },
+      // Flux helm-controller CRDs
+      {
+        apiGroups: ['helm.toolkit.fluxcd.io'],
+        resources: ['helmreleases'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Flux helm-controller status and finalizers
+      {
+        apiGroups: ['helm.toolkit.fluxcd.io'],
+        resources: ['helmreleases/status', 'helmreleases/finalizers'],
+        verbs: ['get', 'update', 'patch'],
+      },
+      // Flux kustomize-controller CRDs
+      {
+        apiGroups: ['kustomize.toolkit.fluxcd.io'],
+        resources: ['kustomizations'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Flux kustomize-controller status and finalizers
+      {
+        apiGroups: ['kustomize.toolkit.fluxcd.io'],
+        resources: ['kustomizations/status', 'kustomizations/finalizers'],
+        verbs: ['get', 'update', 'patch'],
+      },
+      // Flux notification-controller CRDs
+      {
+        apiGroups: ['notification.toolkit.fluxcd.io'],
+        resources: ['providers', 'alerts', 'receivers'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Flux notification-controller status and finalizers
+      {
+        apiGroups: ['notification.toolkit.fluxcd.io'],
+        resources: [
+          'providers/status',
+          'alerts/status',
+          'receivers/status',
+          'providers/finalizers',
+          'alerts/finalizers',
+          'receivers/finalizers',
+        ],
+        verbs: ['get', 'update', 'patch'],
+      },
+      // Flux image-reflector-controller CRDs
+      {
+        apiGroups: ['image.toolkit.fluxcd.io'],
+        resources: ['imagepolicies', 'imagerepositories'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Flux image-automation-controller CRDs
+      {
+        apiGroups: ['image.toolkit.fluxcd.io'],
+        resources: ['imageupdateautomations'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // Flux image CRDs status and finalizers
+      {
+        apiGroups: ['image.toolkit.fluxcd.io'],
+        resources: [
+          'imagepolicies/status',
+          'imagerepositories/status',
+          'imageupdateautomations/status',
+          'imagepolicies/finalizers',
+          'imagerepositories/finalizers',
+          'imageupdateautomations/finalizers',
+        ],
+        verbs: ['get', 'update', 'patch'],
+      },
+      // Kro CRDs (needed for kro-system management)
+      {
+        apiGroups: ['kro.run'],
+        resources: ['resourcegraphdefinitions', 'resourcegraphdefinitions/status'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+      // CRD management (needed for Helm charts that install CRDs)
+      {
+        apiGroups: ['apiextensions.k8s.io'],
+        resources: ['customresourcedefinitions'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch'],
+      },
+      // Events (for controllers to post events)
+      {
+        apiGroups: ['events.k8s.io'],
+        resources: ['events'],
+        verbs: ['create', 'patch'],
+      },
+      // Coordination (leader election)
+      {
+        apiGroups: ['coordination.k8s.io'],
+        resources: ['leases'],
+        verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
+      },
+    ],
+  });
 }

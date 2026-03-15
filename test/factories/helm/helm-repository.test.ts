@@ -6,7 +6,11 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { type HelmRepositoryConfig, helmRepository,  } from '../../../src/factories/helm/helm-repository.js';
+import {
+  type HelmRepositoryConfig,
+  helmRepository,
+} from '../../../src/factories/helm/helm-repository.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../../utils/mock-factories.js';
 
 describe('HelmRepository Factory', () => {
   const createTestConfig = (
@@ -70,14 +74,14 @@ describe('HelmRepository Factory', () => {
       const config = createTestConfig();
       const enhanced = helmRepository(config);
 
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as ready when Ready condition is True', () => {
       const config = createTestConfig();
       const enhanced = helmRepository(config);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'test-repo' },
@@ -95,7 +99,7 @@ describe('HelmRepository Factory', () => {
     it('should evaluate as not ready when Ready condition is False', () => {
       const config = createTestConfig();
       const enhanced = helmRepository(config);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'test-repo' },
@@ -114,7 +118,7 @@ describe('HelmRepository Factory', () => {
       const config = createTestConfig('ociRepo', 'oci://ghcr.io/my-org/charts');
       config.type = 'oci';
       const enhanced = helmRepository(config);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: {
@@ -140,7 +144,7 @@ describe('HelmRepository Factory', () => {
       const config = createTestConfig('ociRepo', 'oci://ghcr.io/my-org/charts');
       config.type = 'oci';
       const enhanced = helmRepository(config);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'oci-repo' },
@@ -161,7 +165,7 @@ describe('HelmRepository Factory', () => {
     it('should handle missing status', () => {
       const config = createTestConfig();
       const enhanced = helmRepository(config);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'test-repo' },
@@ -222,8 +226,8 @@ describe('HelmRepository Factory', () => {
 
       // These should compile without type errors
       expect(result.spec.url).toBe(config.url);
-      expect(result.spec.interval).toBe(config.interval as any);
-      expect(result.spec.type).toBe(config.type as any);
+      expect(result.spec.interval).toBe(config.interval as unknown as string);
+      expect(result.spec.type).toBe(config.type as unknown as typeof result.spec.type);
     });
   });
 });

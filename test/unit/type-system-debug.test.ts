@@ -1,7 +1,7 @@
-import { test, expect } from 'bun:test';
+import { expect, test } from 'bun:test';
 import type { KubernetesRef } from '../../src/core/types/common.js';
-import type { MagicProxy } from '../../src/core/types/references.js';
 import type { StatusProxy } from '../../src/core/types/deployment.js';
+import type { MagicProxy } from '../../src/core/types/references.js';
 
 test('MagicProxy should enable property access on KubernetesRef-wrapped unions', () => {
   type TestObj = { name: string; controller: string };
@@ -12,7 +12,7 @@ test('MagicProxy should enable property access on KubernetesRef-wrapped unions',
 
   type NameType = Proxied['name'];
 
-  const assertType: NameType = 'test' as any;
+  const assertType: NameType = 'test' as unknown as NameType;
   expect(assertType).toBeDefined();
 });
 
@@ -30,6 +30,6 @@ test('StatusProxy should preserve types through optional chaining', () => {
 
   type NameAccess = IngressClass extends { name: infer N } ? N : 'FAIL';
 
-  const assertType: NameAccess = 'test' as any;
+  const assertType: NameAccess = 'test' as unknown as NameAccess;
   expect(assertType).toBeDefined();
 });

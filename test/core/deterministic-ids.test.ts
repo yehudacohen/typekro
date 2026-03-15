@@ -39,8 +39,10 @@ describe('Deterministic Resource IDs', () => {
     });
 
     // Both should have the same resource ID
-    expect((webapp1 as any).__resourceId).toBe((webapp2 as any).__resourceId);
-    expect((webapp1 as any).__resourceId).toBe('deploymentWebApp');
+    expect((webapp1 as unknown as Record<string, unknown>).__resourceId).toBe(
+      (webapp2 as unknown as Record<string, unknown>).__resourceId
+    );
+    expect((webapp1 as unknown as Record<string, unknown>).__resourceId).toBe('deploymentWebApp');
   });
 
   it('should support explicit IDs', () => {
@@ -50,7 +52,7 @@ describe('Deterministic Resource IDs', () => {
       id: 'myCustomId',
     });
 
-    expect((webapp as any).__resourceId).toBe('myCustomId');
+    expect((webapp as unknown as Record<string, unknown>).__resourceId).toBe('myCustomId');
   });
 
   it('should handle namespace in config', () => {
@@ -60,6 +62,6 @@ describe('Deterministic Resource IDs', () => {
       namespace: 'production',
     });
 
-    expect((webapp as any).__resourceId).toBe('deploymentWebApp');
+    expect((webapp as unknown as Record<string, unknown>).__resourceId).toBe('deploymentWebApp');
   });
 });

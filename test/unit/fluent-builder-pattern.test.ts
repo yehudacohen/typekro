@@ -3,8 +3,10 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import { getReadinessEvaluator as getReadinessEvaluatorFromMeta } from '../../src/core/metadata/index.js';
 import type { ResourceStatus } from '../../src/core/types.js';
 import { createResource } from '../../src/factories/shared.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Fluent Builder Pattern', () => {
   it('should add withReadinessEvaluator method to Enhanced resources', () => {
@@ -36,7 +38,7 @@ describe('Fluent Builder Pattern', () => {
     const enhanced = resource.withReadinessEvaluator(evaluator);
 
     expect(enhanced).toBeDefined();
-    expect((enhanced as any).readinessEvaluator).toBe(evaluator);
+    expect(getReadinessEvaluator(enhanced)).toBe(evaluator);
   });
 
   it('should prevent serialization of withReadinessEvaluator method', () => {
@@ -73,13 +75,14 @@ describe('Fluent Builder Pattern', () => {
 
     const enhanced = resource.withReadinessEvaluator(evaluator);
 
+    // readinessEvaluator should NOT be in enumerable keys
     const keys = Object.keys(enhanced);
     expect(keys).not.toContain('readinessEvaluator');
 
-    const propertyNames = Object.getOwnPropertyNames(enhanced);
-    expect(propertyNames).toContain('readinessEvaluator');
-
-    expect(Object.propertyIsEnumerable.call(enhanced, 'readinessEvaluator')).toBe(false);
+    // readinessEvaluator is now stored in WeakMap, accessible via proxy get trap
+    const storedEvaluator = getReadinessEvaluatorFromMeta(enhanced);
+    expect(typeof storedEvaluator).toBe('function');
+    expect(storedEvaluator).toBe(evaluator);
   });
 
   it('should not include readiness evaluator in JSON serialization', () => {
@@ -140,7 +143,7 @@ describe('Fluent Builder Pattern', () => {
     };
 
     const enhanced = resource.withReadinessEvaluator(evaluator);
-    const result = (enhanced as any).readinessEvaluator({ status: null });
+    const result = requireReadinessEvaluator(enhanced)({ status: null });
 
     expect(result.ready).toBe(false);
     expect(result.reason).toBe('StatusMissing');
@@ -165,11 +168,11 @@ describe('Fluent Builder Pattern', () => {
     expect(typeof resource.withReadinessEvaluator).toBe('function');
     // createResource() no longer assigns a default readiness evaluator.
     // Each factory must explicitly call .withReadinessEvaluator().
-    expect((resource as any).readinessEvaluator).toBeUndefined();
+    expect(getReadinessEvaluator(resource)).toBeUndefined();
 
     // Should have the resource ID
-    expect((resource as any).id).toBeDefined();
-    expect(typeof (resource as any).id).toBe('string');
+    expect((resource as Record<string, unknown>).id).toBeDefined();
+    expect(typeof (resource as Record<string, unknown>).id).toBe('string');
 
     // Should be serializable
     const serialized = JSON.stringify(resource);

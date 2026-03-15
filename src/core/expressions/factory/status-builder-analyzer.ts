@@ -1,55 +1,50 @@
 /**
- * Status Builder Analyzer for JavaScript to CEL Expression Conversion
+ * Status Builder Analyzer — Orchestrator
  *
- * This module provides specialized analysis for status builder functions used in
- * toResourceGraph. It detects KubernetesRef objects from the magic proxy system
- * and converts JavaScript expressions to appropriate CEL expressions for status
- * field population.
+ * Analyzes status builder functions used in toResourceGraph, detecting
+ * KubernetesRef objects from the magic proxy system and converting
+ * JavaScript expressions to appropriate CEL expressions.
  *
- * Key Features:
- * - Analyzes status builder functions for KubernetesRef detection
- * - Converts return object expressions to CEL for status field mapping
- * - Integrates with magic proxy system (SchemaProxy and ResourcesProxy)
- * - Provides status context-specific CEL generation
- * - Supports both direct and Kro factory patterns
+ * Implementation is decomposed into:
+ * - status-ast-utils.ts — AST parsing, source extraction, pattern detection
+ * - status-cel-generation.ts — CEL generation with status-specific transformations
+ * - status-field-analysis.ts — per-field analysis (AST-based and runtime)
  */
 
-import * as acorn from 'acorn';
-import * as estraverse from 'estraverse';
-import type { Node as ESTreeNode, Identifier, ObjectExpression, ReturnStatement } from 'estree';
 import { containsKubernetesRefs } from '../../../utils/type-guards.js';
 import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
-import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
 import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
-import {
-  type AnalysisContext,
-  type CelConversionResult,
-  JavaScriptToCelAnalyzer,
-} from '../analysis/analyzer.js';
-import { SourceMapBuilder, type SourceMapEntry } from '../analysis/source-map.js';
+import { JavaScriptToCelAnalyzer } from '../analysis/analyzer.js';
+import type { SourceMapEntry } from '../analysis/source-map.js';
 import { MagicProxyAnalyzer } from '../magic-proxy/magic-proxy-analyzer.js';
 import {
   EnhancedTypeOptionalityHandler,
-  type FieldHydrationState,
-  type OptionalityAnalysisResult,
   type OptionalityContext,
 } from '../magic-proxy/optionality-handler.js';
+import {
+  analyzeReturnStatement as analyzeReturnStatementFn,
+  parseStatusBuilderFunction as parseStatusBuilderFunctionFn,
+} from './status-ast-utils.js';
 import type {
-  FieldAvailabilityEstimate,
-  PropertyAnalysis,
-  ReturnStatementAnalysis,
   StatusBuilderAnalysisOptions,
   StatusBuilderAnalysisResult,
   StatusBuilderFunction,
   StatusFieldAnalysisResult,
-  StatusFieldCategory,
-  StatusFieldHandlingInfo,
-  StatusHandlingStrategy,
 } from './status-builder-types.js';
+import {
+  convertStaticValueToCel,
+  generateFallbackStatusCel,
+  generateStatusContextCelWithAdvancedFeatures,
+} from './status-cel-generation.js';
+import {
+  analyzeReturnObjectField as analyzeReturnObjectFieldFn,
+  analyzeStatusField as analyzeStatusFieldFn,
+  categorizeDependencies,
+} from './status-field-analysis.js';
 
 // Re-export all types for backward compatibility
 export type {
@@ -102,11 +97,10 @@ export class StatusBuilderAnalyzer {
     this.options = { ...DEFAULT_ANALYSIS_OPTIONS, ...options };
   }
 
+  // ── Main orchestration ─────────────────────────────────────────────
+
   /**
    * Analyze status builder function for toResourceGraph integration
-   *
-   * This is the main method that analyzes a status builder function and extracts
-   * KubernetesRef dependencies for conversion to CEL expressions.
    */
   analyzeStatusBuilder<TSpec extends Record<string, any>, TStatus>(
     statusBuilder: StatusBuilderFunction<TSpec, TStatus>,
@@ -122,11 +116,11 @@ export class StatusBuilderAnalyzer {
 
       const originalSource = statusBuilder.toString();
 
-      // Parse the status builder function
-      const ast = this.parseStatusBuilderFunction(originalSource);
+      // Parse the status builder function (delegates to status-ast-utils)
+      const ast = parseStatusBuilderFunctionFn(originalSource);
 
-      // Analyze the return statement
-      const returnStatement = this.analyzeReturnStatement(ast, originalSource);
+      // Analyze the return statement (delegates to status-ast-utils)
+      const returnStatement = analyzeReturnStatementFn(ast, originalSource);
 
       if (!returnStatement || !returnStatement.returnsObject) {
         throw new ConversionError(
@@ -147,10 +141,14 @@ export class StatusBuilderAnalyzer {
 
       for (const property of returnStatement.properties) {
         try {
-          const fieldResult = this.analyzeStatusField(
+          // Delegates to status-field-analysis
+          const fieldResult = analyzeStatusFieldFn(
             property,
             resources,
             originalSource,
+            this.expressionAnalyzer,
+            this.optionalityHandler,
+            this.options,
             schemaProxy
           );
 
@@ -158,19 +156,15 @@ export class StatusBuilderAnalyzer {
 
           if (fieldResult.valid) {
             if (fieldResult.celExpression) {
-              // For dynamic expressions, use the CEL expression directly
               statusMappings[property.name] = fieldResult.celExpression;
             } else if (fieldResult.staticValue !== undefined) {
-              // For static objects, keep as plain JavaScript objects for performance
               statusMappings[property.name] = fieldResult.staticValue;
             } else if (property.valueNode.type === 'Literal') {
-              // For static literals, keep as plain JavaScript values for performance
               statusMappings[property.name] = property.valueNode.value;
             } else if (
               property.valueNode.type === 'Identifier' &&
               property.valueNode.name === 'undefined'
             ) {
-              // For undefined identifier, preserve as undefined (will be filtered out during serialization)
               statusMappings[property.name] = undefined;
             } else if (
               property.valueNode.type === 'UnaryExpression' &&
@@ -178,8 +172,7 @@ export class StatusBuilderAnalyzer {
               property.valueNode.argument?.type === 'Literal' &&
               typeof property.valueNode.argument.value === 'number'
             ) {
-              // For boolean literals represented as !0 or !1
-              const booleanValue = property.valueNode.argument.value === 0; // !0 = true, !1 = false
+              const booleanValue = property.valueNode.argument.value === 0;
               statusMappings[property.name] = booleanValue;
             }
           }
@@ -210,8 +203,8 @@ export class StatusBuilderAnalyzer {
         }
       }
 
-      // Categorize dependencies
-      const { resourceReferences, schemaReferences } = this.categorizeDependencies(allDependencies);
+      // Categorize dependencies (delegates to status-field-analysis)
+      const { resourceReferences, schemaReferences } = categorizeDependencies(allDependencies);
 
       this.logger.debug('Status builder analysis complete', {
         fieldCount: returnStatement.properties.length,
@@ -273,11 +266,10 @@ export class StatusBuilderAnalyzer {
     }
   }
 
+  // ── Runtime object analysis ────────────────────────────────────────
+
   /**
    * Analyze return object expressions with magic proxy support
-   *
-   * This method analyzes the object returned by the status builder function
-   * and detects KubernetesRef objects from the magic proxy system.
    */
   analyzeReturnObjectWithMagicProxy(
     returnObject: unknown,
@@ -301,10 +293,12 @@ export class StatusBuilderAnalyzer {
 
     for (const [fieldName, fieldValue] of Object.entries(returnObject)) {
       try {
-        const fieldResult = this.analyzeReturnObjectField(
+        const fieldResult = analyzeReturnObjectFieldFn(
           fieldName,
           fieldValue,
           resources,
+          this.optionalityHandler,
+          this.options,
           schemaProxy
         );
 
@@ -328,130 +322,7 @@ export class StatusBuilderAnalyzer {
     return { statusMappings, dependencies, errors };
   }
 
-  /**
-   * Analyze a single field in the return object with comprehensive magic proxy support
-   */
-  private analyzeReturnObjectField(
-    fieldName: string,
-    fieldValue: unknown,
-    resources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>
-  ): {
-    celExpression: CelExpression | null;
-    dependencies: KubernetesRef<unknown>[];
-    errors: ConversionError[];
-    requiresConversion: boolean;
-  } {
-    try {
-      // Create comprehensive analysis context
-      const context: OptionalityContext = {
-        type: 'status',
-        availableReferences: resources,
-        ...(schemaProxy && { schemaProxy }),
-        factoryType: this.options.factoryType,
-        hydrationStates: this.options.hydrationStates,
-        conservativeNullSafety: this.options.conservativeNullSafety,
-        useKroConditionals: true,
-        generateHasChecks: true,
-        maxOptionalityDepth: this.options.maxDepth,
-        dependencies: [],
-      };
-
-      // Step 1: Detect if the field value contains KubernetesRef objects
-      const containsRefs = containsKubernetesRefs(fieldValue);
-
-      if (!containsRefs) {
-        // No KubernetesRef objects - return as static value
-        return {
-          celExpression: this.convertStaticValueToCel(fieldValue),
-          dependencies: [],
-          errors: [],
-          requiresConversion: false,
-        };
-      }
-
-      // Step 2: Analyze KubernetesRef objects for optionality requirements
-      const optionalityResults = this.optionalityHandler.analyzeOptionalityRequirements(
-        fieldValue,
-        context
-      );
-
-      // Step 3: Generate CEL expression with appropriate null-safety
-      const celResult = this.optionalityHandler.generateNullSafeCelExpression(
-        fieldValue,
-        optionalityResults,
-        context
-      );
-
-      // Step 4: Extract dependencies from the analysis
-      const dependencies = optionalityResults.map((result) => result.kubernetesRef);
-
-      return {
-        celExpression: celResult.celExpression,
-        dependencies,
-        errors: celResult.errors,
-        requiresConversion: true,
-      };
-    } catch (error: unknown) {
-      const fieldError = new ConversionError(
-        `Failed to analyze return object field '${fieldName}': ${ensureError(error).message}`,
-        String(fieldValue),
-        'unknown'
-      );
-
-      return {
-        celExpression: null,
-        dependencies: [],
-        errors: [fieldError],
-        requiresConversion: false,
-      };
-    }
-  }
-
-  /**
-   * Convert static values (no KubernetesRef objects) to CEL expressions
-   */
-  private convertStaticValueToCel(value: unknown): CelExpression {
-    let celExpression: string;
-    let type: string;
-
-    if (typeof value === 'string') {
-      celExpression = `"${value.replace(/"/g, '\\"')}"`;
-      type = 'string';
-    } else if (typeof value === 'number') {
-      celExpression = String(value);
-      type = 'number';
-    } else if (typeof value === 'boolean') {
-      celExpression = String(value);
-      type = 'boolean';
-    } else if (value === null) {
-      celExpression = 'null';
-      type = 'null';
-    } else if (value === undefined) {
-      celExpression = 'null';
-      type = 'null';
-    } else if (Array.isArray(value)) {
-      const elements = value.map((item) => this.convertStaticValueToCel(item).expression);
-      celExpression = `[${elements.join(', ')}]`;
-      type = 'array';
-    } else if (typeof value === 'object') {
-      const properties = Object.entries(value).map(([key, val]) => {
-        const convertedVal = this.convertStaticValueToCel(val);
-        return `"${key}": ${convertedVal.expression}`;
-      });
-      celExpression = `{${properties.join(', ')}}`;
-      type = 'object';
-    } else {
-      celExpression = String(value);
-      type = 'unknown';
-    }
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: celExpression,
-      type,
-    } as CelExpression;
-  }
+  // ── Nested structure analysis ──────────────────────────────────────
 
   /**
    * Perform deep analysis of nested return object structures
@@ -527,11 +398,12 @@ export class StatusBuilderAnalyzer {
 
       try {
         if (containsKubernetesRefs(value)) {
-          // Analyze this field for KubernetesRef objects
-          const fieldResult = this.analyzeReturnObjectField(
+          const fieldResult = analyzeReturnObjectFieldFn(
             fullPath,
             value,
             resources,
+            this.optionalityHandler,
+            this.options,
             schemaProxy
           );
 
@@ -545,7 +417,6 @@ export class StatusBuilderAnalyzer {
 
           errors.push(...fieldResult.errors);
         } else if (value && typeof value === 'object' && !Array.isArray(value)) {
-          // Recursively analyze nested objects
           this.analyzeObjectStructureRecursively(
             value,
             fullPath,
@@ -557,8 +428,7 @@ export class StatusBuilderAnalyzer {
             depth + 1
           );
         } else {
-          // Static value - convert directly
-          flattenedMappings[fullPath] = this.convertStaticValueToCel(value);
+          flattenedMappings[fullPath] = convertStaticValueToCel(value);
         }
       } catch (error: unknown) {
         errors.push(
@@ -572,18 +442,17 @@ export class StatusBuilderAnalyzer {
     }
   }
 
+  // ── CEL generation (delegates to status-cel-generation) ────────────
+
   /**
    * Generate status context-specific CEL from KubernetesRef objects
-   *
-   * This method generates CEL expressions specifically for status context,
-   * taking into account the magic proxy system and field hydration timing.
    */
   generateStatusContextCel(
     kubernetesRef: KubernetesRef<unknown>,
     context: OptionalityContext
   ): CelExpression {
     try {
-      return this.generateStatusContextCelWithAdvancedFeatures(kubernetesRef, context);
+      return generateStatusContextCelWithAdvancedFeatures(kubernetesRef, context);
     } catch (error: unknown) {
       this.logger.debug('Status context CEL generation using fallback', {
         resourceId: kubernetesRef.resourceId,
@@ -593,1247 +462,15 @@ export class StatusBuilderAnalyzer {
         error: ensureError(error).message,
       });
 
-      // Return a safe fallback
-      return this.generateFallbackStatusCel(kubernetesRef);
+      return generateFallbackStatusCel(kubernetesRef);
     }
-  }
-
-  /**
-   * Generate advanced status context CEL with full feature support
-   */
-  private generateStatusContextCelWithAdvancedFeatures(
-    kubernetesRef: KubernetesRef<unknown>,
-    context: OptionalityContext
-  ): CelExpression {
-    const isSchemaRef = kubernetesRef.resourceId === '__schema__';
-    const fieldPath = kubernetesRef.fieldPath || '';
-
-    // Build base CEL expression
-    let baseCelExpression: string;
-    if (isSchemaRef) {
-      baseCelExpression = `schema.${fieldPath}`;
-    } else {
-      baseCelExpression = `resources.${kubernetesRef.resourceId}.${fieldPath}`;
-    }
-
-    // Determine status-specific handling requirements
-    const statusHandlingInfo = this.analyzeStatusFieldHandlingRequirements(kubernetesRef, context);
-
-    // Apply status-specific transformations
-    const finalExpression = this.applyStatusContextTransformations(
-      baseCelExpression,
-      statusHandlingInfo,
-      context
-    );
-
-    // Infer the result type based on the field path and context
-    const resultType = this.inferStatusFieldType(kubernetesRef, context);
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: finalExpression,
-      type: resultType,
-      metadata: {
-        isStatusContext: true,
-        requiresHydration: statusHandlingInfo.requiresHydration,
-        isOptional: statusHandlingInfo.isOptional,
-        handlingStrategy: statusHandlingInfo.strategy,
-      },
-    } as CelExpression;
-  }
-
-  /**
-   * Analyze status field handling requirements
-   */
-  private analyzeStatusFieldHandlingRequirements(
-    kubernetesRef: KubernetesRef<unknown>,
-    context: OptionalityContext
-  ): StatusFieldHandlingInfo {
-    const fieldPath = kubernetesRef.fieldPath || '';
-    const isSchemaRef = kubernetesRef.resourceId === '__schema__';
-    const isStatusField = fieldPath.startsWith('status.');
-
-    // Determine if this field requires hydration
-    const requiresHydration = !isSchemaRef && isStatusField;
-
-    // Determine if this field is optional in status context
-    const isOptional = this.isFieldOptionalInStatusContext(kubernetesRef, context);
-
-    // Determine handling strategy
-    let strategy: StatusHandlingStrategy;
-    if (requiresHydration && isOptional) {
-      strategy = 'hydration-with-null-safety';
-    } else if (requiresHydration) {
-      strategy = 'hydration-required';
-    } else if (isOptional) {
-      strategy = 'null-safety-only';
-    } else {
-      strategy = 'direct-access';
-    }
-
-    // Determine priority for status field evaluation
-    const priority = this.calculateStatusFieldPriority(kubernetesRef, context);
-
-    return {
-      kubernetesRef,
-      requiresHydration,
-      isOptional,
-      strategy,
-      priority,
-      fieldCategory: this.categorizeStatusField(fieldPath),
-      expectedAvailability: this.estimateFieldAvailability(kubernetesRef, context),
-    };
-  }
-
-  /**
-   * Apply status context-specific transformations to CEL expression
-   */
-  private applyStatusContextTransformations(
-    baseCelExpression: string,
-    handlingInfo: StatusFieldHandlingInfo,
-    context: OptionalityContext
-  ): string {
-    let transformedExpression = baseCelExpression;
-
-    switch (handlingInfo.strategy) {
-      case 'hydration-with-null-safety':
-        transformedExpression = this.applyHydrationWithNullSafety(
-          baseCelExpression,
-          handlingInfo,
-          context
-        );
-        break;
-
-      case 'hydration-required':
-        transformedExpression = this.applyHydrationRequired(
-          baseCelExpression,
-          handlingInfo,
-          context
-        );
-        break;
-
-      case 'null-safety-only':
-        transformedExpression = this.applyNullSafetyOnly(baseCelExpression, handlingInfo, context);
-        break;
-
-      case 'direct-access':
-        // No transformation needed
-        break;
-    }
-
-    return transformedExpression;
-  }
-
-  /**
-   * Apply hydration with null-safety transformation
-   */
-  private applyHydrationWithNullSafety(
-    baseCelExpression: string,
-    _handlingInfo: StatusFieldHandlingInfo,
-    context: OptionalityContext
-  ): string {
-    if (context.useKroConditionals) {
-      // Use Kro's conditional operators
-      return baseCelExpression.replace(/\./g, '?.');
-    } else if (context.generateHasChecks) {
-      // Use has() checks
-      const pathParts = baseCelExpression.split('.');
-      const hasChecks: string[] = [];
-
-      for (let i = 0; i < pathParts.length; i++) {
-        const partialPath = pathParts.slice(0, i + 1).join('.');
-        hasChecks.push(`has(${partialPath})`);
-      }
-
-      return `${hasChecks.join(' && ')} && ${baseCelExpression}`;
-    }
-
-    return baseCelExpression;
-  }
-
-  /**
-   * Apply hydration required transformation
-   */
-  private applyHydrationRequired(
-    baseCelExpression: string,
-    handlingInfo: StatusFieldHandlingInfo,
-    _context: OptionalityContext
-  ): string {
-    // For hydration required fields, we might want to add readiness checks
-    if (handlingInfo.fieldCategory === 'readiness-indicator') {
-      return `${baseCelExpression} != null && ${baseCelExpression}`;
-    }
-
-    return baseCelExpression;
-  }
-
-  /**
-   * Apply null-safety only transformation
-   */
-  private applyNullSafetyOnly(
-    baseCelExpression: string,
-    _handlingInfo: StatusFieldHandlingInfo,
-    context: OptionalityContext
-  ): string {
-    if (context.generateHasChecks) {
-      return `has(${baseCelExpression}) && ${baseCelExpression}`;
-    }
-
-    return baseCelExpression;
-  }
-
-  /**
-   * Check if a field is optional in status context
-   */
-  private isFieldOptionalInStatusContext(
-    kubernetesRef: KubernetesRef<unknown>,
-    _context: OptionalityContext
-  ): boolean {
-    const fieldPath = kubernetesRef.fieldPath || '';
-
-    // Status fields are generally optional during hydration
-    if (fieldPath.startsWith('status.')) {
-      return true;
-    }
-
-    // Some spec fields might be optional
-    const optionalSpecFields = [
-      'spec.replicas',
-      'spec.resources',
-      'spec.nodeSelector',
-      'spec.tolerations',
-    ];
-
-    if (optionalSpecFields.some((field) => fieldPath.startsWith(field))) {
-      return true;
-    }
-
-    // Metadata fields like labels and annotations are optional
-    const optionalMetadataFields = [
-      'metadata.labels',
-      'metadata.annotations',
-      'metadata.namespace',
-    ];
-
-    if (optionalMetadataFields.some((field) => fieldPath.startsWith(field))) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Calculate priority for status field evaluation
-   */
-  private calculateStatusFieldPriority(
-    kubernetesRef: KubernetesRef<unknown>,
-    _context: OptionalityContext
-  ): number {
-    const fieldPath = kubernetesRef.fieldPath || '';
-
-    // Higher priority (lower number) for critical status fields
-    if (fieldPath.includes('ready') || fieldPath.includes('available')) {
-      return 1;
-    }
-
-    if (fieldPath.startsWith('status.conditions')) {
-      return 2;
-    }
-
-    if (fieldPath.startsWith('status.')) {
-      return 3;
-    }
-
-    if (fieldPath.startsWith('spec.')) {
-      return 4;
-    }
-
-    if (fieldPath.startsWith('metadata.')) {
-      return 5;
-    }
-
-    return 10; // Default priority
-  }
-
-  /**
-   * Categorize status field type
-   */
-  private categorizeStatusField(fieldPath: string): StatusFieldCategory {
-    if (fieldPath.includes('ready') || fieldPath.includes('available')) {
-      return 'readiness-indicator';
-    }
-
-    if (fieldPath.includes('conditions')) {
-      return 'condition-status';
-    }
-
-    if (fieldPath.includes('replicas')) {
-      return 'replica-status';
-    }
-
-    if (fieldPath.includes('loadBalancer') || fieldPath.includes('ingress')) {
-      return 'network-status';
-    }
-
-    if (fieldPath.includes('phase') || fieldPath.includes('state')) {
-      return 'lifecycle-status';
-    }
-
-    return 'general-status';
-  }
-
-  /**
-   * Estimate field availability timing
-   */
-  private estimateFieldAvailability(
-    kubernetesRef: KubernetesRef<unknown>,
-    _context: OptionalityContext
-  ): FieldAvailabilityEstimate {
-    const fieldPath = kubernetesRef.fieldPath || '';
-
-    if (kubernetesRef.resourceId === '__schema__') {
-      return 'immediate';
-    }
-
-    if (fieldPath.startsWith('metadata.')) {
-      return 'immediate';
-    }
-
-    if (fieldPath.startsWith('spec.')) {
-      return 'immediate';
-    }
-
-    if (fieldPath.includes('ready') || fieldPath.includes('available')) {
-      return 'delayed';
-    }
-
-    if (fieldPath.includes('loadBalancer') || fieldPath.includes('ingress')) {
-      return 'very-delayed';
-    }
-
-    return 'delayed';
-  }
-
-  /**
-   * Infer the type of a status field
-   */
-  private inferStatusFieldType(
-    kubernetesRef: KubernetesRef<unknown>,
-    _context: OptionalityContext
-  ): string {
-    const fieldPath = kubernetesRef.fieldPath || '';
-
-    if (fieldPath.includes('replicas') || fieldPath.includes('count')) {
-      return 'number';
-    }
-
-    if (fieldPath.includes('ready') || fieldPath.includes('available')) {
-      return 'boolean';
-    }
-
-    if (fieldPath.includes('conditions')) {
-      return 'array';
-    }
-
-    if (fieldPath.includes('phase') || fieldPath.includes('state')) {
-      return 'string';
-    }
-
-    if (fieldPath.includes('ip') || fieldPath.includes('IP')) {
-      return 'string';
-    }
-
-    return 'unknown';
-  }
-
-  /**
-   * Analyze a mixed object expression (contains both static and dynamic values)
-   */
-  private analyzeMixedObjectExpression(
-    objectNode: ESTreeNode,
-    resources: Record<string, Enhanced<any, any>>,
-    originalSource: string,
-    schemaProxy?: SchemaProxy<any, any>
-  ): {
-    valid: boolean;
-    processedObject: Record<string, unknown> | null;
-    dependencies: KubernetesRef<unknown>[];
-    requiresConversion: boolean;
-  } {
-    if (objectNode.type !== 'ObjectExpression') {
-      return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
-    }
-
-    const result: Record<string, unknown> = {};
-    const allDependencies: KubernetesRef<unknown>[] = [];
-    let requiresConversion = false;
-
-    for (const prop of objectNode.properties) {
-      if (prop.type === 'Property' && prop.key.type === 'Identifier') {
-        const key = prop.key.name;
-
-        // Handle different value types
-        if (prop.value.type === 'Literal') {
-          // Static literal value
-          result[key] = prop.value.value;
-        } else if (prop.value.type === 'ObjectExpression') {
-          // Nested object - recursively analyze
-          const nestedResult = this.analyzeMixedObjectExpression(
-            prop.value,
-            resources,
-            originalSource,
-            schemaProxy
-          );
-          if (nestedResult.valid) {
-            result[key] = nestedResult.processedObject;
-            allDependencies.push(...nestedResult.dependencies);
-            if (nestedResult.requiresConversion) {
-              requiresConversion = true;
-            }
-          } else {
-            return {
-              valid: false,
-              processedObject: null,
-              dependencies: [],
-              requiresConversion: false,
-            };
-          }
-        } else {
-          // Dynamic expression - analyze with expression analyzer
-          let valueSource: string;
-          try {
-            valueSource = this.getNodeSource(prop.value, originalSource);
-          } catch (error: unknown) {
-            this.logger.debug('Failed to get node source for status builder property', {
-              err: error,
-            });
-            return {
-              valid: false,
-              processedObject: null,
-              dependencies: [],
-              requiresConversion: false,
-            };
-          }
-
-          // Create analysis context
-          const context: AnalysisContext = {
-            type: 'status',
-            availableReferences: resources,
-            ...(schemaProxy && { schemaProxy }),
-            factoryType: this.options.factoryType,
-            dependencies: [],
-          };
-
-          try {
-            // Analyze the expression using the main analyzer
-            const analysisResult = this.expressionAnalyzer.analyzeExpression(valueSource, context);
-
-            if (analysisResult.valid && analysisResult.celExpression) {
-              // Dynamic expression - wrap in CEL
-              const celString = analysisResult.celExpression.expression;
-              result[key] = celString.includes('${') ? celString : `\${${celString}}`;
-              allDependencies.push(...analysisResult.dependencies);
-              requiresConversion = true;
-            } else {
-              // Try to evaluate as static value
-              const staticValue = this.evaluateStaticValue(prop.value);
-              if (staticValue !== null) {
-                result[key] = staticValue;
-              } else {
-                return {
-                  valid: false,
-                  processedObject: null,
-                  dependencies: [],
-                  requiresConversion: false,
-                };
-              }
-            }
-          } catch (error: unknown) {
-            // If expression analysis fails, try static evaluation
-            const staticValue = this.evaluateStaticValue(prop.value);
-            if (staticValue !== null) {
-              result[key] = staticValue;
-            } else {
-              this.logger.debug(
-                `Failed to analyze property '${key}' of type '${prop.value.type}'`,
-                { error, key, type: prop.value.type }
-              );
-              return {
-                valid: false,
-                processedObject: null,
-                dependencies: [],
-                requiresConversion: false,
-              };
-            }
-          }
-        }
-      } else {
-        // Non-standard property structure
-        return { valid: false, processedObject: null, dependencies: [], requiresConversion: false };
-      }
-    }
-
-    return {
-      valid: true,
-      processedObject: result,
-      dependencies: allDependencies,
-      requiresConversion,
-    };
-  }
-
-  /**
-   * Evaluate a static object expression to a JavaScript object
-   */
-  private evaluateStaticObjectExpression(objectNode: ESTreeNode): Record<string, unknown> | null {
-    if (objectNode.type !== 'ObjectExpression') {
-      return null;
-    }
-
-    const result: Record<string, unknown> = {};
-
-    for (const prop of objectNode.properties) {
-      if (prop.type === 'Property' && prop.key.type === 'Identifier') {
-        const key = prop.key.name;
-        const value = this.evaluateStaticValue(prop.value);
-
-        if (value === null && prop.value.type !== 'Literal') {
-          // If we can't evaluate a property statically, this isn't a static object
-          return null;
-        }
-
-        result[key] = value;
-      } else {
-        // Non-static property structure
-        return null;
-      }
-    }
-
-    return result;
-  }
-
-  /**
-   * Evaluate a static value from an AST node
-   */
-  private evaluateStaticValue(node: ESTreeNode): unknown {
-    switch (node.type) {
-      case 'Literal':
-        return (node as ESTreeNode & { value: unknown }).value;
-      case 'UnaryExpression': {
-        const unary = node as ESTreeNode & {
-          operator: string;
-          argument?: ESTreeNode & { type: string; value?: unknown };
-        };
-        if (unary.operator === '!' && unary.argument?.type === 'Literal') {
-          return !unary.argument.value;
-        }
-        if (
-          unary.operator === '-' &&
-          unary.argument?.type === 'Literal' &&
-          typeof unary.argument.value === 'number'
-        ) {
-          return -unary.argument.value;
-        }
-        return null;
-      }
-      case 'ObjectExpression':
-        return this.evaluateStaticObjectExpression(node);
-      case 'ArrayExpression': {
-        const arrayResult: unknown[] = [];
-        for (const element of node.elements) {
-          if (element === null) {
-            arrayResult.push(null);
-          } else {
-            const elementValue = this.evaluateStaticValue(element);
-            if (elementValue === null && element.type !== 'Literal') {
-              return null; // Non-static array
-            }
-            arrayResult.push(elementValue);
-          }
-        }
-        return arrayResult;
-      }
-      default:
-        return null; // Non-static value
-    }
-  }
-
-  /**
-   * Create a CelExpression for a static value
-   */
-  private createStaticCelExpression(value: string): CelExpression {
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: value,
-    } as CelExpression;
-  }
-
-  /**
-   * Extract source code for an AST node using range information
-   */
-  private getNodeSource(node: ESTreeNode, originalSource: string): string {
-    if (!node || !node.type) {
-      return '';
-    }
-
-    // Acorn nodes have start/end properties not in ESTree types
-    const acornNode = node as ESTreeNode & {
-      start?: number;
-      end?: number;
-      range?: [number, number];
-    };
-
-    // Try to use range information to extract the actual source
-    let start: number | undefined;
-    let end: number | undefined;
-
-    // Check for start/end properties (acorn format)
-    if (typeof acornNode.start === 'number' && typeof acornNode.end === 'number') {
-      start = acornNode.start;
-      end = acornNode.end;
-    }
-    // Check for range array (alternative format)
-    else if (Array.isArray(acornNode.range) && acornNode.range.length === 2) {
-      start = acornNode.range[0];
-      end = acornNode.range[1];
-    }
-
-    // If we have valid range information, extract the source
-    if (
-      typeof start === 'number' &&
-      typeof end === 'number' &&
-      start >= 0 &&
-      end <= originalSource.length &&
-      start <= end
-    ) {
-      const extracted = originalSource.slice(start, end).trim();
-
-      if (extracted.length > 0) {
-        return extracted;
-      }
-    }
-
-    // Fallback to manual reconstruction for specific node types
-    // These casts are necessary because ESTree uses discriminated unions on node.type,
-    // but we're switching on node.type as a string and accessing subtype-specific fields.
-    const n = node as ESTreeNode & Record<string, unknown>;
-    switch (node.type) {
-      case 'Literal':
-        return typeof n.value === 'string' ? `"${n.value}"` : String(n.value);
-      case 'Identifier':
-        return (n as unknown as Identifier).name;
-      case 'BinaryExpression': {
-        const left = this.getNodeSource(n.left as ESTreeNode, originalSource);
-        const right = this.getNodeSource(n.right as ESTreeNode, originalSource);
-        return `${left} ${n.operator} ${right}`;
-      }
-      case 'MemberExpression': {
-        const object = this.getNodeSource(n.object as ESTreeNode, originalSource);
-        if (n.computed) {
-          return `${object}[${this.getNodeSource(n.property as ESTreeNode, originalSource)}]`;
-        } else {
-          const propertyName =
-            (n.property as unknown as Identifier).name ||
-            this.getNodeSource(n.property as ESTreeNode, originalSource);
-          return `${object}.${propertyName}`;
-        }
-      }
-      case 'ConditionalExpression':
-        return `${this.getNodeSource(n.test as ESTreeNode, originalSource)} ? ${this.getNodeSource(n.consequent as ESTreeNode, originalSource)} : ${this.getNodeSource(n.alternate as ESTreeNode, originalSource)}`;
-      case 'LogicalExpression':
-        return `${this.getNodeSource(n.left as ESTreeNode, originalSource)} ${n.operator} ${this.getNodeSource(n.right as ESTreeNode, originalSource)}`;
-      case 'CallExpression': {
-        const callee = this.getNodeSource(n.callee as ESTreeNode, originalSource);
-        const args = (n.arguments as ESTreeNode[])
-          .map((arg: ESTreeNode) => this.getNodeSource(arg, originalSource))
-          .join(', ');
-        return `${callee}(${args})`;
-      }
-      case 'ArrowFunctionExpression': {
-        const params = (n.params as ESTreeNode[])
-          .map((param: ESTreeNode) => (param as unknown as Identifier).name)
-          .join(', ');
-        const body = this.getNodeSource(n.body as ESTreeNode, originalSource);
-        return `(${params}) => ${body}`;
-      }
-      case 'TemplateLiteral': {
-        // Simplified template literal reconstruction
-        let result = '`';
-        const quasis = (n.quasis as Array<{ value?: { raw?: string; cooked?: string } }>) || [];
-        const expressions = (n.expressions as ESTreeNode[]) || [];
-        for (let i = 0; i < quasis.length; i++) {
-          const quasi = quasis[i];
-          result += quasi?.value?.raw || quasi?.value?.cooked || '';
-          const expr = expressions[i];
-          if (expr && i < expressions.length) {
-            result += `\${${this.getNodeSource(expr, originalSource)}}`;
-          }
-        }
-        result += '`';
-        return result;
-      }
-      default:
-        // Fallback - return a placeholder
-        return `<${node.type}>`;
-    }
-  }
-
-  /**
-   * Generate fallback status CEL expression
-   */
-  private generateFallbackStatusCel(kubernetesRef: KubernetesRef<unknown>): CelExpression {
-    const isSchemaRef = kubernetesRef.resourceId === '__schema__';
-    const basePath = isSchemaRef
-      ? `schema.${kubernetesRef.fieldPath}`
-      : `resources.${kubernetesRef.resourceId}.${kubernetesRef.fieldPath}`;
-
-    return {
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: basePath,
-      type: 'unknown',
-    } as CelExpression;
-  }
-
-  /**
-   * Parse status builder function to AST
-   */
-  private parseStatusBuilderFunction(source: string): ESTreeNode {
-    try {
-      // Parse the function source with modern JavaScript support using acorn
-      const ast = acorn.parse(source, {
-        ecmaVersion: 2022, // Support modern JavaScript features including optional chaining
-        sourceType: 'script',
-        locations: true,
-        ranges: true,
-      });
-
-      return ast as ESTreeNode;
-    } catch (error: unknown) {
-      throw new ConversionError(
-        `Failed to parse status builder function: ${ensureError(error).message}`,
-        source,
-        'javascript'
-      );
-    }
-  }
-
-  /**
-   * Analyze the return statement of the status builder
-   */
-  private analyzeReturnStatement(
-    ast: ESTreeNode,
-    originalSource: string
-  ): ReturnStatementAnalysis | null {
-    let foundReturnStatement: ReturnStatement | null = null;
-    let foundArrowFunction: ESTreeNode | null = null;
-
-    // Find the return statement or arrow function with implicit return
-    estraverse.traverse(ast, {
-      enter: (node) => {
-        if (node.type === 'ReturnStatement') {
-          foundReturnStatement = node as ReturnStatement;
-          return estraverse.VisitorOption.Break;
-        }
-        if (node.type === 'ArrowFunctionExpression' && node.body?.type === 'ObjectExpression') {
-          foundArrowFunction = node;
-          return estraverse.VisitorOption.Break;
-        }
-        return undefined;
-      },
-    });
-
-    // Handle explicit return statement
-    if (foundReturnStatement) {
-      const returnStatement = foundReturnStatement as ReturnStatement;
-
-      // Check if it returns an object expression
-      const returnsObject = returnStatement.argument?.type === 'ObjectExpression';
-
-      if (!returnsObject) {
-        return {
-          node: returnStatement,
-          returnsObject: false,
-          properties: [],
-          sourceLocation: {
-            line: returnStatement.loc?.start.line || 0,
-            column: returnStatement.loc?.start.column || 0,
-            length: 0,
-          },
-        };
-      }
-
-      // Analyze properties in the object expression
-      const objectExpression = returnStatement.argument as ObjectExpression;
-      const properties = this.analyzeObjectProperties(objectExpression, originalSource);
-
-      return {
-        node: returnStatement,
-        returnsObject: true,
-        properties,
-        sourceLocation: {
-          line: returnStatement.loc?.start.line || 0,
-          column: returnStatement.loc?.start.column || 0,
-          length: returnStatement.range ? returnStatement.range[1] - returnStatement.range[0] : 0,
-        },
-      };
-    }
-
-    // Handle arrow function with implicit return
-    const arrowFn = foundArrowFunction as (ESTreeNode & { body?: ESTreeNode }) | null;
-    if (arrowFn && arrowFn.body?.type === 'ObjectExpression') {
-      const objectExpression = arrowFn.body as ObjectExpression;
-      const properties = this.analyzeObjectProperties(objectExpression, originalSource);
-
-      return {
-        // Arrow function implicit return is represented as a ReturnStatement equivalent
-        node: arrowFn as unknown as ReturnStatement,
-        returnsObject: true,
-        properties,
-        sourceLocation: {
-          line: objectExpression.loc?.start.line || 0,
-          column: objectExpression.loc?.start.column || 0,
-          length: objectExpression.range
-            ? objectExpression.range[1] - objectExpression.range[0]
-            : 0,
-        },
-      };
-    }
-
-    return null;
-  }
-
-  /**
-   * Analyze properties in an object expression
-   */
-  private analyzeObjectProperties(
-    objectExpression: ObjectExpression,
-    originalSource: string
-  ): PropertyAnalysis[] {
-    const properties: PropertyAnalysis[] = [];
-
-    for (const prop of objectExpression.properties) {
-      if (prop.type === 'Property' && prop.key.type === 'Identifier') {
-        const propertyAnalysis: PropertyAnalysis = {
-          name: prop.key.name,
-          valueNode: prop.value,
-          valueSource: this.getNodeSource(prop.value, originalSource),
-          containsKubernetesRefs: false, // Will be determined during field analysis
-          sourceLocation: {
-            line: prop.loc?.start.line || 0,
-            column: prop.loc?.start.column || 0,
-            length: prop.range ? prop.range[1] - prop.range[0] : 0,
-          },
-        };
-
-        properties.push(propertyAnalysis);
-      }
-    }
-
-    return properties;
-  }
-
-  /**
-   * Analyze a single status field
-   */
-  private analyzeStatusField(
-    property: PropertyAnalysis,
-    resources: Record<string, Enhanced<any, any>>,
-    originalSource: string,
-    schemaProxy?: SchemaProxy<any, any>
-  ): StatusFieldAnalysisResult {
-    const fieldName = property.name;
-    const originalExpression = property.valueSource;
-
-    try {
-      // Detect ||/&& operators that may produce unexpected results with KubernetesRef proxies
-      const logicalOpWarnings = this.detectLogicalOperatorWarnings(property.valueNode, fieldName);
-
-      if (logicalOpWarnings.length > 0) {
-        for (const warning of logicalOpWarnings) {
-          this.logger.warn(warning, {
-            fieldName,
-            component: 'status-builder-analyzer',
-            suggestion: 'Use Cel.expr() for conditional/fallback logic in status builders',
-          });
-        }
-      }
-
-      // Check if this is a static literal value
-      if (property.valueNode.type === 'Literal') {
-        // Static literal - return as-is without CEL conversion
-        return {
-          fieldName,
-          originalExpression,
-          celExpression: null,
-          dependencies: [],
-          requiresConversion: false,
-          valid: true,
-          errors: [],
-          sourceMap: [],
-          optionalityAnalysis: [],
-          inferredType: typeof property.valueNode.value,
-          confidence: 1.0,
-          warnings: logicalOpWarnings,
-        };
-      }
-
-      // Check if this is the 'undefined' identifier (special case)
-      if (property.valueNode.type === 'Identifier' && property.valueNode.name === 'undefined') {
-        // undefined identifier - return as-is without CEL conversion
-        return {
-          fieldName,
-          originalExpression,
-          celExpression: null,
-          dependencies: [],
-          requiresConversion: false,
-          valid: true,
-          errors: [],
-          sourceMap: [],
-          optionalityAnalysis: [],
-          inferredType: 'undefined',
-          confidence: 1.0,
-          warnings: logicalOpWarnings,
-        };
-      }
-
-      // Check if this is a boolean literal represented as UnaryExpression (!0 for true, !1 for false)
-      if (
-        property.valueNode.type === 'UnaryExpression' &&
-        property.valueNode.operator === '!' &&
-        property.valueNode.argument?.type === 'Literal' &&
-        typeof property.valueNode.argument.value === 'number'
-      ) {
-        const _booleanValue = property.valueNode.argument.value === 0; // !0 = true, !1 = false
-        return {
-          fieldName,
-          originalExpression,
-          celExpression: null,
-          dependencies: [],
-          requiresConversion: false,
-          valid: true,
-          errors: [],
-          sourceMap: [],
-          optionalityAnalysis: [],
-          inferredType: 'boolean',
-          confidence: 1.0,
-          warnings: logicalOpWarnings,
-        };
-      }
-
-      // Check if this is a static object expression
-      if (property.valueNode.type === 'ObjectExpression') {
-        // Try to evaluate the object as a static value
-        const staticValue = this.evaluateStaticObjectExpression(property.valueNode);
-        if (staticValue !== null) {
-          return {
-            fieldName,
-            originalExpression,
-            celExpression: null,
-            dependencies: [],
-            requiresConversion: false,
-            valid: true,
-            errors: [],
-            sourceMap: [],
-            optionalityAnalysis: [],
-            inferredType: 'object',
-            confidence: 1.0,
-            staticValue, // Store the evaluated static value
-            warnings: logicalOpWarnings,
-          };
-        } else {
-          // This is a mixed object (contains both static and dynamic values)
-          // Recursively analyze each property
-          const mixedObjectResult = this.analyzeMixedObjectExpression(
-            property.valueNode,
-            resources,
-            originalSource,
-            schemaProxy
-          );
-          if (mixedObjectResult.valid) {
-            return {
-              fieldName,
-              originalExpression,
-              celExpression: null,
-              dependencies: mixedObjectResult.dependencies,
-              requiresConversion: mixedObjectResult.requiresConversion,
-              valid: true,
-              errors: [],
-              sourceMap: [],
-              optionalityAnalysis: [],
-              inferredType: 'object',
-              confidence: 1.0,
-              staticValue: mixedObjectResult.processedObject,
-              warnings: logicalOpWarnings,
-            };
-          } else {
-            // Mixed object analysis failed, return error
-            return {
-              fieldName,
-              originalExpression,
-              celExpression: null,
-              dependencies: [],
-              requiresConversion: false,
-              valid: false,
-              errors: [
-                new ConversionError(
-                  `Failed to analyze mixed object expression for field '${fieldName}'`,
-                  originalExpression,
-                  'unknown'
-                ),
-              ],
-              sourceMap: [],
-              optionalityAnalysis: [],
-              inferredType: 'object',
-              confidence: 0.0,
-              warnings: logicalOpWarnings,
-            };
-          }
-        }
-      }
-
-      // Create analysis context
-      const context: AnalysisContext = {
-        type: 'status',
-        availableReferences: resources,
-        ...(schemaProxy && { schemaProxy }),
-        factoryType: this.options.factoryType,
-        ...(this.options.includeSourceMapping && { sourceMap: new SourceMapBuilder() }),
-        dependencies: [],
-      };
-
-      // Analyze the expression using the main analyzer
-      const analysisResult = this.expressionAnalyzer.analyzeExpression(originalExpression, context);
-
-      // Perform optionality analysis if enabled
-      let optionalityAnalysis: OptionalityAnalysisResult[] = [];
-      if (this.options.performOptionalityAnalysis) {
-        const optionalityContext: OptionalityContext = {
-          ...context,
-          hydrationStates: this.options.hydrationStates,
-          conservativeNullSafety: this.options.conservativeNullSafety,
-          useKroConditionals: true,
-          generateHasChecks: true,
-        };
-
-        optionalityAnalysis = this.optionalityHandler.analyzeOptionalityRequirements(
-          originalExpression,
-          optionalityContext
-        );
-      }
-
-      return {
-        fieldName,
-        originalExpression,
-        celExpression: analysisResult.celExpression,
-        dependencies: analysisResult.dependencies,
-        requiresConversion: analysisResult.requiresConversion,
-        valid: analysisResult.valid,
-        errors: analysisResult.errors,
-        sourceMap: analysisResult.sourceMap,
-        optionalityAnalysis,
-        inferredType: analysisResult.inferredType ? String(analysisResult.inferredType) : undefined,
-        confidence: this.calculateFieldConfidence(analysisResult, optionalityAnalysis),
-        warnings: logicalOpWarnings,
-      };
-    } catch (error: unknown) {
-      const fieldError = new ConversionError(
-        `Failed to analyze field '${fieldName}': ${ensureError(error).message}`,
-        originalExpression,
-        'unknown'
-      );
-
-      return {
-        fieldName,
-        originalExpression,
-        celExpression: null,
-        dependencies: [],
-        requiresConversion: false,
-        valid: false,
-        errors: [fieldError],
-        sourceMap: [],
-        optionalityAnalysis: [],
-        inferredType: undefined,
-        confidence: 0,
-        warnings: [],
-      };
-    }
-  }
-
-  /**
-   * Calculate confidence level for field analysis
-   */
-  private calculateFieldConfidence(
-    analysisResult: CelConversionResult,
-    optionalityAnalysis: OptionalityAnalysisResult[]
-  ): number {
-    let confidence = 0.8; // Base confidence
-
-    if (analysisResult.valid) {
-      confidence += 0.1;
-    }
-
-    if (analysisResult.errors.length === 0) {
-      confidence += 0.1;
-    }
-
-    // Factor in optionality analysis confidence
-    if (optionalityAnalysis.length > 0) {
-      const avgOptionalityConfidence =
-        optionalityAnalysis.reduce((sum, result) => sum + result.confidence, 0) /
-        optionalityAnalysis.length;
-
-      confidence = (confidence + avgOptionalityConfidence) / 2;
-    }
-
-    return Math.max(0, Math.min(1, confidence));
-  }
-
-  /**
-   * Categorize dependencies into resource and schema references
-   */
-  private categorizeDependencies(dependencies: KubernetesRef<unknown>[]): {
-    resourceReferences: KubernetesRef<unknown>[];
-    schemaReferences: KubernetesRef<unknown>[];
-  } {
-    const resourceReferences: KubernetesRef<unknown>[] = [];
-    const schemaReferences: KubernetesRef<unknown>[] = [];
-
-    for (const dep of dependencies) {
-      if (dep.resourceId === '__schema__') {
-        schemaReferences.push(dep);
-      } else {
-        resourceReferences.push(dep);
-      }
-    }
-
-    return { resourceReferences, schemaReferences };
-  }
-
-  /**
-   * Detect logical operators (||, &&) in an AST node that involve member expressions.
-   *
-   * In status builders, KubernetesRef proxy objects are always truthy, so:
-   * - `a || b` always returns `a` (the first KubernetesRef), silently discarding the fallback
-   * - `a && b` always returns `b` (the second KubernetesRef), silently discarding the first
-   *
-   * Users should use Cel.expr() for conditional logic instead.
-   */
-  private detectLogicalOperatorWarnings(node: ESTreeNode, fieldName: string): string[] {
-    const warnings: string[] = [];
-
-    const walk = (n: ESTreeNode): void => {
-      if (!n || typeof n !== 'object') return;
-
-      if (n.type === 'LogicalExpression' && (n.operator === '||' || n.operator === '&&')) {
-        const leftNode = (n as ESTreeNode & { left: ESTreeNode }).left;
-        const rightNode = (n as ESTreeNode & { right: ESTreeNode }).right;
-
-        // Check if either side involves a member expression (property access chain),
-        // which likely represents a KubernetesRef proxy access
-        const leftHasMember = this.containsMemberExpression(leftNode);
-        const rightHasMember = this.containsMemberExpression(rightNode);
-
-        if (leftHasMember || rightHasMember) {
-          const operator = n.operator as string;
-          const leftSrc = this.getNodeSource(leftNode, '');
-          const rightSrc = this.getNodeSource(rightNode, '');
-          const exprSrc = leftSrc && rightSrc ? `${leftSrc} ${operator} ${rightSrc}` : '';
-
-          if (operator === '||') {
-            warnings.push(
-              `Status field '${fieldName}' uses '||' operator${exprSrc ? ` (${exprSrc})` : ''}. ` +
-                `KubernetesRef proxies are always truthy, so the right-hand side is never reached. ` +
-                `Use Cel.expr() for fallback logic, e.g.: Cel.expr<Type>(ref, ' != "" ? ', ref, ' : "default"')`
-            );
-          } else {
-            warnings.push(
-              `Status field '${fieldName}' uses '&&' operator${exprSrc ? ` (${exprSrc})` : ''}. ` +
-                `KubernetesRef proxies are always truthy, so '&&' silently returns only the right-hand operand. ` +
-                `Use Cel.expr<boolean>() for logical AND, e.g.: Cel.expr<boolean>(refA, ' && ', refB)`
-            );
-          }
-        }
-
-        // Continue walking to find nested logical expressions
-        walk(leftNode);
-        walk(rightNode);
-      } else if (n.type === 'ConditionalExpression') {
-        const cond = n as ESTreeNode & {
-          test: ESTreeNode;
-          consequent: ESTreeNode;
-          alternate: ESTreeNode;
-        };
-        walk(cond.test);
-        walk(cond.consequent);
-        walk(cond.alternate);
-      } else if (n.type === 'BinaryExpression') {
-        const bin = n as ESTreeNode & { left: ESTreeNode; right: ESTreeNode };
-        walk(bin.left);
-        walk(bin.right);
-      } else if (n.type === 'UnaryExpression') {
-        const unary = n as ESTreeNode & { argument: ESTreeNode };
-        walk(unary.argument);
-      } else if (n.type === 'CallExpression') {
-        const call = n as ESTreeNode & { callee: ESTreeNode; arguments: ESTreeNode[] };
-        walk(call.callee);
-        for (const arg of call.arguments) {
-          walk(arg);
-        }
-      } else if (n.type === 'TemplateLiteral') {
-        const tpl = n as ESTreeNode & { expressions: ESTreeNode[] };
-        for (const expr of tpl.expressions) {
-          walk(expr);
-        }
-      }
-    };
-
-    walk(node);
-    return warnings;
-  }
-
-  /**
-   * Check if an AST node contains a MemberExpression (property access chain),
-   * which indicates it likely represents a KubernetesRef proxy access.
-   */
-  private containsMemberExpression(node: ESTreeNode): boolean {
-    if (!node || typeof node !== 'object') return false;
-    if (node.type === 'MemberExpression') return true;
-
-    // Check child nodes for common expression types
-    if (node.type === 'CallExpression') {
-      const call = node as ESTreeNode & { callee: ESTreeNode; arguments: ESTreeNode[] };
-      if (this.containsMemberExpression(call.callee)) return true;
-      return call.arguments.some((arg) => this.containsMemberExpression(arg));
-    }
-    if (node.type === 'LogicalExpression' || node.type === 'BinaryExpression') {
-      const bin = node as ESTreeNode & { left: ESTreeNode; right: ESTreeNode };
-      return this.containsMemberExpression(bin.left) || this.containsMemberExpression(bin.right);
-    }
-    if (node.type === 'UnaryExpression') {
-      const unary = node as ESTreeNode & { argument: ESTreeNode };
-      return this.containsMemberExpression(unary.argument);
-    }
-    if (node.type === 'ConditionalExpression') {
-      const cond = node as ESTreeNode & {
-        test: ESTreeNode;
-        consequent: ESTreeNode;
-        alternate: ESTreeNode;
-      };
-      return (
-        this.containsMemberExpression(cond.test) ||
-        this.containsMemberExpression(cond.consequent) ||
-        this.containsMemberExpression(cond.alternate)
-      );
-    }
-
-    return false;
   }
 }
 
+// ── Standalone convenience functions ─────────────────────────────────
+
 /**
  * Analyze status builder function for toResourceGraph integration with KubernetesRef detection
- *
- * This is the main integration point for toResourceGraph to analyze status builder functions
- * and detect KubernetesRef objects from the magic proxy system.
  */
 export function analyzeStatusBuilderForToResourceGraph<TSpec extends Record<string, any>, TStatus>(
   statusBuilder: StatusBuilderFunction<TSpec, TStatus>,
@@ -1893,10 +530,8 @@ function calculateStatusFieldHydrationOrder(
   for (const [fieldName, analysis] of fieldAnalysis) {
     const fieldDeps = new Set<string>();
 
-    // For each KubernetesRef dependency, find other fields that might provide that data
     for (const dep of analysis.dependencies) {
       if (dep.resourceId !== '__schema__') {
-        // Find fields that reference the same resource
         for (const [otherField, otherAnalysis] of fieldAnalysis) {
           if (otherField !== fieldName) {
             const hasMatchingResource = otherAnalysis.dependencies.some(
@@ -1920,8 +555,7 @@ function calculateStatusFieldHydrationOrder(
 
   const visit = (field: string): void => {
     if (visiting.has(field)) {
-      // Circular dependency - add to result anyway
-      return;
+      return; // Circular dependency - add to result anyway
     }
 
     if (visited.has(field)) {

@@ -106,13 +106,13 @@ describe('Enhanced<TSpec, TStatus> compile-time types', () => {
       const enhanced = phantom<Enhanced<TestSpec, TestStatus>>();
 
       // @ts-expect-error — spec is readonly
-      enhanced.spec = {} as any;
+      enhanced.spec = {} as unknown;
 
       // @ts-expect-error — status is readonly
-      enhanced.status = {} as any;
+      enhanced.status = {} as unknown;
 
       // @ts-expect-error — metadata is readonly
-      enhanced.metadata = {} as any;
+      enhanced.metadata = {} as unknown;
     }
 
     expect(true).toBe(true);

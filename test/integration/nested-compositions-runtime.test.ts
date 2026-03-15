@@ -20,8 +20,9 @@ import {
   isClusterAvailable,
 } from './shared-kubeconfig.js';
 
-// Test timeout for integration tests
-const TEST_TIMEOUT = 300000; // 5 minutes
+// Test timeout for integration tests — needs to exceed the factory timeout (240s)
+// plus time for setup, serialization, and Helm chart pulls
+const TEST_TIMEOUT = 600000; // 10 minutes
 
 // Check if cluster is available
 const clusterAvailable = isClusterAvailable();
@@ -91,9 +92,68 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
     // Cleanup test resources
     console.log('Cleaning up nested compositions integration tests...');
 
+    const { createKubernetesObjectApiClient } = await import('./shared-kubeconfig.js');
+    const k8sApi = createKubernetesObjectApiClient(kc);
+
+    // Clean up cluster-scoped ClusterIssuers created by tests.
+    // These persist after namespace deletion and can cause webhook conflicts.
+    const clusterIssuerNames = ['test-issuer', 'cross-ref-test-issuer'];
+    for (const name of clusterIssuerNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'cert-manager.io/v1',
+          kind: 'ClusterIssuer',
+          metadata: { name },
+        });
+        console.log(`🗑️ Deleted ClusterIssuer: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(`⚠️ Could not delete ClusterIssuer ${name}: ${error.message}`);
+        }
+      }
+    }
+
+    // Clean up Certificates created by the timeout test (in default namespace)
+    const certNames = ['timeout-test-cert'];
+    for (const name of certNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'cert-manager.io/v1',
+          kind: 'Certificate',
+          metadata: { name, namespace: 'default' },
+        });
+        console.log(`🗑️ Deleted Certificate: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(`⚠️ Could not delete Certificate ${name}: ${error.message}`);
+        }
+      }
+    }
+
+    // Suspend and delete the nested cert-manager HelmRelease before namespace deletion
+    // to prevent Flux from uninstalling cert-manager components during cleanup
+    try {
+      await k8sApi.patch(
+        {
+          apiVersion: 'helm.toolkit.fluxcd.io/v2',
+          kind: 'HelmRelease',
+          metadata: { name: 'nested-test-cm', namespace: 'nested-test-cm' },
+        },
+        undefined as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          headers: { 'Content-Type': 'application/merge-patch+json' },
+          body: { spec: { suspend: true } },
+        } as any
+      );
+    } catch (_e) {
+      // Ignore — may not exist
+    }
+
     // Clean up the nested-test-cm namespace created by the nested compositions test.
-    // We can't use factory.deleteInstance() because it would also delete the shared
-    // cert-manager HelmRepository in flux-system.
     try {
       await deleteNamespaceAndWait('nested-test-cm', kc);
     } catch (_e) {
@@ -426,7 +486,7 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       // Deploy the nested composition
       const factory = nestedComposition.factory('direct', {
         namespace: 'default',
-        timeout: 120000, // 2 minutes for nested deployment
+        timeout: 240000, // 4 minutes for nested deployment (HelmRelease chart pull + reconciliation)
         waitForReady: true,
         kubeConfig: kc,
       });

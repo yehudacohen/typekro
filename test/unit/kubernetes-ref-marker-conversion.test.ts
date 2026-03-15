@@ -71,7 +71,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
           namespace: 'default',
         },
       };
-      const result = processResourceReferences(input) as any;
+      const result = processResourceReferences(input) as Record<string, Record<string, unknown>>;
       expect(result.metadata.name).toBe('${schema.spec.name + "-policy"}');
       expect(result.metadata.namespace).toBe('default');
     });
@@ -87,9 +87,14 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
           },
         },
       };
-      const result = processResourceReferences(input) as any;
-      expect(result.spec.selector.matchLabels.app).toBe('${schema.spec.appName}');
-      expect(result.spec.selector.matchLabels.tier).toBe('${schema.spec.tier}');
+      const result = processResourceReferences(input) as Record<string, unknown>;
+      const spec = result.spec as Record<string, unknown>;
+      const matchLabels = (spec.selector as Record<string, unknown>).matchLabels as Record<
+        string,
+        unknown
+      >;
+      expect(matchLabels.app).toBe('${schema.spec.appName}');
+      expect(matchLabels.tier).toBe('${schema.spec.tier}');
     });
 
     it('should convert markers in array elements', () => {
@@ -99,7 +104,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
           '__KUBERNETES_REF___schema___spec.item2__',
         ],
       };
-      const result = processResourceReferences(input) as any;
+      const result = processResourceReferences(input) as Record<string, unknown[]>;
       expect(result.items[0]).toBe('${schema.spec.item1}');
       expect(result.items[1]).toBe('${schema.spec.item2}');
     });
@@ -123,7 +128,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         name: '__KUBERNETES_REF___schema___spec.name__-svc',
         clusterIP: '__KUBERNETES_REF_service_status.clusterIP__',
       };
-      const result = processResourceReferences(input) as any;
+      const result = processResourceReferences(input) as Record<string, unknown>;
       expect(result.name).toBe('${schema.spec.name + "-svc"}');
       expect(result.clusterIP).toBe('${service.status.clusterIP}');
     });
@@ -172,7 +177,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         port: 8080,
         enabled: true,
       };
-      const result = processResourceReferences(input) as any;
+      const result = processResourceReferences(input) as Record<string, unknown>;
       expect(result.name).toBe('static-name');
       expect(result.port).toBe(8080);
       expect(result.enabled).toBe(true);
@@ -199,12 +204,16 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         },
       };
 
-      const result = processResourceReferences(input) as any;
+      const result = processResourceReferences(input) as Record<string, unknown>;
+      const metadata = result.metadata as Record<string, unknown>;
+      const spec = result.spec as Record<string, unknown>;
+      const endpointSelector = spec.endpointSelector as Record<string, unknown>;
+      const matchLabels = endpointSelector.matchLabels as Record<string, unknown>;
 
-      expect(result.metadata.name).toBe('${schema.spec.name + "-namespace-policy"}');
-      expect(result.metadata.namespace).toBe('typekro-test-cross-resource');
-      expect(result.spec.endpointSelector.matchLabels.app).toBe('${schema.spec.name}');
-      expect(result.spec.endpointSelector.matchLabels.tier).toBe('${schema.spec.tier}');
+      expect(metadata.name).toBe('${schema.spec.name + "-namespace-policy"}');
+      expect(metadata.namespace).toBe('typekro-test-cross-resource');
+      expect(matchLabels.app).toBe('${schema.spec.name}');
+      expect(matchLabels.tier).toBe('${schema.spec.tier}');
     });
 
     it('should handle HelmRelease name pattern', () => {
@@ -225,12 +234,16 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         },
       };
 
-      const result = processResourceReferences(input) as any;
+      const result = processResourceReferences(input) as Record<string, unknown>;
+      const metadata = result.metadata as Record<string, unknown>;
+      const spec = result.spec as Record<string, unknown>;
+      const chart = spec.chart as Record<string, unknown>;
+      const chartSpec = chart.spec as Record<string, unknown>;
 
-      expect(result.metadata.name).toBe('${schema.spec.releaseName}');
-      expect(result.metadata.namespace).toBe('${schema.spec.namespace}');
-      expect(result.spec.chart.spec.chart).toBe('${schema.spec.chartName}');
-      expect(result.spec.chart.spec.version).toBe('${schema.spec.chartVersion}');
+      expect(metadata.name).toBe('${schema.spec.releaseName}');
+      expect(metadata.namespace).toBe('${schema.spec.namespace}');
+      expect(chartSpec.chart).toBe('${schema.spec.chartName}');
+      expect(chartSpec.version).toBe('${schema.spec.chartVersion}');
     });
 
     it('should handle Service with cross-resource references', () => {
@@ -253,12 +266,16 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         },
       };
 
-      const result = processResourceReferences(input) as any;
+      const result = processResourceReferences(input) as Record<string, unknown>;
+      const metadata = result.metadata as Record<string, unknown>;
+      const spec = result.spec as Record<string, unknown>;
+      const selector = spec.selector as Record<string, unknown>;
+      const ports = spec.ports as Record<string, unknown>[];
 
-      expect(result.metadata.name).toBe('${schema.spec.name + "-svc"}');
-      expect(result.spec.selector.app).toBe('${schema.spec.name}');
-      expect(result.spec.ports[0].port).toBe(80);
-      expect(result.spec.ports[0].targetPort).toBe('${schema.spec.containerPort}');
+      expect(metadata.name).toBe('${schema.spec.name + "-svc"}');
+      expect(selector.app).toBe('${schema.spec.name}');
+      expect(ports[0].port).toBe(80);
+      expect(ports[0].targetPort).toBe('${schema.spec.containerPort}');
     });
   });
 });

@@ -281,7 +281,7 @@ describe('Comprehensive Resource Factory Coverage', () => {
 
       expect(sc.kind).toBe('StorageClass');
       expect(sc.apiVersion).toBe('storage.k8s.io/v1');
-      expect(sc.provisioner).toBe('kubernetes.io/gce-pd' as any);
+      expect(sc.provisioner).toBe('kubernetes.io/gce-pd' as unknown as typeof sc.provisioner);
     });
   });
 

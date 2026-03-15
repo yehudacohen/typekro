@@ -133,21 +133,35 @@
       }
     },
     {
-      "includes": [
-        "src/alchemy/**",
-        "src/core/cel.ts",
-        "src/core/cel-evaluator.ts",
-        "src/core/errors.ts",
-        "src/core/reference-resolver.ts",
-        "src/core/schema-proxy.ts",
-        "src/core/types.ts"
-      ],
+      "includes": ["src/alchemy/**", "src/core/errors.ts", "src/core/types.ts"],
       "linter": {
         "rules": {
           "suspicious": {
             "noExplicitAny": "off",
             "noShadowRestrictedNames": "off",
             "noEmptyBlockStatements": "off"
+          },
+          "style": {
+            "noNonNullAssertion": "off"
+          },
+          "correctness": {
+            "noUnusedPrivateClassMembers": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "src/core/expressions/**",
+        "src/core/types/**",
+        "src/core/serialization/**",
+        "src/core/readiness/**",
+        "src/core/composition/**"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
           },
           "style": {
             "noNonNullAssertion": "off"
