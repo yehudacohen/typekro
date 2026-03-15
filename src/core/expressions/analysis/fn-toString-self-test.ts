@@ -115,7 +115,9 @@
  */
 
 import { getComponentLogger } from '../../logging/index.js';
-import { parseScript } from './parser.js';
+// Import from parse-core instead of parser to break the circular dependency:
+// parser.ts → fn-toString-self-test.ts → parser.ts
+import { parseScriptCore } from './parse-core.js';
 
 const logger = getComponentLogger('fn-toString-self-test');
 
@@ -169,11 +171,11 @@ export function runFnToStringSelfTest(): FnToStringSelfTestResult {
     const fnSource = REFERENCE_FUNCTION.toString();
     diagnostics.push(`Regular function toString(): ${fnSource.slice(0, 100)}...`);
 
-    const ast = parseScript(fnSource);
+    const ast = parseScriptCore(fnSource);
     parseable = ast.type === 'Program' || ast.type === 'FunctionDeclaration';
     if (!parseable) {
-      // Try wrapping — parseScript may return the body node
-      parseable = true; // If parseScript didn't throw, the source was parseable
+      // Try wrapping — parseScriptCore may return the body node
+      parseable = true; // If parseScriptCore didn't throw, the source was parseable
     }
     diagnostics.push('Regular function: parseable');
   } catch (error) {
@@ -185,7 +187,7 @@ export function runFnToStringSelfTest(): FnToStringSelfTestResult {
     const arrowSource = REFERENCE_ARROW.toString();
     diagnostics.push(`Arrow function toString(): ${arrowSource.slice(0, 100)}...`);
 
-    parseScript(`(${arrowSource})`);
+    parseScriptCore(`(${arrowSource})`);
     arrowSyntaxPreserved = true;
     diagnostics.push('Arrow function: parseable');
   } catch (error) {

@@ -12,16 +12,19 @@
 export { CompileTimeTypeChecker } from './compile-time-checker.js';
 
 // Error and warning classes
-export { CompileTimeError, CompileTimeWarning } from './compile-time-errors.js';
+export {
+  CompileTimeError,
+  type CompileTimeErrorType,
+  CompileTimeWarning,
+  type CompileTimeWarningType,
+} from './compile-time-errors.js';
 // Types
 export type {
   CompatibilityIssueType,
-  CompileTimeErrorType,
   CompileTimeTypeInfo,
   CompileTimeValidationContext,
   CompileTimeValidationMetadata,
   CompileTimeValidationResult,
-  CompileTimeWarningType,
   KubernetesRefUsageContext,
   TypeCompatibilityIssue,
   TypeConstraint,

@@ -22,26 +22,36 @@ import {
 } from '../../src/core/composition/context.js';
 import { TypeKroError } from '../../src/core/errors.js';
 import { createResource } from '../../src/core/proxy/create-resource.js';
+import type { CelExpression } from '../../src/core/types/common.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
+import { asKubernetesRef, getReadinessEvaluator } from '../utils/mock-factories.js';
+
+// ---------------------------------------------------------------------------
+// Runtime accessor helpers (avoid `as any` for branded proxy objects)
+// ---------------------------------------------------------------------------
+
+/** Cast a value to CelExpression runtime shape for inspecting proxy internals. */
+function asCelExpression(value: unknown): CelExpression {
+  return value as CelExpression;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
 /** Build a minimal KubernetesResource for testing */
-function makeResource<
-  TSpec extends object = Record<string, unknown>,
-  TStatus extends object = Record<string, unknown>,
->(overrides: Partial<KubernetesResource<TSpec, TStatus>> = {}): KubernetesResource<TSpec, TStatus> {
+function makeResource(
+  overrides: Partial<KubernetesResource<Record<string, unknown>, Record<string, unknown>>> = {}
+): KubernetesResource<Record<string, unknown>, Record<string, unknown>> {
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: { name: 'my-app' },
-    spec: { replicas: 3, image: 'nginx' } as unknown as TSpec,
+    spec: { replicas: 3, image: 'nginx' },
     ...overrides,
-  } as KubernetesResource<TSpec, TStatus>;
+  };
 }
 
 // ===========================================================================
@@ -52,7 +62,7 @@ describe('deepCloneValue (via toJSON)', () => {
   it('strips function-valued properties from spec', () => {
     const r = createResource(
       makeResource({
-        spec: { name: 'test', fn: () => 'hello' } as any,
+        spec: { name: 'test', fn: () => 'hello' },
       })
     );
     const json = JSON.parse(JSON.stringify(r.spec));
@@ -63,7 +73,7 @@ describe('deepCloneValue (via toJSON)', () => {
   it('preserves null and undefined values in spec', () => {
     const r = createResource(
       makeResource({
-        spec: { a: null, b: undefined, c: 'ok' } as any,
+        spec: { a: null, b: undefined, c: 'ok' },
       })
     );
     const json = r.spec.toJSON();
@@ -76,7 +86,7 @@ describe('deepCloneValue (via toJSON)', () => {
     const date = new Date('2025-01-01');
     const r = createResource(
       makeResource({
-        spec: { created: date } as any,
+        spec: { created: date },
       })
     );
     const json = r.spec.toJSON();
@@ -89,7 +99,7 @@ describe('deepCloneValue (via toJSON)', () => {
   it('deeply clones nested arrays', () => {
     const r = createResource(
       makeResource({
-        spec: { ports: [{ port: 80 }, { port: 443 }] } as any,
+        spec: { ports: [{ port: 80 }, { port: 443 }] },
       })
     );
     const json = r.spec.toJSON();
@@ -100,7 +110,7 @@ describe('deepCloneValue (via toJSON)', () => {
     const inner = { level2: { level3: 'deep' } };
     const r = createResource(
       makeResource({
-        spec: { nested: inner } as any,
+        spec: { nested: inner },
       })
     );
     const json = r.spec.toJSON();
@@ -111,7 +121,7 @@ describe('deepCloneValue (via toJSON)', () => {
   it('clones RegExp objects', () => {
     const r = createResource(
       makeResource({
-        spec: { pattern: /abc/gi } as any,
+        spec: { pattern: /abc/gi },
       })
     );
     const json = r.spec.toJSON();
@@ -127,46 +137,46 @@ describe('deepCloneValue (via toJSON)', () => {
 
 describe('createRefFactory (via ref property access)', () => {
   it('returns KubernetesRef for non-existent spec properties outside status context', () => {
-    const r = createResource(makeResource({ spec: { replicas: 3 } as any }));
+    const r = createResource(makeResource({ spec: { replicas: 3 } }));
     const ref = r.spec.nonExistent;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).resourceId).toBe('deploymentMyApp');
-    expect((ref as any).fieldPath).toBe('spec.nonExistent');
+    expect(asKubernetesRef(ref).resourceId).toBe('deploymentMyApp');
+    expect(asKubernetesRef(ref).fieldPath).toBe('spec.nonExistent');
   });
 
   it('creates nested reference chains via property access', () => {
     const r = createResource(makeResource());
     const ref = r.status.conditions.ready;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('status.conditions.ready');
+    expect(asKubernetesRef(ref).fieldPath).toBe('status.conditions.ready');
   });
 
   it('$ prefix creates Kro optional access (.?field) on refs', () => {
     const r = createResource(makeResource());
     const ref = r.status.$optionalField;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('status.?optionalField');
+    expect(asKubernetesRef(ref).fieldPath).toBe('status.?optionalField');
   });
 
   it('$ prefix chains correctly with nested access', () => {
     const r = createResource(makeResource());
     const ref = r.status.$optional.nested;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('status.?optional.nested');
+    expect(asKubernetesRef(ref).fieldPath).toBe('status.?optional.nested');
   });
 
   it('orValue() returns CelExpression with string default', () => {
     const r = createResource(makeResource());
     const expr = r.status.someField.orValue('fallback');
-    expect((expr as any)[CEL_EXPRESSION_BRAND]).toBe(true);
-    expect((expr as any).expression).toBe('status.someField.orValue("fallback")');
+    expect(asCelExpression(expr)[CEL_EXPRESSION_BRAND]).toBe(true);
+    expect(asCelExpression(expr).expression).toBe('status.someField.orValue("fallback")');
   });
 
   it('orValue() returns CelExpression with numeric default', () => {
     const r = createResource(makeResource());
     const expr = r.status.someField.orValue(42);
-    expect((expr as any)[CEL_EXPRESSION_BRAND]).toBe(true);
-    expect((expr as any).expression).toBe('status.someField.orValue(42)');
+    expect(asCelExpression(expr)[CEL_EXPRESSION_BRAND]).toBe(true);
+    expect(asCelExpression(expr).expression).toBe('status.someField.orValue(42)');
   });
 
   it('valueOf and toString return the fieldPath on directly created refs', () => {
@@ -178,14 +188,14 @@ describe('createRefFactory (via ref property access)', () => {
     const ref = r.status.readyReplicas;
     // The ref IS a KubernetesRef
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('status.readyReplicas');
-    expect((ref as any).resourceId).toBe('deploymentMyApp');
+    expect(asKubernetesRef(ref).fieldPath).toBe('status.readyReplicas');
+    expect(asKubernetesRef(ref).resourceId).toBe('deploymentMyApp');
   });
 
   it('ref has the KUBERNETES_REF_BRAND symbol', () => {
     const r = createResource(makeResource());
     const ref = r.status.anyField;
-    expect((ref as any)[KUBERNETES_REF_BRAND]).toBe(true);
+    expect(asKubernetesRef(ref)[KUBERNETES_REF_BRAND]).toBe(true);
   });
 });
 
@@ -197,7 +207,7 @@ describe('createPropertyProxy (via spec/status access)', () => {
   it('returns real values for existing spec properties outside status context', () => {
     const r = createResource(
       makeResource({
-        spec: { replicas: 3, image: 'nginx' } as any,
+        spec: { replicas: 3, image: 'nginx' },
       })
     );
     expect(r.spec.replicas).toBe(3);
@@ -207,7 +217,7 @@ describe('createPropertyProxy (via spec/status access)', () => {
   it('returns KubernetesRef for non-existent spec properties', () => {
     const r = createResource(
       makeResource({
-        spec: { replicas: 3 } as any,
+        spec: { replicas: 3 },
       })
     );
     const ref = r.spec.doesNotExist;
@@ -217,44 +227,44 @@ describe('createPropertyProxy (via spec/status access)', () => {
   it('returns KubernetesRef for ALL spec properties inside status builder context', () => {
     const r = createResource(
       makeResource({
-        spec: { replicas: 3, image: 'nginx' } as any,
+        spec: { replicas: 3, image: 'nginx' },
       })
     );
     runInStatusBuilderContext(() => {
       const ref = r.spec.replicas;
       expect(isKubernetesRef(ref)).toBe(true);
-      expect((ref as any).fieldPath).toBe('spec.replicas');
+      expect(asKubernetesRef(ref).fieldPath).toBe('spec.replicas');
     });
   });
 
   it('returns KubernetesRef for ALL status properties inside status builder context', () => {
     const r = createResource(
       makeResource({
-        status: { ready: true } as any,
+        status: { ready: true },
       })
     );
     runInStatusBuilderContext(() => {
       const ref = r.status.ready;
       expect(isKubernetesRef(ref)).toBe(true);
-      expect((ref as any).fieldPath).toBe('status.ready');
+      expect(asKubernetesRef(ref).fieldPath).toBe('status.ready');
     });
   });
 
   it('$ prefix on spec property creates optional ref', () => {
     const r = createResource(
       makeResource({
-        spec: { replicas: 3 } as any,
+        spec: { replicas: 3 },
       })
     );
     const ref = r.spec.$replicas;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('spec.?replicas');
+    expect(asKubernetesRef(ref).fieldPath).toBe('spec.?replicas');
   });
 
   it('toJSON on spec proxy returns clean object (no functions)', () => {
     const r = createResource(
       makeResource({
-        spec: { replicas: 3, name: 'test' } as any,
+        spec: { replicas: 3, name: 'test' },
       })
     );
     const json = r.spec.toJSON();
@@ -264,17 +274,17 @@ describe('createPropertyProxy (via spec/status access)', () => {
   it('property set on spec proxy works', () => {
     const r = createResource(
       makeResource({
-        spec: { replicas: 3 } as any,
+        spec: { replicas: 3 },
       })
     );
-    (r.spec as any).replicas = 5;
+    (r.spec as Record<string, unknown>).replicas = 5;
     expect(r.spec.replicas).toBe(5);
   });
 
   it('Object.keys on spec proxy returns original keys', () => {
     const r = createResource(
       makeResource({
-        spec: { replicas: 3, image: 'nginx' } as any,
+        spec: { replicas: 3, image: 'nginx' },
       })
     );
     const keys = Object.keys(r.spec);
@@ -283,14 +293,14 @@ describe('createPropertyProxy (via spec/status access)', () => {
   });
 
   it('spec proxy is cached — same object returned on repeated access', () => {
-    const r = createResource(makeResource({ spec: { x: 1 } as any }));
+    const r = createResource(makeResource({ spec: { x: 1 } }));
     const s1 = r.spec;
     const s2 = r.spec;
     expect(s1).toBe(s2);
   });
 
   it('status proxy is cached — same object returned on repeated access', () => {
-    const r = createResource(makeResource({ status: { ready: true } as any }));
+    const r = createResource(makeResource({ status: { ready: true } }));
     const s1 = r.status;
     const s2 = r.status;
     expect(s1).toBe(s2);
@@ -298,9 +308,8 @@ describe('createPropertyProxy (via spec/status access)', () => {
 
   it('creates empty proxy when spec is undefined', () => {
     const r = createResource(
-      makeResource({
-        spec: undefined as any,
-      })
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined spec edge case with exactOptionalPropertyTypes
+      makeResource({ spec: undefined } as any)
     );
     // Accessing any property on an empty spec should return a ref
     const ref = r.spec.anyProp;
@@ -309,9 +318,8 @@ describe('createPropertyProxy (via spec/status access)', () => {
 
   it('creates empty proxy when status is undefined', () => {
     const r = createResource(
-      makeResource({
-        status: undefined as any,
-      })
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined status edge case with exactOptionalPropertyTypes
+      makeResource({ status: undefined } as any)
     );
     const ref = r.status.anyProp;
     expect(isKubernetesRef(ref)).toBe(true);
@@ -358,45 +366,45 @@ describe('createGenericProxyResource (via Enhanced proxy)', () => {
     const r = createResource(
       makeResource({
         data: { key1: 'value1' },
-      } as any)
+      })
     );
-    expect((r as any).data.key1).toBe('value1');
+    expect(r.data?.key1).toBe('value1');
   });
 
   it('stringData field returns property proxy when present on resource', () => {
     const r = createResource(
       makeResource({
         stringData: { secret: 'password' },
-      } as any)
+      })
     );
-    expect((r as any).stringData.secret).toBe('password');
+    expect(r.stringData?.secret).toBe('password');
   });
 
   it('provisioner field returns raw value when present', () => {
     const r = createResource(
       makeResource({
         provisioner: 'kubernetes.io/aws-ebs',
-      } as any)
+      })
     );
-    expect((r as any).provisioner).toBe('kubernetes.io/aws-ebs');
+    // provisioner is MagicProxy<string> on Enhanced — access via generic record for assertion
+    expect((r as unknown as Record<string, unknown>).provisioner).toBe('kubernetes.io/aws-ebs');
   });
 
   it('provisioner returns ref when value is undefined but field is on resource', () => {
     const r = createResource(
-      makeResource({
-        provisioner: undefined,
-      } as any)
+      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined provisioner edge case with exactOptionalPropertyTypes
+      makeResource({ provisioner: undefined } as any)
     );
-    const ref = (r as any).provisioner;
+    const ref = (r as unknown as Record<string, unknown>).provisioner;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('provisioner');
+    expect(asKubernetesRef(ref).fieldPath).toBe('provisioner');
   });
 
   it('$ prefix on Enhanced proxy creates ref factory', () => {
     const r = createResource(makeResource());
-    const ref = (r as any).$customField;
+    const ref = (r as Record<string, unknown>).$customField;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('customField');
+    expect(asKubernetesRef(ref).fieldPath).toBe('customField');
   });
 
   it('external ref resources return ref for unknown properties', () => {
@@ -406,18 +414,18 @@ describe('createGenericProxyResource (via Enhanced proxy)', () => {
         apiVersion: 'v1',
         kind: 'ConfigMap',
         metadata: { name: 'ext-cm' },
-      } as any)
+      })
     );
-    const ref = (r as any).unknownField;
+    const ref = (r as Record<string, unknown>).unknownField;
     expect(isKubernetesRef(ref)).toBe(true);
-    expect((ref as any).fieldPath).toBe('unknownField');
+    expect(asKubernetesRef(ref).fieldPath).toBe('unknownField');
   });
 
   it('non-external-ref resources fall through to Reflect.get for unknown props', () => {
     const r = createResource(makeResource());
     // For a regular resource without __externalRef, unknown top-level props
     // should NOT be ref factories — they should be undefined via Reflect.get
-    const result = (r as any).totallyUnknownProp;
+    const result = (r as Record<string, unknown>).totallyUnknownProp;
     expect(result).toBeUndefined();
   });
 
@@ -435,7 +443,7 @@ describe('createGenericProxyResource (via Enhanced proxy)', () => {
   });
 
   it('ownKeys returns the target keys', () => {
-    const r = createResource(makeResource({ spec: { x: 1 } as any }));
+    const r = createResource(makeResource({ spec: { x: 1 } }));
     const keys = Object.keys(r);
     expect(keys).toContain('apiVersion');
     expect(keys).toContain('kind');
@@ -447,7 +455,7 @@ describe('createGenericProxyResource (via Enhanced proxy)', () => {
     const r = createResource(
       makeResource({
         rules: [{ apiGroups: [''], resources: ['pods'], verbs: ['get'] }],
-      } as any)
+      })
     );
     expect(Array.isArray(r.rules)).toBe(true);
   });
@@ -456,16 +464,16 @@ describe('createGenericProxyResource (via Enhanced proxy)', () => {
     const r = createResource(
       makeResource({
         roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: 'my-role' },
-      } as any)
+      })
     );
-    expect((r as any).roleRef.kind).toBe('Role');
+    expect((r as unknown as { roleRef: { kind: string } }).roleRef.kind).toBe('Role');
   });
 
   it('subjects field returns property proxy when present', () => {
     const r = createResource(
       makeResource({
         subjects: [{ kind: 'ServiceAccount', name: 'default', namespace: 'default' }],
-      } as any)
+      })
     );
     expect(Array.isArray(r.subjects)).toBe(true);
   });
@@ -474,16 +482,16 @@ describe('createGenericProxyResource (via Enhanced proxy)', () => {
     const r = createResource(
       makeResource({
         parameters: { type: 'gp2' },
-      } as any)
+      })
     );
-    expect((r as any).parameters.type).toBe('gp2');
+    expect((r as unknown as { parameters: { type: string } }).parameters.type).toBe('gp2');
   });
 
   it('subsets field returns property proxy when present', () => {
     const r = createResource(
       makeResource({
         subsets: [{ addresses: [{ ip: '10.0.0.1' }] }],
-      } as any)
+      })
     );
     expect(Array.isArray(r.subsets)).toBe(true);
   });
@@ -616,7 +624,7 @@ describe('createResource — public API', () => {
           makeResource({
             __externalRef: true,
             id: 'externalRef',
-          } as any)
+          })
         );
         expect(context.resources.externalRef).toBeUndefined();
       });
@@ -645,7 +653,7 @@ describe('createResource — public API', () => {
       const evaluator = () => ({ ready: true, message: 'ok' });
       r.withReadinessEvaluator(evaluator);
       // readinessEvaluator should exist but not be enumerable
-      expect((r as any).readinessEvaluator).toBe(evaluator);
+      expect(getReadinessEvaluator(r)).toBe(evaluator);
       expect(Object.keys(r)).not.toContain('readinessEvaluator');
     });
   });
@@ -653,17 +661,18 @@ describe('createResource — public API', () => {
   describe('conditional expression support', () => {
     it('adds withIncludeWhen method to enhanced resource', () => {
       const r = createResource(makeResource());
-      expect(typeof (r as any).withIncludeWhen).toBe('function');
+      expect(typeof r.withIncludeWhen).toBe('function');
     });
 
     it('adds withReadyWhen method to enhanced resource', () => {
       const r = createResource(makeResource());
-      expect(typeof (r as any).withReadyWhen).toBe('function');
+      expect(typeof r.withReadyWhen).toBe('function');
     });
 
     it('adds withConditional method to enhanced resource', () => {
       const r = createResource(makeResource());
-      expect(typeof (r as any).withConditional).toBe('function');
+      // withConditional is added at runtime by ConditionalExpressionIntegrator, not on the Enhanced type
+      expect(typeof (r as unknown as Record<string, unknown>).withConditional).toBe('function');
     });
   });
 
@@ -674,9 +683,10 @@ describe('createResource — public API', () => {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: { name: 'my-config', namespace: 'default' },
+          // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined spec with exactOptionalPropertyTypes
           spec: undefined as any,
           data: { key: 'value' },
-        } as any)
+        })
       );
       const json = JSON.parse(JSON.stringify(r));
       expect(json.apiVersion).toBe('v1');

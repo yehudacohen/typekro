@@ -12,18 +12,44 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { createKroResourceFactory } from '../../src/core/deployment/kro-factory.js';
 import { ValidationError } from '../../src/core/errors.js';
+import type { KroResourceFactory } from '../../src/core/types/deployment.js';
 import type { KubernetesResource } from '../../src/core/types/kubernetes.js';
 import type { SchemaDefinition } from '../../src/core/types/serialization.js';
 import { CEL_EXPRESSION_BRAND } from '../../src/shared/brands.js';
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Test helpers & types
 // ---------------------------------------------------------------------------
+
+/** Concrete spec type matching the default test schema */
+interface TestSpec {
+  name: string;
+  replicas: number;
+}
+
+/** Concrete status type matching the default test schema */
+interface TestStatus {
+  ready: boolean;
+}
+
+/**
+ * Extended spec type for tests that exercise `generateInstanceName` fallback
+ * fields and non-standard shapes. These fields exist on the runtime object
+ * but are outside the arktype-validated schema.
+ */
+interface FlexibleTestSpec {
+  name?: string;
+  appName?: string;
+  serviceName?: string;
+  resourceName?: string;
+  replicas?: number;
+  enabled?: boolean;
+}
 
 /** Minimal schema definition for testing */
 function makeSchema(
-  overrides: Partial<SchemaDefinition<any, any>> = {}
-): SchemaDefinition<any, any> {
+  overrides: Partial<SchemaDefinition<TestSpec, TestStatus>> = {}
+): SchemaDefinition<TestSpec, TestStatus> {
   return {
     apiVersion: 'v1alpha1',
     kind: 'TestApp',
@@ -42,8 +68,34 @@ function makeFactory(
   options: Record<string, unknown> = {},
   schema = makeSchema(),
   statusMappings: Record<string, unknown> = {}
-) {
+): KroResourceFactory<TestSpec, TestStatus> {
   return createKroResourceFactory(name, emptyResources, schema, statusMappings, options);
+}
+
+/**
+ * Create a factory that accepts flexible spec shapes.
+ * Used for tests that exercise `generateInstanceName` with non-standard fields
+ * (appName, serviceName, resourceName) that exist at runtime but not in the
+ * arktype schema.
+ */
+function makeFlexibleFactory(
+  name = 'myTestApp',
+  options: Record<string, unknown> = {}
+): KroResourceFactory<FlexibleTestSpec, TestStatus> {
+  const schema: SchemaDefinition<FlexibleTestSpec, TestStatus> = {
+    apiVersion: 'v1alpha1',
+    kind: 'TestApp',
+    spec: type({
+      'name?': 'string',
+      'appName?': 'string',
+      'serviceName?': 'string',
+      'resourceName?': 'string',
+      'replicas?': 'number',
+      'enabled?': 'boolean',
+    }),
+    status: type({ ready: 'boolean' }),
+  };
+  return createKroResourceFactory(name, emptyResources, schema, {}, options);
 }
 
 /** Create a branded CelExpression object */
@@ -52,6 +104,23 @@ function makeCelExpr(expression: string): { expression: string; [k: symbol]: boo
     [CEL_EXPRESSION_BRAND]: true,
     expression,
   };
+}
+
+/**
+ * Access a private method on a KroResourceFactory instance for characterization testing.
+ * Uses a Record index signature cast rather than `any` to limit the type escape hatch.
+ */
+function getPrivateMethod(
+  factory: KroResourceFactory<TestSpec, TestStatus>,
+  methodName: string
+): (...args: unknown[]) => unknown {
+  const method = (factory as unknown as Record<string, (...args: unknown[]) => unknown>)[
+    methodName
+  ];
+  if (!method) {
+    throw new Error(`Private method '${methodName}' not found on factory`);
+  }
+  return method.bind(factory);
 }
 
 // ===========================================================================
@@ -305,44 +374,44 @@ describe('KroResourceFactory: pluralizeKind rules', () => {
 describe('KroResourceFactory: generateInstanceName', () => {
   it('uses spec.name when present', () => {
     const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'my-instance', replicas: 1 } as any);
+    const yaml = factory.toYaml({ name: 'my-instance', replicas: 1 });
     expect(yaml).toContain('name: my-instance');
   });
 
   it('uses spec.appName when name is absent', () => {
-    const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ appName: 'app-instance', replicas: 1 } as any);
+    const factory = makeFlexibleFactory('myApp');
+    const yaml = factory.toYaml({ appName: 'app-instance', replicas: 1 });
     expect(yaml).toContain('name: app-instance');
   });
 
   it('uses spec.serviceName when name and appName are absent', () => {
-    const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ serviceName: 'svc-instance', replicas: 1 } as any);
+    const factory = makeFlexibleFactory('myApp');
+    const yaml = factory.toYaml({ serviceName: 'svc-instance', replicas: 1 });
     expect(yaml).toContain('name: svc-instance');
   });
 
-  it('uses spec.resourceName as lowest priority', () => {
-    const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ resourceName: 'res-instance', replicas: 1 } as any);
+  it('uses spec.resourceName when name and appName are absent', () => {
+    const factory = makeFlexibleFactory('myApp');
+    const yaml = factory.toYaml({ resourceName: 'res-instance', replicas: 1 });
     expect(yaml).toContain('name: res-instance');
   });
 
   it('prefers name over appName', () => {
-    const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'preferred', appName: 'secondary', replicas: 1 } as any);
+    const factory = makeFlexibleFactory('myApp');
+    const yaml = factory.toYaml({ name: 'preferred', appName: 'secondary', replicas: 1 });
     expect(yaml).toContain('name: preferred');
   });
 
   it('QUIRK: skips empty string name (falsy check)', () => {
-    const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: '', appName: 'fallback', replicas: 1 } as any);
+    const factory = makeFlexibleFactory('myApp');
+    const yaml = factory.toYaml({ name: '', appName: 'fallback', replicas: 1 });
     // Empty string is falsy, so it skips to appName
     expect(yaml).toContain('name: fallback');
   });
 
   it('generates timestamp-based name when no name fields exist', () => {
-    const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ replicas: 3 } as any);
+    const factory = makeFlexibleFactory('myApp');
+    const yaml = factory.toYaml({ replicas: 3 });
     // Should contain 'name: myApp-<timestamp>'
     expect(yaml).toMatch(/name: myApp-\d+/);
   });
@@ -355,31 +424,31 @@ describe('KroResourceFactory: generateInstanceName', () => {
 describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
   it('prepends kro.run/ when apiVersion has no slash', () => {
     const factory = makeFactory('myApp', {}, makeSchema({ apiVersion: 'v1alpha1' }));
-    const yaml = factory.toYaml({ name: 'test', replicas: 1 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 1 });
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
   });
 
   it('uses apiVersion as-is when it already has a slash', () => {
     const factory = makeFactory('myApp', {}, makeSchema({ apiVersion: 'custom.io/v1' }));
-    const yaml = factory.toYaml({ name: 'test', replicas: 1 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 1 });
     expect(yaml).toContain('apiVersion: custom.io/v1');
   });
 
   it('uses kind from schema definition', () => {
     const factory = makeFactory('myApp', {}, makeSchema({ kind: 'WebApp' }));
-    const yaml = factory.toYaml({ name: 'test', replicas: 1 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 1 });
     expect(yaml).toContain('kind: WebApp');
   });
 
   it('uses namespace from factory options', () => {
     const factory = makeFactory('myApp', { namespace: 'production' });
-    const yaml = factory.toYaml({ name: 'test', replicas: 1 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 1 });
     expect(yaml).toContain('namespace: production');
   });
 
   it('defaults namespace to "default"', () => {
     const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'test', replicas: 1 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 1 });
     expect(yaml).toContain('namespace: default');
   });
 });
@@ -391,7 +460,7 @@ describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
 describe('KroResourceFactory: toYaml(spec) instance YAML', () => {
   it('generates valid YAML structure with apiVersion, kind, metadata, spec', () => {
     const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'test', replicas: 3 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 3 });
     expect(yaml).toContain('apiVersion:');
     expect(yaml).toContain('kind:');
     expect(yaml).toContain('metadata:');
@@ -400,25 +469,25 @@ describe('KroResourceFactory: toYaml(spec) instance YAML', () => {
 
   it('wraps string values in double quotes', () => {
     const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'test', replicas: 3 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 3 });
     expect(yaml).toContain('  name: "test"');
   });
 
   it('leaves numeric values unquoted', () => {
     const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'test', replicas: 3 } as any);
+    const yaml = factory.toYaml({ name: 'test', replicas: 3 });
     expect(yaml).toContain('  replicas: 3');
   });
 
   it('leaves boolean values unquoted', () => {
-    const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'test', enabled: true } as any);
+    const factory = makeFlexibleFactory('myApp');
+    const yaml = factory.toYaml({ name: 'test', enabled: true });
     expect(yaml).toContain('  enabled: true');
   });
 
   it('QUIRK: does not escape quotes inside string values', () => {
     const factory = makeFactory('myApp');
-    const yaml = factory.toYaml({ name: 'say "hello"', replicas: 1 } as any);
+    const yaml = factory.toYaml({ name: 'say "hello"', replicas: 1 });
     // The current implementation wraps in double quotes without escaping inner quotes
     expect(yaml).toContain('  name: "say "hello""');
   });
@@ -473,11 +542,6 @@ describe('KroResourceFactory: isCelExpression detection', () => {
 // ===========================================================================
 
 describe('KroResourceFactory: evaluateStaticCelExpression', () => {
-  // Access private method for characterization testing
-  function getPrivateMethod(factory: any, methodName: string): (...args: any[]) => any {
-    return factory[methodName].bind(factory);
-  }
-
   it('evaluates simple schema.spec field reference', () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticCelExpression');
@@ -546,10 +610,6 @@ describe('KroResourceFactory: evaluateStaticCelExpression', () => {
 // ===========================================================================
 
 describe('KroResourceFactory: resolveSchemaRefMarkers', () => {
-  function getPrivateMethod(factory: any, methodName: string): (...args: any[]) => any {
-    return factory[methodName].bind(factory);
-  }
-
   it('resolves a single marker to the spec value', () => {
     const factory = makeFactory('myApp');
     const resolver = getPrivateMethod(factory, 'resolveSchemaRefMarkers');
@@ -593,10 +653,6 @@ describe('KroResourceFactory: resolveSchemaRefMarkers', () => {
 // ===========================================================================
 
 describe('KroResourceFactory: evaluateStaticFields', () => {
-  function getPrivateMethod(factory: any, methodName: string): (...args: any[]) => any {
-    return factory[methodName].bind(factory);
-  }
-
   it('evaluates CelExpression fields', async () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
@@ -659,7 +715,10 @@ describe('KroResourceFactory: evaluateStaticFields', () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
     const badExpr = makeCelExpr('schema.spec.nonexistent.deeply.nested');
-    const result = await evaluator({ broken: badExpr }, { name: 'test', replicas: 1 });
+    const result = (await evaluator({ broken: badExpr }, { name: 'test', replicas: 1 })) as Record<
+      string,
+      unknown
+    >;
     // angular-expressions returns undefined for missing property chains
     // (it doesn't throw), so the catch block is never entered and the
     // evaluated result is undefined
@@ -669,10 +728,10 @@ describe('KroResourceFactory: evaluateStaticFields', () => {
   it('QUIRK: inline CEL with missing field evaluates to undefined', async () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
-    const result = await evaluator(
+    const result = (await evaluator(
       { broken: '${schema.spec.nonexistent}' },
       { name: 'test', replicas: 1 }
-    );
+    )) as Record<string, unknown>;
     // angular-expressions returns undefined for missing properties,
     // so the catch block is not entered
     expect(result.broken).toBeUndefined();
@@ -681,10 +740,10 @@ describe('KroResourceFactory: evaluateStaticFields', () => {
   it('QUIRK: deeply nested inline CEL with missing fields returns undefined', async () => {
     const factory = makeFactory('myApp');
     const evaluator = getPrivateMethod(factory, 'evaluateStaticFields');
-    const result = await evaluator(
+    const result = (await evaluator(
       { broken: '${schema.spec.nonexistent.deeply.nested}' },
       { name: 'test', replicas: 1 }
-    );
+    )) as Record<string, unknown>;
     // angular-expressions uses safe navigation — it returns undefined even for
     // deeply nested missing paths rather than throwing
     expect(result.broken).toBeUndefined();

@@ -1201,7 +1201,77 @@ export class PathResolver {
       const response = await fetch(fetchUrl.toString(), {
         headers: isIpLiteral ? {} : { Host: hostname },
         signal: AbortSignal.timeout(DEFAULT_HTTP_READ_TIMEOUT),
+        // SECURITY: Disable automatic redirect following to prevent SSRF bypass.
+        // A malicious server at a validated public IP could respond with a 302 redirect
+        // to cloud metadata endpoints (e.g., http://169.254.169.254/latest/meta-data/).
+        // With 'manual', redirects are returned as-is and we reject them below.
+        redirect: 'manual',
       });
+
+      // Handle redirects securely: re-validate each redirect target through the same
+      // SSRF protection pipeline (URL safety + DNS resolution + IP validation).
+      // GitHub releases legitimately redirect (302 from github.com → objects.githubusercontent.com),
+      // so we must follow redirects — but only to validated targets.
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get('location');
+        if (!location) {
+          throw new YamlPathResolutionError(
+            `HTTP redirect (${response.status}) with no Location header for resource '${resourceName}'`,
+            resourceName,
+            url,
+            ['The remote server sent a redirect without a destination']
+          );
+        }
+
+        // Resolve relative redirects against the original URL
+        const redirectUrl = new URL(location, fetchUrl);
+        const redirectUrlStr = redirectUrl.toString();
+
+        // Re-validate the redirect target through the full SSRF protection pipeline
+        validateUrlSafety(redirectUrlStr, resourceName);
+        const redirectHostname = redirectUrl.hostname;
+        const redirectResolvedIp = await resolveAndValidateHostname(
+          redirectHostname,
+          redirectUrlStr,
+          resourceName
+        );
+
+        // Follow the redirect with the validated IP
+        const redirectFetchUrl = new URL(redirectUrlStr);
+        const redirectIsIpLiteral = net.isIP(redirectHostname) !== 0;
+        if (!redirectIsIpLiteral) {
+          redirectFetchUrl.hostname = net.isIPv6(redirectResolvedIp)
+            ? `[${redirectResolvedIp}]`
+            : redirectResolvedIp;
+        }
+
+        const redirectResponse = await fetch(redirectFetchUrl.toString(), {
+          headers: redirectIsIpLiteral ? {} : { Host: redirectHostname },
+          signal: AbortSignal.timeout(DEFAULT_HTTP_READ_TIMEOUT),
+          redirect: 'error', // No further redirects — single hop only
+        });
+
+        if (!redirectResponse.ok) {
+          throw new YamlPathResolutionError(
+            `Failed to fetch HTTP resource after redirect for resource '${resourceName}': HTTP ${redirectResponse.status} ${redirectResponse.statusText}`,
+            resourceName,
+            redirectUrlStr,
+            ['The redirect target returned an error']
+          );
+        }
+
+        const redirectContent = await redirectResponse.text();
+        if (redirectContent.length > DEFAULT_MAX_YAML_CONTENT_SIZE) {
+          throw new YamlPathResolutionError(
+            `HTTP response size ${redirectContent.length} bytes exceeds maximum allowed size for resource '${resourceName}'`,
+            resourceName,
+            redirectUrlStr,
+            ['The remote resource is too large to process safely']
+          );
+        }
+
+        return redirectContent;
+      }
 
       if (!response.ok) {
         throw new YamlPathResolutionError(
