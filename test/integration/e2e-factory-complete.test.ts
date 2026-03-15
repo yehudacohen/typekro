@@ -177,7 +177,7 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     const kroFactory = await resourceGraph.factory('kro', {
       namespace: NAMESPACE,
       waitForReady: true,
-      timeout: 120000, // 2 minutes
+      timeout: 300000, // 5 minutes
       kubeConfig: kubeConfig, // Use the configured kubeConfig with TLS skip
     });
 

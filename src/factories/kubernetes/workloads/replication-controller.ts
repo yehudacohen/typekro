@@ -7,7 +7,7 @@ export type V1ReplicationControllerSpec = NonNullable<V1ReplicationController['s
 export type V1ReplicationControllerStatus = NonNullable<V1ReplicationController['status']>;
 
 export function replicationController(
-  resource: V1ReplicationController
+  resource: V1ReplicationController & { id?: string }
 ): Enhanced<V1ReplicationControllerSpec, V1ReplicationControllerStatus> {
   // Capture expected replicas in closure for readiness evaluation
   const expectedReplicas = resource.spec?.replicas || 1;

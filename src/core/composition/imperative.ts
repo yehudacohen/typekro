@@ -289,9 +289,7 @@ const KUBERNETES_REF_PROXY_PROPS = new Set([
  * @param basePath    - The initial field path (e.g. `'status'` or `''`)
  * @param useAllowlist - When true, use an explicit allowlist instead of `prop in target`
  */
-// biome-ignore lint/suspicious/noExplicitAny: Proxy returns dynamic KubernetesRef shapes
 function createKubernetesRefProxy(resourceId: string, basePath: string, useAllowlist = false): any {
-  // biome-ignore lint/suspicious/noExplicitAny: base object is intentionally untyped — consumed only via proxy
   const baseObj: any = {
     [KUBERNETES_REF_BRAND]: true,
     resourceId,
@@ -458,9 +456,8 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 
           // Store the original composition function for later analysis
           // This allows the serialization system to analyze the original JavaScript expressions
-          (capturedStatus as unknown as Record<string, unknown>).__originalCompositionFn =
-            compositionFn;
-          (capturedStatus as unknown as Record<string, unknown>).__originalSchema = schema.spec;
+          Reflect.set(capturedStatus, '__originalCompositionFn', compositionFn);
+          Reflect.set(capturedStatus, '__originalSchema', schema.spec);
 
           const resourceBuildEnd = Date.now();
           CompositionDebugger.logPerformanceMetrics(

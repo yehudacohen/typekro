@@ -6,7 +6,7 @@ export type V1CertificateSigningRequestSpec = NonNullable<V1CertificateSigningRe
 export type V1CertificateSigningRequestStatus = NonNullable<V1CertificateSigningRequest['status']>;
 
 export function certificateSigningRequest(
-  resource: V1CertificateSigningRequest
+  resource: V1CertificateSigningRequest & { id?: string }
 ): Enhanced<V1CertificateSigningRequestSpec, V1CertificateSigningRequestStatus> {
   return createResource({
     ...resource,

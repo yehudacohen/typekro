@@ -17,7 +17,9 @@ export type V1CronJobStatus = NonNullable<V1CronJob['status']>;
  *   spec: { schedule: '0 2 * * *', jobTemplate: { spec: { template: { spec: { containers: [{ name: 'backup', image: 'backup:latest' }], restartPolicy: 'Never' } } } } },
  * });
  */
-export function cronJob(resource: V1CronJob): Enhanced<V1CronJobSpec, V1CronJobStatus> {
+export function cronJob(
+  resource: V1CronJob & { id?: string }
+): Enhanced<V1CronJobSpec, V1CronJobStatus> {
   return createResource({
     ...resource,
     apiVersion: 'batch/v1',

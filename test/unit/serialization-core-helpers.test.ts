@@ -7,12 +7,13 @@
 
 import { describe, expect, test } from 'bun:test';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import { getResourceId } from '../../src/core/metadata/index.js';
+import { getKindInfo } from '../../src/core/resources/factory-registry.js';
 import {
   analyzeStatusMappingTypes,
   analyzeValueType,
   createStubResource,
   detectAndPreserveCelExpressions,
-  FACTORY_KIND_MAP,
   isLikelyStaticObject,
   mergePreservedCelExpressions,
   separateResourcesAndClosures,
@@ -156,8 +157,8 @@ describe('createStubResource', () => {
     expect(stub).not.toBeNull();
     expect(stub!.apiVersion).toBe('apps/v1');
     expect(stub!.kind).toBe('Deployment');
-    expect((stub!.metadata as any).name).toBe('my-deploy');
-    expect((stub!.metadata as any).labels).toEqual({});
+    expect((stub!.metadata as Record<string, unknown>).name).toBe('my-deploy');
+    expect((stub!.metadata as Record<string, unknown>).labels).toEqual({});
   });
 
   test('returns null for unknown factory types', () => {
@@ -165,37 +166,45 @@ describe('createStubResource', () => {
     expect(stub).toBeNull();
   });
 
-  test('sets __resourceId as non-enumerable', () => {
+  test('stores resourceId in WeakMap metadata (not as object property)', () => {
     const stub = createStubResource('Service', 'my-svc');
     expect(stub).not.toBeNull();
 
     // Not visible in Object.keys
     expect(Object.keys(stub!)).not.toContain('__resourceId');
 
-    // But accessible directly
-    const descriptor = Object.getOwnPropertyDescriptor(stub!, '__resourceId');
-    expect(descriptor).toBeDefined();
-    expect(descriptor!.value).toBe('my-svc');
-    expect(descriptor!.enumerable).toBe(false);
-    expect(descriptor!.configurable).toBe(true);
+    // Accessible via WeakMap metadata
+    expect(getResourceId(stub!)).toBe('my-svc');
+
+    // Not stored as a property on the object
+    expect(stub!).not.toHaveProperty('__resourceId');
   });
 
-  test('creates stubs for all entries in FACTORY_KIND_MAP', () => {
-    for (const [factoryName, kindInfo] of Object.entries(FACTORY_KIND_MAP)) {
-      const stub = createStubResource(factoryName, `test-${factoryName.toLowerCase()}`);
+  test('creates stubs for factory names registered in FactoryRegistry', () => {
+    const testFactories = [
+      { name: 'Deployment', apiVersion: 'apps/v1', kind: 'Deployment' },
+      { name: 'Service', apiVersion: 'v1', kind: 'Service' },
+      { name: 'ConfigMap', apiVersion: 'v1', kind: 'ConfigMap' },
+      { name: 'Secret', apiVersion: 'v1', kind: 'Secret' },
+      { name: 'HelmRelease', apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease' },
+    ];
+    for (const { name, apiVersion, kind } of testFactories) {
+      const info = getKindInfo(name);
+      expect(info).toBeDefined();
+      const stub = createStubResource(name, `test-${name.toLowerCase()}`);
       expect(stub).not.toBeNull();
-      expect(stub!.apiVersion).toBe(kindInfo.apiVersion);
-      expect(stub!.kind).toBe(kindInfo.kind);
+      expect(stub!.apiVersion).toBe(apiVersion);
+      expect(stub!.kind).toBe(kind);
     }
   });
 
-  test('FACTORY_KIND_MAP contains expected Kubernetes types', () => {
-    expect(FACTORY_KIND_MAP.Deployment).toBeDefined();
-    expect(FACTORY_KIND_MAP.Service).toBeDefined();
-    expect(FACTORY_KIND_MAP.ConfigMap).toBeDefined();
-    expect(FACTORY_KIND_MAP.Secret).toBeDefined();
-    expect(FACTORY_KIND_MAP.HelmRelease).toBeDefined();
-    expect(FACTORY_KIND_MAP.HelmRelease?.apiVersion).toBe('helm.toolkit.fluxcd.io/v2');
+  test('FactoryRegistry contains expected Kubernetes types', () => {
+    expect(getKindInfo('Deployment')).toBeDefined();
+    expect(getKindInfo('Service')).toBeDefined();
+    expect(getKindInfo('ConfigMap')).toBeDefined();
+    expect(getKindInfo('Secret')).toBeDefined();
+    expect(getKindInfo('HelmRelease')).toBeDefined();
+    expect(getKindInfo('HelmRelease')?.apiVersion).toBe('helm.toolkit.fluxcd.io/v2');
   });
 
   test('stub does not include spec field', () => {
@@ -351,7 +360,9 @@ describe('mergePreservedCelExpressions', () => {
 
     const result = mergePreservedCelExpressions(analyzed, preserved);
 
-    expect((result as any).a.b.c).toBe(celExpr);
+    const resultA = (result as Record<string, unknown>).a as Record<string, unknown>;
+    const resultAB = resultA.b as Record<string, unknown>;
+    expect(resultAB.c).toBe(celExpr);
   });
 
   test('preserves existing nested objects when merging', () => {
@@ -363,8 +374,9 @@ describe('mergePreservedCelExpressions', () => {
 
     const result = mergePreservedCelExpressions(analyzed, preserved);
 
-    expect((result as any).a.existing).toBe('value');
-    expect((result as any).a.added).toBe(celExpr);
+    const resultAObj = (result as Record<string, unknown>).a as Record<string, unknown>;
+    expect(resultAObj.existing).toBe('value');
+    expect(resultAObj.added).toBe(celExpr);
   });
 
   test('handles empty preserved mappings', () => {
@@ -389,7 +401,7 @@ describe('mergePreservedCelExpressions', () => {
     const result = mergePreservedCelExpressions(analyzed, preserved);
 
     // 'a' was a string but gets overwritten with {} to create nested path
-    expect((result as any).a.b).toBe(celExpr);
+    expect(((result as Record<string, unknown>).a as Record<string, unknown>).b).toBe(celExpr);
   });
 
   test('skips empty path parts', () => {
@@ -400,7 +412,7 @@ describe('mergePreservedCelExpressions', () => {
     const result = mergePreservedCelExpressions({}, preserved);
 
     // Empty parts skipped, so effectively 'a.b'
-    expect((result as any).a.b).toBe(celExpr);
+    expect(((result as Record<string, unknown>).a as Record<string, unknown>).b).toBe(celExpr);
   });
 
   test('does not mutate original analyzed mappings', () => {
@@ -411,7 +423,7 @@ describe('mergePreservedCelExpressions', () => {
     mergePreservedCelExpressions(analyzed, preserved);
 
     // Original should not have the new field
-    expect((analyzed as any).added).toBeUndefined();
+    expect((analyzed as Record<string, unknown>).added).toBeUndefined();
   });
 });
 
@@ -745,7 +757,9 @@ describe('CEL expression detect → merge round-trip', () => {
     const merged = mergePreservedCelExpressions(analyzed, preservedMappings);
 
     expect(merged.phase).toBe(cel1);
-    expect((merged as any).nested.ready).toBe(cel2);
+    expect(((merged as Record<string, unknown>).nested as Record<string, unknown>).ready).toBe(
+      cel2
+    );
     expect(merged.staticField).toBe('unchanged');
   });
 

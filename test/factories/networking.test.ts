@@ -8,6 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import type { V1Ingress, V1NetworkPolicy } from '@kubernetes/client-node';
 import { ingress } from '../../src/factories/kubernetes/networking/ingress.js';
 import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Networking Factories', () => {
   describe('Ingress Factory', () => {
@@ -46,14 +47,14 @@ describe('Networking Factories', () => {
       expect(enhanced.kind).toBe('Ingress');
       expect(enhanced.apiVersion).toBe('networking.k8s.io/v1');
       expect(enhanced.metadata!.name).toBe('test-ingress');
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as ready when load balancer has endpoints', () => {
       const ingressResource = createTestIngress('ready-ingress');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const readyState = {
         status: {
@@ -72,7 +73,7 @@ describe('Networking Factories', () => {
     it('should evaluate as not ready when no load balancer endpoints and not processed', () => {
       const ingressResource = createTestIngress('pending-ingress');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Resource without resourceVersion/generation (not yet processed by controller)
       const pendingState = {
@@ -96,7 +97,7 @@ describe('Networking Factories', () => {
     it('should evaluate as ready when processed by controller even without load balancer', () => {
       const ingressResource = createTestIngress('processed-ingress');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Resource with resourceVersion and generation but no observedGeneration
       // should NOT be considered ready — resourceVersion is set by API server, not controller
@@ -140,7 +141,7 @@ describe('Networking Factories', () => {
     it('should handle missing status gracefully', () => {
       const ingressResource = createTestIngress('no-status');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test with null status — not ready
       const nullStatusResult = evaluator({ status: null, metadata: {} });
@@ -169,7 +170,7 @@ describe('Networking Factories', () => {
     it('should handle missing load balancer gracefully', () => {
       const ingressResource = createTestIngress('no-lb');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // No loadBalancer field and not processed — not ready
       const noLoadBalancerNotProcessed = {
@@ -221,7 +222,7 @@ describe('Networking Factories', () => {
     it('should handle multiple load balancer ingress endpoints', () => {
       const ingressResource = createTestIngress('multi-endpoint');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const multiEndpointState = {
         status: {
@@ -246,7 +247,7 @@ describe('Networking Factories', () => {
     it('should provide detailed readiness messages', () => {
       const ingressResource = createTestIngress('detailed-messages');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test single endpoint with IP
       const singleEndpointState = {
@@ -291,7 +292,7 @@ describe('Networking Factories', () => {
     it.skip('should handle readiness evaluation errors', () => {
       const ingressResource = createTestIngress('error-handling');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test with malformed input that might cause errors
       const _errorScenarios = [null, undefined, 'invalid-string', 42, { status: 'invalid-status' }];
@@ -328,7 +329,7 @@ describe('Networking Factories', () => {
             },
           ],
         },
-      } as any;
+      } as unknown as V1Ingress;
 
       const enhanced = ingress(ingressWithoutMetadata);
       expect(enhanced.metadata!.name).toBe('unnamed-ingress');
@@ -339,7 +340,7 @@ describe('Networking Factories', () => {
       const enhanced = ingress(originalIngress);
 
       // Verify all original properties are preserved
-      expect(enhanced.spec).toEqual(originalIngress.spec! as any);
+      expect(enhanced.spec as unknown).toEqual(originalIngress.spec);
       expect(enhanced.metadata!.name).toBe('preservation-test');
       expect(enhanced.metadata!.namespace).toBe('default');
       expect(enhanced.apiVersion).toBe('networking.k8s.io/v1');
@@ -424,7 +425,7 @@ describe('Networking Factories', () => {
           },
           policyTypes: ['Ingress'],
         },
-      } as any;
+      } as unknown as V1NetworkPolicy;
 
       const enhanced = networkPolicy(policyWithoutMetadata);
       expect(enhanced.metadata!.name).toBe('unnamed-networkpolicy');
@@ -509,8 +510,8 @@ describe('Networking Factories', () => {
       const enhanced = networkPolicy(complexPolicy);
 
       // Verify all properties are preserved
-      expect(enhanced.metadata).toEqual(complexPolicy.metadata! as any);
-      expect(enhanced.spec).toEqual(complexPolicy.spec! as any);
+      expect(enhanced.metadata as unknown).toEqual(complexPolicy.metadata!);
+      expect(enhanced.spec as unknown).toEqual(complexPolicy.spec!);
       expect(enhanced.spec!.ingress).toHaveLength(1);
       expect(enhanced.spec!.egress).toHaveLength(2);
       expect(enhanced.spec?.ingress?.[0]?._from).toHaveLength(2);
@@ -528,7 +529,7 @@ describe('Networking Factories', () => {
       };
 
       const enhanced = networkPolicy(minimalPolicy);
-      expect(enhanced.spec?.podSelector).toEqual({} as any);
+      expect(enhanced.spec?.podSelector as unknown).toEqual({});
       expect(enhanced.metadata!.name).toBe('minimal-policy');
     });
 
@@ -558,7 +559,7 @@ describe('Networking Factories', () => {
       allPodsPolicy.spec!.podSelector = {};
 
       const allPodsEnhanced = networkPolicy(allPodsPolicy);
-      expect(allPodsEnhanced.spec.podSelector).toEqual({} as any);
+      expect(allPodsEnhanced.spec.podSelector as unknown).toEqual({});
 
       // Label-based selector
       const labelSelectorPolicy = createTestNetworkPolicy('label-selector');

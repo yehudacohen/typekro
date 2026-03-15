@@ -6,6 +6,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
 import type {
+  DeploymentResult,
   DirectResourceFactory,
   FactoryForMode,
   FactoryOptions,
@@ -15,6 +16,8 @@ import type {
   ResourceFactory,
   TypedResourceGraph,
 } from '../../src/core/types/deployment.js';
+import type { Enhanced } from '../../src/core/types/kubernetes.js';
+import type { SchemaProxy, Scope } from '../../src/core/types/schema.js';
 
 describe('Factory Pattern Types', () => {
   // Test schema types
@@ -37,7 +40,7 @@ describe('Factory Pattern Types', () => {
       const mockGraph: TypedResourceGraph<TestSpec, TestStatus> = {
         name: 'test-graph',
         resources: [],
-        schema: {} as any, // Mock schema proxy
+        schema: {} as unknown as SchemaProxy<TestSpec, TestStatus>, // Mock schema proxy
 
         factory(_mode, _options) {
           // Mock implementation
@@ -104,7 +107,7 @@ describe('Factory Pattern Types', () => {
     });
 
     it('should support alchemy scope', () => {
-      const mockScope = {} as any; // Mock alchemy scope
+      const mockScope = {} as unknown as Scope; // Mock alchemy scope
 
       const options: FactoryOptions = {
         alchemyScope: mockScope,
@@ -207,8 +210,8 @@ describe('Factory Pattern Types', () => {
         isAlchemyManaged: false,
 
         async deploy(_spec) {
-          // Mock implementation
-          return {} as any;
+          // Mock implementation - never called in type-validation tests
+          return {} as unknown as Enhanced<TestSpec, TestStatus>;
         },
 
         async getInstances() {
@@ -251,7 +254,7 @@ describe('Factory Pattern Types', () => {
         isAlchemyManaged: false,
 
         async deploy(_spec) {
-          return {} as any;
+          return {} as unknown as Enhanced<TestSpec, TestStatus>;
         },
 
         async getInstances() {
@@ -285,7 +288,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async toDryRun(_spec) {
-          return {} as any;
+          return {} as unknown as DeploymentResult;
         },
 
         toYaml(_spec) {
@@ -308,10 +311,10 @@ describe('Factory Pattern Types', () => {
         namespace: 'default',
         isAlchemyManaged: false,
         rgdName: 'test-rgd',
-        schema: {} as any, // Mock schema proxy
+        schema: {} as unknown as SchemaProxy<TestSpec, TestStatus>, // Mock schema proxy
 
         async deploy(_spec) {
-          return {} as any;
+          return {} as unknown as Enhanced<TestSpec, TestStatus>;
         },
 
         async getInstances() {
@@ -364,10 +367,10 @@ describe('Factory Pattern Types', () => {
         namespace: 'default',
         isAlchemyManaged: false,
         rgdName: 'test-rgd',
-        schema: {} as any,
+        schema: {} as unknown as SchemaProxy<TestSpec, TestStatus>,
 
         async deploy(_spec) {
-          return {} as any;
+          return {} as unknown as Enhanced<TestSpec, TestStatus>;
         },
 
         async getInstances() {
@@ -423,10 +426,10 @@ describe('Factory Pattern Types', () => {
         namespace: 'default',
         isAlchemyManaged: false,
         rgdName: 'test-rgd',
-        schema: {} as any,
+        schema: {} as unknown as SchemaProxy<TestSpec, TestStatus>,
 
         async deploy(_spec) {
-          return {} as any;
+          return {} as unknown as Enhanced<TestSpec, TestStatus>;
         },
 
         async getInstances() {
@@ -476,7 +479,7 @@ describe('Factory Pattern Types', () => {
         isAlchemyManaged: false,
 
         async deploy(_spec) {
-          return {} as any;
+          return {} as unknown as Enhanced<TestSpec, TestStatus>;
         },
 
         async getInstances() {
@@ -509,7 +512,7 @@ describe('Factory Pattern Types', () => {
         },
 
         async toDryRun(_spec) {
-          return {} as any;
+          return {} as unknown as DeploymentResult;
         },
 
         toYaml(_spec) {
@@ -536,7 +539,7 @@ describe('Factory Pattern Types', () => {
       type TestFactory = ResourceFactory<ValidSpec, ValidSpec>;
 
       // Mock to ensure it compiles
-      const mockFactory: TestFactory = {} as any;
+      const mockFactory: TestFactory = {} as unknown as TestFactory;
       expect(mockFactory).toBeDefined();
     });
   });

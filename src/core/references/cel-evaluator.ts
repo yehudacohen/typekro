@@ -140,7 +140,7 @@ export class CelEvaluator {
     expression: CelExpression,
     context: CelEvaluationContext
   ): Promise<Record<string, unknown>> {
-    const celContext: Record<string, unknown> = {};
+    const celContext: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 
     // Add variables to context
     if (context.variables) {

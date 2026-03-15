@@ -58,7 +58,9 @@ describe('ConditionalExpressionProcessor', () => {
 
       // For Kro factory, should convert to CEL expression
       expect(result.expression).toHaveProperty('expression');
-      expect((result.expression as any).expression).toBe('schema.spec.enabled');
+      expect((result.expression as unknown as Record<string, unknown>).expression).toBe(
+        'schema.spec.enabled'
+      );
     });
 
     it('should handle includeWhen expression without KubernetesRef objects', () => {
@@ -141,7 +143,9 @@ describe('ConditionalExpressionProcessor', () => {
 
       // For Kro factory, should convert to CEL expression
       expect(result.expression).toHaveProperty('expression');
-      expect((result.expression as any).expression).toBe('deployment.status.readyReplicas');
+      expect((result.expression as unknown as Record<string, unknown>).expression).toBe(
+        'deployment.status.readyReplicas'
+      );
     });
 
     it('should validate readyWhen expressions for status field references', () => {
@@ -189,7 +193,9 @@ describe('ConditionalExpressionProcessor', () => {
 
       // For Kro factory, should convert to CEL expression
       expect(result.expression).toHaveProperty('expression');
-      expect((result.expression as any).expression).toBe('configmap.data.environment');
+      expect((result.expression as unknown as Record<string, unknown>).expression).toBe(
+        'configmap.data.environment'
+      );
     });
 
     it('should validate ternary conditional expressions', () => {

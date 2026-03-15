@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { StatusHydrator } from '../../src/core/deployment/status-hydrator.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
+import { createMockK8sApi } from '../utils/mock-factories.js';
 
 describe('StatusHydrator - New Interface', () => {
   let statusHydrator: StatusHydrator;
@@ -16,8 +17,8 @@ describe('StatusHydrator - New Interface', () => {
 
   beforeEach(() => {
     // Create a mock Kubernetes API (new API returns objects directly, no .body wrapper)
-    mockK8sApi = {
-      read: async () => ({
+    mockK8sApi = createMockK8sApi({
+      readResult: {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
         metadata: { name: 'test-deployment', namespace: 'default' },
@@ -30,8 +31,8 @@ describe('StatusHydrator - New Interface', () => {
             { type: 'Progressing', status: 'True' },
           ],
         },
-      }),
-    } as any;
+      } as k8s.KubernetesObject,
+    });
 
     statusHydrator = new StatusHydrator(mockK8sApi);
   });
@@ -52,13 +53,7 @@ describe('StatusHydrator - New Interface', () => {
 
   it('should handle missing resource gracefully', async () => {
     // Create a mock API that returns 404
-    const notFoundApi = {
-      read: async () => {
-        const error: any = new Error('Not found');
-        error.statusCode = 404;
-        throw error;
-      },
-    } as any;
+    const notFoundApi = createMockK8sApi({ readNotFound: true });
 
     const hydrator = new StatusHydrator(notFoundApi);
 
@@ -71,7 +66,7 @@ describe('StatusHydrator - New Interface', () => {
       },
       spec: {},
       status: {},
-    } as any;
+    } as unknown as Parameters<typeof hydrator.hydrateStatus>[0];
 
     const mockDeployedResource: DeployedResource = {
       id: 'test-missing-resource',
@@ -106,7 +101,7 @@ describe('StatusHydrator - New Interface', () => {
       },
       spec: {},
       status: {},
-    } as any;
+    } as unknown as Parameters<typeof statusHydrator.hydrateStatus>[0];
 
     const mockDeployedResource: DeployedResource = {
       id: 'test-invalid-resource',
@@ -138,7 +133,7 @@ describe('StatusHydrator - New Interface', () => {
       },
       spec: {},
       status: {},
-    } as any;
+    } as unknown as Parameters<typeof statusHydrator.hydrateEnhancedProxy>[0];
 
     // Should not throw even with empty deployed resources array
     await expect(
@@ -156,7 +151,7 @@ describe('StatusHydrator - New Interface', () => {
       },
       spec: {},
       status: {},
-    } as any;
+    } as unknown as Parameters<typeof statusHydrator.hydrateStatus>[0];
 
     const mockDeployedResource: DeployedResource = {
       id: 'testDeployment',

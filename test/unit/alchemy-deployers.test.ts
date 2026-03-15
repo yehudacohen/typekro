@@ -9,6 +9,7 @@ import { DirectTypeKroDeployer } from '../../src/alchemy/deployers.js';
 import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('DirectTypeKroDeployer', () => {
   // Mock DirectDeploymentEngine following established patterns
@@ -29,7 +30,7 @@ describe('DirectTypeKroDeployer', () => {
         delete: mock(() => Promise.resolve({ body: {} })),
         patch: mock(() => Promise.resolve({ body: {} })),
       },
-    } as any;
+    } as unknown as import('../../src/core/deployment/engine.js').DirectDeploymentEngine;
 
     return mockEngine;
   };
@@ -74,10 +75,10 @@ describe('DirectTypeKroDeployer', () => {
       const testDeployment = createTestDeployment('test-app', 3);
 
       // Factory-created resources should already have readiness evaluators attached
-      expect(typeof (testDeployment as any).readinessEvaluator).toBe('function');
+      expect(typeof getReadinessEvaluator(testDeployment)).toBe('function');
 
       // The evaluator should work correctly
-      const evaluator = (testDeployment as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(testDeployment);
       const readyResult = evaluator({
         status: {
           readyReplicas: 3,
@@ -196,8 +197,8 @@ describe('DirectTypeKroDeployer', () => {
       expect(result.spec).toEqual(originalSpec);
 
       // Verify the readiness evaluator is properly attached
-      expect((result as any).readinessEvaluator).toBeDefined();
-      expect(typeof (result as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(result)).toBeDefined();
+      expect(typeof getReadinessEvaluator(result)).toBe('function');
     });
 
     it('should call engine.deploy with correct resource graph', async () => {
@@ -250,7 +251,11 @@ describe('DirectTypeKroDeployer', () => {
       const testDeployment = createTestDeployment('error-test', 2);
 
       await expect(
-        deployer.deploy(testDeployment, { mode: 'direct', namespace: 'default', waitForReady: false })
+        deployer.deploy(testDeployment, {
+          mode: 'direct',
+          namespace: 'default',
+          waitForReady: false,
+        })
       ).rejects.toThrow('Deployment failed');
     });
 
@@ -271,7 +276,11 @@ describe('DirectTypeKroDeployer', () => {
       const testDeployment = createTestDeployment('multi-error-test', 2);
 
       try {
-        await deployer.deploy(testDeployment, { mode: 'direct', namespace: 'default', waitForReady: false });
+        await deployer.deploy(testDeployment, {
+          mode: 'direct',
+          namespace: 'default',
+          waitForReady: false,
+        });
         expect(true).toBe(false); // Should not reach here
       } catch (error: any) {
         expect(error.message).toContain('First error');
@@ -344,7 +353,7 @@ describe('DirectTypeKroDeployer', () => {
       });
 
       expect(result.kind).toBe('Service');
-      expect((result as any).readinessEvaluator).toBeDefined();
+      expect(getReadinessEvaluator(result)).toBeDefined();
     });
   });
 });

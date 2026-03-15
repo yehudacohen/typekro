@@ -4,7 +4,7 @@ import { createResource } from '../../shared.js';
 
 export type V1RuntimeClassHandler = V1RuntimeClass;
 
-export function runtimeClass(resource: V1RuntimeClass) {
+export function runtimeClass(resource: V1RuntimeClass & { id?: string }) {
   return createResource({
     ...resource,
     apiVersion: 'node.k8s.io/v1',

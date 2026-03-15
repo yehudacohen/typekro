@@ -1,14 +1,14 @@
 /**
  * JavaScript to CEL Template Literals Tests
- * 
+ *
  * These tests verify that template literals in JavaScript compositions are properly
  * converted to CEL expressions for runtime evaluation by Kro.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { kubernetesComposition, simple } from '../../src/index.js';
 import { cel } from '../../src/core/references/cel.js';
+import { kubernetesComposition, simple } from '../../src/index.js';
 
 describe('JavaScript to CEL Template Literals', () => {
   describe('cel template literal tag', () => {
@@ -53,7 +53,7 @@ describe('JavaScript to CEL Template Literals', () => {
       // (This is tested separately since we can't run assertions inside the composition)
       const testUrl = cel`https://${'test'}/api`;
       const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.CelExpression');
-      expect((testUrl as any)[KUBERNETES_REF_BRAND]).toBe(true);
+      expect((testUrl as unknown as Record<symbol, unknown>)[KUBERNETES_REF_BRAND]).toBe(true);
       expect(testUrl.expression).toBe('"https://" + "test" + "/api"');
       expect(testUrl._type).toBe('string');
     });
@@ -95,12 +95,14 @@ describe('JavaScript to CEL Template Literals', () => {
 
       // Should include the message field as a CEL expression
       // Note: deployment.metadata.name becomes schema.spec.name because it references the spec
-      expect(yaml).toContain('message: ${"Deployment " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}');
+      expect(yaml).toContain(
+        'message: ${"Deployment " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}'
+      );
 
       // Verify CEL template behavior separately
       const testMessage = cel`Deployment ${'test'} has ${42} replicas`;
       const CEL_BRAND = Symbol.for('TypeKro.CelExpression');
-      expect((testMessage as any)[CEL_BRAND]).toBe(true);
+      expect((testMessage as unknown as Record<symbol, unknown>)[CEL_BRAND]).toBe(true);
       expect(testMessage.expression).toBe('"Deployment " + "test" + " has " + 42 + " replicas"');
     });
 
@@ -140,12 +142,14 @@ describe('JavaScript to CEL Template Literals', () => {
       const yaml = testComposition.toYaml();
 
       // Should include the status field as a CEL expression
-      expect(yaml).toContain('status: ${"App " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}');
+      expect(yaml).toContain(
+        'status: ${"App " + schema.spec.name + " has " + deployment.status.readyReplicas + " replicas"}'
+      );
 
       // Verify CEL expression behavior separately
       const testStatus = cel`App ${'test'} has ${42} replicas`;
       const CEL_BRAND = Symbol.for('TypeKro.CelExpression');
-      expect((testStatus as any)[CEL_BRAND]).toBe(true);
+      expect((testStatus as unknown as Record<symbol, unknown>)[CEL_BRAND]).toBe(true);
       expect(testStatus.expression).toBe('"App " + "test" + " has " + 42 + " replicas"');
     });
   });
@@ -189,7 +193,9 @@ describe('JavaScript to CEL Template Literals', () => {
       // Schema-only expressions should be excluded from YAML (hydrated by TypeKro)
       expect(yaml).not.toContain('url:');
       // Mixed expressions should be included in YAML (sent to Kro)
-      expect(yaml).toContain('message: ${"Deployment " + deployment.metadata.name + " has " + deployment.status.readyReplicas + " replicas"}');
+      expect(yaml).toContain(
+        'message: ${"Deployment " + deployment.metadata.name + " has " + deployment.status.readyReplicas + " replicas"}'
+      );
     });
 
     it('should handle schema-only template literals correctly', () => {
@@ -261,12 +267,14 @@ describe('JavaScript to CEL Template Literals', () => {
       const schemaProxy = createSchemaProxy<typeof TestSpec.infer, typeof TestStatus.infer>();
 
       const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.KubernetesRef');
-      expect((schemaProxy.spec.name as any)[KUBERNETES_REF_BRAND]).toBe(true);
-      expect((schemaProxy.spec.hostname as any)[KUBERNETES_REF_BRAND]).toBe(true);
-      expect((schemaProxy.spec.name as any).resourceId).toBe('__schema__');
-      expect((schemaProxy.spec.hostname as any).resourceId).toBe('__schema__');
-      expect((schemaProxy.spec.name as any).fieldPath).toBe('spec.name');
-      expect((schemaProxy.spec.hostname as any).fieldPath).toBe('spec.hostname');
+      const nameRef = schemaProxy.spec.name as unknown as Record<string | symbol, unknown>;
+      const hostnameRef = schemaProxy.spec.hostname as unknown as Record<string | symbol, unknown>;
+      expect(nameRef[KUBERNETES_REF_BRAND]).toBe(true);
+      expect(hostnameRef[KUBERNETES_REF_BRAND]).toBe(true);
+      expect(nameRef.resourceId).toBe('__schema__');
+      expect(hostnameRef.resourceId).toBe('__schema__');
+      expect(nameRef.fieldPath).toBe('spec.name');
+      expect(hostnameRef.fieldPath).toBe('spec.hostname');
     });
 
     it('should return KubernetesRef objects for resource properties in status builder context', () => {
@@ -355,8 +363,12 @@ describe('JavaScript to CEL Template Literals', () => {
       // Schema-only expressions should be excluded from YAML (hydrated by TypeKro)
       expect(yaml).not.toContain('schemaOnlyUrl:');
       // Resource-only and mixed expressions should be included in YAML (sent to Kro)
-      expect(yaml).toContain('resourceOnlyMessage: ${"Deployment has " + deployment.status.readyReplicas + " replicas"}');
-      expect(yaml).toContain('mixedMessage: ${"App " + schema.spec.hostname + " has " + deployment.status.readyReplicas + " replicas"}');
+      expect(yaml).toContain(
+        'resourceOnlyMessage: ${"Deployment has " + deployment.status.readyReplicas + " replicas"}'
+      );
+      expect(yaml).toContain(
+        'mixedMessage: ${"App " + schema.spec.hostname + " has " + deployment.status.readyReplicas + " replicas"}'
+      );
 
       // None should be treated as static fields
       expect(yaml).not.toContain('Static fields');

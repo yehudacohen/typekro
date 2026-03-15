@@ -302,7 +302,7 @@ describeOrSkip('External-DNS Integration Tests', () => {
 
     // Note: In a real deployment, external-dns would manage actual DNS records
     // This test validates the TypeKro composition structure and configuration
-  }, 60000); // 1 minute timeout
+  }, 300000); // 5 minutes — factory deploys HelmRelease with waitForReady, needs chart pull + pod startup
 
   it('should validate provider configurations correctly', async () => {
     // Test different provider configurations

@@ -14,6 +14,7 @@ import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+import { copyResourceMetadata, getResourceId } from '../metadata/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import type {
@@ -230,30 +231,13 @@ export class ReferenceResolver {
       resolved = this.selectiveClone(resource);
     }
 
-    // Preserve the non-enumerable readinessEvaluator if present
-    if (resource.readinessEvaluator && typeof resource.readinessEvaluator === 'function') {
-      this.logger.trace('Preserving readiness evaluator on cloned resource', {
+    // Preserve all resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
+    copyResourceMetadata(resource, resolved);
+    const rid = getResourceId(resource);
+    if (rid) {
+      this.logger.trace('Preserved metadata on cloned resource', {
         resourceId: resource.id,
-      });
-      Object.defineProperty(resolved, 'readinessEvaluator', {
-        value: resource.readinessEvaluator,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
-
-    // Preserve the non-enumerable __resourceId if present (used for cross-resource references)
-    if (resource.__resourceId && typeof resource.__resourceId === 'string') {
-      this.logger.trace('Preserving __resourceId on cloned resource', {
-        resourceId: resource.id,
-        __resourceId: resource.__resourceId,
-      });
-      Object.defineProperty(resolved, '__resourceId', {
-        value: resource.__resourceId,
-        enumerable: false,
-        configurable: true,
-        writable: false,
+        __resourceId: rid,
       });
     }
 

@@ -771,7 +771,8 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           // This references a missing resource - should be handled gracefully
           ready:
             resources.deployment.status.readyReplicas > 0 &&
-            ((resources as any).service?.status?.conditions?.length ?? 0) > 0,
+            ((resources as unknown as Record<string, Record<string, Record<string, unknown[]>>>)
+              .service?.status?.conditions?.length ?? 0) > 0,
         })
       );
 

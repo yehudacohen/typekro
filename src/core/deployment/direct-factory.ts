@@ -21,13 +21,9 @@ import {
   TypeKroError,
   ValidationError,
 } from '../errors.js';
-import {
-  createKubernetesClientProvider,
-  createKubernetesClientProviderWithKubeConfig,
-  type KubernetesClientConfig,
-  type KubernetesClientProvider,
-} from '../kubernetes/client-provider.js';
+import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { getComponentLogger } from '../logging/index.js';
+import { copyResourceMetadata, getResourceId, setResourceId } from '../metadata/index.js';
 import type {
   DeploymentClosure,
   DeploymentError,
@@ -38,13 +34,7 @@ import type {
   FactoryStatus,
   RollbackResult,
 } from '../types/deployment.js';
-import type {
-  DeployableK8sResource,
-  Enhanced,
-  KubernetesResource,
-  ResourceStatus,
-  WithResourceId,
-} from '../types/kubernetes.js';
+import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 // Alchemy integration
 import type {
   KroCompatibleType,
@@ -52,6 +42,7 @@ import type {
   Scope,
   StatusBuilder,
 } from '../types/serialization.js';
+import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
@@ -83,7 +74,7 @@ export class DirectResourceFactoryImpl<
   private readonly factoryOptions: FactoryOptions;
   private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
   private readonly logger = getComponentLogger('direct-factory');
-  private clientProvider?: KubernetesClientProvider;
+  private readonly clientManager: KubernetesClientManager;
 
   constructor(
     name: string,
@@ -101,44 +92,14 @@ export class DirectResourceFactoryImpl<
     this.schemaDefinition = schemaDefinition;
     this.statusBuilder = statusBuilder;
     this.factoryOptions = options;
-
-    // Don't initialize client provider in constructor - do it lazily when needed
-    // This allows tests to create factories without requiring a kubeconfig
+    this.clientManager = new KubernetesClientManager(options);
   }
 
   /**
    * Get or create the Kubernetes client provider (lazy initialization)
    */
   private getClientProvider(): KubernetesClientProvider {
-    if (!this.clientProvider) {
-      this.clientProvider = this.createClientProvider(this.factoryOptions);
-    }
-    return this.clientProvider;
-  }
-
-  /**
-   * Create and configure the Kubernetes client provider
-   */
-  private createClientProvider(options: FactoryOptions): KubernetesClientProvider {
-    // If a pre-configured kubeConfig is provided, use it directly
-    if (options.kubeConfig) {
-      this.logger.debug('Using pre-configured KubeConfig from factory options');
-      return createKubernetesClientProviderWithKubeConfig(options.kubeConfig);
-    }
-
-    // Create client provider with configuration from factory options
-    const clientConfig: KubernetesClientConfig = {
-      ...(options.skipTLSVerify !== undefined && { skipTLSVerify: options.skipTLSVerify }),
-      ...(options.httpTimeouts && { httpTimeouts: options.httpTimeouts }),
-      // Add other configuration options as needed
-    };
-
-    this.logger.debug('Creating new KubernetesClientProvider with configuration', {
-      skipTLSVerify: clientConfig.skipTLSVerify,
-      hasCustomHttpTimeouts: !!options.httpTimeouts,
-    });
-
-    return createKubernetesClientProvider(clientConfig);
+    return this.clientManager.getClientProvider();
   }
 
   /**
@@ -759,17 +720,16 @@ export class DirectResourceFactoryImpl<
         id: finalId,
       };
 
-      // Preserve the __resourceId property if it exists (it's non-enumerable)
-      // This is the original resource ID (e.g., 'webappConfig') that's used for cross-resource references
-      // Note: For Enhanced proxy resources, __resourceId is on the target object and accessible via Reflect.get
-      const originalResourceId = (resource as WithResourceId).__resourceId;
+      // Preserve resource metadata from the original resource to the spread copy
+      // The WeakMap-based copyResourceMetadata replaces manual Object.defineProperty calls
+      copyResourceMetadata(resource, resourceWithId);
 
-      // Also check if the resource has an 'id' property that was set by the factory
-      // The proxy returns resourceId when accessing 'id' property
+      // Also check proxy 'id' as fallback for the original resource key
+      const originalResourceId = getResourceId(resource);
       const resourceIdFromProxy = resource.id;
       const effectiveOriginalId = originalResourceId || resourceIdFromProxy;
 
-      this.logger.debug('Checking __resourceId preservation', {
+      this.logger.debug('Checking resourceId preservation', {
         originalResourceId,
         resourceIdFromProxy,
         effectiveOriginalId,
@@ -778,30 +738,10 @@ export class DirectResourceFactoryImpl<
       });
 
       if (effectiveOriginalId) {
-        Object.defineProperty(resourceWithId, '__resourceId', {
-          value: effectiveOriginalId,
-          enumerable: false,
-          configurable: true,
-        });
-        this.logger.debug('Preserved __resourceId on resource', {
+        setResourceId(resourceWithId, effectiveOriginalId);
+        this.logger.debug('Preserved resourceId on resource', {
           originalResourceId: effectiveOriginalId,
           newId: finalId,
-        });
-      }
-
-      // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-      const originalResource = resource as {
-        readinessEvaluator?: (resource: unknown) => ResourceStatus;
-      };
-      if (
-        originalResource.readinessEvaluator &&
-        typeof originalResource.readinessEvaluator === 'function'
-      ) {
-        Object.defineProperty(resourceWithId, 'readinessEvaluator', {
-          value: originalResource.readinessEvaluator,
-          enumerable: false,
-          configurable: true,
-          writable: false,
         });
       }
 
@@ -932,8 +872,7 @@ export class DirectResourceFactoryImpl<
       const kubernetesResources: Record<string, KubernetesResource> = {};
       for (const [id, enhanced] of Object.entries(resources)) {
         // Skip external references — they're not managed by us
-        const enhancedRecord = enhanced as unknown as Record<string, unknown>;
-        if (enhancedRecord.__externalRef === true) {
+        if (Reflect.get(enhanced, '__externalRef') === true) {
           this.logger.debug('Skipping externalRef resource in direct mode', { id });
           continue;
         }
@@ -1051,8 +990,7 @@ export class DirectResourceFactoryImpl<
       // Include all other properties (spec, status, data, rules, etc.)
       // Deep resolve any KubernetesRef objects in the value
       if (value !== undefined && value !== null) {
-        (resource as unknown as Record<string, unknown>)[key] =
-          this.deepResolveKubernetesRefs(value);
+        Reflect.set(resource, key, this.deepResolveKubernetesRefs(value));
       }
     }
 
@@ -1062,17 +1000,8 @@ export class DirectResourceFactoryImpl<
     }
 
     // Preserve the non-enumerable readinessEvaluator if it exists.
-    // This is critical for the deployment engine to know when a resource is ready.
-    const enhancedRecord = enhanced as Record<string, unknown>;
-    const readinessEvaluator = enhancedRecord.readinessEvaluator;
-    if (typeof readinessEvaluator === 'function') {
-      Object.defineProperty(resource, 'readinessEvaluator', {
-        value: readinessEvaluator,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
-    }
+    // Preserve resource metadata (resourceId, readinessEvaluator, etc.) from Enhanced proxy
+    copyResourceMetadata(enhanced, resource);
 
     return resource;
   }
@@ -1181,17 +1110,9 @@ export class DirectResourceFactoryImpl<
         });
       }
 
-      // FIX: Explicitly check for and preserve the non-enumerable readinessEvaluator property.
-      const evaluator = (resource as { readinessEvaluator?: (resource: unknown) => boolean })
-        .readinessEvaluator;
-      if (typeof evaluator === 'function') {
-        this.logger.trace('Preserving readiness evaluator for resource', { path });
-        Object.defineProperty(resolved, 'readinessEvaluator', {
-          value: evaluator,
-          enumerable: false,
-          configurable: false,
-          writable: false,
-        });
+      // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
+      if (typeof resource === 'object' && resource !== null) {
+        copyResourceMetadata(resource, resolved);
       }
 
       // FIX: Preserve the id field if it exists (needed for resource mapping in CEL resolution)

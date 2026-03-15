@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1DaemonSet } from '@kubernetes/client-node';
 import { daemonSet } from '../../../../src/factories/kubernetes/workloads/daemon-set.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../../../utils/mock-factories.js';
 
 describe('DaemonSet Factory', () => {
   const createTestDaemonSet = (
@@ -109,7 +110,7 @@ describe('DaemonSet Factory', () => {
 
     it('should handle missing metadata gracefully', () => {
       const daemonSetConfig = createTestDaemonSet();
-      delete (daemonSetConfig as any).metadata;
+      delete (daemonSetConfig as unknown as Record<string, unknown>).metadata;
       const enhanced = daemonSet(daemonSetConfig);
 
       expect(enhanced).toBeDefined();
@@ -122,14 +123,14 @@ describe('DaemonSet Factory', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
 
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as ready when all pods are ready', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockDaemonSet: V1DaemonSet = {
         ...daemonSetConfig,
@@ -152,7 +153,7 @@ describe('DaemonSet Factory', () => {
     it('should evaluate as not ready when some pods are not ready', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockDaemonSet: V1DaemonSet = {
         ...daemonSetConfig,
@@ -175,7 +176,7 @@ describe('DaemonSet Factory', () => {
     it('should evaluate as not ready when no pods are scheduled', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockDaemonSet: V1DaemonSet = {
         ...daemonSetConfig,
@@ -198,7 +199,7 @@ describe('DaemonSet Factory', () => {
     it('should evaluate as not ready when status is missing', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockDaemonSet: V1DaemonSet = {
         ...daemonSetConfig,
@@ -213,7 +214,7 @@ describe('DaemonSet Factory', () => {
     it('should handle missing status fields gracefully', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockDaemonSet: V1DaemonSet = {
         ...daemonSetConfig,
@@ -236,7 +237,7 @@ describe('DaemonSet Factory', () => {
     it('should handle evaluation errors gracefully', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Mock a DaemonSet that might cause an error during evaluation
       const mockDaemonSet = {
@@ -253,7 +254,7 @@ describe('DaemonSet Factory', () => {
     it('should handle single node ready scenario', () => {
       const daemonSetConfig = createTestDaemonSet();
       const enhanced = daemonSet(daemonSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockDaemonSet: V1DaemonSet = {
         ...daemonSetConfig,
@@ -280,7 +281,7 @@ describe('DaemonSet Factory', () => {
         spec: {
           // Missing selector and template
         },
-      } as any;
+      } as unknown as Parameters<typeof daemonSet>[0];
 
       const enhanced = daemonSet(malformedDaemonSet);
 
@@ -292,7 +293,7 @@ describe('DaemonSet Factory', () => {
     it('should handle missing spec gracefully', () => {
       const daemonSetConfig = {
         metadata: { name: 'testDaemonset' },
-      } as any;
+      } as unknown as Parameters<typeof daemonSet>[0];
 
       const enhanced = daemonSet(daemonSetConfig);
 

@@ -1,7 +1,16 @@
 import type { V1StatefulSet } from '@kubernetes/client-node';
 import { ensureError } from '../../../core/errors.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
+
+// Self-register with semantic aliases for fuzzy resource key matching.
+registerFactory({
+  factoryName: 'StatefulSet',
+  kind: 'StatefulSet',
+  apiVersion: 'apps/v1',
+  semanticAliases: ['database', 'db', 'cache', 'redis'],
+});
 
 export type V1StatefulSetSpec = NonNullable<V1StatefulSet['spec']>;
 export type V1StatefulSetStatus = NonNullable<V1StatefulSet['status']>;
@@ -18,7 +27,7 @@ export type V1StatefulSetStatus = NonNullable<V1StatefulSet['status']>;
  * });
  */
 export function statefulSet(
-  resource: V1StatefulSet
+  resource: V1StatefulSet & { id?: string }
 ): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus> {
   // Capture configuration in closure for StatefulSet-specific readiness logic
   const expectedReplicas = resource.spec?.replicas || 1;

@@ -10,53 +10,19 @@
  * detect these access patterns in JavaScript expressions and converts them to CEL.
  */
 
-import * as estraverse from 'estraverse';
-import type { Node as ESTreeNode, Identifier, MemberExpression } from 'estree';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { DEFAULT_MAX_ANALYSIS_DEPTH } from '../../config/defaults.js';
-import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../constants/brands.js';
+import { CEL_EXPRESSION_BRAND } from '../../constants/brands.js';
 import { ConversionError, ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import type { CelExpression, KubernetesRef } from '../../types/common.js';
-import type { MagicProxy } from '../../types/references.js';
-import type { SchemaProxy } from '../../types/serialization.js';
-import type { AnalysisContext, CelConversionResult } from '../analysis/analyzer.js';
-import { ParserError, parseScript } from '../analysis/parser.js';
-import { SourceMapBuilder, type SourceMapEntry } from '../analysis/source-map.js';
+import type { SourceMapEntry } from '../analysis/source-map.js';
+import { SourceMapBuilder } from '../analysis/source-map.js';
+import { analyzeASTForMagicProxyPatterns, parseExpression } from './magic-proxy-ast.js';
+import type { MagicProxyAnalysisContext, MagicProxyAnalysisResult } from './magic-proxy-types.js';
 
-/**
- * Magic proxy analysis context with additional proxy-specific information
- */
-export interface MagicProxyAnalysisContext extends AnalysisContext {
-  /** Schema proxy instance for schema field references */
-  schemaProxy?: SchemaProxy<any, any>;
-
-  /** Available resource proxies */
-  resourceProxies?: Record<string, MagicProxy<any>>;
-
-  /** Whether to perform deep proxy analysis */
-  deepAnalysis?: boolean;
-
-  /** Maximum depth for recursive analysis */
-  maxDepth?: number;
-}
-
-/**
- * Result of magic proxy analysis with proxy-specific information
- */
-export interface MagicProxyAnalysisResult extends CelConversionResult {
-  /** Detected proxy types */
-  proxyTypes: ('schema' | 'resource')[];
-
-  /** Schema field references found */
-  schemaReferences: string[];
-
-  /** Resource field references found */
-  resourceReferences: string[];
-
-  /** Depth of analysis performed */
-  analysisDepth: number;
-}
+// Re-export types for backward compatibility
+export type { MagicProxyAnalysisContext, MagicProxyAnalysisResult } from './magic-proxy-types.js';
 
 /**
  * Magic Proxy Analyzer for detecting and converting KubernetesRef objects
@@ -152,10 +118,10 @@ export class MagicProxyAnalyzer {
     });
 
     // Parse the JavaScript expression to AST
-    const ast = this.parseExpression(expressionSource);
+    const ast = parseExpression(expressionSource);
 
     // Analyze the AST for magic proxy access patterns
-    const analysisResult = this.analyzeASTForMagicProxyPatterns(ast, expressionSource, context);
+    const analysisResult = analyzeASTForMagicProxyPatterns(ast, expressionSource, context);
 
     // Convert the analysis result to magic proxy result format
     const conversionResult = this.convertToMagicProxyResult(analysisResult, context);
@@ -214,212 +180,6 @@ export class MagicProxyAnalyzer {
       resourceReferences: [],
       analysisDepth: 0,
     };
-  }
-
-  /**
-   * Parse JavaScript expression string into AST using unified acorn parser
-   */
-  private parseExpression(expressionSource: string): ESTreeNode {
-    try {
-      // Use unified acorn parser with ES2022 support
-      const ast = parseScript(expressionSource);
-
-      return ast;
-    } catch (error: unknown) {
-      // Convert ParserError to ConversionError for consistent error handling
-      if (error instanceof ParserError) {
-        throw new ConversionError(
-          `Failed to parse JavaScript expression at line ${error.line}, column ${error.column}: ${error.message}`,
-          expressionSource,
-          'javascript'
-        );
-      }
-      throw new ConversionError(
-        `Failed to parse JavaScript expression: ${ensureError(error).message}`,
-        expressionSource,
-        'javascript'
-      );
-    }
-  }
-
-  /**
-   * Analyze AST for magic proxy access patterns
-   */
-  private analyzeASTForMagicProxyPatterns(
-    ast: ESTreeNode,
-    _expressionSource: string,
-    context: MagicProxyAnalysisContext
-  ): {
-    refs: KubernetesRef<any>[];
-    analysisDepth: number;
-    hasProxyObjects: boolean;
-  } {
-    const refs: KubernetesRef<any>[] = [];
-    let analysisDepth = 0;
-    let hasProxyObjects = false;
-
-    // Traverse the AST to find member expressions that could be magic proxy accesses
-    estraverse.traverse(ast, {
-      enter: (node, _parent) => {
-        analysisDepth++;
-
-        if (node.type === 'MemberExpression') {
-          const memberExpr = node as MemberExpression;
-          const kubernetesRef = this.extractKubernetesRefFromMemberExpression(memberExpr, context);
-
-          if (kubernetesRef) {
-            refs.push(kubernetesRef);
-            hasProxyObjects = true;
-          }
-        }
-
-        // Check for other proxy patterns
-        if (this.isProxyAccessPattern(node, context)) {
-          hasProxyObjects = true;
-        }
-      },
-    });
-
-    return {
-      refs,
-      analysisDepth,
-      hasProxyObjects,
-    };
-  }
-
-  /**
-   * Extract KubernetesRef from member expression AST node
-   */
-  private extractKubernetesRefFromMemberExpression(
-    memberExpr: MemberExpression,
-    context: MagicProxyAnalysisContext
-  ): KubernetesRef<any> | null {
-    try {
-      // Build the field path from the member expression chain
-      const fieldPath = this.buildFieldPathFromMemberExpression(memberExpr);
-      const resourceId = this.extractResourceIdFromMemberExpression(memberExpr);
-
-      if (resourceId && fieldPath) {
-        // Check if this matches known proxy patterns
-        if (this.isValidProxyAccess(resourceId, fieldPath, context)) {
-          return {
-            [KUBERNETES_REF_BRAND]: true,
-            resourceId,
-            fieldPath,
-            _type: undefined, // Will be inferred from context
-          };
-        }
-      }
-
-      return null;
-    } catch (error: unknown) {
-      this.logger.debug('Failed to extract KubernetesRef from member expression', { error });
-      return null;
-    }
-  }
-
-  /**
-   * Build field path from member expression chain
-   */
-  private buildFieldPathFromMemberExpression(memberExpr: MemberExpression): string | null {
-    const parts: string[] = [];
-    let current: ESTreeNode = memberExpr;
-
-    while (current && current.type === 'MemberExpression') {
-      const member = current as MemberExpression;
-
-      if (member.property.type === 'Identifier') {
-        parts.unshift(member.property.name);
-      } else {
-        // Skip computed properties for now
-        break;
-      }
-
-      current = member.object;
-    }
-
-    return parts.length > 0 ? parts.join('.') : null;
-  }
-
-  /**
-   * Extract resource ID from member expression
-   */
-  private extractResourceIdFromMemberExpression(memberExpr: MemberExpression): string | null {
-    let current: ESTreeNode = memberExpr;
-
-    // Traverse to the root of the member expression chain
-    while (current && current.type === 'MemberExpression') {
-      current = (current as MemberExpression).object;
-    }
-
-    if (current && current.type === 'Identifier') {
-      const identifier = current as Identifier;
-
-      // Check for known proxy patterns
-      if (identifier.name === 'schema') {
-        return '__schema__';
-      } else if (identifier.name === 'resources') {
-        // For resources.resourceName.field, we need to get the next level
-        let resourceCurrent: ESTreeNode = memberExpr;
-        while (resourceCurrent && resourceCurrent.type === 'MemberExpression') {
-          const member = resourceCurrent as MemberExpression;
-          if (member.object.type === 'Identifier' && member.object.name === 'resources') {
-            if (member.property.type === 'Identifier') {
-              return member.property.name;
-            }
-            break;
-          }
-          resourceCurrent = member.object;
-        }
-      } else {
-        // Direct resource access
-        return identifier.name;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Check if a node represents a proxy access pattern
-   */
-  private isProxyAccessPattern(node: ESTreeNode, context: MagicProxyAnalysisContext): boolean {
-    if (node.type === 'MemberExpression') {
-      const memberExpr = node as MemberExpression;
-      const resourceId = this.extractResourceIdFromMemberExpression(memberExpr);
-
-      if (resourceId) {
-        return this.isValidProxyAccess(resourceId, '', context);
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Check if a resource ID and field path represent valid proxy access
-   */
-  private isValidProxyAccess(
-    resourceId: string,
-    _fieldPath: string,
-    context: MagicProxyAnalysisContext
-  ): boolean {
-    // Schema references are always valid
-    if (resourceId === '__schema__') {
-      return true;
-    }
-
-    // Check if resource exists in available references
-    if (context.availableReferences?.[resourceId]) {
-      return true;
-    }
-
-    // Check if resource exists in resource proxies
-    if (context.resourceProxies?.[resourceId]) {
-      return true;
-    }
-
-    return false;
   }
 
   /**

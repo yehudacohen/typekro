@@ -1,2 +1,7 @@
 export { typeKroRuntimeBootstrap } from './typekro-runtime.js';
-export type { TypeKroRuntimeConfig, TypeKroRuntimeSpec, TypeKroRuntimeStatus } from './types.js';
+export type {
+  RbacMode,
+  TypeKroRuntimeConfig,
+  TypeKroRuntimeSpec,
+  TypeKroRuntimeStatus,
+} from './types.js';

@@ -78,10 +78,12 @@ export function generateDeterministicResourceId(
 
   const nameStr = name as string;
 
-  if (nameStr.includes('${') || nameStr.includes('{{')) {
+  if (nameStr.includes('${') || nameStr.includes('{{') || nameStr.includes('__KUBERNETES_REF_')) {
     throw new ValidationError(
-      `Cannot generate deterministic resource ID for ${kind} with template expression in name: "${nameStr}". ` +
-        `Please either use static names or provide an explicit 'id' in the resource factory options.`,
+      `Cannot generate deterministic resource ID for ${kind} with dynamic name: "${nameStr}". ` +
+        `When using schema references (e.g., spec.name) in resource names, ` +
+        `please provide an explicit 'id' in the resource factory options, e.g.: ` +
+        `simple.${kind}({ name: \`\${spec.name}-db\`, id: 'myDatabase' })`,
       kind,
       nameStr,
       'name'

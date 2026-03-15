@@ -1,7 +1,16 @@
 import type { V1Secret } from '@kubernetes/client-node';
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
+
+// Self-register with semantic alias for fuzzy resource key matching.
+registerFactory({
+  factoryName: 'Secret',
+  kind: 'Secret',
+  apiVersion: 'v1',
+  semanticAliases: ['secret'],
+});
 
 export type V1SecretData = NonNullable<V1Secret['data']>;
 

@@ -27,38 +27,21 @@ import { ResourceAnalyzer } from './resource-analyzer.js';
 
 export type { ExpressionAnalysisResult, FactoryExpressionContext, FactoryAnalysisResult };
 
-export interface FactoryAnalysisConfig {
-  /** Whether to enable expression analysis for this factory */
-  enableAnalysis?: boolean;
-
-  /** Factory type for analysis context */
-  factoryType?: 'direct' | 'kro';
-
-  /** Whether to include detailed debug information */
-  includeDebugInfo?: boolean;
-
-  /** Maximum depth for recursive analysis */
-  maxDepth?: number;
-
-  /** Whether to validate expression types */
-  validateTypes?: boolean;
-}
-
-const logger = getComponentLogger('factory-integration');
-
 /**
  * Configuration for factory expression analysis
  */
 export interface FactoryAnalysisConfig {
   /** Whether to enable expression analysis for this factory */
   enableAnalysis?: boolean;
+
   /** Factory type for context-aware analysis */
   factoryType?: 'direct' | 'kro';
-  /** Whether to preserve static values without analysis */
-  preserveStatic?: boolean;
+
   /** Maximum depth for recursive analysis */
   maxDepth?: number;
 }
+
+const logger = getComponentLogger('factory-integration');
 
 /**
  * Result of factory configuration analysis

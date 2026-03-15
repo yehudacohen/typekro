@@ -515,6 +515,56 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
   httpTimeouts?: HttpTimeoutConfig;
 }
 
+// ---------------------------------------------------------------------------
+// Dependency-inversion provider interfaces (Phase 3.5)
+// ---------------------------------------------------------------------------
+// `kro-factory.ts` lives in `core/` but needs capabilities supplied by
+// `factories/` and `alchemy/` (higher layers).  Rather than dynamic `import()`
+// calls that invert the dependency direction, the higher layers supply
+// implementations of these interfaces through `InternalFactoryOptions`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps a plain Kro custom-resource manifest into an {@link Enhanced} object
+ * with a readiness evaluator that understands Kro's status conventions.
+ *
+ * Implemented by `factories/kro/kro-custom-resource.ts`.
+ */
+export type KroCustomResourceProvider = (resource: {
+  apiVersion: string;
+  kind: string;
+  metadata: { name: string; namespace?: string };
+  spec: unknown;
+}) => Enhanced<unknown, unknown>;
+
+/**
+ * Wraps a ResourceGraphDefinition manifest into an {@link Enhanced} object
+ * with an RGD-specific readiness evaluator.
+ *
+ * Implemented by `factories/kro/resource-graph-definition.ts`.
+ */
+export type ResourceGraphDefinitionProvider = (rgd: {
+  metadata?: { name?: string; namespace?: string };
+  spec?: Record<string, unknown>;
+  [key: string]: unknown;
+}) => Enhanced<Record<string, unknown>, Record<string, unknown>>;
+
+/**
+ * Alchemy integration bridge.
+ *
+ * Only required when `alchemyScope` is provided. Supplies the three
+ * capabilities that `kro-factory.ts` previously obtained via dynamic imports
+ * from `alchemy/deployment.js`.
+ */
+export interface AlchemyBridge {
+  /** Create a deployer wrapping a {@link DirectDeploymentEngine}. */
+  createDeployer(engine: unknown): unknown;
+  /** Register a resource type in alchemy's global provider registry. */
+  ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): any;
+  /** Generate a deterministic alchemy resource ID. */
+  createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string): string;
+}
+
 /**
  * Internal factory options used by the serialization and deployment engine.
  *
@@ -522,13 +572,10 @@ export interface PublicFactoryOptions extends BaseDeploymentConfig {
  * `TypedResourceGraph.factory()` and should never be set by library consumers.
  */
 export interface InternalFactoryOptions {
-  // biome-ignore lint/suspicious/noExplicitAny: internal composition re-execution accepts arbitrary schemas
   /** Re-execution function for the composition (internal use) */
   compositionFn?: (spec: any) => any;
-  // biome-ignore lint/suspicious/noExplicitAny: holds the original definition shape which varies by composition
   /** Original composition definition (internal use) */
   compositionDefinition?: any;
-  // biome-ignore lint/suspicious/noExplicitAny: holds the original options shape which varies by composition
   /** Original composition options (internal use) */
   compositionOptions?: any;
 
@@ -536,6 +583,14 @@ export interface InternalFactoryOptions {
   factoryType?: 'direct' | 'kro';
   /** Pre-analyzed status mappings for factory-specific handling (internal use) */
   statusMappings?: Record<string, unknown>;
+
+  // Dependency-inversion providers (Phase 3.5) ---
+  /** Provider for creating Enhanced Kro custom resources with readiness evaluation */
+  kroCustomResourceProvider?: KroCustomResourceProvider;
+  /** Provider for creating Enhanced RGD resources with readiness evaluation */
+  rgdProvider?: ResourceGraphDefinitionProvider;
+  /** Alchemy integration bridge (only needed when alchemyScope is set) */
+  alchemyBridge?: AlchemyBridge;
 }
 
 /**

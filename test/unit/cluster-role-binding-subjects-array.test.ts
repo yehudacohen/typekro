@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { clusterRoleBinding } from '../../src/factories/kubernetes/rbac/index.js';
 
 describe('ClusterRoleBinding Array Serialization', () => {
@@ -29,14 +29,15 @@ describe('ClusterRoleBinding Array Serialization', () => {
       ],
     });
 
-    console.log('Original subjects:', (crb as any).subjects);
-    console.log('Original isArray:', Array.isArray((crb as any).subjects));
-    console.log('Original keys:', Object.keys((crb as any).subjects));
+    const crbRecord = crb as unknown as Record<string, unknown>;
+    console.log('Original subjects:', crbRecord.subjects);
+    console.log('Original isArray:', Array.isArray(crbRecord.subjects));
+    console.log('Original keys:', Object.keys(crbRecord.subjects as object));
 
-    expect(Array.isArray((crb as any).subjects)).toBe(true);
+    expect(Array.isArray(crbRecord.subjects)).toBe(true);
 
     // Test with toJSON (which is what the resolver now uses)
-    const plainObject = (crb as any).toJSON();
+    const plainObject = (crb as unknown as Record<string, Function>).toJSON();
     console.log('\nAfter toJSON subjects:', plainObject.subjects);
     console.log('After toJSON isArray:', Array.isArray(plainObject.subjects));
     console.log('After toJSON keys:', Object.keys(plainObject.subjects));

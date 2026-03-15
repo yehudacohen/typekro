@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1ReplicationController } from '@kubernetes/client-node';
 import { replicationController } from '../../../../src/factories/kubernetes/workloads/replication-controller.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../../../utils/mock-factories.js';
 
 describe('ReplicationController Factory', () => {
   const createTestReplicationController = (
@@ -75,7 +76,7 @@ describe('ReplicationController Factory', () => {
 
     it('should handle missing metadata gracefully', () => {
       const rcConfig = createTestReplicationController();
-      delete (rcConfig as any).metadata;
+      delete (rcConfig as unknown as Record<string, unknown>).metadata;
       const enhanced = replicationController(rcConfig);
 
       expect(enhanced).toBeDefined();
@@ -88,14 +89,14 @@ describe('ReplicationController Factory', () => {
       const rcConfig = createTestReplicationController();
       const enhanced = replicationController(rcConfig);
 
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as ready when all replicas are ready and available', () => {
       const rcConfig = createTestReplicationController();
       const enhanced = replicationController(rcConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockRC: V1ReplicationController = {
         ...rcConfig,
@@ -117,7 +118,7 @@ describe('ReplicationController Factory', () => {
     it('should evaluate as not ready when some replicas are not ready', () => {
       const rcConfig = createTestReplicationController();
       const enhanced = replicationController(rcConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockRC: V1ReplicationController = {
         ...rcConfig,
@@ -138,7 +139,7 @@ describe('ReplicationController Factory', () => {
     it('should evaluate as not ready when status is missing', () => {
       const rcConfig = createTestReplicationController();
       const enhanced = replicationController(rcConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockRC: V1ReplicationController = {
         ...rcConfig,
@@ -154,7 +155,7 @@ describe('ReplicationController Factory', () => {
     it('should handle missing readyReplicas and availableReplicas', () => {
       const rcConfig = createTestReplicationController();
       const enhanced = replicationController(rcConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockRC: V1ReplicationController = {
         ...rcConfig,
@@ -174,7 +175,7 @@ describe('ReplicationController Factory', () => {
     it('should handle single replica scenario', () => {
       const rcConfig = createTestReplicationController('singleRc', 1);
       const enhanced = replicationController(rcConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockRC: V1ReplicationController = {
         ...rcConfig,

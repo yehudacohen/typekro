@@ -9,6 +9,7 @@ import { DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { hasResourceMetadata } from '../../metadata/index.js';
 import { ensureReadinessEvaluator } from '../../readiness/index.js';
 import type {
   DeploymentResourceGraph,
@@ -190,7 +191,7 @@ export class AlchemyDeploymentStrategy<
             resourceId: resource.id,
             resourceKind: resource.manifest.kind,
             resourceName: resource.manifest.metadata?.name,
-            hasReadinessEvaluator: 'readinessEvaluator' in resource.manifest,
+            hasReadinessEvaluator: hasResourceMetadata(resource.manifest),
           });
 
           const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);

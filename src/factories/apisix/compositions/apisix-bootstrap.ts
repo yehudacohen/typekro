@@ -134,6 +134,15 @@ export const apisixBootstrap = kubernetesComposition(
         ...spec.rbac,
         create: spec.rbac?.create !== undefined ? spec.rbac.create : true,
       },
+
+      // etcd defaults — single replica to avoid scheduling issues on
+      // single-node clusters and reduce resource usage for dev/test.
+      // Production users should explicitly set etcd.replicaCount: 3.
+      etcd: {
+        ...spec.etcd,
+        enabled: spec.etcd?.enabled !== undefined ? spec.etcd.enabled : true,
+        replicaCount: spec.etcd?.replicaCount || 1,
+      },
     };
 
     // Map configuration to Helm values for the main APISIX chart

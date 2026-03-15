@@ -14,6 +14,7 @@ import {
 } from '../../../src/core/expressions/analysis/analyzer.js';
 import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
+import { createMockEnhancedStub } from '../../utils/mock-factories.js';
 
 describe('Error Scenarios and Source Mapping', () => {
   let analyzer: JavaScriptToCelAnalyzer;
@@ -25,8 +26,8 @@ describe('Error Scenarios and Source Mapping', () => {
     mockContext = {
       type: 'status',
       availableReferences: {
-        deployment: {} as any,
-        service: {} as any,
+        deployment: createMockEnhancedStub('Deployment'),
+        service: createMockEnhancedStub('Service'),
       },
       factoryType: 'kro',
       sourceMap: new SourceMapBuilder(),
@@ -203,7 +204,8 @@ describe('Error Scenarios and Source Mapping', () => {
       const mockContextWithInvalidRef = {
         ...mockContext,
         availableReferences: {
-          deployment: invalidKubernetesRef as any,
+          deployment:
+            invalidKubernetesRef as unknown as typeof mockContext.availableReferences.deployment,
         },
       };
 
@@ -234,8 +236,12 @@ describe('Error Scenarios and Source Mapping', () => {
       const circularContext = {
         ...mockContext,
         availableReferences: {
-          'service-a': { status: { readyReplicas: mockRefA } } as any,
-          'service-b': { status: { readyReplicas: mockRefB } } as any,
+          'service-a': {
+            status: { readyReplicas: mockRefA },
+          } as unknown as typeof mockContext.availableReferences.deployment,
+          'service-b': {
+            status: { readyReplicas: mockRefB },
+          } as unknown as typeof mockContext.availableReferences.deployment,
         },
       };
 

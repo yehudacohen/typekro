@@ -236,9 +236,9 @@ describe('CelEvaluator', () => {
 
   describe('extractResourceReferences', () => {
     it('should extract resource references from expressions', () => {
-      const extractResourceReferences = (evaluator as any).extractResourceReferences.bind(
-        evaluator
-      );
+      const extractResourceReferences = (
+        evaluator as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).extractResourceReferences.bind(evaluator);
 
       const refs = extractResourceReferences('database.status.ready && cache.spec.replicas > 0');
 
@@ -248,9 +248,9 @@ describe('CelEvaluator', () => {
     });
 
     it('should handle complex field paths', () => {
-      const extractResourceReferences = (evaluator as any).extractResourceReferences.bind(
-        evaluator
-      );
+      const extractResourceReferences = (
+        evaluator as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).extractResourceReferences.bind(evaluator);
 
       const refs = extractResourceReferences('service.spec.ports[0].port');
 
@@ -259,9 +259,9 @@ describe('CelEvaluator', () => {
     });
 
     it('should handle nested field paths', () => {
-      const extractResourceReferences = (evaluator as any).extractResourceReferences.bind(
-        evaluator
-      );
+      const extractResourceReferences = (
+        evaluator as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).extractResourceReferences.bind(evaluator);
 
       const refs = extractResourceReferences('deployment.spec.template.metadata.labels.app');
 
@@ -384,6 +384,31 @@ describe('CelEvaluator', () => {
       expect(expression.expression).toBe(
         'database.status.host + ":" + string(database.status.port)'
       );
+    });
+  });
+
+  describe('prototype-chain isolation', () => {
+    it('should not expose Object.prototype properties in evaluation context', async () => {
+      // CEL expressions referencing Object.prototype properties (constructor,
+      // hasOwnProperty, toString, etc.) should NOT resolve to JavaScript builtins.
+      // The evaluation context uses Object.create(null) to prevent this.
+      const expression = {
+        [CEL_EXPRESSION_BRAND]: true as const,
+        expression: 'constructor',
+      };
+
+      // Should throw because 'constructor' is not a declared variable —
+      // it should NOT resolve to Object.prototype.constructor
+      await expect(evaluator.evaluate(expression, context)).rejects.toThrow();
+    });
+
+    it('should not expose __proto__ in evaluation context', async () => {
+      const expression = {
+        [CEL_EXPRESSION_BRAND]: true as const,
+        expression: '__proto__',
+      };
+
+      await expect(evaluator.evaluate(expression, context)).rejects.toThrow();
     });
   });
 });

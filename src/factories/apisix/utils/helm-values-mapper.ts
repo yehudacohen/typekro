@@ -63,7 +63,14 @@ export function mapAPISixConfigToHelmValues(config: APISixBootstrapConfig): APIS
     ...(config.dashboard && { dashboard: config.dashboard }),
 
     // etcd configuration
-    ...(config.etcd && { etcd: config.etcd }),
+    ...(config.etcd && {
+      etcd: {
+        ...config.etcd,
+        ...(config.etcd.replicaCount !== undefined && {
+          replicaCount: config.etcd.replicaCount,
+        }),
+      },
+    }),
 
     // Service Account configuration
     ...(config.serviceAccount && { serviceAccount: config.serviceAccount }),

@@ -232,7 +232,7 @@ describe('Resource Metadata Handling', () => {
 
           // Handle case where metadata.name might be a KubernetesRef object or null/undefined
           let name = '';
-          const metadataName = (resource.metadata as any).name;
+          const metadataName = (resource.metadata as unknown as Record<string, unknown>).name;
           if (metadataName && typeof metadataName === 'string') {
             name = metadataName.toLowerCase();
           } else if (metadataName && typeof metadataName === 'object') {

@@ -9,8 +9,10 @@ import { describe, expect, it, mock } from 'bun:test';
 import type { V1Deployment, V1Service } from '@kubernetes/client-node';
 import * as k8s from '@kubernetes/client-node';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
+import type { DeploymentEvent } from '../../src/core/types/deployment.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import { createK8sError } from '../utils/mock-factories.js';
 
 describe('Enhanced DirectDeploymentEngine', () => {
   // Mock Kubernetes client and API
@@ -26,7 +28,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
       patch: mock(() => Promise.resolve({})),
       replace: mock(() => Promise.resolve({})),
       list: mock(() => Promise.resolve({ items: [] })),
-    } as any;
+    };
 
     // Reset all mocks before each test
     mockApi.create.mockClear();
@@ -41,7 +43,10 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
   it('should use custom readiness evaluator when available', async () => {
     const mockK8sApi = createMockK8sApi();
-    const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
+    const engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as unknown as k8s.KubernetesObjectApi
+    );
 
     // Create a deployment with custom readiness evaluator
     const deploymentResource: V1Deployment = {
@@ -62,9 +67,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     // Mock the deployment flow (new API returns objects directly, no .body wrapper):
     // 1. First read call (existence check) - resource doesn't exist (404)
-    const notFoundError = new Error('Not found') as any;
-    notFoundError.statusCode = 404;
-    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
+    mockK8sApi.read.mockRejectedValueOnce(createK8sError('Not found', 404));
 
     // 2. Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
@@ -82,16 +85,19 @@ describe('Enhanced DirectDeploymentEngine', () => {
       },
     });
 
-    const events: any[] = [];
+    const events: DeploymentEvent[] = [];
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
-      progressCallback: (event: any) => events.push(event),
+      progressCallback: (event: DeploymentEvent) => events.push(event),
     };
 
     // Deploy the resource
-    (enhanced as any).id = 'test-deployment';
-    const result = await engine.deployResource(enhanced as any, options);
+    (enhanced as Record<string, unknown>).id = 'test-deployment';
+    const result = await engine.deployResource(
+      enhanced as unknown as Parameters<typeof engine.deployResource>[0],
+      options
+    );
 
     expect(result.status).toBe('ready');
 
@@ -109,7 +115,10 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
   it('should reject resources without factory-provided readiness evaluators', async () => {
     const mockK8sApi = createMockK8sApi();
-    const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
+    const engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as unknown as k8s.KubernetesObjectApi
+    );
 
     // Create a plain resource without custom readiness evaluator
     const plainResource = {
@@ -121,9 +130,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     // Mock the deployment flow (new API returns objects directly, no .body wrapper):
     // 1. First read call (existence check) - resource doesn't exist (404)
-    const notFoundError = new Error('Not found') as any;
-    notFoundError.statusCode = 404;
-    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
+    mockK8sApi.read.mockRejectedValueOnce(createK8sError('Not found', 404));
 
     // 2. Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
@@ -131,22 +138,30 @@ describe('Enhanced DirectDeploymentEngine', () => {
       metadata: { ...plainResource.metadata, uid: 'test-uid' },
     });
 
-    const events: any[] = [];
+    const events: DeploymentEvent[] = [];
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
-      progressCallback: (event: any) => events.push(event),
+      progressCallback: (event: DeploymentEvent) => events.push(event),
     };
 
     // Deploy the resource - should fail because no factory-provided evaluator
-    await expect(engine.deployResource(plainResource as any, options)).rejects.toThrow(
+    await expect(
+      engine.deployResource(
+        plainResource as unknown as Parameters<typeof engine.deployResource>[0],
+        options
+      )
+    ).rejects.toThrow(
       'Resource ConfigMap/test-config does not have a factory-provided readiness evaluator'
     );
   });
 
   it('should handle custom evaluator errors gracefully', async () => {
     const mockK8sApi = createMockK8sApi();
-    const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
+    const engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as unknown as k8s.KubernetesObjectApi
+    );
 
     // Create a service with custom readiness evaluator
     const serviceResource: V1Service = {
@@ -185,16 +200,19 @@ describe('Enhanced DirectDeploymentEngine', () => {
       metadata: { ...serviceResource.metadata, uid: 'test-uid' },
     });
 
-    const events: any[] = [];
+    const events: DeploymentEvent[] = [];
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
-      progressCallback: (event: any) => events.push(event),
+      progressCallback: (event: DeploymentEvent) => events.push(event),
     };
 
     // Deploy the resource
-    (enhanced as any).id = 'test-service';
-    const result = await engine.deployResource(enhanced as any, options);
+    (enhanced as Record<string, unknown>).id = 'test-service';
+    const result = await engine.deployResource(
+      enhanced as unknown as Parameters<typeof engine.deployResource>[0],
+      options
+    );
 
     expect(result.status).toBe('ready');
 
@@ -210,7 +228,10 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
   it('should provide detailed timeout messages from custom evaluators', async () => {
     const mockK8sApi = createMockK8sApi();
-    const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
+    const engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as unknown as k8s.KubernetesObjectApi
+    );
 
     // Create a deployment with custom readiness evaluator
     const deploymentResource: V1Deployment = {
@@ -231,9 +252,7 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
     // Mock the deployment flow (new API returns objects directly, no .body wrapper):
     // 1. First read call (existence check) - resource doesn't exist (404)
-    const notFoundError = new Error('Not found') as any;
-    notFoundError.statusCode = 404;
-    mockK8sApi.read.mockRejectedValueOnce(notFoundError);
+    mockK8sApi.read.mockRejectedValueOnce(createK8sError('Not found', 404));
 
     // 2. Create call - resource is created successfully (returns object directly)
     mockK8sApi.create.mockResolvedValueOnce({
@@ -251,18 +270,23 @@ describe('Enhanced DirectDeploymentEngine', () => {
       },
     });
 
-    const events: any[] = [];
+    const events: DeploymentEvent[] = [];
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
       timeout: 3000, // Short timeout for testing (but long enough for at least one status event)
-      progressCallback: (event: any) => events.push(event),
+      progressCallback: (event: DeploymentEvent) => events.push(event),
     };
 
     // Deploy the resource - should timeout with detailed message
     // Use type assertion to set id since it's read-only on Enhanced type
     (enhanced as { id: string }).id = 'test-deployment-timeout';
-    await expect(engine.deployResource(enhanced as any, options)).rejects.toThrow();
+    await expect(
+      engine.deployResource(
+        enhanced as unknown as Parameters<typeof engine.deployResource>[0],
+        options
+      )
+    ).rejects.toThrow();
 
     // Should have emitted status updates with detailed messages
     // The deployment readiness evaluator message format is: "Waiting for replicas: X/Y ready, X/Y available"
@@ -274,7 +298,10 @@ describe('Enhanced DirectDeploymentEngine', () => {
 
   it('should emit structured status updates with details', async () => {
     const mockK8sApi = createMockK8sApi();
-    const engine = new DirectDeploymentEngine(mockKubeConfig, mockK8sApi);
+    const engine = new DirectDeploymentEngine(
+      mockKubeConfig,
+      mockK8sApi as unknown as k8s.KubernetesObjectApi
+    );
 
     // Create a deployment with custom readiness evaluator
     const deploymentResource: V1Deployment = {
@@ -324,17 +351,20 @@ describe('Enhanced DirectDeploymentEngine', () => {
       metadata: { ...deploymentResource.metadata, uid: 'test-uid' },
     });
 
-    const events: any[] = [];
+    const events: DeploymentEvent[] = [];
     const options = {
       mode: 'direct' as const,
       waitForReady: true,
-      progressCallback: (event: any) => events.push(event),
+      progressCallback: (event: DeploymentEvent) => events.push(event),
     };
 
     // Deploy the resource
     // Use type assertion to set id since it's read-only on Enhanced type
     (enhanced as { id: string }).id = 'test-deployment-structured';
-    const result = await engine.deployResource(enhanced as any, options);
+    const result = await engine.deployResource(
+      enhanced as unknown as Parameters<typeof engine.deployResource>[0],
+      options
+    );
 
     expect(result.status).toBe('ready');
 

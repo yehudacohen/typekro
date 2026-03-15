@@ -9,6 +9,7 @@ import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { DependencyGraph } from '../core/dependencies/index.js';
 import { ResourceDeploymentError } from '../core/deployment/errors.js';
 import { getComponentLogger } from '../core/logging/index.js';
+import { copyResourceMetadata, getReadinessEvaluator } from '../core/metadata/index.js';
 import { ensureReadinessEvaluator } from '../core/readiness/index.js';
 import { generateDeterministicResourceId, getResourceId } from '../core/resources/id.js';
 import type { DeploymentOptions, DeploymentResourceGraph } from '../core/types/deployment.js';
@@ -33,30 +34,8 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
       id: getResourceId(resource, 'unnamed'),
     };
 
-    // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-    const originalResource = resource as unknown as Record<string, unknown>;
-    if (
-      originalResource.readinessEvaluator &&
-      typeof originalResource.readinessEvaluator === 'function'
-    ) {
-      Object.defineProperty(resourceWithId, 'readinessEvaluator', {
-        value: originalResource.readinessEvaluator,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
-    }
-
-    // Preserve the __resourceId field if it exists (it's non-enumerable)
-    // This is used for cross-resource reference resolution
-    if (originalResource.__resourceId && typeof originalResource.__resourceId === 'string') {
-      Object.defineProperty(resourceWithId, '__resourceId', {
-        value: originalResource.__resourceId,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
-    }
+    // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
+    copyResourceMetadata(resource, resourceWithId);
 
     // Create a proper DependencyGraph instance
     const dependencyGraph = new DependencyGraph();
@@ -88,9 +67,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     logger.debug('Ensured readiness evaluator for resource', {
       kind: resource.kind,
       name: resource.metadata?.name,
-      hasEvaluator:
-        typeof (resourceWithEvaluator as unknown as Record<string, unknown>).readinessEvaluator ===
-        'function',
+      hasEvaluator: typeof getReadinessEvaluator(resourceWithEvaluator) === 'function',
     });
 
     const resourceGraph = this.createResourceGraph(resourceWithEvaluator);

@@ -5,24 +5,34 @@
  * Kubernetes deployments using both kro and direct factory patterns.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../../src/core/composition/imperative.js';
-import { ciliumNetworkPolicy, ciliumClusterwideNetworkPolicy } from '../../../src/factories/cilium/resources/networking.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCoreV1ApiClient } from '../shared-kubeconfig.js';
+import {
+  ciliumClusterwideNetworkPolicy,
+  ciliumNetworkPolicy,
+} from '../../../src/factories/cilium/resources/networking.js';
+import {
+  createCoreV1ApiClient,
+  createKubernetesObjectApiClient,
+  deleteNamespaceAndWait,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from '../shared-kubeconfig.js';
 import { ensureCiliumInstalled, isCiliumInstalled } from './setup-cilium.js';
 
 const NAMESPACE = 'typekro-test-networking';
 const clusterAvailable = isClusterAvailable();
 
-// Check if both cluster and Cilium are available
+// Ensure Cilium is bootstrapped, then verify it's available
 let ciliumAvailable = false;
 if (clusterAvailable) {
   try {
+    await ensureCiliumInstalled();
     ciliumAvailable = await isCiliumInstalled();
   } catch (error) {
-    console.warn('Could not check Cilium availability:', error);
+    console.warn('Could not bootstrap/check Cilium availability:', error);
     ciliumAvailable = false;
   }
 }
@@ -30,10 +40,10 @@ if (clusterAvailable) {
 if (!clusterAvailable) {
   console.log('⏭️  Skipping Cilium Networking Integration Tests: No cluster available');
 } else if (!ciliumAvailable) {
-  console.log('⏭️  Skipping Cilium Networking Integration Tests: Cilium not installed in cluster');
+  console.log('⏭️  Skipping Cilium Networking Integration Tests: Cilium bootstrap failed');
 }
 
-const describeOrSkip = (clusterAvailable && ciliumAvailable) ? describe : describe.skip;
+const describeOrSkip = clusterAvailable && ciliumAvailable ? describe : describe.skip;
 
 describeOrSkip('Cilium Networking Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -51,17 +61,26 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
     coreApi = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE;
 
-    // Ensure Cilium is installed using our bootstrap composition
-    await ensureCiliumInstalled();
-
-    // Create test namespace if it doesn't exist
-    try {
-      await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
-      console.log(`📦 Created test namespace: ${testNamespace}`);
-    } catch (error: any) {
-      if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
-        console.log(`📦 Test namespace ${testNamespace} already exists`);
-      } else {
+    // Create test namespace, waiting for any prior terminating namespace to clear
+    const maxWait = 60000; // 1 minute max wait for terminating namespace
+    const startWait = Date.now();
+    while (Date.now() - startWait < maxWait) {
+      try {
+        await coreApi.createNamespace({ body: { metadata: { name: testNamespace } } });
+        console.log(`📦 Created test namespace: ${testNamespace}`);
+        break;
+      } catch (error: any) {
+        const msg = error.body?.message || error.message || '';
+        if (msg.includes('being deleted')) {
+          // Namespace exists but is terminating — wait and retry
+          console.log(`⏳ Waiting for terminating namespace ${testNamespace} to clear...`);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          continue;
+        }
+        if (error.body?.reason === 'AlreadyExists' || error.statusCode === 409) {
+          console.log(`📦 Test namespace ${testNamespace} already exists`);
+          break;
+        }
         throw error;
       }
     }
@@ -72,18 +91,56 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
   afterAll(async () => {
     if (!clusterAvailable || !coreApi) return;
 
-    // Clean up test namespace
+    const k8sApi = createKubernetesObjectApiClient(kubeConfig);
+
+    // 1. Delete RGDs FIRST — Kro controller will cascade-delete instances and their child resources
+    const rgdNames = ['network-policy-kro-test', 'deny-all-test'];
+    for (const name of rgdNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name },
+        });
+        console.log(`🗑️ Deleted RGD: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(`⚠️ Could not delete RGD ${name}: ${error.message}`);
+        }
+      }
+    }
+
+    // 2. Wait for Kro to cascade-delete instances and child resources
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    // 3. Clean up any orphaned cluster-scoped CiliumClusterwideNetworkPolicies
+    const clusterPolicyNames = ['test-cluster-policy', 'test-deny-all-policy', 'test-deny-all'];
+    for (const name of clusterPolicyNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'cilium.io/v2',
+          kind: 'CiliumClusterwideNetworkPolicy',
+          metadata: { name },
+        });
+        console.log(`🗑️ Deleted CiliumClusterwideNetworkPolicy: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(
+            `⚠️ Could not delete CiliumClusterwideNetworkPolicy ${name}: ${error.message}`
+          );
+        }
+      }
+    }
+
+    // 4. Clean up test namespace and wait for completion (deletes all namespaced resources)
     try {
-      await coreApi.deleteNamespace({ name: testNamespace });
-      console.log(`🗑️ Deleted test namespace: ${testNamespace}`);
+      await deleteNamespaceAndWait(testNamespace, kubeConfig);
     } catch (error: any) {
-      // Ignore errors during cleanup
       console.log(`⚠️ Could not delete test namespace: ${error.message}`);
     }
   });
 
   describe('CiliumNetworkPolicy Integration', () => {
-
     it('should deploy CiliumNetworkPolicy using direct factory with .deploy()', async () => {
       console.log('🚀 Testing CiliumNetworkPolicy with direct factory...');
 
@@ -91,12 +148,12 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         name: 'string',
         targetApp: 'string',
         sourceApp: 'string',
-        port: 'number'
+        port: 'number',
       });
 
       const NetworkPolicyTestStatus = type({
         ready: 'boolean',
-        policyName: 'string'
+        policyName: 'string',
       });
 
       const networkPolicyComposition = kubernetesComposition(
@@ -105,7 +162,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'NetworkPolicyTest',
           spec: NetworkPolicyTestSpec,
-          status: NetworkPolicyTestStatus
+          status: NetworkPolicyTestStatus,
         },
         (spec) => {
           const policy = ciliumNetworkPolicy({
@@ -113,27 +170,33 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
             kind: 'CiliumNetworkPolicy',
             metadata: {
               name: 'test-network-policy', // Use a static string to avoid KubernetesRef issues
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { app: spec.targetApp }
+                matchLabels: { app: spec.targetApp },
               },
-              ingress: [{
-                fromEndpoints: [{
-                  matchLabels: { app: spec.sourceApp }
-                }],
-                toPorts: [{
-                  ports: [{ port: '8080', protocol: 'TCP' }] // Use static port to avoid serialization issues
-                }]
-              }]
+              ingress: [
+                {
+                  fromEndpoints: [
+                    {
+                      matchLabels: { app: spec.sourceApp },
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '8080', protocol: 'TCP' }], // Use static port to avoid serialization issues
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'networkPolicy'
+            id: 'networkPolicy',
           });
 
           return {
             ready: true, // Use static value since Cilium resources don't have status.ready
-            policyName: policy.metadata.name
+            policyName: policy.metadata.name,
           };
         }
       );
@@ -148,7 +211,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         name: 'test-network-policy',
         targetApp: 'frontend',
         sourceApp: 'backend',
-        port: 8080
+        port: 8080,
       });
 
       expect(deploymentResult).toBeDefined();
@@ -167,12 +230,12 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
       const NetworkPolicyKroTestSpec = type({
         name: 'string',
         targetApp: 'string',
-        allowedCIDR: 'string'
+        allowedCIDR: 'string',
       });
 
       const NetworkPolicyKroTestStatus = type({
         ready: 'boolean',
-        policyName: 'string'
+        policyName: 'string',
       });
 
       const networkPolicyComposition = kubernetesComposition(
@@ -181,7 +244,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'NetworkPolicyKroTest',
           spec: NetworkPolicyKroTestSpec,
-          status: NetworkPolicyKroTestStatus
+          status: NetworkPolicyKroTestStatus,
         },
         (spec) => {
           const policy = ciliumNetworkPolicy({
@@ -189,25 +252,29 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
             kind: 'CiliumNetworkPolicy',
             metadata: {
               name: 'test-network-policy-kro', // Use a static string to avoid KubernetesRef issues
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { app: spec.targetApp }
+                matchLabels: { app: spec.targetApp },
               },
-              ingress: [{
-                fromCIDR: ['10.0.0.0/8'], // Use static CIDR to avoid serialization issues
-                toPorts: [{
-                  ports: [{ port: '443', protocol: 'TCP' }]
-                }]
-              }]
+              ingress: [
+                {
+                  fromCIDR: ['10.0.0.0/8'], // Use static CIDR to avoid serialization issues
+                  toPorts: [
+                    {
+                      ports: [{ port: '443', protocol: 'TCP' }],
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'networkPolicy'
+            id: 'networkPolicy',
           });
 
           return {
             ready: true, // Use static value since Cilium resources don't have status.ready
-            policyName: policy.metadata.name
+            policyName: policy.metadata.name,
           };
         }
       );
@@ -221,7 +288,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
       const deploymentResult = await kroFactory.deploy({
         name: 'test-network-policy-kro',
         targetApp: 'api',
-        allowedCIDR: '10.0.0.0/8'
+        allowedCIDR: '10.0.0.0/8',
       });
 
       expect(deploymentResult).toBeDefined();
@@ -240,12 +307,12 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         name: 'string',
         targetApp: 'string',
         sourceApp: 'string',
-        allowedPath: 'string'
+        allowedPath: 'string',
       });
 
       const L7PolicyTestStatus = type({
         ready: 'boolean',
-        policyName: 'string'
+        policyName: 'string',
       });
 
       const l7PolicyComposition = kubernetesComposition(
@@ -254,7 +321,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'L7PolicyTest',
           spec: L7PolicyTestSpec,
-          status: L7PolicyTestStatus
+          status: L7PolicyTestStatus,
         },
         (spec) => {
           const policy = ciliumNetworkPolicy({
@@ -262,33 +329,41 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
             kind: 'CiliumNetworkPolicy',
             metadata: {
               name: 'test-l7-policy', // Use a static string to avoid KubernetesRef issues
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { app: spec.targetApp }
+                matchLabels: { app: spec.targetApp },
               },
-              ingress: [{
-                fromEndpoints: [{
-                  matchLabels: { app: spec.sourceApp }
-                }],
-                toPorts: [{
-                  ports: [{ port: '8080', protocol: 'TCP' }],
-                  rules: {
-                    http: [{
-                      method: 'GET',
-                      path: '/api/v1/.*' // Use static path to avoid serialization issues
-                    }]
-                  }
-                }]
-              }]
+              ingress: [
+                {
+                  fromEndpoints: [
+                    {
+                      matchLabels: { app: spec.sourceApp },
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '8080', protocol: 'TCP' }],
+                      rules: {
+                        http: [
+                          {
+                            method: 'GET',
+                            path: '/api/v1/.*', // Use static path to avoid serialization issues
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'l7Policy'
+            id: 'l7Policy',
           });
 
           return {
             ready: true, // Use static value since Cilium resources don't have status.ready
-            policyName: policy.metadata.name
+            policyName: policy.metadata.name,
           };
         }
       );
@@ -303,7 +378,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         name: 'test-l7-policy',
         targetApp: 'api-server',
         sourceApp: 'web-frontend',
-        allowedPath: '/api/v1/.*'
+        allowedPath: '/api/v1/.*',
       });
 
       expect(deploymentResult).toBeDefined();
@@ -311,23 +386,21 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
 
       console.log('✅ L7 HTTP CiliumNetworkPolicy deployment successful');
     });
-
   });
 
   describe('CiliumClusterwideNetworkPolicy Integration', () => {
-
     it('should deploy CiliumClusterwideNetworkPolicy using direct factory with .deploy()', async () => {
       console.log('🚀 Testing CiliumClusterwideNetworkPolicy with direct factory...');
 
       const ClusterPolicyTestSpec = type({
         name: 'string',
         nodeRole: 'string',
-        targetApp: 'string'
+        targetApp: 'string',
       });
 
       const ClusterPolicyTestStatus = type({
         ready: 'boolean',
-        policyName: 'string'
+        policyName: 'string',
       });
 
       const clusterPolicyComposition = kubernetesComposition(
@@ -336,7 +409,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'ClusterPolicyTest',
           spec: ClusterPolicyTestSpec,
-          status: ClusterPolicyTestStatus
+          status: ClusterPolicyTestStatus,
         },
         (spec) => {
           const policy = ciliumClusterwideNetworkPolicy({
@@ -346,21 +419,25 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
             spec: {
               // Use ONLY endpointSelector (not both nodeSelector and endpointSelector due to oneOf constraint)
               endpointSelector: {
-                matchLabels: { app: spec.targetApp }
+                matchLabels: { app: spec.targetApp },
               },
-              ingress: [{
-                fromEntities: ['host'],
-                toPorts: [{
-                  ports: [{ port: '9100', protocol: 'TCP' }]
-                }]
-              }]
+              ingress: [
+                {
+                  fromEntities: ['host'],
+                  toPorts: [
+                    {
+                      ports: [{ port: '9100', protocol: 'TCP' }],
+                    },
+                  ],
+                },
+              ],
             },
-            id: 'clusterPolicy'
+            id: 'clusterPolicy',
           });
 
           return {
             ready: true, // Use static value since Cilium resources don't have status.ready
-            policyName: policy.metadata.name
+            policyName: policy.metadata.name,
           };
         }
       );
@@ -374,7 +451,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
       const deploymentResult = await directFactory.deploy({
         name: 'test-cluster-policy',
         nodeRole: '',
-        targetApp: 'node-exporter'
+        targetApp: 'node-exporter',
       });
 
       expect(deploymentResult).toBeDefined();
@@ -390,13 +467,13 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
 
       const DenyAllTestSpec = type({
         name: 'string',
-        enabled: 'boolean'
+        enabled: 'boolean',
       });
 
       const DenyAllTestStatus = type({
         ready: 'boolean',
         policyName: 'string',
-        enforced: 'boolean'
+        enforced: 'boolean',
       });
 
       const denyAllComposition = kubernetesComposition(
@@ -405,7 +482,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
           apiVersion: 'v1alpha1',
           kind: 'DenyAllTest',
           spec: DenyAllTestSpec,
-          status: DenyAllTestStatus
+          status: DenyAllTestStatus,
         },
         (spec) => {
           const policy = ciliumClusterwideNetworkPolicy({
@@ -415,15 +492,15 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
             spec: {
               endpointSelector: {}, // Selects all endpoints
               ingress: [], // Empty ingress rules = deny all ingress traffic
-              egress: []   // Empty egress rules = deny all egress traffic
+              egress: [], // Empty egress rules = deny all egress traffic
             },
-            id: 'denyAllPolicy'
+            id: 'denyAllPolicy',
           });
 
           return {
             ready: true, // Use static value since Cilium resources don't have status.ready
             policyName: policy.metadata.name,
-            enforced: spec.enabled
+            enforced: spec.enabled,
           };
         }
       );
@@ -436,7 +513,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
 
       const deploymentResult = await kroFactory.deploy({
         name: 'test-deny-all-policy',
-        enabled: true
+        enabled: true,
       });
 
       expect(deploymentResult).toBeDefined();
@@ -445,11 +522,9 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
 
       console.log('✅ Kro factory deny-all CiliumClusterwideNetworkPolicy deployment successful');
     });
-
   });
 
   describe('Network Policy Validation', () => {
-
     it('should validate complex network policy configurations', () => {
       console.log('🧪 Testing complex network policy validation...');
 
@@ -461,27 +536,36 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
             kind: 'CiliumNetworkPolicy' as const,
             metadata: {
               name: 'multi-source',
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { app: 'database' }
+                matchLabels: { app: 'database' },
               },
-              ingress: [{
-                fromEndpoints: [{
-                  matchLabels: { app: 'api' }
-                }],
-                toPorts: [{
-                  ports: [{ port: '5432', protocol: 'TCP' as const }]
-                }]
-              }, {
-                fromCIDR: ['10.0.0.0/8'],
-                toPorts: [{
-                  ports: [{ port: '5432', protocol: 'TCP' as const }]
-                }]
-              }]
-            }
-          }
+              ingress: [
+                {
+                  fromEndpoints: [
+                    {
+                      matchLabels: { app: 'api' },
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '5432', protocol: 'TCP' as const }],
+                    },
+                  ],
+                },
+                {
+                  fromCIDR: ['10.0.0.0/8'],
+                  toPorts: [
+                    {
+                      ports: [{ port: '5432', protocol: 'TCP' as const }],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
         },
         {
           name: 'egress-policy',
@@ -490,23 +574,29 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
             kind: 'CiliumNetworkPolicy' as const,
             metadata: {
               name: 'egress-control',
-              namespace: testNamespace
+              namespace: testNamespace,
             },
             spec: {
               endpointSelector: {
-                matchLabels: { app: 'client' }
+                matchLabels: { app: 'client' },
               },
-              egress: [{
-                toFQDNs: [{
-                  matchPattern: '*.example.com'
-                }],
-                toPorts: [{
-                  ports: [{ port: '443', protocol: 'TCP' as const }]
-                }]
-              }]
-            }
-          }
-        }
+              egress: [
+                {
+                  toFQDNs: [
+                    {
+                      matchPattern: '*.example.com',
+                    },
+                  ],
+                  toPorts: [
+                    {
+                      ports: [{ port: '443', protocol: 'TCP' as const }],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
       ];
 
       scenarios.forEach(({ name, config }) => {
@@ -518,6 +608,5 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
 
       console.log('✅ Complex network policy validation successful');
     });
-
   });
 });

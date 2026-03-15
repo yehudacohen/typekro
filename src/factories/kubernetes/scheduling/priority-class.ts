@@ -4,7 +4,7 @@ import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export function priorityClass(
-  resource: V1PriorityClass
+  resource: V1PriorityClass & { id?: string }
 ): V1PriorityClass & Enhanced<V1PriorityClass, object> {
   return createResource<V1PriorityClass, object>(
     {

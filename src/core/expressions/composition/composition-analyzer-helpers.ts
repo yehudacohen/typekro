@@ -1,0 +1,337 @@
+/**
+ * Stateless utility functions for the composition body analyzer.
+ *
+ * Used by both ternary analysis and AST traversal modules.
+ */
+
+import * as estraverse from 'estraverse';
+import { escapeRegExp } from '../../../utils/helpers.js';
+import { isKnownFactory } from '../../resources/factory-registry.js';
+import { getIdentifierName } from '../analysis/ast-type-guards.js';
+import type {
+  ASTNode,
+  CallExpression,
+  FactoryCallInfo,
+  Identifier,
+  Literal,
+  Property,
+} from './composition-analyzer-types.js';
+
+// ---------------------------------------------------------------------------
+// Hardcoded factory names (fallback for when factories aren't imported)
+// ---------------------------------------------------------------------------
+
+/**
+ * Static set of well-known factory names used as a fallback when the
+ * dynamic FactoryRegistry hasn't been populated (e.g. in unit tests that
+ * only import the analyzer without importing the actual factory modules).
+ *
+ * The FactoryRegistry is checked first; this list is only consulted when
+ * `isKnownFactory()` returns false.
+ */
+const KNOWN_FACTORY_NAMES = new Set([
+  'Deployment',
+  'ConfigMap',
+  'Service',
+  'Ingress',
+  'StatefulSet',
+  'DaemonSet',
+  'Job',
+  'CronJob',
+  'Secret',
+  'PersistentVolumeClaim',
+  'ServiceAccount',
+  'Role',
+  'RoleBinding',
+  'ClusterRole',
+  'ClusterRoleBinding',
+  'HorizontalPodAutoscaler',
+  'PodDisruptionBudget',
+  'NetworkPolicy',
+  'HelmRelease',
+  'HelmRepository',
+  'GitRepository',
+  'Kustomization',
+  'externalRef',
+  // Common custom factory patterns
+  'Namespace',
+  'LimitRange',
+  'ResourceQuota',
+]);
+
+// ---------------------------------------------------------------------------
+// Source extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract source text from an AST node using character ranges.
+ */
+export function getSource(node: ASTNode, fullSource: string): string {
+  const range = node.range as [number, number] | undefined;
+  if (range) {
+    return fullSource.substring(range[0], range[1]);
+  }
+  return '<unknown>';
+}
+
+// ---------------------------------------------------------------------------
+// Factory call detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a CallExpression is a factory call (Deployment, ConfigMap, Service, etc.)
+ * by looking at the callee name against the central FactoryRegistry.
+ *
+ * Custom factories become first-class by calling `registerFactory()` at import
+ * time — no need to edit this file.
+ */
+export function isFactoryCall(node: ASTNode): node is CallExpression {
+  if (node.type !== 'CallExpression') return false;
+  const call = node as CallExpression;
+  const callee = call.callee;
+  if (callee.type === 'Identifier') {
+    const name = (callee as Identifier).name;
+    return isKnownFactory(name) || KNOWN_FACTORY_NAMES.has(name);
+  }
+  return false;
+}
+
+/** Extract the factory function name from a factory call expression */
+export function extractFactoryName(call: CallExpression): string {
+  if (call.callee.type === 'Identifier') {
+    return (call.callee as Identifier).name;
+  }
+  return 'Unknown';
+}
+
+/**
+ * Extract the `id` property value from factory call arguments.
+ *
+ * Factory calls like `Deployment({ name: ..., id: 'web' })` have
+ * an ObjectExpression as their first argument containing the id property.
+ */
+export function extractFactoryId(call: CallExpression): string | undefined {
+  const firstArg = call.arguments[0];
+  if (!firstArg || firstArg.type !== 'ObjectExpression') return undefined;
+
+  const properties = (firstArg as ASTNode & { properties: Property[] }).properties;
+  if (!properties) return undefined;
+
+  for (const prop of properties) {
+    if (prop.type !== 'Property') continue;
+    const key = prop.key;
+    const keyName =
+      key.type === 'Identifier'
+        ? (key as Identifier).name
+        : key.type === 'Literal'
+          ? String((key as Literal).value)
+          : undefined;
+    if (keyName === 'id' && prop.value.type === 'Literal') {
+      return String((prop.value as Literal).value);
+    }
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// CEL conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a JS if-condition AST node to a CEL expression string.
+ *
+ * - Replaces `spec.` with `schema.spec.` (for the schema proxy parameter)
+ * - Converts `===` to `==`, `!==` to `!=`
+ * - Wraps in `${}` for Kro CEL syntax
+ */
+export function conditionToCel(node: ASTNode, fullSource: string, specParamName: string): string {
+  let source = getSource(node, fullSource);
+
+  // Replace the spec parameter name with schema.spec
+  // Must use word boundary to avoid replacing substrings
+  // escapeRegExp prevents regex injection if specParamName contains metacharacters
+  source = source.replace(new RegExp(`\\b${escapeRegExp(specParamName)}\\.`, 'g'), 'schema.spec.');
+
+  // JS → CEL operator conversions
+  source = source.replace(/===/g, '==');
+  source = source.replace(/!==/g, '!=');
+
+  // Note: We do NOT convert quotes here. Bun's transpiler normalizes JS strings
+  // to double quotes in fn.toString(), so the source text already uses double quotes.
+  // For template values (inside resource templates), double quotes work fine because
+  // they're nested in the YAML structure. For status values, the caller is responsible
+  // for converting double quotes to single quotes if needed to avoid YAML escaping.
+
+  return `\${${source}}`;
+}
+
+/**
+ * Convert an iterable source expression to a Kro forEach CEL reference.
+ *
+ * e.g. `spec.regions` → `${schema.spec.regions}`
+ * e.g. `spec.workers.filter(w => w.enabled)` → `${schema.spec.workers.filter(w, w.enabled)}`
+ */
+export function iterableToCel(node: ASTNode, fullSource: string, specParamName: string): string {
+  let source = getSource(node, fullSource);
+
+  // Replace the spec parameter name with schema.spec
+  // escapeRegExp prevents regex injection if specParamName contains metacharacters
+  source = source.replace(new RegExp(`\\b${escapeRegExp(specParamName)}\\.`, 'g'), 'schema.spec.');
+
+  // Convert arrow function callbacks to CEL lambda syntax
+  // Pattern: .filter((w) => w.enabled) → .filter(w, w.enabled)
+  // Pattern: .filter((w) => w.priority > 5) → .filter(w, w.priority > 5)
+  source = source.replace(
+    /\.\s*(filter|map|exists|all)\s*\(\s*\(?([a-zA-Z_$][a-zA-Z0-9_$]*)\)?\s*=>\s*(?:\{\s*(?:return\s+)?)?([\s\S]+?)(?:\s*;?\s*\})?\s*\)/g,
+    (_match, method: string, param: string, body: string) => {
+      let cleanBody = body.trim();
+      // JS → CEL operators
+      cleanBody = cleanBody.replace(/===/g, '==');
+      cleanBody = cleanBody.replace(/!==/g, '!=');
+      return `.${method}(${param}, ${cleanBody})`;
+    }
+  );
+
+  // JS → CEL operators for outer expression
+  source = source.replace(/===/g, '==');
+  source = source.replace(/!==/g, '!=');
+
+  return `\${${source}}`;
+}
+
+// ---------------------------------------------------------------------------
+// Condition analysis
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a condition node is a compile-time literal (e.g. `true`, `false`, `1`).
+ * Compile-time literals should NOT produce includeWhen directives.
+ */
+export function isCompileTimeLiteral(node: ASTNode): boolean {
+  if (node.type === 'Literal') return true;
+  // Unary: `!true`, `-1`
+  if (node.type === 'UnaryExpression') {
+    const unary = node as ASTNode & { argument: ASTNode };
+    return isCompileTimeLiteral(unary.argument);
+  }
+  return false;
+}
+
+/**
+ * Check if a condition references the schema spec parameter.
+ * Only conditions that reference schema fields should produce includeWhen.
+ */
+export function referencesSpec(node: ASTNode, specParamName: string): boolean {
+  let found = false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estraverse types are loose
+  estraverse.traverse(node as any, {
+    enter(n) {
+      if (n.type === 'Identifier' && getIdentifierName(n) === specParamName) {
+        found = true;
+        return estraverse.VisitorOption.Break;
+      }
+      return undefined;
+    },
+    fallback: 'iteration',
+  });
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Factory call search
+// ---------------------------------------------------------------------------
+
+/**
+ * Find all factory calls in a subtree and return their resource IDs and factory names.
+ */
+export function findFactoryCallsInSubtree(node: ASTNode): FactoryCallInfo[] {
+  const calls: FactoryCallInfo[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estraverse types are loose
+  estraverse.traverse(node as any, {
+    enter(n) {
+      const astNode = n as unknown as ASTNode;
+      if (isFactoryCall(astNode)) {
+        const call = astNode as CallExpression;
+        const id = extractFactoryId(call);
+        if (id) {
+          calls.push({ id, factoryName: extractFactoryName(call) });
+        }
+      }
+      return undefined;
+    },
+    fallback: 'iteration',
+  });
+  return calls;
+}
+
+// ---------------------------------------------------------------------------
+// Spec parameter extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the spec parameter name from the composition function source.
+ *
+ * Handles patterns:
+ *   (spec) => { ... }
+ *   function(spec) { ... }
+ *   (spec) => expr
+ */
+export function extractSpecParamName(functionSource: string): string {
+  // Arrow function: (spec) => ... or spec => ...
+  const arrowMatch = functionSource.match(
+    /^\s*(?:(?:async\s+)?\(?([a-zA-Z_$][a-zA-Z0-9_$]*)\)?\s*=>)/
+  );
+  if (arrowMatch?.[1]) return arrowMatch[1];
+
+  // Regular function: function(spec) { ... } or function name(spec) { ... }
+  const funcMatch = functionSource.match(/function\s*\w*\s*\(\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\)/);
+  if (funcMatch?.[1]) return funcMatch[1];
+
+  return 'spec'; // Fallback
+}
+
+// ---------------------------------------------------------------------------
+// Expression and path utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a full expression AST node to a CEL string (not just conditions).
+ *
+ * Reuses the same transforms as conditionToCel:
+ * - `spec.` → `schema.spec.`
+ * - `===` → `==`, `!==` → `!=`
+ * - Single quotes → double quotes
+ * - Wraps in `${}`
+ */
+export function expressionToCel(node: ASTNode, fullSource: string, specParamName: string): string {
+  return conditionToCel(node, fullSource, specParamName);
+}
+
+/**
+ * Map a factory argument property key name to its template property path.
+ *
+ * Factory arguments like `{ name: ..., image: ..., replicas: ... }` map to
+ * template paths like `spec.replicas`. Special keys are mapped differently:
+ * - `name` → `metadata.name`
+ * - `id` → skipped (internal, not a template property)
+ * - Everything else → `spec.{key}`
+ */
+export function factoryArgKeyToTemplatePath(key: string): string | undefined {
+  if (key === 'id') return undefined; // Internal, not a template field
+  if (key === 'name') return 'metadata.name';
+  if (key === 'namespace') return 'metadata.namespace';
+  if (key === 'labels') return 'metadata.labels';
+  if (key === 'annotations') return 'metadata.annotations';
+  return `spec.${key}`;
+}
+
+/**
+ * Negate a CEL condition expression.
+ *
+ * `${schema.spec.monitoring}` → `${!schema.spec.monitoring}`
+ */
+export function negateCondition(condition: string): string {
+  // Remove ${...} wrapper
+  const inner = condition.replace(/^\$\{/, '').replace(/\}$/, '');
+  return `\${!${inner}}`;
+}

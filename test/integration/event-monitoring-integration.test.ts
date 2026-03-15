@@ -5,7 +5,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createEventFilter } from '../../src/core/deployment/event-filter.js';
 import { createEventMonitor } from '../../src/core/deployment/event-monitor.js';
-import { createEventStreamer } from '../../src/core/deployment/event-streamer.js';
 import type { DeployedResource, DeploymentEvent } from '../../src/core/types/deployment.js';
 import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig.js';
 
@@ -46,12 +45,6 @@ describe('Event Monitoring Integration', () => {
         eventTypes: ['Warning', 'Error'],
         includeChildResources: true,
       });
-
-      const eventStreamer = createEventStreamer({
-        consoleLogging: true,
-        logLevel: 'info',
-      });
-      eventStreamer.setProgressCallback(progressCallback);
 
       // Test deployed resources
       const deployedResources: DeployedResource[] = [
@@ -148,25 +141,6 @@ describe('Event Monitoring Integration', () => {
 
       // This test validates the filter logic without requiring real events
       expect(eventFilter).toBeDefined();
-    });
-
-    it('should handle rate limiting in event streamer', async () => {
-      if (!clusterAvailable) {
-        console.log('Skipping test - no Kubernetes cluster available');
-        return;
-      }
-
-      // Test rate limiting functionality
-      const eventStreamer = createEventStreamer({
-        consoleLogging: false,
-        logLevel: 'info',
-        maxEventsPerSecond: 2,
-      });
-
-      // This test validates the streamer logic
-      expect(eventStreamer).toBeDefined();
-      const stats = eventStreamer.getRateLimitStats();
-      expect(stats).toBeDefined();
     });
   });
 

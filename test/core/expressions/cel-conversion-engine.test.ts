@@ -25,12 +25,12 @@ describe('CEL Conversion Engine', () => {
   });
 
   // Helper function to create mock KubernetesRef objects
-  function createMockRef(resourceId: string, fieldPath: string): KubernetesRef<any> {
+  function createMockRef(resourceId: string, fieldPath: string): KubernetesRef<unknown> {
     return {
       [KUBERNETES_REF_BRAND]: true,
       resourceId,
       fieldPath,
-    } as KubernetesRef<any>;
+    } as KubernetesRef<unknown>;
   }
 
   // Helper function to create factory context
@@ -52,7 +52,7 @@ describe('CEL Conversion Engine', () => {
       expect(result.wasConverted).toBe(true);
       expect(result.strategy).toBe('direct');
       expect(isCelExpression(result.converted)).toBe(true);
-      expect((result.converted as unknown as CelExpression<any>).expression).toBe(
+      expect((result.converted as unknown as CelExpression<unknown>).expression).toBe(
         'my-deployment.status.readyReplicas'
       );
     });
@@ -75,7 +75,7 @@ describe('CEL Conversion Engine', () => {
       const result = engine.convertValue(schemaRef, context);
 
       expect(result.wasConverted).toBe(true);
-      expect((result.converted as unknown as CelExpression<any>).expression).toBe(
+      expect((result.converted as unknown as CelExpression<unknown>).expression).toBe(
         'schema.spec.name'
       );
     });
@@ -108,10 +108,10 @@ describe('CEL Conversion Engine', () => {
       expect(result.strategy).toBe('cel-expression');
       expect(result.converted).toHaveProperty('name', 'static-name');
       expect(result.converted).toHaveProperty('replicas', 3);
-      expect(isCelExpression((result.converted as any).port)).toBe(true);
-      expect(((result.converted as any).port as CelExpression<any>).expression).toBe(
-        'my-service.spec.ports[0].port'
-      );
+      expect(isCelExpression((result.converted as Record<string, unknown>).port)).toBe(true);
+      expect(
+        ((result.converted as Record<string, unknown>).port as CelExpression<unknown>).expression
+      ).toBe('my-service.spec.ports[0].port');
     });
 
     test('should convert arrays with KubernetesRef elements', () => {
@@ -126,7 +126,7 @@ describe('CEL Conversion Engine', () => {
       expect(result.strategy).toBe('cel-expression');
       expect(Array.isArray(result.converted)).toBe(true);
 
-      const convertedArray = result.converted as any[];
+      const convertedArray = result.converted as unknown[];
       expect(isCelExpression(convertedArray[0])).toBe(true);
       expect(convertedArray[1]).toBe('static-value');
       expect(isCelExpression(convertedArray[2])).toBe(true);
@@ -152,7 +152,10 @@ describe('CEL Conversion Engine', () => {
       expect(result.wasConverted).toBe(true);
       expect(result.strategy).toBe('cel-expression');
 
-      const converted = result.converted as any;
+      const converted = result.converted as unknown as {
+        metadata: { name: unknown; labels: { app: string } };
+        spec: { replicas: number };
+      };
       expect(isCelExpression(converted.metadata.name)).toBe(true);
       expect(converted.metadata.labels.app).toBe('static-app');
       expect(converted.spec.replicas).toBe(3);
@@ -178,7 +181,7 @@ describe('CEL Conversion Engine', () => {
     });
 
     test('should handle large objects efficiently', () => {
-      const largeObj: Record<string, any> = {};
+      const largeObj: Record<string, unknown> = {};
 
       // Create a large object with some KubernetesRef objects
       for (let i = 0; i < 100; i++) {
@@ -311,7 +314,7 @@ describe('CEL Conversion Engine', () => {
     });
 
     test('should handle circular references gracefully', () => {
-      const obj: any = { name: 'test' };
+      const obj: Record<string, unknown> = { name: 'test' };
       obj.self = obj; // Create circular reference
       const context = createContext('kro');
 

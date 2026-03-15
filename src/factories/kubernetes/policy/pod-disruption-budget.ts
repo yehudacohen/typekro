@@ -7,7 +7,7 @@ export type V1PdbSpec = NonNullable<V1PodDisruptionBudget['spec']>;
 export type V1PdbStatus = NonNullable<V1PodDisruptionBudget['status']>;
 
 export function podDisruptionBudget(
-  resource: V1PodDisruptionBudget
+  resource: V1PodDisruptionBudget & { id?: string }
 ): Enhanced<V1PdbSpec, V1PdbStatus> {
   return createResource({
     ...resource,

@@ -1,7 +1,19 @@
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { externalDnsHelmRepository, externalDnsHelmRelease } from '../../../src/factories/external-dns';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCoreV1ApiClient, ensureNamespaceExists, deleteNamespaceIfExists, createResourceWithConflictHandling, deleteResourceIfExists } from '../shared-kubeconfig.js';
+import {
+  externalDnsHelmRelease,
+  externalDnsHelmRepository,
+} from '../../../src/factories/external-dns';
+import {
+  createCoreV1ApiClient,
+  createKubernetesObjectApiClient,
+  createResourceWithConflictHandling,
+  deleteNamespaceIfExists,
+  deleteResourceIfExists,
+  ensureNamespaceExists,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from '../shared-kubeconfig.js';
 
 // Skip tests if no cluster is available
 const clusterAvailable = isClusterAvailable();
@@ -10,26 +22,26 @@ const describeOrSkip = clusterAvailable ? describe : describe.skip;
 describeOrSkip('External-DNS Helm Integration', () => {
   const _testNamespace = 'typekro-test-external-dns-helm';
   let _kubeConfig: k8s.KubeConfig;
-  
+
   beforeAll(async () => {
     if (!clusterAvailable) return;
-    
+
     // Set up test environment
     console.log('Setting up external-dns Helm integration tests...');
-    
+
     // Use shared kubeconfig helper for consistent TLS configuration
     _kubeConfig = getIntegrationTestKubeConfig();
-    
+
     // Create test namespace
     await ensureNamespaceExists(_testNamespace, _kubeConfig);
-    
+
     // Verify we have a test cluster available
     console.log('✅ Cluster connection established');
   });
 
   afterAll(async () => {
     if (!clusterAvailable) return;
-    
+
     // Clean up test resources
     console.log('Cleaning up external-dns Helm integration tests...');
     await deleteNamespaceIfExists(_testNamespace, _kubeConfig);
@@ -54,21 +66,22 @@ describeOrSkip('External-DNS Helm Integration', () => {
           conflictStrategy: 'warn',
           verbose: true,
         });
-        
+
         // Wait a bit for the repository to be processed
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        
-        expect((createdRepo as any).spec.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
-        expect((createdRepo as any).metadata?.name).toBe('external-dns-repo-direct-test');
-        
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+
+        const repoObj = createdRepo as unknown as Record<string, Record<string, unknown>>;
+        expect(repoObj.spec.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
+        expect(repoObj.metadata?.name).toBe('external-dns-repo-direct-test');
+
         // Clean up - use deleteResourceIfExists to handle missing resources gracefully
         await deleteResourceIfExists(k8sApi, {
           apiVersion: 'source.toolkit.fluxcd.io/v1',
           kind: 'HelmRepository',
           metadata: {
             name: 'external-dns-repo-direct-test',
-            namespace: 'flux-system'
-          }
+            namespace: 'flux-system',
+          },
         });
       } catch (error) {
         console.error('Direct deployment test failed:', error);
@@ -125,7 +138,7 @@ describeOrSkip('External-DNS Helm Integration', () => {
         // Create external-dns namespace if it doesn't exist
         try {
           await coreApi.createNamespace({
-            body: { metadata: { name: 'external-dns' } }
+            body: { metadata: { name: 'external-dns' } },
           });
         } catch (_error) {
           // Namespace might already exist
@@ -136,38 +149,44 @@ describeOrSkip('External-DNS Helm Integration', () => {
           conflictStrategy: 'warn',
           verbose: true,
         });
-        
+
         // Wait for repository to be ready
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        
+        await new Promise((resolve) => setTimeout(resolve, 10000));
+
         // Apply the HelmRelease - use conflict handling
         const createdRelease = await createResourceWithConflictHandling(k8sApi, release, {
           conflictStrategy: 'warn',
           verbose: true,
         });
-        
+
         // Validate the core structure - these should be consistent regardless of whether
         // the resource was just created or already existed
-        expect((createdRepo as any).spec.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
-        expect((createdRelease as any).spec.chart.spec.chart).toBe('external-dns');
+        const repoObj2 = createdRepo as unknown as Record<string, Record<string, unknown>>;
+        expect(repoObj2.spec.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
+        const releaseObj = createdRelease as unknown as Record<string, Record<string, unknown>>;
+        const releaseChart = (releaseObj.spec.chart as Record<string, unknown>).spec as Record<
+          string,
+          unknown
+        >;
+        expect(releaseChart.chart).toBe('external-dns');
         // Note: spec.values may differ if resource already existed with different values
-        
+
         // Clean up - use deleteResourceIfExists to handle missing resources gracefully
         await deleteResourceIfExists(k8sApi, {
           apiVersion: 'helm.toolkit.fluxcd.io/v2',
           kind: 'HelmRelease',
           metadata: {
             name: 'external-dns-test-release',
-            namespace: 'external-dns'
-          }
+            namespace: 'external-dns',
+          },
         });
         await deleteResourceIfExists(k8sApi, {
           apiVersion: 'source.toolkit.fluxcd.io/v1',
           kind: 'HelmRepository',
           metadata: {
             name: 'external-dns-repo-for-release',
-            namespace: 'flux-system'
-          }
+            namespace: 'flux-system',
+          },
         });
       } catch (error) {
         console.error('HelmRelease test failed:', error);
@@ -240,23 +259,25 @@ describeOrSkip('External-DNS Helm Integration', () => {
 
     it('should handle default values correctly', async () => {
       // Test that default values are applied correctly by checking the mapping function directly
-      const { mapExternalDnsConfigToHelmValues } = await import('../../../src/factories/external-dns/resources/helm.js');
-      
+      const { mapExternalDnsConfigToHelmValues } = await import(
+        '../../../src/factories/external-dns/resources/helm.js'
+      );
+
       // Test with minimal config - should get defaults
       const defaultValues = mapExternalDnsConfigToHelmValues({
         provider: 'aws',
-        domainFilters: ['example.com']
+        domainFilters: ['example.com'],
       });
       expect(defaultValues.provider).toBe('aws');
       expect(defaultValues.domainFilters).toEqual(['example.com']);
       expect(defaultValues.policy).toBe('upsert-only'); // Default policy
-      
+
       // Test with explicit config
       const explicitValues = mapExternalDnsConfigToHelmValues({
         provider: 'cloudflare',
         domainFilters: ['example.org'],
         policy: 'sync',
-        txtOwnerId: 'my-cluster'
+        txtOwnerId: 'my-cluster',
       });
       expect(explicitValues.provider).toBe('cloudflare');
       expect(explicitValues.domainFilters).toEqual(['example.org']);
@@ -268,7 +289,9 @@ describeOrSkip('External-DNS Helm Integration', () => {
   describe('Helm Values Validation', () => {
     it('should validate Helm values correctly', async () => {
       // Import the validation function
-      const { validateExternalDnsHelmValues } = await import('../../../src/factories/external-dns/resources/helm.js');
+      const { validateExternalDnsHelmValues } = await import(
+        '../../../src/factories/external-dns/resources/helm.js'
+      );
 
       // Test valid configuration
       const validConfig = {
@@ -289,18 +312,22 @@ describeOrSkip('External-DNS Helm Integration', () => {
         provider: 'invalid-provider', // Invalid provider
         domainFilters: [], // Empty domain filters
         policy: 'invalid-policy', // Invalid policy
-      } as any; // Use 'any' to test validation with invalid types
+      } as unknown as Parameters<typeof validateExternalDnsHelmValues>[0]; // Cast to test validation with invalid types
 
       const invalidResult = validateExternalDnsHelmValues(invalidConfig);
       expect(invalidResult.valid).toBe(false);
       expect(invalidResult.errors.length).toBeGreaterThan(0);
-      expect(invalidResult.errors).toContain('provider must be one of: aws, azure, cloudflare, google, digitalocean, linode, rfc2136, webhook, akamai, ns1, plural');
+      expect(invalidResult.errors).toContain(
+        'provider must be one of: aws, azure, cloudflare, google, digitalocean, linode, rfc2136, webhook, akamai, ns1, plural'
+      );
       expect(invalidResult.errors).toContain('domainFilters cannot be empty');
     });
 
     it('should handle mapping function correctly', async () => {
       // Import the mapping function
-      const { mapExternalDnsConfigToHelmValues } = await import('../../../src/factories/external-dns/resources/helm.js');
+      const { mapExternalDnsConfigToHelmValues } = await import(
+        '../../../src/factories/external-dns/resources/helm.js'
+      );
 
       const config = {
         provider: 'aws' as const,

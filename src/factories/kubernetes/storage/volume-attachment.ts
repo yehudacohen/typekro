@@ -6,7 +6,7 @@ export type V1VolumeAttachmentSpec = NonNullable<V1VolumeAttachment['spec']>;
 export type V1VolumeAttachmentStatus = NonNullable<V1VolumeAttachment['status']>;
 
 export function volumeAttachment(
-  resource: V1VolumeAttachment
+  resource: V1VolumeAttachment & { id?: string }
 ): Enhanced<V1VolumeAttachmentSpec, V1VolumeAttachmentStatus> {
   return createResource({
     ...resource,

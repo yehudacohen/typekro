@@ -1,8 +1,19 @@
 import type { V1Deployment } from '@kubernetes/client-node';
 import { ensureError } from '../../../core/errors.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { V1DeploymentSpec, V1DeploymentStatus } from '../types.js';
+
+// Self-register with semantic aliases for fuzzy resource key matching.
+// The base kind/apiVersion is auto-registered by createResource, but
+// semantic aliases require explicit registration.
+registerFactory({
+  factoryName: 'Deployment',
+  kind: 'Deployment',
+  apiVersion: 'apps/v1',
+  semanticAliases: ['deploy', 'database', 'db', 'cache', 'redis'],
+});
 
 /**
  * Creates a Kubernetes Deployment resource with replica-based readiness evaluation.
@@ -15,7 +26,9 @@ import type { V1DeploymentSpec, V1DeploymentStatus } from '../types.js';
  *   spec: { replicas: 3, selector: { matchLabels: { app: 'my-app' } }, template: { ... } },
  * });
  */
-export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
+export function deployment(
+  resource: V1Deployment & { id?: string }
+): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   // Capture expected replicas in closure for readiness evaluation
   // Handle the case where replicas might be a KubernetesRef (magic proxy) instead of a number
   // When replicas is a KubernetesRef, we'll use the live resource's spec.replicas at evaluation time

@@ -162,7 +162,7 @@ describe('Factory Pattern Handler', () => {
 
     it('should throw error for unsupported pattern', () => {
       expect(() => {
-        FactoryPatternHandlerFactory.createHandler('unsupported' as any);
+        FactoryPatternHandlerFactory.createHandler('unsupported' as unknown as FactoryPatternType);
       }).toThrow('Unsupported factory pattern type: unsupported');
     });
 

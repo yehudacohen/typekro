@@ -9,6 +9,24 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { type Enhanced, simple, toResourceGraph } from '../../../src/index.js';
 
+/**
+ * Flexible type for accessing Enhanced proxy resources in status builder callbacks.
+ * At runtime, these are magic proxy objects with dynamic property access.
+ * This replaces `as any` with a typed alternative that allows deep property access.
+ */
+interface FlexibleResource {
+  status?: {
+    readyReplicas?: number;
+    availableReplicas?: number;
+    conditions?: Array<{ type: string; status: string }>;
+    loadBalancer?: { ingress?: Array<{ ip?: string }> };
+    [key: string]: unknown;
+  };
+  metadata?: { name?: string; [key: string]: unknown };
+  spec?: { replicas?: number; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
 describe('Factory Pattern Integration - Comprehensive Tests', () => {
   describe('Direct vs Kro Factory Pattern Differences', () => {
     it('should handle JavaScript expressions differently in direct vs Kro factories', async () => {
@@ -125,11 +143,11 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             }),
           };
         },
-        (schema: any, resources: any) => ({
+        (schema: Record<string, Record<string, unknown>>, resources: Record<string, unknown>) => ({
           ready:
-            (resources.database as any)?.status?.readyReplicas > 0 &&
-            (resources.app as any)?.status?.readyReplicas > 0,
-          connectionString: `postgres://user:password@${(resources.database as any)?.metadata?.name || 'localhost'}:5432/${schema.spec.dbName}`,
+            (resources.database as unknown as FlexibleResource)?.status?.readyReplicas! > 0 &&
+            (resources.app as unknown as FlexibleResource)?.status?.readyReplicas! > 0,
+          connectionString: `postgres://user:password@${(resources.database as unknown as FlexibleResource)?.metadata?.name || 'localhost'}:5432/${(schema.spec as Record<string, unknown>).dbName}`,
         })
       );
 
@@ -170,7 +188,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             id: 'deployment',
           }),
         }),
-        (_schema: any, _resources: any) => ({
+        (_schema: unknown, _resources: unknown) => ({
           ready: true, // Static value
         })
       );
@@ -191,8 +209,8 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             id: 'deployment',
           }),
         }),
-        (_schema: any, resources: any) => ({
-          ready: (resources.deployment as any)?.status?.readyReplicas > 0, // JavaScript expression
+        (_schema: unknown, resources: Record<string, unknown>) => ({
+          ready: (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas! > 0, // JavaScript expression
         })
       );
 
@@ -245,21 +263,22 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             id: 'service',
           }),
         }),
-        (schema: any, resources: any) => ({
+        (schema: Record<string, Record<string, unknown>>, resources: Record<string, unknown>) => ({
           // Simple expression
-          simple: (resources.deployment as any)?.status?.readyReplicas > 0,
+          simple: (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas! > 0,
 
           // Complex expression
           complex:
-            (resources.deployment as any)?.status?.readyReplicas === schema.spec.replicas &&
-            (resources.deployment as any)?.status?.availableReplicas > 0,
+            (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas ===
+              schema.spec.replicas &&
+            (resources.deployment as unknown as FlexibleResource)?.status?.availableReplicas! > 0,
 
           // Very complex expression
           veryComplex:
-            (resources.deployment as any)?.status?.conditions?.find(
-              (c: any) => c.type === 'Available'
+            (resources.deployment as unknown as FlexibleResource)?.status?.conditions?.find(
+              (c: { type: string; status: string }) => c.type === 'Available'
             )?.status === 'True'
-              ? `Ready: ${(resources.deployment as any)?.status?.readyReplicas}/${schema.spec.replicas}`
+              ? `Ready: ${(resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas}/${schema.spec.replicas}`
               : 'Not ready',
         })
       );
@@ -297,7 +316,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             status: PerfStatus,
           },
           (schema) => {
-            const resources: Record<string, any> = {};
+            const resources: Record<string, Enhanced<unknown, unknown>> = {};
 
             for (let i = 0; i < 10; i++) {
               resources[`deployment-${i}`] = simple.Deployment({
@@ -310,8 +329,8 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
 
             return resources;
           },
-          (schema: any, _resources: any) => {
-            const items = [];
+          (schema: Record<string, Record<string, unknown>>, _resources: unknown) => {
+            const items: string[] = [];
 
             for (let i = 0; i < 10; i++) {
               items.push(`${schema.spec.name}-${i}`);
@@ -375,7 +394,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
               status: ScaleStatus,
             },
             (schema) => {
-              const resources: Record<string, any> = {};
+              const resources: Record<string, Enhanced<unknown, unknown>> = {};
 
               for (let i = 0; i < size; i++) {
                 resources[`deployment-${i}`] = simple.Deployment({
@@ -387,9 +406,9 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
 
               return resources;
             },
-            (_schema: any, resources: any) => ({
+            (_schema: unknown, resources: Record<string, unknown>) => ({
               ready: Object.keys(resources).every(
-                (key) => (resources[key] as any)?.status?.readyReplicas > 0
+                (key) => (resources[key] as unknown as FlexibleResource)?.status?.readyReplicas! > 0
               ),
             })
           );
@@ -499,8 +518,8 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             id: 'deployment',
           }),
         }),
-        (_schema: any, resources: any) => ({
-          ready: (resources.deployment as any)?.status?.readyReplicas > 0,
+        (_schema: unknown, resources: Record<string, unknown>) => ({
+          ready: (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas! > 0,
         })
       );
 
@@ -562,9 +581,12 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             id: 'deployment',
           }),
         }),
-        (schema: any, resources: any) => ({
-          ready: (resources.deployment as any)?.status?.readyReplicas === schema.spec.replicas,
-          replicas: (resources.deployment as any)?.status?.readyReplicas || 0,
+        (schema: Record<string, Record<string, unknown>>, resources: Record<string, unknown>) => ({
+          ready:
+            (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas ===
+            schema.spec.replicas,
+          replicas:
+            (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas || 0,
         })
       );
 
@@ -619,9 +641,9 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
         (_schema, resources) => ({
           // Status depends on both resources
           ready:
-            (resources.deployment as any).status?.readyReplicas > 0 &&
-            (resources.deployment as any).status?.availableReplicas > 0,
-          url: `http://${(resources.service as any)?.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
+            (resources.deployment as unknown as FlexibleResource).status?.readyReplicas! > 0 &&
+            (resources.deployment as unknown as FlexibleResource).status?.availableReplicas! > 0,
+          url: `http://${(resources.service as unknown as FlexibleResource)?.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
         })
       );
 

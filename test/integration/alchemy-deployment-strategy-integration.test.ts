@@ -111,7 +111,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       delete: async () => ({ success: true }),
       rollback: async () => ({ success: true }),
       getDeploymentStatus: async () => ({ status: 'failed' }),
-    } as any;
+    } as unknown as DirectDeploymentEngine;
 
     console.log(
       '✅ AlchemyDeploymentStrategy error handling test setup complete with mocked engine'
@@ -576,7 +576,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                   // Missing apiVersion and kind - should cause inference issues
                   metadata: { name: 'invalid-resource' },
                   spec: { some: 'data' },
-                } as any,
+                } as unknown as DeployableK8sResource<Enhanced<unknown, unknown>>,
               },
             ],
             dependencyGraph: new DependencyGraph(),
@@ -673,7 +673,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
           undefined, // statusBuilder
           undefined, // resourceKeys
           {},
-          undefined as any,
+          undefined as unknown as ConstructorParameters<typeof AlchemyDeploymentStrategy>[6],
           // Invalid scope
           baseStrategy
         );

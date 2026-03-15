@@ -93,8 +93,13 @@ describe('Schema Proxy Factory', () => {
     it('should support deep nested field access', () => {
       const schema = createSchemaProxy<TestSpec, TestStatus>();
 
-      // Access deeply nested properties that don't exist in the type
-      const deepRef = (schema.spec as any).some.very.deep.nested.property;
+      // Access deeply nested properties that don't exist in the type via proxy
+      // The proxy intercepts all property access and builds field paths
+      type DeepProxy = Record<
+        string,
+        Record<string, Record<string, Record<string, Record<string, unknown>>>>
+      >;
+      const deepRef = (schema.spec as unknown as DeepProxy).some.very.deep.nested.property;
 
       expect(isKubernetesRef(deepRef)).toBe(true);
       expect(deepRef).toHaveProperty('resourceId', '__schema__');
@@ -109,8 +114,8 @@ describe('Schema Proxy Factory', () => {
       const nameRef = schema.spec.name;
       const readyRef = schema.status.ready;
 
-      expect(isSchemaReference(nameRef as any)).toBe(true);
-      expect(isSchemaReference(readyRef as any)).toBe(true);
+      expect(isSchemaReference(nameRef as unknown as KubernetesRef<unknown>)).toBe(true);
+      expect(isSchemaReference(readyRef as unknown as KubernetesRef<unknown>)).toBe(true);
     });
 
     it('should distinguish schema references from external references', () => {
@@ -124,7 +129,7 @@ describe('Schema Proxy Factory', () => {
         fieldPath: 'status.someField',
       } as KubernetesRef<any>;
 
-      expect(isSchemaReference(schemaRef as any)).toBe(true);
+      expect(isSchemaReference(schemaRef as unknown as KubernetesRef<unknown>)).toBe(true);
       expect(isSchemaReference(externalRef)).toBe(false);
     });
   });
@@ -149,8 +154,9 @@ describe('Schema Proxy Factory', () => {
       const schema = createSchemaProxy<TestSpec, TestStatus>();
 
       // Should be able to access properties not in the type definition
-      const unknownSpecRef = (schema.spec as any).unknownProperty;
-      const unknownStatusRef = (schema.status as any).anotherUnknownProperty;
+      const unknownSpecRef = (schema.spec as unknown as Record<string, unknown>).unknownProperty;
+      const unknownStatusRef = (schema.status as unknown as Record<string, unknown>)
+        .anotherUnknownProperty;
 
       expect(isKubernetesRef(unknownSpecRef)).toBe(true);
       expect(unknownSpecRef).toHaveProperty('fieldPath', 'spec.unknownProperty');
@@ -179,11 +185,12 @@ describe('Schema Proxy Factory', () => {
       const ref = schema.spec.name;
 
       // Should be identifiable as a schema reference
-      expect(isSchemaReference(ref as any)).toBe(true);
+      expect(isSchemaReference(ref as unknown as KubernetesRef<unknown>)).toBe(true);
 
       // Should have the correct structure for serialization
-      expect((ref as any).resourceId).toBe('__schema__');
-      expect((ref as any).fieldPath).toBe('spec.name');
+      const refRuntime = ref as unknown as Record<string, unknown>;
+      expect(refRuntime.resourceId).toBe('__schema__');
+      expect(refRuntime.fieldPath).toBe('spec.name');
     });
   });
 });

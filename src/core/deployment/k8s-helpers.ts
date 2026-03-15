@@ -52,7 +52,7 @@ export function extractAcceptedMediaTypes(error: unknown): string[] {
     const message = apiError.message || apiError.body?.message || '';
     const match = message.match(/accepted media types include: ([^"]+)/);
 
-    if (match && match[1]) {
+    if (match?.[1]) {
       return match[1].split(', ').map((type: string) => type.trim());
     }
   } catch (err: unknown) {

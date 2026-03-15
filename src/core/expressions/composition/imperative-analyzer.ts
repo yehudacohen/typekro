@@ -369,7 +369,7 @@ function convertResourceReferencesToCel(
  */
 function convertTemplateLiteralToCel(
   templateLiteral: string,
-  resources: Record<string, Enhanced<any, any>>
+  _resources: Record<string, Enhanced<any, any>>
 ): string {
   // Remove the backticks
   let content = templateLiteral.slice(1, -1);
@@ -458,7 +458,7 @@ function convertTemplateLiteralContent(content: string): string {
   // For schema: __KUBERNETES_REF___schema___{fieldPath}__
   return content.replace(
     /__KUBERNETES_REF_(__schema__|[^_]+)_(.+?)__/g,
-    (match, resourceId, fieldPath) => {
+    (_match, resourceId, fieldPath) => {
       if (resourceId === '__schema__') {
         return `schema.${fieldPath}`;
       } else {

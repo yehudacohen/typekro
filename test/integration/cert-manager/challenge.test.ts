@@ -336,7 +336,8 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       });
 
       expect(acmeIssuerResource).toBeDefined();
-      const issuerBody = acmeIssuerResource as any;
+      // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+      const issuerBody = acmeIssuerResource as Record<string, any>;
       expect(issuerBody.kind).toBe('ClusterIssuer');
       expect(issuerBody.spec.acme?.server).toBe(
         'https://acme-staging-v02.api.letsencrypt.org/directory'
@@ -354,7 +355,8 @@ describeOrSkip('Cert-Manager Challenge Integration Tests', () => {
       });
 
       expect(certificateResource).toBeDefined();
-      const certBody = certificateResource as any;
+      // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+      const certBody = certificateResource as Record<string, any>;
       expect(certBody.kind).toBe('Certificate');
       expect(certBody.spec.dnsNames).toEqual(['acme-test.example.com']);
       expect(certBody.spec.issuerRef.name).toBe(issuerName);

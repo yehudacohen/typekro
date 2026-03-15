@@ -1,7 +1,16 @@
 import type { V1Ingress, V1IngressStatus } from '@kubernetes/client-node';
 import { ensureError } from '../../../core/errors.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
+
+// Self-register with semantic alias for fuzzy resource key matching.
+registerFactory({
+  factoryName: 'Ingress',
+  kind: 'Ingress',
+  apiVersion: 'networking.k8s.io/v1',
+  semanticAliases: ['ingress'],
+});
 
 export type V1IngressSpec = NonNullable<V1Ingress['spec']>;
 
@@ -16,7 +25,9 @@ export type V1IngressSpec = NonNullable<V1Ingress['spec']>;
  *   spec: { rules: [{ host: 'app.example.com', http: { paths: [{ path: '/', pathType: 'Prefix', backend: { service: { name: 'my-svc', port: { number: 80 } } } }] } }] },
  * });
  */
-export function ingress(resource: V1Ingress): Enhanced<V1IngressSpec, V1IngressStatus> {
+export function ingress(
+  resource: V1Ingress & { id?: string }
+): Enhanced<V1IngressSpec, V1IngressStatus> {
   return createResource({
     ...resource,
     apiVersion: 'networking.k8s.io/v1',

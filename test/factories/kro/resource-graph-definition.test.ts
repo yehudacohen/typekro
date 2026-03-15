@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { resourceGraphDefinition } from '../../../src/factories/kro/resource-graph-definition.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../../utils/mock-factories.js';
 
 describe('ResourceGraphDefinition Factory', () => {
   const createTestRGD = (name: string = 'testRgd') => ({
@@ -117,14 +118,14 @@ describe('ResourceGraphDefinition Factory', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
 
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as not ready when resource not found', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const result = evaluator(null);
       expect(result.ready).toBe(false);
@@ -135,7 +136,7 @@ describe('ResourceGraphDefinition Factory', () => {
     it('should evaluate as not ready when no status exists but has uid', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testRgd', uid: '12345' },
@@ -154,7 +155,7 @@ describe('ResourceGraphDefinition Factory', () => {
     it('should evaluate as not ready when no status and no uid', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testRgd' },
@@ -170,7 +171,7 @@ describe('ResourceGraphDefinition Factory', () => {
     it('should evaluate as ready when state is Active with all conditions', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testRgd', uid: '12345' },
@@ -193,7 +194,7 @@ describe('ResourceGraphDefinition Factory', () => {
     it('should evaluate as not ready when failed condition exists', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testRgd', uid: '12345' },
@@ -213,7 +214,7 @@ describe('ResourceGraphDefinition Factory', () => {
     it('should evaluate as not ready when in pending state', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testRgd', uid: '12345' },
@@ -233,7 +234,7 @@ describe('ResourceGraphDefinition Factory', () => {
     it('should evaluate as not ready with unknown state', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testRgd', uid: '12345' },
@@ -253,7 +254,7 @@ describe('ResourceGraphDefinition Factory', () => {
     it('should handle missing status gracefully', () => {
       const rgdConfig = createTestRGD();
       const enhanced = resourceGraphDefinition(rgdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testRgd' },

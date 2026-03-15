@@ -6,10 +6,11 @@
  * create external references.
  */
 
-import { type } from 'arktype';
 import { describe, expect, it } from 'bun:test';
-import { Cel, kubernetesComposition, simple } from '../../src/index.js';
+import { type } from 'arktype';
 import type { Enhanced } from '../../src/core/types.js';
+import { Cel, kubernetesComposition, simple } from '../../src/index.js';
+import { asKubernetesRef } from '../utils/mock-factories.js';
 
 // Test schemas
 interface DatabaseSpec {
@@ -23,6 +24,15 @@ interface DatabaseStatus {
   host: string;
   connectionString: string;
   ready: boolean;
+}
+
+/**
+ * Access a dynamic resource key on a composition proxy.
+ * Replaces `(composition as any).key` with a typed helper.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: test helper for dynamic proxy access
+function compositionResource(composition: unknown, key: string): any {
+  return (composition as Record<string, unknown>)[key];
 }
 
 describe('Cross-composition magic proxy', () => {
@@ -74,11 +84,11 @@ describe('Cross-composition magic proxy', () => {
       );
 
       // Access resource via magic proxy
-      const databaseRef = (databaseComposition as any).database;
+      const databaseRef = compositionResource(databaseComposition, 'database');
 
       // Should be an Enhanced proxy with external reference marking
       expect(databaseRef).toBeDefined();
-      expect((databaseRef as any).__externalRef).toBe(true);
+      expect(asKubernetesRef(databaseRef).__externalRef).toBe(true);
       expect(databaseRef.kind).toBe('Deployment');
       expect(databaseRef.metadata.name).toBe('postgres-db');
       expect(databaseRef.apiVersion).toBe('apps/v1');
@@ -115,10 +125,10 @@ describe('Cross-composition magic proxy', () => {
       );
 
       // Access service via magic proxy
-      const serviceRef = (databaseComposition as any).service;
+      const serviceRef = compositionResource(databaseComposition, 'service');
 
       expect(serviceRef).toBeDefined();
-      expect((serviceRef as any).__externalRef).toBe(true);
+      expect(asKubernetesRef(serviceRef).__externalRef).toBe(true);
       expect(serviceRef.kind).toBe('Service');
       expect(serviceRef.metadata.name).toBe('postgres-service');
       expect(serviceRef.apiVersion).toBe('v1');
@@ -143,7 +153,7 @@ describe('Cross-composition magic proxy', () => {
       );
 
       // Try to access non-existent resource
-      const nonExistentRef = (databaseComposition as any).nonExistentResource;
+      const nonExistentRef = compositionResource(databaseComposition, 'nonExistentResource');
       expect(nonExistentRef).toBeUndefined();
     });
 
@@ -222,11 +232,14 @@ describe('Cross-composition magic proxy', () => {
         },
         (schema) => {
           // Use cross-composition magic proxy to reference database
-          const dbRef = (databaseComposition as any).database as Enhanced<
+          const dbRef = compositionResource(databaseComposition, 'database') as Enhanced<
             DatabaseSpec,
             DatabaseStatus
           >;
-          const dbServiceRef = (databaseComposition as any).service as Enhanced<any, any>;
+          const dbServiceRef = compositionResource(databaseComposition, 'service') as Enhanced<
+            Record<string, unknown>,
+            Record<string, unknown>
+          >;
 
           return {
             webapp: simple.Deployment({
@@ -255,8 +268,8 @@ describe('Cross-composition magic proxy', () => {
       expect(webappComposition.resources).toHaveLength(1); // webapp only
 
       // The cross-composition references should be marked as external
-      const dbRef = (databaseComposition as any).database;
-      expect((dbRef as any).__externalRef).toBe(true);
+      const dbRef = compositionResource(databaseComposition, 'database');
+      expect(asKubernetesRef(dbRef).__externalRef).toBe(true);
     });
 
     it('should work with different resource naming patterns', () => {
@@ -283,15 +296,15 @@ describe('Cross-composition magic proxy', () => {
       );
 
       // Should work with kebab-case and snake_case keys
-      const deploymentRef = (composition as any)['my-deployment'];
-      const serviceRef = (composition as any).my_service;
+      const deploymentRef = compositionResource(composition, 'my-deployment');
+      const serviceRef = compositionResource(composition, 'my_service');
 
       expect(deploymentRef).toBeDefined();
-      expect((deploymentRef as any).__externalRef).toBe(true);
+      expect(asKubernetesRef(deploymentRef).__externalRef).toBe(true);
       expect(deploymentRef.metadata.name).toBe('test-deployment');
 
       expect(serviceRef).toBeDefined();
-      expect((serviceRef as any).__externalRef).toBe(true);
+      expect(asKubernetesRef(serviceRef).__externalRef).toBe(true);
       expect(serviceRef.metadata.name).toBe('test-service');
     });
 
@@ -314,9 +327,9 @@ describe('Cross-composition magic proxy', () => {
       );
 
       // Should match case-insensitively
-      const databaseRef1 = (composition as any).Database;
-      const databaseRef2 = (composition as any).database;
-      const databaseRef3 = (composition as any).DATABASE;
+      const databaseRef1 = compositionResource(composition, 'Database');
+      const databaseRef2 = compositionResource(composition, 'database');
+      const databaseRef3 = compositionResource(composition, 'DATABASE');
 
       expect(databaseRef1).toBeDefined();
       expect(databaseRef2).toBeDefined();
@@ -348,7 +361,7 @@ describe('Cross-composition magic proxy', () => {
         })
       );
 
-      const deploymentRef = (composition as any).deployment;
+      const deploymentRef = compositionResource(composition, 'deployment');
 
       // Should have Enhanced proxy structure
       expect(deploymentRef.apiVersion).toBe('apps/v1');
@@ -385,10 +398,10 @@ describe('Cross-composition magic proxy', () => {
         })
       );
 
-      const deploymentRef = (composition as any).deployment;
+      const deploymentRef = compositionResource(composition, 'deployment');
 
       expect(deploymentRef.metadata.namespace).toBe('production');
-      expect((deploymentRef as any).__externalRef).toBe(true);
+      expect(asKubernetesRef(deploymentRef).__externalRef).toBe(true);
     });
   });
 });

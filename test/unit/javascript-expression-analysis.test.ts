@@ -9,9 +9,9 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { analyzeStatusBuilderForToResourceGraph } from '../../src/core/expressions/factory/status-builder-analyzer.js';
 import { simple } from '../../src/index.js';
+import { isKubernetesRef } from '../utils/mock-factories.js';
 
 describe('JavaScript Expression Analysis', () => {
   describe('KubernetesRef detection in expressions', () => {
@@ -166,19 +166,21 @@ describe('JavaScript Expression Analysis', () => {
       if (configMapping && typeof configMapping === 'object' && 'expression' in configMapping) {
         // It's a CelExpression, try to parse the expression
         try {
-          expect(JSON.parse((configMapping as any).expression)).toEqual({
+          expect(
+            JSON.parse((configMapping as Record<string, unknown>).expression as string)
+          ).toEqual({
             debug: false,
             timeout: 30,
           });
         } catch {
           // If parsing fails, compare the expression string directly
-          expect((configMapping as any).expression).toContain('debug');
-          expect((configMapping as any).expression).toContain('timeout');
+          expect((configMapping as Record<string, unknown>).expression).toContain('debug');
+          expect((configMapping as Record<string, unknown>).expression).toContain('timeout');
         }
       } else {
         // It's a direct object
         expect(configMapping).toBeDefined();
-        expect(configMapping as any).toEqual({ debug: false, timeout: 30 });
+        expect(configMapping as unknown).toEqual({ debug: false, timeout: 30 });
       }
     });
 
@@ -223,19 +225,21 @@ describe('JavaScript Expression Analysis', () => {
       ) {
         // It's a CelExpression, try to parse the expression
         try {
-          expect(JSON.parse((metadataMapping as any).expression)).toEqual({
+          expect(
+            JSON.parse((metadataMapping as Record<string, unknown>).expression as string)
+          ).toEqual({
             created: '2024-01-01',
             author: 'system',
           });
         } catch {
           // If parsing fails, compare the expression string directly
-          expect((metadataMapping as any).expression).toContain('created');
-          expect((metadataMapping as any).expression).toContain('author');
+          expect((metadataMapping as Record<string, unknown>).expression).toContain('created');
+          expect((metadataMapping as Record<string, unknown>).expression).toContain('author');
         }
       } else {
         // It's a direct object
         expect(metadataMapping).toBeDefined();
-        expect(metadataMapping as any).toEqual({
+        expect(metadataMapping as unknown).toEqual({
           created: '2024-01-01',
           author: 'system',
         });
@@ -334,7 +338,7 @@ describe('JavaScript Expression Analysis', () => {
 
       // Should be a KubernetesRef function
       expect(typeof readyReplicas).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (readyReplicas as any)).toBe(true);
+      expect(isKubernetesRef(readyReplicas)).toBe(true);
 
       // Should be detectable in expressions
       const statusBuilder = (_schema: any, resources: any) => ({

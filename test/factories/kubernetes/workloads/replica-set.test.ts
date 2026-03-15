@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1ReplicaSet } from '@kubernetes/client-node';
 import { replicaSet } from '../../../../src/factories/kubernetes/workloads/replica-set.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../../../utils/mock-factories.js';
 
 describe('ReplicaSet Factory', () => {
   const createTestReplicaSet = (
@@ -76,7 +77,7 @@ describe('ReplicaSet Factory', () => {
 
     it('should handle missing metadata gracefully', () => {
       const replicaSetConfig = createTestReplicaSet();
-      delete (replicaSetConfig as any).metadata;
+      delete (replicaSetConfig as unknown as Record<string, unknown>).metadata;
       const enhanced = replicaSet(replicaSetConfig);
 
       expect(enhanced).toBeDefined();
@@ -89,14 +90,14 @@ describe('ReplicaSet Factory', () => {
       const replicaSetConfig = createTestReplicaSet();
       const enhanced = replicaSet(replicaSetConfig);
 
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as ready when all replicas are ready', () => {
       const replicaSetConfig = createTestReplicaSet();
       const enhanced = replicaSet(replicaSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockReplicaSet: V1ReplicaSet = {
         ...replicaSetConfig,
@@ -116,7 +117,7 @@ describe('ReplicaSet Factory', () => {
     it('should evaluate as not ready when some replicas are not ready', () => {
       const replicaSetConfig = createTestReplicaSet();
       const enhanced = replicaSet(replicaSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockReplicaSet: V1ReplicaSet = {
         ...replicaSetConfig,
@@ -136,7 +137,7 @@ describe('ReplicaSet Factory', () => {
     it('should evaluate as not ready when status is missing', () => {
       const replicaSetConfig = createTestReplicaSet();
       const enhanced = replicaSet(replicaSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockReplicaSet: V1ReplicaSet = {
         ...replicaSetConfig,
@@ -152,7 +153,7 @@ describe('ReplicaSet Factory', () => {
       const replicaSetConfig = createTestReplicaSet();
       delete replicaSetConfig.spec!.replicas;
       const enhanced = replicaSet(replicaSetConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockReplicaSet: V1ReplicaSet = {
         ...replicaSetConfig,

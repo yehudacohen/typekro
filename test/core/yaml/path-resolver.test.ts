@@ -169,7 +169,9 @@ describe('PathResolver', () => {
       const resolver = new PathResolver();
 
       // Access private method for testing
-      const matchesPatterns = (resolver as any).matchesPatterns.bind(resolver);
+      const matchesPatterns = (
+        resolver as unknown as Record<string, (...args: unknown[]) => unknown>
+      ).matchesPatterns.bind(resolver);
 
       expect(matchesPatterns('file.yaml', ['*.yaml'])).toBe(true);
       expect(matchesPatterns('file.yml', ['*.yaml'])).toBe(false);

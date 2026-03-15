@@ -56,7 +56,7 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
 
       for (const resourceType of resourceTypes) {
         try {
-          let response: any;
+          let response: unknown;
           if (
             resourceType.plural === 'clusterissuers' ||
             resourceType.plural === 'helmrepositories'
@@ -77,7 +77,8 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
             });
           }
 
-          const items = (response as any).items || [];
+          const items =
+            ((response as Record<string, unknown>).items as { metadata: { name: string } }[]) ?? [];
           for (const item of items) {
             if (
               item.metadata.name.startsWith('test-') ||
@@ -272,14 +273,16 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       version: 'v1',
       plural: 'clusterissuers',
     });
-    const createdIssuer = (clusterIssuers as any).items.find((issuer: any) =>
-      issuer.metadata.name.includes('issuer')
-    );
+    const createdIssuer = (
+      (clusterIssuers as Record<string, unknown>).items as Record<string, unknown>[]
+    ).find((issuer) =>
+      ((issuer.metadata as Record<string, unknown>).name as string).includes('issuer')
+    )!;
     expect(createdIssuer).toBeDefined();
-    expect(createdIssuer.spec.acme?.server).toBe(
-      'https://acme-staging-v02.api.letsencrypt.org/directory'
-    );
-    expect(createdIssuer.spec.acme?.email).toBe('test@example.com');
+    const issuerSpec = createdIssuer.spec as Record<string, unknown>;
+    const issuerAcme = issuerSpec.acme as Record<string, unknown> | undefined;
+    expect(issuerAcme?.server).toBe('https://acme-staging-v02.api.letsencrypt.org/directory');
+    expect(issuerAcme?.email).toBe('test@example.com');
     // skipTLSVerify not set when using Let's Encrypt staging (only needed for Pebble)
 
     // Verify Certificate was created
@@ -289,23 +292,22 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
       namespace: testNamespace,
       plural: 'certificates',
     });
-    const createdCert = (certificates as any).items.find((cert: any) =>
-      cert.metadata.name.includes('cert')
-    );
+    const createdCert = (
+      (certificates as Record<string, unknown>).items as Record<string, unknown>[]
+    ).find((cert) => ((cert.metadata as Record<string, unknown>).name as string).includes('cert'))!;
     expect(createdCert).toBeDefined();
-    expect(createdCert.spec.commonName).toBe('test.funwiththe.cloud');
-    expect(createdCert.spec.dnsNames).toEqual([
-      'test.funwiththe.cloud',
-      'api.test.funwiththe.cloud',
-    ]);
-    expect(createdCert.spec.issuerRef.name).toContain('issuer');
-    expect(createdCert.spec.issuerRef.kind).toBe('ClusterIssuer');
+    const certSpec = createdCert.spec as Record<string, unknown>;
+    expect(certSpec.commonName).toBe('test.funwiththe.cloud');
+    expect(certSpec.dnsNames).toEqual(['test.funwiththe.cloud', 'api.test.funwiththe.cloud']);
+    const issuerRef = certSpec.issuerRef as Record<string, unknown>;
+    expect(issuerRef.name).toContain('issuer');
+    expect(issuerRef.kind).toBe('ClusterIssuer');
 
     console.log('✅ Complete ACME certificate issuance stack deployed to Kubernetes');
     console.log('📋 Pebble ACME server, ClusterIssuer, and Certificate resources verified');
     console.log(`🔐 Certificate configured for: test.funwiththe.cloud, api.test.funwiththe.cloud`);
     console.log(`🏗️ Pebble ACME server deployed as: ${pebbleName}`);
-    console.log(`📝 Certificate will be stored in secret: ${createdCert.spec.secretName}`);
+    console.log(`📝 Certificate will be stored in secret: ${certSpec.secretName}`);
 
     // Note: In a real environment with Pebble running and proper DNS/ingress setup,
     // the certificate would be issued and the secret would be created with the actual certificate
@@ -568,9 +570,11 @@ describe('Cert-Manager Comprehensive Integration Tests with Pebble ACME Server',
     });
     expect(certificateResource).toBeDefined();
 
-    const certBody = certificateResource as any;
-    expect(certBody.spec.issuerRef.name).toBe(issuerName); // Verify cross-reference worked
-    expect(certBody.spec.issuerRef.kind).toBe('ClusterIssuer');
+    const certBody = certificateResource as Record<string, unknown>;
+    const certBodySpec = certBody.spec as Record<string, unknown>;
+    const certBodyIssuerRef = certBodySpec.issuerRef as Record<string, unknown>;
+    expect(certBodyIssuerRef.name).toBe(issuerName); // Verify cross-reference worked
+    expect(certBodyIssuerRef.kind).toBe('ClusterIssuer');
 
     console.log('✅ Cross-resource references and dependency resolution validated');
     console.log('📋 Certificate correctly references ClusterIssuer');

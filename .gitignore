@@ -28,6 +28,9 @@ temp/
 *.tmp
 *.temp
 
+# Coverage output
+coverage/
+
 # Logs
 *.log
 logs/

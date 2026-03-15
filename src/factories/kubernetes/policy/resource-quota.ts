@@ -7,7 +7,7 @@ export type V1ResourceQuotaSpec = NonNullable<V1ResourceQuota['spec']>;
 export type V1ResourceQuotaStatus = NonNullable<V1ResourceQuota['status']>;
 
 export function resourceQuota(
-  resource: V1ResourceQuota
+  resource: V1ResourceQuota & { id?: string }
 ): Enhanced<V1ResourceQuotaSpec, V1ResourceQuotaStatus> {
   return createResource({
     ...resource,

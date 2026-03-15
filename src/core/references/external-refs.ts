@@ -10,8 +10,19 @@
  */
 
 import { getCurrentCompositionContext } from '../composition/context.js';
+import { getResourceId } from '../metadata/index.js';
 import { createResource } from '../proxy/create-resource.js';
-import type { Enhanced, KubernetesResource, WithResourceId } from '../types.js';
+import { registerFactory } from '../resources/factory-registry.js';
+import type { Enhanced, KubernetesResource } from '../types.js';
+
+// Self-register so the composition analyzer recognizes `externalRef(...)` calls
+// in the AST. The kind/apiVersion are placeholders — externalRef creates resources
+// of user-specified kinds, but we need the factoryName 'externalRef' in the registry.
+registerFactory({
+  factoryName: 'externalRef',
+  kind: 'ExternalRef',
+  apiVersion: 'typekro/v1',
+});
 
 /**
  * Object-form configuration for creating an external reference.
@@ -105,7 +116,7 @@ export function externalRef<TSpec extends object, TStatus extends object>(
   // createExternalRefWithoutRegistration() instead.
   const context = getCurrentCompositionContext();
   if (context) {
-    const resourceId = (enhanced as WithResourceId).__resourceId;
+    const resourceId = getResourceId(enhanced);
     if (resourceId) {
       context.addResource(resourceId, enhanced as Enhanced<unknown, unknown>);
     }

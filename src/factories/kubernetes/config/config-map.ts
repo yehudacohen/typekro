@@ -1,7 +1,16 @@
 import type { V1ConfigMap } from '@kubernetes/client-node';
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
+
+// Self-register with semantic alias for fuzzy resource key matching.
+registerFactory({
+  factoryName: 'ConfigMap',
+  kind: 'ConfigMap',
+  apiVersion: 'v1',
+  semanticAliases: ['configmap'],
+});
 
 export type V1ConfigMapData = NonNullable<V1ConfigMap['data']>;
 
@@ -23,7 +32,9 @@ type ConfigMapStatus = {};
  *   data: { DATABASE_HOST: 'db.example.com', LOG_LEVEL: 'info' },
  * });
  */
-export function configMap(resource: V1ConfigMap): Enhanced<ConfigMapSpec, ConfigMapStatus> {
+export function configMap(
+  resource: V1ConfigMap & { id?: string }
+): Enhanced<ConfigMapSpec, ConfigMapStatus> {
   // ConfigMaps don't have a spec field in Kubernetes - data, binaryData, and immutable
   // are at the root level. We must NOT create a synthetic spec field or Kro will fail
   // with "schema not found for field spec" error.

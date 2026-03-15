@@ -6,7 +6,7 @@ export type V1HpaSpec = NonNullable<V1HorizontalPodAutoscaler['spec']>;
 export type V1HpaStatus = NonNullable<V1HorizontalPodAutoscaler['status']>;
 
 export function horizontalPodAutoscalerV1(
-  resource: V1HorizontalPodAutoscaler
+  resource: V1HorizontalPodAutoscaler & { id?: string }
 ): Enhanced<V1HpaSpec, V1HpaStatus> {
   return createResource({
     ...resource,

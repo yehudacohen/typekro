@@ -2,7 +2,7 @@
  * Test defensive socket checking to prevent ECONNRESET errors
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 
 describe('Request Error Suppression', () => {
   it('should check socket state before aborting', () => {
@@ -75,7 +75,7 @@ describe('Request Error Suppression', () => {
     };
 
     // Simulate the defensive check logic
-    const socket = (mockRequest.req as any)?.socket;
+    const socket = (mockRequest.req as unknown as Record<string, unknown>)?.socket;
     let abortCalled = false;
 
     if (socket && !socket.destroyed) {

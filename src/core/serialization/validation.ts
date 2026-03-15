@@ -4,9 +4,10 @@
 
 import { extractResourceReferences } from '../../utils/type-guards.js';
 import { formatReferenceError } from '../errors.js';
+import { getResourceId } from '../metadata/index.js';
 import { generateDeterministicResourceId } from '../resources/id.js';
 import type { ValidationResult } from '../types/serialization.js';
-import type { KubernetesResource, WithResourceId } from '../types.js';
+import type { KubernetesResource } from '../types.js';
 
 /**
  * Validate resource graph for cycles and missing dependencies
@@ -23,7 +24,7 @@ export function validateResourceGraph(
   for (const [resourceName, resource] of Object.entries(resources)) {
     // Use the embedded resource ID if available, otherwise generate deterministic one
     const resourceId =
-      (resource as WithResourceId).__resourceId ||
+      getResourceId(resource) ||
       generateDeterministicResourceId(
         resource.kind,
         resource.metadata?.name || resourceName,
@@ -104,7 +105,7 @@ export function getDependencyOrder(resources: Record<string, KubernetesResource>
   for (const [resourceName, resource] of Object.entries(resources)) {
     // Use the embedded resource ID if available, otherwise generate deterministic one
     const resourceId =
-      (resource as WithResourceId).__resourceId ||
+      getResourceId(resource) ||
       generateDeterministicResourceId(
         resource.kind,
         resource.metadata?.name || resourceName,

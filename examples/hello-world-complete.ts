@@ -151,7 +151,7 @@ const webappComposition = kubernetesComposition(
     return {
       deploymentReady: deployment.status.readyReplicas >= spec.replicas,
       serviceReady: service.spec.clusterIP !== undefined,
-      ingressReady: ingress.status.loadBalancer?.ingress?.length > 0 || false,
+      ingressReady: (ingress.status.loadBalancer?.ingress?.length ?? 0) > 0,
       certificateReady:
         certificate.status?.conditions?.some(
           (c: any) => c.type === 'Ready' && c.status === 'True'

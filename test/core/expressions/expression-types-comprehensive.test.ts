@@ -13,6 +13,7 @@ import {
 } from '../../../src/core/expressions/analysis/analyzer.js';
 import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
+import { createMockEnhancedStub } from '../../utils/mock-factories.js';
 
 describe('Expression Types - Comprehensive KubernetesRef Integration', () => {
   let analyzer: JavaScriptToCelAnalyzer;
@@ -49,9 +50,9 @@ describe('Expression Types - Comprehensive KubernetesRef Integration', () => {
     mockContext = {
       type: 'status',
       availableReferences: {
-        deployment: {} as any,
-        service: {} as any,
-        database: {} as any,
+        deployment: createMockEnhancedStub('Deployment'),
+        service: createMockEnhancedStub('Service'),
+        database: createMockEnhancedStub('Database'),
       },
       factoryType: 'kro',
       sourceMap: new SourceMapBuilder(),
@@ -453,7 +454,7 @@ describe('Expression Types - Comprehensive KubernetesRef Integration', () => {
       ];
 
       // Add ingress to available references
-      mockContext.availableReferences.ingress = {} as any;
+      mockContext.availableReferences.ingress = createMockEnhancedStub('Ingress');
 
       for (const expr of expressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);

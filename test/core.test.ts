@@ -126,7 +126,7 @@ describe('Serialization Engine', () => {
       () => ({ name: 'test' })
     );
     const yaml = resourceGraph.toYaml();
-    const dbServiceId = (dbService as any).__resourceId;
+    const dbServiceId = (dbService as unknown as Record<string, unknown>).__resourceId;
     const expectedCel = `\${${dbServiceId}.spec.clusterIP}`;
 
     // Corrected, more robust test: Check for the key-value pair with a space,

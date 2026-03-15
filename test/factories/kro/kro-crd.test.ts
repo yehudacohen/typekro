@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node';
 import { kroCustomResourceDefinition } from '../../../src/factories/kro/kro-crd.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../../utils/mock-factories.js';
 
 describe('KroCustomResourceDefinition Factory', () => {
   const createTestCRD = (
@@ -36,7 +37,7 @@ describe('KroCustomResourceDefinition Factory', () => {
                   type: 'object',
                   properties: {
                     image: { type: 'string' },
-                    replicas: { type: 'integer', _default: 1 as any },
+                    replicas: { type: 'integer', _default: 1 as unknown },
                   },
                 },
                 status: {
@@ -110,7 +111,7 @@ describe('KroCustomResourceDefinition Factory', () => {
                 spec: {
                   type: 'object',
                   properties: {
-                    version: { type: 'string', _enum: ['12', '13', '14'] as any },
+                    version: { type: 'string', _enum: ['12', '13', '14'] as unknown as string[] },
                     replicas: { type: 'integer', minimum: 1, maximum: 10 },
                     storage: {
                       type: 'object',
@@ -140,7 +141,7 @@ describe('KroCustomResourceDefinition Factory', () => {
 
     it('should handle missing metadata gracefully', () => {
       const crdConfig = createTestCRD();
-      delete (crdConfig as any).metadata;
+      delete (crdConfig as unknown as Record<string, unknown>).metadata;
 
       const enhanced = kroCustomResourceDefinition(crdConfig);
 
@@ -154,14 +155,14 @@ describe('KroCustomResourceDefinition Factory', () => {
       const crdConfig = createTestCRD();
       const enhanced = kroCustomResourceDefinition(crdConfig);
 
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as ready when Established and NamesAccepted for Kro CRD', () => {
       const crdConfig = createTestCRD();
       const enhanced = kroCustomResourceDefinition(crdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockCRD: V1CustomResourceDefinition = {
         ...crdConfig,
@@ -201,7 +202,7 @@ describe('KroCustomResourceDefinition Factory', () => {
     it('should evaluate as not ready when Established is False', () => {
       const crdConfig = createTestCRD();
       const enhanced = kroCustomResourceDefinition(crdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockCRD: V1CustomResourceDefinition = {
         ...crdConfig,
@@ -234,7 +235,7 @@ describe('KroCustomResourceDefinition Factory', () => {
     it('should evaluate as not ready when NamesAccepted is False', () => {
       const crdConfig = createTestCRD();
       const enhanced = kroCustomResourceDefinition(crdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockCRD: V1CustomResourceDefinition = {
         ...crdConfig,
@@ -267,7 +268,7 @@ describe('KroCustomResourceDefinition Factory', () => {
     it('should evaluate as not ready for non-Kro CRD', () => {
       const nonKroCRD = createTestCRD('ingresses.networking.k8s.io'); // Not a .kro.run CRD
       const enhanced = kroCustomResourceDefinition(nonKroCRD);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockCRD: V1CustomResourceDefinition = {
         ...nonKroCRD,
@@ -300,7 +301,7 @@ describe('KroCustomResourceDefinition Factory', () => {
     it('should handle missing status conditions', () => {
       const crdConfig = createTestCRD();
       const enhanced = kroCustomResourceDefinition(crdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockCRD: V1CustomResourceDefinition = {
         ...crdConfig,
@@ -319,7 +320,7 @@ describe('KroCustomResourceDefinition Factory', () => {
     it('should handle missing status entirely', () => {
       const crdConfig = createTestCRD();
       const enhanced = kroCustomResourceDefinition(crdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockCRD: V1CustomResourceDefinition = {
         ...crdConfig,
@@ -334,7 +335,7 @@ describe('KroCustomResourceDefinition Factory', () => {
     it('should handle evaluation errors gracefully', () => {
       const crdConfig = createTestCRD();
       const enhanced = kroCustomResourceDefinition(crdConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Pass invalid data that might cause an error
       const result = evaluator(null);
@@ -349,7 +350,7 @@ describe('KroCustomResourceDefinition Factory', () => {
         spec: {
           // Missing required fields
         },
-      } as any;
+      } as unknown as V1CustomResourceDefinition;
 
       const enhanced = kroCustomResourceDefinition(malformedCRD);
 
@@ -361,7 +362,7 @@ describe('KroCustomResourceDefinition Factory', () => {
     it('should handle missing spec gracefully', () => {
       const crdConfig = {
         metadata: { name: 'test.kro.run' },
-      } as any;
+      } as unknown as V1CustomResourceDefinition;
 
       const enhanced = kroCustomResourceDefinition(crdConfig);
 

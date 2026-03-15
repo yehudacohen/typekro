@@ -79,20 +79,15 @@ export async function patchCRDSchema(
 
     // Generate patches for each version
     const patches: { op: string; path: string; value: unknown }[] = [];
-    const crdObj = crd as unknown as Record<string, unknown>;
-    const crdSpec = crdObj.spec as Record<string, unknown> | undefined;
-    const versions = (Array.isArray(crdSpec?.versions) ? crdSpec.versions : []) as Record<
-      string,
-      unknown
-    >[];
+    const versions = crd.spec?.versions ?? [];
 
     for (let i = 0; i < versions.length; i++) {
-      const version = versions[i] as Record<string, unknown> | undefined;
-      const schema = version?.schema as Record<string, unknown> | undefined;
-      if (schema?.openAPIV3Schema) {
+      const version = versions[i];
+      const openAPIV3Schema = version?.schema?.openAPIV3Schema;
+      if (openAPIV3Schema) {
         const basePath = `/spec/versions/${i}/schema/openAPIV3Schema`;
         patches.push(
-          ...generateSchemaFixPatches(schema.openAPIV3Schema as Record<string, unknown>, basePath)
+          ...generateSchemaFixPatches(openAPIV3Schema as Record<string, unknown>, basePath)
         );
       }
     }

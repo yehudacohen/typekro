@@ -1184,7 +1184,11 @@ describeOrSkip('Imperative Composition E2E Integration Tests', () => {
           ) as 'pending' | 'running' | 'failed',
           // Extra field not in schema - should be handled gracefully
           extraField: 'this should not break the composition',
-        } as any;
+        } as unknown as {
+          phase: 'pending' | 'running' | 'failed';
+          url: string;
+          readyReplicas: number;
+        };
       });
 
       // Should not throw during composition creation

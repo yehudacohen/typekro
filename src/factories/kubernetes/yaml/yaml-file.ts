@@ -15,7 +15,7 @@ import type {
   DeploymentContext,
 } from '../../../core/types/deployment.js';
 import type { CRDManifest, KubernetesResource } from '../../../core/types/kubernetes.js';
-import { PathResolver } from '../../../core/yaml/path-resolver.js';
+import { PathResolver, type ResolvedContent } from '../../../core/yaml/path-resolver.js';
 import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
 import { handleConflict } from './conflict-handler.js';
@@ -146,18 +146,18 @@ async function applyCRDWithSchemaFix(
   // Log what we're applying for debugging
   // Navigate deeply nested OpenAPI schema — typed as Record<string, unknown> so intermediate casts are needed
   const openAPISchema = crd.spec?.versions?.[0]?.schema?.openAPIV3Schema;
-  const specProps = (openAPISchema?.['properties'] as Record<string, unknown> | undefined)?.[
-    'spec'
-  ] as Record<string, unknown> | undefined;
-  const valuesField = (specProps?.['properties'] as Record<string, unknown> | undefined)?.[
-    'values'
-  ] as Record<string, unknown> | undefined;
+  const specProps = (openAPISchema?.properties as Record<string, unknown> | undefined)?.spec as
+    | Record<string, unknown>
+    | undefined;
+  const valuesField = (specProps?.properties as Record<string, unknown> | undefined)?.values as
+    | Record<string, unknown>
+    | undefined;
   logger.debug('Applying CRD with schema fix', {
     crdName,
     fieldManager,
     forceConflicts,
     valuesFieldHasPreserveUnknown: valuesField?.['x-kubernetes-preserve-unknown-fields'] === true,
-    valuesFieldType: valuesField?.['type'],
+    valuesFieldType: valuesField?.type,
   });
 
   try {
@@ -302,6 +302,8 @@ async function applyCRDSchemaJsonPatch(
 
 export interface YamlFileConfig {
   name: string;
+  /** Resource graph identifier. Required when `name` is dynamic (e.g. from schema references). */
+  id?: string;
   path: string; // Supports: "./local/file.yaml", "git:github.com/org/repo/path/file.yaml"
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
   /** @default 'replace' */
@@ -343,6 +345,35 @@ export interface YamlFileConfig {
    * @default 30000
    */
   crdPatchTimeout?: number;
+  /**
+   * Optional callback invoked when the YAML content cannot be fetched (e.g., HTTP error
+   * for remote URLs). If the callback returns `true`, the closure treats the failure as
+   * a no-op — meaning the resources are assumed to already exist on the cluster.
+   *
+   * This enables idempotent bootstrap patterns: if Flux is already installed and the
+   * download URL is temporarily unreachable, the deployment can proceed instead of
+   * failing the entire operation.
+   *
+   * The callback receives the Kubernetes API client so it can check for sentinel
+   * resources (e.g., CRDs, namespaces, deployments).
+   *
+   * @example
+   * ```typescript
+   * yamlFile({
+   *   name: 'flux-install',
+   *   path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+   *   skipIfFetchFails: async (k8sApi) => {
+   *     // If Flux CRDs exist, the install is already done
+   *     try {
+   *       await k8sApi.read({ apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition',
+   *         metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' } });
+   *       return true; // Already installed
+   *     } catch { return false; }
+   *   },
+   * });
+   * ```
+   */
+  skipIfFetchFails?: (k8sApi: k8s.KubernetesObjectApi) => Promise<boolean>;
 }
 
 /**
@@ -393,7 +424,27 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
           ? await deploymentContext.resolveReference(config.namespace)
           : config.namespace;
 
-      const resolvedContent = await pathResolver.resolveContent(config.path, config.name);
+      let resolvedContent: ResolvedContent;
+      try {
+        resolvedContent = await pathResolver.resolveContent(config.path, config.name);
+      } catch (fetchError: unknown) {
+        // When content fetch fails (e.g., HTTP 500 for remote URLs), check if resources
+        // are already installed on the cluster. This enables idempotent bootstrap patterns
+        // where the download URL may be temporarily unreachable but the resources are
+        // already present from a previous deployment.
+        if (config.skipIfFetchFails && deploymentContext.kubernetesApi) {
+          const alreadyInstalled = await config.skipIfFetchFails(deploymentContext.kubernetesApi);
+          if (alreadyInstalled) {
+            logger.warn(
+              `YAML fetch failed for '${config.name}' but resources are already installed on cluster — skipping`,
+              { path: config.path, error: ensureError(fetchError).message }
+            );
+            return []; // Return empty results — resources already exist
+          }
+        }
+        // Not already installed or no check configured — re-throw
+        throw fetchError;
+      }
       const rawManifests = parseYamlManifests(resolvedContent.content);
 
       // Apply optional manifest transform (e.g., CRD schema fixes)

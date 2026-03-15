@@ -140,13 +140,13 @@ describe('TypeKro Logging', () => {
   describe('Error Handling', () => {
     it('should handle invalid log levels gracefully', () => {
       expect(() => {
-        createLogger({ level: 'invalid' as any });
+        createLogger({ level: 'invalid' as unknown as 'info' });
       }).toThrow('Invalid log level');
     });
 
     it('should validate configuration', () => {
       expect(() => {
-        createLogger({ level: 'info', destination: 123 as any });
+        createLogger({ level: 'info', destination: 123 as unknown as string });
       }).toThrow('Log destination must be a string');
     });
   });

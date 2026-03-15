@@ -17,7 +17,9 @@ export type V1DaemonSetStatus = NonNullable<V1DaemonSet['status']>;
  *   spec: { selector: { matchLabels: { app: 'log-agent' } }, template: { ... } },
  * });
  */
-export function daemonSet(resource: V1DaemonSet): Enhanced<V1DaemonSetSpec, V1DaemonSetStatus> {
+export function daemonSet(
+  resource: V1DaemonSet & { id?: string }
+): Enhanced<V1DaemonSetSpec, V1DaemonSetStatus> {
   return createResource({
     ...resource,
     apiVersion: 'apps/v1',

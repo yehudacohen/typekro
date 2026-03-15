@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
 describe('DirectResourceFactory Status Hydration', () => {
   const WebAppSpecSchema = type({
@@ -494,7 +494,9 @@ describe('DirectResourceFactory Status Hydration', () => {
         }),
         (_schema, resources) => ({
           // Try to reference a resource that doesn't exist
-          url: (resources as any).nonExistentService?.metadata?.name || 'http://default-service',
+          url:
+            (resources as unknown as Record<string, Record<string, Record<string, string>>>)
+              .nonExistentService?.metadata?.name || 'http://default-service',
           ready: true,
           readyReplicas: resources.deployment?.status?.readyReplicas || 0,
           phase: 'pending' as const,
@@ -579,7 +581,7 @@ describe('DirectResourceFactory Status Hydration', () => {
 
       const factory = await graph.factory('direct', {
         namespace: 'alchemy-strategy-test',
-        alchemyScope: mockAlchemyScope as any,
+        alchemyScope: mockAlchemyScope as unknown as Record<string, unknown>,
       });
 
       expect(factory).toBeDefined();

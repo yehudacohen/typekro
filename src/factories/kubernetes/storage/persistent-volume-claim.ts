@@ -18,7 +18,7 @@ export type V1PvcStatus = NonNullable<V1PersistentVolumeClaim['status']>;
  * });
  */
 export function persistentVolumeClaim(
-  resource: V1PersistentVolumeClaim
+  resource: V1PersistentVolumeClaim & { id?: string }
 ): Enhanced<V1PvcSpec, V1PvcStatus> {
   return createResource({
     ...resource,

@@ -49,21 +49,22 @@ describe('Cert-Manager Order Real Integration Tests', () => {
           namespace: testNamespace,
           plural: 'orders',
         })
-        .then(async (response: any) => {
-          const items = response.items || [];
+        .then(async (response: Record<string, unknown>) => {
+          const items = (response.items as Record<string, unknown>[]) || [];
           for (const item of items) {
-            if (item.metadata.name.startsWith('test-')) {
+            const itemMeta = item.metadata as Record<string, unknown>;
+            if ((itemMeta.name as string).startsWith('test-')) {
               try {
                 await customObjectsApi.deleteNamespacedCustomObject({
                   group: 'acme.cert-manager.io',
                   version: 'v1',
                   namespace: testNamespace,
                   plural: 'orders',
-                  name: item.metadata.name,
+                  name: itemMeta.name as string,
                 });
-                console.log(`🗑️ Deleted Order: ${item.metadata.name}`);
+                console.log(`🗑️ Deleted Order: ${itemMeta.name}`);
               } catch (deleteError) {
-                console.warn(`⚠️ Failed to delete Order ${item.metadata.name}:`, deleteError);
+                console.warn(`⚠️ Failed to delete Order ${itemMeta.name}:`, deleteError);
               }
             }
           }
@@ -187,15 +188,16 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     });
 
     expect(orderResource).toBeDefined();
-    const orderBody = orderResource as any;
+    const orderBody = orderResource as Record<string, unknown>;
     expect(orderBody.kind).toBe('Order');
-    expect(orderBody.metadata.name).toBe(orderName);
-    expect(orderBody.spec.request).toBe(sampleCSR);
-    expect(orderBody.spec.commonName).toBe('test.example.com');
-    expect(orderBody.spec.dnsNames).toEqual(['test.example.com', 'www.test.example.com']);
-    expect(orderBody.spec.issuerRef.name).toBe('test-issuer');
-    expect(orderBody.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(orderBody.spec.duration).toBe('2160h'); // cert-manager 1.19.3 normalizes duration format
+    expect((orderBody.metadata as Record<string, unknown>).name).toBe(orderName);
+    const orderSpec = orderBody.spec as Record<string, unknown>;
+    expect(orderSpec.request).toBe(sampleCSR);
+    expect(orderSpec.commonName).toBe('test.example.com');
+    expect(orderSpec.dnsNames).toEqual(['test.example.com', 'www.test.example.com']);
+    expect((orderSpec.issuerRef as Record<string, unknown>).name).toBe('test-issuer');
+    expect((orderSpec.issuerRef as Record<string, unknown>).kind).toBe('ClusterIssuer');
+    expect(orderSpec.duration).toBe('2160h'); // cert-manager 1.19.3 normalizes duration format
 
     console.log('✅ Order successfully deployed to Kubernetes');
     console.log('📋 Order resource verified in cluster');
@@ -307,24 +309,27 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       namespace: testNamespace,
       plural: 'orders',
     });
-    const createdOrder = (allOrders as any).items.find((order: any) =>
-      order.metadata.name.includes('comprehensive-order')
+    const allOrdersBody = allOrders as Record<string, unknown>;
+    const orderItems = (allOrdersBody.items as Record<string, unknown>[]) || [];
+    const createdOrder = orderItems.find((o) =>
+      ((o.metadata as Record<string, unknown>).name as string).includes('comprehensive-order')
     );
     expect(createdOrder).toBeDefined();
 
-    const orderBody = createdOrder as any;
+    const orderBody = createdOrder as Record<string, unknown>;
     expect(orderBody.kind).toBe('Order');
-    expect(orderBody.spec.request).toBe(multiDomainCSR);
-    expect(orderBody.spec.commonName).toBe('multi.example.com');
-    expect(orderBody.spec.dnsNames).toEqual([
+    const orderSpec = orderBody.spec as Record<string, unknown>;
+    expect(orderSpec.request).toBe(multiDomainCSR);
+    expect(orderSpec.commonName).toBe('multi.example.com');
+    expect(orderSpec.dnsNames).toEqual([
       'multi.example.com',
       'api.multi.example.com',
       'www.multi.example.com',
     ]);
-    expect(orderBody.spec.ipAddresses).toEqual(['192.168.1.100', '10.0.0.100']);
-    expect(orderBody.spec.issuerRef.name).toBe('test-comprehensive-issuer');
-    expect(orderBody.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(orderBody.spec.duration).toBe('8760h'); // cert-manager 1.19.3 normalizes duration format
+    expect(orderSpec.ipAddresses).toEqual(['192.168.1.100', '10.0.0.100']);
+    expect((orderSpec.issuerRef as Record<string, unknown>).name).toBe('test-comprehensive-issuer');
+    expect((orderSpec.issuerRef as Record<string, unknown>).kind).toBe('ClusterIssuer');
+    expect(orderSpec.duration).toBe('8760h'); // cert-manager 1.19.3 normalizes duration format
 
     console.log('✅ Comprehensive Order successfully deployed to Kubernetes');
     console.log('📋 Order resource verified with multiple domains and IP addresses');

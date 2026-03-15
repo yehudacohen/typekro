@@ -5,9 +5,9 @@
  * cross-composition status references.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { integrationTestBootstrap } from '../integration/shared-bootstrap.js';
-import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import { expectKubernetesRef } from '../utils/mock-factories.js';
 
 describe('Integration Test Bootstrap', () => {
   it('should create bootstrap composition with proper structure', () => {
@@ -27,19 +27,18 @@ describe('Integration Test Bootstrap', () => {
     const kroReadyRef = integrationTestBootstrap.status.kroReady;
     const fluxReadyRef = integrationTestBootstrap.status.fluxReady;
 
-    // Verify these are KubernetesRef objects
-    expect((readyRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((kroReadyRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((fluxReadyRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-
-    // Verify resource ID is correct
-    expect((readyRef as any).resourceId).toBe('integration-test-bootstrap');
-    expect((kroReadyRef as any).resourceId).toBe('integration-test-bootstrap');
-
-    // Verify field paths
-    expect((readyRef as any).fieldPath).toBe('status.ready');
-    expect((kroReadyRef as any).fieldPath).toBe('status.kroReady');
-    expect((fluxReadyRef as any).fieldPath).toBe('status.fluxReady');
+    // Verify these are KubernetesRef objects with correct properties
+    expectKubernetesRef(readyRef, {
+      resourceId: 'integration-test-bootstrap',
+      fieldPath: 'status.ready',
+    });
+    expectKubernetesRef(kroReadyRef, {
+      resourceId: 'integration-test-bootstrap',
+      fieldPath: 'status.kroReady',
+    });
+    expectKubernetesRef(fluxReadyRef, {
+      fieldPath: 'status.fluxReady',
+    });
   });
 
   it('should generate valid YAML', () => {
@@ -73,7 +72,8 @@ describe('Integration Test Bootstrap', () => {
   it('should handle optional components correctly', () => {
     const certManagerReadyRef = integrationTestBootstrap.status.certManagerReady;
 
-    expect((certManagerReadyRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((certManagerReadyRef as any).fieldPath).toBe('status.certManagerReady');
+    expectKubernetesRef(certManagerReadyRef, {
+      fieldPath: 'status.certManagerReady',
+    });
   });
 });

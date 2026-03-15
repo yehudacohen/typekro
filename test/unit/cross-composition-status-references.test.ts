@@ -5,11 +5,11 @@
  * status fields from nested compositions within parent compositions.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
 import { simple } from '../../src/index.js';
-import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import { expectKubernetesRef } from '../utils/mock-factories.js';
 
 describe('Cross-Composition Status References', () => {
   it('should allow accessing .status on CallableComposition', () => {
@@ -57,20 +57,21 @@ describe('Cross-Composition Status References', () => {
     const replicasRef = nestedComposition.status.availableReplicas;
     const phaseRef = nestedComposition.status.phase;
 
-    // Verify these are KubernetesRef objects
-    expect((readyRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((replicasRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((phaseRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
+    // Verify these are KubernetesRef objects with correct resourceId and fieldPath
+    expectKubernetesRef(readyRef, {
+      resourceId: 'nested-composition',
+      fieldPath: 'status.ready',
+    });
 
-    // Verify the resourceId and fieldPath are correct
-    expect((readyRef as any).resourceId).toBe('nested-composition');
-    expect((readyRef as any).fieldPath).toBe('status.ready');
+    expectKubernetesRef(replicasRef, {
+      resourceId: 'nested-composition',
+      fieldPath: 'status.availableReplicas',
+    });
 
-    expect((replicasRef as any).resourceId).toBe('nested-composition');
-    expect((replicasRef as any).fieldPath).toBe('status.availableReplicas');
-
-    expect((phaseRef as any).resourceId).toBe('nested-composition');
-    expect((phaseRef as any).fieldPath).toBe('status.phase');
+    expectKubernetesRef(phaseRef, {
+      resourceId: 'nested-composition',
+      fieldPath: 'status.phase',
+    });
   });
 
   it('should support nested status field access', () => {
@@ -118,21 +119,15 @@ describe('Cross-Composition Status References', () => {
     const healthStatus = nestedComposition.status.health;
 
     // These should be KubernetesRef objects that support further nesting
-    expect((dbStatus as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((dbStatus as any).fieldPath).toBe('status.components');
+    expectKubernetesRef(dbStatus, { fieldPath: 'status.components' });
+    expectKubernetesRef(healthStatus, { fieldPath: 'status.health' });
 
-    expect((healthStatus as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((healthStatus as any).fieldPath).toBe('status.health');
+    // Access deeply nested fields via proxy (dynamic properties not on KubernetesRefRuntime)
+    const dbReady = (nestedComposition.status.components as Record<string, unknown>).database;
+    const overallHealth = (nestedComposition.status.health as Record<string, unknown>).overall;
 
-    // Access deeply nested fields
-    const dbReady = (nestedComposition.status.components as any).database;
-    const overallHealth = (nestedComposition.status.health as any).overall;
-
-    expect((dbReady as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((dbReady as any).fieldPath).toBe('status.components.database');
-
-    expect((overallHealth as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((overallHealth as any).fieldPath).toBe('status.health.overall');
+    expectKubernetesRef(dbReady, { fieldPath: 'status.components.database' });
+    expectKubernetesRef(overallHealth, { fieldPath: 'status.health.overall' });
   });
 
   it('should work in parent composition status builders', () => {
@@ -232,13 +227,16 @@ describe('Cross-Composition Status References', () => {
     const healthA = serviceA.status.healthy;
     const healthB = serviceB.status.healthy;
 
-    // Verify they have different resourceIds
-    expect((healthA as any).resourceId).toBe('service-a');
-    expect((healthB as any).resourceId).toBe('service-b');
+    // Verify they have different resourceIds but the same fieldPath
+    expectKubernetesRef(healthA, {
+      resourceId: 'service-a',
+      fieldPath: 'status.healthy',
+    });
 
-    // Both should have the same fieldPath
-    expect((healthA as any).fieldPath).toBe('status.healthy');
-    expect((healthB as any).fieldPath).toBe('status.healthy');
+    expectKubernetesRef(healthB, {
+      resourceId: 'service-b',
+      fieldPath: 'status.healthy',
+    });
 
     // Verify they're distinct objects
     expect(healthA).not.toBe(healthB);
@@ -260,10 +258,7 @@ describe('Cross-Composition Status References', () => {
 
     const statusRef = testComposition.status.ready;
 
-    // Should have the __nestedComposition marker
-    expect((statusRef as any).__nestedComposition).toBe(true);
-
-    // Should be marked as a KubernetesRef
-    expect((statusRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
+    // Should be a KubernetesRef with the __nestedComposition marker
+    expectKubernetesRef(statusRef, { nestedComposition: true });
   });
 });

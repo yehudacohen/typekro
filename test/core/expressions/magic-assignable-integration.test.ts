@@ -1,27 +1,23 @@
 /**
  * MagicAssignable Integration Tests
- * 
+ *
  * Tests the integration between factory functions, MagicAssignable type processing,
  * and KubernetesRef detection to ensure seamless operation across the entire system.
  */
 
 import { describe, expect, test } from 'bun:test';
 import { type } from 'arktype';
-import { toResourceGraph } from '../../../src/core/serialization/core.js';
-import { simple } from '../../../src/factories/simple/index.js';
+import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
 import {
   analyzeFactoryConfig,
-  processFactoryValue,
+  convertToCel,
   detectMagicProxyRefs,
-  convertToCel
+  processFactoryValue,
 } from '../../../src/core/expressions/index.js';
-import type {
-  FactoryExpressionContext
-} from '../../../src/core/expressions/analysis/types.js';
-import type {
-  MagicAssignable
-} from '../../../src/core/types/index.js';
-import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import { toResourceGraph } from '../../../src/core/serialization/core.js';
+import type { MagicAssignable } from '../../../src/core/types/index.js';
+import { simple } from '../../../src/factories/simple/index.js';
 
 // Test schemas
 const WebAppSpecSchema = type({
@@ -95,15 +91,15 @@ describe('MagicAssignable Integration', () => {
             env: {
               APP_NAME: schema.spec.name,
               APP_PORT: '8080',
-              STATIC_VAR: 'static-value'
-            }
+              STATIC_VAR: 'static-value',
+            },
           };
 
           // Analyze the configuration for KubernetesRef objects
           const context: FactoryExpressionContext = {
             factoryType: 'kro',
             factoryName: 'Deployment',
-            analysisEnabled: true
+            analysisEnabled: true,
           };
 
           const analysis = analyzeFactoryConfig(config, context);
@@ -115,7 +111,7 @@ describe('MagicAssignable Integration', () => {
           return {
             deployment: simple.Deployment({
               ...config,
-              id: 'detectionTestDeployment' // Add explicit ID
+              id: 'detectionTestDeployment', // Add explicit ID
             }),
           };
         },
@@ -135,7 +131,7 @@ describe('MagicAssignable Integration', () => {
       const context: FactoryExpressionContext = {
         factoryType: 'kro',
         factoryName: 'TestFactory',
-        analysisEnabled: true
+        analysisEnabled: true,
       };
 
       // Test different MagicAssignable types
@@ -169,33 +165,37 @@ describe('MagicAssignable Integration', () => {
               labels: {
                 app: schema.spec.name, // MagicAssignable<string>
                 version: 'v1.0.0', // Static string
-              }
+              },
             },
             spec: {
               replicas: schema.spec.replicas, // MagicAssignable<number>
               template: {
                 spec: {
-                  containers: [{
-                    name: schema.spec.name, // MagicAssignable<string>
-                    image: schema.spec.image, // MagicAssignable<string>
-                    ports: [{
-                      containerPort: schema.spec.port, // MagicAssignable<number>
-                      name: 'http'
-                    }],
-                    env: [
-                      {
-                        name: 'APP_NAME',
-                        value: schema.spec.name // MagicAssignable<string>
-                      },
-                      {
-                        name: 'STATIC_ENV',
-                        value: 'static-value' // Static string
-                      }
-                    ]
-                  }]
-                }
-              }
-            }
+                  containers: [
+                    {
+                      name: schema.spec.name, // MagicAssignable<string>
+                      image: schema.spec.image, // MagicAssignable<string>
+                      ports: [
+                        {
+                          containerPort: schema.spec.port, // MagicAssignable<number>
+                          name: 'http',
+                        },
+                      ],
+                      env: [
+                        {
+                          name: 'APP_NAME',
+                          value: schema.spec.name, // MagicAssignable<string>
+                        },
+                        {
+                          name: 'STATIC_ENV',
+                          value: 'static-value', // Static string
+                        },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
           };
 
           // Detect KubernetesRef objects in the complex structure
@@ -248,7 +248,7 @@ describe('MagicAssignable Integration', () => {
           const context: FactoryExpressionContext = {
             factoryType: 'kro',
             factoryName: 'StatusBuilder',
-            analysisEnabled: true
+            analysisEnabled: true,
           };
 
           // Test CEL conversion for different expression types
@@ -283,7 +283,7 @@ describe('MagicAssignable Integration', () => {
       const context: FactoryExpressionContext = {
         factoryType: 'kro',
         factoryName: 'MixedFactory',
-        analysisEnabled: true
+        analysisEnabled: true,
       };
 
       const mixedConfig = {
@@ -293,8 +293,16 @@ describe('MagicAssignable Integration', () => {
         staticArray: ['item1', 'item2'],
         staticObject: { key: 'value' },
         // These would be KubernetesRef objects in a real scenario
-        dynamicString: { [KUBERNETES_REF_BRAND]: true, resourceId: '__schema__', fieldPath: 'spec.name' },
-        dynamicNumber: { [KUBERNETES_REF_BRAND]: true, resourceId: '__schema__', fieldPath: 'spec.port' },
+        dynamicString: {
+          [KUBERNETES_REF_BRAND]: true,
+          resourceId: '__schema__',
+          fieldPath: 'spec.name',
+        },
+        dynamicNumber: {
+          [KUBERNETES_REF_BRAND]: true,
+          resourceId: '__schema__',
+          fieldPath: 'spec.port',
+        },
       };
 
       const analysis = analyzeFactoryConfig(mixedConfig, context);
@@ -358,16 +366,17 @@ describe('MagicAssignable Integration', () => {
       const context: FactoryExpressionContext = {
         factoryType: 'kro',
         factoryName: 'OptionalFactory',
-        analysisEnabled: true
+        analysisEnabled: true,
       };
 
       const configWithOptionals = {
         required: 'required-value',
         optional: undefined as MagicAssignable<string> | undefined,
         nullable: null as MagicAssignable<string> | null,
-        conditionalRef: Math.random() > 0.5
-          ? { [KUBERNETES_REF_BRAND]: true, resourceId: '__schema__', fieldPath: 'spec.name' }
-          : 'static-fallback'
+        conditionalRef:
+          Math.random() > 0.5
+            ? { [KUBERNETES_REF_BRAND]: true, resourceId: '__schema__', fieldPath: 'spec.name' }
+            : 'static-fallback',
       };
 
       const processed = processFactoryValue(configWithOptionals, context, 'test.config');
@@ -382,7 +391,7 @@ describe('MagicAssignable Integration', () => {
       const context: FactoryExpressionContext = {
         factoryType: 'kro',
         factoryName: 'PerformanceFactory',
-        analysisEnabled: true
+        analysisEnabled: true,
       };
 
       // Create a large configuration with mixed MagicAssignable values
@@ -394,7 +403,7 @@ describe('MagicAssignable Integration', () => {
           largeConfig[`ref${i}`] = {
             [KUBERNETES_REF_BRAND]: true,
             resourceId: `resource${i}`,
-            fieldPath: `spec.field${i}`
+            fieldPath: `spec.field${i}`,
           };
         } else {
           // Add static values
@@ -415,7 +424,7 @@ describe('MagicAssignable Integration', () => {
       const context: FactoryExpressionContext = {
         factoryType: 'kro',
         factoryName: 'OptimizationFactory',
-        analysisEnabled: true
+        analysisEnabled: true,
       };
 
       const staticConfig = {
@@ -424,8 +433,8 @@ describe('MagicAssignable Integration', () => {
         replicas: 3,
         env: {
           NODE_ENV: 'production',
-          PORT: '3000'
-        }
+          PORT: '3000',
+        },
       };
 
       const startTime = performance.now();
@@ -444,24 +453,24 @@ describe('MagicAssignable Integration', () => {
       const context: FactoryExpressionContext = {
         factoryType: 'kro',
         factoryName: 'ErrorHandlingFactory',
-        analysisEnabled: true
+        analysisEnabled: true,
       };
 
       const malformedConfig = {
         valid: 'valid-value',
-        circular: {} as any,
+        circular: {} as Record<string, unknown>,
         invalidRef: { [KUBERNETES_REF_BRAND]: true }, // Missing required fields
-        deepNesting: {}
+        deepNesting: {},
       };
 
       // Create circular reference
       malformedConfig.circular.self = malformedConfig.circular;
 
       // Create deep nesting
-      let current: any = malformedConfig.deepNesting;
+      let current: Record<string, unknown> = malformedConfig.deepNesting as Record<string, unknown>;
       for (let i = 0; i < 20; i++) {
         current.next = {};
-        current = current.next;
+        current = current.next as Record<string, unknown>;
       }
 
       // Should not throw errors
@@ -475,13 +484,13 @@ describe('MagicAssignable Integration', () => {
       const context: FactoryExpressionContext = {
         factoryType: 'kro',
         factoryName: 'ValidationFactory',
-        analysisEnabled: true
+        analysisEnabled: true,
       };
 
       const configWithIssues = {
         validField: 'valid',
         // This would be caught by TypeScript in real usage, but we test runtime behavior
-        typeIssue: 123 as any as MagicAssignable<string>,
+        typeIssue: 123 as unknown as MagicAssignable<string>,
       };
 
       const analysis = analyzeFactoryConfig(configWithIssues, context);

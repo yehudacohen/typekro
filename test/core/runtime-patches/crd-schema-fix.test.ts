@@ -18,6 +18,54 @@ import {
 } from '../../../src/core/runtime-patches/crd-schema-fix.js';
 import type { KubernetesResource } from '../../../src/core/types/kubernetes.js';
 
+/** Test-local interface for CRD objects with spec.versions[].schema structures. */
+interface CRDTestResource extends KubernetesResource {
+  spec: {
+    group?: string;
+    names?: Record<string, unknown>;
+    versions: Array<{
+      name: string;
+      schema?: {
+        openAPIV3Schema?: {
+          type?: string;
+          properties?: Record<string, unknown>;
+          [key: string]: unknown;
+        };
+      };
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * Navigates into spec.versions[0].schema.openAPIV3Schema.properties.spec and
+ * returns the nested `properties` object (the spec-level properties map).
+ * Useful for accessing additionalProperties or other spec-level schema fields.
+ */
+function getSpecSchema(crd: CRDTestResource, versionIndex = 0): Record<string, unknown> {
+  const version = crd.spec.versions[versionIndex]!;
+  const specProps = version.schema!.openAPIV3Schema!.properties! as Record<
+    string,
+    Record<string, unknown>
+  >;
+  return specProps.spec as Record<string, unknown>;
+}
+
+/**
+ * Navigates to spec.versions[N].schema.openAPIV3Schema.properties.spec.properties[fieldName]
+ * and returns it as a typed record. Covers the most common deep-access pattern in these tests.
+ */
+function getNestedField(
+  crd: CRDTestResource,
+  fieldName: string,
+  versionIndex = 0
+): Record<string, unknown> {
+  const specSchema = getSpecSchema(crd, versionIndex);
+  const specProperties = specSchema.properties as Record<string, Record<string, unknown>>;
+  return specProperties[fieldName] as Record<string, unknown>;
+}
+
 describe('CRD Schema Fix Utilities', () => {
   describe('needsCRDSchemaFix', () => {
     it('should return false for non-CRD resources', () => {
@@ -34,7 +82,7 @@ describe('CRD Schema Fix Utilities', () => {
     });
 
     it('should return false for CRD without schema issues', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -58,7 +106,7 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
       const result = needsCRDSchemaFix(crd);
 
@@ -68,7 +116,7 @@ describe('CRD Schema Fix Utilities', () => {
     });
 
     it('should detect x-kubernetes-preserve-unknown-fields without type', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' },
@@ -95,7 +143,7 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
       const result = needsCRDSchemaFix(crd);
 
@@ -107,7 +155,7 @@ describe('CRD Schema Fix Utilities', () => {
     });
 
     it('should detect known fields missing x-kubernetes-preserve-unknown-fields', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' },
@@ -134,7 +182,7 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
       const result = needsCRDSchemaFix(crd);
 
@@ -145,7 +193,7 @@ describe('CRD Schema Fix Utilities', () => {
     });
 
     it('should check nested properties recursively', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -177,7 +225,7 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
       const result = needsCRDSchemaFix(crd);
 
@@ -200,7 +248,7 @@ describe('CRD Schema Fix Utilities', () => {
     });
 
     it('should add type: object to fields with x-kubernetes-preserve-unknown-fields', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -227,18 +275,17 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
-      const result = fixCRDSchemaForK8s133(crd) as any;
+      const result = fixCRDSchemaForK8s133(crd) as CRDTestResource;
 
-      const dataField =
-        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.data;
+      const dataField = getNestedField(result, 'data');
       expect(dataField.type).toBe('object');
       expect(dataField['x-kubernetes-preserve-unknown-fields']).toBe(true);
     });
 
     it('should add x-kubernetes-preserve-unknown-fields to known fields like values', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' },
@@ -264,18 +311,17 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
-      const result = fixCRDSchemaForK8s133(crd) as any;
+      const result = fixCRDSchemaForK8s133(crd) as CRDTestResource;
 
-      const valuesField =
-        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
+      const valuesField = getNestedField(result, 'values');
       expect(valuesField.type).toBe('object');
       expect(valuesField['x-kubernetes-preserve-unknown-fields']).toBe(true);
     });
 
     it('should not modify original CRD (deep clone)', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -301,7 +347,7 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
       const result = fixCRDSchemaForK8s133(crd);
 
@@ -309,20 +355,19 @@ describe('CRD Schema Fix Utilities', () => {
       expect(result).not.toBe(crd);
 
       // Original should not be modified
-      const originalValues = (crd as any).spec.versions[0].schema.openAPIV3Schema.properties.spec
-        .properties.values;
+      const originalValues = getNestedField(crd, 'values');
       expect(originalValues.type).toBeUndefined();
     });
 
     it('should handle CRD without versions gracefully', () => {
-      const crd: KubernetesResource = {
+      const crd = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
         spec: {
           // No versions
         },
-      } as any;
+      } as unknown as KubernetesResource;
 
       const result = fixCRDSchemaForK8s133(crd);
 
@@ -330,7 +375,7 @@ describe('CRD Schema Fix Utilities', () => {
     });
 
     it('should fix multiple versions', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -374,23 +419,19 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
-      const result = fixCRDSchemaForK8s133(crd) as any;
+      const result = fixCRDSchemaForK8s133(crd) as CRDTestResource;
 
       // Both versions should be fixed
-      expect(
-        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
-      ).toBe('object');
-      expect(
-        result.spec.versions[1].schema.openAPIV3Schema.properties.spec.properties.values.type
-      ).toBe('object');
+      expect(getNestedField(result, 'values', 0).type).toBe('object');
+      expect(getNestedField(result, 'values', 1).type).toBe('object');
     });
   });
 
   describe('smartFixCRDSchemaForK8s133', () => {
     it('should not modify CRD that does not need fixes', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -414,7 +455,7 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
       const result = smartFixCRDSchemaForK8s133(crd);
 
@@ -423,7 +464,7 @@ describe('CRD Schema Fix Utilities', () => {
     });
 
     it('should fix CRD that needs fixes', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -450,15 +491,13 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
-      const result = smartFixCRDSchemaForK8s133(crd) as any;
+      const result = smartFixCRDSchemaForK8s133(crd) as CRDTestResource;
 
       // Should return a fixed copy
       expect(result).not.toBe(crd);
-      expect(
-        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
-      ).toBe('object');
+      expect(getNestedField(result, 'values').type).toBe('object');
     });
   });
 
@@ -496,7 +535,7 @@ describe('CRD Schema Fix Utilities', () => {
               },
             ],
           },
-        } as any,
+        } as CRDTestResource,
         {
           apiVersion: 'v1',
           kind: 'Service',
@@ -512,10 +551,8 @@ describe('CRD Schema Fix Utilities', () => {
       expect(results[0]).toBe(manifests[0]!);
 
       // CRD should be fixed
-      const fixedCrd = results[1] as any;
-      expect(
-        fixedCrd.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
-      ).toBe('object');
+      const fixedCrd = results[1] as CRDTestResource;
+      expect(getNestedField(fixedCrd, 'values').type).toBe('object');
 
       // Service should be unchanged
       expect(results[2]).toBe(manifests[2]!);
@@ -549,7 +586,7 @@ describe('CRD Schema Fix Utilities', () => {
               },
             ],
           },
-        } as any,
+        } as CRDTestResource,
         {
           apiVersion: 'apiextensions.k8s.io/v1',
           kind: 'CustomResourceDefinition',
@@ -576,7 +613,7 @@ describe('CRD Schema Fix Utilities', () => {
               },
             ],
           },
-        } as any,
+        } as CRDTestResource,
       ];
 
       const results = smartFixCRDSchemasForK8s133(manifests);
@@ -588,17 +625,15 @@ describe('CRD Schema Fix Utilities', () => {
 
       // Bad CRD should be fixed (different reference)
       expect(results[1]).not.toBe(manifests[1]);
-      const fixedCrd = results[1] as any;
-      expect(
-        fixedCrd.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values.type
-      ).toBe('object');
+      const fixedCrd = results[1] as CRDTestResource;
+      expect(getNestedField(fixedCrd, 'values').type).toBe('object');
     });
   });
 
   describe('Real-world Flux CRD scenarios', () => {
     it('should fix HelmRelease CRD with values field', () => {
       // Simulated Flux HelmRelease CRD structure
-      const helmReleaseCrd: KubernetesResource = {
+      const helmReleaseCrd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' },
@@ -650,19 +685,18 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
-      const result = fixCRDSchemaForK8s133(helmReleaseCrd) as any;
+      const result = fixCRDSchemaForK8s133(helmReleaseCrd) as CRDTestResource;
 
       // values field should have type: object added
-      const valuesField =
-        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.values;
+      const valuesField = getNestedField(result, 'values');
       expect(valuesField.type).toBe('object');
       expect(valuesField['x-kubernetes-preserve-unknown-fields']).toBe(true);
     });
 
     it('should handle additionalProperties in CRD schema', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -687,17 +721,18 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
-      const result = fixCRDSchemaForK8s133(crd) as any;
+      const result = fixCRDSchemaForK8s133(crd) as CRDTestResource;
 
-      const additionalProps =
-        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.additionalProperties;
+      const specSchema = getSpecSchema(result);
+      const additionalProps = (specSchema as Record<string, unknown>)
+        .additionalProperties as Record<string, unknown>;
       expect(additionalProps.type).toBe('object');
     });
 
     it('should handle items in array schema', () => {
-      const crd: KubernetesResource = {
+      const crd: CRDTestResource = {
         apiVersion: 'apiextensions.k8s.io/v1',
         kind: 'CustomResourceDefinition',
         metadata: { name: 'test.example.com' },
@@ -727,12 +762,12 @@ describe('CRD Schema Fix Utilities', () => {
             },
           ],
         },
-      } as any;
+      };
 
-      const result = fixCRDSchemaForK8s133(crd) as any;
+      const result = fixCRDSchemaForK8s133(crd) as CRDTestResource;
 
-      const itemsSchema =
-        result.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.items.items;
+      const itemsField = getNestedField(result, 'items') as Record<string, unknown>;
+      const itemsSchema = itemsField.items as Record<string, unknown>;
       expect(itemsSchema.type).toBe('object');
     });
   });

@@ -16,6 +16,20 @@ import { ResourceAnalyzer } from '../../../src/core/expressions/factory/resource
 import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-proxy/magic-assignable-analyzer.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
 
+/** Interface for accessing JavaScriptToCelAnalyzer private members in tests */
+interface AnalyzerInternals {
+  cache?: {
+    getStats(): { entryCount: number; cacheHits: number; hitRatio: number };
+    size: number;
+  };
+  clearCache?(): void;
+}
+
+/** Type-safe access to analyzer internals */
+function analyzerInternals(a: JavaScriptToCelAnalyzer): AnalyzerInternals {
+  return a as unknown as AnalyzerInternals;
+}
+
 describe('Performance Analysis - KubernetesRef Detection', () => {
   let analyzer: JavaScriptToCelAnalyzer;
   let magicAssignableAnalyzer: MagicAssignableAnalyzer;
@@ -148,7 +162,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       const _firstRunDuration = firstRunEnd - firstRunStart;
 
       // Check cache stats after first run
-      const cacheStatsAfterFirst = (analyzer as any).cache?.getStats();
+      const cacheStatsAfterFirst = analyzerInternals(analyzer).cache?.getStats();
 
       // Second run - should use cache
       const secondRunStart = performance.now();
@@ -160,7 +174,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       const _secondRunDuration = secondRunEnd - secondRunStart;
 
       // Check cache stats after second run
-      const cacheStatsAfterSecond = (analyzer as any).cache?.getStats();
+      const cacheStatsAfterSecond = analyzerInternals(analyzer).cache?.getStats();
 
       // Cache should have entries and hits
       expect(cacheStatsAfterFirst?.entryCount || 0).toBeGreaterThan(0);
@@ -196,7 +210,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
 
       for (const structure of testStructures) {
         const result = magicAssignableAnalyzer.analyzeMagicAssignable(
-          structure as any,
+          structure as unknown,
           mockContext
         );
         expect(result).toBeDefined();
@@ -337,7 +351,7 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
     });
 
     it('should handle dependency tracking efficiently', () => {
-      const createMockRef = (resourceId: string, fieldPath: string): KubernetesRef<any> => ({
+      const createMockRef = (resourceId: string, fieldPath: string): KubernetesRef<unknown> => ({
         [KUBERNETES_REF_BRAND]: true,
         resourceId,
         fieldPath,
@@ -348,8 +362,8 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       const resourceConfigs: Record<string, any> = {};
 
       for (let i = 0; i < 20; i++) {
-        const dependencies = [];
-        const fieldPaths = [];
+        const dependencies: KubernetesRef<unknown>[] = [];
+        const fieldPaths: string[] = [];
 
         // Each resource depends on 2-3 others
         for (let j = 0; j < 3 && j < i; j++) {
@@ -399,7 +413,10 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       const iterations = 1000;
 
       // Get initial memory usage (if available)
-      const initialMemory = (performance as any).memory?.usedJSHeapSize || 0;
+      // performance.memory is a non-standard Chrome API; access via Record cast
+      const perfRecord = performance as unknown as Record<string, unknown>;
+      const initialMemory =
+        (perfRecord.memory as Record<string, number> | undefined)?.usedJSHeapSize || 0;
 
       // Perform many analyses
       for (let i = 0; i < iterations; i++) {
@@ -407,9 +424,10 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
         expect(result.valid).toBe(true);
 
         // Clear result to help GC
-        (result as any).celExpression = null;
-        (result as any).dependencies = null;
-        (result as any).sourceMap = null;
+        const mutableResult = result as unknown as Record<string, unknown>;
+        mutableResult.celExpression = null;
+        mutableResult.dependencies = null;
+        mutableResult.sourceMap = null;
       }
 
       // Force garbage collection if available
@@ -418,7 +436,8 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       }
 
       // Check memory usage after cleanup
-      const finalMemory = (performance as any).memory?.usedJSHeapSize || 0;
+      const finalMemory =
+        (perfRecord.memory as Record<string, number> | undefined)?.usedJSHeapSize || 0;
 
       // Memory growth should be reasonable (less than 10MB)
       if (initialMemory > 0 && finalMemory > 0) {
@@ -439,14 +458,15 @@ describe('Performance Analysis - KubernetesRef Detection', () => {
       }
 
       // Cache should have entries
-      const cacheStats = (analyzer as any).cache?.getStats();
+      const internals = analyzerInternals(analyzer);
+      const cacheStats = internals.cache?.getStats();
       expect(cacheStats?.entryCount || 0).toBeGreaterThan(0);
 
       // Clear cache if method exists
-      if ((analyzer as any).clearCache) {
-        (analyzer as any).clearCache();
+      if (internals.clearCache) {
+        internals.clearCache();
 
-        const newCacheSize = (analyzer as any).cache?.size || 0;
+        const newCacheSize = internals.cache?.size || 0;
         expect(newCacheSize).toBe(0);
       }
     });

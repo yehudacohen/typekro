@@ -12,18 +12,19 @@ TypeKro provides two composition APIs for creating typed resource graphs. Both p
 | **Nested compositions** | Call compositions as functions inside the composition fn | Same |
 | **Best for** | Most applications — natural JS, less boilerplate | Advanced users who want full CEL control or complex status logic |
 
-### Decision Tree
+### Decision Flowchart
 
-```
-Do you need explicit CEL control over status expressions?
-├── Yes → toResourceGraph
-└── No
-    Do you prefer a single-function "create resources + return status" pattern?
-    ├── Yes → kubernetesComposition (recommended default)
-    └── No
-        Do you want resource builder and status builder as separate concerns?
-        ├── Yes → toResourceGraph
-        └── Either works — start with kubernetesComposition
+```mermaid
+flowchart TD
+    A[Starting a new composition?] --> B{Need explicit CEL\ncontrol over status?}
+    B -->|Yes| C[Use toResourceGraph]
+    B -->|No| D{Prefer separated\nresource + status builders?}
+    D -->|Yes| C
+    D -->|No| E[Use kubernetesComposition]
+    D -->|Not sure| E
+
+    style E fill:#d4edda,stroke:#28a745,color:#000
+    style C fill:#fff3cd,stroke:#ffc107,color:#000
 ```
 
 **Rule of thumb:** Start with `kubernetesComposition`. Switch to `toResourceGraph` if you need explicit `Cel.expr()` or find the single-function pattern limiting.

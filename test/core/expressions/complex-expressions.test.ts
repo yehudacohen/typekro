@@ -11,6 +11,7 @@ import {
   JavaScriptToCelAnalyzer,
 } from '../../../src/core/expressions/analysis/analyzer.js';
 import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
+import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 
 describe('Complex Expressions and Edge Cases', () => {
   let analyzer: JavaScriptToCelAnalyzer;
@@ -22,14 +23,14 @@ describe('Complex Expressions and Edge Cases', () => {
     mockContext = {
       type: 'status',
       availableReferences: {
-        deployment: {} as any,
-        service: {} as any,
-        ingress: {} as any,
-        configmap: {} as any,
-        secret: {} as any,
-        database: {} as any,
-        redis: {} as any,
-        monitoring: {} as any,
+        deployment: {} as unknown as Enhanced<unknown, unknown>,
+        service: {} as unknown as Enhanced<unknown, unknown>,
+        ingress: {} as unknown as Enhanced<unknown, unknown>,
+        configmap: {} as unknown as Enhanced<unknown, unknown>,
+        secret: {} as unknown as Enhanced<unknown, unknown>,
+        database: {} as unknown as Enhanced<unknown, unknown>,
+        redis: {} as unknown as Enhanced<unknown, unknown>,
+        monitoring: {} as unknown as Enhanced<unknown, unknown>,
       },
       factoryType: 'kro',
       sourceMap: new SourceMapBuilder(),

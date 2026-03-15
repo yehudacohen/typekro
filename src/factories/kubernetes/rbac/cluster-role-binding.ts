@@ -21,7 +21,7 @@ import { createResource } from '../../shared.js';
  * });
  */
 export function clusterRoleBinding(
-  resource: V1ClusterRoleBinding
+  resource: V1ClusterRoleBinding & { id?: string }
 ): V1ClusterRoleBinding & Enhanced<V1ClusterRoleBinding, object> {
   return createResource<V1ClusterRoleBinding, object>(
     {
