@@ -24,13 +24,28 @@ import {
   StatusBuilderAnalyzer,
 } from '../../src/core/expressions/factory/status-builder-analyzer.js';
 import type { OptionalityContext } from '../../src/core/expressions/magic-proxy/optionality-handler.js';
-import type { KubernetesRef } from '../../src/core/types/common.js';
+import type { CelExpression, KubernetesRef } from '../../src/core/types/common.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Test helpers & local types
 // ---------------------------------------------------------------------------
+
+/**
+ * Extended CelExpression with runtime metadata added by generateStatusContextCel.
+ * The actual implementation adds these fields via object spread but the
+ * CelExpression interface does not declare them — this test-local type bridges the gap.
+ */
+interface CelExpressionWithMetadata extends CelExpression {
+  type?: string;
+  metadata?: {
+    isStatusContext?: boolean;
+    requiresHydration?: boolean;
+    isOptional?: boolean;
+    handlingStrategy?: string;
+  };
+}
 
 /** Create a KubernetesRef-like object for generateStatusContextCel tests */
 function makeRef(resourceId: string, fieldPath: string): KubernetesRef<unknown> {
@@ -55,14 +70,11 @@ function makeOptionalityContext(overrides: Partial<OptionalityContext> = {}): Op
   };
 }
 
-/** Check that a value is a branded CelExpression */
-function isCelExpr(value: unknown): boolean {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    (value as any)[CEL_EXPRESSION_BRAND] === true &&
-    typeof (value as any).expression === 'string'
-  );
+/** Type guard: check that a value is a branded CelExpression */
+function isCelExpr(value: unknown): value is CelExpression {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string | symbol, unknown>;
+  return record[CEL_EXPRESSION_BRAND] === true && typeof record.expression === 'string';
 }
 
 // ===========================================================================
@@ -75,7 +87,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
   describe('static value fields', () => {
     it('analyzes static string literal field', () => {
       const resources: Record<string, Enhanced<any, any>> = {};
-      const statusBuilder = (_s: any, _r: any) => ({ phase: 'Running' });
+      const statusBuilder = (_s: unknown, _r: unknown) => ({ phase: 'Running' });
       const result = analyzer.analyzeStatusBuilder(statusBuilder, resources);
 
       expect(result.valid).toBe(true);
@@ -89,31 +101,43 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
     });
 
     it('analyzes static number literal field', () => {
-      const result = analyzer.analyzeStatusBuilder((_s: any, _r: any) => ({ count: 42 }), {});
+      const result = analyzer.analyzeStatusBuilder(
+        (_s: unknown, _r: unknown) => ({ count: 42 }),
+        {}
+      );
       expect(result.valid).toBe(true);
       expect(result.statusMappings.count).toBe(42);
     });
 
     it('analyzes static boolean true field', () => {
-      const result = analyzer.analyzeStatusBuilder((_s: any, _r: any) => ({ ready: true }), {});
+      const result = analyzer.analyzeStatusBuilder(
+        (_s: unknown, _r: unknown) => ({ ready: true }),
+        {}
+      );
       expect(result.valid).toBe(true);
       expect(result.statusMappings.ready).toBe(true);
     });
 
     it('analyzes static boolean false field', () => {
-      const result = analyzer.analyzeStatusBuilder((_s: any, _r: any) => ({ enabled: false }), {});
+      const result = analyzer.analyzeStatusBuilder(
+        (_s: unknown, _r: unknown) => ({ enabled: false }),
+        {}
+      );
       expect(result.valid).toBe(true);
       expect(result.statusMappings.enabled).toBe(false);
     });
 
     it('analyzes static null field', () => {
-      const result = analyzer.analyzeStatusBuilder((_s: any, _r: any) => ({ value: null }), {});
+      const result = analyzer.analyzeStatusBuilder(
+        (_s: unknown, _r: unknown) => ({ value: null }),
+        {}
+      );
       expect(result.valid).toBe(true);
       expect(result.statusMappings.value).toBeNull();
     });
 
     it('analyzes empty return object', () => {
-      const result = analyzer.analyzeStatusBuilder((_s: any, _r: any) => ({}), {});
+      const result = analyzer.analyzeStatusBuilder((_s: unknown, _r: unknown) => ({}), {});
       expect(result.valid).toBe(true);
       expect(result.fieldAnalysis.size).toBe(0);
       expect(Object.keys(result.statusMappings)).toHaveLength(0);
@@ -121,7 +145,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
 
     it('analyzes multiple static fields', () => {
       const result = analyzer.analyzeStatusBuilder(
-        (_s: any, _r: any) => ({ a: 'x', b: 1, c: true }),
+        (_s: unknown, _r: unknown) => ({ a: 'x', b: 1, c: true }),
         {}
       );
       expect(result.valid).toBe(true);
@@ -133,7 +157,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
 
     it('analyzes static object expression', () => {
       const result = analyzer.analyzeStatusBuilder(
-        (_s: any, _r: any) => ({ config: { debug: false, timeout: 30 } }),
+        (_s: unknown, _r: unknown) => ({ config: { debug: false, timeout: 30 } }),
         {}
       );
       expect(result.valid).toBe(true);
@@ -148,7 +172,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
   describe('result structure', () => {
     it('returns all expected fields in the result', () => {
       const result = analyzer.analyzeStatusBuilder(
-        (_s: any, _r: any) => ({ phase: 'Running' }),
+        (_s: unknown, _r: unknown) => ({ phase: 'Running' }),
         {}
       );
 
@@ -165,7 +189,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
     });
 
     it('captures the original source of the status builder function', () => {
-      const fn = (_s: any, _r: any) => ({ phase: 'Running' });
+      const fn = (_s: unknown, _r: unknown) => ({ phase: 'Running' });
       const result = analyzer.analyzeStatusBuilder(fn, {});
       expect(result.originalSource).toBe(fn.toString());
     });
@@ -174,7 +198,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
   describe('error handling', () => {
     it('returns valid:false when function returns non-object', () => {
       // A function that returns a string should fail
-      const fn = (_s: any, _r: any) => 'hello';
+      const fn = (_s: unknown, _r: unknown) => 'hello';
       const result = analyzer.analyzeStatusBuilder(fn as any, {});
       expect(result.valid).toBe(false);
       expect(result.errors.length).toBeGreaterThan(0);
@@ -195,7 +219,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
   describe('field analysis details', () => {
     it('field analysis includes confidence for static fields', () => {
       const result = analyzer.analyzeStatusBuilder(
-        (_s: any, _r: any) => ({ phase: 'Running' }),
+        (_s: unknown, _r: unknown) => ({ phase: 'Running' }),
         {}
       );
       const field = result.fieldAnalysis.get('phase')!;
@@ -204,7 +228,7 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
 
     it('field analysis includes inferredType for string literal', () => {
       const result = analyzer.analyzeStatusBuilder(
-        (_s: any, _r: any) => ({ phase: 'Running' }),
+        (_s: unknown, _r: unknown) => ({ phase: 'Running' }),
         {}
       );
       const field = result.fieldAnalysis.get('phase')!;
@@ -212,13 +236,19 @@ describe('StatusBuilderAnalyzer.analyzeStatusBuilder()', () => {
     });
 
     it('field analysis includes inferredType for number literal', () => {
-      const result = analyzer.analyzeStatusBuilder((_s: any, _r: any) => ({ count: 42 }), {});
+      const result = analyzer.analyzeStatusBuilder(
+        (_s: unknown, _r: unknown) => ({ count: 42 }),
+        {}
+      );
       const field = result.fieldAnalysis.get('count')!;
       expect(field.inferredType).toBe('number');
     });
 
     it('field analysis includes inferredType for boolean literal', () => {
-      const result = analyzer.analyzeStatusBuilder((_s: any, _r: any) => ({ ready: true }), {});
+      const result = analyzer.analyzeStatusBuilder(
+        (_s: unknown, _r: unknown) => ({ ready: true }),
+        {}
+      );
       const field = result.fieldAnalysis.get('ready')!;
       expect(field.inferredType).toBe('boolean');
     });
@@ -364,7 +394,8 @@ describe('StatusBuilderAnalyzer.generateStatusContextCel()', () => {
       const result = analyzer.generateStatusContextCel(ref, context);
 
       // Schema refs should have direct-access strategy (not hydration)
-      expect((result as any).metadata?.requiresHydration).toBe(false);
+      const extended = result as CelExpressionWithMetadata;
+      expect(extended.metadata?.requiresHydration).toBe(false);
     });
   });
 
@@ -420,37 +451,37 @@ describe('StatusBuilderAnalyzer.generateStatusContextCel()', () => {
       // 'status.readyReplicas' matches 'ready' first and returns 'boolean'
       const ref = makeRef('deploy', 'status.readyReplicas');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).type).toBe('boolean');
+      expect((result as CelExpressionWithMetadata).type).toBe('boolean');
     });
 
     it('infers number type for replicas-only fields', () => {
       const ref = makeRef('deploy', 'status.replicas');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).type).toBe('number');
+      expect((result as CelExpressionWithMetadata).type).toBe('number');
     });
 
     it('infers boolean type for ready fields', () => {
       const ref = makeRef('deploy', 'status.ready');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).type).toBe('boolean');
+      expect((result as CelExpressionWithMetadata).type).toBe('boolean');
     });
 
     it('infers array type for conditions fields', () => {
       const ref = makeRef('deploy', 'status.conditions');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).type).toBe('array');
+      expect((result as CelExpressionWithMetadata).type).toBe('array');
     });
 
     it('infers string type for phase fields', () => {
       const ref = makeRef('deploy', 'status.phase');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).type).toBe('string');
+      expect((result as CelExpressionWithMetadata).type).toBe('string');
     });
 
     it('infers string type for IP fields', () => {
       const ref = makeRef('svc', 'status.loadBalancer.ingress.ip');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).type).toBe('string');
+      expect((result as CelExpressionWithMetadata).type).toBe('string');
     });
   });
 
@@ -458,19 +489,19 @@ describe('StatusBuilderAnalyzer.generateStatusContextCel()', () => {
     it('schema references have immediate availability', () => {
       const ref = makeRef('__schema__', 'spec.name');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).metadata?.isStatusContext).toBe(true);
+      expect((result as CelExpressionWithMetadata).metadata?.isStatusContext).toBe(true);
     });
 
     it('resource status references require hydration', () => {
       const ref = makeRef('deploy', 'status.readyReplicas');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).metadata?.requiresHydration).toBe(true);
+      expect((result as CelExpressionWithMetadata).metadata?.requiresHydration).toBe(true);
     });
 
     it('resource spec references do not require hydration', () => {
       const ref = makeRef('deploy', 'spec.replicas');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any).metadata?.requiresHydration).toBe(false);
+      expect((result as CelExpressionWithMetadata).metadata?.requiresHydration).toBe(false);
     });
   });
 
@@ -485,7 +516,7 @@ describe('StatusBuilderAnalyzer.generateStatusContextCel()', () => {
     it('returns CelExpression-branded result', () => {
       const ref = makeRef('deploy', 'status.ready');
       const result = analyzer.generateStatusContextCel(ref, makeOptionalityContext());
-      expect((result as any)[CEL_EXPRESSION_BRAND]).toBe(true);
+      expect(result[CEL_EXPRESSION_BRAND]).toBe(true);
     });
   });
 });
@@ -497,7 +528,7 @@ describe('StatusBuilderAnalyzer.generateStatusContextCel()', () => {
 describe('analyzeStatusBuilderForToResourceGraph()', () => {
   it('returns all expected fields', () => {
     const result = analyzeStatusBuilderForToResourceGraph(
-      (_s: any, _r: any) => ({ phase: 'Running' }),
+      (_s: unknown, _r: unknown) => ({ phase: 'Running' }),
       {}
     );
 
@@ -512,7 +543,7 @@ describe('analyzeStatusBuilderForToResourceGraph()', () => {
 
   it('reports requiresConversion=false for static-only builders', () => {
     const result = analyzeStatusBuilderForToResourceGraph(
-      (_s: any, _r: any) => ({ phase: 'Running', count: 42 }),
+      (_s: unknown, _r: unknown) => ({ phase: 'Running', count: 42 }),
       {}
     );
     expect(result.requiresConversion).toBe(false);
@@ -520,7 +551,7 @@ describe('analyzeStatusBuilderForToResourceGraph()', () => {
 
   it('returns hydrationOrder array', () => {
     const result = analyzeStatusBuilderForToResourceGraph(
-      (_s: any, _r: any) => ({ a: 'x', b: 'y' }),
+      (_s: unknown, _r: unknown) => ({ a: 'x', b: 'y' }),
       {}
     );
     expect(Array.isArray(result.hydrationOrder)).toBe(true);
@@ -530,13 +561,13 @@ describe('analyzeStatusBuilderForToResourceGraph()', () => {
 
   it('accepts factoryType parameter', () => {
     const resultKro = analyzeStatusBuilderForToResourceGraph(
-      (_s: any, _r: any) => ({ phase: 'Running' }),
+      (_s: unknown, _r: unknown) => ({ phase: 'Running' }),
       {},
       undefined,
       'kro'
     );
     const resultDirect = analyzeStatusBuilderForToResourceGraph(
-      (_s: any, _r: any) => ({ phase: 'Running' }),
+      (_s: unknown, _r: unknown) => ({ phase: 'Running' }),
       {},
       undefined,
       'direct'
@@ -548,10 +579,8 @@ describe('analyzeStatusBuilderForToResourceGraph()', () => {
   });
 
   it('returns valid=false for non-object returning builder', () => {
-    const result = analyzeStatusBuilderForToResourceGraph(
-      (_s: any, _r: any) => 'not-an-object' as any,
-      {}
-    );
+    const badBuilder = (_s: unknown, _r: unknown) => 'not-an-object' as any;
+    const result = analyzeStatusBuilderForToResourceGraph(badBuilder, {});
     expect(result.valid).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
   });
@@ -563,7 +592,7 @@ describe('analyzeStatusBuilderForToResourceGraph()', () => {
 
 describe('analyzeStatusBuilder() convenience function', () => {
   it('returns StatusBuilderAnalysisResult structure', () => {
-    const result = analyzeStatusBuilder((_s: any, _r: any) => ({ phase: 'Running' }), {});
+    const result = analyzeStatusBuilder((_s: unknown, _r: unknown) => ({ phase: 'Running' }), {});
 
     expect(result.fieldAnalysis).toBeInstanceOf(Map);
     expect(typeof result.statusMappings).toBe('object');
@@ -573,7 +602,7 @@ describe('analyzeStatusBuilder() convenience function', () => {
 
   it('passes options through to analyzer', () => {
     const result = analyzeStatusBuilder(
-      (_s: any, _r: any) => ({ phase: 'Running' }),
+      (_s: unknown, _r: unknown) => ({ phase: 'Running' }),
       {},
       undefined,
       { deepAnalysis: false, performOptionalityAnalysis: false }

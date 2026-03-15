@@ -22,6 +22,7 @@ import { getComponentLogger } from '../../src/core/logging/index.js';
 import { Cel } from '../../src/core/references/cel.js';
 import { createSchemaProxy } from '../../src/core/references/index.js';
 import { analyzeAndConvertStatusMappings } from '../../src/core/serialization/core.js';
+import type { Enhanced } from '../../src/core/types/kubernetes.js';
 
 // =============================================================================
 // Shared test schemas and helpers
@@ -62,11 +63,16 @@ function makeEnhanced(kind: string, apiVersion = 'v1') {
   };
 }
 
-function makeResources() {
+function makeResources(): Record<
+  string,
+  Enhanced<Record<string, unknown>, Record<string, unknown>>
+> {
+  // Mock enhanced resources — cast through unknown since these simplified mocks
+  // don't implement the full Enhanced interface (withReadyWhen, etc.)
   return {
     deployment: makeEnhanced('Deployment', 'apps/v1'),
     service: makeEnhanced('Service', 'v1'),
-  } as Record<string, any>;
+  } as unknown as Record<string, Enhanced<Record<string, unknown>, Record<string, unknown>>>;
 }
 
 /** Create a CelExpression-branded object */
@@ -83,6 +89,51 @@ function makeKubeRef(resourceId: string, fieldPath: string) {
     [KUBERNETES_REF_BRAND]: true,
     resourceId,
     fieldPath,
+  };
+}
+
+/**
+ * Create an imperative status builder that attaches hidden properties
+ * (__originalCompositionFn, optionally __needsPreAnalysis) to the returned mappings.
+ *
+ * Uses a single `as unknown as TStatus` cast so individual test sites don't need `as any`.
+ */
+function makeImperativeStatusBuilder<TStatus>(
+  mappings: Record<string, unknown>,
+  originalFn: (...args: any[]) => unknown,
+  opts?: { needsPreAnalysis?: boolean }
+): () => TStatus {
+  return () => {
+    Object.defineProperty(mappings, '__originalCompositionFn', {
+      value: originalFn,
+      enumerable: false,
+      configurable: true,
+    });
+    if (opts?.needsPreAnalysis) {
+      Object.defineProperty(mappings, '__needsPreAnalysis', {
+        value: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    return mappings as unknown as TStatus;
+  };
+}
+
+/**
+ * Create a status builder whose returned object has a poisoned __originalCompositionFn
+ * getter (throws on access), used to test the outer-catch fallback path.
+ */
+function makePoisonedStatusBuilder<TStatus>(mappings: Record<string, unknown>): () => TStatus {
+  return () => {
+    Object.defineProperty(mappings, '__originalCompositionFn', {
+      get() {
+        throw new Error('Poisoned getter');
+      },
+      enumerable: false,
+      configurable: true,
+    });
+    return mappings as unknown as TStatus;
   };
 }
 
@@ -224,11 +275,12 @@ describe('analyzeAndConvertStatusMappings: declarative path', () => {
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
-      () => ({
-        ready: kubeRef as any,
-        url: 'http://static.com',
-        phase: 'running' as const,
-      }),
+      () =>
+        ({
+          ready: kubeRef,
+          url: 'http://static.com',
+          phase: 'running' as const,
+        }) as unknown as TStatus,
       schema,
       makeResources(),
       makeLogger()
@@ -260,19 +312,10 @@ describe('analyzeAndConvertStatusMappings: imperative path', () => {
       phase: 'running',
     });
 
-    const statusBuilder = () => {
-      const mappings: Record<string, unknown> = {
-        ready: true,
-        url: 'http://test.com',
-        phase: 'running',
-      };
-      Object.defineProperty(mappings, '__originalCompositionFn', {
-        value: originalFn,
-        enumerable: false,
-        configurable: true,
-      });
-      return mappings as any;
-    };
+    const statusBuilder = makeImperativeStatusBuilder<TStatus>(
+      { ready: true, url: 'http://test.com', phase: 'running' },
+      originalFn
+    );
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -292,21 +335,10 @@ describe('analyzeAndConvertStatusMappings: imperative path', () => {
     const resources = makeResources();
     const kubeRef = makeKubeRef('deployment', 'status.readyReplicas');
 
-    const originalFn = () => ({});
-
-    const statusBuilder = () => {
-      const mappings: Record<string, unknown> = {
-        ready: kubeRef,
-        url: 'http://static.com',
-        phase: 'running',
-      };
-      Object.defineProperty(mappings, '__originalCompositionFn', {
-        value: originalFn,
-        enumerable: false,
-        configurable: true,
-      });
-      return mappings as any;
-    };
+    const statusBuilder = makeImperativeStatusBuilder<TStatus>(
+      { ready: kubeRef, url: 'http://static.com', phase: 'running' },
+      () => ({})
+    );
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -325,21 +357,10 @@ describe('analyzeAndConvertStatusMappings: imperative path', () => {
     const resources = makeResources();
     const celExpr = makeCelExpr('deployment.status.readyReplicas > 0');
 
-    const originalFn = () => ({});
-
-    const statusBuilder = () => {
-      const mappings: Record<string, unknown> = {
-        ready: celExpr,
-        url: 'http://static.com',
-        phase: 'running',
-      };
-      Object.defineProperty(mappings, '__originalCompositionFn', {
-        value: originalFn,
-        enumerable: false,
-        configurable: true,
-      });
-      return mappings as any;
-    };
+    const statusBuilder = makeImperativeStatusBuilder<TStatus>(
+      { ready: celExpr, url: 'http://static.com', phase: 'running' },
+      () => ({})
+    );
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -356,26 +377,11 @@ describe('analyzeAndConvertStatusMappings: imperative path', () => {
     const schema = createSchemaProxy<TSpec, TStatus>();
     const resources = makeResources();
 
-    const originalFn = () => ({});
-
-    const statusBuilder = () => {
-      const mappings: Record<string, unknown> = {
-        ready: true,
-        url: 'http://static.com',
-        phase: 'running',
-      };
-      Object.defineProperty(mappings, '__originalCompositionFn', {
-        value: originalFn,
-        enumerable: false,
-        configurable: true,
-      });
-      Object.defineProperty(mappings, '__needsPreAnalysis', {
-        value: true,
-        enumerable: false,
-        configurable: true,
-      });
-      return mappings as any;
-    };
+    const statusBuilder = makeImperativeStatusBuilder<TStatus>(
+      { ready: true, url: 'http://static.com', phase: 'running' },
+      () => ({}),
+      { needsPreAnalysis: true }
+    );
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -394,7 +400,10 @@ describe('analyzeAndConvertStatusMappings: imperative path', () => {
     const resources = makeResources();
 
     // A function that looks like a real composition (analyzable by AST)
-    const originalFn = function compositionFn(schema: any, resources: any) {
+    const originalFn = function compositionFn(
+      _schema: unknown,
+      resources: Record<string, { status: { readyReplicas: number } }>
+    ) {
       return {
         ready: resources.deployment.status.readyReplicas > 0,
         url: 'http://test.com',
@@ -402,19 +411,10 @@ describe('analyzeAndConvertStatusMappings: imperative path', () => {
       };
     };
 
-    const statusBuilder = () => {
-      const mappings: Record<string, unknown> = {
-        ready: true,
-        url: 'http://static.com',
-        phase: 'running',
-      };
-      Object.defineProperty(mappings, '__originalCompositionFn', {
-        value: originalFn,
-        enumerable: false,
-        configurable: true,
-      });
-      return mappings as any;
-    };
+    const statusBuilder = makeImperativeStatusBuilder<TStatus>(
+      { ready: true, url: 'http://static.com', phase: 'running' },
+      originalFn
+    );
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -493,19 +493,10 @@ describe('analyzeAndConvertStatusMappings: fallback behavior', () => {
       throw new Error('This composition is invalid');
     };
 
-    const statusBuilder = () => {
-      const mappings: Record<string, unknown> = {
-        ready: kubeRef,
-        url: 'http://test.com',
-        phase: 'running',
-      };
-      Object.defineProperty(mappings, '__originalCompositionFn', {
-        value: originalFn,
-        enumerable: false,
-        configurable: true,
-      });
-      return mappings as any;
-    };
+    const statusBuilder = makeImperativeStatusBuilder<TStatus>(
+      { ready: kubeRef, url: 'http://test.com', phase: 'running' },
+      originalFn
+    );
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -524,23 +515,12 @@ describe('analyzeAndConvertStatusMappings: fallback behavior', () => {
     const schema = createSchemaProxy<TSpec, TStatus>();
     const resources = makeResources();
 
-    // Use a getter that throws to break the analysis pipeline
-    const statusBuilder = () => {
-      const obj = {
-        ready: true,
-        url: 'http://test.com',
-        phase: 'running',
-      };
-      // Add a poisoned __originalCompositionFn that causes issues
-      Object.defineProperty(obj, '__originalCompositionFn', {
-        get() {
-          throw new Error('Poisoned getter');
-        },
-        enumerable: false,
-        configurable: true,
-      });
-      return obj as any;
-    };
+    // Use a poisoned getter that throws to break the analysis pipeline
+    const statusBuilder = makePoisonedStatusBuilder<TStatus>({
+      ready: true,
+      url: 'http://test.com',
+      phase: 'running',
+    });
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -563,17 +543,12 @@ describe('analyzeAndConvertStatusMappings: fallback behavior', () => {
   test('imperativeAnalysisSucceeded is false when all analysis fails', () => {
     const schema = createSchemaProxy<TSpec, TStatus>();
 
-    const statusBuilder = () => {
-      const obj = { ready: true, url: 'test', phase: 'running' as const };
-      Object.defineProperty(obj, '__originalCompositionFn', {
-        get() {
-          throw new Error('Poisoned');
-        },
-        enumerable: false,
-        configurable: true,
-      });
-      return obj as any;
-    };
+    // Use a poisoned getter that throws to break the analysis pipeline
+    const statusBuilder = makePoisonedStatusBuilder<TStatus>({
+      ready: true,
+      url: 'test',
+      phase: 'running',
+    });
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -638,19 +613,10 @@ describe('analyzeAndConvertStatusMappings: merge behavior', () => {
     // For this characterization test, we just check the flag's effect on the final result
     const kubeRef = makeKubeRef('deployment', 'status.readyReplicas');
 
-    const statusBuilder = () => {
-      const mappings: Record<string, unknown> = {
-        ready: kubeRef,
-        url: 'http://test.com',
-        phase: 'running',
-      };
-      Object.defineProperty(mappings, '__originalCompositionFn', {
-        value: () => ({}),
-        enumerable: false,
-        configurable: true,
-      });
-      return mappings as any;
-    };
+    const statusBuilder = makeImperativeStatusBuilder<TStatus>(
+      { ready: kubeRef, url: 'http://test.com', phase: 'running' },
+      () => ({})
+    );
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
@@ -675,7 +641,7 @@ describe('analyzeAndConvertStatusMappings: edge cases', () => {
     const schema = createSchemaProxy<TSpec, TStatus>();
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
-      () => ({}) as any,
+      () => ({}) as unknown as TStatus,
       schema,
       makeResources(),
       makeLogger()
@@ -689,13 +655,14 @@ describe('analyzeAndConvertStatusMappings: edge cases', () => {
     const schema = createSchemaProxy<TSpec, TStatus>();
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
-      () => ({
-        ready: true,
-        url: 'http://test.com',
-        phase: 'running' as const,
-        // Extra nested data
-        nested: { deep: { value: 42 } } as any,
-      }),
+      () =>
+        ({
+          ready: true,
+          url: 'http://test.com',
+          phase: 'running' as const,
+          // Extra nested data not in TStatus
+          nested: { deep: { value: 42 } },
+        }) as unknown as TStatus,
       schema,
       makeResources(),
       makeLogger()
@@ -748,7 +715,7 @@ describe('analyzeAndConvertStatusMappings: edge cases', () => {
       makeDefinition(),
       () => ({ ready: true, url: 'http://test.com', phase: 'running' as const }),
       schema,
-      {} as Record<string, any>,
+      {} as Record<string, Enhanced<Record<string, unknown>, Record<string, unknown>>>,
       makeLogger()
     );
 
@@ -783,11 +750,12 @@ describe('analyzeAndConvertStatusMappings: edge cases', () => {
 
     const result = analyzeAndConvertStatusMappings(
       makeDefinition(),
-      () => ({
-        ready: ref1 as any,
-        url: ref2 as any,
-        phase: 'running' as const,
-      }),
+      () =>
+        ({
+          ready: ref1,
+          url: ref2,
+          phase: 'running' as const,
+        }) as unknown as TStatus,
       schema,
       makeResources(),
       makeLogger()

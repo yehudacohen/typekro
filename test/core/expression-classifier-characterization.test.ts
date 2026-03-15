@@ -35,8 +35,18 @@ import {
   isTemplateLiteral,
 } from '../../src/core/expressions/analysis/expression-classifier.js';
 import { parseScript } from '../../src/core/expressions/analysis/parser.js';
-import type { AnalysisContext } from '../../src/core/expressions/analysis/shared-types.js';
-import type { KubernetesRef } from '../../src/core/types/common.js';
+import type {
+  AnalysisContext,
+  CelConversionResult,
+} from '../../src/core/expressions/analysis/shared-types.js';
+import type { ResourceValidationResult } from '../../src/core/expressions/validation/resource-validation.js';
+import {
+  ResourceValidationError,
+  type ValidationContext,
+} from '../../src/core/expressions/validation/resource-validation-types.js';
+import type { CelExpression, KubernetesRef } from '../../src/core/types/common.js';
+import type { Enhanced } from '../../src/core/types/kubernetes.js';
+import type { SchemaProxy } from '../../src/core/types/serialization.js';
 import { KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -54,6 +64,22 @@ function makeKubernetesRef(
   ref[KUBERNETES_REF_BRAND] = true;
   return ref as unknown as KubernetesRef<unknown>;
 }
+
+/** Minimal stub satisfying Enhanced<unknown, unknown> for availableReferences */
+function makeEnhancedStub(opts: { kind: string; apiVersion: string }): Enhanced<unknown, unknown> {
+  // Enhanced requires many fields at runtime, but expression-classifier only reads
+  // `kind` and `apiVersion` from these stubs. A single cast in the helper avoids
+  // scattering `as any` across every test.
+  return opts as unknown as Enhanced<unknown, unknown>;
+}
+
+/** Type alias matching handleSpecialCases' validateResourceReferencesFn parameter */
+type ValidateResourceReferencesFn = (
+  refs: KubernetesRef<unknown>[],
+  availableResources: Record<string, Enhanced<unknown, unknown>>,
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
+  validationContext?: ValidationContext
+) => ResourceValidationResult[];
 
 function makeContext(overrides: Partial<AnalysisContext> = {}): AnalysisContext {
   return {
@@ -396,7 +422,7 @@ describe('convertKubernetesRefToResult', () => {
     const ref = makeKubernetesRef('myService', 'status.loadBalancer.ip');
     const ctx = makeContext({
       availableReferences: {
-        myService: { kind: 'Service', apiVersion: 'v1' } as any,
+        myService: makeEnhancedStub({ kind: 'Service', apiVersion: 'v1' }),
       },
     });
     const result = convertKubernetesRefToResult(ref, ctx);
@@ -432,13 +458,16 @@ describe('convertKubernetesRefToResult', () => {
 // ── analyzeExpressionWithRefs (dispatch) ─────────────────────────────
 
 describe('analyzeExpressionWithRefs', () => {
-  const mockAnalyzeExpressionFn = (expression: unknown, _context: AnalysisContext) => ({
+  const mockAnalyzeExpressionFn = (
+    expression: unknown,
+    _context: AnalysisContext
+  ): CelConversionResult => ({
     valid: true,
     celExpression: {
-      [CEL_EXPRESSION_BRAND]: true,
+      [CEL_EXPRESSION_BRAND]: true as const,
       expression: String(expression),
       _type: 'string',
-    } as any,
+    } satisfies CelExpression,
     dependencies: [],
     sourceMap: [],
     errors: [],
@@ -465,13 +494,15 @@ describe('analyzeExpressionWithRefs', () => {
   });
 
   test('functions dispatch to function handler', () => {
-    const fn = () => {
+    const baseFn = () => {
       return 42;
     };
     // Make it contain a ref to pass the static check
-    (fn as any).__kubernetesRef = true;
-    (fn as any).resourceId = 'test';
-    (fn as any).fieldPath = 'status';
+    const fn = Object.assign(baseFn, {
+      __kubernetesRef: true,
+      resourceId: 'test',
+      fieldPath: 'status',
+    });
 
     const ctx = makeContext();
     const result = analyzeExpressionWithRefs(fn, ctx, mockAnalyzeExpressionFn);
@@ -493,7 +524,7 @@ describe('handleSpecialCases', () => {
   test('handles optional chaining expressions', () => {
     const ctx = makeContext({
       availableReferences: {
-        deploy: { kind: 'Deployment', apiVersion: 'apps/v1' } as any,
+        deploy: makeEnhancedStub({ kind: 'Deployment', apiVersion: 'apps/v1' }),
       },
     });
     const result = handleSpecialCases('deploy?.status?.readyReplicas', ctx);
@@ -508,7 +539,7 @@ describe('handleSpecialCases', () => {
   test('handles nullish coalescing expressions', () => {
     const ctx = makeContext({
       availableReferences: {
-        deploy: { kind: 'Deployment', apiVersion: 'apps/v1' } as any,
+        deploy: makeEnhancedStub({ kind: 'Deployment', apiVersion: 'apps/v1' }),
       },
     });
     const result = handleSpecialCases('deploy.status.replicas ?? 0', ctx);
@@ -519,7 +550,7 @@ describe('handleSpecialCases', () => {
   test('handles mixed optional chaining and nullish coalescing', () => {
     const ctx = makeContext({
       availableReferences: {
-        deploy: { kind: 'Deployment', apiVersion: 'apps/v1' } as any,
+        deploy: makeEnhancedStub({ kind: 'Deployment', apiVersion: 'apps/v1' }),
       },
     });
     const result = handleSpecialCases('deploy?.status?.replicas ?? 0', ctx);
@@ -530,7 +561,7 @@ describe('handleSpecialCases', () => {
   test('handles simple property access paths', () => {
     const ctx = makeContext({
       availableReferences: {
-        myDeploy: { kind: 'Deployment', apiVersion: 'apps/v1' } as any,
+        myDeploy: makeEnhancedStub({ kind: 'Deployment', apiVersion: 'apps/v1' }),
       },
     });
     const result = handleSpecialCases('myDeploy.status.readyReplicas', ctx);
@@ -560,21 +591,29 @@ describe('handleSpecialCases', () => {
     const ctx = makeContext({
       validateResourceReferences: true,
       availableReferences: {
-        deploy: { kind: 'Deployment', apiVersion: 'apps/v1' } as any,
+        deploy: makeEnhancedStub({ kind: 'Deployment', apiVersion: 'apps/v1' }),
       },
     });
 
-    const validateFn = () => [
+    const validateFn: ValidateResourceReferencesFn = () => [
       {
         valid: true,
         errors: [],
         warnings: [],
-        resourceId: 'deploy',
-        fieldPath: 'status.readyReplicas',
+        suggestions: [],
+        metadata: {
+          resourceType: 'Deployment',
+          fieldOptional: false,
+          fieldNullable: false,
+          dependencyDepth: 1,
+          isStatusField: true,
+          isSpecField: false,
+          isMetadataField: false,
+        },
       },
     ];
 
-    const result = handleSpecialCases('deploy.status.readyReplicas', ctx, validateFn as any);
+    const result = handleSpecialCases('deploy.status.readyReplicas', ctx, validateFn);
     expect(result).not.toBeNull();
     if (result) {
       expect(result.valid).toBe(true);
@@ -587,19 +626,27 @@ describe('handleSpecialCases', () => {
       availableReferences: {},
     });
 
-    const validateFn = () => {
+    const validateFn: ValidateResourceReferencesFn = () => {
       return [
         {
           valid: false,
-          errors: [{ message: 'Resource "missing" not found' }],
+          errors: [ResourceValidationError.forResourceNotFound('missing.status', 'missing', [])],
           warnings: [],
-          resourceId: 'missing',
-          fieldPath: 'status',
+          suggestions: [],
+          metadata: {
+            resourceType: 'Unknown',
+            fieldOptional: false,
+            fieldNullable: false,
+            dependencyDepth: 1,
+            isStatusField: true,
+            isSpecField: false,
+            isMetadataField: false,
+          },
         },
       ];
     };
 
-    const result = handleSpecialCases('missing.status', ctx, validateFn as any);
+    const result = handleSpecialCases('missing.status', ctx, validateFn);
     expect(result).not.toBeNull();
     if (result) {
       // Characterization: the simple path handler runs, but validation only
