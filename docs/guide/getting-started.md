@@ -50,6 +50,7 @@ export const app = kubernetesComposition(
       ports: [{ containerPort: 80 }]
     });
     
+    // Resources auto-register — result only needed for cross-references in status
     Service({
       id: 'svc',
       name: `${spec.name}-service`,

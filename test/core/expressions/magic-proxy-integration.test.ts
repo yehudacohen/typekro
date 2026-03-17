@@ -179,7 +179,7 @@ describe('Magic Proxy Integration Tests', () => {
               deploy.status?.readyReplicas === schema.spec.replicas &&
               (deploy.status?.availableReplicas as number) > 0,
             endpoint: (svc.status as Record<string, unknown>)?.loadBalancer
-              ? `http://${((svc.status as Record<string, unknown>).loadBalancer as Record<string, unknown[]>).ingress[0]}`
+              ? `http://${((svc.status as Record<string, unknown>).loadBalancer as Record<string, unknown[]>).ingress?.[0]}`
               : 'http://localhost',
             health: {
               deployment:

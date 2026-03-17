@@ -71,7 +71,7 @@ describeOrSkip('External-DNS Helm Integration', () => {
         await new Promise((resolve) => setTimeout(resolve, 5000));
 
         const repoObj = createdRepo as unknown as Record<string, Record<string, unknown>>;
-        expect(repoObj.spec.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
+        expect(repoObj.spec!.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
         expect(repoObj.metadata?.name).toBe('external-dns-repo-direct-test');
 
         // Clean up - use deleteResourceIfExists to handle missing resources gracefully
@@ -162,9 +162,9 @@ describeOrSkip('External-DNS Helm Integration', () => {
         // Validate the core structure - these should be consistent regardless of whether
         // the resource was just created or already existed
         const repoObj2 = createdRepo as unknown as Record<string, Record<string, unknown>>;
-        expect(repoObj2.spec.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
+        expect(repoObj2.spec!.url).toBe('https://kubernetes-sigs.github.io/external-dns/');
         const releaseObj = createdRelease as unknown as Record<string, Record<string, unknown>>;
-        const releaseChart = (releaseObj.spec.chart as Record<string, unknown>).spec as Record<
+        const releaseChart = (releaseObj.spec!.chart as Record<string, unknown>).spec as Record<
           string,
           unknown
         >;

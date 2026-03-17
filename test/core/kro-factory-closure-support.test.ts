@@ -82,7 +82,7 @@ describe('KroResourceFactory Closure Support', () => {
       // Should create Kro factory without errors
       const kroFactory = await graph.factory('kro', {
         namespace: 'test-namespace',
-        kubeConfig,
+        ...(kubeConfig ? { kubeConfig } : {}),
       });
 
       expect(kroFactory.mode).toBe('kro');
@@ -136,7 +136,7 @@ describe('KroResourceFactory Closure Support', () => {
 
       const kroFactory = await graph.factory('kro', {
         namespace: 'test-namespace',
-        kubeConfig,
+        ...(kubeConfig ? { kubeConfig } : {}),
       });
 
       // Deploy should execute closures before creating RGD
@@ -201,7 +201,7 @@ describe('KroResourceFactory Closure Support', () => {
 
       const kroFactory = await graph.factory('kro', {
         namespace: 'test-namespace',
-        kubeConfig,
+        ...(kubeConfig ? { kubeConfig } : {}),
       });
 
       // Deploy should fail with clear error message about dynamic references
@@ -246,7 +246,7 @@ describe('KroResourceFactory Closure Support', () => {
 
       const kroFactory = await graph.factory('kro', {
         namespace: 'test-namespace',
-        kubeConfig,
+        ...(kubeConfig ? { kubeConfig } : {}),
       });
 
       try {
@@ -315,7 +315,7 @@ describe('KroResourceFactory Closure Support', () => {
       // Should create factory successfully
       const kroFactory = await graph.factory('kro', {
         namespace: 'test-namespace',
-        kubeConfig,
+        ...(kubeConfig ? { kubeConfig } : {}),
       });
 
       expect(kroFactory.mode).toBe('kro');
@@ -354,7 +354,7 @@ describe('KroResourceFactory Closure Support', () => {
       // Should create Direct factory successfully
       const directFactory = await graph.factory('direct', {
         namespace: 'test-namespace',
-        kubeConfig,
+        ...(kubeConfig ? { kubeConfig } : {}),
       });
 
       expect(directFactory.mode).toBe('direct');

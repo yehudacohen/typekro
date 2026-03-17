@@ -19,8 +19,4 @@ export { CompositionIntegrationHooks, compositionUsesKubernetesRefs } from './in
 export type { NestedCompositionScope } from './scope-manager.js';
 export { MagicProxyScopeManager } from './scope-manager.js';
 // Types
-export type {
-  CompositionAnalysisResult,
-  CompositionPattern,
-  PatternAnalysisConfig,
-} from './types.js';
+export type { CompositionAnalysisResult } from './types.js';

@@ -386,7 +386,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     });
     console.log(
       '📋 Available ClusterIssuers:',
-      (allIssuers as unknown as Record<string, Record<string, unknown>[]>).items.map(
+      (allIssuers as unknown as Record<string, Record<string, unknown>[]>).items!.map(
         (i) => (i.metadata as Record<string, string>).name
       )
     );
@@ -400,7 +400,7 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     });
     console.log(
       '📋 Available Certificates:',
-      (allCerts as unknown as Record<string, Record<string, unknown>[]>).items.map(
+      (allCerts as unknown as Record<string, Record<string, unknown>[]>).items!.map(
         (c) => (c.metadata as Record<string, string>).name
       )
     );
@@ -417,7 +417,9 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     });
     const createdIssuer = (
       lifecycleIssuers as unknown as Record<string, Record<string, unknown>[]>
-    ).items.find((issuer) => (issuer.metadata as Record<string, string>).name.includes('issuer'));
+    ).items!.find((issuer) =>
+      ((issuer.metadata as Record<string, string>).name ?? '').includes('issuer')
+    );
     expect(createdIssuer).toBeDefined();
 
     const issuerBody = createdIssuer as Record<string, unknown>;
@@ -428,7 +430,9 @@ describe('Cert-Manager Certificate Real Integration Tests', () => {
     // Find the Certificate that was actually created
     const createdCert = (
       allCerts as unknown as Record<string, Record<string, unknown>[]>
-    ).items.find((cert) => (cert.metadata as Record<string, string>).name.includes('cert'));
+    ).items!.find((cert) =>
+      ((cert.metadata as Record<string, string>).name ?? '').includes('cert')
+    );
     expect(createdCert).toBeDefined();
 
     const certBody2 = createdCert as Record<string, unknown>;

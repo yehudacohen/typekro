@@ -505,7 +505,9 @@ describe('Cilium Networking CRD Factories', () => {
 
       expect(result.ready).toBe(false);
       expect(result.message).toBe('CiliumNetworkPolicy not ready: Invalid endpoint selector');
-      expect(result.details?.condition?.reason).toBe('ValidationError');
+      expect(
+        (result.details as { condition?: { reason?: string } } | undefined)?.condition?.reason
+      ).toBe('ValidationError');
     });
 
     it('should return ready when Ready condition is True', () => {

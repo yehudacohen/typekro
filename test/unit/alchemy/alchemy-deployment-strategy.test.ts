@@ -291,7 +291,7 @@ describe('AlchemyDeploymentStrategy', () => {
         testSchema,
         undefined, // statusBuilder
         undefined, // resourceKeys
-        { ...factoryOptions, kubeConfig: undefined as unknown as FactoryOptions['kubeConfig'] },
+        (({ kubeConfig: _kc, ...rest }) => rest)(factoryOptions),
         mockAlchemyScope,
         mockBaseStrategy
       );

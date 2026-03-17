@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
+import type * as k8s from '@kubernetes/client-node';
 import {
   createEventFilter,
   EventFilter,
@@ -555,7 +556,7 @@ describe('EventFilter', () => {
             },
           })
         ),
-      } as unknown as Record<string, unknown>;
+      } as unknown as k8s.CoreV1Api;
 
       const deploymentResource: DeployedResource = {
         id: 'webapp-deployment',
@@ -584,7 +585,7 @@ describe('EventFilter', () => {
     it('should handle API errors during child resource discovery', async () => {
       const mockCoreV1Api = {
         listNamespacedPod: mock(() => Promise.reject(new Error('API Error'))),
-      } as unknown as Record<string, unknown>;
+      } as unknown as k8s.CoreV1Api;
 
       const deploymentResource: DeployedResource = {
         id: 'webapp-deployment',

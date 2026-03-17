@@ -295,10 +295,15 @@ export class DirectDeploymentEngine {
     );
     const abortSignal = deploymentAbortController.signal;
 
-    deploymentLogger.info('Starting deployment with closures', {
-      options,
-      closures: Object.keys(closures),
-    });
+    deploymentLogger.info(
+      Object.keys(closures).length === 0
+        ? 'Starting deployment'
+        : 'Starting deployment with closures',
+      {
+        options,
+        closures: Object.keys(closures),
+      }
+    );
 
     try {
       this.emitEvent(options, {

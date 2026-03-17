@@ -327,7 +327,7 @@ describe('Alchemy Resolver Comprehensive', () => {
         const result = await buildResourceGraphWithDeferredResolution(resources, mockContext);
 
         expect(result.deployment).toEqual({ spec: { replicas: 3 } });
-        expect((result as Record<string, Record<string, unknown>>).service.resource).toBe(
+        expect((result as Record<string, Record<string, unknown>>).service!.resource).toBe(
           alchemyPromise
         ); // Should be preserved
       });
@@ -351,7 +351,7 @@ describe('Alchemy Resolver Comprehensive', () => {
         const result = await resolveAllReferencesInAlchemyContext(resources, mockContext);
 
         expect(result.deployment).toEqual({ spec: { replicas: 3 } });
-        expect((result as Record<string, Record<string, unknown>>).service.resource).toEqual(
+        expect((result as Record<string, Record<string, unknown>>).service!.resource).toEqual(
           mockResolvedValue
         );
       });

@@ -1141,6 +1141,9 @@ ${Object.entries(spec as Record<string, any>)
           'typekro.io/kind': this.schemaDefinition.kind,
         },
       },
+      // Type cast: constructing a partial Enhanced proxy — only metadata.name and spec
+      // are accessed by callers at this call site. TypeScript cannot verify structural
+      // completeness; callers are responsible for only accessing these fields.
     } as unknown as Enhanced<TSpec, TStatus>;
 
     // Hydrate dynamic status fields if enabled and there are dynamic fields

@@ -534,8 +534,12 @@ export function createMockCelExpression<T = unknown>(expression: string): CelExp
  * const context = { availableResources: { webapp: mockResource } };
  * ```
  */
-export function createMockEnhancedStub(constructorName: string): Enhanced<any, any> {
-  return { constructor: { name: constructorName } } as Enhanced<any, any>;
+export function createMockEnhancedStub(
+  constructorName: string
+): Enhanced<Record<string, unknown>, Record<string, unknown>> {
+  return {
+    constructor: { name: constructorName },
+  } as Enhanced<Record<string, unknown>, Record<string, unknown>>;
 }
 
 // =============================================================================
@@ -571,7 +575,10 @@ export interface AlchemyStrategyInternals {
 }
 
 /**
- * Access AlchemyDeploymentStrategy internals for testing.
+ * Casts a strategy instance to its internal interface for white-box testing.
+ * NOTE: This is a documentation cast, not a type-safe accessor. If private methods
+ * on AlchemyDeploymentStrategy are renamed, TypeScript will NOT catch the mismatch here.
+ * When refactoring AlchemyDeploymentStrategy, also update AlchemyStrategyInternals.
  *
  * Eliminates patterns like:
  * ```ts

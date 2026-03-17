@@ -37,7 +37,7 @@ describe('ClusterRoleBinding Array Serialization', () => {
     expect(Array.isArray(crbRecord.subjects)).toBe(true);
 
     // Test with toJSON (which is what the resolver now uses)
-    const plainObject = (crb as unknown as Record<string, Function>).toJSON();
+    const plainObject = (crb as unknown as Record<string, Function>).toJSON!();
     console.log('\nAfter toJSON subjects:', plainObject.subjects);
     console.log('After toJSON isArray:', Array.isArray(plainObject.subjects));
     console.log('After toJSON keys:', Object.keys(plainObject.subjects));

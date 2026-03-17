@@ -732,6 +732,9 @@ export class ReferenceResolver {
 
       // Query the resource from the cluster
       // In the new API, methods return objects directly (no .body wrapper)
+      // Cast is required: resourceRef.metadata.name is guaranteed non-undefined (set above)
+      // but V1ObjectMeta.name is typed as optional, causing exactOptionalPropertyTypes mismatch.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const resource = await this.k8sApi.read(resourceRef as any);
 
       queryLogger.debug('Successfully retrieved cluster resource', {

@@ -46,7 +46,7 @@ describe('removeUndefinedValues', () => {
   it('removes undefined values from a flat object', () => {
     const input = { a: 1, b: undefined, c: 'hello' };
     const result = removeUndefinedValues(input);
-    expect(result).toEqual({ a: 1, c: 'hello' });
+    expect(result as unknown).toEqual({ a: 1, c: 'hello' });
     expect('b' in (result as Record<string, unknown>)).toBe(false);
   });
 
@@ -68,7 +68,7 @@ describe('removeUndefinedValues', () => {
       },
     };
     const result = removeUndefinedValues(input);
-    expect(result).toEqual({
+    expect(result as unknown).toEqual({
       a: 1,
       nested: {
         c: 3,
@@ -84,13 +84,13 @@ describe('removeUndefinedValues', () => {
 
   it('recursively cleans arrays of objects', () => {
     const input = [{ a: 1, b: undefined }, { c: undefined }];
-    expect(removeUndefinedValues(input)).toEqual([{ a: 1 }, {}]);
+    expect(removeUndefinedValues(input) as unknown).toEqual([{ a: 1 }, {}]);
   });
 
   it('preserves empty objects after cleanup', () => {
     const input = { a: undefined };
     // All values removed → empty object
-    expect(removeUndefinedValues(input)).toEqual({});
+    expect(removeUndefinedValues(input) as unknown).toEqual({});
   });
 
   it('preserves empty arrays after cleanup', () => {
@@ -109,7 +109,7 @@ describe('removeUndefinedValues', () => {
         ],
       },
     };
-    expect(removeUndefinedValues(input)).toEqual({
+    expect(removeUndefinedValues(input) as unknown).toEqual({
       values: {
         image: { tag: 'latest' },
         replicas: 3,

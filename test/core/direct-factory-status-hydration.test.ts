@@ -581,12 +581,12 @@ describe('DirectResourceFactory Status Hydration', () => {
 
       const factory = await graph.factory('direct', {
         namespace: 'alchemy-strategy-test',
-        alchemyScope: mockAlchemyScope as unknown as Record<string, unknown>,
-      });
+        alchemyScope: mockAlchemyScope,
+      } as Parameters<typeof graph.factory>[1]);
 
       expect(factory).toBeDefined();
-      expect(factory.mode).toBe('direct');
-      expect(factory.isAlchemyManaged).toBe(true);
+      expect((factory as unknown as Record<string, unknown>).mode).toBe('direct');
+      expect((factory as unknown as Record<string, unknown>).isAlchemyManaged).toBe(true);
     });
   });
 

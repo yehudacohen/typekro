@@ -270,7 +270,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           // Complex expression
           complex:
             (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas ===
-              schema.spec.replicas &&
+              schema.spec!.replicas &&
             (resources.deployment as unknown as FlexibleResource)?.status?.availableReplicas! > 0,
 
           // Very complex expression
@@ -278,7 +278,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             (resources.deployment as unknown as FlexibleResource)?.status?.conditions?.find(
               (c: { type: string; status: string }) => c.type === 'Available'
             )?.status === 'True'
-              ? `Ready: ${(resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas}/${schema.spec.replicas}`
+              ? `Ready: ${(resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas}/${schema.spec!.replicas}`
               : 'Not ready',
         })
       );
@@ -333,12 +333,12 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             const items: string[] = [];
 
             for (let i = 0; i < 10; i++) {
-              items.push(`${schema.spec.name}-${i}`);
+              items.push(`${schema.spec!.name}-${i}`);
             }
 
             return {
               items,
-              summary: `${items.length} items for ${schema.spec.name}`,
+              summary: `${items.length} items for ${schema.spec!.name}`,
             };
           }
         );
@@ -584,7 +584,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
         (schema: Record<string, Record<string, unknown>>, resources: Record<string, unknown>) => ({
           ready:
             (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas ===
-            schema.spec.replicas,
+            schema.spec!.replicas,
           replicas:
             (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas || 0,
         })

@@ -18,6 +18,12 @@ Instead, please report them via email to: **security@typekro.run**
 
 You should receive a response within 48 hours. If the issue is confirmed, we will release a patch as soon as possible depending on complexity.
 
+## Contacting the Security Team
+
+Report vulnerabilities via GitHub Security Advisories (preferred): navigate to the repository → Security → Advisories → "Report a vulnerability".
+
+For sensitive issues, email security@typekro.run. PGP-encrypted reports are welcome — key available on request.
+
 ## What to Include
 
 Please include the following information in your report:
@@ -119,6 +125,16 @@ The `typeKroRuntimeBootstrap` function binds Flux controllers to `cluster-admin`
 default. This is intentional — Flux controllers manage arbitrary Helm charts that may
 create CRDs and cluster-scoped resources. Scoped RBAC is available via the `rbac` option
 for security-conscious deployments. See Design Constraint #3 in the project roadmap.
+
+To restrict permissions, use the `rbac` option when deploying the TypeKro runtime:
+```typescript
+await typeKroRuntime.factory('kro', { rbac: 'namespace' })
+```
+See the `RbacMode` type for available options.
+
+### Expression Evaluation Sandbox
+
+TypeKro uses `angular-expressions` to evaluate schema field references safely. This is **not** a general-purpose sandbox for untrusted code — it prevents string injection into `new Function()` calls but composition functions themselves are trusted code (see Trust Boundary #1 above). Do not use TypeKro to evaluate arbitrary user-provided expressions.
 
 ### `fn.toString()` Dependency
 

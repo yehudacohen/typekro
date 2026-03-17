@@ -619,10 +619,7 @@ describe('Optionality confidence calculation', () => {
 
   it('confidence is boosted when hydration states are provided', () => {
     const ref = makeRef('deploy', 'spec.image');
-    const withoutHydration = handler.analyzeOptionalityRequirements(
-      ref,
-      makeContext({ hydrationStates: undefined })
-    );
+    const withoutHydration = handler.analyzeOptionalityRequirements(ref, makeContext({}));
     const withHydration = handler.analyzeOptionalityRequirements(
       ref,
       makeContext({ hydrationStates: new Map() })

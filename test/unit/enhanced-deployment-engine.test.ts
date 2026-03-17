@@ -379,12 +379,12 @@ describe('Enhanced DirectDeploymentEngine', () => {
     // Status events should have detailed information
     // The deployment readiness evaluator message format is: "Waiting for replicas: X/Y ready, X/Y available"
     const notReadyEvent = statusEvents[0];
-    expect(notReadyEvent.message).toContain('1/2 ready');
-    expect(notReadyEvent.message).toContain('1/2 available');
+    expect(notReadyEvent?.message).toContain('1/2 ready');
+    expect(notReadyEvent?.message).toContain('1/2 available');
 
     // Ready event should confirm readiness
     const readyEvent = readyEvents[0];
-    expect(readyEvent.message).toContain('2/2 ready replicas');
-    expect(readyEvent.message).toContain('2/2 available replicas');
+    expect(readyEvent?.message).toContain('2/2 ready replicas');
+    expect(readyEvent?.message).toContain('2/2 available replicas');
   });
 });

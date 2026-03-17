@@ -129,9 +129,9 @@ describe('ResourceRollbackManager', () => {
 
       // Verify reverse order by checking the calls
       const deleteCalls = mockK8sApi.delete.mock.calls;
-      expect(deleteCalls[0][0].metadata.name).toBe('app1'); // deployment first (reversed)
-      expect(deleteCalls[1][0].metadata.name).toBe('app1-service'); // service second
-      expect(deleteCalls[2][0].metadata.name).toBe('app1-config'); // configmap last
+      expect(deleteCalls[0]![0]!.metadata.name).toBe('app1'); // deployment first (reversed)
+      expect(deleteCalls[1]![0]!.metadata.name).toBe('app1-service'); // service second
+      expect(deleteCalls[2]![0]!.metadata.name).toBe('app1-config'); // configmap last
     });
 
     it('should emit proper rollback events throughout the process', async () => {
@@ -236,7 +236,7 @@ describe('ResourceRollbackManager', () => {
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(2);
 
       // Check that second call used gracePeriod = 0 for force deletion
-      const forceDeletionCall = mockK8sApi.delete.mock.calls[1];
+      const forceDeletionCall = mockK8sApi.delete.mock.calls[1]!;
       expect(forceDeletionCall[3]).toBe(0); // gracePeriod parameter
     });
 
@@ -255,10 +255,10 @@ describe('ResourceRollbackManager', () => {
       expect(calls).toHaveLength(2);
 
       // First call - normal deletion with undefined gracePeriod
-      expect(calls[0][3]).toBeUndefined();
+      expect(calls[0]![3]).toBeUndefined();
 
       // Second call - force deletion with gracePeriod = 0
-      expect(calls[1][3]).toBe(0);
+      expect(calls[1]![3]).toBe(0);
     });
 
     it('should handle force deletion failures gracefully', async () => {
@@ -454,11 +454,11 @@ describe('ResourceRollbackManager', () => {
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(2);
 
       // Check namespaced resource call
-      const namespacedCall = mockK8sApi.delete.mock.calls[1][0]; // Second call (reverse order)
+      const namespacedCall = mockK8sApi.delete.mock.calls[1]![0]!; // Second call (reverse order)
       expect(namespacedCall.metadata.namespace).toBe('kube-system');
 
       // Check cluster-scoped resource call
-      const clusterCall = mockK8sApi.delete.mock.calls[0][0]; // First call (reverse order)
+      const clusterCall = mockK8sApi.delete.mock.calls[0]![0]!; // First call (reverse order)
       expect(clusterCall.metadata.namespace).toBeUndefined();
     });
   });

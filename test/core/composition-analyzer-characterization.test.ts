@@ -11,11 +11,11 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import type { CompositionAnalysisResult } from '../../src/core/expressions/composition/composition-analyzer.js';
 import {
   analyzeCompositionBody,
   applyAnalysisToResources,
 } from '../../src/core/expressions/composition/composition-analyzer.js';
+import type { ASTAnalysisResult as CompositionAnalysisResult } from '../../src/core/expressions/composition/composition-analyzer-types.js';
 import {
   getForEach,
   getIncludeWhen,
@@ -505,7 +505,7 @@ describe('applyAnalysisToResources', () => {
     const overrides = getTemplateOverrides(resources.app);
     expect(overrides).toBeDefined();
     expect(overrides).toHaveLength(1);
-    expect(overrides![0].propertyPath).toBe('spec.replicas');
+    expect(overrides![0]?.propertyPath).toBe('spec.replicas');
   });
 
   it('skips resources not found in the resources record', () => {

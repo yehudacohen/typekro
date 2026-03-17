@@ -42,9 +42,11 @@ export {
   createHelmRevisionReadinessEvaluator,
   createHelmTestReadinessEvaluator,
   createHelmTimeoutReadinessEvaluator,
+  createLabeledHelmReleaseEvaluator,
   helmRelease,
   helmReleaseReadinessEvaluator,
   helmRepository,
+  simpleHelmChart,
 } from './helm/index.js';
 // =============================================================================
 // KRO ECOSYSTEM

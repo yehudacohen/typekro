@@ -15,15 +15,15 @@ import { createK8sError } from '../utils/mock-factories.js';
 function resolverInternals(resolver: ReferenceResolver) {
   const r = resolver as unknown as Record<string, (...args: unknown[]) => unknown>;
   return {
-    extractFieldValue: r.extractFieldValue.bind(resolver) as (
+    extractFieldValue: r.extractFieldValue!.bind(resolver) as (
       obj: unknown,
       path: string
     ) => unknown,
-    resolveKubernetesRef: r.resolveKubernetesRef.bind(resolver) as (
+    resolveKubernetesRef: r.resolveKubernetesRef!.bind(resolver) as (
       ref: unknown,
       ctx: unknown
     ) => Promise<unknown>,
-    selectiveClone: r.selectiveClone.bind(resolver) as (obj: unknown) => unknown,
+    selectiveClone: r.selectiveClone!.bind(resolver) as (obj: unknown) => unknown,
   };
 }
 
@@ -707,8 +707,8 @@ describe('ReferenceResolver', () => {
       expect(cloned.items[0]).toBe('static');
       expect(cloned.items[1]).toBe(42);
       expect(cloned.items[2]).toBe(celExpr); // CEL preserved
-      expect(cloned.items[3]).toEqual(obj.items[3]);
-      expect(cloned.items[3]).not.toBe(obj.items[3]); // Nested object cloned
+      expect(cloned.items?.[3]).toEqual(obj.items![3]!);
+      expect(cloned.items?.[3]).not.toBe(obj.items![3]!); // Nested object cloned
     });
 
     it('should handle null and undefined', () => {

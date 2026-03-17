@@ -17,10 +17,10 @@ import {
   referencesSpec,
 } from './composition-analyzer-helpers.js';
 import type {
+  ASTAnalysisResult,
   ASTNode,
   CallExpression,
   CollectionVariable,
-  CompositionAnalysisResult,
   ConditionalExpression,
   Identifier,
   Literal,
@@ -49,7 +49,7 @@ export function analyzeFactoryArgTernaries(
   resourceId: string,
   fullSource: string,
   specParamName: string,
-  result: CompositionAnalysisResult
+  result: ASTAnalysisResult
 ): void {
   const firstArg = call.arguments[0];
   if (!firstArg || firstArg.type !== 'ObjectExpression') return;
@@ -112,7 +112,7 @@ export function analyzeReturnStatementTernaries(
   returnNode: ASTNode,
   fullSource: string,
   specParamName: string,
-  result: CompositionAnalysisResult
+  result: ASTAnalysisResult
 ): void {
   const argument = (returnNode as ASTNode & { argument: ASTNode | null }).argument;
   if (!argument || argument.type !== 'ObjectExpression') return;
@@ -253,7 +253,7 @@ export function analyzeReturnCollectionAggregates(
   fullSource: string,
   _collections: Map<string, CollectionVariable>,
   specParamName: string,
-  result: CompositionAnalysisResult
+  result: ASTAnalysisResult
 ): void {
   const argument = (returnNode as ASTNode & { argument: ASTNode | null }).argument;
   if (!argument || argument.type !== 'ObjectExpression') return;

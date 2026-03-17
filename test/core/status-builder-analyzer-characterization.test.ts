@@ -267,32 +267,32 @@ describe('StatusBuilderAnalyzer.analyzeReturnObjectWithMagicProxy()', () => {
       const result = analyzer.analyzeReturnObjectWithMagicProxy({ phase: 'Running' }, {});
       expect(result.errors).toHaveLength(0);
       expect(isCelExpr(result.statusMappings.phase)).toBe(true);
-      expect(result.statusMappings.phase.expression).toBe('"Running"');
+      expect(result.statusMappings.phase!.expression).toBe('"Running"');
     });
 
     it('converts number value to CEL number literal', () => {
       const result = analyzer.analyzeReturnObjectWithMagicProxy({ count: 42 }, {});
-      expect(result.statusMappings.count.expression).toBe('42');
+      expect(result.statusMappings.count!.expression).toBe('42');
     });
 
     it('converts boolean value to CEL boolean literal', () => {
       const result = analyzer.analyzeReturnObjectWithMagicProxy({ ready: true }, {});
-      expect(result.statusMappings.ready.expression).toBe('true');
+      expect(result.statusMappings.ready!.expression).toBe('true');
     });
 
     it('converts null to CEL null', () => {
       const result = analyzer.analyzeReturnObjectWithMagicProxy({ val: null }, {});
-      expect(result.statusMappings.val.expression).toBe('null');
+      expect(result.statusMappings.val!.expression).toBe('null');
     });
 
     it('converts array to CEL array literal', () => {
       const result = analyzer.analyzeReturnObjectWithMagicProxy({ items: [1, 2, 3] }, {});
-      expect(result.statusMappings.items.expression).toBe('[1, 2, 3]');
+      expect(result.statusMappings.items!.expression).toBe('[1, 2, 3]');
     });
 
     it('converts nested object to CEL object literal', () => {
       const result = analyzer.analyzeReturnObjectWithMagicProxy({ cfg: { a: 1 } }, {});
-      expect(result.statusMappings.cfg.expression).toBe('{"a": 1}');
+      expect(result.statusMappings.cfg!.expression).toBe('{"a": 1}');
     });
 
     it('returns empty results for empty object', () => {
@@ -332,20 +332,20 @@ describe('StatusBuilderAnalyzer.analyzeNestedReturnObjectStructure()', () => {
     const result = analyzer.analyzeNestedReturnObjectStructure({ phase: 'Running', count: 42 }, {});
     expect(result.structureErrors).toHaveLength(0);
     expect(result.flattenedMappings.phase).toBeDefined();
-    expect(result.flattenedMappings.phase.expression).toBe('"Running"');
-    expect(result.flattenedMappings.count.expression).toBe('42');
+    expect(result.flattenedMappings.phase!.expression).toBe('"Running"');
+    expect(result.flattenedMappings.count!.expression).toBe('42');
   });
 
   it('flattens one-level nested objects', () => {
     const result = analyzer.analyzeNestedReturnObjectStructure({ health: { ready: true } }, {});
     expect(result.flattenedMappings['health.ready']).toBeDefined();
-    expect(result.flattenedMappings['health.ready'].expression).toBe('true');
+    expect(result.flattenedMappings['health.ready']!.expression).toBe('true');
   });
 
   it('flattens deeply nested objects with multi-level paths', () => {
     const result = analyzer.analyzeNestedReturnObjectStructure({ a: { b: { c: 42 } } }, {});
     expect(result.flattenedMappings['a.b.c']).toBeDefined();
-    expect(result.flattenedMappings['a.b.c'].expression).toBe('42');
+    expect(result.flattenedMappings['a.b.c']!.expression).toBe('42');
   });
 
   it('returns error when depth exceeds maxDepth', () => {
@@ -622,7 +622,7 @@ describe('analyzeReturnObjectWithMagicProxy() convenience function', () => {
 
     expect(result.errors).toHaveLength(0);
     expect(isCelExpr(result.statusMappings.phase)).toBe(true);
-    expect(result.statusMappings.phase.expression).toBe('"Running"');
+    expect(result.statusMappings.phase!.expression).toBe('"Running"');
   });
 
   it('returns empty results for empty object', () => {

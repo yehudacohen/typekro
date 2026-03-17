@@ -9,9 +9,9 @@ import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
 import {
+  type ASTAnalysisResult,
   analyzeCompositionBody,
   applyAnalysisToResources,
-  type CompositionAnalysisResult,
 } from '../expressions/composition/composition-analyzer.js';
 import { StatusBuilderAnalyzer } from '../expressions/factory/status-builder-analyzer.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -382,7 +382,7 @@ function analyzeAndConvertStatusMappings<
  */
 interface CompositionBodyAnalysisResult {
   /** The analysis result from the composition body analyzer, or null if unavailable. */
-  compositionAnalysis: CompositionAnalysisResult | null;
+  compositionAnalysis: ASTAnalysisResult | null;
   /**
    * Mutable flag tracking whether `applyAnalysisToResources` has been called.
    * Wrapped in an object so Biome doesn't hoist it to `const`.
@@ -408,7 +408,7 @@ function processCompositionBodyAnalysis(
   analyzedStatusMappings: Record<string, unknown>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): CompositionBodyAnalysisResult {
-  let compositionAnalysis: CompositionAnalysisResult | null = null;
+  let compositionAnalysis: ASTAnalysisResult | null = null;
   const analysisState = { appliedToResources: false };
 
   const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)

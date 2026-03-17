@@ -108,7 +108,7 @@ describe('Kustomize Reference Integration', () => {
     expect(patches).toBeDefined();
     expect(patches).toHaveLength(1);
 
-    const patch = patches![0];
+    const patch = patches![0]!;
     const target = patch.target as Record<string, unknown> | undefined;
     expect(target?.kind).toBe('Deployment');
     expect(target?.name).toBe('webapp');
@@ -122,21 +122,21 @@ describe('Kustomize Reference Integration', () => {
       unknown
     >;
     const containers = tmplSpec.containers as Record<string, unknown>[];
-    expect(isKubernetesRef(containers[0].image)).toBe(true);
-    const envVars = containers[0].env as Record<string, unknown>[];
-    expect(isKubernetesRef(envVars[0].value)).toBe(true);
+    expect(isKubernetesRef(containers[0]!.image)).toBe(true);
+    const envVars = containers[0]!.env as Record<string, unknown>[];
+    expect(isKubernetesRef(envVars[0]!.value)).toBe(true);
 
     // Check that references in images array are preserved
     const images = kustSpec?.images as Record<string, unknown>[] | undefined;
     expect(images).toBeDefined();
     expect(images).toHaveLength(1);
-    expect(isKubernetesRef(images![0].newTag)).toBe(true);
+    expect(isKubernetesRef(images![0]!.newTag)).toBe(true);
 
     // Check that references in replicas array are preserved
     const replicas = kustSpec?.replicas as Record<string, unknown>[] | undefined;
     expect(replicas).toBeDefined();
     expect(replicas).toHaveLength(1);
-    expect(isKubernetesRef(replicas![0].count)).toBe(true);
+    expect(isKubernetesRef(replicas![0]!.count)).toBe(true);
   });
 
   it('should support string patches with references', () => {
@@ -197,7 +197,7 @@ describe('Kustomize Reference Integration', () => {
     expect(patches2).toBeDefined();
     expect(patches2).toHaveLength(1);
 
-    const patch2 = patches2![0];
+    const patch2 = patches2![0]!;
     const target2 = patch2.target as Record<string, unknown> | undefined;
 
     // Verify reference in target selector
@@ -299,23 +299,23 @@ describe('Kustomize Reference Integration', () => {
     expect(patches3).toBeDefined();
     expect(patches3).toHaveLength(1);
 
-    const patchContent3 = patches3![0].patch as Record<string, unknown>;
+    const patchContent3 = patches3![0]!.patch as Record<string, unknown>;
     const patchSpec3 = patchContent3.spec as Record<string, unknown>;
     const tmplSpec3 = (patchSpec3.template as Record<string, unknown>).spec as Record<
       string,
       unknown
     >;
-    const container = (tmplSpec3.containers as Record<string, unknown>[])[0];
+    const container = (tmplSpec3.containers as Record<string, unknown>[])[0]!;
 
     // Check resource references
     const containerResources = container.resources as Record<string, Record<string, unknown>>;
-    expect(isKubernetesRef(containerResources.requests.cpu)).toBe(true);
-    expect(isKubernetesRef(containerResources.requests.memory)).toBe(true);
-    expect(isKubernetesRef(containerResources.limits.cpu)).toBe(true);
-    expect(isKubernetesRef(containerResources.limits.memory)).toBe(true);
+    expect(isKubernetesRef(containerResources.requests!.cpu)).toBe(true);
+    expect(isKubernetesRef(containerResources.requests!.memory)).toBe(true);
+    expect(isKubernetesRef(containerResources.limits!.cpu)).toBe(true);
+    expect(isKubernetesRef(containerResources.limits!.memory)).toBe(true);
 
     // Check environment variable references
     const containerEnv = container.env as Record<string, unknown>[];
-    expect(isKubernetesRef(containerEnv[0].value)).toBe(true); // schema.spec.environment
+    expect(isKubernetesRef(containerEnv[0]!.value)).toBe(true); // schema.spec.environment
   });
 });

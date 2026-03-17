@@ -50,7 +50,7 @@ export class CompositionExpressionAnalyzer {
           allowSideEffects: true,
           trackResourceCreation: true,
           validateScope: true,
-          convertTocel: true,
+          convertToCel: true,
         },
       ],
       [
@@ -60,7 +60,7 @@ export class CompositionExpressionAnalyzer {
           allowSideEffects: false,
           trackResourceCreation: false,
           validateScope: false,
-          convertTocel: true,
+          convertToCel: true,
         },
       ],
     ]);
@@ -174,7 +174,7 @@ export class CompositionExpressionAnalyzer {
   ): MagicAssignableShape<TStatus> {
     const config = this.patternConfigs.get(pattern)!;
 
-    if (!config.convertTocel) {
+    if (!config.convertToCel) {
       // Pattern doesn't require CEL conversion
       return statusShape;
     }
@@ -223,7 +223,7 @@ export class CompositionExpressionAnalyzer {
     }
 
     // Check CEL conversion compatibility
-    if (factoryType === 'kro' && !config.convertTocel) {
+    if (factoryType === 'kro' && !config.convertToCel) {
       isCompatible = false;
       warnings.push(
         `Pattern '${pattern}' is not compatible with Kro factory (CEL conversion required)`

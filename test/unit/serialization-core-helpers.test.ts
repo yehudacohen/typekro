@@ -270,13 +270,22 @@ describe('detectAndPreserveCelExpressions', () => {
   });
 
   test('handles null/undefined input gracefully', () => {
-    expect(detectAndPreserveCelExpressions(null).hasExistingCel).toBe(false);
-    expect(detectAndPreserveCelExpressions(undefined).hasExistingCel).toBe(false);
+    expect(
+      detectAndPreserveCelExpressions(null as unknown as Record<string, unknown>).hasExistingCel
+    ).toBe(false);
+    expect(
+      detectAndPreserveCelExpressions(undefined as unknown as Record<string, unknown>)
+        .hasExistingCel
+    ).toBe(false);
   });
 
   test('handles non-object input gracefully', () => {
-    expect(detectAndPreserveCelExpressions('string').hasExistingCel).toBe(false);
-    expect(detectAndPreserveCelExpressions(42).hasExistingCel).toBe(false);
+    expect(
+      detectAndPreserveCelExpressions('string' as unknown as Record<string, unknown>).hasExistingCel
+    ).toBe(false);
+    expect(
+      detectAndPreserveCelExpressions(42 as unknown as Record<string, unknown>).hasExistingCel
+    ).toBe(false);
   });
 
   test('skips arrays (CEL in arrays not detected)', () => {
@@ -658,10 +667,10 @@ describe('analyzeStatusMappingTypes', () => {
   });
 
   test('handles null/undefined input', () => {
-    const result = analyzeStatusMappingTypes(null);
+    const result = analyzeStatusMappingTypes(null as unknown as Record<string, unknown>);
     expect(result.kubernetesRefFields).toHaveLength(0);
 
-    const result2 = analyzeStatusMappingTypes(undefined);
+    const result2 = analyzeStatusMappingTypes(undefined as unknown as Record<string, unknown>);
     expect(result2.kubernetesRefFields).toHaveLength(0);
   });
 

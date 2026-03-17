@@ -161,8 +161,8 @@ return {
   // Conditionals
   phase: deploy.status.readyReplicas > 0 ? 'running' : 'pending',
   
-  // Fallbacks
-  endpoint: svc.status.loadBalancer?.ingress?.[0]?.ip || 'pending'
+  // Use Cel.expr for conditional status — JavaScript operators like || are not supported in status builders
+  endpoint: Cel.expr<string>('has(svc.status.loadBalancer) && size(svc.status.loadBalancer.ingress) > 0 ? svc.status.loadBalancer.ingress[0].ip : "pending"')
 };
 ```
 

@@ -78,7 +78,7 @@ describe('Request Error Suppression', () => {
     const socket = (mockRequest.req as unknown as Record<string, unknown>)?.socket;
     let abortCalled = false;
 
-    if (socket && !socket.destroyed) {
+    if (socket && !(socket as { destroyed?: boolean }).destroyed) {
       try {
         mockRequest.abort();
         abortCalled = true;

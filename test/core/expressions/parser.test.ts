@@ -562,7 +562,7 @@ describe('Property-Based Tests: Source Location Preservation', () => {
         const ast = result.ast as unknown as Record<string, unknown>;
         const range = ast.range as number[] | undefined;
         // Range should cover the expression (accounting for wrapping in parseExpression)
-        return Array.isArray(range) && range[0] >= 0 && range[1] > range[0];
+        return Array.isArray(range) && (range[0] ?? -1) >= 0 && (range[1] ?? 0) > (range[0] ?? -1);
       }),
       { numRuns: 100 }
     );

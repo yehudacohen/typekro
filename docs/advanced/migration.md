@@ -166,7 +166,7 @@ const app = kubernetesComposition({
   });
 
   return {
-    ip: svc.status.loadBalancer.ingress[0].ip  // Runtime reference
+    ip: svc.status.loadBalancer.ingress[0].ip  // ingress[0] is valid in CEL — Enhanced types are NonOptional in status builder context
   };
 });
 ```

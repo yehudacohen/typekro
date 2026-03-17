@@ -338,9 +338,12 @@ export const certManagerBootstrap = kubernetesComposition(
         '.exists(c, c.type == "Ready" && c.status == "True")'
       ),
       crds: {
-        // WORKAROUND: Nested CEL expressions aren't being resolved properly in direct mode
-        // Using a static true value since we wait for HelmRelease to be Ready anyway
-        // TODO: Fix nested CEL expression resolution in ReferenceResolver
+        // KNOWN ISSUE: Nested CEL expression resolution is broken in direct mode (tracked in TODO).
+        // In direct mode, nested CEL expressions referencing resource statuses are not resolved by
+        // ReferenceResolver, so we hardcode static values here as a workaround. This means the
+        // cert-manager composition reports `crds.installed: true` regardless of actual CRD state
+        // when deployed in direct mode. Fix: implement nested CEL resolution in ReferenceResolver
+        // before exposing cert-manager direct-mode deployments in production workflows.
         installed: true,
         version: spec.version || '1.19.3',
       },
