@@ -533,6 +533,13 @@ function evaluateStaticExpression(node: any): any {
     case 'Identifier':
       // For identifiers, we can't evaluate them statically
       return node.name;
+    case 'UnaryExpression':
+      // Bun minifies `true` → `!0` and `false` → `!1` (UnaryExpression with operator '!')
+      // Handle these so boolean literals work correctly regardless of Bun minification.
+      if (node.operator === '!' && node.argument?.type === 'Literal') {
+        return !node.argument.value;
+      }
+      return null;
     case 'BinaryExpression':
       // For binary expressions with literals, we could evaluate them
       // But for safety, just return a placeholder

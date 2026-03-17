@@ -52,27 +52,26 @@ describe('analyzeImperativeComposition', () => {
       expect(result.statusMappings.count).toBe(42);
     });
 
-    it('boolean true becomes null (Bun minifies true→!0, UnaryExpression not handled)', () => {
-      // Bun transforms `true` to `!0` which is a UnaryExpression.
-      // evaluateStaticExpression has no case for UnaryExpression → returns null.
+    it('extracts boolean true (handles Bun minification of true→!0)', () => {
+      // Bun may transform `true` to `!0` (UnaryExpression).
+      // evaluateStaticExpression now handles this case correctly.
       const fn = () => {
         return { enabled: true };
       };
 
       const result = analyzeImperativeComposition(fn, {}, { factoryType: 'kro' });
 
-      // Quirk: true becomes null due to Bun minification
-      expect(result.statusMappings.enabled).toBeNull();
+      expect(result.statusMappings.enabled).toBe(true);
     });
 
-    it('boolean false also becomes null (Bun minifies false→!1)', () => {
+    it('extracts boolean false (handles Bun minification of false→!1)', () => {
       const fn = () => {
         return { disabled: false };
       };
 
       const result = analyzeImperativeComposition(fn, {}, { factoryType: 'kro' });
 
-      expect(result.statusMappings.disabled).toBeNull();
+      expect(result.statusMappings.disabled).toBe(false);
     });
 
     it('extracts null literal values', () => {
