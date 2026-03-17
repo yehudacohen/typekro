@@ -260,7 +260,7 @@ describe('analyzeFunction', () => {
 
     expect(result.valid).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.errors[0].message).toContain(
+    expect(result.errors[0]?.message).toContain(
       'Converting function bodies to CEL expressions is not yet supported'
     );
   });

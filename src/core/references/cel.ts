@@ -221,7 +221,11 @@ function template(
         return `\${${value.expression}}`;
       }
       // For literal values, escape any ${...} sequences that could be
-      // misinterpreted as CEL expression placeholders during serialization
+      // misinterpreted as CEL expression placeholders during serialization.
+      // Defense-in-depth: user-supplied strings may contain "${" (e.g. shell
+      // script snippets). Escaping here prevents the serializer from treating
+      // them as CEL injection points. This is intentionally kept even if no
+      // caller currently passes such strings.
       return String(value).replace(/\$\{/g, '\\${');
     }
     return '%s';

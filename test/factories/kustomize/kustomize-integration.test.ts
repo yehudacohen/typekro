@@ -166,8 +166,8 @@ describe('Kustomize Integration', () => {
       string,
       Record<string, unknown>
     >[];
-    expect(patches?.[0].target.kind).toBe('Deployment');
-    expect(patches?.[0].target.name).toBe('webapp');
+    expect(patches?.[0]?.target?.kind).toBe('Deployment');
+    expect(patches?.[0]?.target?.name).toBe('webapp');
   });
 
   it('should support image and replica transformations', () => {
@@ -196,14 +196,14 @@ describe('Kustomize Integration', () => {
     const spec = kustomizationResource.spec as unknown as Record<string, unknown>;
     const images = spec.images as Record<string, unknown>[];
     expect(images).toHaveLength(1);
-    expect(images?.[0].name).toBe('webapp');
-    expect(images?.[0].newName).toBe('my-registry/webapp');
-    expect(images?.[0].newTag).toBe('v1.2.3');
+    expect(images?.[0]?.name).toBe('webapp');
+    expect(images?.[0]?.newName).toBe('my-registry/webapp');
+    expect(images?.[0]?.newTag).toBe('v1.2.3');
 
     const replicas = spec.replicas as Record<string, unknown>[];
     expect(replicas).toHaveLength(1);
-    expect(replicas?.[0].name).toBe('webapp');
-    expect(replicas?.[0].count).toBe(3);
+    expect(replicas?.[0]?.name).toBe('webapp');
+    expect(replicas?.[0]?.count).toBe(3);
   });
 
   it('should have readiness evaluator attached', () => {

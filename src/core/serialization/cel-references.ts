@@ -177,10 +177,10 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
  */
 export function serializeStatusMappingsToCel(
   statusMappings: Record<string, unknown>
-): Record<string, string> {
-  const celExpressions: Record<string, string> = {};
+): Record<string, string | Record<string, unknown>> {
+  const celExpressions: Record<string, string | Record<string, unknown>> = {};
 
-  function serializeValue(value: unknown): string {
+  function serializeValue(value: unknown): string | Record<string, unknown> {
     if (isKubernetesRef(value)) {
       return `\${${(value as KubernetesRef<unknown>).resourceId}.${(value as KubernetesRef<unknown>).fieldPath}}`;
     }
@@ -196,11 +196,11 @@ export function serializeStatusMappingsToCel(
     }
 
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const nestedExpressions: Record<string, string> = {};
+      const nestedExpressions: Record<string, unknown> = {};
       for (const [key, nestedValue] of Object.entries(value)) {
         nestedExpressions[key] = serializeValue(nestedValue);
       }
-      return nestedExpressions as unknown as string;
+      return nestedExpressions;
     }
 
     if (typeof value === 'string') {

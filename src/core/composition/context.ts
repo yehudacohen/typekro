@@ -173,7 +173,7 @@ export function createCompositionContext(
         this.resources[id] = resource;
       }
     },
-    addClosure(id: string, closure: any) {
+    addClosure(id: string, closure: DeploymentClosure) {
       this.closures[id] = closure;
     },
     addVariableMapping(variableName: string, resourceId: string) {

@@ -72,8 +72,8 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         },
       };
       const result = processResourceReferences(input) as Record<string, Record<string, unknown>>;
-      expect(result.metadata.name).toBe('${schema.spec.name + "-policy"}');
-      expect(result.metadata.namespace).toBe('default');
+      expect(result.metadata!.name).toBe('${schema.spec.name + "-policy"}');
+      expect(result.metadata!.namespace).toBe('default');
     });
 
     it('should convert markers in nested object properties', () => {
@@ -105,8 +105,8 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         ],
       };
       const result = processResourceReferences(input) as Record<string, unknown[]>;
-      expect(result.items[0]).toBe('${schema.spec.item1}');
-      expect(result.items[1]).toBe('${schema.spec.item2}');
+      expect(result.items![0]).toBe('${schema.spec.item1}');
+      expect(result.items![1]).toBe('${schema.spec.item2}');
     });
   });
 
@@ -274,8 +274,8 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
 
       expect(metadata.name).toBe('${schema.spec.name + "-svc"}');
       expect(selector.app).toBe('${schema.spec.name}');
-      expect(ports[0].port).toBe(80);
-      expect(ports[0].targetPort).toBe('${schema.spec.containerPort}');
+      expect(ports[0]!.port).toBe(80);
+      expect(ports[0]!.targetPort).toBe('${schema.spec.containerPort}');
     });
   });
 });

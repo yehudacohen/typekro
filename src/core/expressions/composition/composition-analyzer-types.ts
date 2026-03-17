@@ -121,7 +121,7 @@ export interface ExpressionOverride {
 }
 
 /** Full analysis result */
-export interface CompositionAnalysisResult {
+export interface ASTAnalysisResult {
   resources: Map<string, ResourceControlFlow>;
   /** Factory calls found in AST that weren't registered at runtime */
   unregisteredFactories: UnregisteredFactory[];

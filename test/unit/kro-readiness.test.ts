@@ -66,7 +66,7 @@ function defaultOptions(overrides: {
   pollInterval?: number;
   factoryContext?: string;
 }): KroReadinessOptions {
-  return {
+  const opts: KroReadinessOptions = {
     instanceName: 'test-instance',
     timeout: overrides.timeout ?? 2000,
     k8sApi: overrides.k8sApi,
@@ -76,8 +76,11 @@ function defaultOptions(overrides: {
     kind: 'WebApp',
     rgdName: 'web-app',
     pollInterval: overrides.pollInterval ?? 100,
-    factoryContext: overrides.factoryContext,
   };
+  if (overrides.factoryContext !== undefined) {
+    opts.factoryContext = overrides.factoryContext;
+  }
+  return opts;
 }
 
 // =============================================================================

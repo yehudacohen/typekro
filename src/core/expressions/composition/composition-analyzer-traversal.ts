@@ -26,9 +26,9 @@ import {
   findFactoryMapCall,
 } from './composition-analyzer-ternary.js';
 import type {
+  ASTAnalysisResult,
   ASTNode,
   CallExpression,
-  CompositionAnalysisResult,
   ConditionalExpression,
   ForEachDimension,
   ForOfStatement,
@@ -59,7 +59,7 @@ export function walkBody(
   fullSource: string,
   specParamName: string,
   ctx: TraversalContext,
-  result: CompositionAnalysisResult
+  result: ASTAnalysisResult
 ): void {
   for (const stmt of body) {
     walkStatement(stmt, fullSource, specParamName, ctx, result);
@@ -71,7 +71,7 @@ export function walkStatement(
   fullSource: string,
   specParamName: string,
   ctx: TraversalContext,
-  result: CompositionAnalysisResult
+  result: ASTAnalysisResult
 ): void {
   switch (node.type) {
     case 'ExpressionStatement':
@@ -271,7 +271,7 @@ export function walkExpression(
   fullSource: string,
   specParamName: string,
   ctx: TraversalContext,
-  result: CompositionAnalysisResult
+  result: ASTAnalysisResult
 ): void {
   if (!node) return;
 
@@ -455,7 +455,7 @@ export function registerResourceControlFlow(
   resourceId: string,
   factoryName: string,
   ctx: TraversalContext,
-  result: CompositionAnalysisResult
+  result: ASTAnalysisResult
 ): void {
   let entry = result.resources.get(resourceId);
   if (!entry) {

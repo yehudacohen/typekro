@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-16
+
 ### Added
 
 - **Kro v0.8.x**: `forEach` directive for iterating over arrays in resource definitions
@@ -23,11 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - APISIX chart upgraded to 2.13.0 with orphan cleanup support
 - `customResource()` factory now provides a default readiness evaluator (overridable via `.withReadinessEvaluator()`)
 - APISIX admin credentials now configurable via `gateway.adminCredentials` in bootstrap config
+- New subpath entry points: `typekro/advanced` for internal/advanced APIs and `typekro/alchemy` for Alchemy integration
+- `arktypeToKroSchema` and `createWebService` added to main public API
+- `RbacMode`, `TypeKroRuntimeSpec`, `TypeKroRuntimeStatus` types added for TypeKro runtime compositions
+- Runtime typo detection for status field names (Levenshtein distance, debug mode only)
+- WeakMap-based resource metadata store replacing non-enumerable object properties
+- Factory registry with self-registration pattern replacing hardcoded allowlists
+- Shared deployment infrastructure: `ResourceApplier`, `ReadinessWaiter`, `ResourceRollbackManager` extracted from engine
+- `analyzeAndConvertStatusMappings` pipeline decomposed into named stages with `StageResult` pattern
 
 ### Changed
 
 - **BREAKING**: Kro upgraded from v0.3.0 to v0.8.5 (OCI registry moved to `registry.k8s.io/kro/charts`)
 - **BREAKING**: All factories now require explicit readiness evaluators (no default provided by `createResource`)
+- **BREAKING**: `ResourceGraph` interface renamed to `DeploymentResourceGraph`
+- **BREAKING**: `FactoryOptions` split into `PublicFactoryOptions` (user-facing) and `InternalFactoryOptions` (internal)
+- **BREAKING**: `ResourceDeploymentError`, `ResourceReadinessTimeoutError`, `ResourceConflictError`, and `UnsupportedMediaTypeError` now extend `TypeKroError` instead of `Error`
+- **BREAKING**: `KroResourceTemplate.template` field is now optional (to support the new `externalRef` alternative)
+- Lower-level APIs moved to dedicated subpath exports: `typekro/advanced` (logging, K8s client, errors, CEL internals) and `typekro/alchemy` (Alchemy deployers and utilities)
 - Ingress readiness evaluator rewritten to require actual controller signals instead of accepting empty status
 - `autoFix.fluxCRDs` patching logs upgraded to warn level
 - CRD schema fix logic consolidated from 3 files into `src/core/utils/crd-schema-fix.ts`
@@ -60,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - ~70 lines of dead code in HelmRelease readiness evaluator
 - Unused `WebhookConfig` interface from cert-manager types
+- `CompositionFactory` type removed from main `'typekro'` barrel (still accessible via `typekro/advanced`)
+- `UnsupportedPatternDetector` class removed entirely
 
 ## [0.4.0] - 2026-01-01
 
@@ -138,7 +155,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kro deployment mode with ResourceGraphDefinition serialization
 - Schema proxy with type-safe spec/status access
 
-[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/yehudacohen/typekro/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/yehudacohen/typekro/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/yehudacohen/typekro/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/yehudacohen/typekro/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yehudacohen/typekro/compare/v0.2.2...v0.3.0

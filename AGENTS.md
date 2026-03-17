@@ -33,6 +33,7 @@
 
 ### kubernetesComposition Patterns (Recommended)
 - **Imports**: `import { kubernetesComposition, simple } from 'typekro';` (or `from '../src/index.js'`)
+  // Note: simple.* factories are also importable individually from 'typekro/simple'
 - **Resources**: `const deploy = simple.Deployment({ id: 'deploy', name: spec.name, image: spec.image })`
 - **Status**: Return natural JS: `return { ready: deploy.status.readyReplicas >= spec.replicas }`
 - **String templates**: `` url: `http://${svc.status.clusterIP}` ``

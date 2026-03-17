@@ -206,6 +206,7 @@ function createFluxRbac(mode: RbacMode, targetNamespace: string): void {
     metadata: {
       name: 'cluster-reconciler',
       labels: {
+        // Flux's own label value — not the namespace; do not replace with DEFAULT_FLUX_NAMESPACE
         'app.kubernetes.io/instance': 'flux-system',
         'app.kubernetes.io/part-of': 'flux',
       },
@@ -245,6 +246,7 @@ function createScopedFluxClusterRole(): void {
     metadata: {
       name: 'typekro-flux-controllers',
       labels: {
+        // Flux's own label value — not the namespace; do not replace with DEFAULT_FLUX_NAMESPACE
         'app.kubernetes.io/instance': 'flux-system',
         'app.kubernetes.io/part-of': 'flux',
         'app.kubernetes.io/managed-by': 'typekro',

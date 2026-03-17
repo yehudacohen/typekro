@@ -910,6 +910,12 @@ export class KubernetesClientProvider {
    * Check if two configurations are structurally equivalent.
    * Compares identity fields without serializing sensitive credential material
    * (tokens, certificates, keys) to avoid leaking secrets into memory strings.
+   *
+   * NOTE: Token comparison is presence-only (has token vs. no token), not value-based.
+   * A rotated token with the same presence (e.g. refreshed service account tokens) will
+   * NOT trigger a new client — the cached client continues with the old token.
+   * This is a known limitation: callers that rotate credentials should call invalidateClient()
+   * explicitly or create a new provider instance.
    */
   private isSameConfig(config?: KubernetesClientConfig): boolean {
     if (!this.config && !config) return true;

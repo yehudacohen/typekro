@@ -184,7 +184,10 @@ describe('yamlFile skipIfFetchFails', () => {
     });
 
     // Context without kubernetesApi
-    const ctx = createTestContext({ kubernetesApi: undefined });
+    const ctx = {
+      resolveReference: createTestContext({}).resolveReference,
+      deployedResources: new Map(),
+    } as DeploymentContext;
 
     await expect(closure(ctx)).rejects.toThrow('HTTP 503: Service Unavailable');
     // Callback should never be invoked — guard checks for kubernetesApi first

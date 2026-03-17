@@ -238,9 +238,11 @@ describe('CelEvaluator', () => {
     it('should extract resource references from expressions', () => {
       const extractResourceReferences = (
         evaluator as unknown as Record<string, (...args: unknown[]) => unknown>
-      ).extractResourceReferences.bind(evaluator);
+      ).extractResourceReferences!.bind(evaluator);
 
-      const refs = extractResourceReferences('database.status.ready && cache.spec.replicas > 0');
+      const refs = extractResourceReferences(
+        'database.status.ready && cache.spec.replicas > 0'
+      ) as unknown[];
 
       expect(refs).toHaveLength(2);
       expect(refs[0]).toEqual({ resourceId: 'database', fieldPath: 'status.ready' });
@@ -250,9 +252,9 @@ describe('CelEvaluator', () => {
     it('should handle complex field paths', () => {
       const extractResourceReferences = (
         evaluator as unknown as Record<string, (...args: unknown[]) => unknown>
-      ).extractResourceReferences.bind(evaluator);
+      ).extractResourceReferences!.bind(evaluator);
 
-      const refs = extractResourceReferences('service.spec.ports[0].port');
+      const refs = extractResourceReferences('service.spec.ports[0].port') as unknown[];
 
       expect(refs).toHaveLength(1);
       expect(refs[0]).toEqual({ resourceId: 'service', fieldPath: 'spec.ports[0].port' });
@@ -261,9 +263,11 @@ describe('CelEvaluator', () => {
     it('should handle nested field paths', () => {
       const extractResourceReferences = (
         evaluator as unknown as Record<string, (...args: unknown[]) => unknown>
-      ).extractResourceReferences.bind(evaluator);
+      ).extractResourceReferences!.bind(evaluator);
 
-      const refs = extractResourceReferences('deployment.spec.template.metadata.labels.app');
+      const refs = extractResourceReferences(
+        'deployment.spec.template.metadata.labels.app'
+      ) as unknown[];
 
       expect(refs).toHaveLength(1);
       expect(refs[0]).toEqual({

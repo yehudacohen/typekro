@@ -99,7 +99,7 @@ describe('Schema Proxy Factory', () => {
         string,
         Record<string, Record<string, Record<string, Record<string, unknown>>>>
       >;
-      const deepRef = (schema.spec as unknown as DeepProxy).some.very.deep.nested.property;
+      const deepRef = (schema.spec as unknown as DeepProxy).some!.very!.deep!.nested!.property;
 
       expect(isKubernetesRef(deepRef)).toBe(true);
       expect(deepRef).toHaveProperty('resourceId', '__schema__');

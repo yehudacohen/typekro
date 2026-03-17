@@ -43,7 +43,8 @@ export interface KroSimpleSchema {
   /** Custom API group for the CRD (defaults to 'kro.run' in Kro) */
   group?: string;
   spec: Record<string, string>;
-  status?: Record<string, string>;
+  /** Status fields may be plain CEL expression strings or nested objects for nested status mappings. */
+  status?: Record<string, string | Record<string, unknown>>;
 }
 
 export interface KroFieldDefinition {

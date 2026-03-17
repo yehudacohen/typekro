@@ -31,7 +31,7 @@ import type { ASTNode, TraversalContext } from './composition-analyzer-types.js'
 
 // Re-export all public types for backward compatibility
 export type {
-  CompositionAnalysisResult,
+  ASTAnalysisResult,
   ExpressionOverride,
   ForEachDimension,
   IncludeWhenCondition,
@@ -40,7 +40,7 @@ export type {
 } from './composition-analyzer-types.js';
 
 // Import the result type for use in function signatures
-import type { CompositionAnalysisResult } from './composition-analyzer-types.js';
+import type { ASTAnalysisResult } from './composition-analyzer-types.js';
 
 const logger = getComponentLogger('composition-analyzer');
 
@@ -60,8 +60,8 @@ const logger = getComponentLogger('composition-analyzer');
 export function analyzeCompositionBody(
   compositionFn: (...args: unknown[]) => unknown,
   resourceIds: Set<string>
-): CompositionAnalysisResult {
-  const result: CompositionAnalysisResult = {
+): ASTAnalysisResult {
+  const result: ASTAnalysisResult = {
     resources: new Map(),
     unregisteredFactories: [],
     templateOverrides: new Map(),
@@ -142,7 +142,7 @@ export function analyzeCompositionBody(
  */
 export function applyAnalysisToResources(
   resources: Record<string, unknown>,
-  analysis: CompositionAnalysisResult
+  analysis: ASTAnalysisResult
 ): void {
   for (const [resourceId, controlFlow] of analysis.resources) {
     const resource = resources[resourceId];

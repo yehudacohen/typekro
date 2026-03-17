@@ -479,8 +479,9 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             combined[id] = resource;
           }
 
-          // Add deployment closures (cast through unknown — closures are stored alongside
-          // Enhanced resources in the combined map for the serialization layer)
+          // Type cast: closures and Enhanced resources share the same map for sequential
+          // processing. Closures are functions but are stored under Enhanced<> type here;
+          // code that reads this map uses duck-typing to distinguish them at runtime.
           for (const [id, closure] of Object.entries(context.closures)) {
             combined[id] = closure as unknown as Enhanced<unknown, unknown>;
           }

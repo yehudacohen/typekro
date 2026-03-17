@@ -403,8 +403,10 @@ describe('DirectFactory: consistency across multiple calls', () => {
     expect(graph1.resources.length).toBe(graph2.resources.length);
 
     for (let i = 0; i < graph1.resources.length; i++) {
-      expect(graph1.resources[i].manifest.kind).toBe(graph2.resources[i].manifest.kind);
-      expect(graph1.resources[i].manifest.apiVersion).toBe(graph2.resources[i].manifest.apiVersion);
+      expect(graph1.resources[i]!.manifest.kind).toBe(graph2.resources[i]!.manifest.kind);
+      expect(graph1.resources[i]!.manifest.apiVersion).toBe(
+        graph2.resources[i]!.manifest.apiVersion
+      );
     }
   });
 
@@ -415,9 +417,9 @@ describe('DirectFactory: consistency across multiple calls', () => {
     const graph2 = factory.createResourceGraphForInstance(DEFAULT_SPEC);
 
     for (let i = 0; i < graph1.resources.length; i++) {
-      const rid1 = (graph1.resources[i].manifest as unknown as Record<string, unknown>)
+      const rid1 = (graph1.resources[i]!.manifest as unknown as Record<string, unknown>)
         .__resourceId;
-      const rid2 = (graph2.resources[i].manifest as unknown as Record<string, unknown>)
+      const rid2 = (graph2.resources[i]!.manifest as unknown as Record<string, unknown>)
         .__resourceId;
       expect(rid1).toBe(rid2);
     }

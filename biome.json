@@ -151,28 +151,6 @@
       }
     },
     {
-      "includes": [
-        "src/core/expressions/**",
-        "src/core/types/**",
-        "src/core/serialization/**",
-        "src/core/readiness/**",
-        "src/core/composition/**"
-      ],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noExplicitAny": "off"
-          },
-          "style": {
-            "noNonNullAssertion": "off"
-          },
-          "correctness": {
-            "noUnusedPrivateClassMembers": "off"
-          }
-        }
-      }
-    },
-    {
       "includes": ["test/**"],
       "linter": {
         "rules": {

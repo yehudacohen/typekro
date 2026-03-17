@@ -27,12 +27,15 @@ import type { CelExpression, KubernetesRef } from '../../src/core/types/common.j
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/shared/brands.js';
 
 function makeRef<T = unknown>(resourceId: string, fieldPath: string, _type?: T): KubernetesRef<T> {
-  return {
+  const ref: KubernetesRef<T> = {
     [KUBERNETES_REF_BRAND]: true as const,
     resourceId,
     fieldPath,
-    _type,
   };
+  if (_type !== undefined) {
+    (ref as unknown as Record<string, unknown>)._type = _type;
+  }
+  return ref;
 }
 
 function isCelExpression(value: unknown): value is CelExpression {

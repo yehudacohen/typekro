@@ -402,10 +402,10 @@ describe('analyzeAndConvertStatusMappings: imperative path', () => {
     // A function that looks like a real composition (analyzable by AST)
     const originalFn = function compositionFn(
       _schema: unknown,
-      resources: Record<string, { status: { readyReplicas: number } }>
+      resources: Record<string, { status: { readyReplicas: number } } | undefined>
     ) {
       return {
-        ready: resources.deployment.status.readyReplicas > 0,
+        ready: (resources.deployment?.status.readyReplicas ?? 0) > 0,
         url: 'http://test.com',
         phase: 'running',
       };

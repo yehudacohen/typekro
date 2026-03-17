@@ -303,10 +303,7 @@ describe('CelTypeInferenceEngine', () => {
   describe('inferType — schema references', () => {
     it('returns unknown when no schema proxy is provided', () => {
       const engine = new CelTypeInferenceEngine();
-      const result = engine.inferType(
-        celExpr('schema.spec.name'),
-        createContext({ schemaProxy: undefined })
-      );
+      const result = engine.inferType(celExpr('schema.spec.name'), createContext({}));
 
       expect(result.success).toBe(true);
       expect(result.resultType.typeName).toBe('unknown');

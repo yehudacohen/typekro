@@ -502,10 +502,11 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           certManagerReady: true, // Assume cert-manager is available
           ingressClassReady: true, // IngressClass is ready immediately
           ingressReady:
-            (
-              (challengeIngress.status as unknown as Record<string, unknown>)
-                ?.loadBalancer as Record<string, unknown[]>
-            )?.ingress?.length > 0 || false,
+            ((
+              (challengeIngress.status as unknown as Record<string, unknown>)?.loadBalancer as
+                | Record<string, unknown[]>
+                | undefined
+            )?.ingress?.length ?? 0) > 0 || false,
           issuerReady:
             acmeIssuer.status.conditions?.some(
               (c: any) => c.type === 'Ready' && c.status === 'True'
@@ -582,10 +583,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       version: 'v1',
       plural: 'helmrepositories',
     });
-    const pebbleRepo = (pebbleRepos as Record<string, Record<string, unknown>[]>).items.find(
+    const pebbleRepo = (pebbleRepos as Record<string, Record<string, unknown>[]>).items!.find(
       (repo: Record<string, unknown>) =>
-        (repo.metadata as Record<string, string>).name.includes('pebble') &&
-        (repo.metadata as Record<string, string>).name.includes('repo')
+        ((repo.metadata as Record<string, string>).name ?? '').includes('pebble') &&
+        ((repo.metadata as Record<string, string>).name ?? '').includes('repo')
     );
     expect(pebbleRepo).toBeDefined();
     expect((pebbleRepo as Record<string, unknown>).spec as Record<string, unknown>).toBeDefined();
@@ -602,7 +603,9 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     });
     const pebbleRelease = (
       pebbleReleases as unknown as Record<string, Record<string, unknown>[]>
-    ).items.find((release) => (release.metadata as Record<string, string>).name.includes('pebble'));
+    ).items!.find((release) =>
+      ((release.metadata as Record<string, string>).name ?? '').includes('pebble')
+    );
     expect(pebbleRelease).toBeDefined();
     const pebbleReleaseObj = pebbleRelease as Record<string, unknown>;
     const pebbleReleaseSpec = pebbleReleaseObj.spec as Record<string, unknown>;
@@ -621,7 +624,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     });
     const createdIssuer = (
       clusterIssuers as unknown as Record<string, Record<string, unknown>[]>
-    ).items.find((issuer) => (issuer.metadata as Record<string, string>).name === issuerName);
+    ).items!.find((issuer) => (issuer.metadata as Record<string, string>).name === issuerName);
     expect(createdIssuer).toBeDefined();
     const issuerSpec = (createdIssuer as Record<string, unknown>).spec as Record<string, unknown>;
     const acme = issuerSpec.acme as Record<string, unknown> | undefined;
@@ -645,7 +648,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     });
     const createdCert = (
       certificates as unknown as Record<string, Record<string, unknown>[]>
-    ).items.find((cert) => (cert.metadata as Record<string, string>).name === certName);
+    ).items!.find((cert) => (cert.metadata as Record<string, string>).name === certName);
     expect(createdCert).toBeDefined();
     const certSpec = (createdCert as Record<string, unknown>).spec as Record<string, unknown>;
     expect(certSpec.commonName).toBe('e2e.funwiththe.cloud');
@@ -677,11 +680,16 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       if (orderItems.length > 0) {
         // Show details for all orders
         for (const order of orderItems) {
-          const orderName = order.metadata.name;
-          const state = order.status?.state || 'unknown';
-          const dnsNames = order.spec?.dnsNames || [];
-          const finalizeURL = order.status?.finalizeURL;
-          const authzCount = order.status?.authorizations?.length || 0;
+          const orderMeta = order.metadata as { name?: string } | undefined;
+          const orderStatus = order.status as
+            | { state?: string; finalizeURL?: string; authorizations?: unknown[] }
+            | undefined;
+          const orderSpec = order.spec as { dnsNames?: string[] } | undefined;
+          const orderName = orderMeta?.name;
+          const state = orderStatus?.state || 'unknown';
+          const dnsNames = orderSpec?.dnsNames || [];
+          const finalizeURL = orderStatus?.finalizeURL;
+          const authzCount = orderStatus?.authorizations?.length || 0;
 
           console.log(`🔍 Order ${orderName}:`);
           console.log(`   - State: ${state}`);
@@ -696,7 +704,9 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           order.metadata.ownerReferences?.some((ref: any) => ref.name === certName)
         );
         if (relatedOrder) {
-          expect(relatedOrder.spec.issuerRef.name).toBe(issuerName);
+          expect(
+            (relatedOrder.spec as { issuerRef?: { name?: string } } | undefined)?.issuerRef?.name
+          ).toBe(issuerName);
           console.log('✅ ACME Order created by cert-manager');
         } else {
           console.log('ℹ️ No Order found yet (may be created later by cert-manager)');
@@ -725,12 +735,19 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       if (challengeItems.length > 0) {
         // Show details for all challenges
         for (const challenge of challengeItems) {
-          const challengeName = challenge.metadata.name;
-          const dnsName = challenge.spec.dnsName;
-          const challengeType = challenge.spec.type;
-          const state = challenge.status?.state || 'unknown';
-          const processing = challenge.status?.processing || false;
-          const presented = challenge.status?.presented || false;
+          const challengeMeta = challenge.metadata as { name?: string } | undefined;
+          const challengeSpec = challenge.spec as
+            | { dnsName?: string; type?: string; issuerRef?: { name?: string } }
+            | undefined;
+          const challengeStatus = challenge.status as
+            | { state?: string; processing?: boolean; presented?: boolean }
+            | undefined;
+          const challengeName = challengeMeta?.name;
+          const dnsName = challengeSpec?.dnsName;
+          const challengeType = challengeSpec?.type;
+          const state = challengeStatus?.state || 'unknown';
+          const processing = challengeStatus?.processing || false;
+          const presented = challengeStatus?.presented || false;
 
           console.log(`🔍 Challenge ${challengeName}:`);
           console.log(`   - DNS Name: ${dnsName}`);
@@ -746,8 +763,11 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           )
         );
         if (relatedChallenge) {
-          expect(relatedChallenge.spec.type).toMatch(/HTTP-01|DNS-01/);
-          expect(relatedChallenge.spec.issuerRef.name).toBe(issuerName);
+          const rcSpec = relatedChallenge.spec as
+            | { type?: string; issuerRef?: { name?: string } }
+            | undefined;
+          expect(rcSpec?.type).toMatch(/HTTP-01|DNS-01/);
+          expect(rcSpec?.issuerRef?.name).toBe(issuerName);
           console.log('✅ ACME Challenge created by cert-manager');
         } else {
           console.log('ℹ️ No related Challenge found yet (may be created later by cert-manager)');
@@ -782,18 +802,21 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         });
         const cert = (
           certificates as unknown as Record<string, Record<string, unknown>[]>
-        ).items.find((c) => (c.metadata as Record<string, string>).name === certName);
+        ).items!.find((c) => (c.metadata as Record<string, string>).name === certName);
         if (cert) {
-          const conditions = cert.status?.conditions || [];
+          const conditions =
+            (cert.status as { conditions?: unknown[] } | undefined)?.conditions || [];
           const readyCondition = conditions.find((c: any) => c.type === 'Ready');
           const issuingCondition = conditions.find((c: any) => c.type === 'Issuing');
 
           console.log(`📜 Certificate ${certName}:`);
+          const rcond = readyCondition as { status?: string; message?: string } | undefined;
+          const icond = issuingCondition as { status?: string; message?: string } | undefined;
           console.log(
-            `   - Ready: ${readyCondition?.status || 'Unknown'} - ${readyCondition?.message || 'No message'}`
+            `   - Ready: ${rcond?.status || 'Unknown'} - ${rcond?.message || 'No message'}`
           );
-          if (issuingCondition) {
-            console.log(`   - Issuing: ${issuingCondition.status} - ${issuingCondition.message}`);
+          if (icond) {
+            console.log(`   - Issuing: ${icond.status} - ${icond.message}`);
           }
         }
       } catch (_certError) {

@@ -43,15 +43,15 @@ describe('JavaScript Expression Analysis', () => {
       expect(analysis.statusMappings).toBeDefined();
 
       // Should detect KubernetesRef in expressions
-      expect(analysis.statusMappings.ready?.expression).toContain(
+      expect((analysis.statusMappings.ready as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
 
-      expect(analysis.statusMappings.hasLoadBalancer?.expression).toContain(
+      expect((analysis.statusMappings.hasLoadBalancer as { expression?: string } | undefined)?.expression).toContain(
         'service.status.loadBalancer'
       );
 
-      expect(analysis.statusMappings.replicas?.expression).toContain(
+      expect((analysis.statusMappings.replicas as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
 
@@ -93,17 +93,17 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // All expressions with KubernetesRef should be converted to CEL
-      expect(analysis.statusMappings.ready?.expression).toContain(
+      expect((analysis.statusMappings.ready as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
-      expect(analysis.statusMappings.ready?.expression).toContain('service.status.loadBalancer');
+      expect((analysis.statusMappings.ready as { expression?: string } | undefined)?.expression).toContain('service.status.loadBalancer');
 
-      expect(analysis.statusMappings.phase?.expression).toContain(
+      expect((analysis.statusMappings.phase as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
-      expect(analysis.statusMappings.phase?.expression).toContain('deployment.spec.replicas');
+      expect((analysis.statusMappings.phase as { expression?: string } | undefined)?.expression).toContain('deployment.spec.replicas');
 
-      expect(analysis.statusMappings.endpoint?.expression).toContain('service.status.loadBalancer');
+      expect((analysis.statusMappings.endpoint as { expression?: string } | undefined)?.expression).toContain('service.status.loadBalancer');
 
       // Static value should remain unchanged
       expect(analysis.statusMappings.environment).toBe('production');
@@ -131,11 +131,11 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // All expressions should be converted to CEL with proper optional chaining
-      expect(analysis.statusMappings.ip?.expression).toContain('service.status');
+      expect((analysis.statusMappings.ip as { expression?: string } | undefined)?.expression).toContain('service.status');
 
-      expect(analysis.statusMappings.ready?.expression).toContain('service.status');
+      expect((analysis.statusMappings.ready as { expression?: string } | undefined)?.expression).toContain('service.status');
 
-      expect(analysis.statusMappings.url?.expression).toContain('service.status');
+      expect((analysis.statusMappings.url as { expression?: string } | undefined)?.expression).toContain('service.status');
     });
   });
 
@@ -246,15 +246,15 @@ describe('JavaScript Expression Analysis', () => {
       }
 
       // KubernetesRef expressions should be converted to CEL
-      expect(analysis.statusMappings.ready?.expression).toContain(
+      expect((analysis.statusMappings.ready as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
 
-      expect(analysis.statusMappings.replicas?.expression).toContain(
+      expect((analysis.statusMappings.replicas as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
 
-      expect(analysis.statusMappings.status?.expression).toContain(
+      expect((analysis.statusMappings.status as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
     });
@@ -287,10 +287,10 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // Should handle undefined/null values appropriately
-      expect(analysis.statusMappings.ready?.expression).toBeDefined();
+      expect((analysis.statusMappings.ready as { expression?: string } | undefined)?.expression).toBeDefined();
       expect(analysis.statusMappings.url).toBeUndefined();
       expect(analysis.statusMappings.phase).toBeNull();
-      expect(analysis.statusMappings.replicas?.expression).toBeDefined();
+      expect((analysis.statusMappings.replicas as { expression?: string } | undefined)?.expression).toBeDefined();
     });
 
     it('should handle deeply nested KubernetesRef expressions', () => {
@@ -349,7 +349,7 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // Should convert to CEL
-      expect(analysis.statusMappings.ready?.expression).toContain(
+      expect((analysis.statusMappings.ready as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
     });
@@ -374,15 +374,15 @@ describe('JavaScript Expression Analysis', () => {
       const analysis = analyzeStatusBuilderForToResourceGraph(statusBuilder, mockResources);
 
       // All expressions should be converted to CEL
-      expect(analysis.statusMappings.deploymentReady?.expression).toContain(
+      expect((analysis.statusMappings.deploymentReady as { expression?: string } | undefined)?.expression).toContain(
         'deployment.status.readyReplicas'
       );
 
-      expect(analysis.statusMappings.serviceReady?.expression).toContain(
+      expect((analysis.statusMappings.serviceReady as { expression?: string } | undefined)?.expression).toContain(
         'service.status.loadBalancer'
       );
 
-      expect(analysis.statusMappings.storageReady?.expression).toContain('pvc.status.phase');
+      expect((analysis.statusMappings.storageReady as { expression?: string } | undefined)?.expression).toContain('pvc.status.phase');
     });
   });
 

@@ -204,8 +204,9 @@ describe('Error Scenarios and Source Mapping', () => {
       const mockContextWithInvalidRef = {
         ...mockContext,
         availableReferences: {
-          deployment:
-            invalidKubernetesRef as unknown as typeof mockContext.availableReferences.deployment,
+          deployment: invalidKubernetesRef as unknown as NonNullable<
+            typeof mockContext.availableReferences.deployment
+          >,
         },
       };
 
@@ -238,10 +239,10 @@ describe('Error Scenarios and Source Mapping', () => {
         availableReferences: {
           'service-a': {
             status: { readyReplicas: mockRefA },
-          } as unknown as typeof mockContext.availableReferences.deployment,
+          } as unknown as NonNullable<typeof mockContext.availableReferences.deployment>,
           'service-b': {
             status: { readyReplicas: mockRefB },
-          } as unknown as typeof mockContext.availableReferences.deployment,
+          } as unknown as NonNullable<typeof mockContext.availableReferences.deployment>,
         },
       };
 

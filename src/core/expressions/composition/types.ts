@@ -40,5 +40,5 @@ export interface PatternAnalysisConfig {
   allowSideEffects: boolean;
   trackResourceCreation: boolean;
   validateScope: boolean;
-  convertTocel: boolean;
+  convertToCel: boolean;
 }
