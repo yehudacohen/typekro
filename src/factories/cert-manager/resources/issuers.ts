@@ -1,133 +1,18 @@
 // Cert-Manager Issuer Resources
-import { createResource } from '../../shared.js';
+import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import { createResource } from '../../shared.js';
 import type { ClusterIssuerConfig, IssuerConfig, IssuerStatus } from '../types.js';
 
-/**
- * ClusterIssuer Readiness Evaluator
- *
- * Evaluates the readiness of a cert-manager ClusterIssuer resource based on its status conditions.
- * A ClusterIssuer is considered ready when it has a "Ready" condition with status "True".
- *
- * @param liveResource - The entire ClusterIssuer resource from Kubernetes
- * @returns ResourceStatus indicating if the issuer is ready
- */
-function clusterIssuerReadinessEvaluator(liveResource: any): {
-  ready: boolean;
-  message: string;
-  reason?: string;
-} {
-  // Extract status from the live resource
-  const status = liveResource?.status as IssuerStatus | undefined;
+/** Evaluates ClusterIssuer readiness via standard Ready condition check. */
+const clusterIssuerReadinessEvaluator = createConditionBasedReadinessEvaluator({
+  kind: 'ClusterIssuer',
+});
 
-  // Check if status exists
-  if (!status) {
-    return {
-      ready: false,
-      message: 'ClusterIssuer status not available',
-      reason: 'StatusMissing',
-    };
-  }
-
-  // Check if conditions exist
-  if (!status.conditions || status.conditions.length === 0) {
-    return {
-      ready: false,
-      message: 'ClusterIssuer conditions not available',
-      reason: 'ConditionsMissing',
-    };
-  }
-
-  // Look for Ready condition
-  const readyCondition = status.conditions.find((condition) => condition.type === 'Ready');
-
-  if (!readyCondition) {
-    return {
-      ready: false,
-      message: 'ClusterIssuer Ready condition not found',
-      reason: 'ReadyConditionMissing',
-    };
-  }
-
-  // Check Ready condition status
-  if (readyCondition.status === 'True') {
-    return {
-      ready: true,
-      message: `ClusterIssuer is ready: ${readyCondition.message || 'Issuer is ready to issue certificates'}`,
-      reason: 'Ready',
-    };
-  }
-
-  // ClusterIssuer is not ready
-  return {
-    ready: false,
-    message: `ClusterIssuer is not ready: ${readyCondition.message || readyCondition.reason || 'Unknown reason'}`,
-    reason: readyCondition.reason || 'NotReady',
-  };
-}
-
-/**
- * Issuer Readiness Evaluator
- *
- * Evaluates the readiness of a cert-manager Issuer resource based on its status conditions.
- * An Issuer is considered ready when it has a "Ready" condition with status "True".
- *
- * @param liveResource - The entire Issuer resource from Kubernetes
- * @returns ResourceStatus indicating if the issuer is ready
- */
-function issuerReadinessEvaluator(liveResource: any): {
-  ready: boolean;
-  message: string;
-  reason?: string;
-} {
-  // Extract status from the live resource
-  const status = liveResource?.status as IssuerStatus | undefined;
-
-  // Check if status exists
-  if (!status) {
-    return {
-      ready: false,
-      message: 'Issuer status not available',
-      reason: 'StatusMissing',
-    };
-  }
-
-  // Check if conditions exist
-  if (!status.conditions || status.conditions.length === 0) {
-    return {
-      ready: false,
-      message: 'Issuer conditions not available',
-      reason: 'ConditionsMissing',
-    };
-  }
-
-  // Look for Ready condition
-  const readyCondition = status.conditions.find((condition) => condition.type === 'Ready');
-
-  if (!readyCondition) {
-    return {
-      ready: false,
-      message: 'Issuer Ready condition not found',
-      reason: 'ReadyConditionMissing',
-    };
-  }
-
-  // Check Ready condition status
-  if (readyCondition.status === 'True') {
-    return {
-      ready: true,
-      message: `Issuer is ready: ${readyCondition.message || 'Issuer is ready to issue certificates'}`,
-      reason: 'Ready',
-    };
-  }
-
-  // Issuer is not ready
-  return {
-    ready: false,
-    message: `Issuer is not ready: ${readyCondition.message || readyCondition.reason || 'Unknown reason'}`,
-    reason: readyCondition.reason || 'NotReady',
-  };
-}
+/** Evaluates Issuer readiness via standard Ready condition check. */
+const issuerReadinessEvaluator = createConditionBasedReadinessEvaluator({
+  kind: 'Issuer',
+});
 
 /**
  * ClusterIssuer Factory Function

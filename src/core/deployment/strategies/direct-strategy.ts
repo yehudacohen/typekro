@@ -5,22 +5,23 @@
  * individual Kubernetes resources directly to the cluster.
  */
 
+import { isCelExpression } from '../../../utils/type-guards.js';
 import type {
   DeployedResource,
   DeploymentContext,
+  DeploymentResourceGraph,
   DeploymentResult,
   FactoryOptions,
-  ResourceGraph,
 } from '../../types/deployment.js';
-import { ResourceDeploymentError } from '../../types/deployment.js';
+import type { Enhanced } from '../../types/index.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
 import type {
   KroCompatibleType,
   SchemaDefinition,
   StatusBuilder,
 } from '../../types/serialization.js';
-import type { Enhanced } from '../../types/index.js';
 import type { DirectDeploymentEngine } from '../engine.js';
+import { ResourceDeploymentError } from '../errors.js';
 import { createDeploymentOptions, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';
 
@@ -39,8 +40,8 @@ export class DirectDeploymentStrategy<
     resourceKeys: Record<string, KubernetesResource> | undefined,
     factoryOptions: FactoryOptions,
     private deploymentEngine: DirectDeploymentEngine,
-    public resourceResolver: { 
-      createResourceGraphForInstance(spec: TSpec): ResourceGraph;
+    public resourceResolver: {
+      createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph;
       getReExecutedStatus?(): TStatus | null;
     } // Resource resolution logic
   ) {
@@ -68,7 +69,7 @@ export class DirectDeploymentStrategy<
         // Type assertion is safe here because we've checked that the method exists
         const engineWithClosures = this.deploymentEngine as DirectDeploymentEngine & {
           deployWithClosures<TSpec>(
-            graph: ResourceGraph,
+            graph: DeploymentResourceGraph,
             closures: Record<string, unknown>,
             options: Parameters<DirectDeploymentEngine['deploy']>[1],
             spec: TSpec,
@@ -102,7 +103,7 @@ export class DirectDeploymentStrategy<
       }
 
       return deploymentResult;
-    } catch (error) {
+    } catch (error: unknown) {
       handleDeploymentError(error, 'Direct deployment failed');
     }
   }
@@ -117,7 +118,7 @@ export class DirectDeploymentStrategy<
   ): Promise<Enhanced<TSpec, TStatus>> {
     // Check if we have re-executed status from composition re-execution
     const reExecutedStatus = this.resourceResolver.getReExecutedStatus?.();
-    
+
     if (reExecutedStatus) {
       this.logger.debug('Using hybrid status approach (re-executed + base strategy)', {
         instanceName,
@@ -126,21 +127,29 @@ export class DirectDeploymentStrategy<
 
       // Get the base proxy which includes CEL expression resolution
       const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
-      
-      // Import the CEL expression utility
-      const { isCelExpression } = require('../../../utils/type-guards.js');
-      
+
+      // If base status is null (e.g., waitForReady: false), use re-executed status directly
+      if (baseProxy.status == null) {
+        this.logger.debug('Base status is null, using re-executed status directly', {
+          instanceName,
+        });
+        return {
+          ...baseProxy,
+          status: reExecutedStatus as TStatus,
+        } as Enhanced<TSpec, TStatus>;
+      }
+
       // Merge re-executed status with base status
       // Priority: resolved spec-based values from re-execution > evaluated CEL expressions from base
-      const hybridStatus = { ...baseProxy.status };
-      
+      const hybridStatus: Record<string, unknown> = { ...baseProxy.status };
+
       for (const [key, value] of Object.entries(reExecutedStatus)) {
-        const baseValue = (baseProxy.status as any)[key];
+        const baseValue = (baseProxy.status as Record<string, unknown>)[key];
         const reExecutedValue = value;
-        
+
         // If the re-executed value is not a CEL expression, it's a resolved spec-based value - use it
         if (!isCelExpression(reExecutedValue)) {
-          (hybridStatus as any)[key] = reExecutedValue;
+          hybridStatus[key] = reExecutedValue;
           this.logger.debug('Using re-executed value for spec-based field', {
             field: key,
             value: reExecutedValue,
@@ -149,7 +158,7 @@ export class DirectDeploymentStrategy<
         } else {
           // Re-executed value is a CEL expression - let the base strategy handle it
           // The base strategy will have already evaluated it if possible
-          (hybridStatus as any)[key] = baseValue;
+          hybridStatus[key] = baseValue;
           this.logger.debug('Using base strategy value for CEL expression field', {
             field: key,
             baseValue,
@@ -161,7 +170,7 @@ export class DirectDeploymentStrategy<
 
       return {
         ...baseProxy,
-        status: hybridStatus,
+        status: hybridStatus as TStatus,
       } as Enhanced<TSpec, TStatus>;
     }
 

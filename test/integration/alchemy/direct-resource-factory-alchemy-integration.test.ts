@@ -73,7 +73,17 @@ describe('DirectResourceFactory Alchemy Integration', () => {
   });
 
   afterAll(async () => {
-    console.log('🧹 Cleaning up alchemy scope...');
+    console.log('🧹 Cleaning up alchemy scope and test namespaces...');
+    const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
+    const namespacesToClean = [
+      'direct-alchemy-test',
+      'multi-deploy-test',
+      'shared-type-test',
+      'failure-test',
+      'update-test',
+    ];
+    await Promise.allSettled(namespacesToClean.map((ns) => deleteNamespaceAndWait(ns, kc)));
+    console.log('✅ Test namespace cleanup complete');
   });
 
   describe('DirectResourceFactory with Alchemy integration end-to-end', () => {
@@ -95,7 +105,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
         const WebAppStatusSchema = type({
           url: 'string',
           readyReplicas: 'number%1',
-          phase: 'string',
+          phase: 'number%1',
         });
 
         // Create resource graph with individual resources
@@ -138,9 +148,9 @@ describe('DirectResourceFactory Alchemy Integration', () => {
             return { deployment, service, config };
           },
           (_schema, resources) => ({
-            url: Cel.template('http://%s:80', resources.service.status.clusterIP),
+            url: Cel.template('http://%s:80', resources.service.metadata.name),
             readyReplicas: resources.deployment.status.readyReplicas,
-            phase: resources.deployment.status.phase,
+            phase: resources.deployment.status.readyReplicas,
           })
         );
 
@@ -206,17 +216,17 @@ describe('DirectResourceFactory Alchemy Integration', () => {
 
           // Verify resource type naming patterns (if resources exist in state)
           if (deploymentResources.length > 0) {
-            const deploymentResource = deploymentResources[0] as any;
+            const deploymentResource = deploymentResources[0] as Record<string, unknown>;
             expect(deploymentResource.kind).toBe('kubernetes::Deployment');
           }
 
           if (serviceResources.length > 0) {
-            const serviceResource = serviceResources[0] as any;
+            const serviceResource = serviceResources[0] as Record<string, unknown>;
             expect(serviceResource.kind).toBe('kubernetes::Service');
           }
 
           if (configMapResources.length > 0) {
-            const configMapResource = configMapResources[0] as any;
+            const configMapResource = configMapResources[0] as Record<string, unknown>;
             expect(configMapResource.kind).toBe('kubernetes::ConfigMap');
           }
 
@@ -288,7 +298,7 @@ describe('DirectResourceFactory Alchemy Integration', () => {
           }),
           (_schema, resources) => ({
             status: 'running',
-            endpoint: Cel.template('http://%s', resources.service.status.clusterIP),
+            endpoint: Cel.template('http://%s', resources.service.metadata.name),
           })
         );
 

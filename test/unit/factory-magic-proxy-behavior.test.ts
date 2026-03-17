@@ -1,18 +1,23 @@
 /**
  * Unit tests for factory function magic proxy behavior
- * 
+ *
  * These tests verify that factory functions produce resources with proper magic proxy behavior,
  * specifically that status fields return KubernetesRef objects instead of static values.
- * 
+ *
  * This test suite would have caught the bug where helmRelease factory was providing
  * static status values like 'Pending' instead of allowing the magic proxy to create
  * KubernetesRef objects.
  */
 
 import { describe, expect, it } from 'bun:test';
-import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { helmRelease } from '../../src/factories/helm/helm-release.js';
 import { simple } from '../../src/index.js';
+import {
+  asKubernetesRef,
+  clearStatusBuilderContext,
+  expectKubernetesRef,
+  setStatusBuilderContext,
+} from '../utils/mock-factories.js';
 
 describe('Factory Magic Proxy Behavior', () => {
   describe('helmRelease factory', () => {
@@ -22,24 +27,24 @@ describe('Factory Magic Proxy Behavior', () => {
         chart: {
           repository: 'oci://ghcr.io/kro-run/kro',
           name: 'kro',
-          version: '0.3.0'
-        }
+          version: '0.3.0',
+        },
       });
 
-      // These assertions would have caught the bug where status.phase was 'Pending'
-      const phase = release.status.phase;
-      
+      // These assertions would have caught the bug where status fields were static values
+      const lastAttemptedRevision = release.status.lastAttemptedRevision;
+
       // Should NOT be static values
-      expect(phase).not.toBe('Pending');
-      expect(phase).not.toBe('Ready');
-      expect(phase).not.toBe('Installing');
-      expect(phase).not.toBe(undefined);
-      
+      expect(lastAttemptedRevision).not.toBe('Pending');
+      expect(lastAttemptedRevision).not.toBe('Ready');
+      expect(lastAttemptedRevision).not.toBe('Installing');
+      expect(lastAttemptedRevision).not.toBe(undefined);
+
       // Should BE a KubernetesRef function
-      expect(typeof phase).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (phase as any)).toBe(true);
-      expect((phase as any).resourceId).toBe('helmreleaseTestRelease');
-      expect((phase as any).fieldPath).toBe('status.phase');
+      expectKubernetesRef(lastAttemptedRevision, {
+        resourceId: 'helmreleaseTestRelease',
+        fieldPath: 'status.lastAttemptedRevision',
+      });
     });
 
     it('should create KubernetesRef objects for all status fields', () => {
@@ -48,24 +53,24 @@ describe('Factory Magic Proxy Behavior', () => {
         chart: {
           repository: 'oci://ghcr.io/kro-run/kro',
           name: 'kro',
-          version: '0.3.0'
-        }
+          version: '0.3.0',
+        },
       });
 
-      // Test all status fields
-      const phase = release.status.phase;
-      const revision = release.status.revision;
-      const lastDeployed = release.status.lastDeployed;
+      // Test all status fields (real HelmReleaseStatus fields)
+      const lastAttemptedRevision = release.status.lastAttemptedRevision;
+      const observedGeneration = release.status.observedGeneration;
+      const helmChart = release.status.helmChart;
 
       // All should be KubernetesRef objects, not static values
-      [phase, revision, lastDeployed].forEach((field, index) => {
-        const fieldNames = ['phase', 'revision', 'lastDeployed'];
+      [lastAttemptedRevision, observedGeneration, helmChart].forEach((field, index) => {
+        const fieldNames = ['lastAttemptedRevision', 'observedGeneration', 'helmChart'];
         const fieldName = fieldNames[index];
-        
-        expect(typeof field).toBe('function');
-        expect(KUBERNETES_REF_BRAND in (field as any)).toBe(true);
-        expect((field as any).resourceId).toBe('helmreleaseTestRelease');
-        expect((field as any).fieldPath).toBe(`status.${fieldName}`);
+
+        expectKubernetesRef(field, {
+          resourceId: 'helmreleaseTestRelease',
+          fieldPath: `status.${fieldName}`,
+        });
       });
     });
 
@@ -75,25 +80,25 @@ describe('Factory Magic Proxy Behavior', () => {
         chart: {
           repository: 'oci://ghcr.io/kro-run/kro',
           name: 'kro',
-          version: '0.3.0'
-        }
+          version: '0.3.0',
+        },
       });
 
       // Set the status builder context to simulate being inside a status builder
-      (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__ = true;
-      
+      setStatusBuilderContext(true);
+
       try {
         // In status builder context, status field access should return KubernetesRef objects
-        const phase = release.status.phase;
-        expect(typeof phase).toBe('function');
-        expect(KUBERNETES_REF_BRAND in (phase as any)).toBe(true);
-        expect((phase as any).fieldPath).toBe('status.phase');
-        
+        const lastAttemptedRevision = release.status.lastAttemptedRevision;
+        expectKubernetesRef(lastAttemptedRevision, {
+          fieldPath: 'status.lastAttemptedRevision',
+        });
+
         // Note: JavaScript expressions like `phase === 'Ready'` will still be evaluated immediately
         // because JavaScript doesn't allow operator overloading. The conversion happens during
         // status builder analysis, not during expression execution.
       } finally {
-        delete (globalThis as any).__TYPEKRO_STATUS_BUILDER_CONTEXT__;
+        clearStatusBuilderContext();
       }
     });
   });
@@ -103,60 +108,45 @@ describe('Factory Magic Proxy Behavior', () => {
       const deployment = simple.Deployment({
         name: 'test-app',
         image: 'nginx:latest',
-        replicas: 3
+        replicas: 3,
       });
 
       // Status fields should be KubernetesRef objects
       const readyReplicas = deployment.status.readyReplicas;
       const availableReplicas = deployment.status.availableReplicas;
-      
-      expect(typeof readyReplicas).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (readyReplicas as any)).toBe(true);
-      expect((readyReplicas as any).fieldPath).toBe('status.readyReplicas');
-      
-      expect(typeof availableReplicas).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (availableReplicas as any)).toBe(true);
-      expect((availableReplicas as any).fieldPath).toBe('status.availableReplicas');
+
+      expectKubernetesRef(readyReplicas, { fieldPath: 'status.readyReplicas' });
+      expectKubernetesRef(availableReplicas, { fieldPath: 'status.availableReplicas' });
     });
 
     it('should create Service resources with KubernetesRef status fields', () => {
       const service = simple.Service({
         name: 'test-service',
         ports: [{ port: 80, targetPort: 8080 }],
-        selector: { app: 'test-app' }
+        selector: { app: 'test-app' },
       });
 
       // Status fields should be KubernetesRef objects
-      const clusterIP = service.status.clusterIP;
       const loadBalancer = service.status.loadBalancer;
-      
-      expect(typeof clusterIP).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (clusterIP as any)).toBe(true);
-      expect((clusterIP as any).fieldPath).toBe('status.clusterIP');
-      
-      expect(typeof loadBalancer).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (loadBalancer as any)).toBe(true);
-      expect((loadBalancer as any).fieldPath).toBe('status.loadBalancer');
+      const conditions = service.status.conditions;
+
+      expectKubernetesRef(loadBalancer, { fieldPath: 'status.loadBalancer' });
+      expectKubernetesRef(conditions, { fieldPath: 'status.conditions' });
     });
 
     it('should create PVC resources with KubernetesRef status fields', () => {
       const pvc = simple.Pvc({
         name: 'test-storage',
         size: '10Gi',
-        accessModes: ['ReadWriteOnce']
+        accessModes: ['ReadWriteOnce'],
       });
 
       // Status fields should be KubernetesRef objects
       const phase = pvc.status.phase;
       const capacity = pvc.status.capacity;
-      
-      expect(typeof phase).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (phase as any)).toBe(true);
-      expect((phase as any).fieldPath).toBe('status.phase');
-      
-      expect(typeof capacity).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (capacity as any)).toBe(true);
-      expect((capacity as any).fieldPath).toBe('status.capacity');
+
+      expectKubernetesRef(phase, { fieldPath: 'status.phase' });
+      expectKubernetesRef(capacity, { fieldPath: 'status.capacity' });
     });
   });
 
@@ -169,25 +159,24 @@ describe('Factory Magic Proxy Behavior', () => {
         simple.Pvc({ name: 'test', size: '1Gi', accessModes: ['ReadWriteOnce'] }),
         helmRelease({
           name: 'test',
-          chart: { repository: 'oci://example.com', name: 'chart', version: '1.0.0' }
-        })
+          chart: { repository: 'oci://example.com', name: 'chart', version: '1.0.0' },
+        }),
       ];
 
       resources.forEach((resource, index) => {
         const resourceTypes = ['Deployment', 'Service', 'PVC', 'HelmRelease'];
         const _resourceType = resourceTypes[index];
-        
+
         // Check that status object exists but doesn't have static values
         expect(resource.status).toBeDefined();
-        
+
         // Access a common status field and verify it's a KubernetesRef
         const statusKeys = Object.keys(resource.status || {});
         if (statusKeys.length > 0 && statusKeys[0]) {
-          const firstStatusField = (resource.status as any)[statusKeys[0]];
-          
+          const firstStatusField = (resource.status as Record<string, unknown>)[statusKeys[0]];
+
           // Should be a KubernetesRef function, not a static value
-          expect(typeof firstStatusField).toBe('function');
-          expect(KUBERNETES_REF_BRAND in (firstStatusField as any)).toBe(true);
+          expectKubernetesRef(firstStatusField);
         }
       });
     });
@@ -196,29 +185,24 @@ describe('Factory Magic Proxy Behavior', () => {
       const deployment = simple.Deployment({
         name: 'test-app',
         image: 'nginx:latest',
-        replicas: 3
+        replicas: 3,
       });
 
       const service = simple.Service({
         name: 'test-service',
         ports: [{ port: 80, targetPort: 8080 }],
-        selector: { app: 'test-app' }
+        selector: { app: 'test-app' },
       });
 
       // Individual status fields should be KubernetesRef objects
       const readyReplicas = deployment.status.readyReplicas;
-      const clusterIP = service.status.clusterIP;
+      const serviceLoadBalancer = service.status.loadBalancer;
       const specReplicas = deployment.spec.replicas;
 
       // All should be KubernetesRef functions
-      expect(typeof readyReplicas).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (readyReplicas as any)).toBe(true);
-      expect((readyReplicas as any).fieldPath).toBe('status.readyReplicas');
-      
-      expect(typeof clusterIP).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (clusterIP as any)).toBe(true);
-      expect((clusterIP as any).fieldPath).toBe('status.clusterIP');
-      
+      expectKubernetesRef(readyReplicas, { fieldPath: 'status.readyReplicas' });
+      expectKubernetesRef(serviceLoadBalancer, { fieldPath: 'status.loadBalancer' });
+
       // Spec fields with actual values return those values outside of status builder context
       // This is correct behavior - spec fields only become KubernetesRef in status builders
       expect(specReplicas).toBe(3); // The actual value from the deployment spec
@@ -233,35 +217,32 @@ describe('Factory Magic Proxy Behavior', () => {
         chart: {
           repository: 'oci://ghcr.io/kro-run/kro',
           name: 'kro',
-          version: '0.3.0'
-        }
+          version: '0.3.0',
+        },
       });
 
       // These specific assertions would have failed with the bug
-      expect(release.status.phase).not.toBe('Pending');
-      expect(release.status.phase).not.toBe('Ready');
-      expect(release.status.phase).not.toBe('Installing');
-      expect(release.status.phase).not.toBe('Failed');
-      
+      expect(release.status.lastAttemptedRevision).not.toBe('Pending');
+      expect(release.status.lastAttemptedRevision).not.toBe('Ready');
+      expect(release.status.lastAttemptedRevision).not.toBe('Installing');
+      expect(release.status.lastAttemptedRevision).not.toBe('Failed');
+
       // Should be a proper KubernetesRef
-      expect(typeof release.status.phase).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (release.status.phase as any)).toBe(true);
+      expectKubernetesRef(release.status.lastAttemptedRevision);
     });
 
     it('should ensure Enhanced resources maintain magic proxy behavior', () => {
       // Test that Enhanced<> wrapper doesn't break magic proxy
       const deployment = simple.Deployment({
         name: 'enhanced-test',
-        image: 'nginx:latest'
+        image: 'nginx:latest',
       });
 
       // The Enhanced wrapper should not interfere with magic proxy behavior
       const readyReplicas = deployment.status.readyReplicas;
-      
-      expect(typeof readyReplicas).toBe('function');
-      expect(KUBERNETES_REF_BRAND in (readyReplicas as any)).toBe(true);
-      expect((readyReplicas as any).resourceId).toContain('deployment');
-      expect((readyReplicas as any).fieldPath).toBe('status.readyReplicas');
+
+      expectKubernetesRef(readyReplicas, { fieldPath: 'status.readyReplicas' });
+      expect(asKubernetesRef(readyReplicas).resourceId).toContain('deployment');
     });
   });
 });

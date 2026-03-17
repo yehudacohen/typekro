@@ -6,11 +6,19 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { DependencyGraph, type DeployableK8sResource, DirectDeploymentEngine, type Enhanced, type ResourceGraph,  } from '../../src/core.js';
+import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
+import { DependencyGraph } from '../../src/core/dependencies/index.js';
+import type { ReferenceResolver } from '../../src/core/references/resolver.js';
+import {
+  type DeployableK8sResource,
+  type DeploymentResourceGraph,
+  DirectDeploymentEngine,
+  type Enhanced,
+} from '../../src/index.js';
 
 // Mock the Kubernetes client (new API returns objects directly, no .body wrapper)
 const mockK8sApi = {
-  read: mock((resource?: any) => {
+  read: mock((resource?: Record<string, unknown>) => {
     // Mock CRD status check - return established CRD (object directly)
     if (resource?.kind === 'CustomResourceDefinition') {
       return Promise.resolve({
@@ -45,29 +53,29 @@ const mockK8sApi = {
     }
     return Promise.resolve({ items: [] });
   }),
-  create: mock((resource?: any) =>
+  create: mock((resource?: Record<string, Record<string, unknown>>) =>
     // Returns object directly (no .body wrapper)
     Promise.resolve({
       ...resource,
-      metadata: { ...resource.metadata, uid: 'test-uid' },
+      metadata: { ...resource?.metadata, uid: 'test-uid' },
     })
   ),
-  patch: mock((resource?: any) =>
+  patch: mock((resource?: Record<string, Record<string, unknown>>) =>
     // Returns object directly (no .body wrapper)
     Promise.resolve({
       ...resource,
-      metadata: { ...resource.metadata, uid: 'test-uid' },
+      metadata: { ...resource?.metadata, uid: 'test-uid' },
     })
   ),
 };
 
-const mockKubeConfig = {} as any;
+const mockKubeConfig = {} as unknown as KubeConfig;
 const mockReferenceResolver = {
-  resolveReferences: mock((resource: any) => Promise.resolve(resource)),
-} as any;
+  resolveReferences: mock((resource: Record<string, unknown>) => Promise.resolve(resource)),
+};
 
 // Helper function to create a mock CRD
-function createMockCRD(name: string): DeployableK8sResource<Enhanced<any, any>> {
+function createMockCRD(name: string): DeployableK8sResource<Enhanced<unknown, unknown>> {
   const crd = {
     id: `crd-${name}`,
     kind: 'CustomResourceDefinition',
@@ -84,7 +92,7 @@ function createMockCRD(name: string): DeployableK8sResource<Enhanced<any, any>> 
       },
     },
     status: {},
-  } as DeployableK8sResource<Enhanced<any, any>>;
+  } as unknown as DeployableK8sResource<Enhanced<unknown, unknown>>;
 
   // Add a mock readiness evaluator
   Object.defineProperty(crd, 'readinessEvaluator', {
@@ -98,7 +106,7 @@ function createMockCRD(name: string): DeployableK8sResource<Enhanced<any, any>> 
 }
 
 // Helper function to create a mock custom resource
-function createMockCustomResource(kind: string): DeployableK8sResource<Enhanced<any, any>> {
+function createMockCustomResource(kind: string): DeployableK8sResource<Enhanced<unknown, unknown>> {
   const resource = {
     id: `custom-${kind.toLowerCase()}`,
     kind: kind,
@@ -106,7 +114,7 @@ function createMockCustomResource(kind: string): DeployableK8sResource<Enhanced<
     metadata: { name: `test-${kind.toLowerCase()}` },
     spec: { replicas: 1 },
     status: {},
-  } as DeployableK8sResource<Enhanced<any, any>>;
+  } as unknown as DeployableK8sResource<Enhanced<unknown, unknown>>;
 
   // Add a mock readiness evaluator
   Object.defineProperty(resource, 'readinessEvaluator', {
@@ -125,8 +133,8 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
   beforeEach(() => {
     engine = new DirectDeploymentEngine(
       mockKubeConfig,
-      mockK8sApi as any,
-      mockReferenceResolver as any
+      mockK8sApi as unknown as KubernetesObjectApi,
+      mockReferenceResolver as unknown as ReferenceResolver
     );
 
     // Clear mocks
@@ -146,7 +154,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     dependencyGraph.addNode(crd.id, crd);
     dependencyGraph.addNode(customResource.id, customResource);
 
-    const graph: ResourceGraph = {
+    const graph: DeploymentResourceGraph = {
       name: 'test-crd-graph',
       resources: [
         { id: crd.id, manifest: crd },
@@ -199,7 +207,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
       metadata: { name: 'test-deployment' },
       spec: { replicas: 1 },
       status: {},
-    } as DeployableK8sResource<Enhanced<any, any>>;
+    } as unknown as DeployableK8sResource<Enhanced<unknown, unknown>>;
 
     // Add a mock readiness evaluator
     Object.defineProperty(deployment, 'readinessEvaluator', {
@@ -212,7 +220,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     const dependencyGraph = new DependencyGraph();
     dependencyGraph.addNode(deployment.id, deployment);
 
-    const graph: ResourceGraph = {
+    const graph: DeploymentResourceGraph = {
       name: 'test-no-crd-graph',
       resources: [{ id: deployment.id, manifest: deployment }],
       dependencyGraph,
@@ -243,7 +251,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
   it('should handle CRD establishment timeout gracefully for custom resources', async () => {
     // Mock CRD status to never be established
     // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
-    mockK8sApi.read.mockImplementation((resource?: any) => {
+    mockK8sApi.read.mockImplementation((resource?: Record<string, unknown>) => {
       if (resource?.kind === 'CustomResourceDefinition') {
         return Promise.resolve({
           status: {
@@ -281,7 +289,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     const dependencyGraph = new DependencyGraph();
     dependencyGraph.addNode(customResource.id, customResource);
 
-    const graph: ResourceGraph = {
+    const graph: DeploymentResourceGraph = {
       name: 'test-slow-cr-graph',
       resources: [{ id: customResource.id, manifest: customResource }],
       dependencyGraph,
@@ -304,7 +312,7 @@ describe('DirectDeploymentEngine CRD Establishment', () => {
     // - "Timeout waiting for CRD...to be established" (if CRD timeout is reached first)
     // - "Delay aborted" or "Operation aborted" (if deployment timeout triggers abort signal)
     const errorMessage = result.errors?.[0]?.error.message || '';
-    const isExpectedError = 
+    const isExpectedError =
       /Timeout waiting for CRD.*to be established/.test(errorMessage) ||
       /aborted/i.test(errorMessage);
     expect(isExpectedError).toBe(true);

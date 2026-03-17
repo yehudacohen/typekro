@@ -1,35 +1,37 @@
 /**
  * Comprehensive tests for MagicAssignable type integration with KubernetesRef detection
- * 
+ *
  * Tests that JavaScript expressions work seamlessly with MagicAssignable and MagicAssignableShape
  * types through KubernetesRef detection and conversion.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
-import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-assignable-analyzer.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
-import { containsKubernetesRefs } from '../../../src/utils/type-guards.js';
+import type { AnalysisContext } from '../../../src/core/expressions/analysis/analyzer.js';
+import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
+import { MagicAssignableAnalyzer } from '../../../src/core/expressions/magic-proxy/magic-assignable-analyzer.js';
 import type { KubernetesRef, MagicAssignable } from '../../../src/core/types/common.js';
+import type { Enhanced } from '../../../src/core/types/kubernetes.js';
 import type { MagicAssignableShape } from '../../../src/core/types/serialization.js';
-import { SourceMapBuilder } from '../../../src/core/expressions/source-map.js';
+import { containsKubernetesRefs } from '../../../src/utils/type-guards.js';
 
 describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
   let analyzer: MagicAssignableAnalyzer;
-  let mockContext: any;
+  let mockContext: AnalysisContext;
 
   beforeEach(() => {
     analyzer = new MagicAssignableAnalyzer();
-    
+
     mockContext = {
       type: 'status',
       availableReferences: {
-        deployment: {} as any,
-        service: {} as any,
-        database: {} as any
+        deployment: {} as unknown as Enhanced<unknown, unknown>,
+        service: {} as unknown as Enhanced<unknown, unknown>,
+        database: {} as unknown as Enhanced<unknown, unknown>,
       },
       factoryType: 'kro',
       sourceMap: new SourceMapBuilder(),
-      dependencies: []
+      dependencies: [],
     };
   });
 
@@ -39,7 +41,6 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'metadata.name',
-        
       };
 
       // Test different MagicAssignable values
@@ -49,15 +50,15 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         true,
         mockRef,
         null,
-        undefined
+        undefined,
       ];
 
       for (const value of testValues) {
         const result = analyzer.analyzeMagicAssignable(value, mockContext);
-        
+
         expect(result).toBeDefined();
         expect(result.originalValue).toBe(value);
-        
+
         if (value === mockRef) {
           expect(result.requiresConversion).toBe(true);
           expect(result.dependencies.length).toBeGreaterThan(0);
@@ -74,7 +75,7 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
       const mockRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.readyReplicas'
+        fieldPath: 'status.readyReplicas',
       };
 
       // Complex expressions that might be MagicAssignable
@@ -82,15 +83,15 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         mockRef,
         [mockRef, 'static', mockRef],
         { ref: mockRef, static: 'value' },
-        { nested: { deep: mockRef } }
+        { nested: { deep: mockRef } },
       ];
 
       for (const value of complexValues) {
-        const result = analyzer.analyzeMagicAssignable(value as any, mockContext);
-        
+        const result = analyzer.analyzeMagicAssignable(value as unknown, mockContext);
+
         expect(result).toBeDefined();
-        expect(result.originalValue).toBe(value as any);
-        
+        expect(result.originalValue).toBe(value as unknown);
+
         if (containsKubernetesRefs(value)) {
           expect(result.requiresConversion).toBe(true);
           expect(result.dependencies.length).toBeGreaterThan(0);
@@ -105,26 +106,26 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
       const stringRef: KubernetesRef<string> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'metadata.name'
+        fieldPath: 'metadata.name',
       };
 
       const numberRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.readyReplicas'
+        fieldPath: 'status.readyReplicas',
       };
 
       const booleanRef: KubernetesRef<boolean> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'service',
-        fieldPath: 'status.ready'
+        fieldPath: 'status.ready',
       };
 
       const refs = [stringRef, numberRef, booleanRef];
 
       for (const ref of refs) {
-        const result = analyzer.analyzeMagicAssignable(ref as any, mockContext);
-        
+        const result = analyzer.analyzeMagicAssignable(ref as unknown, mockContext);
+
         expect(result).toBeDefined();
         expect(result.requiresConversion).toBe(true);
         expect(result.dependencies).toHaveLength(1);
@@ -139,7 +140,6 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'metadata.name',
-        
       };
 
       const simpleShape: MagicAssignableShape<{
@@ -149,17 +149,17 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
       }> = {
         name: mockRef,
         ready: true,
-        replicas: 3
+        replicas: 3,
       };
 
       const result = analyzer.analyzeMagicAssignableShape(simpleShape, mockContext);
-      
+
       expect(result).toBeDefined();
       expect(result.originalShape).toBe(simpleShape);
       expect(result.requiresConversion).toBe(true);
       expect(result.dependencies).toHaveLength(1);
       expect(result.dependencies[0]).toBe(mockRef);
-      
+
       // Processed shape should have converted the KubernetesRef
       expect(result.processedShape.name).not.toBe(mockRef);
       expect(result.processedShape.ready).toBe(true);
@@ -171,21 +171,18 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'metadata.name',
-        
       };
 
       const replicasRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'status.readyReplicas',
-        
       };
 
       const readyRef: KubernetesRef<boolean> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'service',
         fieldPath: 'status.ready',
-        
       };
 
       const nestedShape: MagicAssignableShape<{
@@ -203,30 +200,30 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
       }> = {
         app: {
           name: nameRef,
-          replicas: replicasRef
+          replicas: replicasRef,
         },
         service: {
           ready: readyRef,
-          type: 'ClusterIP'
+          type: 'ClusterIP',
         },
         metadata: {
           labels: {
             app: nameRef,
-            version: 'v1.0.0'
-          }
-        }
+            version: 'v1.0.0',
+          },
+        },
       };
 
       const result = analyzer.analyzeMagicAssignableShape(nestedShape, mockContext);
-      
+
       expect(result).toBeDefined();
       expect(result.requiresConversion).toBe(true);
       expect(result.dependencies.length).toBeGreaterThan(0);
-      
+
       // Should find all KubernetesRef objects (nameRef appears twice)
       const uniqueRefs = new Set(result.dependencies);
       expect(uniqueRefs.size).toBe(3); // nameRef, replicasRef, readyRef
-      
+
       // Processed shape should maintain structure
       expect(result.processedShape.app).toBeDefined();
       expect(result.processedShape.service).toBeDefined();
@@ -240,7 +237,6 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'metadata.name',
-        
       };
 
       const arrayShape: MagicAssignableShape<{
@@ -252,20 +248,20 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         mixed: ['static', 42, itemRef],
         nested: [
           { name: itemRef, value: 1 },
-          { name: 'static', value: 2 }
-        ]
+          { name: 'static', value: 2 },
+        ],
       };
 
       const result = analyzer.analyzeMagicAssignableShape(arrayShape, mockContext);
-      
+
       expect(result).toBeDefined();
       expect(result.requiresConversion).toBe(true);
       expect(result.dependencies.length).toBeGreaterThan(0);
-      
+
       // Should find all instances of itemRef
-      const refCount = result.dependencies.filter(dep => dep === itemRef).length;
+      const refCount = result.dependencies.filter((dep) => dep === itemRef).length;
       expect(refCount).toBeGreaterThan(1);
-      
+
       // Processed shape should maintain array structure
       expect(Array.isArray(result.processedShape.items)).toBe(true);
       expect(Array.isArray(result.processedShape.mixed)).toBe(true);
@@ -291,20 +287,20 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         config: {
           env: 'production',
           debug: false,
-          timeout: 30
+          timeout: 30,
         },
-        items: ['item1', 'item2', 'item3']
+        items: ['item1', 'item2', 'item3'],
       };
 
       const startTime = performance.now();
       const result = analyzer.analyzeMagicAssignableShape(staticShape, mockContext);
       const endTime = performance.now();
-      
+
       expect(result).toBeDefined();
       expect(result.requiresConversion).toBe(false);
       expect(result.dependencies).toHaveLength(0);
-      expect(result.processedShape).toBe(staticShape as any);
-      
+      expect(result.processedShape as unknown).toBe(staticShape as unknown);
+
       // Should be very fast for static values
       const duration = endTime - startTime;
       expect(duration).toBeLessThan(10); // Less than 10ms
@@ -313,7 +309,7 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
     it('should handle large static structures efficiently', () => {
       // Create a large static structure
       const largeStaticShape: MagicAssignableShape<Record<string, any>> = {};
-      
+
       for (let i = 0; i < 100; i++) {
         largeStaticShape[`item${i}`] = {
           name: `item-${i}`,
@@ -324,21 +320,21 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
             retries: 3,
             metadata: {
               created: new Date().toISOString(),
-              tags: [`tag-${i}`, `category-${i % 5}`]
-            }
-          }
+              tags: [`tag-${i}`, `category-${i % 5}`],
+            },
+          },
         };
       }
 
       const startTime = performance.now();
       const result = analyzer.analyzeMagicAssignableShape(largeStaticShape, mockContext);
       const endTime = performance.now();
-      
+
       expect(result).toBeDefined();
       expect(result.requiresConversion).toBe(false);
       expect(result.dependencies).toHaveLength(0);
       expect(result.processedShape).toBe(largeStaticShape);
-      
+
       // Should handle large static structures efficiently
       const duration = endTime - startTime;
       expect(duration).toBeLessThan(100); // Less than 100ms
@@ -347,19 +343,11 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
 
   describe('Error Handling and Edge Cases', () => {
     it('should handle null and undefined values gracefully', () => {
-      const edgeCaseValues: MagicAssignable<any>[] = [
-        null,
-        undefined,
-        '',
-        0,
-        false,
-        [],
-        {}
-      ];
+      const edgeCaseValues: MagicAssignable<any>[] = [null, undefined, '', 0, false, [], {}];
 
       for (const value of edgeCaseValues) {
         const result = analyzer.analyzeMagicAssignable(value, mockContext);
-        
+
         expect(result).toBeDefined();
         expect(result.originalValue).toBe(value);
         expect(result.requiresConversion).toBe(false);
@@ -374,33 +362,33 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         // Missing brand
         {
           resourceId: 'deployment',
-          fieldPath: 'status.readyReplicas'
+          fieldPath: 'status.readyReplicas',
         },
         // Missing resourceId
         {
           [KUBERNETES_REF_BRAND]: true,
-          fieldPath: 'status.readyReplicas'
+          fieldPath: 'status.readyReplicas',
         },
         // Missing fieldPath
         {
           [KUBERNETES_REF_BRAND]: true,
-          resourceId: 'deployment'
+          resourceId: 'deployment',
         },
         // Invalid brand
         {
           [KUBERNETES_REF_BRAND]: false,
           resourceId: 'deployment',
-          fieldPath: 'status.readyReplicas'
-        }
+          fieldPath: 'status.readyReplicas',
+        },
       ];
 
       for (const malformedRef of malformedRefs) {
         // Use type assertion since we're intentionally testing malformed inputs
-        const result = analyzer.analyzeMagicAssignable(malformedRef as any, mockContext);
-        
+        const result = analyzer.analyzeMagicAssignable(malformedRef as unknown, mockContext);
+
         expect(result).toBeDefined();
-        expect(result.originalValue).toBe(malformedRef as any);
-        
+        expect(result.originalValue).toBe(malformedRef as unknown);
+
         // Should treat as static value if not a valid KubernetesRef
         expect(result.requiresConversion).toBe(false);
         expect(result.dependencies).toHaveLength(0);
@@ -410,17 +398,17 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
     it('should handle circular references in shapes', () => {
       const circularShape: any = {
         name: 'circular',
-        value: 42
+        value: 42,
       };
-      
+
       // Create circular reference
       circularShape.self = circularShape;
 
       const result = analyzer.analyzeMagicAssignableShape(circularShape, mockContext);
-      
+
       expect(result).toBeDefined();
       expect(result.originalShape).toBe(circularShape);
-      
+
       // Should handle gracefully without infinite recursion
       expect(result.requiresConversion).toBe(false);
       expect(result.dependencies).toHaveLength(0);
@@ -430,20 +418,19 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
       // Create a problematic context that might cause errors
       const problematicContext = {
         ...mockContext,
-        availableReferences: null // This might cause issues
+        availableReferences: null as unknown as AnalysisContext['availableReferences'], // This might cause issues
       };
 
       const mockRef: KubernetesRef<string> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'metadata.name',
-        
       };
 
       const result = analyzer.analyzeMagicAssignable(mockRef, problematicContext);
-      
+
       expect(result).toBeDefined();
-      
+
       // Should handle errors gracefully
       if (result.errors.length > 0) {
         const error = result.errors[0];
@@ -459,28 +446,27 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'metadata.name',
-        
       };
 
       const shape: MagicAssignableShape<{ name: string; ready: boolean }> = {
         name: mockRef,
-        ready: true
+        ready: true,
       };
 
       // Test with Kro factory
       const kroContext = { ...mockContext, factoryType: 'kro' as const };
       const kroResult = analyzer.analyzeMagicAssignableShape(shape, kroContext);
-      
+
       expect(kroResult).toBeDefined();
       expect(kroResult.requiresConversion).toBe(true);
-      
+
       // Test with direct factory
       const directContext = { ...mockContext, factoryType: 'direct' as const };
       const directResult = analyzer.analyzeMagicAssignableShape(shape, directContext);
-      
+
       expect(directResult).toBeDefined();
       expect(directResult.requiresConversion).toBe(true);
-      
+
       // Both should detect the KubernetesRef but may process differently
       expect(kroResult.dependencies).toHaveLength(1);
       expect(directResult.dependencies).toHaveLength(1);
@@ -491,7 +477,6 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'status.readyReplicas',
-        
       };
 
       const complexShape: MagicAssignableShape<{
@@ -499,20 +484,20 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         complex: string;
       }> = {
         simple: mockRef,
-        complex: `Ready: ${mockRef} replicas`
+        complex: `Ready: ${mockRef} replicas`,
       };
 
       // Test with different factory types
       const factoryTypes: ('kro' | 'direct')[] = ['kro', 'direct'];
-      
+
       for (const factoryType of factoryTypes) {
         const context = { ...mockContext, factoryType };
         const result = analyzer.analyzeMagicAssignableShape(complexShape, context);
-        
+
         expect(result).toBeDefined();
         expect(result.requiresConversion).toBe(true);
         expect(result.dependencies.length).toBeGreaterThan(0);
-        
+
         // Should process according to factory type
         expect(result.processedShape).toBeDefined();
         expect(result.processedShape.simple).not.toBe(mockRef);
@@ -536,14 +521,12 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'metadata.name',
-        
       };
 
       const replicasRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
         fieldPath: 'status.readyReplicas',
-        
       };
 
       const typedShape: MagicAssignableShape<TypedShape> = {
@@ -552,23 +535,25 @@ describe('MagicAssignable Type Integration - Comprehensive Tests', () => {
         ready: true,
         config: {
           env: 'production',
-          debug: false
-        }
+          debug: false,
+        },
       };
 
       const result = analyzer.analyzeMagicAssignableShape(typedShape, mockContext);
-      
+
       expect(result).toBeDefined();
       expect(result.requiresConversion).toBe(true);
       expect(result.dependencies).toHaveLength(2);
-      
+
       // Type information should be preserved
-      const nameRefDep = result.dependencies.find(dep => dep.fieldPath === 'metadata.name');
-      const replicasRefDep = result.dependencies.find(dep => dep.fieldPath === 'status.readyReplicas');
-      
+      const nameRefDep = result.dependencies.find((dep) => dep.fieldPath === 'metadata.name');
+      const replicasRefDep = result.dependencies.find(
+        (dep) => dep.fieldPath === 'status.readyReplicas'
+      );
+
       expect(nameRefDep?.fieldPath).toBe('metadata.name');
       expect(replicasRefDep?.fieldPath).toBe('status.readyReplicas');
-      
+
       // Processed shape should maintain structure
       expect(result.processedShape.config.env).toBe('production');
       expect(result.processedShape.config.debug).toBe(false);

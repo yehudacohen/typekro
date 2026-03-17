@@ -1,4 +1,9 @@
-import type { ReadinessEvaluator, ResourceStatus } from '../../../core/types/index.js';
+import { ensureError } from '../../../core/errors.js';
+import type {
+  KubernetesCondition,
+  ReadinessEvaluator,
+  ResourceStatus,
+} from '../../../core/types/index.js';
 
 /**
  * Readiness evaluator for Kustomization resources
@@ -6,7 +11,8 @@ import type { ReadinessEvaluator, ResourceStatus } from '../../../core/types/ind
  * Checks if the Kustomization has been successfully applied and all resources are ready.
  * This evaluator follows TypeKro patterns and integrates with the cluster state access system.
  */
-export const kustomizationReadinessEvaluator: ReadinessEvaluator = (
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Kustomization is a CRD without typed client
+export const kustomizationReadinessEvaluator: ReadinessEvaluator<any> = (
   liveResource: any
 ): ResourceStatus => {
   try {
@@ -30,7 +36,7 @@ export const kustomizationReadinessEvaluator: ReadinessEvaluator = (
     }
 
     // Check for Ready condition
-    const readyCondition = status.conditions.find((c: any) => c.type === 'Ready');
+    const readyCondition = status.conditions.find((c: KubernetesCondition) => c.type === 'Ready');
     if (!readyCondition) {
       return {
         ready: false,
@@ -48,7 +54,9 @@ export const kustomizationReadinessEvaluator: ReadinessEvaluator = (
     }
 
     // Check for Healthy condition if present
-    const healthyCondition = status.conditions.find((c: any) => c.type === 'Healthy');
+    const healthyCondition = status.conditions.find(
+      (c: KubernetesCondition) => c.type === 'Healthy'
+    );
     if (healthyCondition && healthyCondition.status !== 'True') {
       return {
         ready: false,
@@ -70,11 +78,11 @@ export const kustomizationReadinessEvaluator: ReadinessEvaluator = (
       ready: true,
       message: `Kustomization is ready with ${status.inventory?.entries?.length || 0} applied resources`,
     };
-  } catch (error) {
+  } catch (error: unknown) {
     return {
       ready: false,
       reason: 'EvaluationError',
-      message: `Error evaluating Kustomization readiness: ${error}`,
+      message: `Error evaluating Kustomization readiness: ${ensureError(error).message}`,
     };
   }
 };

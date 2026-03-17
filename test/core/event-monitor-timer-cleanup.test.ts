@@ -2,15 +2,15 @@
  * Test for EventMonitor timer cleanup to prevent race conditions
  */
 
-import { describe, expect, it, beforeEach, afterEach, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { type EventMonitor, createEventMonitor } from '../../src/core/deployment/event-monitor.js';
+import { createEventMonitor, type EventMonitor } from '../../src/core/deployment/event-monitor.js';
 import type { DeployedResource } from '../../src/core/types/deployment.js';
 
 describe('EventMonitor Timer Cleanup', () => {
   let eventMonitor: EventMonitor;
   let mockKubeConfig: k8s.KubeConfig;
-  let mockWatch: any;
+  let mockWatch: unknown;
 
   beforeEach(() => {
     // Mock KubeConfig
@@ -20,7 +20,7 @@ describe('EventMonitor Timer Cleanup', () => {
         listNamespacedReplicaSet: mock(() => Promise.resolve({ body: { items: [] } })),
         listNamespacedPod: mock(() => Promise.resolve({ body: { items: [] } })),
       })),
-    } as any;
+    } as unknown as k8s.KubeConfig;
 
     // Mock Watch
     mockWatch = {
@@ -34,7 +34,7 @@ describe('EventMonitor Timer Cleanup', () => {
         eventTypes: ['Warning', 'Error'],
         includeChildResources: true, // Enable child discovery to trigger timers
       },
-      mock(() => mockWatch)
+      mock(() => mockWatch) as unknown as (config: k8s.KubeConfig) => k8s.Watch
     );
   });
 
@@ -184,7 +184,7 @@ describe('EventMonitor Timer Cleanup', () => {
     };
 
     await eventMonitor.startMonitoring([deployedResource]);
-    
+
     // This should work normally without any timer cleanup needed
     await expect(eventMonitor.stopMonitoring()).resolves.toBeUndefined();
   });

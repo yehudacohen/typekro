@@ -1,6 +1,7 @@
 // Helm Release Resource Types
 export interface HelmReleaseSpec {
   interval?: string;
+  timeout?: string;
   chart: {
     spec: {
       chart: string;
@@ -12,7 +13,16 @@ export interface HelmReleaseSpec {
       };
     };
   };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Helm values are arbitrary user-defined objects
   values?: Record<string, any>;
+  targetNamespace?: string;
+  install?: {
+    createNamespace?: boolean;
+    remediation?: { retries?: number };
+  };
+  upgrade?: {
+    remediation?: { retries?: number };
+  };
 }
 
 export interface HelmReleaseStatus {

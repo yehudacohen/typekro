@@ -10,25 +10,42 @@
 - **Test single file**: `bun test test/path/to/file.test.ts --timeout 10000`
 - **Test unit only**: `bun run test` (excludes integration tests)
 - **Test integration**: `bun run test:integration`
+- **Test with coverage**: `bun run test:coverage` (generates lcov report)
 - **Lint**: `bun run lint` (check) / `bun run lint:fix` (auto-fix)
 - **Typecheck**: `bun run typecheck` (all) / `bun run typecheck:lib` (src only)
 - **Format**: `bun run format:fix`
 
 ### Code Style
 - **Tool**: Use `bun` (never npm/yarn). Biome for linting/formatting.
-- **Imports**: External libraries first, internal modules second, types last. Use `type` imports for types.
+- **Imports**: External libraries first, internal modules second, types last. Use `type` imports for types (enforced by Biome).
 - **Format**: 2 spaces, single quotes, 100 char lines, trailing commas ES5, semicolons always
 - **Types**: Strict TypeScript. No `as any` except in specific core files. No `!` assertions except tests.
+- **Type Safety**: Arrays/objects require null checks (`arr[0]?.value`). Optional properties are exact - no `undefined` when not specified.
 - **Naming**: camelCase variables/functions, PascalCase types/interfaces, UPPER_SNAKE constants
 - **Errors**: Custom error classes extending `TypeKroError`. Use structured error messages.
-- **Patterns**: Use `createResource` pattern for factories. Follow `src/core/`, `src/factories/` structure.
+- **Documentation**: Use JSDoc comments for public APIs, exported functions, and complex types.
+- **Patterns**: Use `createResource` pattern for internal factories. Follow `src/core/`, `src/factories/` structure.
 
-### Resource Graph Creation (toResourceGraph)
+### Which Composition API to Use
+- **Default: `kubernetesComposition`** — single function creates resources + returns status. Status expressions are natural JavaScript, auto-converted to CEL. Use `simple.Deployment()`, `simple.Service()`, etc.
+- **Advanced: `toResourceGraph`** — separate resource builder and status builder. Status uses explicit `Cel.expr()` / `Cel.template()`. Use `createDeployment()`, `createService()`, etc.
+- **Rule of thumb**: Start with `kubernetesComposition`. Switch to `toResourceGraph` only if you need explicit CEL control.
+
+### kubernetesComposition Patterns (Recommended)
+- **Imports**: `import { kubernetesComposition, simple } from 'typekro';` (or `from '../src/index.js'`)
+  // Note: simple.* factories are also importable individually from 'typekro/simple'
+- **Resources**: `const deploy = simple.Deployment({ id: 'deploy', name: spec.name, image: spec.image })`
+- **Status**: Return natural JS: `return { ready: deploy.status.readyReplicas >= spec.replicas }`
+- **String templates**: `` url: `http://${svc.status.clusterIP}` ``
+- **Conditionals**: `phase: deploy.status.readyReplicas > 0 ? 'running' : 'pending'`
+- **`id` parameter**: Required on every resource for cross-resource references
+
+### toResourceGraph Patterns (Advanced)
 - **Use proper CEL expressions**: `Cel.expr<Type>(resourceRef, operator)` or `Cel.expr<Type>('static_expression')`
-- **Status expressions**: `Cel.expr<boolean>(resources.myResource?.status.field, ' == "Ready"')`
+- **Status expressions**: `Cel.expr<boolean>(resources.myResource.status.field, ' == "Ready"')` (NO `?.` — Enhanced types are NonOptional)
 - **Multi-condition**: `Cel.expr<string>('condition ? "value1" : "value2"')`  
 - **Templates**: `Cel.template('Hello %s', schema.spec.name)` for string interpolation
-- **Resource references**: Use `resources.resourceKey?.status.field` in CEL expressions
+- **Resource references**: Use `resources.resourceKey.status.field` (NO `?.` — Enhanced types are NonOptional)
 - **Type safety**: Always specify CEL type: `Cel.expr<boolean>()`, `Cel.expr<string>()`, etc.
 
 ## CRITICAL RULES - NEVER VIOLATE THESE
@@ -181,7 +198,60 @@ Before making any change, ask yourself:
 - [ ] Will my tests compile without type assertions?
 - [ ] Am I enabling all functionality in tests (`waitForReady: true`)?
 
-## CREATING RESOURCE GRAPHS WITH toResourceGraph()
+## CREATING COMPOSITIONS WITH kubernetesComposition (RECOMMENDED)
+
+### Basic Structure
+```typescript
+import { type } from 'arktype';
+import { kubernetesComposition, simple } from 'typekro';
+
+const myApp = kubernetesComposition(
+  {
+    name: 'my-app',
+    apiVersion: 'example.com/v1alpha1',
+    kind: 'MyApp',
+    spec: type({ name: 'string', image: 'string', replicas: 'number' }),
+    status: type({ ready: 'boolean', url: 'string' })
+  },
+  (spec) => {
+    const deploy = simple.Deployment({
+      id: 'deploy',
+      name: spec.name,
+      image: spec.image,
+      replicas: spec.replicas
+    });
+
+    const svc = simple.Service({
+      id: 'svc',
+      name: `${spec.name}-svc`,
+      selector: { app: spec.name },
+      ports: [{ port: 80 }]
+    });
+
+    return {
+      ready: deploy.status.readyReplicas >= spec.replicas,
+      url: `http://${svc.status.clusterIP}`
+    };
+  }
+);
+```
+
+### Key Patterns
+- **Resources**: Use `simple.Deployment()`, `simple.Service()`, `simple.ConfigMap()`, etc.
+- **`id` is required**: Every resource needs `id: 'uniqueKey'` for cross-resource references
+- **Status is natural JS**: `deploy.status.readyReplicas >= spec.replicas` auto-converts to CEL
+- **String interpolation**: `` `http://${svc.status.clusterIP}` `` auto-converts to CEL templates
+- **Ternaries**: `deploy.status.readyReplicas > 0 ? 'running' : 'pending'` auto-converts to CEL conditionals
+- **Cross-resource refs in env**: `env: { DB_HOST: dbService.status.clusterIP }` — magic proxy handles it
+
+### What NOT to Do in kubernetesComposition
+- Do NOT use `Cel.expr()` or `Cel.template()` — JS expressions are auto-converted
+- Do NOT use `createDeployment()` — use `simple.Deployment()` instead
+- Do NOT forget the `id` parameter on resources — it's required for references
+
+## CREATING RESOURCE GRAPHS WITH toResourceGraph() (ADVANCED)
+
+Use `toResourceGraph` only when you need explicit CEL control over status expressions.
 
 ### Basic Structure
 ```typescript
@@ -201,14 +271,14 @@ const myGraph = toResourceGraph(
   // Status builder function  
   (schema, resources) => ({
     phase: Cel.expr<string>('some_expression'),
-    readyReplicas: resources.resourceKey?.status.readyReplicas
+    readyReplicas: resources.resourceKey.status.readyReplicas
   })
 );
 ```
 
 ### CEL Expression Patterns (CRITICAL)
 - **ALWAYS** specify type: `Cel.expr<boolean>()`, `Cel.expr<string>()`, `Cel.expr<number>()`
-- **Enhanced resource references**: `resources.resourceKey.status.field` (NO `?.` - Enhanced types are NonOptional)
+- **Enhanced resource references**: `resources.resourceKey.status.field` (NO `?.` — Enhanced types are NonOptional)
 - **Comparisons**: `Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')`
 - **Equality**: `Cel.expr<boolean>(resources.helmrelease.status.phase, ' == "Ready"')`
 - **Conditionals**: `Cel.expr<string>(resources.resource.status.field, ' == "value" ? "result1" : "result2"')`
@@ -218,9 +288,9 @@ const myGraph = toResourceGraph(
 ### Status Builder Rules
 - **Resource keys**: Use exact keys from resource builder return object
 - **Mixed types**: Some resources return `DeploymentClosure`, others return `Enhanced<Spec,Status>`
-- **yamlFile resources**: Don't have standard status - use static values or other resources for status
-- **HelmRelease resources**: Have proper `status.phase` field - use CEL expressions
-- **Enhanced resources**: Reference like `resources.myDeployment.status.readyReplicas` (NO `?.` - NonOptional types)
+- **yamlFile resources**: Don't have standard status — use static values or other resources for status
+- **HelmRelease resources**: Have proper `status.phase` field — use CEL expressions
+- **Enhanced resources**: Reference like `resources.myDeployment.status.readyReplicas` (NO `?.` — NonOptional types)
 
 ### Common Patterns
 ```typescript
@@ -229,7 +299,7 @@ phase: Cel.expr<'Pending' | 'Installing' | 'Ready' | 'Failed'>(
   resources.kroHelmRelease.status.phase, ' == "Ready" ? "Ready" : "Installing"'
 )
 
-// Boolean readiness (Enhanced types - no ?.)
+// Boolean readiness (Enhanced types — no ?.)
 ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')
 
 // Static string values
@@ -242,12 +312,12 @@ fluxReady: true, // yamlFile doesn't have status, assume ready
 webAppReady: Cel.expr<boolean>(resources.webapp.status.readyReplicas, ' == ', resources.webapp.spec.replicas)
 ```
 
-### What NOT to Do
-- ❌ `resources.resource?.status.field` (Enhanced types are NonOptional - no `?.`)
-- ❌ `Cel.expr(resources.resource.status.field == "value")` (comparison should be in CEL operator parameter)
-- ❌ Missing type parameters: `Cel.expr()` (always specify `<boolean>`, `<string>`, etc.)
-- ❌ Using JavaScript operators: `resources.a.ready || false` (use CEL expressions)
-- ❌ Accessing non-existent status on yamlFile resources (they return DeploymentClosure, not Enhanced)
+### What NOT to Do in toResourceGraph
+- Do NOT use `resources.resource?.status.field` (Enhanced types are NonOptional — no `?.`)
+- Do NOT put comparisons inside `Cel.expr()` arguments: `Cel.expr(resources.resource.status.field == "value")` — comparison should be in the CEL operator parameter
+- Do NOT omit type parameters: `Cel.expr()` — always specify `<boolean>`, `<string>`, etc.
+- Do NOT use JavaScript operators: `resources.a.ready || false` — use CEL expressions
+- Do NOT access non-existent status on yamlFile resources (they return DeploymentClosure, not Enhanced)
 
 ## PROJECT-SPECIFIC CONTEXT
 

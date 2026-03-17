@@ -21,8 +21,9 @@
  */
 
 import { evaluate, parse } from 'cel-js';
-import { isKubernetesRef } from '../../utils/index';
+import { isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { ensureError, TypeKroError } from '../errors.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import { CelEvaluationError } from '../types/references.js';
 import type { CelExpression, KubernetesRef } from '../types.js';
@@ -62,8 +63,8 @@ export class CelEvaluator {
       const result = evaluate(expression.expression, celContext, functions);
 
       return result;
-    } catch (error) {
-      throw new CelEvaluationError(expression, error as Error);
+    } catch (error: unknown) {
+      throw new CelEvaluationError(expression, ensureError(error));
     }
   }
 
@@ -75,7 +76,9 @@ export class CelEvaluator {
       const parseResult = parse(expression.expression);
 
       if (!parseResult.isSuccess) {
-        throw new Error('Failed to parse CEL expression');
+        throw new TypeKroError('Failed to parse CEL expression', 'CEL_PARSE_FAILED', {
+          expression: expression.expression,
+        });
       }
 
       return async (context: CelEvaluationContext) => {
@@ -103,8 +106,8 @@ export class CelEvaluator {
         };
         return evaluate(parseResult.cst, celContext, functions);
       };
-    } catch (error) {
-      throw new CelEvaluationError(expression, error as Error);
+    } catch (error: unknown) {
+      throw new CelEvaluationError(expression, ensureError(error));
     }
   }
 
@@ -122,10 +125,10 @@ export class CelEvaluator {
           error: 'Failed to parse CEL expression',
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         valid: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: ensureError(error).message,
       };
     }
   }
@@ -137,7 +140,7 @@ export class CelEvaluator {
     expression: CelExpression,
     context: CelEvaluationContext
   ): Promise<Record<string, unknown>> {
-    const celContext: Record<string, unknown> = {};
+    const celContext: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 
     // Add variables to context
     if (context.variables) {
@@ -162,7 +165,11 @@ export class CelEvaluator {
       }
 
       if (!resource) {
-        throw new Error(`Resource '${ref.resourceId}' not found in context`);
+        throw new TypeKroError(
+          `Resource '${ref.resourceId}' not found in context`,
+          'RESOURCE_NOT_FOUND',
+          { resourceId: ref.resourceId }
+        );
       }
 
       // Add the entire resource to context using its ID (use the original case from CEL expression)
@@ -220,6 +227,31 @@ export class CelEvaluator {
   }
 
   /**
+   * Escape a string for safe embedding in a CEL string literal.
+   * Prevents CEL injection by escaping quotes and backslashes.
+   */
+  private static escapeCelString(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  /**
+   * Validate a CEL predicate/expression fragment to prevent injection.
+   * Rejects expressions containing string literals with unbalanced quotes
+   * or suspicious patterns that could indicate injection attempts.
+   */
+  private static validateCelFragment(fragment: string, paramName: string): void {
+    // Check for unbalanced double quotes (ignoring escaped ones)
+    const unescapedQuotes = fragment.replace(/\\"/g, '').match(/"/g);
+    if (unescapedQuotes && unescapedQuotes.length % 2 !== 0) {
+      throw new TypeKroError(
+        `Invalid CEL ${paramName}: unbalanced quotes in "${fragment}"`,
+        'CEL_INJECTION_PREVENTED',
+        { fragment, paramName }
+      );
+    }
+  }
+
+  /**
    * Common CEL expression builders
    */
   static expressions = {
@@ -232,7 +264,7 @@ export class CelEvaluator {
           if (isKubernetesRef(part)) {
             return `${part.resourceId}.${part.fieldPath}`;
           }
-          return `"${part}"`;
+          return `"${CelEvaluator.escapeCelString(part)}"`;
         })
         .join(', ');
 
@@ -253,6 +285,11 @@ export class CelEvaluator {
       const conditionExpr = isKubernetesRef(condition)
         ? `${condition.resourceId}.${condition.fieldPath}`
         : condition;
+
+      // Validate the condition fragment if it's a raw string
+      if (!isKubernetesRef(condition)) {
+        CelEvaluator.validateCelFragment(conditionExpr, 'condition');
+      }
 
       return {
         [CEL_EXPRESSION_BRAND]: true,
@@ -281,7 +318,7 @@ export class CelEvaluator {
      */
     contains: (ref: KubernetesRef, substring: string): CelExpression => ({
       [CEL_EXPRESSION_BRAND]: true,
-      expression: `${ref.resourceId}.${ref.fieldPath}.contains("${substring}")`,
+      expression: `${ref.resourceId}.${ref.fieldPath}.contains("${CelEvaluator.escapeCelString(substring)}")`,
     }),
 
     /**
@@ -289,7 +326,7 @@ export class CelEvaluator {
      */
     startsWith: (ref: KubernetesRef, prefix: string): CelExpression => ({
       [CEL_EXPRESSION_BRAND]: true,
-      expression: `${ref.resourceId}.${ref.fieldPath}.startsWith("${prefix}")`,
+      expression: `${ref.resourceId}.${ref.fieldPath}.startsWith("${CelEvaluator.escapeCelString(prefix)}")`,
     }),
 
     /**
@@ -297,39 +334,51 @@ export class CelEvaluator {
      */
     endsWith: (ref: KubernetesRef, suffix: string): CelExpression => ({
       [CEL_EXPRESSION_BRAND]: true,
-      expression: `${ref.resourceId}.${ref.fieldPath}.endsWith("${suffix}")`,
+      expression: `${ref.resourceId}.${ref.fieldPath}.endsWith("${CelEvaluator.escapeCelString(suffix)}")`,
     }),
 
     /**
      * List/array operations: resource.field.all(x, x > 0)
      */
-    all: (ref: KubernetesRef, predicate: string): CelExpression => ({
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: `${ref.resourceId}.${ref.fieldPath}.all(x, ${predicate})`,
-    }),
+    all: (ref: KubernetesRef, predicate: string): CelExpression => {
+      CelEvaluator.validateCelFragment(predicate, 'predicate');
+      return {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: `${ref.resourceId}.${ref.fieldPath}.all(x, ${predicate})`,
+      };
+    },
 
     /**
      * List/array operations: resource.field.exists(x, x > 0)
      */
-    exists: (ref: KubernetesRef, predicate: string): CelExpression => ({
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: `${ref.resourceId}.${ref.fieldPath}.exists(x, ${predicate})`,
-    }),
+    exists: (ref: KubernetesRef, predicate: string): CelExpression => {
+      CelEvaluator.validateCelFragment(predicate, 'predicate');
+      return {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: `${ref.resourceId}.${ref.fieldPath}.exists(x, ${predicate})`,
+      };
+    },
 
     /**
      * List/array filter: resource.field.filter(x, x > 0)
      */
-    filter: (ref: KubernetesRef, predicate: string): CelExpression => ({
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: `${ref.resourceId}.${ref.fieldPath}.filter(x, ${predicate})`,
-    }),
+    filter: (ref: KubernetesRef, predicate: string): CelExpression => {
+      CelEvaluator.validateCelFragment(predicate, 'predicate');
+      return {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: `${ref.resourceId}.${ref.fieldPath}.filter(x, ${predicate})`,
+      };
+    },
 
     /**
      * List/array map: resource.field.map(x, x * 2)
      */
-    map: (ref: KubernetesRef, transform: string): CelExpression => ({
-      [CEL_EXPRESSION_BRAND]: true,
-      expression: `${ref.resourceId}.${ref.fieldPath}.map(x, ${transform})`,
-    }),
+    map: (ref: KubernetesRef, transform: string): CelExpression => {
+      CelEvaluator.validateCelFragment(transform, 'transform');
+      return {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: `${ref.resourceId}.${ref.fieldPath}.map(x, ${transform})`,
+      };
+    },
   };
 }

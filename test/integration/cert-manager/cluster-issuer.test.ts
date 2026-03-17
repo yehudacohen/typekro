@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
-import { toResourceGraph, kubernetesComposition } from '../../../src/index.js';
 import { type } from 'arktype';
-import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
+import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { kubernetesComposition, toResourceGraph } from '../../../src/index.js';
+import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -19,7 +19,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       customObjectsApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       console.log('✅ Cluster connection established');
-      
+
       // Create test namespace
       await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
@@ -34,33 +34,42 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       console.log('🧹 Cleaning up ClusterIssuer test resources...');
 
       // Delete all ClusterIssuers that start with 'test-' or 'integration-'
-      await customObjectsApi.listClusterCustomObject({
-        group: 'cert-manager.io',
-        version: 'v1',
-        plural: 'clusterissuers'
-      }).then(async (response: any) => {
-        const items = response.items || [];
-        for (const item of items) {
-          if (item.metadata.name.startsWith('test-') || item.metadata.name.startsWith('integration-')) {
-            try {
-              await customObjectsApi.deleteClusterCustomObject({
-                group: 'cert-manager.io',
-                version: 'v1',
-                plural: 'clusterissuers',
-                name: item.metadata.name
-              });
-              console.log(`🗑️ Deleted ClusterIssuer: ${item.metadata.name}`);
-            } catch (deleteError) {
-              console.warn(`⚠️ Failed to delete ClusterIssuer ${item.metadata.name}:`, deleteError);
+      await customObjectsApi
+        .listClusterCustomObject({
+          group: 'cert-manager.io',
+          version: 'v1',
+          plural: 'clusterissuers',
+        })
+        .then(async (response: any) => {
+          const items = response.items || [];
+          for (const item of items) {
+            if (
+              item.metadata.name.startsWith('test-') ||
+              item.metadata.name.startsWith('integration-')
+            ) {
+              try {
+                await customObjectsApi.deleteClusterCustomObject({
+                  group: 'cert-manager.io',
+                  version: 'v1',
+                  plural: 'clusterissuers',
+                  name: item.metadata.name,
+                });
+                console.log(`🗑️ Deleted ClusterIssuer: ${item.metadata.name}`);
+              } catch (deleteError) {
+                console.warn(
+                  `⚠️ Failed to delete ClusterIssuer ${item.metadata.name}:`,
+                  deleteError
+                );
+              }
             }
           }
-        }
-      }).catch((error) => {
-        console.warn('⚠️ Failed to list ClusterIssuers for cleanup:', error);
-      });
+        })
+        .catch((error) => {
+          console.warn('⚠️ Failed to list ClusterIssuers for cleanup:', error);
+        });
 
       // Wait a moment for cleanup to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       console.log('✅ ClusterIssuer test resource cleanup completed');
     } catch (error) {
@@ -70,24 +79,26 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager ClusterIssuer real integration tests...');
-    await deleteNamespaceIfExists(testNamespace, kubeConfig);
+    await deleteNamespaceAndWait(testNamespace, kubeConfig);
   });
 
   it('should deploy ClusterIssuer resource to Kubernetes using direct factory', async () => {
     console.log('🚀 Testing ClusterIssuer deployment with direct factory...');
 
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
 
     // Create a composition for ClusterIssuer deployment
     const ClusterIssuerSpec = type({
       name: 'string',
-      email: 'string'
+      email: 'string',
     });
 
     const ClusterIssuerStatus = type({
       ready: 'boolean',
       issuerType: 'string',
-      message: 'string'
+      message: 'string',
     });
 
     const clusterIssuerComposition = kubernetesComposition(
@@ -103,16 +114,18 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
         const issuer = clusterIssuer({
           name: spec.name,
           spec: {
-            selfSigned: {}
+            selfSigned: {},
           },
-          id: 'testIssuer'
+          id: 'testIssuer',
         });
 
         // Return status - will be evaluated by readiness evaluator
         return {
-          ready: issuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
+          ready:
+            issuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') ||
+            false,
           issuerType: 'self-signed',
-          message: 'ClusterIssuer deployed successfully'
+          message: 'ClusterIssuer deployed successfully',
         };
       }
     );
@@ -129,7 +142,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
 
     const deploymentResult = await directFactory.deploy({
       name: uniqueName,
-      email: 'test@example.com'
+      email: 'test@example.com',
     });
 
     // Validate deployment result
@@ -142,38 +155,42 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       group: 'cert-manager.io',
       version: 'v1',
       plural: 'clusterissuers',
-      name: uniqueName
+      name: uniqueName,
     });
 
     expect(clusterIssuerResource).toBeDefined();
-    const issuerBody = clusterIssuerResource as any;
+    // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+    const issuerBody = clusterIssuerResource as Record<string, any>;
     expect(issuerBody.kind).toBe('ClusterIssuer');
     expect(issuerBody.metadata.name).toBe(uniqueName);
     expect(issuerBody.spec.selfSigned).toEqual({});
 
     console.log('✅ ClusterIssuer successfully deployed to Kubernetes');
     console.log('📋 ClusterIssuer resource verified in cluster');
-
   }, 60000); // 60 second timeout for real deployment
 
   it('should deploy complete certificate issuance stack with ClusterIssuer and Certificate to Kubernetes', async () => {
     console.log('🚀 Testing complete certificate issuance with ClusterIssuer and Certificate...');
 
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
-    const { certificate } = await import('../../../src/factories/cert-manager/resources/certificates.js');
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
+    const { certificate } = await import(
+      '../../../src/factories/cert-manager/resources/certificates.js'
+    );
 
     // Create a resource graph that includes both issuer and certificate
     const CertificateIssuanceSpecSchema = type({
       issuerName: 'string',
       certificateName: 'string',
       secretName: 'string',
-      commonName: 'string'
+      commonName: 'string',
     });
 
     const CertificateIssuanceStatusSchema = type({
       issuerReady: 'boolean',
       certificateReady: 'boolean',
-      secretCreated: 'boolean'
+      secretCreated: 'boolean',
     });
 
     const certificateIssuanceGraph = toResourceGraph(
@@ -189,9 +206,9 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
         selfSignedIssuer: clusterIssuer({
           name: schema.spec.issuerName,
           spec: {
-            selfSigned: {}
+            selfSigned: {},
           },
-          id: 'selfSignedIssuer'
+          id: 'selfSignedIssuer',
         }),
 
         // Create certificate that references the issuer
@@ -204,18 +221,24 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
             dnsNames: [schema.spec.commonName],
             issuerRef: {
               name: schema.spec.issuerName, // Reference the issuer we created
-              kind: 'ClusterIssuer'
+              kind: 'ClusterIssuer',
             },
             duration: '24h', // Short duration for testing
-            renewBefore: '1h'
+            renewBefore: '1h',
           },
-          id: 'testCertificate'
-        })
+          id: 'testCertificate',
+        }),
       }),
       (_schema, resources) => ({
-        issuerReady: resources.selfSignedIssuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-        certificateReady: resources.testCertificate.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-        secretCreated: resources.testCertificate.status.conditions?.length > 0 || false
+        issuerReady:
+          resources.selfSignedIssuer.status.conditions?.some(
+            (c: any) => c.type === 'Ready' && c.status === 'True'
+          ) || false,
+        certificateReady:
+          resources.testCertificate.status.conditions?.some(
+            (c: any) => c.type === 'Ready' && c.status === 'True'
+          ) || false,
+        secretCreated: resources.testCertificate.status.conditions?.length > 0 || false,
       })
     );
 
@@ -237,7 +260,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       issuerName: issuerName,
       certificateName: certName,
       secretName: secretName,
-      commonName: 'test.example.com'
+      commonName: 'test.example.com',
     });
 
     // Validate deployment result
@@ -249,11 +272,12 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       group: 'cert-manager.io',
       version: 'v1',
       plural: 'clusterissuers',
-      name: issuerName
+      name: issuerName,
     });
 
     expect(clusterIssuerResource).toBeDefined();
-    const issuerBody = clusterIssuerResource as any;
+    // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+    const issuerBody = clusterIssuerResource as Record<string, any>;
     expect(issuerBody.kind).toBe('ClusterIssuer');
     expect(issuerBody.metadata.name).toBe(issuerName);
     expect(issuerBody.spec.selfSigned).toEqual({});
@@ -264,11 +288,12 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       version: 'v1',
       namespace: testNamespace,
       plural: 'certificates',
-      name: certName
+      name: certName,
     });
 
     expect(certificateResource).toBeDefined();
-    const certBody = certificateResource as any;
+    // biome-ignore lint/suspicious/noExplicitAny: K8s custom object API returns deeply nested untyped objects
+    const certBody = certificateResource as Record<string, any>;
     expect(certBody.kind).toBe('Certificate');
     expect(certBody.metadata.name).toBe(certName);
     expect(certBody.spec.secretName).toBe(secretName);
@@ -287,18 +312,19 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
         version: 'v1',
         namespace: testNamespace,
         plural: 'certificates',
-        name: certName
+        name: certName,
       });
       console.log(`🗑️ Cleaned up Certificate: ${certName}`);
     } catch (error) {
       console.warn(`⚠️ Failed to clean up Certificate ${certName}:`, error);
     }
-
   }, 120000); // 120 second timeout for real certificate issuance
 
   it('should validate ClusterIssuer factory integration with TypeKro features', async () => {
     // Test that ClusterIssuer factory works with TypeKro's serialization and deployment features
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
 
     const testIssuer = clusterIssuer({
       name: 'integration-test-issuer-features',
@@ -307,18 +333,20 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
           server: 'https://acme-staging-v02.api.letsencrypt.org/directory',
           email: 'test@example.com',
           privateKeySecretRef: {
-            name: 'letsencrypt-staging'
+            name: 'letsencrypt-staging',
           },
-          solvers: [{
-            http01: {
-              ingress: {
-                class: 'nginx'
-              }
-            }
-          }]
-        }
+          solvers: [
+            {
+              http01: {
+                ingress: {
+                  class: 'nginx',
+                },
+              },
+            },
+          ],
+        },
       },
-      id: 'integrationIssuer'
+      id: 'integrationIssuer',
     });
 
     // Validate TypeKro integration features
@@ -337,7 +365,9 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
 
   it('should support comprehensive ACME solver configurations for real certificate issuance', async () => {
     // Test comprehensive ACME configurations that would work with real ACME providers
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
 
     // Test Let's Encrypt production with HTTP01 challenge
     const letsEncryptProd = clusterIssuer({
@@ -347,30 +377,32 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
           server: 'https://acme-v02.api.letsencrypt.org/directory',
           email: 'admin@example.com',
           privateKeySecretRef: {
-            name: 'letsencrypt-prod'
+            name: 'letsencrypt-prod',
           },
-          solvers: [{
-            http01: {
-              ingress: {
-                class: 'nginx',
-                podTemplate: {
-                  metadata: {
-                    annotations: {
-                      'kubernetes.io/ingress.class': 'nginx'
-                    }
+          solvers: [
+            {
+              http01: {
+                ingress: {
+                  class: 'nginx',
+                  podTemplate: {
+                    metadata: {
+                      annotations: {
+                        'kubernetes.io/ingress.class': 'nginx',
+                      },
+                    },
+                    spec: {
+                      nodeSelector: {
+                        'kubernetes.io/os': 'linux',
+                      },
+                    },
                   },
-                  spec: {
-                    nodeSelector: {
-                      'kubernetes.io/os': 'linux'
-                    }
-                  }
-                }
-              }
-            }
-          }]
-        }
+                },
+              },
+            },
+          ],
+        },
       },
-      id: 'letsEncryptProd'
+      id: 'letsEncryptProd',
     });
 
     // Test Let's Encrypt with DNS01 challenge using multiple providers
@@ -381,7 +413,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
           server: 'https://acme-v02.api.letsencrypt.org/directory',
           email: 'admin@example.com',
           privateKeySecretRef: {
-            name: 'letsencrypt-dns01'
+            name: 'letsencrypt-dns01',
           },
           solvers: [
             // AWS Route53 solver
@@ -391,13 +423,13 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
                   region: 'us-east-1',
                   secretAccessKeySecretRef: {
                     name: 'aws-credentials',
-                    key: 'secret-access-key'
-                  }
-                }
+                    key: 'secret-access-key',
+                  },
+                },
               },
               selector: {
-                dnsZones: ['aws.example.com']
-              }
+                dnsZones: ['aws.example.com'],
+              },
             },
             // Cloudflare solver
             {
@@ -405,13 +437,13 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
                 cloudflare: {
                   apiTokenSecretRef: {
                     name: 'cloudflare-api-token',
-                    key: 'api-token'
-                  }
-                }
+                    key: 'api-token',
+                  },
+                },
               },
               selector: {
-                dnsZones: ['cloudflare.example.com']
-              }
+                dnsZones: ['cloudflare.example.com'],
+              },
             },
             // Google Cloud DNS solver
             {
@@ -420,28 +452,34 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
                   project: 'my-gcp-project',
                   serviceAccountSecretRef: {
                     name: 'gcp-service-account',
-                    key: 'service-account.json'
-                  }
-                }
+                    key: 'service-account.json',
+                  },
+                },
               },
               selector: {
-                dnsZones: ['gcp.example.com']
-              }
-            }
-          ]
-        }
+                dnsZones: ['gcp.example.com'],
+              },
+            },
+          ],
+        },
       },
-      id: 'letsEncryptDns01'
+      id: 'letsEncryptDns01',
     });
 
     // Validate comprehensive ACME configurations
-    expect(letsEncryptProd.spec.acme?.server).toBe('https://acme-v02.api.letsencrypt.org/directory');
+    expect(letsEncryptProd.spec.acme?.server).toBe(
+      'https://acme-v02.api.letsencrypt.org/directory'
+    );
     expect(letsEncryptProd.spec.acme?.solvers?.[0]?.http01?.ingress?.class).toBe('nginx');
 
     expect(letsEncryptDns01.spec.acme?.solvers).toHaveLength(3);
     expect(letsEncryptDns01.spec.acme?.solvers?.[0]?.dns01?.route53?.region).toBe('us-east-1');
-    expect(letsEncryptDns01.spec.acme?.solvers?.[1]?.dns01?.cloudflare?.apiTokenSecretRef?.name).toBe('cloudflare-api-token');
-    expect(letsEncryptDns01.spec.acme?.solvers?.[2]?.dns01?.cloudDNS?.project).toBe('my-gcp-project');
+    expect(
+      letsEncryptDns01.spec.acme?.solvers?.[1]?.dns01?.cloudflare?.apiTokenSecretRef?.name
+    ).toBe('cloudflare-api-token');
+    expect(letsEncryptDns01.spec.acme?.solvers?.[2]?.dns01?.cloudDNS?.project).toBe(
+      'my-gcp-project'
+    );
 
     console.log('✅ Comprehensive ACME solver configurations validated');
     console.log('📋 HTTP01 and DNS01 challenges with multiple providers supported');
@@ -449,7 +487,9 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
 
   it('should support all major issuer types for comprehensive certificate authority integration', async () => {
     // Test all supported issuer types to ensure comprehensive CA support
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
 
     // Test Vault issuer with Kubernetes auth
     const vaultIssuer = clusterIssuer({
@@ -464,13 +504,13 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
               role: 'cert-manager',
               secretRef: {
                 name: 'vault-service-account',
-                key: 'token'
-              }
-            }
-          }
-        }
+                key: 'token',
+              },
+            },
+          },
+        },
       },
-      id: 'vaultIssuer'
+      id: 'vaultIssuer',
     });
 
     // Test Venafi TPP issuer
@@ -482,13 +522,13 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
           tpp: {
             url: 'https://tpp.example.com/vedsdk',
             credentialsRef: {
-              name: 'venafi-tpp-credentials'
+              name: 'venafi-tpp-credentials',
             },
-            caBundle: 'LS0tLS1CRUdJTi...' // Base64 encoded CA bundle
-          }
-        }
+            caBundle: 'LS0tLS1CRUdJTi...', // Base64 encoded CA bundle
+          },
+        },
       },
-      id: 'venafiTppIssuer'
+      id: 'venafiTppIssuer',
     });
 
     // Test Venafi Cloud issuer
@@ -500,12 +540,12 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
           cloud: {
             apiTokenSecretRef: {
               name: 'venafi-cloud-token',
-              key: 'api-token'
-            }
-          }
-        }
+              key: 'api-token',
+            },
+          },
+        },
       },
-      id: 'venafiCloudIssuer'
+      id: 'venafiCloudIssuer',
     });
 
     // Test CA issuer with comprehensive configuration
@@ -516,10 +556,10 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
           secretName: 'ca-key-pair',
           crlDistributionPoints: ['http://crl.example.com/ca.crl'],
           ocspServers: ['http://ocsp.example.com'],
-          issuingCertificateURLs: ['http://ca.example.com/ca.crt']
-        }
+          issuingCertificateURLs: ['http://ca.example.com/ca.crt'],
+        },
       },
-      id: 'caIssuer'
+      id: 'caIssuer',
     });
 
     // Validate all issuer types
@@ -529,7 +569,9 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
     expect(venafiTppIssuer.spec.venafi?.tpp?.url).toBe('https://tpp.example.com/vedsdk');
     expect(venafiTppIssuer.spec.venafi?.zone).toBe('DevOps\\Certificates');
 
-    expect(venafiCloudIssuer.spec.venafi?.cloud?.apiTokenSecretRef?.name).toBe('venafi-cloud-token');
+    expect(venafiCloudIssuer.spec.venafi?.cloud?.apiTokenSecretRef?.name).toBe(
+      'venafi-cloud-token'
+    );
 
     expect(caIssuer.spec.ca?.secretName).toBe('ca-key-pair');
     expect(caIssuer.spec.ca?.crlDistributionPoints).toEqual(['http://crl.example.com/ca.crl']);
@@ -540,7 +582,9 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
 
   it('should validate readiness evaluation with actual issuer registration status scenarios', async () => {
     // Test readiness evaluation with realistic ACME account registration scenarios
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
 
     const testIssuer = clusterIssuer({
       name: 'readiness-test-acme',
@@ -549,18 +593,20 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
           server: 'https://acme-staging-v02.api.letsencrypt.org/directory',
           email: 'test@example.com',
           privateKeySecretRef: {
-            name: 'letsencrypt-staging'
+            name: 'letsencrypt-staging',
           },
-          solvers: [{
-            http01: {
-              ingress: {
-                class: 'nginx'
-              }
-            }
-          }]
-        }
+          solvers: [
+            {
+              http01: {
+                ingress: {
+                  class: 'nginx',
+                },
+              },
+            },
+          ],
+        },
       },
-      id: 'readinessTestIssuer'
+      id: 'readinessTestIssuer',
     });
 
     expect(testIssuer.readinessEvaluator).toBeDefined();
@@ -577,14 +623,14 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
             type: 'Ready',
             status: 'True',
             reason: 'ACMEAccountRegistered',
-            message: 'The ACME account was registered with the ACME server'
-          }
+            message: 'The ACME account was registered with the ACME server',
+          },
         ],
         acme: {
           uri: 'https://acme-staging-v02.api.letsencrypt.org/acme/acct/12345',
-          lastRegisteredEmail: 'test@example.com'
-        }
-      }
+          lastRegisteredEmail: 'test@example.com',
+        },
+      },
     };
 
     if (testIssuer.readinessEvaluator) {
@@ -605,10 +651,10 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
             type: 'Ready',
             status: 'False',
             reason: 'ACMEAccountRegistrationFailed',
-            message: 'Failed to register ACME account: invalid email address'
-          }
-        ]
-      }
+            message: 'Failed to register ACME account: invalid email address',
+          },
+        ],
+      },
     };
 
     if (testIssuer.readinessEvaluator) {
@@ -623,7 +669,7 @@ describe('Cert-Manager ClusterIssuer Real Integration Tests', () => {
       apiVersion: 'cert-manager.io/v1',
       kind: 'ClusterIssuer',
       metadata: { name: 'test-acme-issuer' },
-      spec: { acme: { server: 'https://acme-staging-v02.api.letsencrypt.org/directory' } }
+      spec: { acme: { server: 'https://acme-staging-v02.api.letsencrypt.org/directory' } },
       // No status field - initial state
     };
 

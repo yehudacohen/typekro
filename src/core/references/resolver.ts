@@ -6,13 +6,16 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { isCelExpression, isKubernetesRef } from '../../utils/index';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { DEFAULT_RESOURCE_READY_TIMEOUT } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { ResourceReadinessTimeoutError } from '../deployment/errors.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
+import { ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+import { copyResourceMetadata, getResourceId } from '../metadata/index.js';
 import type { ResolutionContext } from '../types/deployment.js';
-import { ResourceReadinessTimeoutError } from '../types/deployment.js';
 import type { CelEvaluationContext } from '../types/references.js';
 import type {
   CelExpression,
@@ -94,7 +97,7 @@ export class ReferenceResolver {
    * - Function values (structuredClone cannot clone functions)
    * BUT preserve KubernetesRef and CEL expression objects intact
    */
-  private filterInternalFields(obj: any): any {
+  private filterInternalFields(obj: unknown): unknown {
     if (obj === null || obj === undefined || typeof obj !== 'object') {
       return obj;
     }
@@ -109,7 +112,7 @@ export class ReferenceResolver {
     }
 
     // Create new object without non-cloneable fields
-    const filtered: any = {};
+    const filtered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       // Skip fields starting with __ as they are internal
       if (key.startsWith('__')) {
@@ -132,57 +135,17 @@ export class ReferenceResolver {
   }
 
   /**
-   * Check if an object contains CEL expressions at any level
-   * CEL expressions have Symbol brands that cannot be cloned by structuredClone
-   */
-  private containsCelExpressions(obj: any, visited = new Set<any>()): boolean {
-    if (obj === null || obj === undefined) {
-      return false;
-    }
-
-    // Prevent infinite loops from circular references
-    if (visited.has(obj)) {
-      return false;
-    }
-
-    // Check if this object is a CEL expression
-    if (isCelExpression(obj)) {
-      return true;
-    }
-
-    // Recursively check arrays
-    if (Array.isArray(obj)) {
-      visited.add(obj);
-      const result = obj.some((item) => this.containsCelExpressions(item, visited));
-      visited.delete(obj);
-      return result;
-    }
-
-    // Recursively check object properties
-    if (typeof obj === 'object') {
-      visited.add(obj);
-      const result = Object.values(obj).some((value) =>
-        this.containsCelExpressions(value, visited)
-      );
-      visited.delete(obj);
-      return result;
-    }
-
-    return false;
-  }
-
-  /**
    * Selectively clone an object, preserving CEL expressions as-is
    * CEL expressions are immutable and don't need deep cloning
    * This avoids structuredClone failures on Symbol-branded objects
    */
-  private selectiveClone(obj: any, visited = new Set<any>()): any {
+  private selectiveClone(obj: unknown, visited = new Set<object>()): unknown {
     if (obj === null || obj === undefined) {
       return obj;
     }
 
     // Prevent infinite loops from circular references
-    if (visited.has(obj)) {
+    if (typeof obj === 'object' && visited.has(obj)) {
       return obj;
     }
 
@@ -203,7 +166,7 @@ export class ReferenceResolver {
     // Clone plain objects recursively
     if (typeof obj === 'object') {
       visited.add(obj);
-      const cloned: any = {};
+      const cloned: Record<string | symbol, unknown> = {};
 
       // Clone string-keyed properties
       for (const [key, value] of Object.entries(obj)) {
@@ -213,7 +176,7 @@ export class ReferenceResolver {
       // Preserve Symbol-keyed properties (like KUBERNETES_REF_BRAND, CEL_EXPRESSION_BRAND)
       const symbols = Object.getOwnPropertySymbols(obj);
       for (const sym of symbols) {
-        cloned[sym] = obj[sym];
+        cloned[sym] = (obj as Record<symbol, unknown>)[sym];
       }
 
       visited.delete(obj);
@@ -253,11 +216,11 @@ export class ReferenceResolver {
     // This avoids structuredClone failures on objects with Symbols
     let resolved: any;
 
-    if (typeof (resource as any).toJSON === 'function') {
+    if (typeof resource.toJSON === 'function') {
       this.logger.trace('Resource has toJSON method, calling it first', {
         resourceId: resource.id,
       });
-      const plainObject = (resource as any).toJSON();
+      const plainObject = resource.toJSON();
       // toJSON might still contain Symbol-branded objects, so use selectiveClone
       resolved = this.selectiveClone(plainObject);
     } else {
@@ -268,30 +231,13 @@ export class ReferenceResolver {
       resolved = this.selectiveClone(resource);
     }
 
-    // Preserve the non-enumerable readinessEvaluator if present
-    if (resource.readinessEvaluator && typeof resource.readinessEvaluator === 'function') {
-      this.logger.trace('Preserving readiness evaluator on cloned resource', {
+    // Preserve all resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
+    copyResourceMetadata(resource, resolved);
+    const rid = getResourceId(resource);
+    if (rid) {
+      this.logger.trace('Preserved metadata on cloned resource', {
         resourceId: resource.id,
-      });
-      Object.defineProperty(resolved, 'readinessEvaluator', {
-        value: resource.readinessEvaluator,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
-
-    // Preserve the non-enumerable __resourceId if present (used for cross-resource references)
-    if (resource.__resourceId && typeof resource.__resourceId === 'string') {
-      this.logger.trace('Preserving __resourceId on cloned resource', {
-        resourceId: resource.id,
-        __resourceId: resource.__resourceId,
-      });
-      Object.defineProperty(resolved, '__resourceId', {
-        value: resource.__resourceId,
-        enumerable: false,
-        configurable: true,
-        writable: false,
+        __resourceId: rid,
       });
     }
 
@@ -302,18 +248,22 @@ export class ReferenceResolver {
   /**
    * Quick check if a resource has any references
    */
-  private hasReferences(obj: any, visited = new Set<any>()): boolean {
+  private hasReferences(obj: unknown, visited = new Set<object>()): boolean {
     if (obj === null || obj === undefined) {
+      return false;
+    }
+
+    if (isKubernetesRef(obj) || isCelExpression(obj)) {
+      return true;
+    }
+
+    if (typeof obj !== 'object') {
       return false;
     }
 
     // Prevent infinite loops from circular references
     if (visited.has(obj)) {
       return false;
-    }
-
-    if (isKubernetesRef(obj) || isCelExpression(obj)) {
-      return true;
     }
 
     if (Array.isArray(obj)) {
@@ -323,20 +273,16 @@ export class ReferenceResolver {
       return result;
     }
 
-    if (typeof obj === 'object') {
-      visited.add(obj);
-      const result = Object.values(obj).some((value) => this.hasReferences(value, visited));
-      visited.delete(obj);
-      return result;
-    }
-
-    return false;
+    visited.add(obj);
+    const result = Object.values(obj).some((value) => this.hasReferences(value, visited));
+    visited.delete(obj);
+    return result;
   }
 
   /**
    * Restore Symbol brands that were lost during JSON serialization
    */
-  private restoreBrands(obj: any, visited = new Set<any>()): void {
+  private restoreBrands(obj: unknown, visited = new Set<object>()): void {
     if (obj === null || obj === undefined || typeof obj !== 'object') {
       return;
     }
@@ -346,12 +292,14 @@ export class ReferenceResolver {
       return;
     }
 
+    const record = obj as Record<string, unknown>;
+
     // Check if this looks like a KubernetesRef (has resourceId and fieldPath)
     if (
-      obj.resourceId &&
-      obj.fieldPath &&
-      typeof obj.resourceId === 'string' &&
-      typeof obj.fieldPath === 'string'
+      record.resourceId &&
+      record.fieldPath &&
+      typeof record.resourceId === 'string' &&
+      typeof record.fieldPath === 'string'
     ) {
       // Restore the KubernetesRef brand
       Object.defineProperty(obj, Symbol.for('TypeKro.KubernetesRef'), {
@@ -361,7 +309,7 @@ export class ReferenceResolver {
     }
 
     // Check if this looks like a CelExpression (has expression property)
-    if (obj.expression && typeof obj.expression === 'string') {
+    if (record.expression && typeof record.expression === 'string') {
       // Restore the CelExpression brand
       Object.defineProperty(obj, Symbol.for('TypeKro.CelExpression'), {
         value: true,
@@ -461,12 +409,16 @@ export class ReferenceResolver {
     // Check if this is a reference to the schema
     if (ref.resourceId === 'schema' || ref.resourceId === '__schema__') {
       if (context.schema) {
-        const value = this.extractFieldValue<T>(context.schema as any, ref.fieldPath);
+        const value = this.extractFieldValue<T>(context.schema, ref.fieldPath);
         this.cache.set(cacheKey, value);
         return value as T;
       }
       // If schema not in context, this is an error
-      throw new Error(`Schema reference found but schema not provided in context`);
+      throw new TypeKroError(
+        `Schema reference found but schema not provided in context`,
+        'SCHEMA_NOT_PROVIDED',
+        { resourceId: ref.resourceId, fieldPath: ref.fieldPath }
+      );
     }
 
     // First check if resource is in our deployment context
@@ -490,10 +442,10 @@ export class ReferenceResolver {
           resourceId: ref.resourceId,
           fieldPath: ref.fieldPath,
           hasResource: !!resource,
-          resourceKind: resource ? (resource as any).kind : undefined,
+          resourceKind: resource ? (resource as Record<string, unknown>).kind : undefined,
         });
         if (resource) {
-          const value = this.extractFieldValue<T>(resource as any, ref.fieldPath);
+          const value = this.extractFieldValue<T>(resource, ref.fieldPath);
           this.logger.debug('Extracted field value from resourceKeyMapping', {
             resourceId: ref.resourceId,
             fieldPath: ref.fieldPath,
@@ -512,8 +464,8 @@ export class ReferenceResolver {
       const value = this.extractFieldValue<T>(resource, ref.fieldPath);
       this.cache.set(cacheKey, value);
       return value as T;
-    } catch (error) {
-      throw new ReferenceResolutionError(ref, error as Error);
+    } catch (error: unknown) {
+      throw new ReferenceResolutionError(ref, ensureError(error));
     }
   }
 
@@ -561,7 +513,7 @@ export class ReferenceResolver {
   ): Promise<T> {
     this.logger.debug('Starting CEL expression evaluation', {
       expression: expr.expression,
-      isTemplate: (expr as any).__isTemplate,
+      isTemplate: expr.__isTemplate,
       hasResourceKeyMapping: !!context.resourceKeyMapping,
       resourceKeyMappingSize: context.resourceKeyMapping ? context.resourceKeyMapping.size : 0,
       resourceKeyMappingKeys: context.resourceKeyMapping
@@ -573,7 +525,7 @@ export class ReferenceResolver {
 
     // Handle template expressions specially - they contain ${...} placeholders
     // that need to be resolved individually, not as a single CEL expression
-    if ((expr as any).__isTemplate) {
+    if (expr.__isTemplate) {
       return await this.evaluateTemplateExpression(expr, context);
     }
 
@@ -592,11 +544,12 @@ export class ReferenceResolver {
         // Use the resource key mapping to provide resources with their original keys
         for (const [originalKey, resource] of context.resourceKeyMapping) {
           resourcesMap.set(originalKey, resource);
+          const resourceInfo = resource as Record<string, unknown>;
           this.logger.debug('Added resource to CEL context from key mapping', {
             originalKey,
-            resourceId: (resource as any).id,
-            resourceKind: (resource as any).kind,
-            resourceName: (resource as any).name,
+            resourceId: resourceInfo.id,
+            resourceKind: resourceInfo.kind,
+            resourceName: resourceInfo.name,
           });
         }
       } else {
@@ -617,7 +570,7 @@ export class ReferenceResolver {
         // Also add as __schema__ for backward compatibility
         resourcesMap.set('__schema__', context.schema);
         this.logger.debug('Added schema to CEL context', {
-          schemaSpec: Object.keys((context.schema as any).spec || {}),
+          schemaSpec: Object.keys((context.schema.spec ?? {}) as Record<string, unknown>),
         });
       }
 
@@ -627,7 +580,7 @@ export class ReferenceResolver {
         // Also add as __schema__ for backward compatibility
         resourcesMap.set('__schema__', context.schema);
         this.logger.debug('Added schema to CEL context', {
-          schemaSpec: Object.keys((context.schema as any).spec || {}),
+          schemaSpec: Object.keys((context.schema.spec ?? {}) as Record<string, unknown>),
         });
       }
 
@@ -654,8 +607,8 @@ export class ReferenceResolver {
       });
       this.cache.set(cacheKey, result);
       return result as T;
-    } catch (error) {
-      this.logger.error('CEL expression evaluation failed', error as Error, {
+    } catch (error: unknown) {
+      this.logger.error('CEL expression evaluation failed', ensureError(error), {
         expression: expr.expression,
         hasResourceKeyMapping: !!context.resourceKeyMapping,
         resourceKeyMappingKeys: context.resourceKeyMapping
@@ -664,13 +617,13 @@ export class ReferenceResolver {
         resourcesMapSize: resourcesMap.size,
         resourcesMapKeys: Array.from(resourcesMap.keys()),
       });
-      throw new CelExpressionError(expr, error as Error);
+      throw new CelExpressionError(expr, ensureError(error));
     }
   }
 
   /**
    * Evaluate a template expression by resolving ${...} placeholders
-   * 
+   *
    * Template expressions are strings like "http://${service.metadata.name}" that contain
    * embedded CEL expressions. Each ${...} placeholder is evaluated separately and the
    * results are concatenated to form the final string.
@@ -680,7 +633,7 @@ export class ReferenceResolver {
     context: ResolutionContext
   ): Promise<T> {
     const templateString = expr.expression;
-    
+
     this.logger.debug('Evaluating template expression', {
       template: templateString,
     });
@@ -688,7 +641,7 @@ export class ReferenceResolver {
     // Find all ${...} placeholders and evaluate them
     const placeholderRegex = /\$\{([^}]+)\}/g;
     let result = templateString;
-    
+
     // Collect all matches first to avoid issues with modifying the string while iterating
     const matches: Array<{ fullMatch: string; celExpr: string }> = [];
     let match = placeholderRegex.exec(templateString);
@@ -711,20 +664,20 @@ export class ReferenceResolver {
 
         // Evaluate the placeholder expression
         const evaluatedValue = await this.evaluateCelExpression(placeholderExpr, context);
-        
+
         // Replace the placeholder with the evaluated value
         result = result.replace(fullMatch, String(evaluatedValue));
-        
+
         this.logger.debug('Evaluated template placeholder', {
           placeholder: fullMatch,
           celExpr,
           evaluatedValue,
         });
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.warn('Failed to evaluate template placeholder', {
           placeholder: fullMatch,
           celExpr,
-          error: (error as Error).message,
+          error: ensureError(error).message,
         });
         // Keep the original placeholder if evaluation fails
       }
@@ -779,6 +732,9 @@ export class ReferenceResolver {
 
       // Query the resource from the cluster
       // In the new API, methods return objects directly (no .body wrapper)
+      // Cast is required: resourceRef.metadata.name is guaranteed non-undefined (set above)
+      // but V1ObjectMeta.name is typed as optional, causing exactOptionalPropertyTypes mismatch.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const resource = await this.k8sApi.read(resourceRef as any);
 
       queryLogger.debug('Successfully retrieved cluster resource', {
@@ -787,17 +743,18 @@ export class ReferenceResolver {
       });
 
       // Convert k8s.KubernetesObject to our KubernetesResource type
+      const rawResource = resource as k8s.KubernetesObject & { spec?: unknown; status?: unknown };
       const kubernetesResource: KubernetesResource = {
         apiVersion: resource.apiVersion || '',
         kind: resource.kind || '',
         metadata: resource.metadata || {},
-        spec: (resource as any).spec,
-        status: (resource as any).status,
+        spec: rawResource.spec,
+        status: rawResource.status,
         ...(resource.metadata?.name && { id: resource.metadata.name }),
       };
 
       return kubernetesResource;
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string };
 
       if (k8sError.statusCode === 404) {
@@ -811,7 +768,7 @@ export class ReferenceResolver {
         );
       }
 
-      queryLogger.error('Failed to query cluster resource', error as Error, {
+      queryLogger.error('Failed to query cluster resource', ensureError(error), {
         resourceId: ref.resourceId,
         statusCode: k8sError.statusCode,
       });
@@ -982,7 +939,7 @@ export class ReferenceResolver {
    */
   async waitForResourceReady<T = unknown>(
     resourceRef: KubernetesRef<T>,
-    timeout: number = 30000
+    timeout: number = DEFAULT_RESOURCE_READY_TIMEOUT
   ): Promise<boolean> {
     const readinessLogger = this.logger.child({ resourceId: resourceRef.resourceId });
 
@@ -1029,8 +986,8 @@ export class ReferenceResolver {
       });
 
       return true;
-    } catch (error) {
-      readinessLogger.error('Resource readiness check failed', error as Error, {
+    } catch (error: unknown) {
+      readinessLogger.error('Resource readiness check failed', ensureError(error), {
         resourceId: resourceRef.resourceId,
         timeout,
       });
@@ -1045,7 +1002,7 @@ export class ReferenceResolver {
         kind: 'Unknown',
         name: resourceRef.resourceId,
         namespace: 'default',
-        manifest: {} as any,
+        manifest: { apiVersion: '', kind: 'Unknown', metadata: { name: resourceRef.resourceId } },
         status: 'failed',
         deployedAt: new Date(),
       };
@@ -1072,17 +1029,25 @@ export class ReferenceResolver {
 }
 
 // Error classes
-export class ReferenceResolutionError extends Error {
+export class ReferenceResolutionError extends TypeKroError {
   constructor(ref: KubernetesRef, cause: Error) {
-    super(`Failed to resolve reference ${ref.resourceId}.${ref.fieldPath}: ${cause.message}`);
+    super(
+      `Failed to resolve reference ${ref.resourceId}.${ref.fieldPath}: ${cause.message}`,
+      'REFERENCE_RESOLUTION_ERROR',
+      { resourceId: ref.resourceId, fieldPath: ref.fieldPath, cause: cause.message }
+    );
     this.name = 'ReferenceResolutionError';
     this.cause = cause;
   }
 }
 
-export class CelExpressionError extends Error {
+export class CelExpressionError extends TypeKroError {
   constructor(expr: CelExpression, cause: Error) {
-    super(`Failed to evaluate CEL expression '${expr.expression}': ${cause.message}`);
+    super(
+      `Failed to evaluate CEL expression '${expr.expression}': ${cause.message}`,
+      'CEL_EXPRESSION_ERROR',
+      { expression: expr.expression, cause: cause.message }
+    );
     this.name = 'CelExpressionError';
     this.cause = cause;
   }

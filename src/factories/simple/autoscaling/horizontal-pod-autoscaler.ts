@@ -15,6 +15,17 @@ import type { HpaConfig } from '../types.js';
  *
  * @param config - Configuration for the horizontal pod autoscaler
  * @returns Enhanced HorizontalPodAutoscaler resource
+ *
+ * @example
+ * ```typescript
+ * const autoscaler = Hpa({
+ *   name: 'web-hpa',
+ *   target: { kind: 'Deployment', name: 'web-server' },
+ *   minReplicas: 2,
+ *   maxReplicas: 10,
+ *   cpuUtilization: 80,
+ * });
+ * ```
  */
 export function Hpa(config: HpaConfig): Enhanced<V2HpaSpec, V2HpaStatus> {
   const metrics = [];
@@ -33,6 +44,7 @@ export function Hpa(config: HpaConfig): Enhanced<V2HpaSpec, V2HpaStatus> {
   }
 
   return horizontalPodAutoscaler({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),

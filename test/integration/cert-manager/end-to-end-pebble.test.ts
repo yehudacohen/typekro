@@ -9,12 +9,21 @@
  * 5. Complete certificate lifecycle verification
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
-import { kubernetesComposition, pebble, certManager, simple } from '../../../src/index.js';
-import { CiliumIngressClass, CiliumIngress } from '../../../src/factories/cilium/resources/gateway.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCustomObjectsApiClient, createCoreV1ApiClient, ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
+import { ingress } from '../../../src/factories/kubernetes/networking/ingress.js';
+import { certManager, kubernetesComposition, pebble, simple } from '../../../src/index.js';
+import {
+  createCoreV1ApiClient,
+  createCustomObjectsApiClient,
+  createKubernetesObjectApiClient,
+  deleteNamespaceAndWait,
+  ensureApisixInstalled,
+  ensureNamespaceExists,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from '../shared-kubeconfig.js';
 
 const NAMESPACE = 'typekro-test-e2e-pebble';
 const clusterAvailable = isClusterAvailable();
@@ -30,7 +39,7 @@ const E2ECertificateSpec = type({
   baseName: 'string',
   commonName: 'string',
   dnsNames: 'string[]',
-  email: 'string'
+  email: 'string',
 });
 
 const E2ECertificateStatus = type({
@@ -47,7 +56,7 @@ const E2ECertificateStatus = type({
   acmeEndpoint: 'string',
   issuerName: 'string',
   certificateName: 'string',
-  secretName: 'string'
+  secretName: 'string',
 });
 
 describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', () => {
@@ -68,9 +77,18 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     customObjectsApi = createCustomObjectsApiClient(kubeConfig);
     coreV1Api = createCoreV1ApiClient(kubeConfig);
     testNamespace = NAMESPACE;
-    
+
     // Create test namespace
     await ensureNamespaceExists(testNamespace, kubeConfig);
+
+    // Install APISIX ingress controller for HTTP-01 challenges
+    console.log('📦 Installing APISIX ingress controller...');
+    await ensureApisixInstalled({
+      namespace: 'apisix-system',
+      kubeConfig: kubeConfig,
+      gatewayType: 'NodePort',
+    });
+    console.log('✅ APISIX ingress controller installed');
 
     // Install cert-manager through TypeKro (following dependency management philosophy)
     console.log('📦 Installing cert-manager through TypeKro bootstrap...');
@@ -83,31 +101,31 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     await certManagerFactory.deploy({
       name: 'cert-manager',
       namespace: 'cert-manager',
-      version: '1.13.3',
+      version: '1.19.3',
       installCRDs: true,
+      startupapicheck: { enabled: false }, // Disable to avoid post-install hook timeouts
       // Minimal resource configuration for testing
       controller: {
         resources: {
           requests: { cpu: '10m', memory: '32Mi' },
-          limits: { cpu: '100m', memory: '128Mi' }
-        }
+          limits: { cpu: '100m', memory: '128Mi' },
+        },
       },
       webhook: {
-        enabled: true,
         replicaCount: 1,
         resources: {
           requests: { cpu: '10m', memory: '32Mi' },
-          limits: { cpu: '100m', memory: '128Mi' }
-        }
+          limits: { cpu: '100m', memory: '128Mi' },
+        },
       },
       cainjector: {
         enabled: true,
         replicaCount: 1,
         resources: {
           requests: { cpu: '10m', memory: '32Mi' },
-          limits: { cpu: '100m', memory: '128Mi' }
-        }
-      }
+          limits: { cpu: '100m', memory: '128Mi' },
+        },
+      },
     });
 
     console.log('✅ Cert-manager installed successfully through TypeKro!');
@@ -119,11 +137,14 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
 
     // Check if we're in debug mode - if so, skip cleanup to allow inspection
     const debugMode = process.env.DEBUG_MODE === 'true';
-    
+
     if (debugMode) {
       console.log('🔍 Debug mode enabled - skipping resource cleanup');
       console.log('   Resources left in cluster for inspection:');
-      console.log('   - Certificates, ClusterIssuers, Challenges, Orders in namespace:', testNamespace);
+      console.log(
+        '   - Certificates, ClusterIssuers, Challenges, Orders in namespace:',
+        testNamespace
+      );
       console.log('   - HelmReleases and HelmRepositories');
       console.log('   Use kubectl to inspect resources manually');
       console.log('   Run this test without DEBUG_MODE=true to enable cleanup');
@@ -139,10 +160,20 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         { group: 'cert-manager.io', version: 'v1', plural: 'clusterissuers', namespaced: false },
         { group: 'acme.cert-manager.io', version: 'v1', plural: 'challenges', namespaced: true },
         { group: 'acme.cert-manager.io', version: 'v1', plural: 'orders', namespaced: true },
-        { group: 'helm.toolkit.fluxcd.io', version: 'v2', plural: 'helmreleases', namespaced: true },
-        { group: 'source.toolkit.fluxcd.io', version: 'v1', plural: 'helmrepositories', namespaced: false },
+        {
+          group: 'helm.toolkit.fluxcd.io',
+          version: 'v2',
+          plural: 'helmreleases',
+          namespaced: true,
+        },
+        {
+          group: 'source.toolkit.fluxcd.io',
+          version: 'v1',
+          plural: 'helmrepositories',
+          namespaced: false,
+        },
         { group: 'networking.k8s.io', version: 'v1', plural: 'ingresses', namespaced: true },
-        { group: 'networking.k8s.io', version: 'v1', plural: 'ingressclasses', namespaced: false }
+        { group: 'networking.k8s.io', version: 'v1', plural: 'ingressclasses', namespaced: false },
       ];
 
       for (const resourceType of resourceTypes) {
@@ -166,7 +197,12 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           const items = response.items || [];
           for (const item of items) {
             const itemName = item.metadata?.name;
-            if (itemName && (itemName.startsWith('e2e-test-') || itemName.includes('pebble') || itemName.includes('cilium-test'))) {
+            if (
+              itemName &&
+              (itemName.startsWith('e2e-test-') ||
+                itemName.includes('pebble') ||
+                itemName.includes('apisix'))
+            ) {
               try {
                 if (resourceType.namespaced) {
                   await customObjectsApi.deleteNamespacedCustomObject({
@@ -188,7 +224,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
               } catch (deleteError: any) {
                 // Only warn about non-404 errors - 404 means resource was already deleted
                 if (deleteError.statusCode !== 404) {
-                  console.warn(`⚠️ Failed to delete ${resourceType.plural} ${itemName}:`, deleteError);
+                  console.warn(
+                    `⚠️ Failed to delete ${resourceType.plural} ${itemName}:`,
+                    deleteError
+                  );
                 }
               }
             }
@@ -207,7 +246,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         for (const secret of secrets.items) {
           if (secret.metadata?.name?.startsWith('e2e-test-')) {
             try {
-              await coreV1Api.deleteNamespacedSecret({ name: secret.metadata.name, namespace: testNamespace });
+              await coreV1Api.deleteNamespacedSecret({
+                name: secret.metadata.name,
+                namespace: testNamespace,
+              });
               console.log(`🗑️ Deleted Secret: ${secret.metadata.name}`);
             } catch (deleteError: any) {
               // Only warn about non-404 errors
@@ -222,7 +264,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         for (const service of services.items) {
           if (service.metadata?.name?.startsWith('e2e-test-')) {
             try {
-              await coreV1Api.deleteNamespacedService({ name: service.metadata.name, namespace: testNamespace });
+              await coreV1Api.deleteNamespacedService({
+                name: service.metadata.name,
+                namespace: testNamespace,
+              });
               console.log(`🗑️ Deleted Service: ${service.metadata.name}`);
             } catch (deleteError: any) {
               // Only warn about non-404 errors
@@ -240,14 +285,14 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       }
 
       // Wait for cleanup to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Note: We don't clean up cert-manager here as it may be used by other tests
       // In a real CI environment, the entire cluster would be destroyed after all tests
       console.log('✅ End-to-end test resource cleanup completed');
-      
+
       // Clean up test namespace
-      await deleteNamespaceIfExists(testNamespace, kubeConfig);
+      await deleteNamespaceAndWait(testNamespace, kubeConfig);
     } catch (error) {
       console.warn('⚠️ End-to-end test cleanup failed (non-critical):', error);
     }
@@ -281,7 +326,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           namespace: 'flux-system',
           url: 'https://jupyterhub.github.io/helm-chart/',
           interval: '5m',
-          id: 'pebbleRepo'
+          id: 'pebbleRepo',
         });
 
         // Step 2: Create Pebble HelmRelease
@@ -290,25 +335,25 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           namespace: testNamespace,
           chart: {
             name: 'pebble',
-            version: '0.1.0'
+            version: '0.1.0',
           },
           repositoryRef: {
             name: `${baseName}-pebble-repo`,
-            namespace: 'flux-system'
+            namespace: 'flux-system',
           },
           values: {
             pebble: {
               env: [
                 { name: 'PEBBLE_VA_NOSLEEP', value: '1' },
                 { name: 'PEBBLE_WFE_NONCEREJECT', value: '0' },
-                { name: 'PEBBLE_AUTHZREUSE', value: '100' }
+                { name: 'PEBBLE_AUTHZREUSE', value: '100' },
               ],
               config: {
                 pebble: {
                   httpPort: 80,
-                  tlsPort: 443
-                }
-              }
+                  tlsPort: 443,
+                },
+              },
             },
             coredns: {
               corefileSegment: `
@@ -326,47 +371,46 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
                 template ANY ANY www.e2e.funwiththe.cloud {
                   answer "{{ .Name }} 60 IN A 127.0.0.1"
                 }
-              `
+              `,
             },
             service: {
               type: 'ClusterIP',
               port: 443,
-              managementPort: 15000
-            }
+              managementPort: 15000,
+            },
           },
           interval: '5m',
-          id: 'pebbleRelease'
+          id: 'pebbleRelease',
         });
 
-        // Step 3: Create Cilium IngressClass for HTTP-01 challenges
-        const _ciliumIngressClass = CiliumIngressClass({
-          name: 'cilium-test',
-          default: false,
-          id: 'ciliumIngressClass'
-        });
+        // Step 3: APISIX IngressClass is pre-installed via ensureApisixInstalled()
+        // No need to create it in the composition
 
-        // Step 4: Create ClusterIssuer pointing to Pebble with Cilium ingress
-        const acmeIssuer = require('../../../src/factories/cert-manager/resources/issuers.js').clusterIssuer({
-          name: issuerName,
-          spec: {
-            acme: {
-              server: `https://${pebbleName}.${testNamespace}.svc.cluster.local/dir`,
-              email: spec.email,
-              privateKeySecretRef: {
-                name: `${issuerName}-private-key`
+        // Step 4: Create ClusterIssuer pointing to Pebble with APISIX ingress
+        const acmeIssuer =
+          require('../../../src/factories/cert-manager/resources/issuers.js').clusterIssuer({
+            name: issuerName,
+            spec: {
+              acme: {
+                server: `https://${pebbleName}.${testNamespace}.svc.cluster.local/dir`,
+                email: spec.email,
+                privateKeySecretRef: {
+                  name: `${issuerName}-private-key`,
+                },
+                skipTLSVerify: true,
+                solvers: [
+                  {
+                    http01: {
+                      ingress: {
+                        class: 'apisix',
+                      },
+                    },
+                  },
+                ],
               },
-              skipTLSVerify: true,
-              solvers: [{
-                http01: {
-                  ingress: {
-                    class: 'cilium-test'
-                  }
-                }
-              }]
-            }
-          },
-          id: 'acmeIssuer'
-        });
+            },
+            id: 'acmeIssuer',
+          });
 
         // Step 5: Create a simple web service to handle HTTP-01 challenges
         const challengeService = simple.Service({
@@ -374,7 +418,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           namespace: testNamespace,
           selector: { app: `${baseName}-challenge` },
           ports: [{ port: 80, targetPort: 80 }],
-          id: 'challengeService'
+          id: 'challengeService',
         });
 
         const challengeDeployment = simple.Deployment({
@@ -383,67 +427,119 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           image: 'nginx:alpine',
           replicas: 1,
           ports: [{ containerPort: 80 }],
-          id: 'challengeDeployment'
+          id: 'challengeDeployment',
         });
 
-        // Step 6: Create Cilium Ingress for HTTP-01 challenges
-        const challengeIngress = CiliumIngress({
-          name: `${baseName}-ingress`,
-          namespace: testNamespace,
-          host: spec.commonName,
-          serviceName: `${baseName}-challenge-svc`,
-          servicePort: 80,
-          tlsSecretName: secretName,
-          ingressClassName: 'cilium-test',
-          annotations: {
-            'cert-manager.io/cluster-issuer': issuerName
+        // Step 6: Create standard Ingress for HTTP-01 challenges (served by APISIX)
+        const challengeIngress = ingress({
+          metadata: {
+            name: `${baseName}-ingress`,
+            namespace: testNamespace,
+            annotations: {
+              'cert-manager.io/cluster-issuer': issuerName,
+            },
           },
-          id: 'challengeIngress'
-        });
+          spec: {
+            ingressClassName: 'apisix',
+            rules: [
+              {
+                host: spec.commonName,
+                http: {
+                  paths: [
+                    {
+                      path: '/',
+                      pathType: 'Prefix',
+                      backend: {
+                        service: {
+                          name: `${baseName}-challenge-svc`,
+                          port: { number: 80 },
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            tls: [
+              {
+                hosts: [spec.commonName],
+                secretName: secretName,
+              },
+            ],
+          },
+          id: 'challengeIngress',
+        } as unknown as Parameters<typeof ingress>[0]);
 
         // Step 7: Create Certificate that will trigger ACME challenges
-        const acmeCertificate = require('../../../src/factories/cert-manager/resources/certificates.js').certificate({
-          name: certName,
-          namespace: testNamespace,
-          spec: {
-            secretName: secretName,
-            commonName: spec.commonName,
-            dnsNames: spec.dnsNames,
-            issuerRef: {
-              name: issuerName,
-              kind: 'ClusterIssuer'
+        const acmeCertificate =
+          require('../../../src/factories/cert-manager/resources/certificates.js').certificate({
+            name: certName,
+            namespace: testNamespace,
+            spec: {
+              secretName: secretName,
+              commonName: spec.commonName,
+              dnsNames: spec.dnsNames,
+              issuerRef: {
+                name: issuerName,
+                kind: 'ClusterIssuer',
+              },
+              duration: '24h',
+              renewBefore: '1h',
             },
-            duration: '24h',
-            renewBefore: '1h'
-          },
-          id: 'acmeCertificate'
-        });
+            id: 'acmeCertificate',
+          });
 
         // Return status expressions using actual resource status
         return {
-          pebbleReady: pebbleRepo.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') &&
-            pebbleRelease.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
+          pebbleReady:
+            (pebbleRepo.status.conditions?.some(
+              (c: any) => c.type === 'Ready' && c.status === 'True'
+            ) &&
+              pebbleRelease.status.conditions?.some(
+                (c: any) => c.type === 'Ready' && c.status === 'True'
+              )) ||
+            false,
           certManagerReady: true, // Assume cert-manager is available
           ingressClassReady: true, // IngressClass is ready immediately
-          ingressReady: (challengeIngress.status as any)?.loadBalancer?.ingress?.length > 0 || false,
-          issuerReady: acmeIssuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-          certificateReady: acmeCertificate.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-          challengeServiceReady: (challengeService.status.loadBalancer?.ingress?.length || 0) > 0 || (challengeDeployment.status.readyReplicas || 0) > 0 || false,
+          ingressReady:
+            ((
+              (challengeIngress.status as unknown as Record<string, unknown>)?.loadBalancer as
+                | Record<string, unknown[]>
+                | undefined
+            )?.ingress?.length ?? 0) > 0 || false,
+          issuerReady:
+            acmeIssuer.status.conditions?.some(
+              (c: any) => c.type === 'Ready' && c.status === 'True'
+            ) || false,
+          certificateReady:
+            acmeCertificate.status.conditions?.some(
+              (c: any) => c.type === 'Ready' && c.status === 'True'
+            ) || false,
+          challengeServiceReady:
+            (challengeService.status.loadBalancer?.ingress?.length || 0) > 0 ||
+            (challengeDeployment.status.readyReplicas || 0) > 0 ||
+            false,
           challengesCreated: acmeCertificate.status.conditions?.length > 0 || false,
           ordersCreated: acmeCertificate.status.conditions?.length > 0 || false,
-          secretCreated: acmeCertificate.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
+          secretCreated:
+            acmeCertificate.status.conditions?.some(
+              (c: any) => c.type === 'Ready' && c.status === 'True'
+            ) || false,
           acmeEndpoint: `https://${pebbleName}.${testNamespace}.svc.cluster.local/dir`,
           issuerName: issuerName,
           certificateName: certName,
-          secretName: secretName
+          secretName: secretName,
         };
       }
     );
 
     // Deploy the complete stack using direct factory
+    // ACME resources will never reach "ready" without a real ACME server completing challenges,
+    // so we use waitForReady: false since we're testing deployment mechanics
     const directFactory = e2eCertificateComposition.factory('direct', {
       namespace: testNamespace,
-      waitForReady: false, // Don't wait for full ACME completion
+      waitForReady: false,
+      timeout: 60000, // 1 minute - just needs to create the resources
       kubeConfig: kubeConfig,
     });
 
@@ -454,20 +550,22 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     const secretName = `${uniqueBaseName}-secret`;
 
     console.log(`📦 Deploying complete end-to-end certificate issuance stack: ${uniqueBaseName}`);
-    console.log(`🏗️ This will deploy: Cert-Manager + Pebble ACME Server + ClusterIssuer + Certificate`);
+    console.log(
+      `🏗️ This will deploy: Cert-Manager + Pebble ACME Server + ClusterIssuer + Certificate`
+    );
 
     console.log('🔍 Deploying with parameters:', {
       baseName: uniqueBaseName,
       commonName: 'e2e.funwiththe.cloud',
       dnsNames: ['e2e.funwiththe.cloud', 'api.e2e.funwiththe.cloud', 'www.e2e.funwiththe.cloud'],
-      email: 'e2e-test@funwiththe.cloud'
+      email: 'e2e-test@funwiththe.cloud',
     });
 
     const deploymentResult = await directFactory.deploy({
       baseName: uniqueBaseName,
       commonName: 'e2e.funwiththe.cloud',
       dnsNames: ['e2e.funwiththe.cloud', 'api.e2e.funwiththe.cloud', 'www.e2e.funwiththe.cloud'],
-      email: 'e2e-test@funwiththe.cloud'
+      email: 'e2e-test@funwiththe.cloud',
     });
 
     // Validate deployment result
@@ -475,7 +573,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     expect(deploymentResult.metadata.name).toContain('instance-');
 
     console.log('⏳ Waiting for resources to be created and stabilize...');
-    await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds for resources to be created
+    await new Promise((resolve) => setTimeout(resolve, 30000)); // Wait 30 seconds for resources to be created
 
     // Step 1: Verify Pebble ACME server deployment
     console.log('🔍 Verifying Pebble ACME server deployment...');
@@ -485,11 +583,16 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       version: 'v1',
       plural: 'helmrepositories',
     });
-    const pebbleRepo = (pebbleRepos as any).items.find((repo: any) =>
-      repo.metadata.name.includes('pebble') && repo.metadata.name.includes('repo')
+    const pebbleRepo = (pebbleRepos as Record<string, Record<string, unknown>[]>).items!.find(
+      (repo: Record<string, unknown>) =>
+        ((repo.metadata as Record<string, string>).name ?? '').includes('pebble') &&
+        ((repo.metadata as Record<string, string>).name ?? '').includes('repo')
     );
     expect(pebbleRepo).toBeDefined();
-    expect(pebbleRepo.spec.url).toBe('https://jupyterhub.github.io/helm-chart/');
+    expect((pebbleRepo as Record<string, unknown>).spec as Record<string, unknown>).toBeDefined();
+    expect(((pebbleRepo as Record<string, unknown>).spec as Record<string, unknown>).url).toBe(
+      'https://jupyterhub.github.io/helm-chart/'
+    );
     console.log('✅ Pebble HelmRepository created');
 
     const pebbleReleases = await customObjectsApi.listNamespacedCustomObject({
@@ -498,11 +601,17 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       namespace: testNamespace,
       plural: 'helmreleases',
     });
-    const pebbleRelease = (pebbleReleases as any).items.find((release: any) =>
-      release.metadata.name.includes('pebble')
+    const pebbleRelease = (
+      pebbleReleases as unknown as Record<string, Record<string, unknown>[]>
+    ).items!.find((release) =>
+      ((release.metadata as Record<string, string>).name ?? '').includes('pebble')
     );
     expect(pebbleRelease).toBeDefined();
-    expect(pebbleRelease.spec.chart.spec.chart).toBe('pebble');
+    const pebbleReleaseObj = pebbleRelease as Record<string, unknown>;
+    const pebbleReleaseSpec = pebbleReleaseObj.spec as Record<string, unknown>;
+    expect(
+      ((pebbleReleaseSpec.chart as Record<string, unknown>).spec as Record<string, unknown>).chart
+    ).toBe('pebble');
     console.log('✅ Pebble HelmRelease created');
 
     // Step 2: Verify ClusterIssuer pointing to Pebble
@@ -513,14 +622,19 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       version: 'v1',
       plural: 'clusterissuers',
     });
-    const createdIssuer = (clusterIssuers as any).items.find((issuer: any) =>
-      issuer.metadata.name === issuerName
-    );
+    const createdIssuer = (
+      clusterIssuers as unknown as Record<string, Record<string, unknown>[]>
+    ).items!.find((issuer) => (issuer.metadata as Record<string, string>).name === issuerName);
     expect(createdIssuer).toBeDefined();
-    expect(createdIssuer.spec.acme?.server).toBe(`https://${pebbleName}.${testNamespace}.svc.cluster.local/dir`);
-    expect(createdIssuer.spec.acme?.email).toBe('e2e-test@funwiththe.cloud');
-    expect(createdIssuer.spec.acme?.skipTLSVerify).toBe(true);
-    expect(createdIssuer.spec.acme?.solvers?.[0]?.http01?.ingress?.class).toBe('cilium-test');
+    const issuerSpec = (createdIssuer as Record<string, unknown>).spec as Record<string, unknown>;
+    const acme = issuerSpec.acme as Record<string, unknown> | undefined;
+    expect(acme?.server).toBe(`https://${pebbleName}.${testNamespace}.svc.cluster.local/dir`);
+    expect(acme?.email).toBe('e2e-test@funwiththe.cloud');
+    expect(acme?.skipTLSVerify).toBe(true);
+    const solvers = acme?.solvers as Record<string, unknown>[] | undefined;
+    const http01 = solvers?.[0]?.http01 as Record<string, unknown> | undefined;
+    const ingressConfig = http01?.ingress as Record<string, unknown> | undefined;
+    expect(ingressConfig?.class).toBe('apisix');
     console.log('✅ ClusterIssuer configured to use Pebble ACME server');
 
     // Step 3: Verify Certificate creation
@@ -532,15 +646,21 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       namespace: testNamespace,
       plural: 'certificates',
     });
-    const createdCert = (certificates as any).items.find((cert: any) =>
-      cert.metadata.name === certName
-    );
+    const createdCert = (
+      certificates as unknown as Record<string, Record<string, unknown>[]>
+    ).items!.find((cert) => (cert.metadata as Record<string, string>).name === certName);
     expect(createdCert).toBeDefined();
-    expect(createdCert.spec.commonName).toBe('e2e.funwiththe.cloud');
-    expect(createdCert.spec.dnsNames).toEqual(['e2e.funwiththe.cloud', 'api.e2e.funwiththe.cloud', 'www.e2e.funwiththe.cloud']);
-    expect(createdCert.spec.issuerRef.name).toBe(issuerName);
-    expect(createdCert.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(createdCert.spec.secretName).toBe(secretName);
+    const certSpec = (createdCert as Record<string, unknown>).spec as Record<string, unknown>;
+    expect(certSpec.commonName).toBe('e2e.funwiththe.cloud');
+    expect(certSpec.dnsNames).toEqual([
+      'e2e.funwiththe.cloud',
+      'api.e2e.funwiththe.cloud',
+      'www.e2e.funwiththe.cloud',
+    ]);
+    const issuerRef = certSpec.issuerRef as Record<string, unknown>;
+    expect(issuerRef.name).toBe(issuerName);
+    expect(issuerRef.kind).toBe('ClusterIssuer');
+    expect(certSpec.secretName).toBe(secretName);
     console.log('✅ Certificate configured for ACME issuance');
 
     // Step 4: Check for ACME Order creation (cert-manager creates these automatically)
@@ -553,18 +673,24 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         namespace: testNamespace,
         plural: 'orders',
       });
-      const orderItems = (orders as any).items || [];
+      const orderItems =
+        (orders as unknown as Record<string, Record<string, unknown>[]>).items || [];
       console.log(`📋 Found ${orderItems.length} Order resources`);
 
       if (orderItems.length > 0) {
         // Show details for all orders
         for (const order of orderItems) {
-          const orderName = order.metadata.name;
-          const state = order.status?.state || 'unknown';
-          const dnsNames = order.spec?.dnsNames || [];
-          const finalizeURL = order.status?.finalizeURL;
-          const authzCount = order.status?.authorizations?.length || 0;
-          
+          const orderMeta = order.metadata as { name?: string } | undefined;
+          const orderStatus = order.status as
+            | { state?: string; finalizeURL?: string; authorizations?: unknown[] }
+            | undefined;
+          const orderSpec = order.spec as { dnsNames?: string[] } | undefined;
+          const orderName = orderMeta?.name;
+          const state = orderStatus?.state || 'unknown';
+          const dnsNames = orderSpec?.dnsNames || [];
+          const finalizeURL = orderStatus?.finalizeURL;
+          const authzCount = orderStatus?.authorizations?.length || 0;
+
           console.log(`🔍 Order ${orderName}:`);
           console.log(`   - State: ${state}`);
           console.log(`   - DNS Names: ${dnsNames.join(',')}`);
@@ -573,12 +699,14 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           }
           console.log(`   - Authorizations: ${authzCount}`);
         }
-        
+
         const relatedOrder = orderItems.find((order: any) =>
           order.metadata.ownerReferences?.some((ref: any) => ref.name === certName)
         );
         if (relatedOrder) {
-          expect(relatedOrder.spec.issuerRef.name).toBe(issuerName);
+          expect(
+            (relatedOrder.spec as { issuerRef?: { name?: string } } | undefined)?.issuerRef?.name
+          ).toBe(issuerName);
           console.log('✅ ACME Order created by cert-manager');
         } else {
           console.log('ℹ️ No Order found yet (may be created later by cert-manager)');
@@ -600,19 +728,27 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         namespace: testNamespace,
         plural: 'challenges',
       });
-      const challengeItems = (challenges as any).items || [];
+      const challengeItems =
+        (challenges as unknown as Record<string, Record<string, unknown>[]>).items || [];
       console.log(`📋 Found ${challengeItems.length} Challenge resources`);
 
       if (challengeItems.length > 0) {
         // Show details for all challenges
         for (const challenge of challengeItems) {
-          const challengeName = challenge.metadata.name;
-          const dnsName = challenge.spec.dnsName;
-          const challengeType = challenge.spec.type;
-          const state = challenge.status?.state || 'unknown';
-          const processing = challenge.status?.processing || false;
-          const presented = challenge.status?.presented || false;
-          
+          const challengeMeta = challenge.metadata as { name?: string } | undefined;
+          const challengeSpec = challenge.spec as
+            | { dnsName?: string; type?: string; issuerRef?: { name?: string } }
+            | undefined;
+          const challengeStatus = challenge.status as
+            | { state?: string; processing?: boolean; presented?: boolean }
+            | undefined;
+          const challengeName = challengeMeta?.name;
+          const dnsName = challengeSpec?.dnsName;
+          const challengeType = challengeSpec?.type;
+          const state = challengeStatus?.state || 'unknown';
+          const processing = challengeStatus?.processing || false;
+          const presented = challengeStatus?.presented || false;
+
           console.log(`🔍 Challenge ${challengeName}:`);
           console.log(`   - DNS Name: ${dnsName}`);
           console.log(`   - Type: ${challengeType}`);
@@ -620,15 +756,18 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           console.log(`   - Processing: ${processing}`);
           console.log(`   - Presented: ${presented}`);
         }
-        
+
         const relatedChallenge = challengeItems.find((challenge: any) =>
-          challenge.metadata.ownerReferences?.some((ref: any) =>
-            ref.kind === 'Order' || ref.name.includes(certName.split('-')[0])
+          challenge.metadata.ownerReferences?.some(
+            (ref: any) => ref.kind === 'Order' || ref.name.includes(certName.split('-')[0])
           )
         );
         if (relatedChallenge) {
-          expect(relatedChallenge.spec.type).toMatch(/HTTP-01|DNS-01/);
-          expect(relatedChallenge.spec.issuerRef.name).toBe(issuerName);
+          const rcSpec = relatedChallenge.spec as
+            | { type?: string; issuerRef?: { name?: string } }
+            | undefined;
+          expect(rcSpec?.type).toMatch(/HTTP-01|DNS-01/);
+          expect(rcSpec?.issuerRef?.name).toBe(issuerName);
           console.log('✅ ACME Challenge created by cert-manager');
         } else {
           console.log('ℹ️ No related Challenge found yet (may be created later by cert-manager)');
@@ -644,7 +783,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     console.log('🔍 Checking for certificate secret creation...');
 
     try {
-      const secret = await coreV1Api.readNamespacedSecret({ name: secretName, namespace: testNamespace });
+      const secret = await coreV1Api.readNamespacedSecret({
+        name: secretName,
+        namespace: testNamespace,
+      });
       expect(secret.type).toBe('kubernetes.io/tls');
       expect(secret.data).toHaveProperty('tls.crt');
       expect(secret.data).toHaveProperty('tls.key');
@@ -658,22 +800,29 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
           namespace: testNamespace,
           plural: 'certificates',
         });
-        const cert = (certificates as any).items.find((c: any) => c.metadata.name === certName);
+        const cert = (
+          certificates as unknown as Record<string, Record<string, unknown>[]>
+        ).items!.find((c) => (c.metadata as Record<string, string>).name === certName);
         if (cert) {
-          const conditions = cert.status?.conditions || [];
+          const conditions =
+            (cert.status as { conditions?: unknown[] } | undefined)?.conditions || [];
           const readyCondition = conditions.find((c: any) => c.type === 'Ready');
           const issuingCondition = conditions.find((c: any) => c.type === 'Issuing');
-          
+
           console.log(`📜 Certificate ${certName}:`);
-          console.log(`   - Ready: ${readyCondition?.status || 'Unknown'} - ${readyCondition?.message || 'No message'}`);
-          if (issuingCondition) {
-            console.log(`   - Issuing: ${issuingCondition.status} - ${issuingCondition.message}`);
+          const rcond = readyCondition as { status?: string; message?: string } | undefined;
+          const icond = issuingCondition as { status?: string; message?: string } | undefined;
+          console.log(
+            `   - Ready: ${rcond?.status || 'Unknown'} - ${rcond?.message || 'No message'}`
+          );
+          if (icond) {
+            console.log(`   - Issuing: ${icond.status} - ${icond.message}`);
           }
         }
       } catch (_certError) {
         console.log('ℹ️ Could not check certificate status');
       }
-      
+
       console.log('ℹ️ Certificate secret not ready yet (ACME challenges need to complete first)');
     }
 
@@ -682,9 +831,13 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     console.log(`   🏗️ Pebble ACME Server: ${pebbleName}`);
     console.log(`   🔐 ClusterIssuer: ${issuerName} -> Pebble ACME endpoint`);
     console.log(`   📜 Certificate: ${certName} -> Secret: ${secretName}`);
-    console.log(`   🌐 Domains: e2e.funwiththe.cloud, api.e2e.funwiththe.cloud, www.e2e.funwiththe.cloud`);
+    console.log(
+      `   🌐 Domains: e2e.funwiththe.cloud, api.e2e.funwiththe.cloud, www.e2e.funwiththe.cloud`
+    );
     console.log('');
-    console.log('✅ All cert-manager CRD factories (Certificate, ClusterIssuer, Challenge, Order) integrated successfully');
+    console.log(
+      '✅ All cert-manager CRD factories (Certificate, ClusterIssuer, Challenge, Order) integrated successfully'
+    );
     console.log('✅ Pebble ACME test server factory working correctly');
     console.log('✅ Complete ACME certificate issuance workflow validated');
     console.log('');
@@ -695,26 +848,33 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
     console.log('   ✅ All TypeKro factories working correctly with cross-resource references');
     console.log('   ');
     console.log('   In a production environment with:');
-    console.log('   - Working Flux source-controller (currently in CrashLoopBackOff in test cluster)');
+    console.log(
+      '   - Working Flux source-controller (currently in CrashLoopBackOff in test cluster)'
+    );
     console.log('   - Proper DNS resolution for challenge domains');
     console.log('   - Ingress controller for HTTP-01 challenges');
     console.log('   cert-manager would complete the ACME challenges and issue the certificate.');
-
-  }, 300000); // 5 minute timeout for complete end-to-end test
+  }, 600000); // 10 minute timeout for complete end-to-end test (includes Pebble image pull + ACME flow)
 
   it('should validate TypeKro factory integration with real ACME workflow', async () => {
     console.log('🧪 Testing TypeKro factory integration with ACME workflow...');
 
     // Test that all our factories work together in a composition
-    const { clusterIssuer } = await import('../../../src/factories/cert-manager/resources/issuers.js');
-    const { certificate } = await import('../../../src/factories/cert-manager/resources/certificates.js');
-    const { challenge, order } = await import('../../../src/factories/cert-manager/resources/challenges.js');
+    const { clusterIssuer } = await import(
+      '../../../src/factories/cert-manager/resources/issuers.js'
+    );
+    const { certificate } = await import(
+      '../../../src/factories/cert-manager/resources/certificates.js'
+    );
+    const { challenge, order } = await import(
+      '../../../src/factories/cert-manager/resources/challenges.js'
+    );
 
     // Create a composition that uses all cert-manager factories
     const IntegrationTestSpec = type({
       name: 'string',
       email: 'string',
-      domain: 'string'
+      domain: 'string',
     });
 
     const IntegrationTestStatus = type({
@@ -722,7 +882,7 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
       cert: 'boolean',
       challenge: 'boolean',
       order: 'boolean',
-      allFactoriesWorking: 'boolean'
+      allFactoriesWorking: 'boolean',
     });
 
     const integrationComposition = kubernetesComposition(
@@ -738,9 +898,9 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
         const issuer = clusterIssuer({
           name: `${spec.name}-issuer`,
           spec: {
-            selfSigned: {}
+            selfSigned: {},
           },
-          id: 'issuer'
+          id: 'issuer',
         });
 
         const cert = certificate({
@@ -752,10 +912,10 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
             dnsNames: [spec.domain],
             issuerRef: {
               name: issuer.metadata?.name || `${spec.name}-issuer`,
-              kind: 'ClusterIssuer'
-            }
+              kind: 'ClusterIssuer',
+            },
           },
-          id: 'cert'
+          id: 'cert',
         });
 
         const testChallenge = challenge({
@@ -771,16 +931,16 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
             solver: {
               http01: {
                 ingress: {
-                  class: 'nginx'
-                }
-              }
+                  class: 'nginx',
+                },
+              },
             },
             issuerRef: {
               name: issuer.metadata?.name || `${spec.name}-issuer`,
-              kind: 'ClusterIssuer'
-            }
+              kind: 'ClusterIssuer',
+            },
           },
-          id: 'testChallenge'
+          id: 'testChallenge',
         });
 
         const testOrder = order({
@@ -790,20 +950,24 @@ describeOrSkip('Cert-Manager End-to-End Integration with Pebble ACME Server', ()
             request: 'LS0tLS1CRUdJTi...',
             issuerRef: {
               name: issuer.metadata?.name || `${spec.name}-issuer`,
-              kind: 'ClusterIssuer'
+              kind: 'ClusterIssuer',
             },
             commonName: spec.domain,
-            dnsNames: [spec.domain]
+            dnsNames: [spec.domain],
           },
-          id: 'testOrder'
+          id: 'testOrder',
         });
 
         return {
-          issuer: issuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-          cert: cert.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
+          issuer:
+            issuer.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') ||
+            false,
+          cert:
+            cert.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') ||
+            false,
           challenge: testChallenge.status.state === 'valid' || false,
           order: testOrder.status.state === 'valid' || false,
-          allFactoriesWorking: true // This confirms all factories can be instantiated
+          allFactoriesWorking: true, // This confirms all factories can be instantiated
         };
       }
     );

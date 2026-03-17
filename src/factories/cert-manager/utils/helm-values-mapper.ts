@@ -1,66 +1,96 @@
+import { removeUndefinedValues } from '../../../utils/helpers.js';
 import type { CertManagerBootstrapConfig, CertManagerHelmValues } from '../types.js';
 
 /**
  * Maps CertManagerBootstrapConfig to cert-manager Helm values
- * 
+ *
  * This function transforms the TypeKro configuration interface into the format
  * expected by the official cert-manager Helm chart.
- * 
+ *
  * @param config - The cert-manager bootstrap configuration
  * @returns Helm values object for the cert-manager chart
  */
-export function mapCertManagerConfigToHelmValues(config: CertManagerBootstrapConfig): CertManagerHelmValues {
+export function mapCertManagerConfigToHelmValues(
+  config: CertManagerBootstrapConfig
+): CertManagerHelmValues {
   const helmValues: Partial<CertManagerHelmValues> = {
     // Installation configuration - default to true for TypeKro comprehensive deployment
     // This ensures CRDs are installed automatically, which is required for cert-manager to function
     installCRDs: config.installCRDs ?? true,
-    
+
     // Global configuration
     ...(config.global && { global: config.global }),
-    
+
     // Replica configuration
     ...(config.replicaCount !== undefined && { replicaCount: config.replicaCount }),
-    
+
     // Deployment strategy
     ...(config.strategy && { strategy: config.strategy }),
-    
+
     // Controller configuration
-    ...(config.controller && { 
-      controller: {
-        // Only include fields that cert-manager Helm chart supports
-        ...(config.controller.image && { image: config.controller.image }),
-        ...(config.controller.resources && { resources: config.controller.resources }),
-        ...(config.controller.nodeSelector && { nodeSelector: config.controller.nodeSelector }),
-        ...(config.controller.tolerations && { tolerations: config.controller.tolerations }),
-        ...(config.controller.affinity && { affinity: config.controller.affinity }),
-        ...(config.controller.securityContext && { securityContext: config.controller.securityContext }),
-        ...(config.controller.containerSecurityContext && { containerSecurityContext: config.controller.containerSecurityContext }),
-        ...(config.controller.volumes && { volumes: config.controller.volumes }),
-        ...(config.controller.volumeMounts && { volumeMounts: config.controller.volumeMounts }),
-        ...(config.controller.extraArgs && { extraArgs: config.controller.extraArgs }),
-        ...(config.controller.env && { env: config.controller.env }),
-        ...(config.controller.serviceAccount && { serviceAccount: config.controller.serviceAccount }),
-      }
+    // NOTE: The cert-manager Helm chart places controller settings at the root level,
+    // not under a "controller" key. Specifically:
+    //   - extraArgs, extraEnv, resources, nodeSelector, etc. at root = controller settings
+    //   - webhook.extraArgs = webhook settings
+    //   - cainjector.extraArgs = cainjector settings
+    ...(config.controller?.extraArgs && { extraArgs: config.controller.extraArgs }),
+    ...(config.controller?.env && { extraEnv: config.controller.env }),
+    ...(config.controller?.resources && { resources: config.controller.resources }),
+    ...(config.controller?.nodeSelector && { nodeSelector: config.controller.nodeSelector }),
+    ...(config.controller?.tolerations && { tolerations: config.controller.tolerations }),
+    ...(config.controller?.affinity && { affinity: config.controller.affinity }),
+    ...(config.controller?.securityContext && {
+      securityContext: config.controller.securityContext,
     }),
-    
+    ...(config.controller?.containerSecurityContext && {
+      containerSecurityContext: config.controller.containerSecurityContext,
+    }),
+    ...(config.controller?.volumes && { volumes: config.controller.volumes }),
+    ...(config.controller?.volumeMounts && { volumeMounts: config.controller.volumeMounts }),
+    ...(config.controller?.image && { image: config.controller.image }),
+    ...(config.controller?.serviceAccount && {
+      serviceAccount: config.controller.serviceAccount,
+    }),
+
     // Webhook configuration
-    ...(config.webhook && { webhook: config.webhook }),
-    
+    // NOTE: cert-manager 1.19+ removed 'enabled', 'mutatingAdmissionWebhooks',
+    // and 'validatingAdmissionWebhooks' from the webhook values schema.
+    ...(config.webhook && {
+      webhook: Object.fromEntries(
+        Object.entries(config.webhook).filter(
+          ([key]) =>
+            key !== 'enabled' &&
+            key !== 'mutatingAdmissionWebhooks' &&
+            key !== 'validatingAdmissionWebhooks'
+        )
+      ),
+    }),
+
     // CA Injector configuration
     ...(config.cainjector && { cainjector: config.cainjector }),
-    
+
     // ACME solver configuration
-    ...(config.acmesolver && { acmesolver: config.acmesolver }),
-    
+    // NOTE: cert-manager 1.19+ only supports 'image' in the acmesolver section.
+    ...(config.acmesolver?.image && {
+      acmesolver: { image: config.acmesolver.image },
+    }),
+
     // Startup API check configuration
-    // Only pass startupapicheck if it's explicitly enabled, otherwise don't include it
-    // to ensure the Helm chart uses its default behavior (which may be to skip the hook)
-    ...(config.startupapicheck && config.startupapicheck.enabled !== false && { startupapicheck: config.startupapicheck }),
-    ...(config.startupapicheck?.enabled === false && { startupapicheck: { enabled: false } }),
-    
+    // ENABLED by default to ensure webhook is ready before deployment completes
+    // This prevents "webhook not found" errors when deploying cert-manager CRDs
+    ...(config.startupapicheck?.enabled === false
+      ? { startupapicheck: { enabled: false } }
+      : {
+          startupapicheck: {
+            enabled: true,
+            timeout: '5m', // Increased timeout for slower environments
+            ...config.startupapicheck,
+          },
+        }),
+
     // Monitoring configuration
     ...(config.prometheus && { prometheus: config.prometheus }),
-    
+
     // Custom values override
     ...(config.customValues || {}),
   };
@@ -70,23 +100,26 @@ export function mapCertManagerConfigToHelmValues(config: CertManagerBootstrapCon
 }
 
 /**
- * Validates cert-manager Helm values for common configuration issues
- * 
- * @param values - The Helm values to validate
- * @returns Array of validation warnings/errors
+ * Checks cert-manager Helm values for best-practice warnings (e.g., HA, monitoring).
+ *
+ * Unlike {@link validateCertManagerHelmValues} (in `resources/helm.ts`) which performs
+ * hard validation (invalid replica counts, wrong resource types), this function
+ * returns advisory warnings about sub-optimal but technically valid configurations.
+ *
+ * @param values - The Helm values to check
+ * @returns Array of warning messages (empty if no issues found)
  */
-export function validateCertManagerHelmValues(values: CertManagerHelmValues): string[] {
+export function getCertManagerHelmValueWarnings(values: CertManagerHelmValues): string[] {
   const warnings: string[] = [];
 
   // Check CRD installation
   if (values.installCRDs === false) {
-    warnings.push('installCRDs is set to false. Ensure CRDs are installed separately before deploying cert-manager.');
+    warnings.push(
+      'installCRDs is set to false. Ensure CRDs are installed separately before deploying cert-manager.'
+    );
   }
 
-  // Check webhook configuration
-  if (values.webhook?.enabled === false) {
-    warnings.push('Webhook is disabled. This may cause issues with certificate validation and mutation.');
-  }
+  // Note: webhook.enabled was removed in cert-manager 1.19+ (webhook is always enabled)
 
   // Check CA injector configuration
   if (values.cainjector?.enabled === false) {
@@ -95,47 +128,24 @@ export function validateCertManagerHelmValues(values: CertManagerHelmValues): st
 
   // Check resource requirements
   if (!values.resources?.requests) {
-    warnings.push('No resource requests specified. Consider setting CPU and memory requests for better scheduling.');
+    warnings.push(
+      'No resource requests specified. Consider setting CPU and memory requests for better scheduling.'
+    );
   }
 
   // Check replica count for webhook
-  if (values.webhook?.enabled !== false && values.webhook?.replicaCount === 1) {
-    warnings.push('Webhook is running with only 1 replica. Consider increasing for high availability.');
+  if (values.webhook?.replicaCount === 1) {
+    warnings.push(
+      'Webhook is running with only 1 replica. Consider increasing for high availability.'
+    );
   }
 
   // Check monitoring configuration
   if (values.prometheus?.enabled && !values.prometheus?.servicemonitor?.enabled) {
-    warnings.push('Prometheus is enabled but ServiceMonitor is disabled. Metrics may not be scraped.');
+    warnings.push(
+      'Prometheus is enabled but ServiceMonitor is disabled. Metrics may not be scraped.'
+    );
   }
 
   return warnings;
-}
-
-/**
- * Recursively removes undefined values from an object
- * 
- * @param obj - The object to clean
- * @returns The object with undefined values removed
- */
-function removeUndefinedValues(obj: any): any {
-  if (obj === null || obj === undefined) {
-    return obj;
-  }
-
-  if (Array.isArray(obj)) {
-    return obj.map(removeUndefinedValues).filter(item => item !== undefined);
-  }
-
-  if (typeof obj === 'object') {
-    const cleaned: any = {};
-    for (const [key, value] of Object.entries(obj)) {
-      const cleanedValue = removeUndefinedValues(value);
-      if (cleanedValue !== undefined) {
-        cleaned[key] = cleanedValue;
-      }
-    }
-    return cleaned;
-  }
-
-  return obj;
 }

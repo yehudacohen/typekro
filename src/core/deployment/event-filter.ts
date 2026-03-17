@@ -6,6 +6,11 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import {
+  DEFAULT_DEDUPLICATION_WINDOW_SECONDS,
+  DEFAULT_MAX_EVENTS_PER_RESOURCE,
+} from '../config/defaults.js';
+import { ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource } from '../types/deployment.js';
 import type { KubernetesEventData } from './event-monitor.js';
@@ -209,8 +214,8 @@ export class EventFilter {
     this.options = {
       eventTypes: options.eventTypes || ['Warning', 'Error'],
       includeChildResources: options.includeChildResources ?? true,
-      deduplicationWindow: options.deduplicationWindow || 60, // 1 minute
-      maxEventsPerResource: options.maxEventsPerResource || 100,
+      deduplicationWindow: options.deduplicationWindow || DEFAULT_DEDUPLICATION_WINDOW_SECONDS,
+      maxEventsPerResource: options.maxEventsPerResource || DEFAULT_MAX_EVENTS_PER_RESOURCE,
     };
   }
 
@@ -404,8 +409,8 @@ export class EventFilter {
         parent: `${parentResource.kind}/${parentResource.name}`,
         childCount: childResources.length,
       });
-    } catch (error) {
-      this.logger.warn('Failed to discover child resources', error as Error);
+    } catch (error: unknown) {
+      this.logger.error('Failed to discover child resources', ensureError(error));
     }
 
     return childResources;
@@ -548,18 +553,18 @@ export class EventFilter {
         labelSelector: `app=${replicaSet.name}`,
       });
 
-      return pods.items
-        .filter(
-          (pod: k8s.V1Pod) => pod.metadata?.name && pod.metadata?.namespace && pod.metadata?.uid
-        )
-        .map((pod: k8s.V1Pod) => ({
-          kind: 'Pod',
-          name: pod.metadata?.name!,
-          namespace: pod.metadata?.namespace!,
-          uid: pod.metadata?.uid!,
-        }));
-    } catch (error) {
-      this.logger.warn('Failed to find pods for ReplicaSet', error as Error);
+      const results: ResourceIdentifier[] = [];
+      for (const pod of pods.items) {
+        const name = pod.metadata?.name;
+        const namespace = pod.metadata?.namespace;
+        const uid = pod.metadata?.uid;
+        if (name && namespace && uid) {
+          results.push({ kind: 'Pod', name, namespace, uid });
+        }
+      }
+      return results;
+    } catch (error: unknown) {
+      this.logger.error('Failed to find pods for ReplicaSet', ensureError(error));
       return [];
     }
   }

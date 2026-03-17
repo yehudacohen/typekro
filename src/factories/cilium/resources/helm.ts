@@ -7,17 +7,20 @@
  * while reusing existing readiness evaluators.
  */
 
-
-import { createResource } from '../../shared.js';
+import {
+  createHelmRepositoryReadinessEvaluator,
+  type HelmRepositorySpec,
+  type HelmRepositoryStatus,
+} from '../../helm/helm-repository.js';
 import { helmReleaseReadinessEvaluator } from '../../helm/readiness-evaluators.js';
+import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import { createResource } from '../../shared.js';
 import type {
   CiliumBootstrapConfig,
-  CiliumHelmRepositoryConfig,
   CiliumHelmReleaseConfig,
+  CiliumHelmRepositoryConfig,
   CiliumHelmValues,
 } from '../types.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
-import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
 
 // =============================================================================
 // CILIUM HELM REPOSITORY WRAPPER
@@ -53,20 +56,8 @@ import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-r
  * });
  * ```
  */
-/**
- * Simple readiness evaluator for HelmRepository resources
- * HelmRepository is ready when it has a Ready condition with status True
- */
-function ciliumHelmRepositoryReadinessEvaluator(resource: any) {
-  const conditions = resource.status?.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-  const isReady = readyCondition?.status === 'True';
-
-  return {
-    ready: isReady,
-    message: isReady ? 'HelmRepository is ready' : 'HelmRepository is not ready',
-  };
-}
+/** Cilium HelmRepository readiness evaluator (delegates to shared implementation) */
+const ciliumHelmRepositoryReadinessEvaluator = createHelmRepositoryReadinessEvaluator('Cilium');
 
 export function ciliumHelmRepository(config: CiliumHelmRepositoryConfig) {
   // For Kro deployments, we need to avoid status expectations that conflict with actual Flux status
@@ -195,23 +186,25 @@ export function mapCiliumConfigToHelmValues(config: CiliumBootstrapConfig): Cili
   // Networking configuration
   if (config.networking) {
     const networking = config.networking;
-    
+
     if (networking.ipam) {
       values.ipam = {
         mode: networking.ipam.mode || 'kubernetes',
       };
-      
+
       if (networking.ipam.operator) {
         values.ipam.operator = {};
         if (networking.ipam.operator.clusterPoolIPv4PodCIDRList) {
-          values.ipam.operator.clusterPoolIPv4PodCIDRList = networking.ipam.operator.clusterPoolIPv4PodCIDRList;
+          values.ipam.operator.clusterPoolIPv4PodCIDRList =
+            networking.ipam.operator.clusterPoolIPv4PodCIDRList;
         }
         if (networking.ipam.operator.clusterPoolIPv6PodCIDRList) {
-          values.ipam.operator.clusterPoolIPv6PodCIDRList = networking.ipam.operator.clusterPoolIPv6PodCIDRList;
+          values.ipam.operator.clusterPoolIPv6PodCIDRList =
+            networking.ipam.operator.clusterPoolIPv6PodCIDRList;
         }
       }
     }
-    
+
     if (networking.kubeProxyReplacement) {
       // Convert string values to boolean/string format expected by Cilium Helm chart
       switch (networking.kubeProxyReplacement) {
@@ -228,39 +221,39 @@ export function mapCiliumConfigToHelmValues(config: CiliumBootstrapConfig): Cili
           values.kubeProxyReplacement = networking.kubeProxyReplacement;
       }
     }
-    
+
     if (networking.routingMode) {
       values.routingMode = networking.routingMode;
     }
-    
+
     if (networking.tunnelProtocol) {
       values.tunnelProtocol = networking.tunnelProtocol;
     }
-    
+
     if (networking.autoDirectNodeRoutes !== undefined) {
       values.autoDirectNodeRoutes = networking.autoDirectNodeRoutes;
     }
-    
+
     if (networking.endpointRoutes) {
       values.endpointRoutes = networking.endpointRoutes;
     }
-    
+
     if (networking.hostServices) {
       values.hostServices = networking.hostServices;
     }
-    
+
     if (networking.nodePort) {
       values.nodePort = networking.nodePort;
     }
-    
+
     if (networking.externalIPs) {
       values.externalIPs = networking.externalIPs;
     }
-    
+
     if (networking.hostPort) {
       values.hostPort = networking.hostPort;
     }
-    
+
     if (networking.loadBalancer) {
       values.loadBalancer = networking.loadBalancer;
     }
@@ -269,19 +262,19 @@ export function mapCiliumConfigToHelmValues(config: CiliumBootstrapConfig): Cili
   // Security configuration
   if (config.security) {
     const security = config.security;
-    
+
     if (security.encryption) {
       values.encryption = security.encryption;
     }
-    
+
     if (security.authentication) {
       values.authentication = security.authentication;
     }
-    
+
     if (security.policyEnforcement) {
       values.policyEnforcement = security.policyEnforcement;
     }
-    
+
     if (security.policyAuditMode !== undefined) {
       values.policyAuditMode = security.policyAuditMode;
     }
@@ -300,11 +293,11 @@ export function mapCiliumConfigToHelmValues(config: CiliumBootstrapConfig): Cili
   // Observability configuration
   if (config.observability) {
     const observability = config.observability;
-    
+
     if (observability.hubble) {
       values.hubble = observability.hubble;
     }
-    
+
     if (observability.prometheus) {
       values.prometheus = observability.prometheus;
     }
@@ -323,15 +316,15 @@ export function mapCiliumConfigToHelmValues(config: CiliumBootstrapConfig): Cili
   // Advanced configuration
   if (config.advanced) {
     const advanced = config.advanced;
-    
+
     if (advanced.bpf) {
       values.bpf = advanced.bpf;
     }
-    
+
     if (advanced.k8s) {
       values.k8s = advanced.k8s;
     }
-    
+
     if (advanced.cni) {
       values.cni = advanced.cni;
     }

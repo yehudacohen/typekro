@@ -1,13 +1,31 @@
 /**
  * Comprehensive tests for factory pattern integration with JavaScript to CEL conversion
- * 
+ *
  * Tests the integration between direct and Kro factory patterns with KubernetesRef handling,
  * ensuring that JavaScript expressions work correctly with both deployment strategies.
  */
 
-import { describe, it, expect } from 'bun:test';
-import { toResourceGraph, simple, type Enhanced } from '../../../src/index.js';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { type Enhanced, simple, toResourceGraph } from '../../../src/index.js';
+
+/**
+ * Flexible type for accessing Enhanced proxy resources in status builder callbacks.
+ * At runtime, these are magic proxy objects with dynamic property access.
+ * This replaces `as any` with a typed alternative that allows deep property access.
+ */
+interface FlexibleResource {
+  status?: {
+    readyReplicas?: number;
+    availableReplicas?: number;
+    conditions?: Array<{ type: string; status: string }>;
+    loadBalancer?: { ingress?: Array<{ ip?: string }> };
+    [key: string]: unknown;
+  };
+  metadata?: { name?: string; [key: string]: unknown };
+  spec?: { replicas?: number; [key: string]: unknown };
+  [key: string]: unknown;
+}
 
 describe('Factory Pattern Integration - Comprehensive Tests', () => {
   describe('Direct vs Kro Factory Pattern Differences', () => {
@@ -15,14 +33,14 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
       const FactorySpec = type({
         name: 'string',
         replicas: 'number',
-        environment: 'string'
+        environment: 'string',
       });
 
       const FactoryStatus = type({
         ready: 'boolean',
         url: 'string',
         replicas: 'number',
-        environment: 'string'
+        environment: 'string',
       });
 
       const graph = toResourceGraph(
@@ -31,7 +49,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'FactoryComparison',
           spec: FactorySpec,
-          status: FactoryStatus
+          status: FactoryStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
@@ -42,22 +60,24 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             env: {
               NODE_ENV: schema.spec.environment,
               REPLICAS: `${schema.spec.replicas}`,
-              IS_PROD: schema.spec.environment === 'production' ? 'true' : 'false'
-            }
+              IS_PROD: schema.spec.environment === 'production' ? 'true' : 'false',
+            },
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'factoryService'
-          })
+            id: 'factoryService',
+          }),
         }),
         (schema, resources) => ({
           // JavaScript expressions that should work with both factory types
-          ready: resources.deployment!.status.readyReplicas > 0 && resources.service!.status.ready,
-          url: `http://${resources.service!.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
-          replicas: resources.deployment!.status.readyReplicas || 0,
-          environment: schema.spec.environment
+          ready:
+            resources.deployment.status.readyReplicas > 0 &&
+            resources.deployment.status.availableReplicas > 0,
+          url: `http://${resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
+          replicas: resources.deployment.status.readyReplicas || 0,
+          environment: schema.spec.environment,
         })
       );
 
@@ -80,12 +100,12 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
     it('should preserve KubernetesRef objects correctly in both factory types', async () => {
       const RefSpec = type({
         name: 'string',
-        dbName: 'string'
+        dbName: 'string',
       });
 
       const RefStatus = type({
         ready: 'boolean',
-        connectionString: 'string'
+        connectionString: 'string',
       });
 
       const graph = toResourceGraph(
@@ -94,7 +114,7 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'RefPreservation',
           spec: RefSpec,
-          status: RefStatus
+          status: RefStatus,
         },
 
         (schema) => {
@@ -105,10 +125,10 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
             env: {
               POSTGRES_DB: schema.spec.dbName,
               POSTGRES_USER: 'user',
-              POSTGRES_PASSWORD: 'password'
-            }
+              POSTGRES_PASSWORD: 'password',
+            },
           });
-          
+
           return {
             database,
             app: simple.Deployment({
@@ -117,15 +137,17 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
               id: 'app',
               env: {
                 // Cross-resource reference that should work with both factories
-                DATABASE_URL: `postgres://user:password@${database.status.podIP}:5432/${schema.spec.dbName}`,
-                DB_READY: database.status.readyReplicas > 0 ? 'true' : 'false'
-              }
-            })
+                DATABASE_URL: `postgres://user:password@${database.metadata.name}:5432/${schema.spec.dbName}`,
+                DB_READY: database.status.readyReplicas > 0 ? 'true' : 'false',
+              },
+            }),
           };
         },
-        (schema: any, resources: any) => ({
-          ready: (resources.database as any)?.status?.readyReplicas > 0 && (resources.app as any)?.status?.readyReplicas > 0,
-          connectionString: `postgres://user:password@${(resources.database as any)?.status?.podIP || 'localhost'}:5432/${schema.spec.dbName}`
+        (schema: Record<string, Record<string, unknown>>, resources: Record<string, unknown>) => ({
+          ready:
+            (resources.database as unknown as FlexibleResource)?.status?.readyReplicas! > 0 &&
+            (resources.app as unknown as FlexibleResource)?.status?.readyReplicas! > 0,
+          connectionString: `postgres://user:password@${(resources.database as unknown as FlexibleResource)?.metadata?.name || 'localhost'}:5432/${(schema.spec as Record<string, unknown>).dbName}`,
         })
       );
 
@@ -143,11 +165,11 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
   describe('Factory Type Detection and Validation', () => {
     it('should automatically detect appropriate factory type based on expressions', async () => {
       const _AutoSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const _AutoStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // Simple graph without complex expressions
@@ -157,17 +179,17 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'SimpleAuto',
           spec: type({ name: 'string' }),
-          status: type({ ready: 'boolean' })
+          status: type({ ready: 'boolean' }),
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
-        (_schema: any, _resources: any) => ({
-          ready: true // Static value
+        (_schema: unknown, _resources: unknown) => ({
+          ready: true, // Static value
         })
       );
 
@@ -178,17 +200,17 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'ComplexAuto',
           spec: type({ name: 'string' }),
-          status: type({ ready: 'boolean' })
+          status: type({ ready: 'boolean' }),
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
-        (_schema: any, resources: any) => ({
-          ready: (resources.deployment as any)?.status?.readyReplicas > 0 // JavaScript expression
+        (_schema: unknown, resources: Record<string, unknown>) => ({
+          ready: (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas! > 0, // JavaScript expression
         })
       );
 
@@ -210,13 +232,13 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
     it('should validate factory compatibility with expression complexity', async () => {
       const CompatSpec = type({
         name: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       const CompatStatus = type({
         simple: 'boolean',
         complex: 'boolean',
-        veryComplex: 'string'
+        veryComplex: 'string',
       });
 
       const graph = toResourceGraph(
@@ -225,33 +247,39 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'CompatibilityTest',
           spec: CompatSpec,
-          status: CompatStatus
+          status: CompatStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: schema.spec.replicas,
-            id: 'deployment'
+            id: 'deployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'service'
-          })
+            id: 'service',
+          }),
         }),
-        (schema: any, resources: any) => ({
+        (schema: Record<string, Record<string, unknown>>, resources: Record<string, unknown>) => ({
           // Simple expression
-          simple: (resources.deployment as any)?.status?.readyReplicas > 0,
-          
+          simple: (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas! > 0,
+
           // Complex expression
-          complex: (resources.deployment as any)?.status?.readyReplicas === schema.spec.replicas && (resources.service as any)?.status?.ready,
-          
+          complex:
+            (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas ===
+              schema.spec!.replicas &&
+            (resources.deployment as unknown as FlexibleResource)?.status?.availableReplicas! > 0,
+
           // Very complex expression
-          veryComplex: (resources.deployment as any)?.status?.conditions?.find((c: any) => c.type === 'Available')?.status === 'True'
-            ? `Ready: ${(resources.deployment as any)?.status?.readyReplicas}/${schema.spec.replicas}`
-            : 'Not ready'
+          veryComplex:
+            (resources.deployment as unknown as FlexibleResource)?.status?.conditions?.find(
+              (c: { type: string; status: string }) => c.type === 'Available'
+            )?.status === 'True'
+              ? `Ready: ${(resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas}/${schema.spec!.replicas}`
+              : 'Not ready',
         })
       );
 
@@ -270,49 +298,50 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
     it('should have comparable performance for both factory types', async () => {
       const PerfSpec = type({
         name: 'string',
-        count: 'number'
+        count: 'number',
       });
 
       const PerfStatus = type({
         items: 'string[]',
-        summary: 'string'
+        summary: 'string',
       });
 
-      const createGraph = () => toResourceGraph(
-        {
-          name: 'performance-comparison',
-          apiVersion: 'example.com/v1',
-          kind: 'PerformanceComparison',
-          spec: PerfSpec,
-          status: PerfStatus
-        },
-        (schema) => {
-          const resources: Record<string, any> = {};
-          
-          for (let i = 0; i < 10; i++) {
-            resources[`deployment-${i}`] = simple.Deployment({
-              name: `${schema.spec.name}-${i}`,
-              image: 'nginx:latest',
-              replicas: 1,
-              id: `deployment${i}`
-            });
+      const createGraph = () =>
+        toResourceGraph(
+          {
+            name: 'performance-comparison',
+            apiVersion: 'example.com/v1',
+            kind: 'PerformanceComparison',
+            spec: PerfSpec,
+            status: PerfStatus,
+          },
+          (schema) => {
+            const resources: Record<string, Enhanced<unknown, unknown>> = {};
+
+            for (let i = 0; i < 10; i++) {
+              resources[`deployment-${i}`] = simple.Deployment({
+                name: `${schema.spec.name}-${i}`,
+                image: 'nginx:latest',
+                replicas: 1,
+                id: `deployment${i}`,
+              });
+            }
+
+            return resources;
+          },
+          (schema: Record<string, Record<string, unknown>>, _resources: unknown) => {
+            const items: string[] = [];
+
+            for (let i = 0; i < 10; i++) {
+              items.push(`${schema.spec!.name}-${i}`);
+            }
+
+            return {
+              items,
+              summary: `${items.length} items for ${schema.spec!.name}`,
+            };
           }
-          
-          return resources;
-        },
-        (schema: any, _resources: any) => {
-          const items = [];
-          
-          for (let i = 0; i < 10; i++) {
-            items.push(`${schema.spec.name}-${i}`);
-          }
-          
-          return {
-            items,
-            summary: `${items.length} items for ${schema.spec.name}`
-          };
-        }
-      );
+        );
 
       // Test Kro factory performance
       const kroStartTime = performance.now();
@@ -343,11 +372,11 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
     it('should scale similarly for both factory types', async () => {
       const ScaleSpec = type({
         name: 'string',
-        size: 'number'
+        size: 'number',
       });
 
       const ScaleStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       const sizes = [5, 10, 20];
@@ -355,33 +384,34 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
       const directTimes: number[] = [];
 
       for (const size of sizes) {
-        const createScaledGraph = () => toResourceGraph(
-          {
-            name: `scale-test-${size}`,
-            apiVersion: 'example.com/v1',
-            kind: 'ScaleTest',
-            spec: ScaleSpec,
-            status: ScaleStatus
-          },
-          (schema) => {
-            const resources: Record<string, any> = {};
-            
-            for (let i = 0; i < size; i++) {
-              resources[`deployment-${i}`] = simple.Deployment({
-                name: `${schema.spec.name}-${i}`,
-                image: 'nginx:latest',
-                id: `deployment${i}`
-              });
-            }
-            
-            return resources;
-          },
-          (_schema: any, resources: any) => ({
-            ready: Object.keys(resources).every(key => 
-              (resources[key] as any)?.status?.readyReplicas > 0
-            )
-          })
-        );
+        const createScaledGraph = () =>
+          toResourceGraph(
+            {
+              name: `scale-test-${size}`,
+              apiVersion: 'example.com/v1',
+              kind: 'ScaleTest',
+              spec: ScaleSpec,
+              status: ScaleStatus,
+            },
+            (schema) => {
+              const resources: Record<string, Enhanced<unknown, unknown>> = {};
+
+              for (let i = 0; i < size; i++) {
+                resources[`deployment-${i}`] = simple.Deployment({
+                  name: `${schema.spec.name}-${i}`,
+                  image: 'nginx:latest',
+                  id: `deployment${i}`,
+                });
+              }
+
+              return resources;
+            },
+            (_schema: unknown, resources: Record<string, unknown>) => ({
+              ready: Object.keys(resources).every(
+                (key) => (resources[key] as unknown as FlexibleResource)?.status?.readyReplicas! > 0
+              ),
+            })
+          );
 
         // Test Kro factory
         const kroStart = performance.now();
@@ -414,11 +444,11 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
   describe('Error Handling Differences', () => {
     it('should handle errors appropriately for each factory type', async () => {
       const ErrorSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const ErrorStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // Graph with potentially problematic expressions
@@ -428,18 +458,18 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'ErrorHandling',
           spec: ErrorSpec,
-          status: ErrorStatus
+          status: ErrorStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
         (_schema, resources) => ({
           // Expression that might cause issues
-          ready: (resources.deployment as Enhanced<any, any>).status.readyReplicas > 0
+          ready: (resources.deployment as Enhanced<any, any>).status.readyReplicas > 0,
         })
       );
 
@@ -465,11 +495,11 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
 
     it('should provide factory-specific error messages', async () => {
       const SpecificErrorSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const SpecificErrorStatus = type({
-        ready: 'boolean'
+        ready: 'boolean',
       });
 
       // Create a graph that might have factory-specific issues
@@ -479,17 +509,17 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'SpecificErrors',
           spec: SpecificErrorSpec,
-          status: SpecificErrorStatus
+          status: SpecificErrorStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
-        (_schema: any, resources: any) => ({
-          ready: (resources.deployment as any)?.status?.readyReplicas > 0
+        (_schema: unknown, resources: Record<string, unknown>) => ({
+          ready: (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas! > 0,
         })
       );
 
@@ -527,12 +557,12 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
     it('should deploy resources correctly with both factory types', async () => {
       const DeploySpec = type({
         name: 'string',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       const DeployStatus = type({
         ready: 'boolean',
-        replicas: 'number'
+        replicas: 'number',
       });
 
       const graph = toResourceGraph(
@@ -541,19 +571,22 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'DeploymentTest',
           spec: DeploySpec,
-          status: DeployStatus
+          status: DeployStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
             replicas: schema.spec.replicas,
-            id: 'deployment'
-          })
+            id: 'deployment',
+          }),
         }),
-        (schema: any, resources: any) => ({
-          ready: (resources.deployment as any)?.status?.readyReplicas === schema.spec.replicas,
-          replicas: (resources.deployment as any)?.status?.readyReplicas || 0
+        (schema: Record<string, Record<string, unknown>>, resources: Record<string, unknown>) => ({
+          ready:
+            (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas ===
+            schema.spec!.replicas,
+          replicas:
+            (resources.deployment as unknown as FlexibleResource)?.status?.readyReplicas || 0,
         })
       );
 
@@ -576,12 +609,12 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
 
     it('should handle resource dependencies correctly in both factory types', async () => {
       const DepSpec = type({
-        name: 'string'
+        name: 'string',
       });
 
       const DepStatus = type({
         ready: 'boolean',
-        url: 'string'
+        url: 'string',
       });
 
       const graph = toResourceGraph(
@@ -590,25 +623,27 @@ describe('Factory Pattern Integration - Comprehensive Tests', () => {
           apiVersion: 'example.com/v1',
           kind: 'DependencyTest',
           spec: DepSpec,
-          status: DepStatus
+          status: DepStatus,
         },
         (schema) => ({
           deployment: simple.Deployment({
             name: schema.spec.name,
             image: 'nginx:latest',
-            id: 'deployment'
+            id: 'deployment',
           }),
           service: simple.Service({
             name: schema.spec.name,
             ports: [{ port: 80, targetPort: 8080 }],
             selector: { app: schema.spec.name },
-            id: 'service'
-          })
+            id: 'service',
+          }),
         }),
         (_schema, resources) => ({
           // Status depends on both resources
-          ready: (resources.deployment as any).status?.readyReplicas > 0 && (resources.service as any).status?.ready,
-          url: `http://${(resources.service as any)?.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`
+          ready:
+            (resources.deployment as unknown as FlexibleResource).status?.readyReplicas! > 0 &&
+            (resources.deployment as unknown as FlexibleResource).status?.availableReplicas! > 0,
+          url: `http://${(resources.service as unknown as FlexibleResource)?.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
         })
       );
 

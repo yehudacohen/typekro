@@ -6,8 +6,13 @@
  * Cilium-specific configuration and validation.
  */
 
-import { describe, it, expect } from 'bun:test';
-import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues, validateCiliumHelmValues } from '../../../src/factories/cilium/resources/helm.js';
+import { describe, expect, it } from 'bun:test';
+import {
+  ciliumHelmRelease,
+  ciliumHelmRepository,
+  mapCiliumConfigToHelmValues,
+  validateCiliumHelmValues,
+} from '../../../src/factories/cilium/resources/helm.js';
 import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 
 describe('Cilium Helm Integration', () => {
@@ -166,8 +171,8 @@ describe('Cilium Helm Integration', () => {
       const values = mapCiliumConfigToHelmValues(config);
 
       expect(values.cluster).toEqual({ name: 'test', id: 1 });
-      expect((values as any).debug).toEqual({ enabled: true });
-      expect((values as any).customField).toBe('customValue');
+      expect((values as Record<string, unknown>).debug).toEqual({ enabled: true });
+      expect((values as Record<string, unknown>).customField).toBe('customValue');
     });
   });
 
@@ -187,7 +192,7 @@ describe('Cilium Helm Integration', () => {
     });
 
     it('should reject missing cluster configuration', () => {
-      const values = {} as any;
+      const values = {} as unknown as Parameters<typeof validateCiliumHelmValues>[0];
 
       const result = validateCiliumHelmValues(values);
 
@@ -213,26 +218,35 @@ describe('Cilium Helm Integration', () => {
       const values = {
         cluster: { name: 'test', id: 1 },
         ipam: {
-          mode: 'invalid-mode' as any,
+          mode: 'invalid-mode' as unknown as
+            | 'kubernetes'
+            | 'cluster-pool'
+            | 'azure'
+            | 'aws-eni'
+            | 'crd',
         },
       };
 
       const result = validateCiliumHelmValues(values);
 
       expect(result.valid).toBe(false);
-      expect(result.errors).toContain('ipam.mode must be one of: kubernetes, cluster-pool, azure, aws-eni, crd');
+      expect(result.errors).toContain(
+        'ipam.mode must be one of: kubernetes, cluster-pool, azure, aws-eni, crd'
+      );
     });
 
     it('should validate kube-proxy replacement mode', () => {
       const values = {
         cluster: { name: 'test', id: 1 },
-        kubeProxyReplacement: 'invalid-mode' as any,
+        kubeProxyReplacement: 'invalid-mode' as unknown as boolean | 'partial',
       };
 
       const result = validateCiliumHelmValues(values);
 
       expect(result.valid).toBe(false);
-      expect(result.errors).toContain('kubeProxyReplacement must be one of: true, false, \'partial\'');
+      expect(result.errors).toContain(
+        "kubeProxyReplacement must be one of: true, false, 'partial'"
+      );
     });
 
     it('should validate encryption type', () => {
@@ -240,7 +254,7 @@ describe('Cilium Helm Integration', () => {
         cluster: { name: 'test', id: 1 },
         encryption: {
           enabled: true,
-          type: 'invalid-type' as any,
+          type: 'invalid-type' as unknown as 'wireguard' | 'ipsec',
         },
       };
 

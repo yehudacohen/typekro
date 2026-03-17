@@ -1,0 +1,439 @@
+/**
+ * Conditional Expression Integration for Factory Functions
+ *
+ * This module provides integration points for conditional expressions like
+ * includeWhen and readyWhen in factory functions, enabling automatic
+ * KubernetesRef detection and CEL conversion.
+ */
+
+import { getCurrentCompositionContext } from '../../composition/context.js';
+import { getComponentLogger } from '../../logging/index.js';
+import {
+  getIncludeWhen,
+  getReadyWhen,
+  getResourceId,
+  setIncludeWhen,
+  setReadyWhen,
+} from '../../metadata/index.js';
+import type { Enhanced, IncludeWhenCondition, ReadyWhenCondition } from '../../types/index.js';
+import type { FactoryExpressionContext } from '../analysis/types.js';
+import {
+  type ConditionalExpressionConfig,
+  ConditionalExpressionProcessor,
+  type ConditionalExpressionResult,
+} from './conditional-expression-processor.js';
+
+const logger = getComponentLogger('conditional-integration');
+
+/**
+ * Configuration for conditional expression integration
+ */
+export interface ConditionalIntegrationConfig extends ConditionalExpressionConfig {
+  /** Whether to automatically process conditional expressions */
+  autoProcess?: boolean;
+  /** Whether to validate conditional expressions */
+  validateExpressions?: boolean;
+}
+
+/**
+ * Conditional expression properties that can be added to Enhanced resources
+ */
+export interface ConditionalExpressionProperties {
+  /** Condition for including this resource in deployment (may accumulate into an array for AND semantics) */
+  includeWhen?: IncludeWhenCondition | IncludeWhenCondition[];
+  /** Condition for considering this resource ready (may accumulate into an array) */
+  readyWhen?: ReadyWhenCondition | ReadyWhenCondition[];
+  /** Custom conditional expressions */
+  conditionals?: Record<string, IncludeWhenCondition | ReadyWhenCondition>;
+}
+
+/**
+ * Enhanced resource with conditional expression support
+ */
+export type EnhancedWithConditionals<TSpec, TStatus> = Enhanced<TSpec, TStatus> &
+  ConditionalExpressionProperties & {
+    /** Set includeWhen condition */
+    withIncludeWhen(condition: IncludeWhenCondition): EnhancedWithConditionals<TSpec, TStatus>;
+    /** Set readyWhen condition */
+    withReadyWhen(condition: ReadyWhenCondition): EnhancedWithConditionals<TSpec, TStatus>;
+    /** Add custom conditional expression */
+    withConditional(
+      name: string,
+      condition: IncludeWhenCondition | ReadyWhenCondition
+    ): EnhancedWithConditionals<TSpec, TStatus>;
+    /** Create factory expression context for conditional expression processing */
+    createFactoryContext(): FactoryExpressionContext;
+  };
+
+/**
+ * Result of conditional expression integration
+ */
+export interface ConditionalIntegrationResult {
+  /** Whether any conditional expressions were processed */
+  hasConditionals: boolean;
+  /** Processing results for each conditional expression */
+  results: {
+    includeWhen?: ConditionalExpressionResult;
+    readyWhen?: ConditionalExpressionResult;
+    conditionals?: Record<string, ConditionalExpressionResult>;
+  };
+  /** Total processing time */
+  totalProcessingTimeMs: number;
+  /** Any integration warnings */
+  warnings: string[];
+}
+
+/**
+ * Conditional Expression Integrator
+ *
+ * Integrates conditional expression processing with factory functions
+ * and Enhanced resources.
+ */
+export class ConditionalExpressionIntegrator {
+  private processor: ConditionalExpressionProcessor;
+
+  constructor() {
+    this.processor = new ConditionalExpressionProcessor();
+  }
+
+  /**
+   * Add conditional expression support to an Enhanced resource
+   *
+   * @param resource - Enhanced resource to augment
+   * @param config - Integration configuration
+   * @returns Enhanced resource with conditional expression support
+   */
+  addConditionalSupport<TSpec, TStatus>(
+    resource: Enhanced<TSpec, TStatus>,
+    config: ConditionalIntegrationConfig = {}
+  ): EnhancedWithConditionals<TSpec, TStatus> {
+    const enhanced = resource as EnhancedWithConditionals<TSpec, TStatus>;
+
+    // includeWhen and readyWhen are stored in WeakMap metadata (no Object.defineProperty needed).
+    // They start as undefined by default.
+
+    Object.defineProperty(enhanced, 'conditionals', {
+      value: {},
+      writable: true,
+      enumerable: false, // Don't serialize by default
+      configurable: true,
+    });
+
+    // Add fluent builder methods — accumulate conditions in arrays (AND semantics)
+    Object.defineProperty(enhanced, 'withIncludeWhen', {
+      value: (condition: IncludeWhenCondition): EnhancedWithConditionals<TSpec, TStatus> => {
+        if (config.autoProcess) {
+          const context = enhanced.createFactoryContext();
+          const result = this.processor.processIncludeWhenExpression(condition, context, config);
+
+          if (result.validationErrors.length > 0) {
+            logger.warn('includeWhen validation warnings', {
+              resourceId: getResourceId(enhanced),
+              errors: result.validationErrors,
+            });
+          }
+
+          // Accumulate: multiple calls produce multiple entries (AND semantics)
+          const existing = getIncludeWhen(enhanced);
+          if (Array.isArray(existing)) {
+            existing.push(result.expression);
+          } else if (existing !== undefined) {
+            setIncludeWhen(enhanced, [existing, result.expression]);
+          } else {
+            setIncludeWhen(enhanced, [result.expression]);
+          }
+        } else {
+          // Accumulate raw values — the serialization layer will convert to CEL
+          const existing = getIncludeWhen(enhanced);
+          if (Array.isArray(existing)) {
+            existing.push(condition);
+          } else if (existing !== undefined) {
+            setIncludeWhen(enhanced, [existing, condition]);
+          } else {
+            setIncludeWhen(enhanced, [condition]);
+          }
+        }
+
+        return enhanced;
+      },
+      enumerable: false,
+      configurable: true,
+    });
+
+    Object.defineProperty(enhanced, 'withReadyWhen', {
+      value: (condition: ReadyWhenCondition): EnhancedWithConditionals<TSpec, TStatus> => {
+        if (config.autoProcess) {
+          const context = enhanced.createFactoryContext();
+          const result = this.processor.processReadyWhenExpression(condition, context, config);
+
+          if (result.validationErrors.length > 0) {
+            logger.warn('readyWhen validation warnings', {
+              resourceId: getResourceId(enhanced),
+              errors: result.validationErrors,
+            });
+          }
+
+          // Accumulate: multiple calls produce multiple entries
+          const existing = getReadyWhen(enhanced);
+          if (Array.isArray(existing)) {
+            existing.push(result.expression);
+          } else if (existing !== undefined) {
+            setReadyWhen(enhanced, [existing, result.expression]);
+          } else {
+            setReadyWhen(enhanced, [result.expression]);
+          }
+        } else {
+          // Accumulate raw values — the serialization layer will convert to CEL
+          const existing = getReadyWhen(enhanced);
+          if (Array.isArray(existing)) {
+            existing.push(condition);
+          } else if (existing !== undefined) {
+            setReadyWhen(enhanced, [existing, condition]);
+          } else {
+            setReadyWhen(enhanced, [condition]);
+          }
+        }
+
+        return enhanced;
+      },
+      enumerable: false,
+      configurable: true,
+    });
+
+    Object.defineProperty(enhanced, 'withConditional', {
+      value: (
+        name: string,
+        condition: IncludeWhenCondition | ReadyWhenCondition
+      ): EnhancedWithConditionals<TSpec, TStatus> => {
+        const context = enhanced.createFactoryContext();
+
+        if (config.autoProcess) {
+          const result = this.processor.processCustomConditionalExpression(
+            condition,
+            context,
+            config
+          );
+          if (!enhanced.conditionals) {
+            enhanced.conditionals = {};
+          }
+          enhanced.conditionals[name] = result.expression;
+
+          if (result.validationErrors.length > 0) {
+            logger.warn('Custom conditional validation warnings', {
+              resourceId: getResourceId(enhanced),
+              conditionalName: name,
+              errors: result.validationErrors,
+            });
+          }
+        } else {
+          if (!enhanced.conditionals) {
+            enhanced.conditionals = {};
+          }
+          enhanced.conditionals[name] = condition;
+        }
+
+        return enhanced;
+      },
+      enumerable: false,
+      configurable: true,
+    });
+
+    // Add helper method to create factory context
+    Object.defineProperty(enhanced, 'createFactoryContext', {
+      value: (): FactoryExpressionContext => {
+        const compositionContext = getCurrentCompositionContext();
+        return {
+          factoryType: 'kro', // Default to Kro, can be overridden
+          factoryName: enhanced.kind || 'unknown',
+          analysisEnabled: true,
+          availableResources: compositionContext?.resources || {},
+          schemaProxy: undefined, // Will be set by toResourceGraph if available
+          resourceId: getResourceId(enhanced) || 'unknown',
+        };
+      },
+      enumerable: false,
+      configurable: true,
+    });
+
+    return enhanced;
+  }
+
+  /**
+   * Process all conditional expressions on an Enhanced resource
+   *
+   * @param resource - Enhanced resource with conditional expressions
+   * @param context - Factory context
+   * @param config - Integration configuration
+   * @returns Processing results
+   */
+  processResourceConditionals<TSpec, TStatus>(
+    resource: EnhancedWithConditionals<TSpec, TStatus>,
+    context: FactoryExpressionContext,
+    config: ConditionalIntegrationConfig = {}
+  ): ConditionalIntegrationResult {
+    const startTime = performance.now();
+    const results: ConditionalIntegrationResult['results'] = {};
+    const warnings: string[] = [];
+    let hasConditionals = false;
+
+    logger.debug('Processing resource conditional expressions', {
+      resourceId: context.resourceId,
+      factoryType: context.factoryType,
+    });
+
+    // Process includeWhen expression
+    const currentIncludeWhen = getIncludeWhen(resource);
+    if (currentIncludeWhen !== undefined) {
+      hasConditionals = true;
+      results.includeWhen = this.processor.processIncludeWhenExpression(
+        currentIncludeWhen,
+        context,
+        config
+      );
+
+      if (results.includeWhen.validationErrors.length > 0) {
+        warnings.push(...results.includeWhen.validationErrors.map((err) => `includeWhen: ${err}`));
+      }
+
+      // Update the resource with processed expression
+      setIncludeWhen(resource, results.includeWhen.expression as unknown[]);
+    }
+
+    // Process readyWhen expression
+    const currentReadyWhen = getReadyWhen(resource);
+    if (currentReadyWhen !== undefined) {
+      hasConditionals = true;
+      results.readyWhen = this.processor.processReadyWhenExpression(
+        currentReadyWhen,
+        context,
+        config
+      );
+
+      if (results.readyWhen.validationErrors.length > 0) {
+        warnings.push(...results.readyWhen.validationErrors.map((err) => `readyWhen: ${err}`));
+      }
+
+      // Update the resource with processed expression
+      setReadyWhen(resource, results.readyWhen.expression as unknown[]);
+    }
+
+    // Process custom conditional expressions
+    if (resource.conditionals && Object.keys(resource.conditionals).length > 0) {
+      hasConditionals = true;
+      results.conditionals = {};
+
+      for (const [name, condition] of Object.entries(resource.conditionals)) {
+        results.conditionals[name] = this.processor.processCustomConditionalExpression(
+          condition,
+          context,
+          config
+        );
+
+        if (results.conditionals[name].validationErrors.length > 0) {
+          warnings.push(
+            ...results.conditionals[name].validationErrors.map((err) => `${name}: ${err}`)
+          );
+        }
+
+        // Update the resource with processed expression
+        resource.conditionals[name] = results.conditionals[name].expression;
+      }
+    }
+
+    const totalProcessingTimeMs = performance.now() - startTime;
+
+    logger.debug('Resource conditional expressions processing completed', {
+      resourceId: context.resourceId,
+      hasConditionals,
+      totalProcessingTimeMs,
+      warningsCount: warnings.length,
+    });
+
+    return {
+      hasConditionals,
+      results,
+      totalProcessingTimeMs,
+      warnings,
+    };
+  }
+
+  /**
+   * Extract conditional expressions from a resource for serialization
+   *
+   * @param resource - Enhanced resource with conditional expressions
+   * @returns Conditional expressions ready for serialization
+   */
+  extractConditionalsForSerialization<TSpec, TStatus>(
+    resource: EnhancedWithConditionals<TSpec, TStatus>
+  ): Record<string, unknown> {
+    const conditionals: Record<string, unknown> = {};
+
+    const includeWhen = getIncludeWhen(resource);
+    if (includeWhen !== undefined) {
+      conditionals.includeWhen = includeWhen;
+    }
+
+    const readyWhen = getReadyWhen(resource);
+    if (readyWhen !== undefined) {
+      conditionals.readyWhen = readyWhen;
+    }
+
+    if (resource.conditionals && Object.keys(resource.conditionals).length > 0) {
+      Object.assign(conditionals, resource.conditionals);
+    }
+
+    return conditionals;
+  }
+
+  /**
+   * Validate that conditional expressions are appropriate for the factory type
+   *
+   * @param resource - Enhanced resource with conditional expressions
+   * @param factoryType - Target factory type
+   * @returns Validation results
+   */
+  validateConditionalsForFactory<TSpec, TStatus>(
+    resource: EnhancedWithConditionals<TSpec, TStatus>,
+    factoryType: 'direct' | 'kro'
+  ): { isValid: boolean; errors: string[]; warnings: string[] } {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // Direct factory limitations
+    const resIncludeWhen = getIncludeWhen(resource);
+    const resReadyWhen = getReadyWhen(resource);
+
+    if (factoryType === 'direct') {
+      if (resIncludeWhen !== undefined) {
+        warnings.push('includeWhen expressions have limited support in direct factory mode');
+      }
+
+      if (resReadyWhen !== undefined) {
+        warnings.push('readyWhen expressions have limited support in direct factory mode');
+      }
+    }
+
+    // Kro factory requirements
+    if (factoryType === 'kro') {
+      // All conditional expressions should be convertible to CEL
+      if (resIncludeWhen !== undefined && typeof resIncludeWhen === 'function') {
+        errors.push('includeWhen expressions cannot be functions in Kro factory mode');
+      }
+
+      if (resReadyWhen !== undefined && typeof resReadyWhen === 'function') {
+        errors.push('readyWhen expressions cannot be functions in Kro factory mode');
+      }
+    }
+
+    return {
+      isValid: errors.length === 0,
+      errors,
+      warnings,
+    };
+  }
+}
+
+/**
+ * Global conditional expression integrator instance
+ */
+export const conditionalExpressionIntegrator = new ConditionalExpressionIntegrator();

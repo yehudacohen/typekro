@@ -1,16 +1,24 @@
 import { describe, expect, it } from 'bun:test';
-import { // New Certificate Resources
-  certificateSigningRequest, componentStatus, csiDriver, csiNode, // New Extensions Resources
+import {
+  // New Certificate Resources
+  certificateSigningRequest,
+  componentStatus,
+  csiDriver,
+  csiNode, // New Extensions Resources
   customResourceDefinition, // New Autoscaling V1 Resources
   horizontalPodAutoscalerV1, // New Networking Resources
-  ingressClass, isKubernetesRef, // New Coordination Resources
+  ingressClass, // New Coordination Resources
   lease, // New Admission Resources
   mutatingWebhookConfiguration, // New Core Resources
   node, // New Priority and Runtime Resources
   priorityClass, // New Apps Resources
-  replicationController, runtimeClass, // Serialization
-  toResourceGraph, validatingWebhookConfiguration, // New Storage Resources
-  volumeAttachment,  } from '../../src/index';
+  replicationController,
+  runtimeClass, // Serialization
+  toResourceGraph,
+  validatingWebhookConfiguration, // New Storage Resources
+  volumeAttachment,
+} from '../../src/index';
+import { isKubernetesRef } from '../../src/utils/index.js';
 
 describe('New Resource Factory Coverage', () => {
   describe('Apps Resources', () => {
@@ -213,7 +221,7 @@ describe('New Resource Factory Coverage', () => {
       });
 
       expect(mwc.metadata.name).toBe('test-mutating-webhook');
-      expect(mwc.kind).toBe('MutatingAdmissionWebhook');
+      expect(mwc.kind).toBe('MutatingWebhookConfiguration');
       expect(mwc.apiVersion).toBe('admissionregistration.k8s.io/v1');
     });
 
@@ -245,7 +253,7 @@ describe('New Resource Factory Coverage', () => {
       });
 
       expect(vwc.metadata.name).toBe('test-validating-webhook');
-      expect(vwc.kind).toBe('ValidatingAdmissionWebhook');
+      expect(vwc.kind).toBe('ValidatingWebhookConfiguration');
       expect(vwc.apiVersion).toBe('admissionregistration.k8s.io/v1');
     });
   });

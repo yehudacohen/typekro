@@ -3,19 +3,19 @@
  * These tests prevent regressions in composition metadata storage
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { kubernetesComposition, toResourceGraph, simple } from '../../src/index.js';
+import { kubernetesComposition, simple, toResourceGraph } from '../../src/index.js';
 
 describe('Readonly Property Assignment Protection', () => {
   const TestSpecSchema = type({
     name: 'string',
-    image: 'string'
+    image: 'string',
   });
 
   const TestStatusSchema = type({
     ready: 'boolean',
-    url: 'string'
+    url: 'string',
   });
 
   describe('Composition Metadata Storage', () => {
@@ -35,12 +35,12 @@ describe('Readonly Property Assignment Protection', () => {
               name: spec.name,
               image: spec.image,
               replicas: 1,
-              id: 'deployment'
+              id: 'deployment',
             });
 
             return {
               ready: true,
-              url: `http://${spec.name}.example.com`
+              url: `http://${spec.name}.example.com`,
             };
           }
         );
@@ -63,17 +63,17 @@ describe('Readonly Property Assignment Protection', () => {
             name: `${spec.name}-service`,
             selector: { app: spec.name },
             ports: [{ port: 80, targetPort: 8080 }],
-            id: 'service'
+            id: 'service',
           });
 
           return {
             ready: true,
-            url: `http://${spec.name}-service`
+            url: `http://${spec.name}-service`,
           };
         }
       );
 
-      const compositionAny = composition as any;
+      const compositionAny = composition as unknown as Record<string, unknown>;
 
       // Metadata properties should exist
       expect(compositionAny._compositionFn).toBeDefined();
@@ -119,12 +119,12 @@ describe('Readonly Property Assignment Protection', () => {
                 name: spec.name,
                 image: spec.image,
                 replicas: 1,
-                id: 'deployment'
+                id: 'deployment',
               });
 
               return {
                 ready: true,
-                url: `http://${spec.name}.example.com`
+                url: `http://${spec.name}.example.com`,
               };
             }
           );
@@ -150,17 +150,17 @@ describe('Readonly Property Assignment Protection', () => {
           const _configMap = simple.ConfigMap({
             name: `${spec.name}-config`,
             data: { 'app.properties': 'key=value' },
-            id: 'config'
+            id: 'config',
           });
 
           return {
             ready: true,
-            url: `http://${spec.name}.example.com`
+            url: `http://${spec.name}.example.com`,
           };
         }
       );
 
-      const compositionAny = composition as any;
+      const compositionAny = composition as unknown as Record<string, unknown>;
 
       // Store original values
       const originalCompositionFn = compositionAny._compositionFn;
@@ -174,7 +174,7 @@ describe('Readonly Property Assignment Protection', () => {
         // Expected in strict mode
         expect(error).toBeInstanceOf(TypeError);
       }
-      
+
       try {
         compositionAny._definition = 'modified';
       } catch (error) {
@@ -199,18 +199,18 @@ describe('Readonly Property Assignment Protection', () => {
         (spec) => {
           const _secret = simple.Secret({
             name: `${spec.name}-secret`,
-            data: { 'password': 'base64encodedpassword' },
-            id: 'secret'
+            data: { password: 'base64encodedpassword' },
+            id: 'secret',
           });
 
           return {
             ready: true,
-            url: `http://${spec.name}.example.com`
+            url: `http://${spec.name}.example.com`,
           };
         }
       );
 
-      const compositionAny = composition as any;
+      const compositionAny = composition as unknown as Record<string, unknown>;
 
       // Should be able to delete properties (configurable: true)
       expect(() => {
@@ -277,12 +277,12 @@ describe('Readonly Property Assignment Protection', () => {
               name: spec.name,
               image: spec.image,
               replicas: 1,
-              id: 'deployment'
+              id: 'deployment',
             });
 
             return {
               ready: true,
-              url: `http://${spec.name}.example.com`
+              url: `http://${spec.name}.example.com`,
             };
           }
         );
@@ -355,12 +355,12 @@ describe('Readonly Property Assignment Protection', () => {
                 name: spec.name,
                 image: spec.image,
                 replicas: 1,
-                id: 'deployment'
+                id: 'deployment',
               });
 
               return {
                 ready: true,
-                url: `http://${spec.name}.example.com`
+                url: `http://${spec.name}.example.com`,
               };
             }
           );
@@ -390,12 +390,12 @@ describe('Readonly Property Assignment Protection', () => {
               name: `${spec.name}-service`,
               selector: { app: spec.name },
               ports: [{ port: 80, targetPort: 8080 }],
-              id: 'service'
+              id: 'service',
             });
 
             return {
               ready: true,
-              url: `http://${spec.name}-service`
+              url: `http://${spec.name}-service`,
             };
           }
         );

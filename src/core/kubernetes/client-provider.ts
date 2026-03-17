@@ -1,18 +1,54 @@
 /**
  * Kubernetes Client Provider
  *
- * Single source of truth for all Kubernetes API interactions.
- * Manages KubeConfig loading and KubernetesObjectApi client instantiation
- * with consistent configuration across the entire application.
+ * Manages KubeConfig loading and Kubernetes API client instantiation
+ * with consistent configuration, security settings, and lifecycle management.
  *
- * This provider implements the singleton pattern and serves as the central
- * authority for all Kubernetes API client creation, ensuring consistent
- * configuration, security settings, and lifecycle management.
+ * ## Usage Patterns
+ *
+ * ### Recommended: Deployment-Scoped Providers
+ *
+ * Create a fresh provider per deployment/factory to ensure isolation between
+ * concurrent deployments. Use `KubernetesClientManager` (in
+ * `deployment/client-provider-manager.ts`) which handles this automatically:
+ *
+ * ```ts
+ * // Via factory options (handles provider lifecycle for you)
+ * const factory = graph.factory('direct', { namespace: 'prod' });
+ *
+ * // Manual scoped provider
+ * const provider = createKubernetesClientProvider({ skipTLSVerify: false });
+ * const api = provider.getKubernetesApi();
+ * ```
+ *
+ * ### Deprecated: Singleton Pattern
+ *
+ * The `getInstance()` / `getKubernetesClientProvider()` singleton and its
+ * convenience functions (`getKubernetesApi()`, `getCoreV1Api()`, etc.) are
+ * deprecated. They share a single provider instance across all deployments,
+ * preventing concurrent deployments from using different configurations and
+ * making cleanup error-prone. Use `createKubernetesClientProvider()` or
+ * `createKubernetesClientProviderWithKubeConfig()` instead.
  */
 
 import * as k8s from '@kubernetes/client-node';
+import {
+  DEFAULT_BACKOFF_MULTIPLIER,
+  DEFAULT_CLUSTER_READY_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_RETRIES,
+  DEFAULT_READINESS_MAX_BACKOFF,
+  DEFAULT_RETRY_BASE_DELAY,
+} from '../config/defaults.js';
+import { isTestEnvironment } from '../config/index.js';
+import { ensureError, KubernetesClientError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { createBunCompatibleApiClient, createBunCompatibleKubernetesObjectApi, isBunRuntime } from './bun-api-client.js';
+import {
+  createBunCompatibleApiClient,
+  createBunCompatibleKubernetesObjectApi,
+  type HttpTimeoutConfig,
+  isBunRuntime,
+} from './bun-api-client.js';
 
 /**
  * Retry configuration options for operations with exponential backoff
@@ -79,6 +115,7 @@ export interface KubernetesClientConfig {
   cluster?: {
     name: string;
     server: string;
+    /** @security Disables TLS verification for this cluster. Only use in development/testing. */
     skipTLSVerify?: boolean;
     caData?: string;
     caFile?: string;
@@ -106,6 +143,12 @@ export interface KubernetesClientConfig {
    * Custom kubeconfig file path (optional)
    */
   kubeconfigPath?: string;
+
+  /**
+   * HTTP request timeout configuration for Bun runtime
+   * Configures timeouts for different types of Kubernetes API operations
+   */
+  httpTimeouts?: HttpTimeoutConfig;
 }
 
 /**
@@ -144,12 +187,16 @@ export class KubernetesClientProvider {
   private initialized = false;
 
   // Client cache to avoid recreating clients unnecessarily
-  private clientCache = new Map<string, any>();
+  private clientCache = new Map<string, k8s.ApiType>();
 
   private constructor() {}
 
   /**
-   * Get the singleton instance of KubernetesClientProvider
+   * Get the singleton instance of KubernetesClientProvider.
+   *
+   * @deprecated Use {@link createInstance} for deployment-scoped provider instances.
+   * The singleton pattern prevents concurrent deployments from using different
+   * configurations. See `KubernetesClientManager` for the recommended pattern.
    */
   static getInstance(): KubernetesClientProvider {
     if (!KubernetesClientProvider.instance) {
@@ -195,12 +242,13 @@ export class KubernetesClientProvider {
       this.kubeConfig = this.createKubeConfig(this.config);
       // Use createBunCompatibleKubernetesObjectApi which handles both Bun and Node.js
       // This works around Bun's fetch TLS issues (https://github.com/oven-sh/bun/issues/10642)
-      this.k8sApi = createBunCompatibleKubernetesObjectApi(this.kubeConfig);
+      // Pass HTTP timeout configuration if provided
+      this.k8sApi = createBunCompatibleKubernetesObjectApi(this.kubeConfig, config?.httpTimeouts);
       this.initialized = true;
 
-      const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+      const isTest = isTestEnvironment();
       // Use debug level in test environments to reduce noise, info level in production
-      const logLevel = isTestEnvironment ? 'debug' : 'info';
+      const logLevel = isTest ? 'debug' : 'info';
       this.logger[logLevel]('Kubernetes client provider initialized successfully', {
         currentContext: this.kubeConfig.getCurrentContext(),
         server: this.kubeConfig.getCurrentCluster()?.server,
@@ -208,14 +256,14 @@ export class KubernetesClientProvider {
         clusterName: this.kubeConfig.getCurrentCluster()?.name,
         userName: this.kubeConfig.getCurrentUser()?.name,
       });
-    } catch (error) {
-      this.logger.error('Failed to initialize Kubernetes client provider', error as Error);
+    } catch (error: unknown) {
+      this.logger.error('Failed to initialize Kubernetes client provider', ensureError(error));
       this.reset();
-      const enhancedError = new Error(
-        `Failed to initialize Kubernetes client provider: ${(error as Error).message}`
+      throw new KubernetesClientError(
+        `Failed to initialize Kubernetes client provider: ${ensureError(error).message}`,
+        'initialization',
+        ensureError(error)
       );
-      enhancedError.cause = error;
-      throw enhancedError;
     }
   }
 
@@ -240,14 +288,14 @@ export class KubernetesClientProvider {
         skipTLSVerify: this.kubeConfig.getCurrentCluster()?.skipTLSVerify,
         runtime: isBunRuntime() ? 'bun' : 'node',
       });
-    } catch (error) {
-      this.logger.error('Failed to initialize with pre-configured KubeConfig', error as Error);
+    } catch (error: unknown) {
+      this.logger.error('Failed to initialize with pre-configured KubeConfig', ensureError(error));
       this.reset();
-      const enhancedError = new Error(
-        `Failed to initialize with pre-configured KubeConfig: ${(error as Error).message}`
+      throw new KubernetesClientError(
+        `Failed to initialize with pre-configured KubeConfig: ${ensureError(error).message}`,
+        'initialization',
+        ensureError(error)
       );
-      enhancedError.cause = error;
-      throw enhancedError;
     }
   }
 
@@ -408,9 +456,9 @@ export class KubernetesClientProvider {
 
       this.logger.debug('Cluster availability check successful');
       return true;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Cluster availability check failed', {
-        error: (error as Error).message,
+        error: ensureError(error).message,
       });
       return false;
     }
@@ -424,7 +472,10 @@ export class KubernetesClientProvider {
    * @param retryInterval - Interval between retry attempts in milliseconds (default: 1000ms)
    * @throws Error if cluster doesn't become available within timeout
    */
-  async waitForClusterReady(timeout: number = 30000, retryInterval: number = 1000): Promise<void> {
+  async waitForClusterReady(
+    timeout: number = DEFAULT_CLUSTER_READY_TIMEOUT,
+    retryInterval: number = DEFAULT_FAST_POLL_INTERVAL
+  ): Promise<void> {
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
@@ -443,7 +494,10 @@ export class KubernetesClientProvider {
       await new Promise((resolve) => setTimeout(resolve, retryInterval));
     }
 
-    throw new Error(`Cluster did not become available within ${timeout}ms timeout`);
+    throw new KubernetesClientError(
+      `Cluster did not become available within ${timeout}ms timeout`,
+      'cluster-availability'
+    );
   }
 
   /**
@@ -457,14 +511,14 @@ export class KubernetesClientProvider {
    */
   async withRetry<T>(operation: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
     const {
-      maxAttempts = 3,
-      baseDelay = 1000,
-      maxDelay = 10000,
-      backoffFactor = 2,
+      maxAttempts = DEFAULT_MAX_RETRIES,
+      baseDelay = DEFAULT_RETRY_BASE_DELAY,
+      maxDelay = DEFAULT_READINESS_MAX_BACKOFF,
+      backoffFactor = DEFAULT_BACKOFF_MULTIPLIER,
       retryableErrors = this.defaultRetryableErrorCheck,
     } = options;
 
-    let lastError: Error;
+    let lastError: Error | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -478,8 +532,8 @@ export class KubernetesClientProvider {
         }
 
         return result;
-      } catch (error) {
-        lastError = error as Error;
+      } catch (error: unknown) {
+        lastError = ensureError(error);
 
         if (attempt === maxAttempts || !retryableErrors(lastError)) {
           this.logger.error('Operation failed after all retry attempts', lastError, {
@@ -503,7 +557,9 @@ export class KubernetesClientProvider {
       }
     }
 
-    throw lastError!;
+    // Unreachable when maxAttempts >= 1: either the operation succeeds (return)
+    // or the last attempt's catch block throws. This handles maxAttempts === 0.
+    throw lastError ?? new Error(`Retry failed: maxAttempts was ${maxAttempts}`);
   }
 
   /**
@@ -517,11 +573,14 @@ export class KubernetesClientProvider {
    * @param clientClass - The API client class constructor
    * @returns Cached or new API client instance
    */
-  private getCachedClient<T>(clientType: string, clientClass: new (...args: any[]) => T): T {
+  private getCachedClient<T extends k8s.ApiType>(
+    clientType: string,
+    clientClass: new (config: k8s.Configuration) => T
+  ): T {
     // Check if we have a cached client
     if (this.clientCache.has(clientType)) {
       this.logger.debug('Using cached API client', { clientType });
-      return this.clientCache.get(clientType);
+      return this.clientCache.get(clientType) as T;
     }
 
     let client: T;
@@ -530,36 +589,41 @@ export class KubernetesClientProvider {
       // Use Bun-compatible client creation when running in Bun
       // This works around Bun's fetch TLS issues
       if (isBunRuntime() && this.kubeConfig) {
-        client = createBunCompatibleApiClient(this.kubeConfig, clientClass as any) as T;
+        client = createBunCompatibleApiClient(
+          this.kubeConfig,
+          clientClass,
+          this.config?.httpTimeouts
+        );
         this.logger.debug('Created API client using Bun-compatible HTTP library', {
           clientType,
           runtime: 'bun',
+          hasCustomTimeouts: !!this.config?.httpTimeouts,
         });
       } else {
         // Use the standard makeApiClient approach for Node.js
-        client = this.kubeConfig?.makeApiClient(clientClass as any) as T;
+        client = this.kubeConfig?.makeApiClient(clientClass) as T;
         this.logger.debug('Created API client using makeApiClient', {
           clientType,
           runtime: 'node',
         });
       }
-    } catch (error) {
+    } catch (error: unknown) {
       // Log detailed information about why client creation failed
-      this.logger.error(
-        'API client creation failed',
-        error as Error,
-        {
-          clientType,
-          clientClassName: clientClass?.name,
-          isBun: isBunRuntime(),
-          kubeConfigValid: !!this.kubeConfig,
-          currentCluster: this.kubeConfig?.getCurrentCluster()?.name,
-          currentUser: this.kubeConfig?.getCurrentUser()?.name,
-        }
-      );
+      this.logger.error('API client creation failed', ensureError(error), {
+        clientType,
+        clientClassName: clientClass?.name,
+        isBun: isBunRuntime(),
+        kubeConfigValid: !!this.kubeConfig,
+        currentCluster: this.kubeConfig?.getCurrentCluster()?.name,
+        currentUser: this.kubeConfig?.getCurrentUser()?.name,
+      });
 
       // Re-throw the error instead of falling back
-      throw new Error(`Failed to create ${clientType} API client: ${(error as Error).message}`);
+      throw new KubernetesClientError(
+        `Failed to create ${clientType} API client: ${ensureError(error).message}`,
+        'client-creation',
+        ensureError(error)
+      );
     }
 
     // Cache the client for future use
@@ -668,13 +732,26 @@ export class KubernetesClientProvider {
 
         // Apply configuration modifications if provided
         this.applyConfigModifications(kc, config);
-      } catch (error) {
-        // If loading from default fails (e.g., in test environments), create a minimal mock config
+      } catch (error: unknown) {
+        /**
+         * @security Mock credentials are only used in test environments.
+         * In production, kubeconfig loading failures are fatal to prevent
+         * accidentally connecting with mock/insecure credentials.
+         */
+        const isTestEnv = isTestEnvironment();
+
+        if (!isTestEnv) {
+          this.logger.error(
+            'Failed to load kubeconfig in non-test environment, re-throwing',
+            ensureError(error)
+          );
+          throw error;
+        }
+
         this.logger.warn(
           'Failed to load kubeconfig, creating minimal mock configuration for testing',
           {
-            error: (error as Error).message,
-            isTestEnvironment: process.env.NODE_ENV === 'test' || process.env.VITEST === 'true',
+            error: ensureError(error).message,
           }
         );
 
@@ -705,8 +782,9 @@ export class KubernetesClientProvider {
         kc.setCurrentContext('mock-context');
       }
     } else {
-      throw new Error(
-        'Either complete cluster/user configuration must be provided, or loadFromDefault must be true'
+      throw new KubernetesClientError(
+        'Either complete cluster/user configuration must be provided, or loadFromDefault must be true',
+        'configuration'
       );
     }
 
@@ -757,12 +835,16 @@ export class KubernetesClientProvider {
         this.logger.debug('Applied context modification', {
           context: config.context,
         });
-      } catch (error) {
-        this.logger.error('Failed to set context', error as Error, {
+      } catch (error: unknown) {
+        this.logger.error('Failed to set context', ensureError(error), {
           requestedContext: config.context,
           availableContexts: kc.getContexts().map((c) => c.name),
         });
-        throw new Error(`Context '${config.context}' not found in kubeconfig`);
+        throw new KubernetesClientError(
+          `Context '${config.context}' not found in kubeconfig`,
+          'configuration',
+          ensureError(error)
+        );
       }
     }
   }
@@ -801,23 +883,63 @@ export class KubernetesClientProvider {
     if (cluster?.server) {
       try {
         new URL(cluster.server);
-      } catch (error) {
+      } catch (error: unknown) {
         this.logger.warn('Invalid server URL format', {
           server: cluster.server,
-          error: (error as Error).message,
+          error: ensureError(error).message,
         });
       }
+    }
+
+    // Check for bearer token over HTTP (unencrypted)
+    const user = kc.getCurrentUser();
+    if (cluster?.server?.startsWith('http://') && user?.token) {
+      this.logger.warn(
+        'Bearer token configured for unencrypted HTTP connection - token may be intercepted',
+        {
+          server: cluster.server,
+          security: 'bearer-token-over-http',
+          recommendation: 'Use HTTPS endpoint to protect bearer token in transit',
+          securityRisk: 'Bearer tokens sent over HTTP are visible to network observers',
+        }
+      );
     }
   }
 
   /**
-   * Check if two configurations are the same
+   * Check if two configurations are structurally equivalent.
+   * Compares identity fields without serializing sensitive credential material
+   * (tokens, certificates, keys) to avoid leaking secrets into memory strings.
+   *
+   * NOTE: Token comparison is presence-only (has token vs. no token), not value-based.
+   * A rotated token with the same presence (e.g. refreshed service account tokens) will
+   * NOT trigger a new client — the cached client continues with the old token.
+   * This is a known limitation: callers that rotate credentials should call invalidateClient()
+   * explicitly or create a new provider instance.
    */
   private isSameConfig(config?: KubernetesClientConfig): boolean {
     if (!this.config && !config) return true;
     if (!this.config || !config) return false;
 
-    return JSON.stringify(this.config) === JSON.stringify(config);
+    return (
+      this.config.server === config.server &&
+      this.config.context === config.context &&
+      this.config.skipTLSVerify === config.skipTLSVerify &&
+      this.config.loadFromDefault === config.loadFromDefault &&
+      this.config.kubeconfigPath === config.kubeconfigPath &&
+      this.config.cluster?.name === config.cluster?.name &&
+      this.config.cluster?.server === config.cluster?.server &&
+      this.config.cluster?.skipTLSVerify === config.cluster?.skipTLSVerify &&
+      this.config.user?.name === config.user?.name &&
+      // Compare credential presence without serializing values
+      !!this.config.user?.token === !!config.user?.token &&
+      !!this.config.user?.certData === !!config.user?.certData &&
+      !!this.config.user?.certFile === !!config.user?.certFile &&
+      !!this.config.user?.keyData === !!config.user?.keyData &&
+      !!this.config.user?.keyFile === !!config.user?.keyFile &&
+      !!this.config.cluster?.caData === !!config.cluster?.caData &&
+      !!this.config.cluster?.caFile === !!config.cluster?.caFile
+    );
   }
 
   /**
@@ -825,7 +947,10 @@ export class KubernetesClientProvider {
    */
   private ensureInitialized(): void {
     if (!this.initialized || !this.kubeConfig || !this.k8sApi) {
-      throw new Error('KubernetesClientProvider not initialized. Call initialize() first.');
+      throw new KubernetesClientError(
+        'KubernetesClientProvider not initialized. Call initialize() first.',
+        'initialization'
+      );
     }
   }
 
@@ -889,7 +1014,14 @@ export class KubernetesClientProvider {
 }
 
 /**
- * Convenience function to get the singleton instance
+ * Convenience function to get the singleton instance.
+ *
+ * @deprecated Use {@link createKubernetesClientProvider} or
+ * {@link createKubernetesClientProviderWithKubeConfig} instead to create
+ * deployment-scoped provider instances. The singleton pattern prevents
+ * concurrent deployments from using different configurations and makes
+ * cleanup error-prone. See `KubernetesClientManager` for the recommended
+ * per-factory pattern.
  */
 export function getKubernetesClientProvider(): KubernetesClientProvider {
   return KubernetesClientProvider.getInstance();
@@ -920,8 +1052,11 @@ export function createKubernetesClientProviderWithKubeConfig(
 }
 
 /**
- * Convenience function to get a configured Kubernetes API client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured Kubernetes API client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getKubernetesApi()` on the instance instead.
  */
 export function getKubernetesApi(config?: KubernetesClientConfig): k8s.KubernetesObjectApi {
   const provider = getKubernetesClientProvider();
@@ -932,8 +1067,11 @@ export function getKubernetesApi(config?: KubernetesClientConfig): k8s.Kubernete
 }
 
 /**
- * Convenience function to get a configured KubeConfig
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured KubeConfig.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getKubeConfig()` on the instance instead.
  */
 export function getKubeConfig(config?: KubernetesClientConfig): k8s.KubeConfig {
   const provider = getKubernetesClientProvider();
@@ -944,8 +1082,11 @@ export function getKubeConfig(config?: KubernetesClientConfig): k8s.KubeConfig {
 }
 
 /**
- * Convenience function to get a configured CoreV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured CoreV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getCoreV1Api()` on the instance instead.
  */
 export function getCoreV1Api(config?: KubernetesClientConfig): k8s.CoreV1Api {
   const provider = getKubernetesClientProvider();
@@ -956,8 +1097,11 @@ export function getCoreV1Api(config?: KubernetesClientConfig): k8s.CoreV1Api {
 }
 
 /**
- * Convenience function to get a configured AppsV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured AppsV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getAppsV1Api()` on the instance instead.
  */
 export function getAppsV1Api(config?: KubernetesClientConfig): k8s.AppsV1Api {
   const provider = getKubernetesClientProvider();
@@ -968,8 +1112,11 @@ export function getAppsV1Api(config?: KubernetesClientConfig): k8s.AppsV1Api {
 }
 
 /**
- * Convenience function to get a configured CustomObjectsApi client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured CustomObjectsApi client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getCustomObjectsApi()` on the instance instead.
  */
 export function getCustomObjectsApi(config?: KubernetesClientConfig): k8s.CustomObjectsApi {
   const provider = getKubernetesClientProvider();
@@ -980,8 +1127,11 @@ export function getCustomObjectsApi(config?: KubernetesClientConfig): k8s.Custom
 }
 
 /**
- * Convenience function to get a configured BatchV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured BatchV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getBatchV1Api()` on the instance instead.
  */
 export function getBatchV1Api(config?: KubernetesClientConfig): k8s.BatchV1Api {
   const provider = getKubernetesClientProvider();
@@ -992,8 +1142,11 @@ export function getBatchV1Api(config?: KubernetesClientConfig): k8s.BatchV1Api {
 }
 
 /**
- * Convenience function to get a configured NetworkingV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured NetworkingV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getNetworkingV1Api()` on the instance instead.
  */
 export function getNetworkingV1Api(config?: KubernetesClientConfig): k8s.NetworkingV1Api {
   const provider = getKubernetesClientProvider();
@@ -1004,8 +1157,11 @@ export function getNetworkingV1Api(config?: KubernetesClientConfig): k8s.Network
 }
 
 /**
- * Convenience function to get a configured RbacAuthorizationV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured RbacAuthorizationV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getRbacAuthorizationV1Api()` on the instance instead.
  */
 export function getRbacAuthorizationV1Api(
   config?: KubernetesClientConfig
@@ -1018,8 +1174,11 @@ export function getRbacAuthorizationV1Api(
 }
 
 /**
- * Convenience function to get a configured StorageV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured StorageV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getStorageV1Api()` on the instance instead.
  */
 export function getStorageV1Api(config?: KubernetesClientConfig): k8s.StorageV1Api {
   const provider = getKubernetesClientProvider();
@@ -1030,8 +1189,11 @@ export function getStorageV1Api(config?: KubernetesClientConfig): k8s.StorageV1A
 }
 
 /**
- * Convenience function to get a configured ApiExtensionsV1Api client
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to get a configured ApiExtensionsV1Api client.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.getApiExtensionsV1Api()` on the instance instead.
  */
 export function getApiExtensionsV1Api(config?: KubernetesClientConfig): k8s.ApiextensionsV1Api {
   const provider = getKubernetesClientProvider();
@@ -1042,8 +1204,11 @@ export function getApiExtensionsV1Api(config?: KubernetesClientConfig): k8s.Apie
 }
 
 /**
- * Convenience function to check cluster availability
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to check cluster availability.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.isClusterAvailable()` on the instance instead.
  */
 export async function isClusterAvailable(config?: KubernetesClientConfig): Promise<boolean> {
   const provider = getKubernetesClientProvider();
@@ -1054,8 +1219,11 @@ export async function isClusterAvailable(config?: KubernetesClientConfig): Promi
 }
 
 /**
- * Convenience function to wait for cluster readiness
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to wait for cluster readiness.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.waitForClusterReady()` on the instance instead.
  */
 export async function waitForClusterReady(
   timeout?: number,
@@ -1070,8 +1238,11 @@ export async function waitForClusterReady(
 }
 
 /**
- * Convenience function to execute operations with retry logic
- * Uses the singleton provider and initializes it with default config if needed
+ * Convenience function to execute operations with retry logic.
+ * Uses the singleton provider and initializes it with default config if needed.
+ *
+ * @deprecated Create a scoped provider with {@link createKubernetesClientProvider}
+ * and call `.withRetry()` on the instance instead.
  */
 export async function withRetry<T>(
   operation: () => Promise<T>,

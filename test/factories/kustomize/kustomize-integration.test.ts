@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { kustomization, toResourceGraph, simple } from '../../../src/index.js';
+import { kustomization, simple, toResourceGraph } from '../../../src/index.js';
 
 describe('Kustomize Integration', () => {
   it('should create Kustomization with basic configuration', () => {
@@ -109,15 +109,19 @@ describe('Kustomize Integration', () => {
     expect(graph.resources).toHaveLength(2);
 
     // Find the kustomization resource
-    const kustomizationResource = graph.resources.find((r: any) => r.kind === 'Kustomization');
+    const kustomizationResource = graph.resources.find((r) => r.kind === 'Kustomization');
     expect(kustomizationResource).toBeDefined();
-    expect((kustomizationResource as any).spec.patches).toBeDefined();
-    expect((kustomizationResource as any).spec.patches).toHaveLength(1);
-    expect((kustomizationResource as any).spec.images).toBeDefined();
-    expect((kustomizationResource as any).spec.images).toHaveLength(1);
+    const kustSpec = (kustomizationResource as unknown as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    expect(kustSpec.patches).toBeDefined();
+    expect(kustSpec.patches).toHaveLength(1);
+    expect(kustSpec.images).toBeDefined();
+    expect(kustSpec.images).toHaveLength(1);
 
     // Find the deployment resource
-    const deploymentResource = graph.resources.find((r: any) => r.kind === 'Deployment');
+    const deploymentResource = graph.resources.find((r) => r.kind === 'Deployment');
     expect(deploymentResource).toBeDefined();
   });
 
@@ -158,8 +162,12 @@ describe('Kustomize Integration', () => {
     });
 
     expect(kustomizationResource.spec.patchesJson6902).toHaveLength(1);
-    expect((kustomizationResource as any).spec.patchesJson6902?.[0].target.kind).toBe('Deployment');
-    expect((kustomizationResource as any).spec.patchesJson6902?.[0].target.name).toBe('webapp');
+    const patches = kustomizationResource.spec.patchesJson6902 as unknown as Record<
+      string,
+      Record<string, unknown>
+    >[];
+    expect(patches?.[0]?.target?.kind).toBe('Deployment');
+    expect(patches?.[0]?.target?.name).toBe('webapp');
   });
 
   it('should support image and replica transformations', () => {
@@ -185,14 +193,17 @@ describe('Kustomize Integration', () => {
       ],
     });
 
-    expect((kustomizationResource as any).spec.images).toHaveLength(1);
-    expect((kustomizationResource as any).spec.images?.[0].name).toBe('webapp');
-    expect((kustomizationResource as any).spec.images?.[0].newName).toBe('my-registry/webapp');
-    expect((kustomizationResource as any).spec.images?.[0].newTag).toBe('v1.2.3');
+    const spec = kustomizationResource.spec as unknown as Record<string, unknown>;
+    const images = spec.images as Record<string, unknown>[];
+    expect(images).toHaveLength(1);
+    expect(images?.[0]?.name).toBe('webapp');
+    expect(images?.[0]?.newName).toBe('my-registry/webapp');
+    expect(images?.[0]?.newTag).toBe('v1.2.3');
 
-    expect((kustomizationResource as any).spec.replicas).toHaveLength(1);
-    expect((kustomizationResource as any).spec.replicas?.[0].name).toBe('webapp');
-    expect((kustomizationResource as any).spec.replicas?.[0].count).toBe(3);
+    const replicas = spec.replicas as Record<string, unknown>[];
+    expect(replicas).toHaveLength(1);
+    expect(replicas?.[0]?.name).toBe('webapp');
+    expect(replicas?.[0]?.count).toBe(3);
   });
 
   it('should have readiness evaluator attached', () => {

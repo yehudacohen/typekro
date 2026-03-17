@@ -5,13 +5,13 @@
  * topological ordering for deployment.
  */
 
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
-import { CircularDependencyError } from '../errors.js';
+import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
-import { isCelExpression, isKubernetesRef } from './type-guards.js';
 
 export class DependencyResolver {
   private logger = getComponentLogger('dependency-resolver');
@@ -159,7 +159,11 @@ export class DependencyResolver {
       }
 
       if (currentLevel.length === 0) {
-        throw new Error('Unable to determine deployment order - possible circular dependency');
+        throw new TypeKroError(
+          'Unable to determine deployment order - possible circular dependency',
+          'DEPLOYMENT_ORDER_FAILED',
+          { processedCount: processed.size, totalCount: topologicalOrder.length }
+        );
       }
 
       levels.push(currentLevel);

@@ -5,12 +5,15 @@
  * for different deployment strategies (direct and Kro).
  */
 
+import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
 import { DependencyGraph } from '../core/dependencies/index.js';
+import { ResourceDeploymentError } from '../core/deployment/errors.js';
 import { getComponentLogger } from '../core/logging/index.js';
-import type { DeploymentOptions, ResourceGraph } from '../core/types/deployment.js';
-import { ResourceDeploymentError } from '../core/types/deployment.js';
+import { copyResourceMetadata, getReadinessEvaluator } from '../core/metadata/index.js';
+import { ensureReadinessEvaluator } from '../core/readiness/index.js';
+import { generateDeterministicResourceId, getResourceId } from '../core/resources/id.js';
+import type { DeploymentOptions, DeploymentResourceGraph } from '../core/types/deployment.js';
 import type { DeployableK8sResource, Enhanced } from '../core/types/kubernetes.js';
-import { ensureReadinessEvaluator, generateDeterministicResourceId } from '../utils/helpers.js';
 import type { TypeKroDeployer } from './types.js';
 
 const logger = getComponentLogger('deployers');
@@ -25,47 +28,28 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
    * Create a ResourceGraph for a single resource
    * This helper function reduces duplication between deploy and delete operations
    */
-  private createResourceGraph<T extends Enhanced<any, any>>(resource: T): ResourceGraph {
+  private createResourceGraph<T extends Enhanced<any, any>>(resource: T): DeploymentResourceGraph {
     const resourceWithId = {
       ...resource,
-      id: resource.id || resource.metadata?.name || 'unnamed',
+      id: getResourceId(resource, 'unnamed'),
     };
 
-    // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-    const originalResource = resource as any;
-    if (
-      originalResource.readinessEvaluator &&
-      typeof originalResource.readinessEvaluator === 'function'
-    ) {
-      Object.defineProperty(resourceWithId, 'readinessEvaluator', {
-        value: originalResource.readinessEvaluator,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
-    }
-
-    // Preserve the __resourceId field if it exists (it's non-enumerable)
-    // This is used for cross-resource reference resolution
-    if (originalResource.__resourceId && typeof originalResource.__resourceId === 'string') {
-      Object.defineProperty(resourceWithId, '__resourceId', {
-        value: originalResource.__resourceId,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
-    }
+    // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
+    copyResourceMetadata(resource, resourceWithId);
 
     // Create a proper DependencyGraph instance
     const dependencyGraph = new DependencyGraph();
-    dependencyGraph.addNode(resourceWithId.id, resourceWithId as any);
+    dependencyGraph.addNode(
+      resourceWithId.id,
+      resourceWithId as DeployableK8sResource<Enhanced<unknown, unknown>>
+    );
 
     return {
       name: `${resource.kind?.toLowerCase()}-${resource.metadata?.name || 'unnamed'}`,
       resources: [
         {
           id: resourceWithId.id,
-          manifest: resourceWithId as any,
+          manifest: resourceWithId as DeployableK8sResource<Enhanced<unknown, unknown>>,
         },
       ],
       dependencyGraph,
@@ -83,7 +67,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
     logger.debug('Ensured readiness evaluator for resource', {
       kind: resource.kind,
       name: resource.metadata?.name,
-      hasEvaluator: typeof (resourceWithEvaluator as any).readinessEvaluator === 'function',
+      hasEvaluator: typeof getReadinessEvaluator(resourceWithEvaluator) === 'function',
     });
 
     const resourceGraph = this.createResourceGraph(resourceWithEvaluator);
@@ -92,7 +76,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
       mode: 'direct' as const,
       namespace: options.namespace || 'default',
       waitForReady: options.waitForReady ?? true,
-      timeout: options.timeout ?? 300000,
+      timeout: options.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
     };
 
     const result = await this.engine.deploy(resourceGraph, deploymentOptions);
@@ -121,7 +105,7 @@ export class DirectTypeKroDeployer implements TypeKroDeployer {
   ): Promise<void> {
     // Create a DeployedResource for the deleteResource method
     const deployedResource = {
-      id: resource.id || resource.metadata?.name || 'unnamed',
+      id: getResourceId(resource, 'unnamed'),
       kind: resource.kind || 'Unknown',
       name: resource.metadata?.name || 'unnamed',
       namespace: options.namespace || resource.metadata?.namespace || 'default',
@@ -144,7 +128,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
 
   async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
     // Convert single resource to ResourceGraph for DirectDeploymentEngine
-    const resourceGraph: ResourceGraph = {
+    const resourceGraph: DeploymentResourceGraph = {
       name: resource.metadata?.name || 'unnamed-resource',
       resources: [
         {
@@ -173,7 +157,7 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
   ): Promise<void> {
     // Create a DeployedResource for the deleteResource method
     const deployedResource = {
-      id: resource.id || resource.metadata?.name || 'unnamed',
+      id: getResourceId(resource, 'unnamed'),
       kind: resource.kind || 'Unknown',
       name: resource.metadata?.name || 'unnamed',
       namespace: options.namespace || resource.metadata?.namespace || 'default',

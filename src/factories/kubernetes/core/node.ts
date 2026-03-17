@@ -5,7 +5,7 @@ import { createResource } from '../../shared.js';
 export type V1NodeSpec = NonNullable<V1Node['spec']>;
 export type V1NodeStatus = NonNullable<V1Node['status']>;
 
-export function node(resource: V1Node): Enhanced<V1NodeSpec, V1NodeStatus> {
+export function node(resource: V1Node & { id?: string }): Enhanced<V1NodeSpec, V1NodeStatus> {
   return createResource({
     ...resource,
     apiVersion: 'v1',

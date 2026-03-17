@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5 # TODO: pin to SHA for supply chain security
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.2.x'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Circular dependency check
+        run: bunx madge --circular --extensions ts src/
+
+      - name: Unit tests with coverage
+        run: bun run test:coverage
+
+      - name: Upload coverage to Codecov
+        if: success()
+        uses: codecov/codecov-action@v5
+        with:
+          file: ./coverage/lcov.info
+          flags: unittests
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

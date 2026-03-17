@@ -69,7 +69,7 @@ export interface TypeKroResourceProps<T extends Enhanced<any, any>> {
  */
 export interface AlchemyResourceState {
   kind?: string;
-  resource?: any;
+  resource?: Enhanced<unknown, unknown> | undefined;
   ready?: boolean;
   [key: string]: unknown;
 }

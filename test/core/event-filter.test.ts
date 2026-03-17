@@ -2,11 +2,15 @@
  * Unit tests for EventFilter
  */
 
-import { describe, expect, it, beforeEach, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-import { EventFilter, FieldSelectorBuilder, createEventFilter } from '../../src/core/deployment/event-filter.js';
-import type { DeployedResource } from '../../src/core/types/deployment.js';
-import type { KubernetesEventData } from '../../src/core/types/deployment.js';
+import type * as k8s from '@kubernetes/client-node';
+import {
+  createEventFilter,
+  EventFilter,
+  FieldSelectorBuilder,
+} from '../../src/core/deployment/event-filter.js';
+import type { DeployedResource, KubernetesEventData } from '../../src/core/types/deployment.js';
 
 describe('FieldSelectorBuilder', () => {
   let builder: FieldSelectorBuilder;
@@ -26,7 +30,9 @@ describe('FieldSelectorBuilder', () => {
       ];
 
       const selector = builder.buildForResources(resources);
-      expect(selector).toBe('involvedObject.kind=Deployment,involvedObject.namespace=production,involvedObject.name=webapp');
+      expect(selector).toBe(
+        'involvedObject.kind=Deployment,involvedObject.namespace=production,involvedObject.name=webapp'
+      );
     });
 
     it('should build field selector for multiple resources of same kind', () => {
@@ -173,7 +179,7 @@ describe('EventFilter', () => {
   describe('generateFieldSelectors', () => {
     it('should generate field selectors grouped by namespace', () => {
       const selectors = eventFilter.generateFieldSelectors(mockDeployedResources);
-      
+
       expect(selectors.has('production')).toBe(true);
       const productionSelector = selectors.get('production');
       expect(productionSelector).toContain('involvedObject.kind=Deployment');
@@ -199,7 +205,7 @@ describe('EventFilter', () => {
       ];
 
       const selectors = eventFilter.generateFieldSelectors(multiNamespaceResources);
-      
+
       expect(selectors.has('production')).toBe(true);
       expect(selectors.has('staging')).toBe(true);
     });
@@ -378,7 +384,7 @@ describe('EventFilter', () => {
       expect(firstDedupe).toBe(false);
 
       // Wait for window to expire
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Second occurrence (should not be deduplicated due to expired window)
       const secondDedupe = shortWindowFilter.shouldDeduplicate(event);
@@ -517,7 +523,7 @@ describe('EventFilter', () => {
       // Wait for entries to become old
       setTimeout(() => {
         shortWindowFilter.cleanupDeduplicationCache();
-        
+
         // After cleanup, the same event should not be deduplicated
         const shouldDedupe = shortWindowFilter.shouldDeduplicate(event);
         expect(shouldDedupe).toBe(false);
@@ -528,27 +534,29 @@ describe('EventFilter', () => {
   describe('discoverChildResources', () => {
     it('should discover child resources for Deployment', async () => {
       const mockCoreV1Api = {
-        listNamespacedPod: mock(() => Promise.resolve({
-          body: {
-            items: [
-              {
-                metadata: {
-                  name: 'webapp-abc123-xyz789',
-                  namespace: 'production',
-                  uid: 'pod-uid-1',
+        listNamespacedPod: mock(() =>
+          Promise.resolve({
+            body: {
+              items: [
+                {
+                  metadata: {
+                    name: 'webapp-abc123-xyz789',
+                    namespace: 'production',
+                    uid: 'pod-uid-1',
+                  },
                 },
-              },
-              {
-                metadata: {
-                  name: 'webapp-abc123-def456',
-                  namespace: 'production',
-                  uid: 'pod-uid-2',
+                {
+                  metadata: {
+                    name: 'webapp-abc123-def456',
+                    namespace: 'production',
+                    uid: 'pod-uid-2',
+                  },
                 },
-              },
-            ],
-          },
-        })),
-      } as any;
+              ],
+            },
+          })
+        ),
+      } as unknown as k8s.CoreV1Api;
 
       const deploymentResource: DeployedResource = {
         id: 'webapp-deployment',
@@ -577,7 +585,7 @@ describe('EventFilter', () => {
     it('should handle API errors during child resource discovery', async () => {
       const mockCoreV1Api = {
         listNamespacedPod: mock(() => Promise.reject(new Error('API Error'))),
-      } as any;
+      } as unknown as k8s.CoreV1Api;
 
       const deploymentResource: DeployedResource = {
         id: 'webapp-deployment',

@@ -2,10 +2,15 @@ import { describe, expect, it } from 'bun:test';
 
 describe('Helm Factory Exports', () => {
   it('should export helm functions from main index', async () => {
-    const { helmRelease, simpleHelmChart } = await import('../../../src/factories/index.js');
+    const { helmRelease } = await import('../../../src/factories/index.js');
 
     expect(helmRelease).toBeDefined();
     expect(typeof helmRelease).toBe('function');
+  });
+
+  it('should still export deprecated simpleHelmChart from helm subpath', async () => {
+    const { simpleHelmChart } = await import('../../../src/factories/helm/index.js');
+
     expect(simpleHelmChart).toBeDefined();
     expect(typeof simpleHelmChart).toBe('function');
   });

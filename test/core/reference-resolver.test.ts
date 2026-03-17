@@ -5,7 +5,27 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
-import { ReferenceResolver } from '../../src/core.js';
+import { ReferenceResolver } from '../../src/core/references/index.js';
+import { containsCelExpressions } from '../../src/utils/type-guards.js';
+import { createK8sError } from '../utils/mock-factories.js';
+
+/**
+ * Type-safe access to private methods on ReferenceResolver for testing.
+ */
+function resolverInternals(resolver: ReferenceResolver) {
+  const r = resolver as unknown as Record<string, (...args: unknown[]) => unknown>;
+  return {
+    extractFieldValue: r.extractFieldValue!.bind(resolver) as (
+      obj: unknown,
+      path: string
+    ) => unknown,
+    resolveKubernetesRef: r.resolveKubernetesRef!.bind(resolver) as (
+      ref: unknown,
+      ctx: unknown
+    ) => Promise<unknown>,
+    selectiveClone: r.selectiveClone!.bind(resolver) as (obj: unknown) => unknown,
+  };
+}
 
 // Mock the Kubernetes client
 const mockKubeConfig = {
@@ -20,10 +40,15 @@ const mockK8sApi = {
 
 describe('ReferenceResolver', () => {
   let resolver: ReferenceResolver;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test context with partial deployed resources
   let context: any;
 
   beforeEach(() => {
-    resolver = new ReferenceResolver(mockKubeConfig, 'direct', mockK8sApi as any);
+    resolver = new ReferenceResolver(
+      mockKubeConfig,
+      'direct',
+      mockK8sApi as unknown as k8s.KubernetesObjectApi
+    );
     context = {
       deployedResources: [],
       kubeClient: mockKubeConfig,
@@ -259,7 +284,7 @@ describe('ReferenceResolver', () => {
       const obj = { name: 'test', value: 42 };
 
       // Access private method for testing
-      const extractFieldValue = (resolver as any).extractFieldValue.bind(resolver);
+      const { extractFieldValue } = resolverInternals(resolver);
 
       expect(extractFieldValue(obj, 'name')).toBe('test');
       expect(extractFieldValue(obj, 'value')).toBe(42);
@@ -278,7 +303,7 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const extractFieldValue = (resolver as any).extractFieldValue.bind(resolver);
+      const { extractFieldValue } = resolverInternals(resolver);
 
       expect(extractFieldValue(obj, 'spec.template.metadata.labels.app')).toBe('my-app');
     });
@@ -293,7 +318,7 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const extractFieldValue = (resolver as any).extractFieldValue.bind(resolver);
+      const { extractFieldValue } = resolverInternals(resolver);
 
       expect(extractFieldValue(obj, 'spec.ports[0].port')).toBe(80);
       expect(extractFieldValue(obj, 'spec.ports[1].name')).toBe('https');
@@ -302,14 +327,14 @@ describe('ReferenceResolver', () => {
     it('should return undefined for non-existent paths', () => {
       const obj = { name: 'test' };
 
-      const extractFieldValue = (resolver as any).extractFieldValue.bind(resolver);
+      const { extractFieldValue } = resolverInternals(resolver);
 
       expect(extractFieldValue(obj, 'nonexistent')).toBeUndefined();
       expect(extractFieldValue(obj, 'name.nested')).toBeUndefined();
     });
 
     it('should handle null/undefined objects gracefully', () => {
-      const extractFieldValue = (resolver as any).extractFieldValue.bind(resolver);
+      const { extractFieldValue } = resolverInternals(resolver);
 
       expect(extractFieldValue(null, 'field')).toBeUndefined();
       expect(extractFieldValue(undefined, 'field')).toBeUndefined();
@@ -453,7 +478,7 @@ describe('ReferenceResolver', () => {
       };
 
       // First resolution
-      const resolveKubernetesRef = (resolver as any).resolveKubernetesRef.bind(resolver);
+      const { resolveKubernetesRef } = resolverInternals(resolver);
       const result1 = await resolveKubernetesRef(ref, context);
 
       // Second resolution should use cache
@@ -488,7 +513,7 @@ describe('ReferenceResolver', () => {
         fieldPath: 'status.podIP',
       };
 
-      const resolveKubernetesRef = (resolver as any).resolveKubernetesRef.bind(resolver);
+      const { resolveKubernetesRef } = resolverInternals(resolver);
       await resolveKubernetesRef(ref, context);
 
       expect(resolver.getCacheStats().size).toBe(1);
@@ -503,9 +528,7 @@ describe('ReferenceResolver', () => {
     it('should throw ReferenceResolutionError for invalid references', async () => {
       // Mock the k8s API to throw a 404 error for nonexistent resources
       mockK8sApi.read.mockImplementationOnce(() => {
-        const error = new Error('Resource not found') as any;
-        error.statusCode = 404;
-        return Promise.reject(error);
+        return Promise.reject(createK8sError('Resource not found', 404));
       });
 
       const resource = {
@@ -546,7 +569,6 @@ describe('ReferenceResolver', () => {
         expression: 'test.expression',
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
 
@@ -562,7 +584,6 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
 
@@ -577,7 +598,6 @@ describe('ReferenceResolver', () => {
         ],
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
 
@@ -592,28 +612,24 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(false);
     });
 
     it('should handle null and undefined', () => {
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(null)).toBe(false);
       expect(containsCelExpressions(undefined)).toBe(false);
     });
 
     it('should handle primitive values', () => {
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions('string')).toBe(false);
       expect(containsCelExpressions(42)).toBe(false);
       expect(containsCelExpressions(true)).toBe(false);
     });
 
     it('should handle circular references without infinite loop', () => {
-      const obj: any = { name: 'test' };
+      const obj: Record<string, unknown> = { name: 'test' };
       obj.circular = obj;
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(false);
     });
 
@@ -633,7 +649,6 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const containsCelExpressions = (resolver as any).containsCelExpressions.bind(resolver);
       expect(containsCelExpressions(obj)).toBe(true);
     });
   });
@@ -648,12 +663,12 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
-      const cloned = selectiveClone(obj);
+      const { selectiveClone } = resolverInternals(resolver);
+      const cloned = selectiveClone(obj) as Record<string, unknown>;
 
       expect(cloned).toEqual(obj);
       expect(cloned).not.toBe(obj); // Different reference
-      expect(cloned.nested).not.toBe(obj.nested); // Nested object also cloned
+      expect((cloned as { nested: unknown }).nested).not.toBe(obj.nested); // Nested object also cloned
     });
 
     it('should preserve CEL expressions without cloning them', () => {
@@ -668,8 +683,8 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
-      const cloned = selectiveClone(obj);
+      const { selectiveClone } = resolverInternals(resolver);
+      const cloned = selectiveClone(obj) as typeof obj;
 
       expect(cloned.spec.value).toBe(celExpr); // Same reference, not cloned
       expect(cloned.spec).not.toBe(obj.spec); // Parent object cloned
@@ -685,36 +700,36 @@ describe('ReferenceResolver', () => {
         items: ['static', 42, celExpr, { nested: 'object' }],
       };
 
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
-      const cloned = selectiveClone(obj);
+      const { selectiveClone } = resolverInternals(resolver);
+      const cloned = selectiveClone(obj) as typeof obj;
 
       expect(cloned.items).not.toBe(obj.items); // Array cloned
       expect(cloned.items[0]).toBe('static');
       expect(cloned.items[1]).toBe(42);
       expect(cloned.items[2]).toBe(celExpr); // CEL preserved
-      expect(cloned.items[3]).toEqual(obj.items[3]);
-      expect(cloned.items[3]).not.toBe(obj.items[3]); // Nested object cloned
+      expect(cloned.items?.[3]).toEqual(obj.items![3]!);
+      expect(cloned.items?.[3]).not.toBe(obj.items![3]!); // Nested object cloned
     });
 
     it('should handle null and undefined', () => {
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const { selectiveClone } = resolverInternals(resolver);
       expect(selectiveClone(null)).toBeNull();
       expect(selectiveClone(undefined)).toBeUndefined();
     });
 
     it('should handle primitive values', () => {
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
+      const { selectiveClone } = resolverInternals(resolver);
       expect(selectiveClone('string')).toBe('string');
       expect(selectiveClone(42)).toBe(42);
       expect(selectiveClone(true)).toBe(true);
     });
 
     it('should handle circular references without infinite loop', () => {
-      const obj: any = { name: 'test', value: 123 };
+      const obj: Record<string, unknown> = { name: 'test', value: 123 };
       obj.circular = obj;
 
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
-      const cloned = selectiveClone(obj);
+      const { selectiveClone } = resolverInternals(resolver);
+      const cloned = selectiveClone(obj) as Record<string, unknown>;
 
       expect(cloned.name).toBe('test');
       expect(cloned.value).toBe(123);
@@ -738,8 +753,8 @@ describe('ReferenceResolver', () => {
         field3: 'static',
       };
 
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
-      const cloned = selectiveClone(obj);
+      const { selectiveClone } = resolverInternals(resolver);
+      const cloned = selectiveClone(obj) as typeof obj;
 
       expect(cloned.field1).toBe(celExpr1);
       expect(cloned.field2).toBe(celExpr2);
@@ -764,8 +779,8 @@ describe('ReferenceResolver', () => {
         },
       };
 
-      const selectiveClone = (resolver as any).selectiveClone.bind(resolver);
-      const cloned = selectiveClone(obj);
+      const { selectiveClone } = resolverInternals(resolver);
+      const cloned = selectiveClone(obj) as typeof obj;
 
       expect(cloned.level1.level2.level3.celField).toBe(celExpr);
       expect(cloned.level1.level2.level3.staticField).toBe('value');

@@ -8,10 +8,32 @@
  */
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../constants/brands.js';
 
+/**
+ * A branded type representing a Common Expression Language (CEL) expression
+ * that evaluates to a value of type `T` at Kro runtime.
+ *
+ * CEL expressions are used in status builders and conditional directives
+ * to define dynamic logic that Kro evaluates server-side.
+ *
+ * Create instances with {@link Cel.expr}, {@link Cel.template}, or {@link Cel.string}.
+ *
+ * @typeParam T - The TypeScript type this expression evaluates to at runtime.
+ *
+ * @example
+ * ```ts
+ * // Boolean expression checking deployment readiness
+ * Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0')
+ *
+ * // String template interpolation
+ * Cel.template('https://%s/api', schema.spec.hostname)
+ * ```
+ */
 export interface CelExpression<T = unknown> {
   [CEL_EXPRESSION_BRAND]: true;
   expression: string;
   _type?: T;
+  /** When true, the expression is a mixed template containing `${...}` placeholders. */
+  __isTemplate?: boolean;
 }
 
 /**
@@ -55,20 +77,27 @@ export type MagicString = string | KubernetesRef<string> | CelExpression<string>
 export type MagicNumber = number | KubernetesRef<number> | CelExpression<number>;
 export type MagicBoolean = boolean | KubernetesRef<boolean> | CelExpression<boolean>;
 
-// Use declaration merging to make KubernetesRef and CelExpression compatible with their underlying types
-// This allows the magic proxy system to work transparently with composition functions
-declare global {
-  namespace TypeKro {
-    interface MagicTypeCompatibility {
-      // Make KubernetesRef<string> assignable to string
-      KubernetesRefString: KubernetesRef<string> extends string ? true : false;
-      // Make CelExpression<string> assignable to string
-      CelExpressionString: CelExpression<string> extends string ? true : false;
-    }
-  }
-}
-
-// Forward declaration for types that depend on each other
+/**
+ * A branded type representing a reference to a Kubernetes resource field.
+ *
+ * At composition time, property accesses on schema and resource proxies
+ * produce `KubernetesRef` values that are serialized into CEL `${...}`
+ * references in the Kro manifest. This enables type-safe cross-resource
+ * references without string manipulation.
+ *
+ * Users typically never construct these directly; they are created
+ * automatically by the MagicProxy system when accessing proxy properties
+ * (e.g., `schema.spec.replicas` or `resources.deployment.status.readyReplicas`).
+ *
+ * @typeParam T - The TypeScript type of the referenced field value.
+ *
+ * @example
+ * ```ts
+ * // These produce KubernetesRef values automatically:
+ * const replicas = schema.spec.replicas;      // KubernetesRef<number>
+ * const phase = resources.deploy.status.phase; // KubernetesRef<string>
+ * ```
+ */
 export interface KubernetesRef<T = unknown> {
   readonly [KUBERNETES_REF_BRAND]: true;
   readonly resourceId: string;

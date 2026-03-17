@@ -4,32 +4,24 @@
 
 import type { Type } from 'arktype';
 import type { MagicAssignable } from './common.js';
-import type { Enhanced } from './kubernetes.js';
-import type { SchemaMagicProxy } from './references.js';
 import type {
   AlchemyDeploymentOptions,
   DeploymentOperationStatus,
   DeploymentOptions,
   DeploymentResult,
   RollbackResult,
-} from './resource-graph.js';
+} from './deployment.js';
+import type { Enhanced } from './kubernetes.js';
+import type { KroCompatibleType, Prev, SchemaProxy, Scope } from './schema.js';
 
-// Re-export alchemy Scope type for compatibility
-export type { Scope } from 'alchemy';
-
-// =============================================================================
-// ARKTYPE TYPE EXTRACTION
-// =============================================================================
-
-/**
- * Extracts the inferred TypeScript type from an ArkType Type<T>.
- * This is critical for proper type inference in kubernetesComposition.
- *
- * @example
- * const MySchema = type({ name: 'string', age: 'number' });
- * type Extracted = InferType<typeof MySchema>; // { name: string; age: number }
- */
-export type InferType<T> = T extends Type<infer U> ? U : T;
+// Re-export schema types for backward compatibility (originally defined here)
+export type {
+  InferType,
+  KroCompatibleType,
+  KroCompatibleValue,
+  SchemaProxy,
+  Scope,
+} from './schema.js';
 
 // =============================================================================
 // KRO SERIALIZATION & DEPENDENCY TYPES
@@ -38,7 +30,7 @@ export type InferType<T> = T extends Type<infer U> ? U : T;
 export interface KroResourceGraphDefinition {
   apiVersion: 'kro.run/v1alpha1';
   kind: 'ResourceGraphDefinition';
-  metadata: { name: string; namespace?: string };
+  metadata: { name: string; namespace?: string; annotations?: Record<string, string> };
   spec: {
     schema: KroSimpleSchema;
     resources: KroResourceTemplate[];
@@ -48,8 +40,11 @@ export interface KroResourceGraphDefinition {
 export interface KroSimpleSchema {
   apiVersion: string;
   kind: string;
+  /** Custom API group for the CRD (defaults to 'kro.run' in Kro) */
+  group?: string;
   spec: Record<string, string>;
-  status?: Record<string, string>;
+  /** Status fields may be plain CEL expression strings or nested objects for nested status mappings. */
+  status?: Record<string, string | Record<string, unknown>>;
 }
 
 export interface KroFieldDefinition {
@@ -57,9 +52,37 @@ export interface KroFieldDefinition {
   markers?: string;
 }
 
+/**
+ * Kro v0.8.x externalRef definition — references a pre-existing resource
+ * that is not managed by Kro but can be referenced in expressions.
+ */
+export interface KroExternalRef {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name: string;
+    namespace?: string;
+  };
+}
+
+/**
+ * Kro v0.8.x forEach dimension — one variable mapping per dimension.
+ * Each entry is `{ variableName: "CEL expression yielding a list" }`.
+ */
+export type KroForEachDimension = Record<string, string>;
+
 export interface KroResourceTemplate {
   id: string;
-  template: unknown;
+  /** The Kubernetes resource template. Mutually exclusive with externalRef. */
+  template?: unknown;
+  /** External reference to a pre-existing resource. Mutually exclusive with template. */
+  externalRef?: KroExternalRef;
+  /** CEL boolean expressions — all must be true for this resource to be created. */
+  includeWhen?: string[];
+  /** CEL boolean expressions — all must be true for this resource to be considered ready. */
+  readyWhen?: string[];
+  /** Collection dimensions — each dimension maps a variable to a CEL list expression. */
+  forEach?: KroForEachDimension[];
 }
 
 // =============================================================================
@@ -87,31 +110,6 @@ type KroNestedType<Depth extends number = 10> = Depth extends 0
         | `[]${string}` // Arrays of custom types
         | `map[string]${string}`; // Maps of custom types
     };
-
-/**
- * Helper type to decrement depth counter
- */
-type Prev<T extends number> = T extends 10
-  ? 9
-  : T extends 9
-    ? 8
-    : T extends 8
-      ? 7
-      : T extends 7
-        ? 6
-        : T extends 6
-          ? 5
-          : T extends 5
-            ? 4
-            : T extends 4
-              ? 3
-              : T extends 3
-                ? 2
-                : T extends 2
-                  ? 1
-                  : T extends 1
-                    ? 0
-                    : never;
 
 /**
  * Valid Kro Simple Schema field types with proper nesting support
@@ -158,60 +156,9 @@ export interface KroSchemaField {
   maximum?: number;
 }
 
-/**
- * Base type for values that are compatible with Kro schemas
- */
-export type KroCompatibleValue<Depth extends number = 10> = Depth extends 0
-  ? never
-  :
-      | string
-      | number
-      | boolean
-      | string[]
-      | number[]
-      | boolean[]
-      | string[][] // Nested arrays
-      | number[][]
-      | boolean[][]
-      | Record<string, string> // Maps of basic types
-      | Record<string, number>
-      | Record<string, boolean>
-      | Record<string, string[]> // Maps of arrays
-      | Record<string, number[]>
-      | Record<string, boolean[]>
-      | Record<string, string>[] // Arrays of maps
-      | Record<string, number>[]
-      | Record<string, boolean>[]
-      | Record<string, Record<string, string>> // Nested maps
-      | Record<string, Record<string, number>>
-      | Record<string, Record<string, boolean>>
-      | KroCompatibleType<Prev<Depth>>; // Nested objects (with depth limit)
-
-/**
- * Constraint type for TypeScript types that can be used with Kro schemas
- * This ensures only compatible types are used for spec and status, with proper nesting support up to 10 levels deep
- *
- * This is more flexible than a strict index signature to allow for specific interface definitions in tests
- */
-export type KroCompatibleType<Depth extends number = 10> = Depth extends 0
-  ? never
-  : Record<string, KroCompatibleValue<Depth>> | object;
-
 // =============================================================================
 // SCHEMA PROXY & BUILDER FUNCTION TYPES
 // =============================================================================
-
-/**
- * The user-facing type for a schema proxy. It enables type-safe
- * access to the spec and status fields of the CRD being defined.
- *
- * TSpec and TStatus should be compatible with Kro's Simple Schema format.
- * We use a looser constraint to preserve specific field types from ArkType schemas.
- */
-export type SchemaProxy<TSpec extends Record<string, any>, TStatus extends Record<string, any>> = {
-  spec: SchemaMagicProxy<TSpec>;
-  status: SchemaMagicProxy<TStatus>;
-};
 
 /**
  * A typed version of KroResourceGraphDefinition that includes type information
@@ -244,7 +191,7 @@ export interface ResourceGraphWithDeployment {
   /**
    * Deploy the resource graph through alchemy's resource management system
    */
-  deployWithAlchemy(scope: any, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
+  deployWithAlchemy(scope: Scope, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
 
   /**
    * Get the deployment status of this resource graph
@@ -313,10 +260,16 @@ export interface CompositionFactory<
 // =============================================================================
 
 export interface SerializationOptions {
+  /** Kubernetes namespace for the serialized ResourceGraphDefinition. */
   namespace?: string;
+  /** Number of spaces for YAML indentation. @default 2 */
   indent?: number;
+  /** Maximum line width for YAML output. @default 120 */
   lineWidth?: number;
+  /** Disable YAML anchors/aliases. @default true */
   noRefs?: boolean;
+  /** When true, adds kro.run/allow-breaking-changes annotation to RGD metadata. @default false */
+  allowBreakingChanges?: boolean;
 }
 
 export interface SerializationContext {
@@ -337,17 +290,23 @@ export interface ValidationResult {
   errors: string[];
 }
 
-// Magic assignable type for status field mappings with recursive support
-// This allows status builders to return either:
-// 1. Plain objects with static values (e.g., { ready: true, phase: 'Ready' })
-// 2. Objects with MagicAssignable values (e.g., { ready: someRef.status.ready })
-// 3. Mix of both
+/**
+ * Magic assignable type for status field mappings with recursive support.
+ *
+ * This allows status builders to return either:
+ * 1. Plain objects with static values (e.g., `{ ready: true, phase: 'Ready' }`)
+ * 2. Objects with MagicAssignable values (e.g., `{ ready: someRef.status.ready }`)
+ * 3. A mix of both
+ *
+ * TypeScript enforces that only keys defined in the status schema are returned,
+ * catching typos and extra properties at compile time.
+ */
 export type MagicAssignableShape<T> = T extends object
   ? {
       [K in keyof T]: T[K] extends object
         ? MagicAssignableShape<T[K]> // Recursively handle nested objects
         : T[K] | MagicAssignable<T[K]>; // Accept both plain values and MagicAssignable
-    } & { [key: string]: any } // Index signature for runtime access
+    }
   : T;
 
 export type ResourceBuilder<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType> = (
@@ -367,8 +326,16 @@ export type StatusBuilder<
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here
-) => TStatus | MagicAssignableShape<TStatus>;
+) => MagicAssignableShape<TStatus>;
 
+/**
+ * Internal schema definition used for schema proxy creation and Kro schema generation.
+ *
+ * Most users should use {@link ResourceGraphDefinition} instead, which is the
+ * public-facing configuration object for `toResourceGraph()`.
+ *
+ * @internal
+ */
 export interface SchemaDefinition<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
@@ -379,10 +346,54 @@ export interface SchemaDefinition<
   status: Type<TStatus>;
 }
 
-export interface ResourceGraphDefinition<TSpec extends KroCompatibleType, TStatus> {
+/**
+ * Configuration for defining a typed Kro ResourceGraphDefinition.
+ *
+ * This is the primary configuration object passed to `toResourceGraph()`.
+ * It describes the custom resource's identity, spec schema, and status schema.
+ *
+ * @example
+ * ```ts
+ * const myApp = toResourceGraph(
+ *   {
+ *     name: 'my-webapp',
+ *     kind: 'WebApp',
+ *     apiVersion: 'v1alpha1',
+ *     group: 'apps.example.com',
+ *     spec: type({ name: 'string', replicas: 'number' }),
+ *     status: type({ ready: 'boolean', url: 'string' }),
+ *   },
+ *   (schema) => ({ ... }),
+ *   (schema, resources) => ({ ... }),
+ * );
+ * ```
+ */
+export interface ResourceGraphDefinition<
+  TSpec extends KroCompatibleType,
+  TStatus extends KroCompatibleType,
+> {
+  /** Kubernetes-compatible name for this RGD. Must follow DNS subdomain rules (lowercase, hyphens). */
   name: string;
-  apiVersion?: string; // Optional, defaults to 'kro.run/v1alpha1'
+  /**
+   * Full apiVersion string for the generated CRD, including group and version.
+   * If a `group` is also provided, this should be just the version suffix.
+   *
+   * @default 'v1alpha1'
+   * @example 'v1alpha1'
+   * @example 'example.com/v1alpha1'
+   */
+  apiVersion?: string;
+  /** The Kind for the generated CRD. Must be PascalCase (e.g. `'WebApp'`). */
   kind: string;
+  /**
+   * Custom API group for the CRD.
+   *
+   * @default 'kro.run' (in Kro v0.8.x)
+   * @example 'apps.example.com'
+   */
+  group?: string;
+  /** ArkType schema defining the spec fields that users provide when creating an instance. */
   spec: Type<TSpec>;
+  /** ArkType schema defining the status fields that the composition populates. */
   status: Type<TStatus>;
 }

@@ -1,4 +1,5 @@
 import type { V2HorizontalPodAutoscaler } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -6,7 +7,7 @@ export type V2HpaSpec = NonNullable<V2HorizontalPodAutoscaler['spec']>;
 export type V2HpaStatus = NonNullable<V2HorizontalPodAutoscaler['status']>;
 
 export function horizontalPodAutoscaler(
-  resource: V2HorizontalPodAutoscaler
+  resource: V2HorizontalPodAutoscaler & { id?: string }
 ): Enhanced<V2HpaSpec, V2HpaStatus> {
   return createResource({
     ...resource,
@@ -30,10 +31,10 @@ export function horizontalPodAutoscaler(
           ? `HPA is active with ${status.currentReplicas} current replicas`
           : 'HPA is not yet able to read metrics',
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
-        reason: `Error checking HPA status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error checking HPA status: ${ensureError(error).message}`,
       };
     }
   });

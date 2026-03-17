@@ -1,11 +1,23 @@
 import type { V1Job } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1JobSpec = NonNullable<V1Job['spec']>;
 export type V1JobStatus = NonNullable<V1Job['status']>;
 
-export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
+/**
+ * Creates a Kubernetes Job resource with completion-based readiness evaluation.
+ *
+ * @param resource - The Job specification conforming to the Kubernetes V1Job API.
+ * @returns An Enhanced Job resource that tracks readiness based on successful completions, supporting both Indexed and NonIndexed completion modes.
+ * @example
+ * const migrate = job({
+ *   metadata: { name: 'db-migrate' },
+ *   spec: { template: { spec: { containers: [{ name: 'migrate', image: 'migrate:latest' }], restartPolicy: 'Never' } } },
+ * });
+ */
+export function job(resource: V1Job & { id?: string }): Enhanced<V1JobSpec, V1JobStatus> {
   // Capture configuration in closure for Job-specific readiness logic
   const expectedCompletions = resource.spec?.completions || 1;
   const parallelism = resource.spec?.parallelism || 1;
@@ -101,12 +113,17 @@ export function job(resource: V1Job): Enhanced<V1JobSpec, V1JobStatus> {
           };
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating Job readiness: ${error}`,
-        details: { expectedCompletions, parallelism, completionMode, error: String(error) },
+        message: `Error evaluating Job readiness: ${ensureError(error).message}`,
+        details: {
+          expectedCompletions,
+          parallelism,
+          completionMode,
+          error: ensureError(error).message,
+        },
       };
     }
   });

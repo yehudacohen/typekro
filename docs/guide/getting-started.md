@@ -50,6 +50,7 @@ export const app = kubernetesComposition(
       ports: [{ containerPort: 80 }]
     });
     
+    // Resources auto-register — result only needed for cross-references in status
     Service({
       id: 'svc',
       name: `${spec.name}-service`,
@@ -152,6 +153,12 @@ The example above uses **Direct mode** which deploys resources immediately witho
 - Self-healing infrastructure
 
 See [Deployment Modes](/guide/deployment-modes) for details.
+:::
+
+::: details Alternative API: toResourceGraph
+TypeKro also provides `toResourceGraph` for users who need explicit CEL control or prefer separating resource creation from status mapping. Most users should start with `kubernetesComposition` (used throughout this guide) and only switch if needed.
+
+See [Choosing Your API](/api/kubernetes-composition#choosing-your-api) for a comparison and decision flowchart.
 :::
 
 ## Advanced Features Preview

@@ -1,124 +1,170 @@
 /**
  * typekro - Define Kro resource graphs with full TypeScript safety.
+ *
+ * ## Getting Started
+ *
+ * TypeKro provides two composition APIs. Both produce the same output and support
+ * the same deployment modes (`direct` and `kro`).
+ *
+ * ### Recommended: {@link kubernetesComposition}
+ *
+ * Single function creates resources and returns status. Status expressions are
+ * natural JavaScript, auto-converted to CEL:
+ *
+ * ```ts
+ * import { kubernetesComposition, simple } from 'typekro';
+ * import { type } from 'arktype';
+ *
+ * const app = kubernetesComposition(
+ *   { name: 'my-app', apiVersion: 'example.com/v1', kind: 'MyApp',
+ *     spec: type({ replicas: 'number', image: 'string' }),
+ *     status: type({ ready: 'boolean' }) },
+ *   (spec) => {
+ *     const deploy = simple.Deployment({
+ *       id: 'deploy', name: 'my-app', image: spec.image, replicas: spec.replicas,
+ *     });
+ *     return { ready: deploy.status.readyReplicas >= spec.replicas };
+ *   },
+ * );
+ * ```
+ *
+ * ### Advanced: {@link toResourceGraph}
+ *
+ * Separate resource builder and status builder with explicit CEL expressions:
+ *
+ * ```ts
+ * import { toResourceGraph, Cel, createDeployment } from 'typekro';
+ * import { type } from 'arktype';
+ *
+ * const graph = toResourceGraph(
+ *   { name: 'my-app', apiVersion: 'example.com/v1', kind: 'MyApp',
+ *     spec: type({ replicas: 'number' }),
+ *     status: type({ ready: 'boolean' }) },
+ *   (schema) => ({
+ *     deployment: createDeployment({ replicas: schema.spec.replicas }),
+ *   }),
+ *   (_schema, resources) => ({
+ *     ready: Cel.expr<boolean>(resources.deployment.status.readyReplicas, ' > 0'),
+ *   }),
+ * );
+ * ```
+ *
+ * ## Which API should I use?
+ *
+ * | | `kubernetesComposition` | `toResourceGraph` |
+ * |---|---|---|
+ * | **Recommended for** | Most applications (default) | Explicit CEL control |
+ * | **Status expressions** | Natural JavaScript (auto-converted to CEL) | Explicit `Cel.expr()` / `Cel.template()` |
+ * | **Resource factories** | `simple.Deployment()`, `simple.Service()` | `createDeployment()`, `createService()` |
+ * | **Cross-resource refs** | `deploy.status.readyReplicas` (magic proxy) | `resources.deploy.status.readyReplicas` |
+ * | **Conditional resources** | `if`/`else` in composition function | `includeWhen` on individual resources |
+ * | **Schema validation** | Built-in via arktype | Built-in via arktype |
+ *
+ * **Rule of thumb:** Start with `kubernetesComposition`. Switch to `toResourceGraph`
+ * only if you need explicit CEL control or prefer separated concerns.
+ *
+ * ## Module Layout
+ *
+ * The main `'typekro'` entry exports the most commonly used APIs:
+ *
+ *   1. ESSENTIAL - Core APIs every user needs (toResourceGraph, Cel, etc.)
+ *   2. COMPOSITION - Imperative composition and runtime bootstrap
+ *   3. DEPLOYMENT - Engines, readiness, and deployers
+ *
+ * Lower-level and specialized APIs are available via subpath imports:
+ *
+ *   ```ts
+ *   // Ecosystem-specific factories
+ *   import { helmRelease } from 'typekro/helm';
+ *   import { simple } from 'typekro/simple';
+ *
+ *   // Alchemy framework integration
+ *   import { DirectTypeKroDeployer } from 'typekro/alchemy';
+ *
+ *   // Internal/advanced APIs (logging, K8s client, errors, CEL evaluator, etc.)
+ *   import { getComponentLogger, TypeKroError } from 'typekro/advanced';
+ *   ```
+ *
+ * @packageDocumentation
  */
 
 // =============================================================================
-// ALCHEMY INTEGRATION
+// 1. ESSENTIAL — Core APIs every user needs
 // =============================================================================
-// Alchemy resource conversion and wrapper utilities
+
+// Imperative composition (define compositions with native TypeScript)
+export { kubernetesComposition } from './core/composition/imperative.js';
+// Resource factory (used inside resource builders)
+export { createResource } from './core/proxy/create-resource.js';
+// CEL expression helpers (used in status builders)
+export { Cel, cel, externalRef } from './core/references/index.js';
+export type {
+  ResourceBuilder,
+  ResourceDependency,
+  SchemaDefinition,
+  SerializationContext,
+  SerializationOptions,
+  ValidationResult,
+} from './core/serialization/index.js';
+// The primary API: define a typed resource graph
 export {
-  createAlchemyResourceId,
-  DirectTypeKroDeployer,
-  // Resource conversion utilities
-  // Alchemy conversion utilities removed - using dynamic registration approach
+  generateKroSchema,
+  generateKroSchemaFromArktype,
+  serializeResourceGraphToYaml,
+  toResourceGraph,
+  validateResourceGraph,
+} from './core/serialization/index.js';
+// Schema conversion
+export { arktypeToKroSchema } from './core/serialization/schema.js';
+export type { ResolutionContext } from './core/types/deployment.js';
+// Core types (all type-only exports from core/types)
+export type * from './core/types/index.js';
+export type { CelEvaluationContext } from './core/types/references.js';
+export { CelEvaluationError } from './core/types/references.js';
+// Factory functions (all ecosystems)
+export * from './factories/index.js';
+// Factory-specific types
+export type * from './factories/kubernetes/types.js';
 
-  // Utility functions (non-conflicting)
-  // generateDeterministicResourceId is exported from utils
+// =============================================================================
+// 2. COMPOSITION — Imperative composition and runtime bootstrap
+// =============================================================================
 
-  // Alchemy dynamic registration exports
-  ensureResourceTypeRegistered,
-  KroTypeKroDeployer,
-} from './alchemy/deployment.js';
-// =============================================================================
-// IMPERATIVE COMPOSITION PATTERN
-// =============================================================================
-// New imperative composition API
+export {
+  type RbacMode,
+  type TypeKroRuntimeConfig,
+  typeKroRuntimeBootstrap,
+} from './compositions/typekro-runtime/index.js';
+export { getCurrentCompositionContext } from './core/composition/context.js';
 export {
   clearCompositionDebugLogs,
   disableCompositionDebugging,
   enableCompositionDebugging,
   getCompositionDebugLogs,
-  kubernetesComposition,
 } from './core/composition/imperative.js';
-export type { CompositionFactory } from './core/types/serialization.js';
-// =============================================================================
-// CORE FUNCTIONALITY
-// =============================================================================
-// Export all core functionality (excluding createResource to avoid conflicts with factories)
-export {
-  Cel,
-  type CelExpression,
-  // Error types
-  CircularDependencyError,
-  CompositionDebugger,
-  CompositionExecutionError,
-  ContextRegistrationError,
-  // Logging functionality
-  createContextLogger,
-  createLogger,
-  // Alchemy integration - dynamic registration approach (exported below)
+export { CompositionDebugger } from './core/composition-debugger.js';
+export type { WebServiceComponent } from './factories/simple/compositions/web-service.js';
+export { createWebService } from './factories/simple/compositions/web-service.js';
 
-  // Schema proxy functions
-  createSchemaProxy,
-  DependencyGraph,
-  // Dependency resolution
-  DependencyResolver,
-  // Direct deployment functionality
+// =============================================================================
+// 3. DEPLOYMENT — Engines, readiness, and deployers
+// =============================================================================
+
+export type { DeploymentOptions, DeploymentResourceGraph } from './core/deployment/index.js';
+export {
   DirectDeploymentEngine,
-  // Type definitions and utilities
-  type Enhanced,
-  externalRef,
-  generateKroSchema,
-  getComponentLogger,
-  getDeploymentLogger,
-  getResourceLogger,
-  isCelExpression,
-  // Utility functions
-  isKubernetesRef,
-  containsKubernetesRefs,
-  isSchemaReference,
-  type KroCompatibleType,
-  type KubernetesRef,
-  type KubernetesResource,
-  type LoggerConfig,
-  type LoggerContext,
-  logger,
-  type MagicAssignableShape,
-  type MagicProxy,
-  // Reference resolution and CEL
-  ReferenceResolver,
-  type RefOrValue,
-  type ResourceBuilder,
-  type ResourceGraphDefinition,
-  type SchemaProxy,
-  type StatusBuilder,
-  // Serialization and YAML generation
-  serializeResourceGraphToYaml,
-  type TypedKroResourceGraphDefinition,
-  type TypedResourceGraphFactory,
-  TypeKroError,
-  type TypeKroLogger,
-  toResourceGraph,
-  UnsupportedPatternDetector,
-  validateResourceGraph,
-} from './core.js';
+  ResourceDeploymentError,
+  ResourceReadinessChecker,
+  ResourceReadinessTimeoutError,
+} from './core/deployment/index.js';
 
-// Alchemy state inspection utilities removed - use alchemy's built-in state store instead
-// Access via: alchemyScope.state.all(), alchemyScope.state.get(id), etc.
-
-export {} from // createTypedKubernetesResource, - REMOVED (causes registration conflicts)
-// KroRGD, - REMOVED (causes registration conflicts)
-// createTypedKroCRDInstance, - REMOVED (causes registration conflicts)
-// wrapDirectResources, - REMOVED (non-compliant with spec)
-// wrapKroDeployment, - REMOVED (non-compliant with spec)
-// wrapDeployment, - REMOVED (non-compliant with spec)
-// DirectResourceProvider, - REMOVED (non-compliant with spec)
-// KroResourceProvider, - REMOVED (non-compliant with spec)
-// KroInstanceProvider, - REMOVED (non-compliant with spec)
-// createDirectResourceProvider, - REMOVED (non-compliant with spec)
-// createKroResourceProvider, - REMOVED (non-compliant with spec)
-// createKroInstanceProvider, - REMOVED (non-compliant with spec)
-'./alchemy/index.js';
 // =============================================================================
-// BOOTSTRAP COMPOSITIONS
+// 4–6: ADVANCED, ALCHEMY, INTERNALS — available via subpath imports
 // =============================================================================
-// Pre-built compositions for infrastructure bootstrap
-export {
-  type TypeKroRuntimeConfig,
-  typeKroRuntimeBootstrap,
-} from './core/composition/typekro-runtime/index.js';
-// =============================================================================
-// FACTORY FUNCTIONS
-// =============================================================================
-// Factory functions organized by ecosystem and resource type
-export * from './factories/index.js';
+//
+// Lower-level APIs have been moved to dedicated subpath exports to reduce the
+// main entry point surface and improve IDE autocomplete:
+//
+//   import { ... } from 'typekro/alchemy';   // Alchemy framework integration
+//   import { ... } from 'typekro/advanced';   // CEL evaluator, logging, K8s client,
+//                                             // errors, dependency graph, utilities

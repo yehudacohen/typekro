@@ -1,5 +1,11 @@
 // kubernetes-api.ts
 import * as k8s from '@kubernetes/client-node';
+import {
+  ensureError,
+  KubernetesApiOperationError,
+  KubernetesClientError,
+  ValidationError,
+} from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createKubernetesClientProvider, type KubernetesClientConfig } from './client-provider.js';
 
@@ -76,10 +82,16 @@ export class KubernetesApi {
     const skipTLSVerify = process.env.KUBERNETES_SKIP_TLS_VERIFY === 'true';
 
     if (!apiServer) {
-      throw new Error('KUBERNETES_API_SERVER environment variable is not set.');
+      throw new KubernetesClientError(
+        'KUBERNETES_API_SERVER environment variable is not set.',
+        'configuration'
+      );
     }
     if (!apiToken) {
-      throw new Error('KUBERNETES_API_TOKEN environment variable is not set.');
+      throw new KubernetesClientError(
+        'KUBERNETES_API_TOKEN environment variable is not set.',
+        'configuration'
+      );
     }
 
     // Log security warning when TLS is disabled
@@ -95,7 +107,7 @@ export class KubernetesApi {
     }
 
     // Validate TLS configuration
-    this.validateTLSConfiguration(apiServer, caCert, skipTLSVerify);
+    this.validateTLSConfiguration(apiServer, caCert, skipTLSVerify, !!apiToken);
 
     return {
       apiServer,
@@ -111,7 +123,8 @@ export class KubernetesApi {
   private validateTLSConfiguration(
     apiServer: string,
     caCert?: string,
-    skipTLSVerify?: boolean
+    skipTLSVerify?: boolean,
+    hasToken?: boolean
   ): void {
     // Check if connecting to HTTPS endpoint without proper TLS configuration
     if (apiServer.startsWith('https://')) {
@@ -149,6 +162,17 @@ export class KubernetesApi {
         apiServer,
         recommendation: 'Use HTTPS endpoint for secure connections',
       });
+      if (hasToken) {
+        this.logger.warn(
+          'Bearer token sent over unencrypted HTTP connection - token may be intercepted',
+          {
+            component: 'kubernetes-api',
+            security: 'bearer-token-over-http',
+            apiServer,
+            recommendation: 'Use HTTPS endpoint to protect bearer token in transit',
+          }
+        );
+      }
     }
   }
 
@@ -163,7 +187,13 @@ export class KubernetesApi {
 
     // Ensure metadata and name exist for proper application
     if (!manifest.metadata || !manifest.metadata.name) {
-      throw new Error('Kubernetes manifest must have metadata.name defined.');
+      throw new ValidationError(
+        'Kubernetes manifest must have metadata.name defined.',
+        manifest.kind || 'Unknown',
+        'unknown',
+        'metadata.name',
+        ['Add a metadata.name field to the Kubernetes manifest']
+      );
     }
 
     const resourceLogger = this.logger.child({
@@ -187,7 +217,7 @@ export class KubernetesApi {
       } catch (e: unknown) {
         // If it's a 404, the resource doesn't exist, which is expected for creation
         if ((e as { statusCode?: number }).statusCode !== 404) {
-          resourceLogger.error('Error checking resource existence', e as Error);
+          resourceLogger.error('Error checking resource existence', ensureError(e));
           throw e;
         }
       }
@@ -203,8 +233,15 @@ export class KubernetesApi {
         resourceLogger.debug('Resource created');
       }
     } catch (error: unknown) {
-      resourceLogger.error('Error applying Kubernetes manifest', error as Error);
-      throw new Error(`Failed to apply Kubernetes manifest: ${(error as Error).message}`);
+      resourceLogger.error('Error applying Kubernetes manifest', ensureError(error));
+      throw new KubernetesApiOperationError(
+        `Failed to apply Kubernetes manifest: ${ensureError(error).message}`,
+        'apply',
+        manifest.kind,
+        manifest.metadata?.name,
+        (error as { statusCode?: number }).statusCode,
+        ensureError(error)
+      );
     }
   }
 
@@ -231,8 +268,15 @@ export class KubernetesApi {
       } as { metadata: { name: string; namespace: string } });
       return result;
     } catch (error: unknown) {
-      getLogger.error('Error getting resource', error as Error);
-      throw new Error(`Failed to get Kubernetes resource: ${(error as Error).message}`);
+      getLogger.error('Error getting resource', ensureError(error));
+      throw new KubernetesApiOperationError(
+        `Failed to get Kubernetes resource: ${ensureError(error).message}`,
+        'get',
+        kind,
+        name,
+        (error as { statusCode?: number }).statusCode,
+        ensureError(error)
+      );
     }
   }
 
@@ -266,8 +310,15 @@ export class KubernetesApi {
         deleteLogger.warn('Resource not found during deletion attempt, assuming already deleted');
         return;
       }
-      deleteLogger.error('Error deleting resource', error as Error);
-      throw new Error(`Failed to delete Kubernetes resource: ${(error as Error).message}`);
+      deleteLogger.error('Error deleting resource', ensureError(error));
+      throw new KubernetesApiOperationError(
+        `Failed to delete Kubernetes resource: ${ensureError(error).message}`,
+        'delete',
+        kind,
+        name,
+        (error as { statusCode?: number }).statusCode,
+        ensureError(error)
+      );
     }
   }
 

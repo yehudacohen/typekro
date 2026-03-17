@@ -10,12 +10,26 @@
 
 import type { KubeConfig } from '@kubernetes/client-node';
 import { type Context, PROVIDERS, Resource } from 'alchemy';
+import { DEFAULT_DEPLOYMENT_TIMEOUT } from '../core/config/defaults.js';
+import { ensureError } from '../core/errors.js';
 import { createKubernetesClientProvider } from '../core/kubernetes/client-provider.js';
 import { getComponentLogger, type TypeKroLogger } from '../core/logging/index.js';
 import type { Enhanced } from '../core/types/kubernetes.js';
 import { DirectTypeKroDeployer, KroTypeKroDeployer } from './deployers.js';
 import { inferAlchemyTypeFromTypeKroResource } from './type-inference.js';
 import type { TypeKroDeployer, TypeKroResource, TypeKroResourceProps } from './types.js';
+
+/**
+ * Serializable resource properties stored by Alchemy after deployment.
+ * These are the clean, cloneable fields that represent deployed state.
+ */
+interface DeployedResourceProperties<T extends Enhanced<unknown, unknown>> {
+  resource: T;
+  namespace: string;
+  deployedResource: T;
+  ready: boolean;
+  deployedAt: number;
+}
 
 // Global registry to track registered resource types
 const REGISTERED_TYPES = new Map<string, unknown>();
@@ -26,6 +40,11 @@ const REGISTERED_TYPES = new Map<string, unknown>();
  * This function ensures each resource type is registered only once,
  * avoiding "Resource already exists" errors while maintaining type safety.
  */
+// Return type is intentionally `any` because alchemy's Provider/Handler types have complex
+// `this` context bindings (Context<any, any>) that cannot be cleanly represented without `any`.
+// Callers invoke the returned provider as a regular function, but alchemy's internal types
+// require `this: Context<...>` which is bound at runtime by the alchemy framework.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown>>(
   resource: T
 ): any {
@@ -82,8 +101,8 @@ export function ensureResourceTypeRegistered<T extends Enhanced<unknown, unknown
 
         // Execute Alchemy context function
         return _executeAlchemyContext(this, resourceProperties, alchemyLogger, alchemyType);
-      } catch (error) {
-        alchemyLogger.error('Error deploying resource through Alchemy', error as Error);
+      } catch (error: unknown) {
+        alchemyLogger.error('Error deploying resource through Alchemy', ensureError(error));
         throw error;
       }
     }
@@ -162,8 +181,8 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
       namespace: props.namespace,
       ...props.options,
     });
-  } catch (error) {
-    logger.error('Error deleting resource', error as Error);
+  } catch (error: unknown) {
+    logger.error('Error deleting resource', ensureError(error));
   }
   return context.destroy();
 }
@@ -174,20 +193,25 @@ async function _handleResourceDeletion<T extends Enhanced<unknown, unknown>>(
 async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
   props: TypeKroResourceProps<T>,
   deployer: TypeKroDeployer
-): Promise<{ resourceProperties: any }> {
+): Promise<{ resourceProperties: DeployedResourceProperties<T> }> {
   // Deploy using the created deployer - pass the original resource with KubernetesRef objects
   // The deployer will handle reference resolution internally
   const deployedResource = await deployer.deploy(props.resource, {
     mode: 'alchemy' as const,
     namespace: props.namespace,
     waitForReady: props.options?.waitForReady ?? true,
-    timeout: props.options?.timeout ?? 300000,
+    timeout: props.options?.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
   });
 
-  // Create clean, serializable versions for Alchemy storage
-  // Only serialize the data that Alchemy needs to store, not the functional parts
-  const cleanResource = JSON.parse(JSON.stringify(props.resource));
-  const cleanDeployedResource = JSON.parse(JSON.stringify(deployedResource));
+  // Create clean, serializable versions for Alchemy storage.
+  // We use JSON.parse(JSON.stringify()) deliberately instead of structuredClone because:
+  // 1. Enhanced<> resources contain non-cloneable values (Symbols like pino.chindings,
+  //    KUBERNETES_REF_BRAND, plus functions like readinessEvaluator) that cause
+  //    structuredClone to throw "Cannot serialize unique symbol" errors.
+  // 2. JSON round-trip strips symbols, functions, and undefined values — which is
+  //    exactly the behavior we want for creating clean Alchemy state entries.
+  const cleanResource = JSON.parse(JSON.stringify(props.resource)) as T;
+  const cleanDeployedResource = JSON.parse(JSON.stringify(deployedResource)) as T;
 
   // Create the resource properties for Alchemy
   const resourceProperties = {
@@ -205,10 +229,10 @@ async function _deployAndCreateResult<T extends Enhanced<unknown, unknown>>(
  * Log deployment success and context details
  */
 function _logDeploymentSuccess<T extends Enhanced<unknown, unknown>>(
-  logger: any,
+  logger: TypeKroLogger,
   alchemyType: string,
   props: TypeKroResourceProps<T>,
-  resourceProperties: any,
+  resourceProperties: DeployedResourceProperties<T>,
   context: Context<TypeKroResource<T>>
 ): void {
   // Log successful deployment
@@ -254,8 +278,8 @@ function _logDeploymentSuccess<T extends Enhanced<unknown, unknown>>(
  */
 function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
   context: Context<TypeKroResource<T>>,
-  resourceProperties: any,
-  logger: any,
+  resourceProperties: DeployedResourceProperties<T>,
+  logger: TypeKroLogger,
   alchemyType: string
 ): TypeKroResource<T> {
   try {
@@ -269,11 +293,11 @@ function _executeAlchemyContext<T extends Enhanced<unknown, unknown>>(
     });
 
     return result;
-  } catch (contextError) {
-    logger.error('Alchemy context function failed', contextError as Error, {
+  } catch (contextError: unknown) {
+    logger.error('Alchemy context function failed', ensureError(contextError), {
       alchemyType,
-      errorMessage: (contextError as Error).message,
-      errorStack: (contextError as Error).stack,
+      errorMessage: ensureError(contextError).message,
+      errorStack: ensureError(contextError).stack,
     });
     throw contextError;
   }

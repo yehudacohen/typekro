@@ -5,24 +5,33 @@
  * internal dependency resolution engine, without requiring the Kro controller.
  */
 
-import { toCamelCase } from '../../utils/helpers.js';
-import { DependencyResolver } from '../dependencies/index.js';
-import { isCelExpression, isKubernetesRef } from '../dependencies/type-guards.js';
+import * as yaml from 'js-yaml';
+import { toCamelCase } from '../../utils/string.js';
+import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import {
-  createKubernetesClientProvider,
-  createKubernetesClientProviderWithKubeConfig,
-  type KubernetesClientConfig,
-  type KubernetesClientProvider,
-} from '../kubernetes/client-provider.js';
+  DEFAULT_DELETE_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_RECURSION_DEPTH,
+} from '../config/defaults.js';
+import { DependencyResolver } from '../dependencies/index.js';
+import {
+  ensureError,
+  ResourceGraphFactoryError,
+  TypeKroError,
+  ValidationError,
+} from '../errors.js';
+import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { getComponentLogger } from '../logging/index.js';
+import { copyResourceMetadata, getResourceId, setResourceId } from '../metadata/index.js';
 import type {
   DeploymentClosure,
   DeploymentError,
+  DeploymentResourceGraph,
   DeploymentResult,
   DirectResourceFactory,
   FactoryOptions,
   FactoryStatus,
-  ResourceGraph,
   RollbackResult,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
@@ -33,6 +42,7 @@ import type {
   Scope,
   StatusBuilder,
 } from '../types/serialization.js';
+import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
@@ -64,7 +74,7 @@ export class DirectResourceFactoryImpl<
   private readonly factoryOptions: FactoryOptions;
   private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
   private readonly logger = getComponentLogger('direct-factory');
-  private clientProvider?: KubernetesClientProvider;
+  private readonly clientManager: KubernetesClientManager;
 
   constructor(
     name: string,
@@ -82,42 +92,14 @@ export class DirectResourceFactoryImpl<
     this.schemaDefinition = schemaDefinition;
     this.statusBuilder = statusBuilder;
     this.factoryOptions = options;
-
-    // Don't initialize client provider in constructor - do it lazily when needed
-    // This allows tests to create factories without requiring a kubeconfig
+    this.clientManager = new KubernetesClientManager(options);
   }
 
   /**
    * Get or create the Kubernetes client provider (lazy initialization)
    */
   private getClientProvider(): KubernetesClientProvider {
-    if (!this.clientProvider) {
-      this.clientProvider = this.createClientProvider(this.factoryOptions);
-    }
-    return this.clientProvider;
-  }
-
-  /**
-   * Create and configure the Kubernetes client provider
-   */
-  private createClientProvider(options: FactoryOptions): KubernetesClientProvider {
-    // If a pre-configured kubeConfig is provided, use it directly
-    if (options.kubeConfig) {
-      this.logger.debug('Using pre-configured KubeConfig from factory options');
-      return createKubernetesClientProviderWithKubeConfig(options.kubeConfig);
-    }
-
-    // Create client provider with configuration from factory options
-    const clientConfig: KubernetesClientConfig = {
-      ...(options.skipTLSVerify !== undefined && { skipTLSVerify: options.skipTLSVerify }),
-      // Add other configuration options as needed
-    };
-
-    this.logger.debug('Creating new KubernetesClientProvider with configuration', {
-      skipTLSVerify: clientConfig.skipTLSVerify,
-    });
-
-    return createKubernetesClientProvider(clientConfig);
+    return this.clientManager.getClientProvider();
   }
 
   /**
@@ -132,11 +114,13 @@ export class DirectResourceFactoryImpl<
       const kubeConfig = clientProvider.getKubeConfig();
 
       // Create the deployment engine with the provider's KubeConfig
+      // Pass HTTP timeout configuration if provided in factory options
       this.deploymentEngine = new DirectDeploymentEngine(
         kubeConfig,
         undefined,
         undefined,
-        'direct'
+        'direct',
+        this.factoryOptions.httpTimeouts
       );
 
       this.logger.debug('DirectDeploymentEngine created successfully', {
@@ -170,7 +154,7 @@ export class DirectResourceFactoryImpl<
       const errorMessage =
         instance.metadata?.annotations?.['typekro.io/deployment-error'] ||
         'Deployment failed - check logs for details';
-      throw new Error(errorMessage);
+      throw new ResourceGraphFactoryError(errorMessage, this.name, 'deployment');
     }
 
     // Track the deployed instance
@@ -226,26 +210,97 @@ export class DirectResourceFactoryImpl<
   async deleteInstance(name: string): Promise<void> {
     const instance = this.deployedInstances.get(name);
     if (!instance) {
-      throw new Error(`Instance not found: ${name}`);
+      throw new TypeKroError(`Instance not found: ${name}`, 'INSTANCE_NOT_FOUND', {
+        instanceName: name,
+        factoryName: this.name,
+      });
     }
 
     try {
-      // Use the deployment engine to delete the resources
+      // Use the deployment engine to delete resources using actual deployment ID
       const engine = this.getDeploymentEngine();
-      await engine.rollback(`${this.name}-${name}`);
+      const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
+      if (!deploymentId) {
+        throw new TypeKroError(
+          `Instance ${name} does not have a deployment ID annotation. Cannot perform cleanup.`,
+          'MISSING_DEPLOYMENT_ID',
+          { instanceName: name, factoryName: this.name }
+        );
+      }
+      const rollbackResult = await engine.rollback(deploymentId);
+
+      // Wait for any namespaces to be fully deleted before returning.
+      // Namespace deletion is asynchronous (enters "Terminating" phase) and can
+      // cause race conditions if the caller immediately re-creates resources.
+      const deletedNamespaces = rollbackResult.rolledBackResources
+        .filter((r) => r.startsWith('Namespace/'))
+        .map((r) => r.split('/')[1]!);
+
+      if (deletedNamespaces.length > 0) {
+        const k8sApi = engine.getKubernetesApi();
+        const deleteTimeout = this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
+        await this.waitForNamespaceDeletion(k8sApi, deletedNamespaces, deleteTimeout);
+      }
 
       // Remove from tracking
       this.deployedInstances.delete(name);
-    } catch (error) {
+    } catch (error: unknown) {
       // If the deployment isn't found in the state, it may have already been cleaned up
       // or the deployment ID format changed. Log and remove from tracking anyway.
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = ensureError(error).message;
       if (errorMessage.includes('not found') || errorMessage.includes('Cannot rollback')) {
         this.deployedInstances.delete(name);
         // Don't throw - the instance is already gone
         return;
       }
-      throw new Error(`Failed to delete instance ${name}: ${errorMessage}`);
+      throw new ResourceGraphFactoryError(
+        `Failed to delete instance ${name}: ${errorMessage}`,
+        this.name,
+        'cleanup'
+      );
+    }
+  }
+
+  /**
+   * Poll until the given namespaces no longer exist (HTTP 404).
+   * Namespaces enter a "Terminating" phase on deletion and may take time
+   * to fully disappear, especially when finalizers or remaining resources
+   * are involved.
+   */
+  private async waitForNamespaceDeletion(
+    k8sApi: import('@kubernetes/client-node').KubernetesObjectApi,
+    namespaces: string[],
+    timeout: number
+  ): Promise<void> {
+    const pollInterval = DEFAULT_FAST_POLL_INTERVAL;
+
+    for (const ns of namespaces) {
+      // Each namespace gets its own timeout budget
+      const nsStartTime = Date.now();
+      while (Date.now() - nsStartTime < timeout) {
+        try {
+          await k8sApi.read({
+            apiVersion: 'v1',
+            kind: 'Namespace',
+            metadata: { name: ns },
+          });
+          // Namespace still exists (likely "Terminating"), keep polling
+          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        } catch (error: unknown) {
+          // 404 means the namespace is fully gone
+          const k8sErr = error as { statusCode?: number; body?: { code?: number } };
+          if (k8sErr.statusCode === 404 || k8sErr.body?.code === 404) {
+            this.logger.debug('Namespace fully deleted', { namespace: ns });
+            break;
+          }
+          // Unexpected error — log and stop waiting for this namespace
+          this.logger.warn('Error polling namespace deletion', {
+            namespace: ns,
+            error: ensureError(error).message,
+          });
+          break;
+        }
+      }
     }
   }
 
@@ -318,18 +373,18 @@ export class DirectResourceFactoryImpl<
                 namespace: deployedResource.namespace,
               });
             }
-          } catch (error) {
+          } catch (error: unknown) {
             // Resource not found or API error - consider it failed
             failedCount++;
             const healthError: DeploymentError = {
               resourceId: deployedResource.id,
               phase: 'readiness',
-              error: error instanceof Error ? error : new Error(String(error)),
+              error: ensureError(error),
               timestamp: new Date(),
             };
             healthErrors.push(healthError);
 
-            healthLogger.error('Failed to check resource health', error as Error, {
+            healthLogger.error('Failed to check resource health', ensureError(error), {
               resourceId: deployedResource.id,
             });
           }
@@ -375,8 +430,8 @@ export class DirectResourceFactoryImpl<
         });
         return 'healthy';
       }
-    } catch (error) {
-      healthLogger.error('Error checking factory health', error as Error);
+    } catch (error: unknown) {
+      healthLogger.error('Error checking factory health', ensureError(error));
       return 'failed';
     }
   }
@@ -452,12 +507,12 @@ export class DirectResourceFactoryImpl<
             } else {
               degradedCount++;
             }
-          } catch (error) {
+          } catch (error: unknown) {
             failedCount++;
             const healthError: DeploymentError = {
               resourceId: deployedResource.id,
               phase: 'readiness',
-              error: error instanceof Error ? error : new Error(String(error)),
+              error: ensureError(error),
               timestamp: new Date(),
             };
             healthErrors.push(healthError);
@@ -477,8 +532,8 @@ export class DirectResourceFactoryImpl<
         },
         errors: healthErrors,
       };
-    } catch (error) {
-      healthLogger.error('Error getting health details', error as Error);
+    } catch (error: unknown) {
+      healthLogger.error('Error getting health details', ensureError(error));
       return {
         health: 'failed',
         resourceCounts: { healthy: 0, degraded: 0, failed: 0, total: 0 },
@@ -486,7 +541,7 @@ export class DirectResourceFactoryImpl<
           {
             resourceId: 'factory',
             phase: 'readiness',
-            error: error instanceof Error ? error : new Error(String(error)),
+            error: ensureError(error),
             timestamp: new Date(),
           },
         ],
@@ -554,65 +609,82 @@ export class DirectResourceFactoryImpl<
   }
 
   /**
-   * Generate YAML for instance deployment
+   * Generate YAML for instance deployment.
+   *
+   * In direct mode this produces plain Kubernetes manifests with all schema
+   * references resolved from the provided spec.  If any KubernetesRef or
+   * CelExpression objects remain after resolution (cross-resource references,
+   * explicit Cel.expr/Cel.template calls, $-prefixed optional access) a
+   * ValidationError is thrown — those constructs require the Kro controller
+   * or runtime deployment via deploy().
    */
   toYaml(spec: TSpec): string {
     // Resolve references with the actual spec values
     const resolvedResources = this.resolveResourcesForSpec(spec);
 
-    // Generate individual Kubernetes resource YAML manifests (not RGD)
+    // Validate that all values are fully resolved — no KubernetesRef or
+    // CelExpression objects should remain in direct-mode YAML output.
+    const unresolvedRefs = findUnresolvedReferences(resolvedResources);
+    if (unresolvedRefs.length > 0) {
+      const details = unresolvedRefs.map((r) => `  - ${r.path}: ${r.description}`).join('\n');
+      throw new ValidationError(
+        `Cannot generate direct-mode YAML: ${unresolvedRefs.length} unresolved reference(s) found.\n` +
+          `Direct mode toYaml() produces plain Kubernetes manifests where all values must be resolved.\n\n` +
+          `Unresolved references:\n${details}\n\n` +
+          `To fix this, either:\n` +
+          `  1. Use factory('kro') to generate Kro-managed YAML with CEL expressions\n` +
+          `  2. Use deploy() which resolves all references at runtime against the live cluster\n` +
+          `  3. Remove Cel.expr() / Cel.template() / cross-resource references from your resource builder`,
+        'DirectResourceFactory',
+        this.name,
+        undefined,
+        [
+          'Use factory("kro") for resource graphs with CEL expressions or cross-resource references',
+          'Use deploy() for runtime resolution against the live cluster',
+          'Remove explicit Cel.expr() / Cel.template() calls if direct-mode YAML is needed',
+        ]
+      );
+    }
+
+    // Generate individual Kubernetes resource YAML manifests (not RGD).
+    // Uses js-yaml for safe serialization — avoids YAML injection via string interpolation.
     const yamlParts = Object.values(resolvedResources).map((resource) => {
       // Remove TypeKro-specific fields and generate clean Kubernetes YAML
       const cleanResource = { ...resource } as KubernetesResource & { id?: string };
       delete cleanResource.id; // Remove TypeKro id field
 
-      // Simple YAML serialization for Kubernetes resources
-      let yamlContent = `apiVersion: ${cleanResource.apiVersion}
-kind: ${cleanResource.kind}
-metadata:
-  name: ${cleanResource.metadata?.name}
-  namespace: ${this.namespace}`;
-
-      // Add labels if present
-      if (cleanResource.metadata?.labels) {
-        yamlContent += `\n  labels:\n${Object.entries(cleanResource.metadata.labels)
-          .map(([k, v]) => `    ${k}: ${v}`)
-          .join('\n')}`;
-      }
+      // Build a clean manifest object for yaml.dump
+      const manifest: Record<string, unknown> = {
+        apiVersion: cleanResource.apiVersion,
+        kind: cleanResource.kind,
+        metadata: {
+          name: cleanResource.metadata?.name,
+          namespace: this.namespace,
+          ...(cleanResource.metadata?.labels
+            ? { labels: cleanResource.metadata.labels }
+            : undefined),
+        },
+      };
 
       // Handle different resource types
       const resourceWithSpec = cleanResource as KubernetesResource & {
         spec?: Record<string, unknown>;
       };
       if (resourceWithSpec.spec) {
-        yamlContent += `\nspec:\n${Object.entries(resourceWithSpec.spec)
-          .map(
-            ([key, value]) =>
-              `  ${key}: ${
-                typeof value === 'object'
-                  ? JSON.stringify(value, null, 2)
-                      .split('\n')
-                      .map((line, i) => (i === 0 ? line : `  ${line}`))
-                      .join('\n')
-                  : value
-              }`
-          )
-          .join('\n')}`;
+        manifest.spec = resourceWithSpec.spec;
       }
 
       const resourceWithData = cleanResource as KubernetesResource & {
         data?: Record<string, string | unknown>;
       };
       if (resourceWithData.data) {
-        yamlContent += `\ndata:\n${Object.entries(resourceWithData.data)
-          .map(
-            ([key, value]) =>
-              `  ${key}: ${typeof value === 'string' ? JSON.stringify(value) : value}`
-          )
-          .join('\n')}`;
+        manifest.data = resourceWithData.data;
       }
 
-      return yamlContent;
+      // JSON round-trip strips non-serializable values (functions, symbols, proxies)
+      // that may remain in resolved resources before safe YAML serialization.
+      const safeManifest = JSON.parse(JSON.stringify(manifest));
+      return yaml.dump(safeManifest, { lineWidth: -1, noRefs: true, sortKeys: false }).trimEnd();
     });
 
     return yamlParts.join('\n---\n');
@@ -621,7 +693,7 @@ metadata:
   /**
    * Create a resource graph for a specific instance
    */
-  public createResourceGraphForInstance(spec: TSpec): ResourceGraph {
+  public createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph {
     const dependencyResolver = new DependencyResolver();
     const resolvedResources = this.resolveResourcesForSpec(spec);
 
@@ -648,47 +720,28 @@ metadata:
         id: finalId,
       };
 
-      // Preserve the __resourceId property if it exists (it's non-enumerable)
-      // This is the original resource ID (e.g., 'webappConfig') that's used for cross-resource references
-      // Note: For Enhanced proxy resources, __resourceId is on the target object and accessible via Reflect.get
-      const originalResourceId = (resource as any).__resourceId;
-      
-      // Also check if the resource has an 'id' property that was set by the factory
-      // The proxy returns resourceId when accessing 'id' property
-      const resourceIdFromProxy = (resource as any).id;
+      // Preserve resource metadata from the original resource to the spread copy
+      // The WeakMap-based copyResourceMetadata replaces manual Object.defineProperty calls
+      copyResourceMetadata(resource, resourceWithId);
+
+      // Also check proxy 'id' as fallback for the original resource key
+      const originalResourceId = getResourceId(resource);
+      const resourceIdFromProxy = resource.id;
       const effectiveOriginalId = originalResourceId || resourceIdFromProxy;
-      
-      this.logger.debug('Checking __resourceId preservation', {
+
+      this.logger.debug('Checking resourceId preservation', {
         originalResourceId,
         resourceIdFromProxy,
         effectiveOriginalId,
         hasOriginalResourceId: !!originalResourceId,
         hasResourceIdFromProxy: !!resourceIdFromProxy,
       });
-      
+
       if (effectiveOriginalId) {
-        Object.defineProperty(resourceWithId, '__resourceId', {
-          value: effectiveOriginalId,
-          enumerable: false,
-          configurable: true,
-        });
-        this.logger.debug('Preserved __resourceId on resource', {
+        setResourceId(resourceWithId, effectiveOriginalId);
+        this.logger.debug('Preserved resourceId on resource', {
           originalResourceId: effectiveOriginalId,
           newId: finalId,
-        });
-      }
-
-      // Preserve the readinessEvaluator function if it exists (it's non-enumerable)
-      const originalResource = resource as { readinessEvaluator?: (resource: unknown) => boolean };
-      if (
-        originalResource.readinessEvaluator &&
-        typeof originalResource.readinessEvaluator === 'function'
-      ) {
-        Object.defineProperty(resourceWithId, 'readinessEvaluator', {
-          value: originalResource.readinessEvaluator,
-          enumerable: false,
-          configurable: true,
-          writable: false,
         });
       }
 
@@ -745,10 +798,10 @@ metadata:
 
           return reExecutionResult.resources;
         }
-      } catch (error) {
-        this.logger.warn(
+      } catch (error: unknown) {
+        this.logger.error(
           'Failed to re-execute composition, falling back to reference resolution',
-          error as Error
+          ensureError(error)
         );
       }
     }
@@ -764,9 +817,9 @@ metadata:
         // to resolving the values from the provided spec.
         const resolvedResource = this.resolveSchemaReferencesToValues(resource, spec);
         resolvedResources[key] = resolvedResource as KubernetesResource;
-      } catch (error) {
+      } catch (error: unknown) {
         // If resolution fails, use the original resource
-        this.logger.warn('Failed to resolve references for resource', error as Error);
+        this.logger.error('Failed to resolve references for resource', ensureError(error));
         resolvedResources[key] = resource;
       }
     }
@@ -788,14 +841,14 @@ metadata:
     try {
       this.logger.debug('Re-executing composition with actual spec values');
 
-      // Import the composition context utilities
-      const {
-        createCompositionContext,
-        runWithCompositionContext,
-      } = require('../../factories/shared.js');
+      // Composition context utilities are now statically imported from core
 
-      // Create a new composition context for re-execution
-      const reExecutionContext = createCompositionContext('re-execution');
+      // Create a new composition context for re-execution.
+      // Enable ID deduplication so forEach loops that create multiple resources
+      // with the same id (e.g., 'regionDep') get unique keys ('regionDep', 'regionDep-1', etc.)
+      const reExecutionContext = createCompositionContext('re-execution', {
+        deduplicateIds: true,
+      });
 
       // Execute the composition function within the new context and capture both resources and status
       const { resources, status } = runWithCompositionContext(reExecutionContext, () => {
@@ -813,9 +866,17 @@ metadata:
         statusFields: status ? Object.keys(status) : [],
       });
 
-      // Convert Enhanced resources back to KubernetesResource format
+      // Convert Enhanced resources back to KubernetesResource format.
+      // Filter out externalRef resources — they already exist in the cluster
+      // and should NOT be deployed in direct mode.
       const kubernetesResources: Record<string, KubernetesResource> = {};
       for (const [id, enhanced] of Object.entries(resources)) {
+        // Skip external references — they're not managed by us
+        if (Reflect.get(enhanced, '__externalRef') === true) {
+          this.logger.debug('Skipping externalRef resource in direct mode', { id });
+          continue;
+        }
+
         // Extract the underlying Kubernetes resource from the Enhanced proxy
         const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
           enhanced as Enhanced<any, any>
@@ -829,8 +890,8 @@ metadata:
         resources: kubernetesResources,
         status: status as TStatus,
       };
-    } catch (error) {
-      this.logger.error('Failed to re-execute composition', error as Error);
+    } catch (error: unknown) {
+      this.logger.error('Failed to re-execute composition', ensureError(error));
       return null;
     }
   }
@@ -848,10 +909,10 @@ metadata:
    * This is needed because when composition functions build objects with schema proxy values,
    * those values are KubernetesRef objects that need to be converted to actual values or
    * placeholder strings for serialization.
-   * 
+   *
    * For schema references (resourceId === '__schema__'), we return a placeholder that will
    * be resolved later when actual spec values are available.
-   * 
+   *
    * For resource references, we return a CEL expression placeholder.
    */
   private deepResolveKubernetesRefs(value: unknown, path = 'root'): unknown {
@@ -862,12 +923,12 @@ metadata:
         resourceId: value.resourceId,
         fieldPath: value.fieldPath,
       });
-      
+
       // For schema references, return a marker that can be resolved later
       if (value.resourceId === '__schema__') {
         return `__KUBERNETES_REF___schema___${value.fieldPath}__`;
       }
-      
+
       // For resource references, return a CEL expression placeholder
       return `__KUBERNETES_REF_${value.resourceId}_${value.fieldPath}__`;
     }
@@ -883,9 +944,7 @@ metadata:
 
     // Handle arrays
     if (Array.isArray(value)) {
-      return value.map((item, index) => 
-        this.deepResolveKubernetesRefs(item, `${path}[${index}]`)
-      );
+      return value.map((item, index) => this.deepResolveKubernetesRefs(item, `${path}[${index}]`));
     }
 
     // Handle objects
@@ -907,7 +966,7 @@ metadata:
    * IMPORTANT: This method preserves ALL enumerable properties from the Enhanced resource,
    * not just standard Kubernetes fields. This is critical for resources like Secret (data),
    * ConfigMap (data, binaryData), RBAC resources (rules, roleRef, subjects), etc.
-   * 
+   *
    * It also resolves any KubernetesRef objects in the resource properties to their
    * string representations, which is critical for HelmRelease values that may contain
    * schema proxy references.
@@ -931,16 +990,47 @@ metadata:
       // Include all other properties (spec, status, data, rules, etc.)
       // Deep resolve any KubernetesRef objects in the value
       if (value !== undefined && value !== null) {
-        (resource as any)[key] = this.deepResolveKubernetesRefs(value);
+        Reflect.set(resource, key, this.deepResolveKubernetesRefs(value));
       }
     }
 
     // Preserve the non-enumerable id field if it exists (needed for resource mapping in CEL resolution)
-    if ((enhanced as any).id) {
-      (resource as any).id = (enhanced as any).id;
+    if (enhanced.id) {
+      resource.id = enhanced.id;
     }
 
+    // Preserve the non-enumerable readinessEvaluator if it exists.
+    // Preserve resource metadata (resourceId, readinessEvaluator, etc.) from Enhanced proxy
+    copyResourceMetadata(enhanced, resource);
+
     return resource;
+  }
+
+  /**
+   * Traverse a spec object using dot-separated path parts, returning the resolved value.
+   * Shared by both KubernetesRef resolution (Case 1) and template marker resolution (Case 4).
+   */
+  private traverseSpec(
+    spec: TSpec,
+    pathParts: string[],
+    logPath: string
+  ): { found: true; value: unknown } | { found: false } {
+    let currentValue: unknown = spec;
+    this.logger.trace('Traversing spec with path parts', { pathParts });
+    for (const part of pathParts) {
+      if (currentValue && typeof currentValue === 'object' && part in currentValue) {
+        currentValue = (currentValue as Record<string, unknown>)[part];
+      } else {
+        this.logger.warn('Path part not found in spec', {
+          path: logPath,
+          part,
+          availableKeys:
+            currentValue && typeof currentValue === 'object' ? Object.keys(currentValue) : [],
+        });
+        return { found: false };
+      }
+    }
+    return { found: true, value: currentValue };
   }
 
   /**
@@ -958,33 +1048,15 @@ metadata:
     if (isKubernetesRef(resource) && resource.resourceId === '__schema__') {
       this.logger.trace('Found schema KubernetesRef', { path, fieldPath: resource.fieldPath });
       const pathParts = resource.fieldPath.split('.');
-      let currentValue: any = spec;
-      // Skip the first part ('spec') and traverse the spec object
-      this.logger.trace('Traversing spec with path parts', { pathParts: pathParts.slice(1) });
-      for (const part of pathParts.slice(1)) {
-        if (currentValue && typeof currentValue === 'object' && part in currentValue) {
-          const oldValue = currentValue;
-          currentValue = currentValue[part];
-          this.logger.trace('Successfully traversed spec part', {
-            part,
-            oldValue: JSON.stringify(oldValue),
-            newValue: JSON.stringify(currentValue),
-          });
-        } else {
-          this.logger.warn('Path part not found in spec, returning original reference', {
-            path,
-            part,
-            spec: JSON.stringify(spec),
-          });
-          return resource;
-          // Path not found, return original
-        }
+      const resolved = this.traverseSpec(spec, pathParts.slice(1), path);
+      if (resolved.found) {
+        this.logger.trace('Resolved schema KubernetesRef to value', {
+          path,
+          resolvedValue: resolved.value,
+        });
+        return resolved.value;
       }
-      this.logger.trace('Resolved schema KubernetesRef to value', {
-        path,
-        resolvedValue: currentValue,
-      });
-      return currentValue;
+      return resource;
     }
 
     // Case 2: Handle CelExpression objects (e.g., Cel.expr(schema.spec.name, '-db'))
@@ -1027,33 +1099,26 @@ metadata:
       }
 
       // Debug: Check if id field is being preserved
-      if (path === 'root' && (resource as any).id) {
+      const resourceRecord = resource as Record<string, unknown>;
+      if (path === 'root' && resourceRecord.id) {
         this.logger.debug('Resource ID preservation check', {
           path,
-          originalId: (resource as any).id,
+          originalId: resourceRecord.id,
           resolvedId: resolved.id,
           originalKeys: Object.keys(resource),
           resolvedKeys: Object.keys(resolved),
         });
       }
 
-      // FIX: Explicitly check for and preserve the non-enumerable readinessEvaluator property.
-      const evaluator = (resource as { readinessEvaluator?: (resource: unknown) => boolean })
-        .readinessEvaluator;
-      if (typeof evaluator === 'function') {
-        this.logger.trace('Preserving readiness evaluator for resource', { path });
-        Object.defineProperty(resolved, 'readinessEvaluator', {
-          value: evaluator,
-          enumerable: false,
-          configurable: false,
-          writable: false,
-        });
+      // Preserve resource metadata (resourceId, readinessEvaluator, etc.) via WeakMap
+      if (typeof resource === 'object' && resource !== null) {
+        copyResourceMetadata(resource, resolved);
       }
 
       // FIX: Preserve the id field if it exists (needed for resource mapping in CEL resolution)
-      if ((resource as any).id) {
-        this.logger.trace('Preserving resource id field', { path, id: (resource as any).id });
-        (resolved as any).id = (resource as any).id;
+      if (resourceRecord.id) {
+        this.logger.trace('Preserving resource id field', { path, id: resourceRecord.id });
+        resolved.id = resourceRecord.id;
       }
 
       return resolved;
@@ -1063,7 +1128,7 @@ metadata:
     // These are generated when schema references are used in template literals like `${schema.spec.name}-suffix`
     if (typeof resource === 'string' && resource.includes('__KUBERNETES_REF_')) {
       this.logger.trace('Found string with KubernetesRef markers', { path, value: resource });
-      
+
       // Replace all __KUBERNETES_REF_ markers with actual values from spec
       // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__
       // For schema: __KUBERNETES_REF___schema___{fieldPath}__
@@ -1073,30 +1138,18 @@ metadata:
         (_match, fieldPath) => {
           // fieldPath is like "spec.baseName" - we need to traverse starting from the schema root
           const pathParts = fieldPath.split('.');
-          
+
           // The first part should be 'spec' or 'status'
           if (pathParts[0] === 'spec') {
-            // Traverse the spec object using the remaining path parts
-            let currentValue: any = spec;
-            for (const part of pathParts.slice(1)) {
-              if (currentValue && typeof currentValue === 'object' && part in currentValue) {
-                currentValue = currentValue[part];
-              } else {
-                this.logger.warn('Schema path not found in spec', {
-                  path,
-                  fieldPath,
-                  part,
-                  availableKeys: currentValue ? Object.keys(currentValue) : [],
-                });
-                return _match; // Keep original marker if path not found
-              }
+            const resolved = this.traverseSpec(spec, pathParts.slice(1), path);
+            if (resolved.found) {
+              this.logger.trace('Resolved schema marker to value', {
+                fieldPath,
+                resolvedValue: resolved.value,
+              });
+              return String(resolved.value);
             }
-            
-            this.logger.trace('Resolved schema marker to value', {
-              fieldPath,
-              resolvedValue: currentValue,
-            });
-            return String(currentValue);
+            return _match; // Keep original marker if path not found
           } else {
             // Status references or other paths - keep as-is for now
             this.logger.trace('Keeping non-spec schema reference marker', {
@@ -1106,10 +1159,10 @@ metadata:
           }
         }
       );
-      
+
       // Also handle non-schema resource references (keep them as-is for now)
       // Pattern: __KUBERNETES_REF_{resourceId}_{fieldPath}__ where resourceId is not __schema__
-      
+
       this.logger.trace('Resolved string with markers', {
         path,
         original: resource,
@@ -1130,6 +1183,76 @@ metadata:
     // Use the imported shared utility
     return generateInstanceName(spec);
   }
+}
+
+/** Describes an unresolved reference found during direct-mode toYaml() validation. */
+interface UnresolvedReference {
+  /** Dot-separated path to the value, e.g. "spec.containers[0].env.DATABASE_HOST" */
+  path: string;
+  /** Human-readable description of the reference type */
+  description: string;
+}
+
+/**
+ * Recursively walk a resolved resource tree and collect any remaining
+ * KubernetesRef or CelExpression objects.  These cannot be serialized
+ * in direct-mode YAML and indicate the user should use Kro mode or deploy().
+ */
+function findUnresolvedReferences(
+  resources: Record<string, KubernetesResource>
+): UnresolvedReference[] {
+  const refs: UnresolvedReference[] = [];
+  const visited = new WeakSet<object>();
+
+  function walk(value: unknown, path: string, depth: number): void {
+    if (value == null || typeof value !== 'object') {
+      // Check for __KUBERNETES_REF_ marker strings left in resolved primitives
+      if (typeof value === 'string' && value.includes('__KUBERNETES_REF_')) {
+        refs.push({ path, description: `Unresolved reference marker: ${value}` });
+      }
+      return;
+    }
+
+    if (depth >= DEFAULT_MAX_RECURSION_DEPTH) return;
+    if (visited.has(value)) return;
+    visited.add(value);
+
+    if (isKubernetesRef(value)) {
+      const ref = value as { resourceId?: string; fieldPath?: string };
+      refs.push({
+        path,
+        description: `KubernetesRef(${ref.resourceId ?? '?'}.${ref.fieldPath ?? '?'})`,
+      });
+      return;
+    }
+
+    if (isCelExpression(value)) {
+      const expr = value as { expression?: string };
+      refs.push({
+        path,
+        description: `CelExpression(${expr.expression ?? '?'})`,
+      });
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        walk(value[i], `${path}[${i}]`, depth + 1);
+      }
+      return;
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, path ? `${path}.${key}` : key, depth + 1);
+    }
+  }
+
+  for (const [resourceKey, resource] of Object.entries(resources)) {
+    const label = `${resource.kind ?? 'Resource'}/${resource.metadata?.name ?? resourceKey}`;
+    walk(resource, label, 0);
+  }
+
+  return refs;
 }
 
 /**

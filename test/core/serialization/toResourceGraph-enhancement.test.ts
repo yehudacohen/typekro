@@ -18,7 +18,7 @@ import {
   CelToJavaScriptMigrationHelper,
   analyzeCelMigrationOpportunities,
   generateCelMigrationGuide 
-} from '../../../src/core/expressions/migration-helpers.js';
+} from '../../../src/core/expressions/factory/migration-helpers.js';
 
 // Test schemas
 const TestSpecSchema = type({

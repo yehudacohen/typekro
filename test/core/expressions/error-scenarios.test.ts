@@ -1,16 +1,20 @@
 /**
  * Error scenario tests with source mapping validation for magic proxy expressions
- * 
+ *
  * Tests error handling, debugging capabilities, and source mapping for JavaScript
  * to CEL conversion with KubernetesRef objects from the magic proxy system.
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
-import { JavaScriptToCelAnalyzer, type AnalysisContext } from '../../../src/core/expressions/analyzer.js';
-import { ConversionError } from '../../../src/core/errors.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import { ConversionError } from '../../../src/core/errors.js';
+import {
+  type AnalysisContext,
+  JavaScriptToCelAnalyzer,
+} from '../../../src/core/expressions/analysis/analyzer.js';
+import { SourceMapBuilder } from '../../../src/core/expressions/analysis/source-map.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
-import { SourceMapBuilder } from '../../../src/core/expressions/source-map.js';
+import { createMockEnhancedStub } from '../../utils/mock-factories.js';
 
 describe('Error Scenarios and Source Mapping', () => {
   let analyzer: JavaScriptToCelAnalyzer;
@@ -18,16 +22,16 @@ describe('Error Scenarios and Source Mapping', () => {
 
   beforeEach(() => {
     analyzer = new JavaScriptToCelAnalyzer();
-    
+
     mockContext = {
       type: 'status',
       availableReferences: {
-        deployment: {} as any,
-        service: {} as any
+        deployment: createMockEnhancedStub('Deployment'),
+        service: createMockEnhancedStub('Service'),
       },
       factoryType: 'kro',
       sourceMap: new SourceMapBuilder(),
-      dependencies: []
+      dependencies: [],
     };
   });
 
@@ -37,38 +41,38 @@ describe('Error Scenarios and Source Mapping', () => {
         {
           expr: 'deployment.status.readyReplicas >',
           // Acorn produces "Unexpected token" instead of "Unexpected end of input"
-          expectedError: 'Parse error'
+          expectedError: 'Parse error',
         },
         {
           expr: 'deployment.status[',
           // Acorn produces "Unexpected token" instead of "Unexpected end of input"
-          expectedError: 'Parse error'
+          expectedError: 'Parse error',
         },
         {
           expr: 'deployment.status.readyReplicas > 0 &&',
-          expectedError: 'Parse error'
+          expectedError: 'Parse error',
         },
         {
           expr: '`unclosed template literal',
-          expectedError: 'Parse error'
+          expectedError: 'Parse error',
         },
         {
           expr: 'deployment.status.readyReplicas > 0 ? "ready"',
-          expectedError: 'Parse error'
-        }
+          expectedError: 'Parse error',
+        },
       ];
 
       for (const { expr, expectedError } of invalidExpressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         expect(result.valid).toBe(false);
         expect(result.errors.length).toBeGreaterThan(0);
-        
+
         const error = result.errors[0];
         expect(error).toBeInstanceOf(ConversionError);
         expect(error?.message).toContain(expectedError);
         expect(error?.originalExpression).toBe(expr);
-        
+
         // Should include line and column information when available
         if (error?.sourceLocation?.line !== undefined) {
           expect(error.sourceLocation.line).toBeGreaterThanOrEqual(1);
@@ -81,22 +85,22 @@ describe('Error Scenarios and Source Mapping', () => {
 
     it('should handle complex parsing errors with nested structures', () => {
       const complexInvalidExpressions = [
-        'deployment.status.conditions.find(c => c.type === "Available"',  // Missing closing parenthesis
-        'service.status?.loadBalancer?.ingress?.[0]?.ip @@ "pending"',   // Invalid operator
+        'deployment.status.conditions.find(c => c.type === "Available"', // Missing closing parenthesis
+        'service.status?.loadBalancer?.ingress?.[0]?.ip @@ "pending"', // Invalid operator
         '`${deployment.status.readyReplicas > 0 ? "ready" : "not-ready"`', // Missing closing brace
-        'deployment.status.readyReplicas > 0 && (service.status.ready',   // Unmatched parenthesis
+        'deployment.status.readyReplicas > 0 && (deployment.status.availableReplicas > 0', // Unmatched parenthesis
       ];
 
       for (const expr of complexInvalidExpressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         expect(result.valid).toBe(false);
         expect(result.errors.length).toBeGreaterThan(0);
-        
+
         const error = result.errors[0];
         expect(error?.message).toBeDefined();
         expect(error?.originalExpression).toBe(expr);
-        
+
         // Error should provide helpful context
         expect(error?.message.length).toBeGreaterThan(10);
       }
@@ -108,32 +112,32 @@ describe('Error Scenarios and Source Mapping', () => {
       const unsupportedExpressions = [
         {
           expr: 'deployment.status.readyReplicas++',
-          expectedError: 'Unsupported JavaScript syntax'
+          expectedError: 'Unsupported JavaScript syntax',
         },
         {
           expr: 'new Date()',
-          expectedError: 'Unsupported JavaScript syntax'
+          expectedError: 'Unsupported JavaScript syntax',
         },
         {
           expr: 'function() { return true; }',
-          expectedError: 'Unsupported JavaScript syntax'
+          expectedError: 'Unsupported JavaScript syntax',
         },
         {
           expr: 'deployment.status.readyReplicas = 5',
-          expectedError: 'Unsupported JavaScript syntax'
+          expectedError: 'Unsupported JavaScript syntax',
         },
         {
           expr: 'for (let i = 0; i < 10; i++) {}',
-          expectedError: 'Unsupported JavaScript syntax'
-        }
+          expectedError: 'Unsupported JavaScript syntax',
+        },
       ];
 
       for (const { expr, expectedError: _expectedError } of unsupportedExpressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         expect(result.valid).toBe(false);
         expect(result.errors.length).toBeGreaterThan(0);
-        
+
         const error = result.errors[0];
         expect(error?.message).toContain('Parse error');
         expect(error?.originalExpression).toBe(expr);
@@ -144,24 +148,24 @@ describe('Error Scenarios and Source Mapping', () => {
       const expressionsWithAlternatives = [
         {
           expr: 'deployment.status.readyReplicas++',
-          expectedSuggestion: 'Use arithmetic expressions instead'
+          expectedSuggestion: 'Use arithmetic expressions instead',
         },
         {
           expr: 'deployment.status.readyReplicas += 1',
-          expectedSuggestion: 'Use arithmetic expressions instead'
+          expectedSuggestion: 'Use arithmetic expressions instead',
         },
         {
           expr: 'deployment.status.conditions.forEach(c => console.log(c))',
-          expectedSuggestion: 'Use array methods like find() or filter()'
-        }
+          expectedSuggestion: 'Use array methods like find() or filter()',
+        },
       ];
 
       for (const { expr, expectedSuggestion: _expectedSuggestion } of expressionsWithAlternatives) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         expect(result.valid).toBe(false);
         expect(result.errors.length).toBeGreaterThan(0);
-        
+
         const error = result.errors[0];
         expect(error?.message).toContain('Unsupported JavaScript syntax');
       }
@@ -171,18 +175,18 @@ describe('Error Scenarios and Source Mapping', () => {
   describe('Resource Reference Errors', () => {
     it('should handle references to unavailable resources gracefully', () => {
       const unavailableResourceExpressions = [
-        'unknownResource.status.ready',
-        'deployment.status.readyReplicas > 0 && unknownService.status.ready',
-        '`http://${unknownService.status.loadBalancer.ingress[0].ip}`'
+        'unknownResource.status.readyReplicas',
+        'deployment.status.readyReplicas > 0 && unknownService.status.readyReplicas',
+        '`http://${unknownService.status.loadBalancer.ingress[0].ip}`',
       ];
 
       for (const expr of unavailableResourceExpressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         // Should be valid but with warnings for unknown resources
         expect(result.valid).toBe(true);
         expect(result.warnings.length).toBeGreaterThan(0);
-        
+
         // Should have warnings about unknown resources
         const warning = result.warnings[0];
         expect(warning?.message).toContain('not found');
@@ -193,48 +197,60 @@ describe('Error Scenarios and Source Mapping', () => {
       const invalidKubernetesRef = {
         // Missing KUBERNETES_REF_BRAND
         resourceId: 'deployment',
-        fieldPath: 'status.readyReplicas'
+        fieldPath: 'status.readyReplicas',
       };
 
       // This would be caught at the type level, but test runtime validation
       const mockContextWithInvalidRef = {
         ...mockContext,
         availableReferences: {
-          deployment: invalidKubernetesRef as any
-        }
+          deployment: invalidKubernetesRef as unknown as NonNullable<
+            typeof mockContext.availableReferences.deployment
+          >,
+        },
       };
 
-      const result = analyzer.analyzeExpression('deployment.status.readyReplicas > 0', mockContextWithInvalidRef);
-      
+      const result = analyzer.analyzeExpression(
+        'deployment.status.readyReplicas > 0',
+        mockContextWithInvalidRef
+      );
+
       // Should handle gracefully
       expect(result).toBeDefined();
     });
 
     it('should handle circular reference detection', () => {
-      const mockRefA: KubernetesRef<boolean> = {
+      const mockRefA: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'service-b',
-        fieldPath: 'status.ready',
-        _type: true
+        fieldPath: 'status.readyReplicas',
+        _type: 0 as number,
       };
 
-      const mockRefB: KubernetesRef<boolean> = {
+      const mockRefB: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'service-a',
-        fieldPath: 'status.ready',
-        _type: false as boolean
+        fieldPath: 'status.readyReplicas',
+        _type: 0 as number,
       };
 
       const circularContext = {
         ...mockContext,
         availableReferences: {
-          'service-a': { status: { ready: mockRefA } } as any,
-          'service-b': { status: { ready: mockRefB } } as any
-        }
+          'service-a': {
+            status: { readyReplicas: mockRefA },
+          } as unknown as NonNullable<typeof mockContext.availableReferences.deployment>,
+          'service-b': {
+            status: { readyReplicas: mockRefB },
+          } as unknown as NonNullable<typeof mockContext.availableReferences.deployment>,
+        },
       };
 
-      const result = analyzer.analyzeExpression('service-a.status.ready && service-b.status.ready', circularContext);
-      
+      const result = analyzer.analyzeExpression(
+        'service-a.status.readyReplicas && service-b.status.readyReplicas',
+        circularContext
+      );
+
       expect(result).toBeDefined();
       // Should detect or handle circular references appropriately
     });
@@ -243,13 +259,13 @@ describe('Error Scenarios and Source Mapping', () => {
   describe('Source Mapping Validation', () => {
     it('should provide accurate source mapping for simple expressions', () => {
       const expression = 'deployment.status.readyReplicas > 0';
-      
+
       const result = analyzer.analyzeExpression(expression, mockContext);
-      
+
       expect(result.valid).toBe(true);
       expect(result.sourceMap).toBeDefined();
       expect(result.sourceMap.length).toBeGreaterThan(0);
-      
+
       const sourceEntry = result.sourceMap[0];
       expect(sourceEntry?.originalExpression).toBe(expression);
       expect(sourceEntry?.celExpression).toBeDefined();
@@ -261,51 +277,55 @@ describe('Error Scenarios and Source Mapping', () => {
     it('should provide source mapping for complex expressions', () => {
       // Use an expression with invalid syntax to ensure it fails
       const complexExpression = 'deployment.status.conditions.invalidSyntax(((';
-      
+
       const result = analyzer.analyzeExpression(complexExpression, mockContext);
-      
+
       expect(result.valid).toBe(false);
       expect(result.errors.length).toBeGreaterThan(0);
-      
+
       // Failed expressions don't generate source maps
       expect(result.sourceMap.length).toBe(0);
-      
+
       // Failed expressions don't have source entries
     });
 
     it('should provide source mapping for template literals', () => {
-      const templateExpression = '`http://${service.status.loadBalancer.ingress[0].ip}:${service.spec.ports[0].port}`';
-      
+      const templateExpression =
+        '`http://${service.status.loadBalancer.ingress[0].ip}:${service.spec.ports[0].port}`';
+
       const result = analyzer.analyzeExpression(templateExpression, mockContext);
-      
+
       expect(result.valid).toBe(true);
       expect(result.sourceMap).toBeDefined();
       expect(result.sourceMap.length).toBeGreaterThan(0);
-      
+
       const sourceEntry = result.sourceMap[0];
       expect(sourceEntry?.originalExpression).toBe(templateExpression);
       expect(sourceEntry?.celExpression).toBeDefined();
-      
+
       // Should identify template literal context
       expect(sourceEntry?.context).toBe('status');
     });
 
     it('should map errors back to original source locations', () => {
       const invalidExpression = 'deployment.status.readyReplicas > 0 &&';
-      
+
       const result = analyzer.analyzeExpression(invalidExpression, mockContext);
-      
+
       expect(result.valid).toBe(false);
       expect(result.errors.length).toBeGreaterThan(0);
-      
+
       const error = result.errors[0];
       expect(error?.originalExpression).toBe(invalidExpression);
-      
+
       // Should provide location information
-      if (error?.sourceLocation?.line !== undefined && error?.sourceLocation?.column !== undefined) {
+      if (
+        error?.sourceLocation?.line !== undefined &&
+        error?.sourceLocation?.column !== undefined
+      ) {
         expect(error.sourceLocation.line).toBeGreaterThanOrEqual(1);
         expect(error.sourceLocation.column).toBeGreaterThanOrEqual(0);
-        
+
         // Column should point to or near the error location
         // Note: acorn may report column at or just past the end of the expression
         expect(error.sourceLocation.column).toBeLessThanOrEqual(invalidExpression.length + 1);
@@ -317,18 +337,18 @@ describe('Error Scenarios and Source Mapping', () => {
     it('should map CEL runtime errors back to JavaScript source', () => {
       // This would typically be tested with actual CEL runtime, but we can test the mapping structure
       const expression = 'deployment.status.readyReplicas > 0';
-      
+
       const result = analyzer.analyzeExpression(expression, mockContext);
-      
+
       expect(result.valid).toBe(true);
       expect(result.sourceMap).toBeDefined();
-      
+
       // Simulate a runtime error mapping
       const sourceEntry = result.sourceMap[0];
       if (sourceEntry) {
         expect(sourceEntry.originalExpression).toBe(expression);
         expect(sourceEntry.celExpression).toBeDefined();
-        
+
         // Should be able to map from CEL back to JavaScript
         const celExpression = sourceEntry.celExpression;
         expect(celExpression).toContain('deployment');
@@ -342,30 +362,30 @@ describe('Error Scenarios and Source Mapping', () => {
         {
           expr: 'deployment.status.readyReplicas > 0',
           context: 'binary-expression',
-          shouldBeValid: true
+          shouldBeValid: true,
         },
         {
           expr: 'service.status?.loadBalancer?.ingress?.[0]?.ip',
           context: 'optional-chaining-with-array',
-          shouldBeValid: true
+          shouldBeValid: true,
         },
         {
-          expr: '`http://${service.status.clusterIP}`',
+          expr: '`http://${service.metadata.name}`',
           context: 'template-literal',
-          shouldBeValid: true
+          shouldBeValid: true,
         },
         {
           expr: 'deployment.status.readyReplicas > 0 ? "ready" : "not-ready"',
           context: 'conditional-expression',
-          shouldBeValid: true
-        }
+          shouldBeValid: true,
+        },
       ];
 
       for (const { expr, context: _context, shouldBeValid } of expressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         expect(result.valid).toBe(shouldBeValid);
-        
+
         if (shouldBeValid) {
           expect(result.celExpression).toBeDefined();
           expect(result.sourceMap.length).toBeGreaterThan(0);
@@ -383,52 +403,53 @@ describe('Error Scenarios and Source Mapping', () => {
     it('should provide detailed analysis information for debugging', () => {
       // Use an expression with invalid syntax to ensure it fails
       const expression = 'deployment.status.conditions.invalidSyntax(((';
-      
+
       const result = analyzer.analyzeExpression(expression, mockContext);
-      
+
       expect(result.valid).toBe(false);
       expect(result.errors.length).toBeGreaterThan(0);
-      
+
       // Failed expressions don't generate dependencies
       expect(result.dependencies.length).toBe(0);
-      
+
       // Failed expressions don't require conversion
       expect(result.requiresConversion).toBe(false);
       expect(result.celExpression).toBeDefined();
     });
 
     it('should allow inspection of both JavaScript and generated CEL', () => {
-      const expression = 'deployment.status.readyReplicas > 0 && service.status.ready';
-      
+      const expression =
+        'deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0';
+
       const result = analyzer.analyzeExpression(expression, mockContext);
-      
+
       expect(result.valid).toBe(true);
-      
+
       // Original JavaScript should be preserved
       const sourceEntry = result.sourceMap[0];
       expect(sourceEntry?.originalExpression).toBe(expression);
-      
+
       // Generated CEL should be available
       expect(result.celExpression).toBeDefined();
       expect(sourceEntry?.celExpression).toBeDefined();
-      
+
       // Should be able to compare both
       expect(sourceEntry?.originalExpression).not.toBe(sourceEntry?.celExpression);
     });
 
     it('should provide performance debugging information', () => {
       const expression = 'deployment.status.readyReplicas > 0';
-      
+
       const startTime = performance.now();
       const result = analyzer.analyzeExpression(expression, mockContext);
       const endTime = performance.now();
-      
+
       expect(result.valid).toBe(true);
-      
+
       // Should complete quickly for debugging
       const duration = endTime - startTime;
       expect(duration).toBeLessThan(100);
-      
+
       // Should provide analysis metadata
       expect(result.dependencies.length).toBeGreaterThan(0);
       expect(result.sourceMap.length).toBeGreaterThan(0);
@@ -440,15 +461,15 @@ describe('Error Scenarios and Source Mapping', () => {
       const partiallyValidExpressions = [
         'deployment.status.readyReplicas > 0 && invalidExpression',
         'validExpression || deployment.status.invalidMethod()',
-        '`Valid template ${deployment.status.readyReplicas} invalid ${}`'
+        '`Valid template ${deployment.status.readyReplicas} invalid ${}`',
       ];
 
       for (const expr of partiallyValidExpressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         // Should attempt to parse what it can
         expect(result).toBeDefined();
-        
+
         if (result.valid) {
           // If it succeeds, should have some valid parts
           expect(result.dependencies.length).toBeGreaterThanOrEqual(0);
@@ -462,21 +483,21 @@ describe('Error Scenarios and Source Mapping', () => {
 
     it('should provide fallback behavior for unsupported features', () => {
       const unsupportedButHandleableExpressions = [
-        'deployment.status.readyReplicas.toString()',  // Method not supported in CEL
-        'deployment.status.readyReplicas instanceof Number',  // instanceof not supported
-        'typeof deployment.status.readyReplicas === "number"'  // typeof not supported
+        'deployment.status.readyReplicas.toString()', // Method not supported in CEL
+        'deployment.status.readyReplicas instanceof Number', // instanceof not supported
+        'typeof deployment.status.readyReplicas === "number"', // typeof not supported
       ];
 
       for (const expr of unsupportedButHandleableExpressions) {
         const result = analyzer.analyzeExpression(expr, mockContext);
-        
+
         expect(result).toBeDefined();
-        
+
         if (!result.valid) {
           // Should provide clear error message
           expect(result.errors.length).toBeGreaterThan(0);
           expect(result.errors[0]?.message).toContain('Unsupported JavaScript syntax');
-          
+
           // Should suggest alternatives when possible
           const errorMessage = result.errors[0]?.message || '';
           expect(errorMessage.length).toBeGreaterThan(20);

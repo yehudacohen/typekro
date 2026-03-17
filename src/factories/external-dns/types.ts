@@ -1,19 +1,19 @@
 // External-DNS Type Definitions
 // Following external-dns Helm chart and CRD specifications
 
-import { type, type Type } from 'arktype';
+import { type Type, type } from 'arktype';
 
 // Re-export common types from cert-manager for consistency
 export type {
-  ResourceRequirements,
-  Toleration,
   Affinity,
-  SecurityContext,
   EnvVar,
+  LabelSelector,
+  ResourceRequirements,
+  SecurityContext,
+  Toleration,
   Volume,
   VolumeMount,
-  LabelSelector,
-} from '../cert-manager/types';
+} from '../cert-manager/types.js';
 
 // =============================================================================
 // ARKTYPE SCHEMAS FOR BOOTSTRAP COMPOSITIONS
@@ -270,5 +270,5 @@ export interface ExternalDnsHelmValues {
   }>;
 
   // Additional custom values
-  [key: string]: any;
+  [key: string]: unknown;
 }

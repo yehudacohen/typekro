@@ -100,31 +100,43 @@ describe('Kustomize Reference Integration', () => {
     expect(kustomizeResource!.apiVersion).toBe('kustomize.toolkit.fluxcd.io/v1');
 
     // Verify patches contain references
-    const patches = (kustomizeResource as any).spec?.patches;
+    const kustSpec = (kustomizeResource as unknown as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    const patches = kustSpec?.patches as Record<string, unknown>[] | undefined;
     expect(patches).toBeDefined();
     expect(patches).toHaveLength(1);
 
-    const patch = patches![0];
-    expect(patch.target?.kind).toBe('Deployment');
-    expect(patch.target?.name).toBe('webapp');
+    const patch = patches![0]!;
+    const target = patch.target as Record<string, unknown> | undefined;
+    expect(target?.kind).toBe('Deployment');
+    expect(target?.name).toBe('webapp');
 
     // Check that schema references are preserved in patch content
-    const patchContent = patch.patch as any;
-    expect(isKubernetesRef(patchContent.spec.replicas)).toBe(true);
-    expect(isKubernetesRef(patchContent.spec.template.spec.containers[0].image)).toBe(true);
-    expect(isKubernetesRef(patchContent.spec.template.spec.containers[0].env[0].value)).toBe(true);
+    const patchContent = patch.patch as Record<string, unknown>;
+    const patchSpec = patchContent.spec as Record<string, unknown>;
+    expect(isKubernetesRef(patchSpec.replicas)).toBe(true);
+    const tmplSpec = (patchSpec.template as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    const containers = tmplSpec.containers as Record<string, unknown>[];
+    expect(isKubernetesRef(containers[0]!.image)).toBe(true);
+    const envVars = containers[0]!.env as Record<string, unknown>[];
+    expect(isKubernetesRef(envVars[0]!.value)).toBe(true);
 
     // Check that references in images array are preserved
-    const images = (kustomizeResource as any).spec?.images;
+    const images = kustSpec?.images as Record<string, unknown>[] | undefined;
     expect(images).toBeDefined();
     expect(images).toHaveLength(1);
-    expect(isKubernetesRef(images![0].newTag)).toBe(true);
+    expect(isKubernetesRef(images![0]!.newTag)).toBe(true);
 
     // Check that references in replicas array are preserved
-    const replicas = (kustomizeResource as any).spec?.replicas;
+    const replicas = kustSpec?.replicas as Record<string, unknown>[] | undefined;
     expect(replicas).toBeDefined();
     expect(replicas).toHaveLength(1);
-    expect(isKubernetesRef(replicas![0].count)).toBe(true);
+    expect(isKubernetesRef(replicas![0]!.count)).toBe(true);
   });
 
   it('should support string patches with references', () => {
@@ -176,19 +188,24 @@ describe('Kustomize Reference Integration', () => {
     );
 
     const kustomizeResource = graph.resources.find((r) => r.kind === 'Kustomization');
-    const patches = (kustomizeResource as any).spec?.patches;
+    const kustSpec2 = (kustomizeResource as unknown as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    const patches2 = kustSpec2?.patches as Record<string, unknown>[] | undefined;
 
-    expect(patches).toBeDefined();
-    expect(patches).toHaveLength(1);
+    expect(patches2).toBeDefined();
+    expect(patches2).toHaveLength(1);
 
-    const patch = patches![0];
+    const patch2 = patches2![0]!;
+    const target2 = patch2.target as Record<string, unknown> | undefined;
 
     // Verify reference in target selector
-    expect(isKubernetesRef(patch.target?.namespace)).toBe(true);
+    expect(isKubernetesRef(target2?.namespace)).toBe(true);
 
     // String patches should be preserved as-is
-    expect(typeof patch.patch).toBe('string');
-    expect(patch.patch).toContain('value: 3');
+    expect(typeof patch2.patch).toBe('string');
+    expect(patch2.patch).toContain('value: 3');
   });
 
   it('should handle complex patch scenarios with nested references', () => {
@@ -274,20 +291,31 @@ describe('Kustomize Reference Integration', () => {
     const kustomizeResource = graph.resources.find((r) => r.kind === 'Kustomization');
 
     // Verify complex patch structure with nested references
-    const patches = (kustomizeResource as any).spec?.patches;
-    expect(patches).toBeDefined();
-    expect(patches).toHaveLength(1);
+    const kustSpec3 = (kustomizeResource as unknown as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    const patches3 = kustSpec3?.patches as Record<string, unknown>[] | undefined;
+    expect(patches3).toBeDefined();
+    expect(patches3).toHaveLength(1);
 
-    const patchContent = patches![0].patch as any;
-    const container = patchContent.spec.template.spec.containers[0];
+    const patchContent3 = patches3![0]!.patch as Record<string, unknown>;
+    const patchSpec3 = patchContent3.spec as Record<string, unknown>;
+    const tmplSpec3 = (patchSpec3.template as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    const container = (tmplSpec3.containers as Record<string, unknown>[])[0]!;
 
     // Check resource references
-    expect(isKubernetesRef(container.resources.requests.cpu)).toBe(true);
-    expect(isKubernetesRef(container.resources.requests.memory)).toBe(true);
-    expect(isKubernetesRef(container.resources.limits.cpu)).toBe(true);
-    expect(isKubernetesRef(container.resources.limits.memory)).toBe(true);
+    const containerResources = container.resources as Record<string, Record<string, unknown>>;
+    expect(isKubernetesRef(containerResources.requests!.cpu)).toBe(true);
+    expect(isKubernetesRef(containerResources.requests!.memory)).toBe(true);
+    expect(isKubernetesRef(containerResources.limits!.cpu)).toBe(true);
+    expect(isKubernetesRef(containerResources.limits!.memory)).toBe(true);
 
     // Check environment variable references
-    expect(isKubernetesRef(container.env[0].value)).toBe(true); // schema.spec.environment
+    const containerEnv = container.env as Record<string, unknown>[];
+    expect(isKubernetesRef(containerEnv[0]!.value)).toBe(true); // schema.spec.environment
   });
 });

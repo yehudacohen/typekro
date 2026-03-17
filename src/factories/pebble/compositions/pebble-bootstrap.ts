@@ -1,27 +1,15 @@
-import { kubernetesComposition } from '../../../index.js';
-import {
-  PebbleBootstrapConfigSchema,
-  PebbleBootstrapStatusSchema,
-} from '../types.js';
-import {
-  pebbleHelmRepository,
-  pebbleHelmRelease
-} from '../resources/helm.js';
+import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { pebbleHelmRelease, pebbleHelmRepository } from '../resources/helm.js';
+import { PebbleBootstrapConfigSchema, PebbleBootstrapStatusSchema } from '../types.js';
 import { createDefaultPebbleTestingValues } from '../utils/helm-values-mapper.js';
 
 /**
- * Helper function to ensure version has 'v' prefix for image tags if needed
- */
-function _ensureVersionPrefix(version: string): string {
-  return version.startsWith('v') ? version : `v${version}`;
-}
-
-/**
  * Pebble ACME Test Server Bootstrap Composition
- * 
+ *
  * Creates a complete Pebble ACME test server deployment using HelmRepository and HelmRelease resources.
  * Provides comprehensive configuration options and status expressions derived from actual resource status.
- * 
+ *
  * Features:
  * - Complete Pebble ACME test server deployment (Pebble server + CoreDNS)
  * - Comprehensive configuration schema with ArkType validation
@@ -29,14 +17,14 @@ function _ensureVersionPrefix(version: string): string {
  * - ACME and management endpoints derived from service status
  * - Support for both kro and direct deployment strategies
  * - Optimized for fast testing with sensible defaults
- * 
+ *
  * @example
  * ```typescript
  * const pebbleFactory = pebbleBootstrap.factory('direct', {
  *   namespace: 'pebble-system',
  *   waitForReady: true
  * });
- * 
+ *
  * const instance = await pebbleFactory.deploy({
  *   name: 'pebble-acme',
  *   namespace: 'pebble-system',
@@ -68,10 +56,10 @@ export const pebbleBootstrap = kubernetesComposition(
     // Create HelmRepository for Pebble chart
     const helmRepository = pebbleHelmRepository({
       name: `${spec.name}-repo`,
-      namespace: 'flux-system',
+      namespace: DEFAULT_FLUX_NAMESPACE,
       url: 'https://jupyterhub.github.io/helm-chart/',
       interval: '5m',
-      id: 'pebbleHelmRepository'
+      id: 'pebbleHelmRepository',
     });
 
     // Use default testing values optimized for fast testing
@@ -87,24 +75,41 @@ export const pebbleBootstrap = kubernetesComposition(
       },
       repositoryRef: {
         name: `${spec.name}-repo`,
-        namespace: 'flux-system',
+        namespace: DEFAULT_FLUX_NAMESPACE,
       },
       values: mergedValues,
       interval: '5m',
-      id: 'pebbleHelmRelease'
+      id: 'pebbleHelmRelease',
     });
 
     // Return status expressions based on actual resource status
     return {
-      ready: helmRepository.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') && 
-             helmRelease.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-      phase: helmRelease.status.conditions?.find((c: any) => c.type === 'Ready')?.status === 'True' ? 'Ready' : 'Pending',
+      ready:
+        (helmRepository.status.conditions?.some(
+          (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
+        ) &&
+          helmRelease.status.conditions?.some(
+            (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
+          )) ||
+        false,
+      phase:
+        helmRelease.status.conditions?.find(
+          (c: { type: string; status: string }) => c.type === 'Ready'
+        )?.status === 'True'
+          ? 'Ready'
+          : 'Pending',
       version: spec.version || 'latest',
-      pebbleReady: helmRelease.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
-      corednsReady: helmRelease.status.conditions?.some((c: any) => c.type === 'Ready' && c.status === 'True') || false,
+      pebbleReady:
+        helmRelease.status.conditions?.some(
+          (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
+        ) || false,
+      corednsReady:
+        helmRelease.status.conditions?.some(
+          (c: { type: string; status: string }) => c.type === 'Ready' && c.status === 'True'
+        ) || false,
       acmeEndpoint: `https://${spec.name}.${spec.namespace || 'default'}.svc.cluster.local/dir`,
       managementEndpoint: `https://${spec.name}.${spec.namespace || 'default'}.svc.cluster.local:15000`,
-      dnsServer: `${spec.name}-coredns.${spec.namespace || 'default'}.svc.cluster.local`
+      dnsServer: `${spec.name}-coredns.${spec.namespace || 'default'}.svc.cluster.local`,
     };
   }
 );

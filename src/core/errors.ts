@@ -3,13 +3,16 @@
  * Provides detailed, actionable error messages with context
  */
 
+import { levenshteinDistance } from '../utils/string.js';
+
 export class TypeKroError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    public readonly context?: Record<string, unknown>
+    public readonly context?: Record<string, unknown>,
+    options?: ErrorOptions
   ) {
-    super(message);
+    super(message, options);
     this.name = 'TypeKroError';
   }
 }
@@ -65,15 +68,56 @@ export class CircularDependencyError extends TypeKroError {
 }
 
 /**
- * Format Arktype validation errors with helpful context and suggestions
+ * Structural representation of a single Arktype validation problem.
+ *
+ * Compatible with `ArkError` from `@ark/schema` and plain mock objects used
+ * in tests. Only the subset of fields actually read by {@link formatArktypeError}
+ * is required.
+ */
+export interface ArktypeValidationProblem {
+  path?: readonly PropertyKey[];
+  expected?: string;
+  actual?: unknown;
+  code?: string;
+  message?: string;
+}
+/**
+ * Structural representation of an Arktype validation error result.
+ *
+ * Compatible with both `ArkErrors` from `@ark/schema` (which extends
+ * `ReadonlyArray<ArkError>` and has a `.summary` getter) and plain mock
+ * objects used in tests (which have an explicit `.problems` array).
+ *
+ * - Real `ArkErrors`: iterable array-like with `.summary`; no `.problems`
+ *   property — the errors ARE the array entries.
+ * - Test mocks: plain objects with `.summary` and `.problems`.
+ *
+ * {@link formatArktypeError} normalizes both shapes by preferring
+ * `.problems` when present, falling back to `Array.from()` for array-like
+ * inputs.
+ */
+export interface ArktypeValidationError {
+  summary: string;
+  problems?: readonly ArktypeValidationProblem[];
+  /** Allow array-like access (real ArkErrors extends ReadonlyArray) */
+  [Symbol.iterator]?: () => Iterator<ArktypeValidationProblem>;
+}
+
+/**
+ * Format Arktype validation errors with helpful context and suggestions.
+ *
+ * Accepts both real `ArkErrors` instances (array-like, no `.problems`) and
+ * plain mock objects with an explicit `.problems` array.
  */
 export function formatArktypeError(
-  error: any,
+  error: ArktypeValidationError,
   resourceKind: string,
   resourceName: string,
   _spec: unknown
 ): ValidationError {
-  const problems = error.problems || [];
+  const problems: readonly ArktypeValidationProblem[] =
+    error.problems ??
+    (Symbol.iterator in error ? Array.from(error as Iterable<ArktypeValidationProblem>) : []);
 
   if (problems.length === 0) {
     return new ValidationError(
@@ -87,9 +131,9 @@ export function formatArktypeError(
 
   // Get the first problem for detailed error
   const firstProblem = problems[0];
-  const fieldPath = firstProblem.path?.join('.') || 'root';
-  const expectedType = firstProblem.expected || 'unknown';
-  const actualValue = firstProblem.actual;
+  const fieldPath = firstProblem?.path?.join('.') || 'root';
+  const expectedType = firstProblem?.expected || 'unknown';
+  const actualValue = firstProblem?.actual;
 
   let message = `Invalid ${resourceKind} '${resourceName}' at field '${fieldPath}':`;
   message += `\n  Expected: ${expectedType}`;
@@ -98,23 +142,23 @@ export function formatArktypeError(
   const suggestions: string[] = [];
 
   // Add specific suggestions based on the error type
-  if (firstProblem.code === 'missing') {
+  if (firstProblem?.code === 'missing') {
     suggestions.push(`Add the required field '${fieldPath}' to your ${resourceKind} spec`);
     suggestions.push(`Example: { ${fieldPath}: ${getExampleValue(expectedType)} }`);
-  } else if (firstProblem.code === 'type') {
+  } else if (firstProblem?.code === 'type') {
     suggestions.push(`Change '${fieldPath}' to be of type ${expectedType}`);
     if (expectedType.includes('|')) {
       const options = expectedType.split('|').map((s: string) => s.trim());
       suggestions.push(`Valid options: ${options.join(', ')}`);
     }
-  } else if (firstProblem.code === 'format') {
+  } else if (firstProblem?.code === 'format') {
     suggestions.push(`Ensure '${fieldPath}' matches the expected format: ${expectedType}`);
   }
 
   // Add all problems if there are multiple
   if (problems.length > 1) {
     message += `\n\nAdditional validation errors:`;
-    problems.slice(1).forEach((problem: any, index: number) => {
+    problems.slice(1).forEach((problem: ArktypeValidationProblem, index: number) => {
       const path = problem.path?.join('.') || 'root';
       message += `\n  ${index + 2}. ${path}: ${problem.message}`;
     });
@@ -190,362 +234,6 @@ export function formatCircularDependencyError(cycle: string[]): CircularDependen
 }
 
 /**
- * Simple Levenshtein distance calculation for suggesting similar resource names
- */
-function levenshteinDistance(str1: string, str2: string): number {
-  const matrix: number[][] = Array(str2.length + 1)
-    .fill(null)
-    .map(() => Array(str1.length + 1).fill(0));
-
-  for (let i = 0; i <= str1.length; i++) matrix[0]![i] = i;
-  for (let j = 0; j <= str2.length; j++) matrix[j]![0] = j;
-
-  for (let j = 1; j <= str2.length; j++) {
-    for (let i = 1; i <= str1.length; i++) {
-      const indicator = str1[i - 1] === str2[j - 1] ? 0 : 1;
-      matrix[j]![i] = Math.min(
-        matrix[j]?.[i - 1]! + 1,
-        matrix[j - 1]?.[i]! + 1,
-        matrix[j - 1]?.[i - 1]! + indicator
-      );
-    }
-  }
-
-  return matrix[str2.length]?.[str1.length]!;
-}
-
-/**
- * Utility functions for detecting and reporting unsupported patterns in compositions
- */
-/**
- * Debugging utilities for composition execution
- */
-export class CompositionDebugger {
-  private static debugMode = false;
-  private static debugLog: string[] = [];
-
-  /**
-   * Enable debug mode for composition execution
-   */
-  static enableDebugMode(): void {
-    CompositionDebugger.debugMode = true;
-    CompositionDebugger.debugLog = [];
-  }
-
-  /**
-   * Disable debug mode
-   */
-  static disableDebugMode(): void {
-    CompositionDebugger.debugMode = false;
-    CompositionDebugger.debugLog = [];
-  }
-
-  /**
-   * Check if debug mode is enabled
-   */
-  static isDebugEnabled(): boolean {
-    return CompositionDebugger.debugMode;
-  }
-
-  /**
-   * Add a debug log entry
-   */
-  static log(phase: string, message: string, context?: Record<string, any>): void {
-    if (!CompositionDebugger.debugMode) return;
-
-    const timestamp = new Date().toISOString();
-    const contextStr = context ? ` | Context: ${JSON.stringify(context)}` : '';
-    const logEntry = `[${timestamp}] ${phase}: ${message}${contextStr}`;
-
-    CompositionDebugger.debugLog.push(logEntry);
-
-    // Also log to console if in development
-    if (process.env.NODE_ENV === 'development') {
-      console.debug(`[TypeKro Composition] ${logEntry}`);
-    }
-  }
-
-  /**
-   * Get all debug logs
-   */
-  static getDebugLogs(): string[] {
-    return [...CompositionDebugger.debugLog];
-  }
-
-  /**
-   * Clear debug logs
-   */
-  static clearDebugLogs(): void {
-    CompositionDebugger.debugLog = [];
-  }
-
-  /**
-   * Create a debug summary for composition execution
-   */
-  static createDebugSummary(
-    compositionName: string,
-    resourceCount: number,
-    executionTimeMs: number,
-    statusFields: string[]
-  ): string {
-    const summary = [
-      `=== Composition Debug Summary ===`,
-      `Composition: ${compositionName}`,
-      `Execution Time: ${executionTimeMs}ms`,
-      `Resources Created: ${resourceCount}`,
-      `Status Fields: ${statusFields.join(', ')}`,
-      ``,
-      `=== Debug Log ===`,
-      ...CompositionDebugger.debugLog,
-      `=== End Debug Summary ===`,
-    ];
-
-    return summary.join('\n');
-  }
-
-  /**
-   * Log resource registration
-   */
-  static logResourceRegistration(
-    resourceId: string,
-    resourceKind: string,
-    factoryName: string
-  ): void {
-    CompositionDebugger.log('RESOURCE_REGISTRATION', `Registered resource '${resourceId}'`, {
-      resourceKind,
-      factoryName,
-    });
-  }
-
-  /**
-   * Log composition execution start
-   */
-  static logCompositionStart(compositionName: string): void {
-    CompositionDebugger.log('COMPOSITION_START', `Starting composition execution`, {
-      compositionName,
-    });
-  }
-
-  /**
-   * Log composition execution end
-   */
-  static logCompositionEnd(
-    compositionName: string,
-    resourceCount: number,
-    statusFields: string[]
-  ): void {
-    CompositionDebugger.log('COMPOSITION_END', `Completed composition execution`, {
-      compositionName,
-      resourceCount,
-      statusFields,
-    });
-  }
-
-  /**
-   * Log status object validation
-   */
-  static logStatusValidation(
-    compositionName: string,
-    statusObject: any,
-    validationResult: 'success' | 'failure',
-    issues?: string[]
-  ): void {
-    CompositionDebugger.log('STATUS_VALIDATION', `Status validation ${validationResult}`, {
-      compositionName,
-      statusObjectKeys: Object.keys(statusObject || {}),
-      issues,
-    });
-  }
-
-  /**
-   * Log performance metrics
-   */
-  static logPerformanceMetrics(
-    phase: string,
-    startTime: number,
-    endTime: number,
-    additionalMetrics?: Record<string, any>
-  ): void {
-    const duration = endTime - startTime;
-    CompositionDebugger.log('PERFORMANCE', `${phase} completed in ${duration}ms`, {
-      duration,
-      ...additionalMetrics,
-    });
-  }
-}
-
-export class UnsupportedPatternDetector {
-  /**
-   * Detect unsupported JavaScript patterns in status objects
-   */
-  static detectUnsupportedStatusPatterns(statusObject: any, fieldPath = ''): string[] {
-    const issues: string[] = [];
-
-    if (typeof statusObject !== 'object' || statusObject === null) {
-      return issues;
-    }
-
-    for (const [key, value] of Object.entries(statusObject)) {
-      const currentPath = fieldPath ? `${fieldPath}.${key}` : key;
-
-      // Skip CEL expressions and resource references - these are valid
-      if (
-        UnsupportedPatternDetector.isCelExpression(value) ||
-        UnsupportedPatternDetector.isResourceReference(value)
-      ) {
-        continue;
-      }
-
-      // Check for JavaScript-specific patterns that don't work in CEL
-      if (typeof value === 'string') {
-        // Template literals with JavaScript expressions (but not CEL templates)
-        if (value.includes('${') && !value.startsWith('${') && !value.endsWith('}')) {
-          issues.push(`Template literal with JavaScript expressions at '${currentPath}': ${value}`);
-        }
-
-        // String concatenation patterns
-        if (value.includes(' + ') || value.includes('` + `')) {
-          issues.push(`String concatenation at '${currentPath}': ${value}`);
-        }
-      }
-
-      // Check for function calls (but not CEL expressions or resource references)
-      if (typeof value === 'function') {
-        issues.push(`Function at '${currentPath}': Functions are not supported in status objects`);
-      }
-
-      // Check for complex JavaScript expressions
-      if (typeof value === 'object' && value !== null) {
-        // Recursively check nested objects
-        issues.push(
-          ...UnsupportedPatternDetector.detectUnsupportedStatusPatterns(value, currentPath)
-        );
-
-        // Check for JavaScript-specific object patterns
-        if (Array.isArray(value)) {
-          // Check for array methods like .map, .filter, etc.
-          const stringified = JSON.stringify(value);
-          if (
-            stringified.includes('.map(') ||
-            stringified.includes('.filter(') ||
-            stringified.includes('.reduce(')
-          ) {
-            issues.push(`Array method calls at '${currentPath}': Use CEL expressions instead`);
-          }
-        }
-      }
-    }
-
-    return issues;
-  }
-
-  /**
-   * Check if a value is a CEL expression
-   */
-  private static isCelExpression(value: any): boolean {
-    return value && typeof value === 'object' && value.__brand === 'CelExpression';
-  }
-
-  /**
-   * Check if a value is a resource reference
-   */
-  private static isResourceReference(value: any): boolean {
-    // Check for KubernetesRef brand
-    if (value && typeof value === 'object' && value.__brand === 'KubernetesRef') {
-      return true;
-    }
-
-    // Check for proxy objects that might be resource references
-    if (
-      value &&
-      typeof value === 'object' &&
-      value.constructor &&
-      value.constructor.name === 'Object'
-    ) {
-      // Check if it has resource reference properties
-      if (value.resourceId || value.fieldPath || value.__isProxy) {
-        return true;
-      }
-    }
-
-    // Check for function proxies that represent resource references
-    if (typeof value === 'function' && value.__isResourceProxy) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Generate suggestions for fixing unsupported patterns
-   */
-  static generatePatternSuggestions(pattern: string): string[] {
-    const suggestions: string[] = [];
-
-    if (pattern.includes('template literal')) {
-      suggestions.push('Use Cel.template() instead of JavaScript template literals');
-      suggestions.push(
-        'Example: Cel.template("https://%s", hostname) instead of `https://${hostname}`'
-      );
-    }
-
-    if (pattern.includes('string concatenation')) {
-      suggestions.push('Use Cel.expr() for string concatenation');
-      suggestions.push('Example: Cel.expr(prefix, " + ", suffix) instead of prefix + suffix');
-    }
-
-    if (pattern.includes('function')) {
-      suggestions.push('Functions are not supported in status objects');
-      suggestions.push('Use CEL expressions or move logic to the composition function');
-    }
-
-    if (pattern.includes('array method')) {
-      suggestions.push('Use CEL expressions for array operations');
-      suggestions.push('Example: Cel.expr(array, ".size()") instead of array.length');
-    }
-
-    if (pattern.includes('JavaScript expressions')) {
-      suggestions.push('Replace JavaScript expressions with CEL expressions');
-      suggestions.push('Use Cel.expr() for complex logic and Cel.template() for string formatting');
-    }
-
-    // General suggestions
-    suggestions.push('Refer to the CEL documentation for supported operations');
-    suggestions.push('Use literal values for simple cases, CEL expressions for complex logic');
-
-    return suggestions;
-  }
-
-  /**
-   * Create a comprehensive error for unsupported patterns
-   */
-  static createUnsupportedPatternError(
-    compositionName: string,
-    statusObject: any
-  ): CompositionExecutionError | null {
-    const issues = UnsupportedPatternDetector.detectUnsupportedStatusPatterns(statusObject);
-
-    if (issues.length === 0) {
-      return null;
-    }
-
-    const allSuggestions = new Set<string>();
-    issues.forEach((issue) => {
-      UnsupportedPatternDetector.generatePatternSuggestions(issue).forEach((suggestion) => {
-        allSuggestions.add(suggestion);
-      });
-    });
-
-    const message = `Unsupported patterns detected in composition '${compositionName}':\n\n${issues.map((issue, i) => `  ${i + 1}. ${issue}`).join('\n')}`;
-
-    return CompositionExecutionError.forUnsupportedPattern(
-      compositionName,
-      message,
-      Array.from(allSuggestions)
-    );
-  }
-}
-/**
 
  * Error thrown when ResourceGraphDefinition deployment fails
  */
@@ -554,13 +242,14 @@ export class ResourceGraphFactoryError extends TypeKroError {
     message: string,
     public readonly factoryName: string,
     public readonly operation: 'deployment' | 'getInstance' | 'cleanup',
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'RESOURCE_GRAPH_FACTORY_ERROR', {
-      factoryName,
-      operation,
-      cause: cause?.message,
-    });
+    super(
+      message,
+      'RESOURCE_GRAPH_FACTORY_ERROR',
+      { factoryName, operation, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
     this.name = 'ResourceGraphFactoryError';
   }
 }
@@ -575,15 +264,14 @@ export class CRDInstanceError extends TypeKroError {
     public readonly kind: string,
     public readonly instanceName: string,
     public readonly operation: 'creation' | 'deletion' | 'statusResolution',
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'CRD_INSTANCE_ERROR', {
-      apiVersion,
-      kind,
-      instanceName,
-      operation,
-      cause: cause?.message,
-    });
+    super(
+      message,
+      'CRD_INSTANCE_ERROR',
+      { apiVersion, kind, instanceName, operation, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
     this.name = 'CRDInstanceError';
   }
 }
@@ -625,15 +313,14 @@ export class CompositionExecutionError extends TypeKroError {
       resourceKind?: string;
       factoryName?: string;
     },
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'COMPOSITION_EXECUTION_ERROR', {
-      compositionName,
-      phase,
-      resourceContext,
-      cause: cause?.message,
-      stack: cause?.stack,
-    });
+    super(
+      message,
+      'COMPOSITION_EXECUTION_ERROR',
+      { compositionName, phase, resourceContext, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
     this.name = 'CompositionExecutionError';
   }
 
@@ -708,17 +395,21 @@ export class ContextRegistrationError extends TypeKroError {
       | 'duplicate-detection'
       | 'validation',
     public readonly suggestions?: string[],
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'CONTEXT_REGISTRATION_ERROR', {
-      resourceId,
-      resourceKind,
-      factoryName,
-      registrationPhase,
-      suggestions,
-      cause: cause?.message,
-      stack: cause?.stack,
-    });
+    super(
+      message,
+      'CONTEXT_REGISTRATION_ERROR',
+      {
+        resourceId,
+        resourceKind,
+        factoryName,
+        registrationPhase,
+        suggestions,
+        cause: cause?.message,
+      },
+      cause ? { cause } : undefined
+    );
     this.name = 'ContextRegistrationError';
   }
 
@@ -809,11 +500,215 @@ export class ContextRegistrationError extends TypeKroError {
  * Error thrown when JavaScript to CEL expression conversion fails
  * Provides detailed context about the conversion failure with source mapping
  */
+/**
+ * Error thrown when status hydration fails
+ * Provides detailed context about deployment state and resource failures
+ */
+export class StatusHydrationError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly instanceName: string,
+    public readonly deploymentStatus: 'failed' | 'partial' | 'success',
+    public readonly failedResources?: Array<{
+      id: string;
+      kind: string;
+      name: string;
+      error: string;
+    }>,
+    public readonly celError?: string,
+    public readonly suggestions?: string[]
+  ) {
+    super(message, 'STATUS_HYDRATION_ERROR', {
+      instanceName,
+      deploymentStatus,
+      failedResources,
+      celError,
+      suggestions,
+    });
+    this.name = 'StatusHydrationError';
+  }
+
+  /**
+   * Create error for failed deployment
+   */
+  static forFailedDeployment(
+    instanceName: string,
+    failedResources: Array<{ id: string; kind: string; name: string; error: string }>
+  ): StatusHydrationError {
+    const message =
+      `Cannot hydrate status for '${instanceName}': deployment failed.\n\n` +
+      `Failed resources (${failedResources.length}):\n` +
+      failedResources
+        .map((r, i) => `  ${i + 1}. ${r.kind}/${r.name} (${r.id})\n     Error: ${r.error}`)
+        .join('\n');
+
+    const suggestions = [
+      'Check the deployment errors above to identify the root cause',
+      'Ensure all required resources can be deployed successfully',
+      'Verify that dependencies (like webhooks) are ready before deploying dependent resources',
+      'Use waitForReady: true to ensure resources are fully deployed before status hydration',
+    ];
+
+    return new StatusHydrationError(
+      message,
+      instanceName,
+      'failed',
+      failedResources,
+      undefined,
+      suggestions
+    );
+  }
+
+  /**
+   * Create error for partial deployment
+   */
+  static forPartialDeployment(
+    instanceName: string,
+    failedResources: Array<{ id: string; kind: string; name: string; error: string }>,
+    successCount: number
+  ): StatusHydrationError {
+    const message =
+      `Cannot hydrate status for '${instanceName}': partial deployment.\n\n` +
+      `${successCount} resources succeeded, ${failedResources.length} failed:\n` +
+      failedResources
+        .map((r, i) => `  ${i + 1}. ${r.kind}/${r.name} (${r.id})\n     Error: ${r.error}`)
+        .join('\n');
+
+    const suggestions = [
+      'Fix the failed resources listed above',
+      'All resources must deploy successfully for status hydration',
+      'Check deployment logs for detailed error information',
+    ];
+
+    return new StatusHydrationError(
+      message,
+      instanceName,
+      'partial',
+      failedResources,
+      undefined,
+      suggestions
+    );
+  }
+
+  /**
+   * Create error for CEL evaluation failure
+   */
+  static forCelEvaluationFailure(
+    instanceName: string,
+    celExpression: string,
+    celError: string,
+    resourceContext?: string
+  ): StatusHydrationError {
+    let message =
+      `Status hydration failed for '${instanceName}': CEL expression evaluation error.\n\n` +
+      `Expression: ${celExpression}\n` +
+      `Error: ${celError}`;
+
+    if (resourceContext) {
+      message += `\nResource context: ${resourceContext}`;
+    }
+
+    const suggestions = [
+      'Check if the referenced resource field exists and is populated',
+      'Ensure all resources have completed deployment and have status fields',
+      'Verify that waitForReady: true is set to ensure resources are ready',
+      'Use optional chaining (?.) in CEL expressions for fields that might not exist',
+    ];
+
+    return new StatusHydrationError(
+      message,
+      instanceName,
+      'success',
+      undefined,
+      celError,
+      suggestions
+    );
+  }
+}
+
+/**
+ * Error thrown when a Kubernetes API operation fails
+ * Wraps HTTP-level failures from the K8s API server
+ */
+export class KubernetesApiOperationError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly operation: 'apply' | 'get' | 'delete' | 'list' | 'patch' | 'watch',
+    public readonly resourceKind?: string,
+    public readonly resourceName?: string,
+    public readonly statusCode?: number,
+    public override readonly cause?: Error
+  ) {
+    super(
+      message,
+      'KUBERNETES_API_OPERATION_ERROR',
+      { operation, resourceKind, resourceName, statusCode, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
+    this.name = 'KubernetesApiOperationError';
+  }
+}
+
+/**
+ * Error thrown when the Kubernetes client provider fails to initialize or configure
+ */
+export class KubernetesClientError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly operation:
+      | 'initialization'
+      | 'configuration'
+      | 'client-creation'
+      | 'cluster-availability',
+    public override readonly cause?: Error
+  ) {
+    super(
+      message,
+      'KUBERNETES_CLIENT_ERROR',
+      { operation, cause: cause?.message },
+      cause ? { cause } : undefined
+    );
+    this.name = 'KubernetesClientError';
+  }
+}
+
+/**
+ * Error thrown when a deployment operation times out
+ */
+export class DeploymentTimeoutError extends TypeKroError {
+  constructor(
+    message: string,
+    public readonly resourceKind: string,
+    public readonly resourceName: string,
+    public readonly timeoutMs: number,
+    public readonly operation: 'readiness' | 'deletion' | 'crd-establishment' | 'instance-readiness'
+  ) {
+    super(message, 'DEPLOYMENT_TIMEOUT', {
+      resourceKind,
+      resourceName,
+      timeoutMs,
+      operation,
+    });
+    this.name = 'DeploymentTimeoutError';
+  }
+}
+
 export class ConversionError extends TypeKroError {
   constructor(
     message: string,
     public readonly originalExpression: string,
-    public readonly expressionType: 'javascript' | 'template-literal' | 'function-call' | 'member-access' | 'binary-operation' | 'conditional' | 'optional-chaining' | 'nullish-coalescing' | 'magic-assignable' | 'magic-assignable-shape' | 'unknown',
+    public readonly expressionType:
+      | 'javascript'
+      | 'template-literal'
+      | 'function-call'
+      | 'member-access'
+      | 'binary-operation'
+      | 'conditional'
+      | 'optional-chaining'
+      | 'nullish-coalescing'
+      | 'magic-assignable'
+      | 'magic-assignable-shape'
+      | 'unknown',
     public readonly sourceLocation?: {
       line: number;
       column: number;
@@ -825,17 +720,21 @@ export class ConversionError extends TypeKroError {
       schemaFields?: string[];
     },
     public readonly suggestions?: string[],
-    public readonly cause?: Error
+    public override readonly cause?: Error
   ) {
-    super(message, 'CONVERSION_ERROR', {
-      originalExpression,
-      expressionType,
-      sourceLocation,
-      context,
-      suggestions,
-      cause: cause?.message,
-      stack: cause?.stack,
-    });
+    super(
+      message,
+      'CONVERSION_ERROR',
+      {
+        originalExpression,
+        expressionType,
+        sourceLocation,
+        context,
+        suggestions,
+        cause: cause?.message,
+      },
+      cause ? { cause } : undefined
+    );
     this.name = 'ConversionError';
   }
 
@@ -856,7 +755,7 @@ export class ConversionError extends TypeKroError {
     suggestions?: string[]
   ): ConversionError {
     const message = `Unsupported JavaScript syntax in expression: ${syntaxType}\n  Expression: ${originalExpression}`;
-    
+
     const defaultSuggestions = [
       'Use supported JavaScript patterns (binary operators, member access, conditionals)',
       'Consider using CEL expressions directly with Cel.expr() or Cel.template()',
@@ -883,7 +782,7 @@ export class ConversionError extends TypeKroError {
     sourceLocation?: { line: number; column: number; length: number }
   ): ConversionError {
     const message = `Failed to resolve KubernetesRef in expression: ${kubernetesRefPath}\n  Expression: ${originalExpression}\n  Available references: ${availableReferences.join(', ')}`;
-    
+
     const suggestions = [
       `Check that the referenced resource '${kubernetesRefPath.split('.')[0]}' exists in your resource graph`,
       'Verify the field path is correct for the referenced resource type',
@@ -913,7 +812,7 @@ export class ConversionError extends TypeKroError {
   ): ConversionError {
     const failedPart = templateParts[failedExpressionIndex] || 'unknown';
     const message = `Failed to convert template literal expression\n  Template: ${originalExpression}\n  Failed part: ${failedPart}`;
-    
+
     const suggestions = [
       'Ensure all template expressions contain valid JavaScript syntax',
       'Use simple expressions in template literals (avoid complex nested expressions)',
@@ -942,7 +841,7 @@ export class ConversionError extends TypeKroError {
     sourceLocation?: { line: number; column: number; length: number }
   ): ConversionError {
     const message = `Unsupported function call in expression: ${functionName}\n  Expression: ${originalExpression}\n  Supported methods: ${supportedMethods.join(', ')}`;
-    
+
     const suggestions = [
       `Use one of the supported methods: ${supportedMethods.join(', ')}`,
       'Consider using CEL expressions for complex operations',
@@ -970,7 +869,7 @@ export class ConversionError extends TypeKroError {
     cause?: Error
   ): ConversionError {
     const message = `Failed to parse JavaScript expression\n  Expression: ${originalExpression}\n  Parse error: ${parsingError}`;
-    
+
     const suggestions = [
       'Check for syntax errors in the JavaScript expression',
       'Ensure proper bracket and parenthesis matching',
@@ -999,7 +898,7 @@ export class ConversionError extends TypeKroError {
     sourceLocation?: { line: number; column: number; length: number }
   ): ConversionError {
     const message = `Expression not valid in current context\n  Expression: ${originalExpression}\n  Current context: ${currentContext}\n  Required context: ${requiredContext}`;
-    
+
     const suggestions = [
       `Move this expression to a ${requiredContext} context`,
       'Check that you are using the correct type of references for this context',
@@ -1042,4 +941,28 @@ export class ConversionError extends TypeKroError {
 
     return formatted;
   }
+}
+
+/**
+ * Safely coerce an unknown caught value into an {@link Error} instance.
+ *
+ * In TypeScript, `catch` clauses type the caught value as `unknown`.
+ * Using `error as Error` is an unsafe cast — the thrown value might
+ * be a string, number, `null`, or any other non-Error type.
+ *
+ * This utility eliminates all `as Error` casts by returning the
+ * original value when it is already an `Error`, or wrapping it in
+ * a new `Error` otherwise.
+ *
+ * @example
+ * ```ts
+ * try { ... } catch (error: unknown) {
+ *   logger.error('Failed', ensureError(error));
+ * }
+ * ```
+ */
+export function ensureError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (typeof value === 'string') return new Error(value);
+  return new Error(String(value));
 }

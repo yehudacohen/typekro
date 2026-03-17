@@ -1,8 +1,15 @@
-import { beforeAll, afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
-import { getIntegrationTestKubeConfig, isClusterAvailable, createKubernetesObjectApiClient, createCustomObjectsApiClient, ensureNamespaceExists, deleteNamespaceIfExists } from './shared-kubeconfig';
+import {
+  createCustomObjectsApiClient,
+  createKubernetesObjectApiClient,
+  deleteNamespaceAndWait,
+  ensureNamespaceExists,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig';
 
 const _CLUSTER_NAME = 'typekro-e2e-test'; // Use same cluster as setup script
 const NAMESPACE = 'typekro-test'; // Use same namespace as setup script
@@ -13,6 +20,12 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
   let kubeConfig: k8s.KubeConfig;
   let k8sApi: k8s.KubernetesObjectApi;
   let _customApi: k8s.CustomObjectsApi;
+  // Hoisted so afterAll can delete the instance before the RGD — Kro requires
+  // instances to be fully gone before the RGD is deleted, otherwise the
+  // kro.run/finalizer on the instance can never be processed and the namespace
+  // gets stuck in Terminating forever.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let kroFactory: any = null;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -34,7 +47,58 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
   afterAll(async () => {
     if (!clusterAvailable) return;
     console.log('🧹 Cleaning up factory test environment...');
-    await deleteNamespaceIfExists(NAMESPACE, kubeConfig);
+
+    // Step 1: Delete the Kro instance FIRST and wait for the kro.run/finalizer to
+    // be cleared. If we delete the RGD before the instance, Kro loses the ability
+    // to process the finalizer and the namespace gets stuck in Terminating.
+    if (kroFactory) {
+      try {
+        await kroFactory.deleteInstance('test-webapp');
+        console.log('🗑️ Deleted Kro instance: test-webapp');
+        // Wait for the instance to fully disappear (finalizer cleared)
+        const customApi = createCustomObjectsApiClient(kubeConfig);
+        const deadline = Date.now() + 60000;
+        while (Date.now() < deadline) {
+          try {
+            await customApi.getNamespacedCustomObject({
+              group: 'kro.run',
+              version: 'v2beta1',
+              namespace: NAMESPACE,
+              plural: 'webappfactorye2es',
+              name: 'test-webapp',
+            });
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          } catch (e: any) {
+            if (e.statusCode === 404 || e.body?.reason === 'NotFound') break;
+          }
+        }
+        console.log('✅ Kro instance fully removed');
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.reason !== 'NotFound') {
+          console.warn('⚠️ Failed to delete Kro instance:', error);
+        }
+      }
+    }
+
+    // Step 2: Delete the RGD now that no instances remain
+    try {
+      const customApi = createCustomObjectsApiClient(kubeConfig);
+      await customApi.deleteClusterCustomObject({
+        group: 'kro.run',
+        version: 'v1alpha1',
+        plural: 'resourcegraphdefinitions',
+        name: 'webapp-factory-e2e',
+      });
+      console.log('🗑️ Deleted RGD: webapp-factory-e2e');
+    } catch (error: unknown) {
+      const err = error as { statusCode?: number; body?: { reason?: string } };
+      if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
+        console.warn('⚠️ Failed to delete RGD webapp-factory-e2e:', error);
+      }
+    }
+
+    // Step 3: Now the namespace has no finalizer-blocked resources and can terminate cleanly
+    await deleteNamespaceAndWait(NAMESPACE, kubeConfig);
     console.log('✅ Factory test cleanup completed');
   });
 
@@ -149,10 +213,10 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
     console.log('✅ STEP 1: Resource graph created successfully');
 
     console.log('📝 STEP 2: Creating Kro factory...');
-    const kroFactory = await resourceGraph.factory('kro', {
+    kroFactory = await resourceGraph.factory('kro', {
       namespace: NAMESPACE,
       waitForReady: true,
-      timeout: 120000, // 2 minutes
+      timeout: 300000, // 5 minutes
       kubeConfig: kubeConfig, // Use the configured kubeConfig with TLS skip
     });
 
@@ -208,7 +272,9 @@ describeOrSkip('End-to-End Factory Pattern with Status Hydration', () => {
       try {
         // Get fresh instance status from the cluster
         const instances = await kroFactory.getInstances();
-        const freshInstance = instances.find((i) => i.spec.name === 'test-webapp');
+        const freshInstance = instances.find(
+          (i: (typeof instances)[number]) => i.spec.name === 'test-webapp'
+        );
 
         if (freshInstance) {
           console.log(

@@ -8,7 +8,56 @@ TypeKro supports multiple deployment strategies. Choose based on your workflow a
 |------|----------|-------------------------|----------------|
 | **Direct** | Development, testing, simple deployments | No | At deploy time |
 | **Kro** | Production, runtime dependencies, GitOps | Yes | At runtime (continuous) |
+| **Alchemy** | Production orchestration with Alchemy framework | No | At deploy time |
+| **Auto** | Automatic mode selection based on environment | Depends | Depends |
 | **YAML Generation** | GitOps workflows, CI/CD pipelines | No | N/A |
+
+> **Note:** `auto` mode is reserved for future use. When specified in `DeploymentOptions.mode`, it will automatically select `direct` or `kro` based on whether a Kro controller is detected in the cluster. Currently, use `direct` or `kro` explicitly.
+>
+> **Note:** `alchemy` mode deploys through the [Alchemy](https://github.com/sam-goodwin/alchemy) framework, providing state management and lifecycle tracking. Pass `alchemyScope` in factory options to enable it.
+
+## Value Resolution Behavior
+
+The table below shows how each value type is handled across factory modes and operations.
+
+**Key:** Resolve = substituted with concrete value | CEL = emitted as `${...}` expression | Error = throws with guidance
+
+### `deploy(spec)` — deploys resources to the cluster
+
+| Value Type | Direct Mode | Kro Mode |
+|---|---|---|
+| **Literal** (compile-time known) | Resolve | Embedded in CR instance |
+| **`schema.spec.*`** (magic proxy) | Resolve (from spec) | Embedded in CR instance |
+| **`$field`** (forced KubernetesRef) | Resolve (from spec) | Embedded in CR instance |
+| **`resources.X.status.Y`** (cross-resource ref) | Resolve (from live cluster, level-by-level) | Kro controller resolves at runtime |
+| **`Cel.expr()`** | Evaluate via angular-expressions at deploy time | Kro controller evaluates at runtime |
+| **`Cel.template()`** | Evaluate via angular-expressions at deploy time | Kro controller evaluates at runtime |
+| **Template literal** (`` `${schema.spec.name}-app` ``) | Resolve (marker string → spec value) | Kro controller resolves `${schema.spec.name}` |
+| **`includeWhen` / `forEach` / `readyWhen`** | Evaluated by composition re-execution | Emitted as Kro directives |
+
+### `toYaml(spec)` — generates YAML offline (no cluster access)
+
+| Value Type | Direct Mode | Kro Mode |
+|---|---|---|
+| **Literal** (compile-time known) | Resolve | Embedded in CR instance |
+| **`schema.spec.*`** (magic proxy) | Resolve (from spec) | Embedded in CR instance |
+| **`$field`** (forced KubernetesRef) | **Error** — Kro optional access (`.?field`) requires Kro | CEL `${resource.data.?field}` |
+| **`resources.X.status.Y`** (cross-resource ref) | **Error** — needs cluster state | CEL `${X.status.Y}` |
+| **`Cel.expr()`** | **Error** — explicit CEL requires Kro or `deploy()` | CEL `${expression}` |
+| **`Cel.template()`** | **Error** — explicit CEL requires Kro or `deploy()` | CEL `${template}` |
+| **Template literal** (`` `${schema.spec.name}-app` ``) | Resolve (marker string → spec value) | CEL `${schema.spec.name}-app` |
+| **`includeWhen` / `forEach` / `readyWhen`** | Evaluated by composition re-execution | Emitted as Kro directives |
+
+### `resourceGraph.toYaml()` — generates Kro ResourceGraphDefinition YAML (no spec)
+
+All references are emitted as CEL expressions for the Kro controller. This is always Kro-mode output regardless of how you later create factories.
+
+> **Why does direct mode `toYaml()` error on CEL/KubernetesRef?**
+>
+> Direct mode `toYaml()` generates plain Kubernetes manifests. These must be valid YAML that
+> `kubectl apply` can process. CEL expressions and cross-resource references have no meaning
+> outside of Kro. If your resource graph uses these features, use `deploy()` (which resolves
+> everything at runtime) or `factory('kro')` (which generates Kro-managed YAML).
 
 ## When is Kro Required?
 

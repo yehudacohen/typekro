@@ -16,6 +16,7 @@ import type {
 } from '../../src/index';
 import { externalRef, simple } from '../../src/index';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
+import { asKubernetesRef, createMockEnhancedStub } from '../utils/mock-factories.js';
 
 describe('Kro Factory Pattern - Types Only (Task 1)', () => {
   // Define test types - must be compatible with KroCompatibleType
@@ -102,13 +103,7 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
       // This test validates that ResourceBuilder can return Enhanced types
       const builderWithEnhanced: ResourceBuilder<DatabaseSpec, DatabaseStatus> = (_schema) => {
         // Mock Enhanced resource
-        const enhancedResource = {
-          apiVersion: 'v1',
-          kind: 'Pod',
-          metadata: { name: 'test' },
-          spec: {} as any,
-          status: {} as any,
-        } as Enhanced<any, any>;
+        const enhancedResource = createMockEnhancedStub('Pod');
 
         return {
           testResource: enhancedResource,
@@ -175,8 +170,12 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
           schema: {
             apiVersion: 'v1alpha1',
             kind: 'Database',
-            spec: { name: 'test', storage: '10Gi' } as any,
-            status: { connectionString: 'test', host: 'test', port: 5432 } as any,
+            spec: { name: 'test', storage: '10Gi' } as Record<string, string>,
+            status: {
+              connectionString: 'test',
+              host: 'test',
+              port: 5432,
+            } as unknown as Record<string, string>,
           },
           resources: [],
         },
@@ -197,7 +196,7 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
       expect(dbRef.apiVersion).toBe('v1alpha1');
       expect(dbRef.kind).toBe('Database');
       expect(dbRef.metadata.name).toBe('production-db');
-      expect((dbRef as any).__externalRef).toBe(true);
+      expect(asKubernetesRef(dbRef).__externalRef).toBe(true);
     });
 
     it('should support external references with namespaces', () => {
@@ -212,7 +211,7 @@ describe('Kro Factory Pattern - Types Only (Task 1)', () => {
       expect(dbRef.kind).toBe('Database');
       expect(dbRef.metadata.name).toBe('production-db');
       expect(dbRef.metadata.namespace).toBe('production');
-      expect((dbRef as any).__externalRef).toBe(true);
+      expect(asKubernetesRef(dbRef).__externalRef).toBe(true);
     });
 
     it('should provide type-safe access to external reference fields', () => {

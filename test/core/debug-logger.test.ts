@@ -2,10 +2,17 @@
  * Unit tests for DebugLogger
  */
 
-import { describe, expect, it, beforeEach, mock } from 'bun:test';
-import { DebugLogger, createDebugLogger, createDebugLoggerFromDeploymentOptions } from '../../src/core/deployment/debug-logger.js';
-import type { DeployedResource } from '../../src/core/types/deployment.js';
-import type { DeploymentEvent, StatusDebugEvent } from '../../src/core/types/deployment.js';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import {
+  createDebugLogger,
+  createDebugLoggerFromDeploymentOptions,
+  DebugLogger,
+} from '../../src/core/deployment/debug-logger.js';
+import type {
+  DeployedResource,
+  DeploymentEvent,
+  StatusDebugEvent,
+} from '../../src/core/types/deployment.js';
 
 describe('DebugLogger', () => {
   let debugLogger: DebugLogger;
@@ -52,16 +59,11 @@ describe('DebugLogger', () => {
         ],
       };
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        currentStatus,
-        false,
-        {
-          attempt: 3,
-          elapsedTime: 5000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, currentStatus, false, {
+        attempt: 3,
+        elapsedTime: 5000,
+        isTimeout: false,
+      });
 
       // Should emit debug event via progress callback
       expect(capturedEvents).toHaveLength(1);
@@ -81,16 +83,11 @@ describe('DebugLogger', () => {
         details: { readyReplicas: 3, totalReplicas: 3 },
       };
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        { phase: 'Running' },
-        readinessResult,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, { phase: 'Running' }, readinessResult, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       expect(capturedEvents).toHaveLength(1);
       const event = capturedEvents[0] as StatusDebugEvent;
@@ -104,16 +101,11 @@ describe('DebugLogger', () => {
         progressCallback: mockProgressCallback,
       });
 
-      disabledLogger.logResourceStatus(
-        mockDeployedResource,
-        { phase: 'Running' },
-        true,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      disabledLogger.logResourceStatus(mockDeployedResource, { phase: 'Running' }, true, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       expect(capturedEvents).toHaveLength(0);
     });
@@ -124,16 +116,11 @@ describe('DebugLogger', () => {
         progressCallback: mockProgressCallback,
       });
 
-      disabledLogger.logResourceStatus(
-        mockDeployedResource,
-        { phase: 'Running' },
-        true,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      disabledLogger.logResourceStatus(mockDeployedResource, { phase: 'Running' }, true, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       expect(capturedEvents).toHaveLength(0);
     });
@@ -182,9 +169,7 @@ describe('DebugLogger', () => {
       const finalStatus = {
         replicas: 3,
         readyReplicas: 1,
-        conditions: [
-          { type: 'Available', status: 'False', reason: 'MinimumReplicasUnavailable' },
-        ],
+        conditions: [{ type: 'Available', status: 'False', reason: 'MinimumReplicasUnavailable' }],
       };
 
       debugLogger.logTimeout(mockDeployedResource, finalStatus, 30000, 15);
@@ -205,15 +190,11 @@ describe('DebugLogger', () => {
     it('should log API errors during status polling', () => {
       const error = new Error('Forbidden: insufficient permissions');
 
-      debugLogger.logApiError(
-        mockDeployedResource,
-        error,
-        {
-          attempt: 5,
-          elapsedTime: 10000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logApiError(mockDeployedResource, error, {
+        attempt: 5,
+        elapsedTime: 10000,
+        isTimeout: false,
+      });
 
       expect(capturedEvents).toHaveLength(1);
       const event = capturedEvents[0] as StatusDebugEvent;
@@ -239,16 +220,11 @@ describe('DebugLogger', () => {
         ],
       };
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        status,
-        false,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, status, false, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       const event = capturedEvents[0] as StatusDebugEvent;
       expect(event.message).toContain('replicas=3');
@@ -264,48 +240,33 @@ describe('DebugLogger', () => {
         ],
       };
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        status,
-        false,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, status, false, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       const event = capturedEvents[0] as StatusDebugEvent;
       expect(event.message).toContain('Ready=False(PodNotReady)');
     });
 
     it('should handle empty status objects', () => {
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        {},
-        false,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, {}, false, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       const event = capturedEvents[0] as StatusDebugEvent;
       expect(event.message).toContain('no status fields');
     });
 
     it('should handle null/undefined status', () => {
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        null,
-        false,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, null, false, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       const event = capturedEvents[0] as StatusDebugEvent;
       expect(event.message).toContain('no status');
@@ -324,25 +285,20 @@ describe('DebugLogger', () => {
         },
       };
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        statusWithSecrets,
-        true,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, statusWithSecrets, true, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       const event = capturedEvents[0] as StatusDebugEvent;
       const sanitizedStatus = event.currentStatus;
-      
+
       expect(sanitizedStatus.token).toBe('[REDACTED]');
       expect(sanitizedStatus.password).toBe('[REDACTED]');
       expect(sanitizedStatus.replicas).toBe(3);
-      expect((sanitizedStatus.config as any).apiKey).toBe('[REDACTED]');
-      expect((sanitizedStatus.config as any).normalField).toBe('normal-value');
+      expect((sanitizedStatus.config as Record<string, unknown>).apiKey).toBe('[REDACTED]');
+      expect((sanitizedStatus.config as Record<string, unknown>).normalField).toBe('normal-value');
     });
 
     it('should handle deeply nested objects with size limits', () => {
@@ -358,16 +314,11 @@ describe('DebugLogger', () => {
         },
       };
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        deepStatus,
-        true,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, deepStatus, true, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       const event = capturedEvents[0] as StatusDebugEvent;
       expect(event.currentStatus).toBeDefined();
@@ -385,24 +336,19 @@ describe('DebugLogger', () => {
         pods: new Array(50).fill(0).map((_, i) => ({ name: `pod-${i}` })),
       };
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        statusWithArrays,
-        true,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, statusWithArrays, true, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       const event = capturedEvents[0] as StatusDebugEvent;
       const sanitizedStatus = event.currentStatus;
-      
+
       // Arrays should be limited in size
       expect(Array.isArray(sanitizedStatus.conditions)).toBe(true);
       expect(Array.isArray(sanitizedStatus.pods)).toBe(true);
-      expect((sanitizedStatus.pods as any[]).length).toBeLessThanOrEqual(10);
+      expect((sanitizedStatus.pods as unknown[]).length).toBeLessThanOrEqual(10);
     });
   });
 
@@ -442,16 +388,11 @@ describe('DebugLogger', () => {
         moreData: 'y'.repeat(1000),
       };
 
-      smallSizeLogger.logResourceStatus(
-        mockDeployedResource,
-        largeStatus,
-        true,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      smallSizeLogger.logResourceStatus(mockDeployedResource, largeStatus, true, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       expect(capturedEvents).toHaveLength(1);
       // Status should be truncated due to size limit
@@ -471,16 +412,11 @@ describe('DebugLogger', () => {
       const newCallback = mock();
       debugLogger.setProgressCallback(newCallback);
 
-      debugLogger.logResourceStatus(
-        mockDeployedResource,
-        { phase: 'Running' },
-        true,
-        {
-          attempt: 1,
-          elapsedTime: 1000,
-          isTimeout: false,
-        }
-      );
+      debugLogger.logResourceStatus(mockDeployedResource, { phase: 'Running' }, true, {
+        attempt: 1,
+        elapsedTime: 1000,
+        isTimeout: false,
+      });
 
       expect(newCallback).toHaveBeenCalledTimes(1);
     });

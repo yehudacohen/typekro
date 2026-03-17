@@ -37,12 +37,12 @@ describe('Encapsulation and Public Interfaces', () => {
       const engine = new DirectDeploymentEngine(kubeConfig);
 
       // Private member should not be accessible
-      expect((engine as any).k8sApi).toBeDefined(); // It exists internally
+      expect((engine as unknown as Record<string, unknown>).k8sApi).toBeDefined(); // It exists internally
 
       // But accessing it directly should be discouraged (TypeScript would prevent this)
       // This test documents that we've moved away from bracket notation access
       const publicApi = engine.getKubernetesApi();
-      const privateApi = (engine as any).k8sApi;
+      const privateApi = (engine as unknown as Record<string, unknown>).k8sApi as typeof publicApi;
 
       // They should be the same instance (proper encapsulation)
       expect(publicApi).toBe(privateApi);

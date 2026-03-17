@@ -6,7 +6,7 @@ import { createResource } from '../../shared.js';
 
 export function customResource<TSpec extends object, TStatus extends object>(
   schema: { apiVersion: string; kind: string; spec: Type<TSpec> },
-  definition: { metadata: V1ObjectMeta; spec: TSpec }
+  definition: { metadata: V1ObjectMeta; spec: TSpec; id?: string }
 ): Enhanced<TSpec, TStatus> {
   // Validate the spec with enhanced error handling
   const result = schema.spec(definition.spec);
@@ -20,10 +20,14 @@ export function customResource<TSpec extends object, TStatus extends object>(
     );
   }
 
-  return createResource({
+  return createResource<TSpec, TStatus>({
     apiVersion: schema.apiVersion,
     kind: schema.kind,
     metadata: definition.metadata,
     spec: result as TSpec,
-  });
+    ...(definition.id && { id: definition.id }),
+  }).withReadinessEvaluator(() => ({
+    ready: true,
+    message: `${schema.kind} is ready (custom resource default — override with .withReadinessEvaluator())`,
+  }));
 }

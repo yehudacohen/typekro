@@ -10,10 +10,10 @@
  * during re-execution. Without proper resolution, they serialize to empty objects {}.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition, simple } from '../../src/index.js';
-import { isKubernetesRef } from '../../src/core/dependencies/type-guards.js';
+import { isKubernetesRef } from '../../src/utils/type-guards.js';
 
 describe('Deep KubernetesRef Resolution', () => {
   describe('Nested Object Value Resolution', () => {
@@ -505,7 +505,7 @@ describe('KubernetesRef Type Guard', () => {
   it('should correctly identify KubernetesRef objects', () => {
     // Import the actual brand symbol
     const { KUBERNETES_REF_BRAND } = require('../../src/core/constants/brands.js');
-    
+
     // Test with a mock KubernetesRef object using the actual Symbol brand
     const mockRef = {
       [KUBERNETES_REF_BRAND]: true,

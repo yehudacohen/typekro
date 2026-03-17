@@ -1,11 +1,14 @@
 import type { V1PersistentVolume } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1PvSpec = NonNullable<V1PersistentVolume['spec']>;
 export type V1PvStatus = NonNullable<V1PersistentVolume['status']>;
 
-export function persistentVolume(resource: V1PersistentVolume): Enhanced<V1PvSpec, V1PvStatus> {
+export function persistentVolume(
+  resource: V1PersistentVolume & { id?: string }
+): Enhanced<V1PvSpec, V1PvStatus> {
   return createResource({
     ...resource,
     apiVersion: 'v1',
@@ -42,12 +45,12 @@ export function persistentVolume(resource: V1PersistentVolume): Enhanced<V1PvSpe
           details: { phase },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating PersistentVolume readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating PersistentVolume readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

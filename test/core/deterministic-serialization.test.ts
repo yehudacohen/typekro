@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Cel } from '../../src';
-import { toResourceGraph } from '../../src/core.js';
-import { simple } from '../../src/index.js';
+import { simple, toResourceGraph } from '../../src/index.js';
 
 describe('Deterministic Serialization', () => {
   it('should generate consistent YAML with deterministic resource IDs', async () => {

@@ -49,7 +49,9 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(dynamicFields.metadata).toEqual({
         namespace: expect.any(Object),
       });
-      expect(isCelExpression(dynamicFields.metadata.namespace)).toBe(true);
+      expect(isCelExpression((dynamicFields.metadata as Record<string, unknown>).namespace)).toBe(
+        true
+      );
     });
 
     it('should handle purely static status mappings', () => {
@@ -362,10 +364,10 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
 
     it('should handle null/undefined status mappings', () => {
       const { staticFields: staticNull, dynamicFields: dynamicNull } = separateStatusFields(
-        null as any
+        null as unknown as Record<string, unknown>
       );
       const { staticFields: staticUndef, dynamicFields: dynamicUndef } = separateStatusFields(
-        undefined as any
+        undefined as unknown as Record<string, unknown>
       );
 
       expect(Object.keys(staticNull)).toEqual([]);
@@ -399,10 +401,13 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
       expect(staticFields.topLevelStatic).toBe('top-static');
 
       expect(dynamicFields).toHaveProperty('level1');
-      expect(dynamicFields.level1).toHaveProperty('dynamicAtLevel1');
-      expect(dynamicFields.level1.level2).toHaveProperty('staticAtLevel2');
-      expect(dynamicFields.level1.level2.level3).toHaveProperty('staticField');
-      expect(dynamicFields.level1.level2.level3).toHaveProperty('dynamicField');
+      const level1 = dynamicFields.level1 as Record<string, unknown>;
+      expect(level1).toHaveProperty('dynamicAtLevel1');
+      const level2 = level1.level2 as Record<string, unknown>;
+      expect(level2).toHaveProperty('staticAtLevel2');
+      const level3 = level2.level3 as Record<string, unknown>;
+      expect(level3).toHaveProperty('staticField');
+      expect(level3).toHaveProperty('dynamicField');
     });
 
     it('should handle arrays in status mappings', () => {
@@ -426,18 +431,21 @@ describeOrSkip('Factory Pattern Status Hydration', () => {
 
       // LIMITATION: Arrays with mixed content are currently treated as static
       // This is a known limitation - arrays containing CEL expressions should be dynamic
-      expect(staticFields.dynamicArray).toBeDefined();
-      expect(staticFields.dynamicArray).toHaveLength(3);
-      expect(isCelExpression(staticFields.dynamicArray[0])).toBe(true);
-      expect(staticFields.dynamicArray[1]).toBe('static-item');
-      expect(isCelExpression(staticFields.dynamicArray[2])).toBe(true);
+      const dynamicArray = staticFields.dynamicArray as unknown[];
+      expect(dynamicArray).toBeDefined();
+      expect(dynamicArray).toHaveLength(3);
+      expect(isCelExpression(dynamicArray[0])).toBe(true);
+      expect(dynamicArray[1]).toBe('static-item');
+      expect(isCelExpression(dynamicArray[2])).toBe(true);
 
       // Mixed objects should be split appropriately
       expect(staticFields.mixedObject).toEqual({ staticItems: ['a', 'b', 'c'] });
       expect(dynamicFields.mixedObject).toEqual({
         dynamicCount: expect.any(Object),
       });
-      expect(isCelExpression(dynamicFields.mixedObject.dynamicCount)).toBe(true);
+      expect(
+        isCelExpression((dynamicFields.mixedObject as Record<string, unknown>).dynamicCount)
+      ).toBe(true);
     });
   });
 });

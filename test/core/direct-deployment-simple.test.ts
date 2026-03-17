@@ -3,9 +3,17 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { DependencyGraph, type DeployableK8sResource, type DeployedResource, type DeploymentOptions, DirectDeploymentEngine, type Enhanced,  } from '../../src/core.js';
+import { DependencyGraph } from '../../src/core/dependencies/index.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import {
+  type DeployableK8sResource,
+  type DeployedResource,
+  type DeploymentOptions,
+  DirectDeploymentEngine,
+  type Enhanced,
+  type KubernetesResource,
+} from '../../src/index.js';
 
 // Helper function to create properly typed test resources with mock readiness evaluators
 function createMockResource(
@@ -47,27 +55,27 @@ function createMockResource(
 // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
 // without a .body wrapper. The mocks must return the resource directly.
 const mockK8sApi = {
-  read: mock((_resource?: any) => {
+  read: mock((_resource?: Record<string, unknown>): Promise<Record<string, unknown>> => {
     // Default to resource not found (404) unless specifically mocked otherwise
     return Promise.reject({ statusCode: 404 });
   }),
-  create: mock((resource?: any) =>
+  create: mock((resource?: Record<string, unknown>) =>
     // Returns object directly (no .body wrapper)
     Promise.resolve({
       metadata: {
-        name: resource?.metadata?.name || 'test',
-        namespace: resource?.metadata?.namespace || 'default',
+        name: (resource?.metadata as Record<string, unknown>)?.name || 'test',
+        namespace: (resource?.metadata as Record<string, unknown>)?.namespace || 'default',
       },
       kind: resource?.kind || 'Deployment',
       apiVersion: resource?.apiVersion || 'apps/v1',
     })
   ),
-  patch: mock((resource?: any) =>
+  patch: mock((resource?: Record<string, unknown>) =>
     // Returns object directly (no .body wrapper)
     Promise.resolve({
       metadata: {
-        name: resource?.metadata?.name || 'test',
-        namespace: resource?.metadata?.namespace || 'default',
+        name: (resource?.metadata as Record<string, unknown>)?.name || 'test',
+        namespace: (resource?.metadata as Record<string, unknown>)?.namespace || 'default',
       },
       kind: resource?.kind || 'ConfigMap',
       apiVersion: resource?.apiVersion || 'v1',
@@ -78,7 +86,7 @@ const mockK8sApi = {
 
 const mockKubeConfig = {
   makeApiClient: mock(() => mockK8sApi),
-} as any;
+} as unknown as import('@kubernetes/client-node').KubeConfig;
 
 // Mock the ReferenceResolver to avoid infinite loops
 const mockReferenceResolver = {
@@ -100,8 +108,8 @@ describe('DirectDeploymentEngine Simple', () => {
   beforeEach(() => {
     engine = new DirectDeploymentEngine(
       mockKubeConfig,
-      mockK8sApi as any,
-      mockReferenceResolver as any
+      mockK8sApi as unknown as import('@kubernetes/client-node').KubernetesObjectApi,
+      mockReferenceResolver as unknown as import('../../src/core/references/resolver.js').ReferenceResolver
     );
     defaultOptions = {
       mode: 'direct',
@@ -130,7 +138,7 @@ describe('DirectDeploymentEngine Simple', () => {
       // Mock resource doesn't exist initially, then exists after creation
       let readCallCount = 0;
       // New API returns objects directly (no .body wrapper)
-      (mockK8sApi.read as any).mockImplementation(() => {
+      mockK8sApi.read.mockImplementation(() => {
         readCallCount++;
         if (readCallCount === 1) {
           // First call during deployment - resource doesn't exist yet
@@ -186,7 +194,7 @@ describe('DirectDeploymentEngine Simple', () => {
 
       // Mock existing resource - first call finds it, subsequent calls return updated version
       // New API returns objects directly (no .body wrapper)
-      (mockK8sApi.read as any).mockResolvedValue({
+      mockK8sApi.read.mockResolvedValue({
         metadata: {
           name: 'existing-config',
           namespace: 'test-namespace',
@@ -221,7 +229,7 @@ describe('DirectDeploymentEngine Simple', () => {
       // Mock resource doesn't exist initially, then exists after creation
       // New API returns objects directly (no .body wrapper)
       let readCallCount = 0;
-      (mockK8sApi.read as any).mockImplementation(() => {
+      mockK8sApi.read.mockImplementation(() => {
         readCallCount++;
         if (readCallCount === 1) {
           return Promise.reject({ statusCode: 404 });
@@ -260,7 +268,7 @@ describe('DirectDeploymentEngine Simple', () => {
       // Mock resource doesn't exist initially, then exists after creation
       // New API returns objects directly (no .body wrapper)
       let readCallCount = 0;
-      (mockK8sApi.read as any).mockImplementation(() => {
+      mockK8sApi.read.mockImplementation(() => {
         readCallCount++;
         if (readCallCount === 1) {
           return Promise.reject({ statusCode: 404 });
@@ -345,7 +353,7 @@ describe('DirectDeploymentEngine Simple', () => {
         kind: 'Deployment',
         name: 'ready-deployment',
         namespace: 'default',
-        manifest: readyDeploymentManifest as any, // Cast to KubernetesResource for DeployedResource
+        manifest: readyDeploymentManifest as unknown as KubernetesResource,
         status: 'deployed',
         deployedAt: new Date(),
       };
@@ -370,15 +378,15 @@ describe('DirectDeploymentEngine Simple', () => {
         kind: 'Deployment',
         name: 'not-ready-deployment',
         namespace: 'default',
-        manifest: notReadyDeploymentManifest as any, // Cast to KubernetesResource for DeployedResource
+        manifest: notReadyDeploymentManifest as unknown as KubernetesResource,
         status: 'deployed',
         deployedAt: new Date(),
       };
 
       // Mock the k8s API to return different statuses
       // New API returns objects directly (no .body wrapper)
-      (mockK8sApi.read as any).mockImplementation((resource: any) => {
-        const name = resource.metadata?.name;
+      mockK8sApi.read.mockImplementation((resource?: Record<string, unknown>) => {
+        const name = (resource?.metadata as Record<string, unknown>)?.name;
         if (name === 'ready-deployment') {
           return Promise.resolve({
             apiVersion: 'apps/v1',
@@ -422,14 +430,14 @@ describe('DirectDeploymentEngine Simple', () => {
         kind: 'Service',
         name: 'test-service',
         namespace: 'default',
-        manifest: serviceManifest as any, // Cast to KubernetesResource for DeployedResource
+        manifest: serviceManifest as unknown as KubernetesResource,
         status: 'deployed',
         deployedAt: new Date(),
       };
 
       // Mock the k8s API to return the service with status
       // New API returns objects directly (no .body wrapper)
-      (mockK8sApi.read as any).mockResolvedValue({
+      mockK8sApi.read.mockResolvedValue({
         apiVersion: 'v1',
         kind: 'Service',
         metadata: { name: 'test-service', namespace: 'default' },
@@ -460,7 +468,7 @@ describe('DirectDeploymentEngine Simple', () => {
 
       // Mock the k8s API to return the configmap without status
       // New API returns objects directly (no .body wrapper)
-      (mockK8sApi.read as any).mockResolvedValue({
+      mockK8sApi.read.mockResolvedValue({
         apiVersion: 'v1',
         kind: 'ConfigMap',
         metadata: { name: 'test-configmap', namespace: 'default' },

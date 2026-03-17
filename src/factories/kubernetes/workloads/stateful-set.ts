@@ -1,12 +1,33 @@
 import type { V1StatefulSet } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
+
+// Self-register with semantic aliases for fuzzy resource key matching.
+registerFactory({
+  factoryName: 'StatefulSet',
+  kind: 'StatefulSet',
+  apiVersion: 'apps/v1',
+  semanticAliases: ['database', 'db', 'cache', 'redis'],
+});
 
 export type V1StatefulSetSpec = NonNullable<V1StatefulSet['spec']>;
 export type V1StatefulSetStatus = NonNullable<V1StatefulSet['status']>;
 
+/**
+ * Creates a Kubernetes StatefulSet resource with update-strategy-aware readiness evaluation.
+ *
+ * @param resource - The StatefulSet specification conforming to the Kubernetes V1StatefulSet API.
+ * @returns An Enhanced StatefulSet resource that evaluates readiness differently for RollingUpdate (all replicas must be ready, current, and updated) vs OnDelete (all replicas must be ready) strategies.
+ * @example
+ * const db = statefulSet({
+ *   metadata: { name: 'postgres' },
+ *   spec: { replicas: 3, serviceName: 'postgres', selector: { matchLabels: { app: 'postgres' } }, template: { ... } },
+ * });
+ */
 export function statefulSet(
-  resource: V1StatefulSet
+  resource: V1StatefulSet & { id?: string }
 ): Enhanced<V1StatefulSetSpec, V1StatefulSetStatus> {
   // Capture configuration in closure for StatefulSet-specific readiness logic
   const expectedReplicas = resource.spec?.replicas || 1;
@@ -79,12 +100,12 @@ export function statefulSet(
           };
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating StatefulSet readiness: ${error}`,
-        details: { expectedReplicas, updateStrategy, error: String(error) },
+        message: `Error evaluating StatefulSet readiness: ${ensureError(error).message}`,
+        details: { expectedReplicas, updateStrategy, error: ensureError(error).message },
       };
     }
   });

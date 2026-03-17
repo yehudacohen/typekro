@@ -7,15 +7,22 @@
  * while reusing existing readiness evaluators.
  */
 
-import { createResource } from '../../shared.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import {
+  createHelmRepositoryReadinessEvaluator,
+  type HelmRepositorySpec,
+  type HelmRepositoryStatus,
+} from '../../helm/helm-repository.js';
+import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
+import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import { createResource } from '../../shared.js';
 import type {
-  CertManagerHelmRepositoryConfig,
   CertManagerHelmReleaseConfig,
+  CertManagerHelmRepositoryConfig,
   CertManagerHelmValues,
 } from '../types.js';
-import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
-import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
 
 // =============================================================================
 // CERT-MANAGER HELM REPOSITORY WRAPPER
@@ -52,31 +59,9 @@ import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-r
  * ```
  */
 
-/**
- * Readiness evaluator for cert-manager HelmRepository resources
- * HelmRepository is ready when it has a Ready condition with status True
- * For OCI repositories, they may not have status conditions but are functional
- */
-function certManagerHelmRepositoryReadinessEvaluator(resource: any) {
-  const conditions = resource.status?.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-
-  // For OCI repositories, they may not have status conditions but are functional
-  // if the resource exists and has been processed by Flux
-  const isOciRepository = resource.spec?.type === 'oci';
-  const hasBeenProcessed = resource.metadata?.generation && resource.metadata?.resourceVersion;
-
-  const isReady = readyCondition?.status === 'True' || (isOciRepository && !!hasBeenProcessed);
-
-  return {
-    ready: isReady,
-    message: isReady
-      ? isOciRepository && !readyCondition
-        ? 'Cert-Manager OCI HelmRepository is functional'
-        : 'Cert-Manager HelmRepository is ready'
-      : 'Cert-Manager HelmRepository is not ready',
-  };
-}
+/** Cert-Manager HelmRepository readiness evaluator (delegates to shared implementation) */
+const certManagerHelmRepositoryReadinessEvaluator =
+  createHelmRepositoryReadinessEvaluator('Cert-Manager');
 
 export function certManagerHelmRepository(
   config: CertManagerHelmRepositoryConfig
@@ -89,7 +74,7 @@ export function certManagerHelmRepository(
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url || 'https://charts.jetstack.io',
@@ -139,78 +124,43 @@ export function certManagerHelmRepository(
  * ```
  */
 
-/**
- * Readiness evaluator for cert-manager HelmRelease resources
- * HelmRelease is ready when it has a Ready phase
- */
-function certManagerHelmReleaseReadinessEvaluator(resource: any) {
-  const status = resource.status;
-
-  if (!status) {
-    return {
-      ready: false,
-      message: 'Cert-Manager HelmRelease status not available yet',
-    };
-  }
-
-  if (status.phase === 'Ready') {
-    return {
-      ready: true,
-      message: `Cert-Manager HelmRelease is ready (revision ${status.revision || 'unknown'})`,
-    };
-  }
-
-  // Check conditions for more detailed status
-  const conditions = status.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-
-  if (readyCondition) {
-    const isReady = readyCondition.status === 'True';
-    return {
-      ready: isReady,
-      message: isReady
-        ? `Cert-Manager HelmRelease is ready (revision ${status.revision || 'unknown'})`
-        : readyCondition.message || 'Cert-Manager HelmRelease is not ready',
-    };
-  }
-
-  return {
-    ready: false,
-    message: `Cert-Manager HelmRelease phase: ${status.phase || 'unknown'}`,
-  };
-}
+/** Cert-Manager HelmRelease readiness evaluator (delegates to shared implementation) */
+const certManagerHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('Cert-Manager');
 
 export function certManagerHelmRelease(
   config: CertManagerHelmReleaseConfig
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   // Create a HelmRelease that properly references the HelmRepository by name
   // We need to use createResource directly to have full control over the sourceRef
-  
+
   // CRITICAL: Helm values MUST be static - they cannot contain KubernetesRef objects
   // from schema proxies because Kro/Flux cannot handle CEL expressions inside spec.values.
   // The HelmRelease spec.values field is an arbitrary object without a defined schema,
   // so any KubernetesRef objects will serialize incorrectly (as empty objects or strings).
   //
-  // We ALWAYS set these critical values statically to ensure cert-manager installs correctly:
-  // 1. installCRDs: true - Required for cert-manager to function
-  // 2. startupapicheck.enabled: false - Prevents post-install hook timeouts
-  //
-  // Any other values from config.values are processed, but we deep-clone and sanitize
-  // to remove any potential KubernetesRef objects that might have leaked through.
+  // We set these critical values with sensible defaults to ensure cert-manager installs correctly:
+  // 1. installCRDs: true — required for cert-manager to function
+  // 2. startupapicheck.enabled: true — validates webhook readiness before marking ready
   //
   // NOTE: config.values may already be the result of mapCertManagerConfigToHelmValues()
-  // from the bootstrap composition, so we DON'T call mapCertManagerConfigToHelmValues again.
+  // from the bootstrap composition (see utils/helm-values-mapper.ts).
   // We just sanitize the values to remove any proxy references.
+  // The bootstrap composition's startupapicheck settings take precedence via the spread.
   const baseValues = config.values ? sanitizeHelmValues(config.values) : {};
   const finalValues = {
-    ...baseValues,
-    // Always install CRDs - this is required for cert-manager to function
+    // Always install CRDs — required for cert-manager to function
     installCRDs: true,
-    // Disable startupapicheck to avoid post-install hook timeouts
-    // The hook can fail if the API server is slow to respond
-    startupapicheck: { enabled: false },
+    // Enable startupapicheck by default with increased timeout to ensure webhook is ready.
+    // This prevents "webhook not found" errors when deploying cert-manager CRDs.
+    startupapicheck: {
+      enabled: true,
+      timeout: '5m',
+    },
+    // Spread baseValues LAST so caller-provided values (including from the bootstrap
+    // composition) take precedence over our defaults above
+    ...baseValues,
   };
-  
+
   return createResource<HelmReleaseSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
@@ -228,7 +178,7 @@ export function certManagerHelmRelease(
           sourceRef: {
             kind: 'HelmRepository' as const,
             name: config.repositoryName || 'cert-manager-repo',
-            namespace: 'flux-system', // HelmRepositories are typically in flux-system
+            namespace: DEFAULT_FLUX_NAMESPACE, // HelmRepositories are typically in flux-system
           },
         },
       },
@@ -241,134 +191,29 @@ export function certManagerHelmRelease(
  * Sanitizes Helm values by removing any KubernetesRef objects or other non-serializable values.
  * This is necessary because Helm values must be static - they cannot contain CEL expressions
  * or schema proxy references.
- * 
+ *
  * @param values - The Helm values object to sanitize
  * @returns A sanitized copy of the values with only primitive types, arrays, and plain objects
  */
-function sanitizeHelmValues(values: Record<string, any>): Record<string, any> {
-  return JSON.parse(JSON.stringify(values, (key, value) => {
-    // Check if this is a KubernetesRef object (has __brand property)
-    if (value && typeof value === 'object' && value.__brand === 'KubernetesRef') {
-      // Return undefined to skip this value - it's a schema proxy reference
-      return undefined;
-    }
-    // Check if this is a CelExpression object
-    if (value && typeof value === 'object' && value.__celExpression) {
-      // Return undefined to skip this value - it's a CEL expression
-      return undefined;
-    }
-    return value;
-  }));
+function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(
+    JSON.stringify(values, (_key, value) => {
+      // Skip KubernetesRef objects — schema proxy references can't be used in Helm values
+      if (isKubernetesRef(value)) {
+        return undefined;
+      }
+      // Skip CelExpression objects — CEL expressions can't be used in Helm values
+      if (isCelExpression(value)) {
+        return undefined;
+      }
+      return value;
+    })
+  );
 }
 
 // =============================================================================
 // HELM VALUES MAPPING SYSTEM
 // =============================================================================
-
-/**
- * Maps Cert-Manager configuration to Helm values
- *
- * This function converts the TypeKro CertManagerHelmValues interface
- * to the format expected by the cert-manager Helm chart.
- *
- * @param config - Cert-Manager configuration object
- * @returns Helm values object compatible with cert-manager chart
- *
- * @example
- * ```typescript
- * const config = {
- *   installCRDs: false,
- *   replicaCount: 2,
- *   webhook: { enabled: true }
- * };
- * const helmValues = mapCertManagerConfigToHelmValues(config);
- * ```
- */
-export function mapCertManagerConfigToHelmValues(
-  config: CertManagerHelmValues
-): Record<string, any> {
-  const values: Record<string, any> = {
-    // Installation configuration - default to true for TypeKro comprehensive deployment
-    installCRDs: config.installCRDs ?? true,
-  };
-
-  // Global configuration
-  if (config.global) {
-    values.global = { ...config.global };
-  }
-
-  // Replica configuration
-  if (config.replicaCount !== undefined) {
-    values.replicaCount = config.replicaCount;
-  }
-
-  // Deployment strategy
-  if (config.strategy) {
-    values.strategy = { ...config.strategy };
-  }
-
-  // Image configuration
-  if (config.image) {
-    values.image = { ...config.image };
-  }
-
-  // Controller configuration
-  if (config.controller) {
-    values.controller = { ...config.controller };
-  }
-
-  // Webhook configuration
-  if (config.webhook) {
-    values.webhook = { ...config.webhook };
-  }
-
-  // CA Injector configuration
-  if (config.cainjector) {
-    values.cainjector = { ...config.cainjector };
-  }
-
-  // ACME solver configuration
-  if (config.acmesolver) {
-    values.acmesolver = { ...config.acmesolver };
-  }
-
-  // Startup API check configuration
-  // Only pass startupapicheck if it's explicitly enabled, otherwise don't include it
-  // to ensure the Helm chart uses its default behavior (which may be to skip the hook)
-  if (config.startupapicheck && config.startupapicheck.enabled !== false) {
-    values.startupapicheck = { ...config.startupapicheck };
-  } else if (config.startupapicheck?.enabled === false) {
-    // Explicitly disable startupapicheck - only pass the enabled flag
-    values.startupapicheck = { enabled: false };
-  }
-
-  // Monitoring configuration
-  if (config.prometheus) {
-    values.prometheus = { ...config.prometheus };
-  }
-
-  // Include any additional custom values
-  Object.keys(config).forEach((key) => {
-    if (
-      !Object.hasOwn(values, key) &&
-      key !== 'installCRDs' &&
-      key !== 'global' &&
-      key !== 'replicaCount' &&
-      key !== 'strategy' &&
-      key !== 'image' &&
-      key !== 'controller' &&
-      key !== 'webhook' &&
-      key !== 'cainjector' &&
-      key !== 'acmesolver' &&
-      key !== 'startupapicheck' &&
-      key !== 'prometheus'
-    ) {
-      values[key] = (config as any)[key];
-    }
-  });
-
-  return values;
-}
 
 /**
  * Validates Cert-Manager Helm values configuration
@@ -411,7 +256,10 @@ export function validateCertManagerHelmValues(values: CertManagerHelmValues): {
   }
 
   // Validate resource requirements format
-  const validateResources = (resources: any, component: string) => {
+  const validateResources = (
+    resources: { limits?: Record<string, unknown>; requests?: Record<string, unknown> },
+    component: string
+  ) => {
     if (resources) {
       if (resources.limits) {
         if (resources.limits.cpu && typeof resources.limits.cpu !== 'string') {

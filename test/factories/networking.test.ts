@@ -8,6 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import type { V1Ingress, V1NetworkPolicy } from '@kubernetes/client-node';
 import { ingress } from '../../src/factories/kubernetes/networking/ingress.js';
 import { networkPolicy } from '../../src/factories/kubernetes/networking/network-policy.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Networking Factories', () => {
   describe('Ingress Factory', () => {
@@ -46,14 +47,14 @@ describe('Networking Factories', () => {
       expect(enhanced.kind).toBe('Ingress');
       expect(enhanced.apiVersion).toBe('networking.k8s.io/v1');
       expect(enhanced.metadata!.name).toBe('test-ingress');
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as ready when load balancer has endpoints', () => {
       const ingressResource = createTestIngress('ready-ingress');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const readyState = {
         status: {
@@ -65,15 +66,21 @@ describe('Networking Factories', () => {
 
       const result = evaluator(readyState);
       expect(result.ready).toBe(true);
-      expect(result.reason).toContain('Ingress has 2 load balancer endpoint(s)');
+      // Evaluator reports the first endpoint's ip/hostname
+      expect(result.message).toContain('192.168.1.100');
     });
 
-    it('should evaluate as not ready when no load balancer endpoints', () => {
+    it('should evaluate as not ready when no load balancer endpoints and not processed', () => {
       const ingressResource = createTestIngress('pending-ingress');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
+      // Resource without resourceVersion/generation (not yet processed by controller)
       const pendingState = {
+        metadata: {
+          name: 'pending-ingress',
+          // No resourceVersion or generation - not yet processed
+        },
         status: {
           loadBalancer: {
             ingress: [], // No endpoints yet
@@ -83,50 +90,139 @@ describe('Networking Factories', () => {
 
       const result = evaluator(pendingState);
       expect(result.ready).toBe(false);
-      expect(result.reason).toBe('Waiting for load balancer to assign endpoints');
+      expect(result.reason).toBe('WaitingForController');
+      expect(result.message).toBe('Waiting for ingress controller to process the resource');
+    });
+
+    it('should evaluate as ready when processed by controller even without load balancer', () => {
+      const ingressResource = createTestIngress('processed-ingress');
+      const enhanced = ingress(ingressResource);
+      const evaluator = requireReadinessEvaluator(enhanced);
+
+      // Resource with resourceVersion and generation but no observedGeneration
+      // should NOT be considered ready — resourceVersion is set by API server, not controller
+      const processedState = {
+        metadata: {
+          name: 'processed-ingress',
+          resourceVersion: '12345',
+          generation: 1,
+        },
+        status: {
+          loadBalancer: {
+            ingress: [], // No endpoints yet
+          },
+        },
+      };
+
+      const notReadyResult = evaluator(processedState);
+      expect(notReadyResult.ready).toBe(false);
+      expect(notReadyResult.reason).toBe('WaitingForController');
+
+      // Resource with observedGeneration matching generation IS ready
+      const observedState = {
+        metadata: {
+          name: 'processed-ingress',
+          resourceVersion: '12345',
+          generation: 1,
+        },
+        status: {
+          observedGeneration: 1,
+          loadBalancer: {
+            ingress: [],
+          },
+        },
+      };
+
+      const readyResult = evaluator(observedState);
+      expect(readyResult.ready).toBe(true);
+      expect(readyResult.message).toContain('observedGeneration matches generation');
     });
 
     it('should handle missing status gracefully', () => {
       const ingressResource = createTestIngress('no-status');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
-      // Test with null status
-      const nullStatusResult = evaluator({ status: null });
+      // Test with null status — not ready
+      const nullStatusResult = evaluator({ status: null, metadata: {} });
       expect(nullStatusResult.ready).toBe(false);
-      expect(nullStatusResult.reason).toBe('No status available');
+      expect(nullStatusResult.reason).toBe('WaitingForController');
 
-      // Test with undefined status
-      const undefinedStatusResult = evaluator({ status: undefined });
+      // Test with undefined status — not ready
+      const undefinedStatusResult = evaluator({ status: undefined, metadata: {} });
       expect(undefinedStatusResult.ready).toBe(false);
-      expect(undefinedStatusResult.reason).toBe('No status available');
+      expect(undefinedStatusResult.reason).toBe('WaitingForController');
 
-      // Test with missing status entirely
-      const noStatusResult = evaluator({});
+      // Test with missing status entirely — not ready
+      const noStatusResult = evaluator({ metadata: {} });
       expect(noStatusResult.ready).toBe(false);
-      expect(noStatusResult.reason).toBe('No status available');
+      expect(noStatusResult.reason).toBe('WaitingForController');
+
+      // Test with resourceVersion but no observedGeneration — still not ready
+      // resourceVersion is set by the API server, not by the ingress controller
+      const processedNoStatusResult = evaluator({
+        metadata: { resourceVersion: '12345', generation: 1 },
+      });
+      expect(processedNoStatusResult.ready).toBe(false);
+      expect(processedNoStatusResult.reason).toBe('WaitingForController');
     });
 
     it('should handle missing load balancer gracefully', () => {
       const ingressResource = createTestIngress('no-lb');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
-      const noLoadBalancerState = {
+      // No loadBalancer field and not processed — not ready
+      const noLoadBalancerNotProcessed = {
+        metadata: {
+          name: 'no-lb',
+        },
+        status: {},
+      };
+
+      const notProcessedResult = evaluator(noLoadBalancerNotProcessed);
+      expect(notProcessedResult.ready).toBe(false);
+      expect(notProcessedResult.reason).toBe('WaitingForController');
+      expect(notProcessedResult.message).toBe(
+        'Waiting for ingress controller to process the resource'
+      );
+
+      // No loadBalancer field, has resourceVersion + generation but NO observedGeneration
+      // resourceVersion/generation are set by the API server, NOT by the controller
+      // Without observedGeneration, we can't confirm the controller has processed the resource
+      const noLoadBalancerNoObservedGen = {
+        metadata: {
+          name: 'no-lb',
+          resourceVersion: '12345',
+          generation: 1,
+        },
+        status: {},
+      };
+
+      const noObservedGenResult = evaluator(noLoadBalancerNoObservedGen);
+      expect(noObservedGenResult.ready).toBe(false);
+      expect(noObservedGenResult.reason).toBe('WaitingForController');
+
+      // No loadBalancer but observedGeneration matches generation — controller has acknowledged
+      const noLoadBalancerWithObservedGen = {
+        metadata: {
+          name: 'no-lb',
+          generation: 1,
+        },
         status: {
-          // No loadBalancer field
+          observedGeneration: 1,
         },
       };
 
-      const result = evaluator(noLoadBalancerState);
-      expect(result.ready).toBe(false);
-      expect(result.reason).toBe('Waiting for load balancer to assign endpoints');
+      const observedGenResult = evaluator(noLoadBalancerWithObservedGen);
+      expect(observedGenResult.ready).toBe(true);
+      expect(observedGenResult.message).toContain('observedGeneration matches generation');
     });
 
     it('should handle multiple load balancer ingress endpoints', () => {
       const ingressResource = createTestIngress('multi-endpoint');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const multiEndpointState = {
         status: {
@@ -144,15 +240,16 @@ describe('Networking Factories', () => {
 
       const result = evaluator(multiEndpointState);
       expect(result.ready).toBe(true);
-      expect(result.reason).toContain('Ingress has 5 load balancer endpoint(s)');
+      // Evaluator reports the first endpoint's ip/hostname
+      expect(result.message).toContain('10.0.0.1');
     });
 
     it('should provide detailed readiness messages', () => {
       const ingressResource = createTestIngress('detailed-messages');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
-      // Test single endpoint
+      // Test single endpoint with IP
       const singleEndpointState = {
         status: {
           loadBalancer: {
@@ -163,26 +260,39 @@ describe('Networking Factories', () => {
 
       const singleResult = evaluator(singleEndpointState);
       expect(singleResult.ready).toBe(true);
-      expect(singleResult.reason).toBe('Ingress has 1 load balancer endpoint(s)');
+      expect(singleResult.message).toBe('Ingress has load balancer endpoint: 203.0.113.1');
 
-      // Test multiple endpoints
-      const multipleEndpointState = {
+      // Test single endpoint with hostname
+      const hostnameEndpointState = {
         status: {
           loadBalancer: {
-            ingress: [{ ip: '203.0.113.1' }, { hostname: 'test.example.com' }],
+            ingress: [{ hostname: 'test.example.com' }],
           },
         },
       };
 
-      const multipleResult = evaluator(multipleEndpointState);
-      expect(multipleResult.ready).toBe(true);
-      expect(multipleResult.reason).toBe('Ingress has 2 load balancer endpoint(s)');
+      const hostnameResult = evaluator(hostnameEndpointState);
+      expect(hostnameResult.ready).toBe(true);
+      expect(hostnameResult.message).toBe('Ingress has load balancer endpoint: test.example.com');
+
+      // Test LB ingress entries with no ip or hostname — still provisioning
+      const emptyEntriesState = {
+        status: {
+          loadBalancer: {
+            ingress: [{}],
+          },
+        },
+      };
+
+      const emptyResult = evaluator(emptyEntriesState);
+      expect(emptyResult.ready).toBe(false);
+      expect(emptyResult.reason).toBe('LoadBalancerProvisioning');
     });
 
     it.skip('should handle readiness evaluation errors', () => {
       const ingressResource = createTestIngress('error-handling');
       const enhanced = ingress(ingressResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test with malformed input that might cause errors
       const _errorScenarios = [null, undefined, 'invalid-string', 42, { status: 'invalid-status' }];
@@ -219,7 +329,7 @@ describe('Networking Factories', () => {
             },
           ],
         },
-      } as any;
+      } as unknown as V1Ingress;
 
       const enhanced = ingress(ingressWithoutMetadata);
       expect(enhanced.metadata!.name).toBe('unnamed-ingress');
@@ -230,7 +340,7 @@ describe('Networking Factories', () => {
       const enhanced = ingress(originalIngress);
 
       // Verify all original properties are preserved
-      expect(enhanced.spec).toEqual(originalIngress.spec! as any);
+      expect(enhanced.spec as unknown).toEqual(originalIngress.spec);
       expect(enhanced.metadata!.name).toBe('preservation-test');
       expect(enhanced.metadata!.namespace).toBe('default');
       expect(enhanced.apiVersion).toBe('networking.k8s.io/v1');
@@ -315,7 +425,7 @@ describe('Networking Factories', () => {
           },
           policyTypes: ['Ingress'],
         },
-      } as any;
+      } as unknown as V1NetworkPolicy;
 
       const enhanced = networkPolicy(policyWithoutMetadata);
       expect(enhanced.metadata!.name).toBe('unnamed-networkpolicy');
@@ -400,8 +510,8 @@ describe('Networking Factories', () => {
       const enhanced = networkPolicy(complexPolicy);
 
       // Verify all properties are preserved
-      expect(enhanced.metadata).toEqual(complexPolicy.metadata! as any);
-      expect(enhanced.spec).toEqual(complexPolicy.spec! as any);
+      expect(enhanced.metadata as unknown).toEqual(complexPolicy.metadata!);
+      expect(enhanced.spec as unknown).toEqual(complexPolicy.spec!);
       expect(enhanced.spec!.ingress).toHaveLength(1);
       expect(enhanced.spec!.egress).toHaveLength(2);
       expect(enhanced.spec?.ingress?.[0]?._from).toHaveLength(2);
@@ -419,7 +529,7 @@ describe('Networking Factories', () => {
       };
 
       const enhanced = networkPolicy(minimalPolicy);
-      expect(enhanced.spec?.podSelector).toEqual({} as any);
+      expect(enhanced.spec?.podSelector as unknown).toEqual({});
       expect(enhanced.metadata!.name).toBe('minimal-policy');
     });
 
@@ -449,7 +559,7 @@ describe('Networking Factories', () => {
       allPodsPolicy.spec!.podSelector = {};
 
       const allPodsEnhanced = networkPolicy(allPodsPolicy);
-      expect(allPodsEnhanced.spec.podSelector).toEqual({} as any);
+      expect(allPodsEnhanced.spec.podSelector as unknown).toEqual({});
 
       // Label-based selector
       const labelSelectorPolicy = createTestNetworkPolicy('label-selector');

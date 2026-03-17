@@ -1,4 +1,5 @@
 import type { V1ReplicationController } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -6,7 +7,7 @@ export type V1ReplicationControllerSpec = NonNullable<V1ReplicationController['s
 export type V1ReplicationControllerStatus = NonNullable<V1ReplicationController['status']>;
 
 export function replicationController(
-  resource: V1ReplicationController
+  resource: V1ReplicationController & { id?: string }
 ): Enhanced<V1ReplicationControllerSpec, V1ReplicationControllerStatus> {
   // Capture expected replicas in closure for readiness evaluation
   const expectedReplicas = resource.spec?.replicas || 1;
@@ -54,12 +55,12 @@ export function replicationController(
           },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ReplicationController readiness: ${error}`,
-        details: { expectedReplicas, error: String(error) },
+        message: `Error evaluating ReplicationController readiness: ${ensureError(error).message}`,
+        details: { expectedReplicas, error: ensureError(error).message },
       };
     }
   });

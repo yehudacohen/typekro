@@ -1,3 +1,4 @@
+import { TypeKroError } from '../errors.js';
 import type { LoggerConfig } from './types.js';
 
 /**
@@ -30,9 +31,34 @@ export function getLoggerConfigFromEnv(): LoggerConfig {
     config.pretty = true;
   }
 
-  // Set custom destination if specified
+  // Set custom destination if specified (validated against path traversal)
   if (process.env.TYPEKRO_LOG_DESTINATION) {
-    config.destination = process.env.TYPEKRO_LOG_DESTINATION;
+    const dest = process.env.TYPEKRO_LOG_DESTINATION;
+    // Reject path traversal sequences
+    if (dest.includes('..')) {
+      throw new TypeKroError(
+        'TYPEKRO_LOG_DESTINATION must not contain path traversal sequences (..)',
+        'INVALID_CONFIG',
+        { destination: dest }
+      );
+    }
+    // Reject null bytes (can trick path resolution in some runtimes)
+    if (dest.includes('\0')) {
+      throw new TypeKroError(
+        'TYPEKRO_LOG_DESTINATION must not contain null bytes',
+        'INVALID_CONFIG',
+        { destination: '<contains null byte>' }
+      );
+    }
+    // Reject absolute paths to prevent writing to arbitrary filesystem locations
+    if (dest.startsWith('/') || /^[a-zA-Z]:\\/.test(dest)) {
+      throw new TypeKroError(
+        'TYPEKRO_LOG_DESTINATION must be a relative path, not an absolute path',
+        'INVALID_CONFIG',
+        { destination: dest }
+      );
+    }
+    config.destination = dest;
   }
 
   // Configure timestamp option
@@ -59,12 +85,16 @@ export function getLoggerConfigFromEnv(): LoggerConfig {
 export function validateLoggerConfig(config: LoggerConfig): void {
   const validLevels = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
   if (!validLevels.includes(config.level)) {
-    throw new Error(
-      `Invalid log level: ${config.level}. Must be one of: ${validLevels.join(', ')}`
+    throw new TypeKroError(
+      `Invalid log level: ${config.level}. Must be one of: ${validLevels.join(', ')}`,
+      'INVALID_CONFIG',
+      { level: config.level, validLevels }
     );
   }
 
   if (config.destination && typeof config.destination !== 'string') {
-    throw new Error('Log destination must be a string');
+    throw new TypeKroError('Log destination must be a string', 'INVALID_CONFIG', {
+      destination: config.destination,
+    });
   }
 }

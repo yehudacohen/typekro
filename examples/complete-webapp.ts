@@ -4,8 +4,10 @@
  */
 
 import { type } from 'arktype';
+// In production: import { Deployment, Service, Ingress, NetworkPolicy } from 'typekro/simple';
+import { Deployment, Ingress, NetworkPolicy, Service } from '../src/factories/simple/index.js';
+// In production: import { kubernetesComposition } from 'typekro';
 import { kubernetesComposition } from '../src/index.js';
-import { Deployment, Service, Ingress, NetworkPolicy } from '../src/factories/simple/index.js';
 
 // Define the schema for our complete web application
 const CompleteWebAppSpecSchema = type({

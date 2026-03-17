@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1CronJob } from '@kubernetes/client-node';
 import { cronJob } from '../../src/factories/kubernetes/workloads/cron-job.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('CronJob Factory', () => {
   const createTestCronJob = (
@@ -49,8 +50,8 @@ describe('CronJob Factory', () => {
       expect(enhanced.apiVersion).toBe('batch/v1');
       expect(enhanced.metadata.name).toBe('test-cronjob');
       expect(enhanced.metadata.namespace).toBe('default');
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should set correct apiVersion and kind', () => {
@@ -79,7 +80,7 @@ describe('CronJob Factory', () => {
             },
           },
         },
-      } as any;
+      } as unknown as Parameters<typeof cronJob>[0];
 
       const enhanced = cronJob(cronJobWithoutMetadata);
       expect(enhanced.metadata.name).toBe('unnamed-cronjob');
@@ -89,7 +90,7 @@ describe('CronJob Factory', () => {
       const originalCronJob = createTestCronJob('preservation-test', '*/15 * * * *');
       const enhanced = cronJob(originalCronJob);
 
-      expect(enhanced.spec).toEqual(originalCronJob.spec! as any);
+      expect(enhanced.spec).toEqual(originalCronJob.spec! as unknown as typeof enhanced.spec);
       expect(enhanced.spec?.schedule).toBe('*/15 * * * *');
       expect(enhanced.spec?.jobTemplate.spec?.template.spec?.containers?.[0]?.image).toBe(
         'busybox:1.35'
@@ -101,7 +102,7 @@ describe('CronJob Factory', () => {
     it('should evaluate suspended cronJob as ready', () => {
       const suspendedCronJob = createTestCronJob('suspended-job', '0 3 * * *', true);
       const enhanced = cronJob(suspendedCronJob);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const suspendedState = {
         status: {
@@ -118,7 +119,7 @@ describe('CronJob Factory', () => {
     it('should evaluate cronJob with lastScheduleTime as ready', () => {
       const cronJobResource = createTestCronJob('scheduled-job');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const scheduledState = {
         status: {
@@ -135,7 +136,7 @@ describe('CronJob Factory', () => {
     it('should evaluate cronJob with no active jobs as ready', () => {
       const cronJobResource = createTestCronJob('inactive-job');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const inactiveState = {
         status: {
@@ -152,7 +153,7 @@ describe('CronJob Factory', () => {
     it('should evaluate unscheduled cronJob as not ready', () => {
       const cronJobResource = createTestCronJob('unscheduled-job');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const unscheduledState = {
         status: {
@@ -172,7 +173,7 @@ describe('CronJob Factory', () => {
     it('should handle missing status gracefully', () => {
       const cronJobResource = createTestCronJob('no-status');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test with null status
       const nullStatusResult = evaluator({ status: null });
@@ -194,7 +195,7 @@ describe('CronJob Factory', () => {
     it('should count active jobs correctly', () => {
       const cronJobResource = createTestCronJob('active-jobs-test');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test with multiple active jobs
       const multipleActiveState = {
@@ -224,7 +225,7 @@ describe('CronJob Factory', () => {
     it.skip('should handle evaluation errors gracefully', () => {
       const cronJobResource = createTestCronJob('error-handling');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test with malformed input that might cause errors
       const errorScenarios = [null, undefined, 'invalid-string', 42, { status: 'not-an-object' }];
@@ -243,7 +244,7 @@ describe('CronJob Factory', () => {
       // Test suspended CronJob with active jobs (should still be ready)
       const suspendedWithActiveJobs = createTestCronJob('suspended-active', '0 4 * * *', true);
       const enhanced1 = cronJob(suspendedWithActiveJobs);
-      const evaluator1 = (enhanced1 as any).readinessEvaluator;
+      const evaluator1 = requireReadinessEvaluator(enhanced1);
 
       const suspendedActiveState = {
         status: {
@@ -259,7 +260,7 @@ describe('CronJob Factory', () => {
       // Test non-suspended CronJob (default behavior)
       const notSuspended = createTestCronJob('not-suspended', '0 5 * * *', false);
       const enhanced2 = cronJob(notSuspended);
-      const evaluator2 = (enhanced2 as any).readinessEvaluator;
+      const evaluator2 = requireReadinessEvaluator(enhanced2);
 
       const notSuspendedState = {
         status: {
@@ -276,7 +277,7 @@ describe('CronJob Factory', () => {
     it('should handle missing active array gracefully', () => {
       const cronJobResource = createTestCronJob('missing-active');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const missingActiveState = {
         status: {
@@ -293,7 +294,7 @@ describe('CronJob Factory', () => {
     it('should handle edge cases in scheduling logic', () => {
       const cronJobResource = createTestCronJob('edge-cases');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // Test with lastScheduleTime but no active jobs (normal completion)
       const completedState = {
@@ -400,7 +401,7 @@ describe('CronJob Factory', () => {
       ).toBe('backup-pvc');
 
       // Test readiness evaluation with complex job
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
       const complexState = {
         status: {
           active: [{ name: 'complex-backup-job-1234567' }],
@@ -433,7 +434,7 @@ describe('CronJob Factory', () => {
         expect(enhanced.spec.schedule).toBe(schedule);
 
         // Test that readiness evaluation works regardless of schedule
-        const evaluator = (enhanced as any).readinessEvaluator;
+        const evaluator = requireReadinessEvaluator(enhanced);
         const testState = {
           status: {
             active: [],
@@ -450,7 +451,7 @@ describe('CronJob Factory', () => {
     it('should handle CronJob state transitions', () => {
       const cronJobResource = createTestCronJob('state-transitions');
       const enhanced = cronJob(cronJobResource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       // 1. Initial state - never scheduled
       const initialState = {
@@ -490,7 +491,7 @@ describe('CronJob Factory', () => {
       // 4. Suspended state
       const suspendedCronJob = createTestCronJob('state-transitions-suspended', '0 2 * * *', true);
       const suspendedEnhanced = cronJob(suspendedCronJob);
-      const suspendedEvaluator = (suspendedEnhanced as any).readinessEvaluator;
+      const suspendedEvaluator = requireReadinessEvaluator(suspendedEnhanced);
 
       const suspendedResult = suspendedEvaluator(completedState);
       expect(suspendedResult.ready).toBe(true);
@@ -541,7 +542,7 @@ describe('CronJob Factory', () => {
       );
 
       // Test readiness evaluation with minimal spec
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
       const minimalState = {
         status: {
           active: [],

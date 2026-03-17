@@ -8,7 +8,8 @@
 import type { ReadinessEvaluator } from '../types/index.js';
 
 interface ReadinessEvaluatorEntry {
-  evaluator: ReadinessEvaluator;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- registry stores evaluators for heterogeneous K8s types
+  evaluator: ReadinessEvaluator<any>;
   factoryName?: string | undefined;
   resourceKind: string;
   registeredAt: number;
@@ -32,7 +33,8 @@ export class ReadinessEvaluatorRegistry {
   /**
    * Register evaluator by resource kind when withReadinessEvaluator is called
    */
-  registerForKind(kind: string, evaluator: ReadinessEvaluator, factoryName?: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
+  registerForKind(kind: string, evaluator: ReadinessEvaluator<any>, factoryName?: string): void {
     const entry: ReadinessEvaluatorEntry = {
       evaluator,
       factoryName,
@@ -46,7 +48,8 @@ export class ReadinessEvaluatorRegistry {
   /**
    * Lookup evaluator by resource kind
    */
-  getEvaluatorForKind(kind: string): ReadinessEvaluator | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- returns evaluators for heterogeneous K8s types
+  getEvaluatorForKind(kind: string): ReadinessEvaluator<any> | null {
     const entry = this.kindToEvaluator.get(kind);
     return entry?.evaluator || null;
   }

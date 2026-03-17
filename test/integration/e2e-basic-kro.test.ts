@@ -22,8 +22,6 @@ import {
 
 // Test configuration
 const BASE_NAMESPACE = 'typekro-e2e-basic';
-const _TEST_NAMESPACE = 'typekro-e2e-basic'; // Fallback for compatibility
-const _TEST_TIMEOUT = 300000; // 5 minutes
 
 // Generate unique namespace for each test
 const generateTestNamespace = (testName: string): string => {
@@ -34,7 +32,6 @@ const generateTestNamespace = (testName: string): string => {
     .slice(0, 20);
   return `${BASE_NAMESPACE}-${sanitized}-${timestamp}`;
 };
-const _CLUSTER_NAME = 'typekro-e2e-test';
 
 // Check if cluster is available
 const clusterAvailable = isClusterAvailable();
@@ -45,7 +42,6 @@ describeOrSkip('Basic E2E Kro Test', () => {
   let kc: k8s.KubeConfig;
   let k8sApi: k8s.CoreV1Api;
   let appsApi: k8s.AppsV1Api;
-  let customApi: k8s.CustomObjectsApi;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -56,7 +52,6 @@ describeOrSkip('Basic E2E Kro Test', () => {
 
       k8sApi = createCoreV1ApiClient(kc);
       appsApi = createAppsV1ApiClient(kc);
-      customApi = createCustomObjectsApiClient(kc);
     } catch (error) {
       console.error('❌ Failed to initialize Kubernetes client:', error);
       throw new Error(
@@ -75,32 +70,27 @@ describeOrSkip('Basic E2E Kro Test', () => {
   // Clean up any leftover test namespaces after all tests complete
   afterAll(async () => {
     if (kc) {
+      // Clean up the RGD we created
+      try {
+        const customApi = createCustomObjectsApiClient(kc);
+        await customApi.deleteClusterCustomObject({
+          group: 'kro.run',
+          version: 'v1alpha1',
+          plural: 'resourcegraphdefinitions',
+          name: 'basic-app',
+        });
+        console.log('🗑️ Deleted RGD: basic-app');
+      } catch (error: unknown) {
+        const err = error as { statusCode?: number; body?: { reason?: string } };
+        if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
+          console.warn('⚠️ Failed to delete RGD basic-app:', error);
+        }
+      }
+
       console.log('🧹 Cleaning up any leftover test namespaces...');
       await cleanupTestNamespaces(/^typekro-e2e-basic-/, kc);
     }
   });
-
-  // Helper function to create and cleanup test namespace
-  const _withTestNamespace = async <T>(
-    testName: string,
-    testFn: (namespace: string) => Promise<T>
-  ): Promise<T> => {
-    const namespace = generateTestNamespace(testName);
-
-    try {
-      // Create namespace
-      await k8sApi.createNamespace({ body: { metadata: { name: namespace } } });
-      console.log(`📦 Created test namespace: ${namespace}`);
-
-      // Run test
-      const result = await testFn(namespace);
-
-      return result;
-    } finally {
-      // Cleanup namespace and wait for full deletion
-      await deleteNamespaceAndWait(namespace, kc);
-    }
-  };
 
   it('should create a basic RGD and deploy an instance', async () => {
     // Increase timeout for this test as it needs to wait for Kro resources
@@ -205,10 +195,16 @@ describeOrSkip('Basic E2E Kro Test', () => {
     checkTimeout();
 
     // Validate that the underlying Kubernetes resources were created
-    const deployment = await appsApi.readNamespacedDeployment({ name: 'test-app', namespace: testNamespace });
+    const deployment = await appsApi.readNamespacedDeployment({
+      name: 'test-app',
+      namespace: testNamespace,
+    });
     expect(deployment.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
 
-    const service = await k8sApi.readNamespacedService({ name: 'test-app-svc', namespace: testNamespace });
+    const service = await k8sApi.readNamespacedService({
+      name: 'test-app-svc',
+      namespace: testNamespace,
+    });
     expect(service.spec?.selector?.app).toBe('test-app');
 
     console.log('✅ Basic E2E test completed successfully');
@@ -226,47 +222,6 @@ describeOrSkip('Basic E2E Kro Test', () => {
   });
 
   // Helper functions
-  async function _waitForRGDReady(
-    name: string,
-    _namespace: string,
-    timeoutMs = 60000
-  ): Promise<void> {
-    const startTime = Date.now();
-    while (Date.now() - startTime < timeoutMs) {
-      try {
-        const rgd = await customApi.getClusterCustomObject({
-          group: 'kro.run',
-          version: 'v1alpha1',
-          plural: 'resourcegraphdefinitions',
-          name,
-        });
-        const status = (rgd as any).status;
-        // Check if RGD is in Active state and all conditions are True
-        if (
-          status?.state === 'Active' &&
-          status?.conditions?.every((c: any) => c.status === 'True')
-        ) {
-          console.log(`✅ RGD ${name} is ready`);
-          return;
-        }
-
-        // Log the current status for debugging
-        console.log(`RGD ${name} status:`, status?.state || 'Unknown');
-        if (status?.conditions) {
-          for (const condition of status.conditions) {
-            if (condition.status === 'False') {
-              console.log(`❌ ${condition.type}: ${condition.message}`);
-            }
-          }
-        }
-      } catch (_error) {
-        console.log(`RGD ${name} not found yet, continuing to wait...`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
-    throw new Error(`Timeout waiting for RGD ${name} to be ready`);
-  }
-
   async function waitForDeployment(
     name: string,
     namespace: string,

@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import {
+  formatArktypeError,
+  formatReferenceError,
+  TypeKroReferenceError,
+  ValidationError,
+} from '../src/core/errors.js';
 import { Cel } from '../src/core/references/index.js';
-import { customResource, formatArktypeError, formatReferenceError, TypeKroReferenceError, ValidationError, validateResourceGraph } from '../src/core.js';
-import { simple } from '../src/index.js';
+import { customResource, simple, validateResourceGraph } from '../src/index.js';
 
 describe('Error Handling', () => {
   describe('Arktype Validation Errors', () => {
@@ -26,7 +31,7 @@ describe('Error Handling', () => {
               engine: 'invalid-engine', // Should be 'postgresql' or 'mysql'
               version: '13',
               replicas: 'not-a-number', // Should be number
-            } as any,
+            } as unknown as Record<string, unknown>,
           }
         );
       }).toThrow(ValidationError);
@@ -49,7 +54,7 @@ describe('Error Handling', () => {
             metadata: { name: 'test-db' },
             spec: {
               // Missing required fields
-            } as any,
+            } as unknown as Record<string, unknown>,
           }
         );
       } catch (error) {
@@ -73,9 +78,7 @@ describe('Error Handling', () => {
       const webapp = simple.Deployment({
         name: 'web-app',
         image: 'nginx:latest',
-        env: {
-          DB_HOST: database.status?.podIP!, // Direct KubernetesRef that validation can detect
-        },
+        replicas: database.status?.readyReplicas!, // KubernetesRef that validation can detect
       });
 
       // Only include webapp, not database - this should cause a reference error

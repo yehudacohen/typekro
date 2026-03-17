@@ -8,7 +8,13 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, getCurrentCompositionContext, kubernetesComposition, toResourceGraph, simple } from '../../src/index.js';
+import {
+  Cel,
+  getCurrentCompositionContext,
+  kubernetesComposition,
+  simple,
+  toResourceGraph,
+} from '../../src/index.js';
 
 describe('Imperative Composition Pattern', () => {
   // Test schemas compatible with Kro
@@ -1430,11 +1436,11 @@ describe('Imperative Composition Pattern', () => {
           dependencies: {
             database: {
               ready: Cel.expr<boolean>(databaseDeployment.status.readyReplicas, ' > 0'),
-              endpoint: Cel.template('postgres://%s:5432', databaseService.status.clusterIP),
+              endpoint: Cel.template('postgres://%s:5432', databaseService.metadata.name),
             },
             cache: {
               ready: Cel.expr<boolean>(cacheDeployment.status.readyReplicas, ' > 0'),
-              endpoint: Cel.template('redis://%s:6379', cacheService.status.clusterIP),
+              endpoint: Cel.template('redis://%s:6379', cacheService.metadata.name),
             },
             storage: {
               ready: Cel.expr<boolean>(databaseDeployment.status.readyReplicas, ' > 0'),
@@ -1930,25 +1936,6 @@ describe('Imperative Composition Pattern', () => {
       }).toThrow('Failed to execute composition function');
     });
 
-    it('should detect unsupported patterns in status objects', () => {
-      // Test the pattern detector directly since it's not enabled in normal flow
-      const { UnsupportedPatternDetector } = require('../../src/index.js');
-
-      const statusWithUnsupportedPatterns = {
-        ready: true,
-        badTemplate: 'Hello ${name} world', // Template literal pattern
-        badFunction: () => 'test', // Function
-      };
-
-      const error = UnsupportedPatternDetector.createUnsupportedPatternError(
-        'test-composition',
-        statusWithUnsupportedPatterns
-      );
-
-      expect(error).not.toBeNull();
-      expect(error?.message).toContain('Unsupported patterns detected');
-    });
-
     it('should provide debugging information when enabled', () => {
       // Import debugging functions
       const {
@@ -1997,7 +1984,7 @@ describe('Imperative Composition Pattern', () => {
     it('should handle resource registration errors gracefully', () => {
       // This test would require mocking the context to simulate registration failures
       // For now, we'll test that the error classes exist and can be instantiated
-      const { ContextRegistrationError } = require('../../src/index.js');
+      const { ContextRegistrationError } = require('../../src/core/errors.js');
 
       const error = ContextRegistrationError.forDuplicateResource(
         'test-resource',
@@ -2015,7 +2002,7 @@ describe('Imperative Composition Pattern', () => {
     });
 
     it('should provide context about which resource caused failures', () => {
-      const { CompositionExecutionError } = require('../../src/index.js');
+      const { CompositionExecutionError } = require('../../src/core/errors.js');
 
       const error = CompositionExecutionError.withResourceContext(
         'Test error message',
@@ -2038,7 +2025,7 @@ describe('Imperative Composition Pattern', () => {
     });
 
     it('should validate status objects and provide helpful error messages', () => {
-      const { CompositionExecutionError } = require('../../src/index.js');
+      const { CompositionExecutionError } = require('../../src/core/errors.js');
 
       const error = CompositionExecutionError.forStatusBuilding(
         'test-composition',
@@ -2054,25 +2041,6 @@ describe('Imperative Composition Pattern', () => {
       expect(error.message).toContain('string');
       expect(error.message).toContain('123');
       expect(error.phase).toBe('status-building');
-    });
-
-    it('should detect and report unsupported pattern types', () => {
-      const { UnsupportedPatternDetector } = require('../../src/index.js');
-
-      const statusObject = {
-        ready: true,
-        url: 'https://example.com', // This is fine - literal string
-        badTemplate: 'Hello ${name} world', // Template literal pattern (not CEL)
-        badConcat: 'prefix + suffix', // String with concatenation pattern
-        badFunction: () => 'test', // Function - definitely not supported
-      };
-
-      const issues = UnsupportedPatternDetector.detectUnsupportedStatusPatterns(statusObject);
-      expect(issues.length).toBeGreaterThan(0);
-
-      const suggestions = UnsupportedPatternDetector.generatePatternSuggestions(issues[0] || '');
-      expect(suggestions.length).toBeGreaterThan(0);
-      expect(suggestions.some((s: string) => s.includes('Cel.'))).toBe(true);
     });
   });
 

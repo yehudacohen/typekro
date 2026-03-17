@@ -16,6 +16,15 @@ import type { DaemonSetConfig } from '../types.js';
  *
  * @param config - Configuration for the daemon set
  * @returns Enhanced DaemonSet resource
+ *
+ * @example
+ * ```typescript
+ * const logs = DaemonSet({
+ *   name: 'fluentd',
+ *   image: 'fluentd:v1.16',
+ *   ports: [{ containerPort: 24224 }],
+ * });
+ * ```
  */
 export function DaemonSet(config: DaemonSetConfig): Enhanced<V1DaemonSetSpec, V1DaemonSetStatus> {
   const env: V1EnvVar[] = config.env

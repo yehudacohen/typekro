@@ -12,6 +12,14 @@ import { File } from 'alchemy/fs';
 import { type } from 'arktype';
 import { Cel, simple, toResourceGraph } from '../../../src/index.js';
 
+/** Shape of an alchemy state entry used in state-store queries */
+interface AlchemyStateEntry {
+  id?: string;
+  kind?: string;
+  status?: string;
+  output?: { path?: string; content?: string };
+}
+
 const _TEST_TIMEOUT = 120000; // 2 minutes
 
 describe('TypeKro-Alchemy Integration', () => {
@@ -56,7 +64,7 @@ describe('TypeKro-Alchemy Integration', () => {
       const WebAppStatusSchema = type({
         url: 'string',
         readyReplicas: 'number%1',
-        databaseStatus: 'string',
+        databaseStatus: 'number%1',
       });
 
       const graph = toResourceGraph(
@@ -90,16 +98,16 @@ describe('TypeKro-Alchemy Integration', () => {
               // This shows TypeKro values being passed to other TypeKro resources
               DATABASE_URL: schema.spec.databaseUrl,
               // This shows cross-resource references within TypeKro
-              DATABASE_HOST: database.status.podIP,
+              DATABASE_HOST: Cel.template('%s', database.metadata.name),
             },
           });
 
           return { database, webapp };
         },
         (_schema, resources) => ({
-          url: Cel.template('http://%s:8080', resources.webapp.status.podIP),
+          url: Cel.template('http://%s:8080', resources.webapp.metadata.name),
           readyReplicas: resources.webapp.status.readyReplicas,
-          databaseStatus: resources.database.status.phase,
+          databaseStatus: resources.database.status.readyReplicas,
         })
       );
 
@@ -162,29 +170,29 @@ describe('TypeKro-Alchemy Integration', () => {
         const resourceIds = Object.keys(alchemyState);
 
         // Verify that our File resources are registered in alchemy state
-        const configFileState = Object.values(alchemyState).find(
-          (state: any) => state.kind === 'fs::File' && state.output?.path === configFile.path
-        ) as any;
-        const appLogFileState = Object.values(alchemyState).find(
-          (state: any) => state.kind === 'fs::File' && state.output?.path === appLogFile.path
-        ) as any;
-        const configJsonFileState = Object.values(alchemyState).find(
-          (state: any) => state.kind === 'fs::File' && state.output?.path === configJsonFile.path
-        ) as any;
+        const configFileState = (Object.values(alchemyState) as AlchemyStateEntry[]).find(
+          (state) => state.kind === 'fs::File' && state.output?.path === configFile.path
+        );
+        const appLogFileState = (Object.values(alchemyState) as AlchemyStateEntry[]).find(
+          (state) => state.kind === 'fs::File' && state.output?.path === appLogFile.path
+        );
+        const configJsonFileState = (Object.values(alchemyState) as AlchemyStateEntry[]).find(
+          (state) => state.kind === 'fs::File' && state.output?.path === configJsonFile.path
+        );
 
         expect(configFileState).toBeDefined();
         expect(configFileState?.status).toBe('created');
-        expect(configFileState?.output.content).toContain('TypeKro Integration Test');
+        expect(configFileState?.output?.content).toContain('TypeKro Integration Test');
 
         expect(appLogFileState).toBeDefined();
         expect(appLogFileState?.status).toBe('created');
-        expect(appLogFileState?.output.content).toContain(
+        expect(appLogFileState?.output?.content).toContain(
           'TypeKro-Alchemy integration test started'
         );
 
         expect(configJsonFileState).toBeDefined();
         expect(configJsonFileState?.status).toBe('created');
-        expect(configJsonFileState?.output.content).toContain('webapp-with-alchemy');
+        expect(configJsonFileState?.output?.content).toContain('webapp-with-alchemy');
 
         console.log(
           `✅ Alchemy state validation passed - ${resourceIds.length} resources in state`
@@ -204,7 +212,9 @@ describe('TypeKro-Alchemy Integration', () => {
 
       // Verify TypeKro YAML contains proper cross-references
       const yaml = graph.toYaml();
-      expect(yaml).toContain('value: ${database.status.podIP}');
+      // database.metadata.name is the literal 'postgres' (not a schema ref),
+      // so Cel.template('%s', database.metadata.name) resolves to the plain string 'postgres'.
+      expect(yaml).toContain('value: postgres');
       expect(yaml).toContain('value: ${schema.spec.databaseUrl}');
     });
 
@@ -215,7 +225,7 @@ describe('TypeKro-Alchemy Integration', () => {
       });
 
       const SimpleStatusSchema = type({
-        phase: 'string',
+        phase: 'number%1',
       });
 
       const graph = toResourceGraph(
@@ -235,7 +245,7 @@ describe('TypeKro-Alchemy Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.app.status.phase,
+          phase: resources.app.status.readyReplicas,
         })
       );
 
@@ -309,22 +319,22 @@ describe('TypeKro-Alchemy Integration', () => {
         const inputTestState = await alchemyScope.state.all();
 
         // Verify that our File resources are registered in alchemy state
-        const dbConfigState = Object.values(inputTestState).find(
-          (state: any) =>
+        const dbConfigState = (Object.values(inputTestState) as AlchemyStateEntry[]).find(
+          (state) =>
             state.kind === 'fs::File' && state.output?.path === alchemyDatabase.configFile.path
-        ) as any;
-        const envConfigState = Object.values(inputTestState).find(
-          (state: any) =>
+        );
+        const envConfigState = (Object.values(inputTestState) as AlchemyStateEntry[]).find(
+          (state) =>
             state.kind === 'fs::File' && state.output?.path === alchemyDatabase.envFile.path
-        ) as any;
+        );
 
         expect(dbConfigState).toBeDefined();
         expect(dbConfigState?.status).toBe('created');
-        expect(dbConfigState?.output.content).toContain('webapp-database');
+        expect(dbConfigState?.output?.content).toContain('webapp-database');
 
         expect(envConfigState).toBeDefined();
         expect(envConfigState?.status).toBe('created');
-        expect(envConfigState?.output.content).toContain('DATABASE_HOST=webapp-database');
+        expect(envConfigState?.output?.content).toContain('DATABASE_HOST=webapp-database');
 
         console.log(`✅ Database input test state validation passed`);
         console.log(`   - DB config: ${dbConfigState?.id} (${dbConfigState?.status})`);
@@ -385,7 +395,7 @@ describe('TypeKro-Alchemy Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: Cel.template('http://%s:8080', resources.webapp.status.podIP),
+          url: Cel.template('http://%s:8080', resources.webapp.metadata.name),
           databaseStatus: 'connected',
         })
       );
@@ -518,30 +528,30 @@ data:
         const fullstackState = await alchemyScope.state.all();
 
         // Verify that our File resources are registered in alchemy state
-        const dbConfigState = Object.values(fullstackState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === alchemyDatabase.configFile.path
-        ) as any;
-        const storageConfigState = Object.values(fullstackState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === alchemyBucket.configFile.path
-        ) as any;
-        const appConfigState = Object.values(fullstackState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === alchemyBucket.appConfigFile.path
-        ) as any;
+        const dbConfigState = (Object.values(fullstackState) as AlchemyStateEntry[]).find(
+          (state) =>
+            state.kind === 'fs::File' && state.output?.path === alchemyDatabase.configFile.path
+        );
+        const storageConfigState = (Object.values(fullstackState) as AlchemyStateEntry[]).find(
+          (state) =>
+            state.kind === 'fs::File' && state.output?.path === alchemyBucket.configFile.path
+        );
+        const appConfigState = (Object.values(fullstackState) as AlchemyStateEntry[]).find(
+          (state) =>
+            state.kind === 'fs::File' && state.output?.path === alchemyBucket.appConfigFile.path
+        );
 
         expect(dbConfigState).toBeDefined();
         expect(dbConfigState?.status).toBe('created');
-        expect(dbConfigState?.output.content).toContain('fullstack-db');
+        expect(dbConfigState?.output?.content).toContain('fullstack-db');
 
         expect(storageConfigState).toBeDefined();
         expect(storageConfigState?.status).toBe('created');
-        expect(storageConfigState?.output.content).toContain('fullstack-storage');
+        expect(storageConfigState?.output?.content).toContain('fullstack-storage');
 
         expect(appConfigState).toBeDefined();
         expect(appConfigState?.status).toBe('created');
-        expect(appConfigState?.output.content).toContain('fullstack-app-config');
+        expect(appConfigState?.output?.content).toContain('fullstack-app-config');
 
         console.log(`✅ Fullstack test state validation passed`);
         console.log(`   - DB config: ${dbConfigState?.id} (${dbConfigState?.status})`);
@@ -655,7 +665,7 @@ data:
         }),
         (_schema, resources) => ({
           phase: 'running',
-          url: Cel.template('http://%s:8080', resources.app.status.podIP),
+          url: Cel.template('http://%s:8080', resources.app.metadata.name),
         })
       );
 
@@ -744,22 +754,23 @@ data:
         const externalDbState = await alchemyScope.state.all();
 
         // Verify that our File resources are registered in alchemy state
-        const configState = Object.values(externalDbState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === externalDatabase.configFile.path
-        ) as any;
-        const credentialsState = Object.values(externalDbState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === externalDatabase.credentialsFile.path
-        ) as any;
+        const configState = (Object.values(externalDbState) as AlchemyStateEntry[]).find(
+          (state) =>
+            state.kind === 'fs::File' && state.output?.path === externalDatabase.configFile.path
+        );
+        const credentialsState = (Object.values(externalDbState) as AlchemyStateEntry[]).find(
+          (state) =>
+            state.kind === 'fs::File' &&
+            state.output?.path === externalDatabase.credentialsFile.path
+        );
 
         expect(configState).toBeDefined();
         expect(configState?.status).toBe('created');
-        expect(configState?.output.content).toContain('external-db');
+        expect(configState?.output?.content).toContain('external-db');
 
         expect(credentialsState).toBeDefined();
         expect(credentialsState?.status).toBe('created');
-        expect(credentialsState?.output.content).toContain('DB_HOST=external-db');
+        expect(credentialsState?.output?.content).toContain('DB_HOST=external-db');
 
         console.log(`✅ External database test state validation passed`);
         console.log(`   - Config: ${configState?.id} (${configState?.status})`);
@@ -964,37 +975,34 @@ resource "aws_s3_bucket" "webapp_assets" {
         const awsState = await alchemyScope.state.all();
 
         // Verify that our File resources are registered in alchemy state
-        const vpcConfigState = Object.values(awsState).find(
-          (state: any) => state.kind === 'fs::File' && state.output.path === vpc.configFile.path
-        ) as any;
-        const dbConfigState = Object.values(awsState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === database.configFile.path
-        ) as any;
-        const s3ConfigState = Object.values(awsState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === s3Bucket.configFile.path
-        ) as any;
-        const terraformConfigState = Object.values(awsState).find(
-          (state: any) =>
-            state.kind === 'fs::File' && state.output.path === s3Bucket.terraformFile.path
-        ) as any;
+        const vpcConfigState = (Object.values(awsState) as AlchemyStateEntry[]).find(
+          (state) => state.kind === 'fs::File' && state.output?.path === vpc.configFile.path
+        );
+        const dbConfigState = (Object.values(awsState) as AlchemyStateEntry[]).find(
+          (state) => state.kind === 'fs::File' && state.output?.path === database.configFile.path
+        );
+        const s3ConfigState = (Object.values(awsState) as AlchemyStateEntry[]).find(
+          (state) => state.kind === 'fs::File' && state.output?.path === s3Bucket.configFile.path
+        );
+        const terraformConfigState = (Object.values(awsState) as AlchemyStateEntry[]).find(
+          (state) => state.kind === 'fs::File' && state.output?.path === s3Bucket.terraformFile.path
+        );
 
         expect(vpcConfigState).toBeDefined();
         expect(vpcConfigState?.status).toBe('created');
-        expect(vpcConfigState?.output.content).toContain('webapp-vpc');
+        expect(vpcConfigState?.output?.content).toContain('webapp-vpc');
 
         expect(dbConfigState).toBeDefined();
         expect(dbConfigState?.status).toBe('created');
-        expect(dbConfigState?.output.content).toContain('webapp-db');
+        expect(dbConfigState?.output?.content).toContain('webapp-db');
 
         expect(s3ConfigState).toBeDefined();
         expect(s3ConfigState?.status).toBe('created');
-        expect(s3ConfigState?.output.content).toContain('webapp-assets');
+        expect(s3ConfigState?.output?.content).toContain('webapp-assets');
 
         expect(terraformConfigState).toBeDefined();
         expect(terraformConfigState?.status).toBe('created');
-        expect(terraformConfigState?.output.content).toContain('resource "aws_vpc" "webapp_vpc"');
+        expect(terraformConfigState?.output?.content).toContain('resource "aws_vpc" "webapp_vpc"');
 
         console.log(`✅ AWS integration test state validation passed`);
         console.log(`   - VPC config: ${vpcConfigState?.id} (${vpcConfigState?.status})`);

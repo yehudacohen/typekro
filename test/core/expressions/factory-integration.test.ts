@@ -15,11 +15,11 @@ import {
   analyzeFactoryConfig,
   processFactoryValue,
   withExpressionAnalysis
-} from '../../../src/core/expressions/factory-integration.js';
+} from '../../../src/core/expressions/factory/factory-integration.js';
 import type { 
   FactoryExpressionContext,
   FactoryAnalysisConfig 
-} from '../../../src/core/expressions/factory-integration.js';
+} from '../../../src/core/expressions/factory/factory-integration.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 
 // Test schemas

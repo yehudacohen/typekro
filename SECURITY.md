@@ -18,6 +18,12 @@ Instead, please report them via email to: **security@typekro.run**
 
 You should receive a response within 48 hours. If the issue is confirmed, we will release a patch as soon as possible depending on complexity.
 
+## Contacting the Security Team
+
+Report vulnerabilities via GitHub Security Advisories (preferred): navigate to the repository → Security → Advisories → "Report a vulnerability".
+
+For sensitive issues, email security@typekro.run. PGP-encrypted reports are welcome — key available on request.
+
 ## What to Include
 
 Please include the following information in your report:
@@ -61,6 +67,81 @@ When using TypeKro, please be aware of these security considerations:
 - Regularly update TypeKro and its dependencies
 - Review dependency security advisories
 - Use Dependabot for automated security updates
+
+## Threat Model
+
+TypeKro operates at the boundary between developer-authored TypeScript and Kubernetes
+cluster state. Understanding the trust boundaries is critical for contributors and
+security-conscious users.
+
+### Trust Boundaries
+
+1. **TypeScript composition code (TRUSTED)**
+   - Composition functions, status builders, and factory calls are authored by the
+     developer and run in Node.js/Bun at build time.
+   - This code has full access to the Node.js runtime. TypeKro does not sandbox it.
+   - **Implication:** Do not execute untrusted TypeKro composition code.
+
+2. **YAML file content (SEMI-TRUSTED)**
+   - Local YAML files are read from disk and included verbatim in Kubernetes manifests.
+   - Git-sourced YAML (`git:` URLs) is fetched from GitHub's API.
+   - HTTP-sourced YAML (`http:`/`https:` URLs) is fetched with SSRF protections.
+   - **Implication:** YAML content is not validated beyond basic syntax. Malicious YAML
+     could define overprivileged RBAC resources or other dangerous objects. Users are
+     responsible for reviewing YAML sources.
+
+3. **CEL expressions (SEMI-TRUSTED)**
+   - CEL expressions are either auto-generated from TypeScript status builders or
+     authored directly via `Cel.expr()`.
+   - CEL evaluation uses `cel-js` with a null-prototype context (`Object.create(null)`)
+     to prevent prototype-chain access.
+   - **Implication:** CEL expressions can reference any resource status field but cannot
+     execute arbitrary JavaScript or access Node.js APIs.
+
+4. **Kubernetes API (TRUSTED TRANSPORT, UNTRUSTED CONTENT)**
+   - TypeKro communicates with the Kubernetes API server over TLS (configurable).
+   - Resource status fields returned by the API are used in CEL evaluation and status
+     hydration.
+   - **Implication:** A compromised cluster could return malicious status values. CEL
+     evaluation is sandboxed, but status values flow into user-visible output.
+
+### SSRF Protection (HTTP URL Resolution)
+
+When resolving `http:`/`https:` YAML sources, TypeKro applies layered SSRF protections:
+
+- **Scheme allowlist:** Only `http:` and `https:` are permitted.
+- **Blocked hosts:** Cloud metadata endpoints (`169.254.169.254`,
+  `metadata.google.internal`) are blocked.
+- **Private IP blocking:** Resolved IPs in RFC 1918, loopback, link-local, and IPv6
+  private ranges are rejected.
+- **DNS rebinding mitigation:** Hostnames are resolved to IP addresses before the fetch.
+  The resolved IP replaces the hostname in the fetch URL, closing the TOCTOU gap between
+  DNS validation and the actual HTTP request.
+- **Suspicious hostname blocking:** Numeric-only hostnames (hex, octal) are rejected.
+
+### RBAC Defaults
+
+The `typeKroRuntimeBootstrap` function binds Flux controllers to `cluster-admin` by
+default. This is intentional — Flux controllers manage arbitrary Helm charts that may
+create CRDs and cluster-scoped resources. Scoped RBAC is available via the `rbac` option
+for security-conscious deployments. See Design Constraint #3 in the project roadmap.
+
+To restrict permissions, use the `rbac` option when deploying the TypeKro runtime:
+```typescript
+await typeKroRuntime.factory('kro', { rbac: 'namespace' })
+```
+See the `RbacMode` type for available options.
+
+### Expression Evaluation Sandbox
+
+TypeKro uses `angular-expressions` to evaluate schema field references safely. This is **not** a general-purpose sandbox for untrusted code — it prevents string injection into `new Function()` calls but composition functions themselves are trusted code (see Trust Boundary #1 above). Do not use TypeKro to evaluate arbitrary user-provided expressions.
+
+### `fn.toString()` Dependency
+
+TypeKro's JS-to-CEL conversion relies on `Function.prototype.toString()` returning
+parseable source code. This is a load-bearing runtime dependency. Minifiers, certain
+transpilers, and some bundlers that strip or mangle function source will break this
+mechanism. This is documented as Design Constraint #4.
 
 ## Vulnerability Disclosure Timeline
 

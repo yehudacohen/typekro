@@ -47,8 +47,9 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
 
     expect(graph).toBeDefined();
     expect(graph.resources[0]).toBeDefined();
-    expect((graph.resources[0] as any).spec.values).toBeDefined();
-    expect((graph.resources[0] as any).spec.values.replicaCount).toBeDefined();
+    const res0 = graph.resources[0] as unknown as Record<string, Record<string, unknown>>;
+    expect(res0.spec!.values).toBeDefined();
+    expect((res0.spec!.values as Record<string, unknown>).replicaCount).toBeDefined();
   });
 
   it('should support nested object references in values', () => {
@@ -87,8 +88,9 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
 
     expect(graph).toBeDefined();
     expect(graph.resources[0]).toBeDefined();
-    expect((graph.resources[0] as any).spec.values.config).toBeDefined();
-    expect((graph.resources[0] as any).spec.values.metadata).toBeDefined();
+    const nestedRes0 = graph.resources[0] as unknown as Record<string, Record<string, unknown>>;
+    expect((nestedRes0.spec!.values as Record<string, unknown>).config).toBeDefined();
+    expect((nestedRes0.spec!.values as Record<string, unknown>).metadata).toBeDefined();
   });
 
   it('should work with simpleHelmChart function', () => {
@@ -115,6 +117,7 @@ describe('Helm Integration with TypeKro Magic Proxy System', () => {
 
     expect(graph).toBeDefined();
     expect(graph.resources[0]).toBeDefined();
-    expect((graph.resources[0] as any).spec.values).toBeDefined();
+    const simpleRes0 = graph.resources[0] as unknown as Record<string, Record<string, unknown>>;
+    expect(simpleRes0.spec!.values).toBeDefined();
   });
 });

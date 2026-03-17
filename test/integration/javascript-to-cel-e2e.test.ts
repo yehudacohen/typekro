@@ -6,9 +6,9 @@
  * and factory pattern integration.
  */
 
-import { describe, it, expect } from 'bun:test';
-import { toResourceGraph, simple, kubernetesComposition } from '../../src/index.js';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import { kubernetesComposition, simple, toResourceGraph } from '../../src/index.js';
 
 describe('JavaScript to CEL E2E Integration Tests', () => {
   describe('Complete Workflow with Magic Proxy', () => {
@@ -117,10 +117,11 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           // Complex JavaScript expressions for status
           ready: schema.spec.database.enabled
             ? resources.deployment.status.readyReplicas > 0 &&
-              resources.service.status.ready &&
+              resources.deployment.status.availableReplicas > 0 &&
               resources.database?.status.readyReplicas > 0 &&
-              resources.databaseService?.status.ready
-            : resources.deployment.status.readyReplicas > 0 && resources.service.status.ready,
+              resources.databaseService?.status?.conditions?.length > 0
+            : resources.deployment.status.readyReplicas > 0 &&
+              resources.deployment.status.availableReplicas > 0,
 
           url: schema.spec.ingress.enabled
             ? `https://${schema.spec.ingress.hostname}`
@@ -140,11 +141,11 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
               ? resources.database?.status?.readyReplicas > 0
               : true,
             ingress: schema.spec.ingress.enabled,
-            service: resources.service.status.ready ?? false,
+            service: resources.deployment.status.availableReplicas > 0,
           },
 
           endpoints: {
-            internal: `http://${resources.service.status?.clusterIP || 'pending'}:80`,
+            internal: `http://${resources.service.metadata?.name || 'pending'}:80`,
             external: schema.spec.ingress.enabled
               ? `https://${schema.spec.ingress.hostname}`
               : resources.service.status?.loadBalancer?.ingress?.[0]?.ip
@@ -204,7 +205,9 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
         }),
         (_schema, resources) => ({
           // JavaScript expressions that should convert to CEL
-          ready: resources.deployment.status.readyReplicas > 0 && resources.service.status.ready,
+          ready:
+            resources.deployment.status.readyReplicas > 0 &&
+            resources.deployment.status.availableReplicas > 0,
           url: `http://${resources.service.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
         })
       );
@@ -303,7 +306,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             // Update app environment with database connection
             app.spec?.template?.spec?.containers?.[0]?.env?.push({
               name: 'DATABASE_URL',
-              value: `postgres://user:password@${database.status.podIP}:5432/${spec.name}`,
+              value: `postgres://user:password@${database.metadata.name}:5432/${spec.name}`,
             });
           }
 
@@ -327,7 +330,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             // Update app environment with Redis connection
             app.spec?.template?.spec?.containers?.[0]?.env?.push({
               name: 'REDIS_URL',
-              value: `redis://${redis.status.podIP}:6379`,
+              value: `redis://${redis.metadata.name}:6379`,
             });
           }
 
@@ -335,11 +338,13 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           return {
             ready:
               app.status.readyReplicas > 0 &&
-              appService.status.ready &&
+              app.status.availableReplicas > 0 &&
               (!spec.features.database ||
-                ((database?.status?.readyReplicas || 0) > 0 && databaseService?.status?.ready)) &&
+                ((database?.status?.readyReplicas || 0) > 0 &&
+                  (databaseService?.status?.conditions?.length || 0) > 0)) &&
               (!spec.features.redis ||
-                ((redis?.status?.readyReplicas || 0) > 0 && redisService?.status?.ready)),
+                ((redis?.status?.readyReplicas || 0) > 0 &&
+                  (redisService?.status?.conditions?.length || 0) > 0)),
 
             url: `http://${appService.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
 
@@ -352,7 +357,7 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             environment: spec.environment,
 
             health: {
-              overall: app.status.readyReplicas > 0 && appService.status.ready,
+              overall: app.status.readyReplicas > 0 && app.status.availableReplicas > 0,
               database: spec.features.database
                 ? database?.status.conditions?.find((c: any) => c.type === 'Available')?.status ===
                   'True'
@@ -418,10 +423,10 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           });
 
           return {
-            ready: db.status.readyReplicas > 0 && dbService.status.ready,
-            host: dbService.status.clusterIP || 'localhost',
+            ready: db.status.readyReplicas > 0 && db.status.availableReplicas > 0,
+            host: dbService.metadata.name || 'localhost',
             port: 5432,
-            connectionString: `postgres://user:password@${dbService.status.clusterIP}:5432/${spec.name}`,
+            connectionString: `postgres://user:password@${dbService.metadata.name}:5432/${spec.name}`,
             storageReady: storage.status.phase === 'Bound',
           };
         }
@@ -480,10 +485,10 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
 
           // Create a database status object that mimics what the nested composition would return
           const database = {
-            ready: db.status.readyReplicas > 0 && dbService.status.ready,
-            host: dbService.status.clusterIP || 'localhost',
+            ready: db.status.readyReplicas > 0 && db.status.availableReplicas > 0,
+            host: dbService.metadata.name || 'localhost',
             port: 5432,
-            connectionString: `postgres://user:password@${dbService.status.clusterIP}:5432/${spec.name}`,
+            connectionString: `postgres://user:password@${dbService.metadata.name}:5432/${spec.name}`,
             storageReady: storage.status.phase === 'Bound',
           };
 
@@ -508,7 +513,8 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           });
 
           return {
-            ready: app.status.readyReplicas > 0 && appService.status.ready && database.ready,
+            ready:
+              app.status.readyReplicas > 0 && app.status.availableReplicas > 0 && database.ready,
             url: `http://${appService.status?.loadBalancer?.ingress?.[0]?.ip || 'localhost'}`,
             database: {
               ready: database.ready,
@@ -518,8 +524,9 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
             health: {
               app: app.status.readyReplicas > 0,
               database: database.ready,
-              service: appService.status.ready,
-              overall: app.status.readyReplicas > 0 && appService.status.ready && database.ready,
+              service: app.status.availableReplicas > 0,
+              overall:
+                app.status.readyReplicas > 0 && app.status.availableReplicas > 0 && database.ready,
             },
           };
         }
@@ -578,13 +585,13 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           // Complex JavaScript expressions
           ready:
             resources.deployment.status.readyReplicas === schema.spec.replicas &&
-            resources.service.status.ready,
+            resources.deployment.status.availableReplicas > 0,
 
           replicas: resources.deployment.status.readyReplicas || 0,
 
           url: resources.service.status?.loadBalancer?.ingress?.[0]?.ip
             ? `http://${resources.service.status.loadBalancer.ingress[0].ip}`
-            : `http://${resources.service.status?.clusterIP || 'localhost'}`,
+            : `http://${resources.service.metadata?.name || 'localhost'}`,
 
           phase:
             resources.deployment.status.readyReplicas === 0
@@ -665,13 +672,13 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
         (schema, resources) => ({
           ready: schema.spec.dbEnabled
             ? resources.app.status.readyReplicas > 0 &&
-              resources.appService.status.ready &&
+              resources.app.status.availableReplicas > 0 &&
               resources.database?.status.readyReplicas > 0 &&
-              resources.databaseService?.status.ready
-            : resources.app.status.readyReplicas > 0 && resources.appService.status.ready,
+              resources.database?.status.availableReplicas > 0
+            : resources.app.status.readyReplicas > 0 && resources.app.status.availableReplicas > 0,
 
           databaseUrl: schema.spec.dbEnabled
-            ? `postgres://user:pass@${resources.databaseService?.status.clusterIP}:5432/db`
+            ? `postgres://user:pass@${resources.databaseService?.metadata?.name}:5432/db`
             : 'none',
         })
       );
@@ -764,7 +771,8 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           // This references a missing resource - should be handled gracefully
           ready:
             resources.deployment.status.readyReplicas > 0 &&
-            ((resources as any).service?.status?.ready ?? false),
+            ((resources as unknown as Record<string, Record<string, Record<string, unknown[]>>>)
+              .service?.status?.conditions?.length ?? 0) > 0,
         })
       );
 
@@ -832,9 +840,10 @@ describe('JavaScript to CEL E2E Integration Tests', () => {
           for (let i = 0; i < schema.spec.microservices; i++) {
             // Type-safe resource access - TypeScript now knows these are Enhanced resources
             const deployment = resources[`service${i}`];
-            const service = resources[`service${i}Service`];
+            const _service = resources[`service${i}Service`];
 
-            const serviceReady = deployment?.status?.readyReplicas > 0 && service?.status?.ready;
+            const serviceReady =
+              deployment?.status?.readyReplicas > 0 && deployment?.status?.availableReplicas > 0;
 
             services.push(`service-${i}`);
 

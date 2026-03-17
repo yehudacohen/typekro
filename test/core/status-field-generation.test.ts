@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
 describe('Status Field Generation', () => {
   const WebAppSpecSchema = type({
@@ -58,7 +58,7 @@ describe('Status Field Generation', () => {
 
       // Should contain CEL expressions for status fields, not type definitions
       expect(yaml).toContain('readyReplicas: ${webappDeployment.status.readyReplicas}');
-      expect(yaml).toContain('url: ${"http://" + webappService.status.loadBalancer.ingress.0.ip}');
+      expect(yaml).toContain('url: http://${webappService.status.loadBalancer.ingress.0.ip}');
       expect(yaml).toContain('conditions: ${webappDeployment.status.conditions.map(c, c.type)}');
 
       // Should not contain type definitions for user status fields

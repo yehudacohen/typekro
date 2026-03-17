@@ -6,11 +6,19 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
-import { kroCustomResource } from '../../../factories/kro/kro-custom-resource.js';
-import { resourceGraphDefinition } from '../../../factories/kro/resource-graph-definition.js';
+// NOTE: kroCustomResource and resourceGraphDefinition are loaded via dynamic import()
+// at point of use to avoid a core/ → factories/ static dependency.
+// This matches the pattern in kro-factory.ts.
+import { preserveNonEnumerableProperties } from '../../../utils/helpers.js';
+import {
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_POLL_INTERVAL,
+  DEFAULT_RGD_TIMEOUT,
+} from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
 import { getCustomObjectsApi } from '../../kubernetes/client-provider.js';
 import { getComponentLogger } from '../../logging/index.js';
+import { getResourceId } from '../../resources/id.js';
 import { generateKroSchemaFromArktype } from '../../serialization/schema.js';
 import type { DeploymentResult, FactoryOptions } from '../../types/deployment.js';
 import type {
@@ -21,7 +29,8 @@ import type {
 } from '../../types/kubernetes.js';
 import type { KroCompatibleType, SchemaDefinition } from '../../types/serialization.js';
 import type { DirectDeploymentEngine } from '../engine.js';
-import { handleDeploymentError } from '../shared-utilities.js';
+import { waitForKroInstanceReady } from '../kro-readiness.js';
+import { convertToKubernetesName, handleDeploymentError } from '../shared-utilities.js';
 import { BaseDeploymentStrategy } from './base-strategy.js';
 
 /**
@@ -31,8 +40,14 @@ export class KroDeploymentStrategy<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
 > extends BaseDeploymentStrategy<TSpec, TStatus> {
-  private customObjectsApi?: k8s.CustomObjectsApi;
+  private injectedCustomObjectsApi: k8s.CustomObjectsApi | undefined;
+  private resolvedCustomObjectsApi: k8s.CustomObjectsApi | undefined;
 
+  /**
+   * @param customObjectsApi - Injected CustomObjectsApi client. When not provided,
+   *   falls back to the singleton `getCustomObjectsApi()` from client-provider.
+   *   Prefer passing this parameter to avoid global singleton coupling.
+   */
   constructor(
     factoryName: string,
     namespace: string,
@@ -40,19 +55,22 @@ export class KroDeploymentStrategy<
     factoryOptions: FactoryOptions,
     private directEngine: DirectDeploymentEngine,
     private resources: Record<string, KubernetesResource> = {},
-    private statusMappings: Record<string, unknown> = {}
+    private statusMappings: Record<string, unknown> = {},
+    customObjectsApi?: k8s.CustomObjectsApi
   ) {
     super(factoryName, namespace, schemaDefinition, undefined, resources, factoryOptions);
+    this.injectedCustomObjectsApi = customObjectsApi;
   }
 
   /**
-   * Get CustomObjectsApi client
+   * Get CustomObjectsApi client (lazy, cached).
+   * Uses injected client if available, otherwise falls back to singleton.
    */
   private getCustomObjectsApi(): k8s.CustomObjectsApi {
-    if (!this.customObjectsApi) {
-      this.customObjectsApi = getCustomObjectsApi();
+    if (!this.resolvedCustomObjectsApi) {
+      this.resolvedCustomObjectsApi = this.injectedCustomObjectsApi ?? getCustomObjectsApi();
     }
-    return this.customObjectsApi;
+    return this.resolvedCustomObjectsApi;
   }
 
   protected async executeDeployment(spec: TSpec, instanceName: string): Promise<DeploymentResult> {
@@ -79,7 +97,7 @@ export class KroDeploymentStrategy<
         duration: 0, // Will be calculated by the base class
         errors: [],
       };
-    } catch (error) {
+    } catch (error: unknown) {
       handleDeploymentError(error, 'Kro deployment failed');
     }
   }
@@ -104,7 +122,7 @@ export class KroDeploymentStrategy<
    */
   private async deployResourceGraphDefinition(): Promise<void> {
     const logger = getComponentLogger('kro-deployment-strategy');
-    const rgdName = this.convertToKubernetesName(this.factoryName);
+    const rgdName = convertToKubernetesName(this.factoryName);
 
     // Generate Kro schema from the factory's schema definition and resources
     const kroSchema = generateKroSchemaFromArktype(
@@ -125,13 +143,17 @@ export class KroDeploymentStrategy<
       spec: {
         schema: kroSchema,
         resources: Object.values(this.resources || {}).map((resource) => ({
-          id: resource.id || resource.metadata?.name || 'unknown',
+          id: getResourceId(resource),
           template: resource,
         })),
       },
     };
 
     // Wrap with resourceGraphDefinition factory to get Enhanced object with readiness evaluation
+    // Dynamic import avoids core/ → factories/ static dependency
+    const { resourceGraphDefinition } = await import(
+      '../../../factories/kro/resource-graph-definition.js'
+    );
     const enhancedRGD = resourceGraphDefinition(rgdManifest);
 
     // Create deployable resource
@@ -140,12 +162,15 @@ export class KroDeploymentStrategy<
       id: rgdName,
     };
 
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedRGD, deployableRGD);
+
     // Deploy using DirectDeploymentEngine with KRO mode
     await this.directEngine.deployResource(deployableRGD, {
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: true,
-      timeout: this.factoryOptions.timeout || 60000,
+      timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
     });
 
     logger.debug('ResourceGraphDefinition deployed successfully', {
@@ -176,6 +201,8 @@ export class KroDeploymentStrategy<
     };
 
     // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
+    // Dynamic import avoids core/ → factories/ static dependency
+    const { kroCustomResource } = await import('../../../factories/kro/kro-custom-resource.js');
     const enhancedCustomResource = kroCustomResource({
       apiVersion: customResourceData.apiVersion,
       kind: customResourceData.kind,
@@ -197,18 +224,24 @@ export class KroDeploymentStrategy<
       },
     } as DeployableK8sResource<Enhanced<TSpec, WithKroStatusFields<object>>>;
 
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedCustomResource, deployableCustomResource);
+
     // Deploy using DirectDeploymentEngine with KRO mode
     // Don't wait for ready here - we'll handle Kro-specific readiness logic ourselves
     const deployedResource = await this.directEngine.deployResource(deployableCustomResource, {
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: false, // We'll handle readiness ourselves
-      timeout: this.factoryOptions.timeout || 300000,
+      timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
     });
 
     // Handle Kro-specific readiness checking if requested
     if (this.factoryOptions.waitForReady ?? true) {
-      await this.waitForKroResourceReady(instanceName, this.factoryOptions.timeout || 300000);
+      await this.waitForKroResourceReady(
+        instanceName,
+        this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT
+      );
     }
 
     logger.debug('Custom Resource instance deployed successfully', {
@@ -228,180 +261,24 @@ export class KroDeploymentStrategy<
   }
 
   /**
-   * Convert camelCase factory name to valid Kubernetes resource name (kebab-case)
-   */
-  private convertToKubernetesName(name: string): string {
-    // Validate input name
-    if (!name || typeof name !== 'string') {
-      throw new Error(
-        `Invalid factory name: ${JSON.stringify(name)}. Factory name must be a non-empty string.`
-      );
-    }
-
-    const trimmedName = name.trim();
-    if (trimmedName.length === 0) {
-      throw new Error(`Invalid factory name: Factory name cannot be empty or whitespace-only.`);
-    }
-
-    // Convert to kebab-case and validate result
-    const kubernetesName = trimmedName
-      .replace(/([a-z])([A-Z])/g, '$1-$2') // Insert dash before capital letters
-      .toLowerCase(); // Convert to lowercase
-
-    // Validate Kubernetes naming conventions
-    if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-      throw new Error(
-        `Invalid factory name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
-      );
-    }
-
-    if (kubernetesName.length > 253) {
-      throw new Error(
-        `Invalid factory name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
-      );
-    }
-
-    return kubernetesName;
-  }
-
-  /**
-   * Wait for Kro resource to be ready with Kro-specific logic
+   * Wait for Kro resource to be ready with Kro-specific logic.
+   * Delegates to the shared `waitForKroInstanceReady` in `kro-readiness.ts`.
    */
   private async waitForKroResourceReady(instanceName: string, timeout: number): Promise<void> {
-    const logger = getComponentLogger('kro-deployment-strategy');
-    const startTime = Date.now();
+    const apiVersion = this.getApiVersion();
+    const k8sApi = this.directEngine.getKubernetesApi();
+    const rgdName = convertToKubernetesName(this.factoryName);
 
-    logger.debug('Waiting for Kro resource readiness', { instanceName, timeout });
-
-    while (Date.now() - startTime < timeout) {
-      try {
-        const apiVersion = this.getApiVersion();
-        const k8sApi = this.directEngine.getKubernetesApi(); // Use public getter method
-
-        // In the new API, methods return objects directly (no .body wrapper)
-        const response = await k8sApi.read({
-          apiVersion,
-          kind: this.schemaDefinition.kind,
-          metadata: {
-            name: instanceName,
-            namespace: this.namespace,
-          },
-        });
-
-        const instance = response as KubernetesResource & {
-          status?: {
-            state?: string;
-            conditions?: Array<{ type: string; status: string; message?: string }>;
-          };
-        };
-        const status = instance.status;
-
-        if (!status) {
-          logger.debug('No status found yet, continuing to wait', { instanceName });
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-          continue;
-        }
-
-        // Kro-specific readiness logic
-        const state = status.state;
-        const conditions = status.conditions || [];
-        const syncedCondition = conditions.find(
-          (c: { type: string; status: string; message?: string }) => c.type === 'InstanceSynced'
-        );
-
-        // Check if status has fields beyond the basic Kro fields (conditions, state)
-        const statusKeys = Object.keys(status);
-        const basicKroFields = ['conditions', 'state'];
-        const hasCustomStatusFields = statusKeys.some((key) => !basicKroFields.includes(key));
-
-        const isActive = state === 'ACTIVE';
-        const isSynced = syncedCondition?.status === 'True';
-
-        // Check what status fields are expected by looking at the ResourceGraphDefinition
-        let expectedCustomStatusFields = false;
-        const rgdName = this.convertToKubernetesName(this.factoryName);
-        try {
-          // In the new API, methods take request objects and return objects directly
-          const rgdResponse = await this.getCustomObjectsApi().getClusterCustomObject({
-            group: 'kro.run',
-            version: 'v1alpha1',
-            plural: 'resourcegraphdefinitions',
-            name: rgdName,
-          });
-          const rgd = rgdResponse as any;
-          const rgdStatusSchema = rgd.spec?.schema?.status || {};
-          const rgdStatusKeys = Object.keys(rgdStatusSchema);
-          expectedCustomStatusFields = rgdStatusKeys.length > 0;
-
-          logger.debug('ResourceGraphDefinition status schema check', {
-            rgdName,
-            rgdStatusKeys,
-            expectedCustomStatusFields,
-          });
-        } catch (error) {
-          logger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
-            rgdName,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
-          expectedCustomStatusFields = false;
-        }
-
-        logger.debug('Kro resource status check', {
-          instanceName,
-          state,
-          isActive,
-          isSynced,
-          hasCustomStatusFields,
-          expectedCustomStatusFields,
-          statusKeys,
-        });
-
-        // Resource is ready when it's active, synced, and either:
-        // 1. Has the expected custom status fields populated, OR
-        // 2. No custom status fields are expected (empty status schema in RGD)
-        const isReady =
-          isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
-
-        if (isReady) {
-          logger.info('Kro resource is ready', {
-            instanceName,
-            hasCustomStatusFields,
-            expectedCustomStatusFields,
-          });
-          return;
-        }
-
-        // Check for failure states
-        if (state === 'FAILED') {
-          const failedCondition = conditions.find(
-            (c: { type: string; status: string; message?: string }) => c.status === 'False'
-          );
-          const errorMessage = failedCondition?.message || 'Unknown error';
-          throw new Error(`Kro resource deployment failed: ${errorMessage}`);
-        }
-
-        logger.debug('Kro resource not ready yet, continuing to wait', {
-          instanceName,
-          state,
-          isSynced,
-          hasCustomStatusFields,
-        });
-      } catch (error) {
-        const k8sError = error as { statusCode?: number };
-        if (k8sError.statusCode !== 404) {
-          throw error;
-        }
-        // Resource not found yet, continue waiting
-        logger.debug('Resource not found yet, continuing to wait', { instanceName });
-      }
-
-      // Wait before checking again
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-
-    throw new Error(
-      `Timeout waiting for Kro resource ${instanceName} to be ready after ${timeout}ms`
-    );
+    return waitForKroInstanceReady({
+      instanceName,
+      timeout,
+      k8sApi,
+      customObjectsApi: this.getCustomObjectsApi(),
+      namespace: this.namespace,
+      apiVersion,
+      kind: this.schemaDefinition.kind,
+      rgdName,
+      pollInterval: DEFAULT_POLL_INTERVAL,
+    });
   }
 }

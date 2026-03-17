@@ -6,14 +6,14 @@
  */
 
 import { describe, expect, it } from 'bun:test';
+import { pod } from '../../src/factories/index.js';
 import type {
   Enhanced,
   ResourceBuilder,
   SchemaProxy,
   TypedKroResourceGraphDefinition,
   TypedResourceGraphFactory,
-} from '../../src/core.js';
-import { pod } from '../../src/factories/index.js';
+} from '../../src/index.js';
 
 // Test interfaces for validation - must be compatible with KroCompatibleType
 interface TestSpec {
@@ -163,9 +163,9 @@ describe('Type Safety Validation', () => {
         apiVersion: 'v1',
         kind: 'Pod',
         metadata: { name: 'test' },
-        spec: {} as any,
-        status: {} as any,
-      } as Enhanced<any, any>;
+        spec: {} as unknown,
+        status: {} as unknown,
+      } as Enhanced<unknown, unknown>;
 
       return {
         testResource: enhancedResource,

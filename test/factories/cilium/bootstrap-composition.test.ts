@@ -7,9 +7,13 @@
  * real Kubernetes environments.
  */
 
-import { describe, it, expect } from 'bun:test';
-import { ciliumBootstrap, CiliumBootstrapSpecSchema, CiliumBootstrapStatusSchema } from '../../../src/factories/cilium/compositions/cilium-bootstrap.js';
-import { mapCiliumConfigToHelmValues, } from '../../../src/factories/cilium/resources/helm.js';
+import { describe, expect, it } from 'bun:test';
+import {
+  CiliumBootstrapSpecSchema,
+  CiliumBootstrapStatusSchema,
+  ciliumBootstrap,
+} from '../../../src/factories/cilium/compositions/cilium-bootstrap.js';
+import { mapCiliumConfigToHelmValues } from '../../../src/factories/cilium/resources/helm.js';
 import type { CiliumBootstrapConfig } from '../../../src/factories/cilium/types.js';
 
 // Use the actual bootstrap schemas
@@ -204,11 +208,11 @@ describe('Cilium Bootstrap Composition', () => {
         name: 'test',
         id: 1,
       });
-      expect((helmValues as any).debug).toEqual({
+      expect((helmValues as unknown as Record<string, unknown>).debug).toEqual({
         enabled: true,
         verbose: 'datapath',
       });
-      expect((helmValues as any).resources).toEqual({
+      expect((helmValues as unknown as Record<string, unknown>).resources).toEqual({
         limits: {
           memory: '1Gi',
         },
@@ -221,7 +225,7 @@ describe('Cilium Bootstrap Composition', () => {
       // This test validates that the ciliumBootstrap composition generates the expected
       // status structure that can be converted to CEL expressions
       expect(ciliumBootstrap).toBeDefined();
-      
+
       // The composition should be able to create factories
       const factory = await ciliumBootstrap.factory('direct', { namespace: 'test' });
       expect(factory).toBeDefined();
@@ -231,8 +235,8 @@ describe('Cilium Bootstrap Composition', () => {
         name: 'test-cilium',
         cluster: {
           name: 'test-cluster',
-          id: 1
-        }
+          id: 1,
+        },
       };
       const yaml = await factory.toYaml(testSpec);
       expect(yaml).toBeDefined();
@@ -266,9 +270,11 @@ describe('Cilium Bootstrap Composition', () => {
       };
 
       const helmValues = mapCiliumConfigToHelmValues(config);
-      
+
       // Import validation function
-      const { validateCiliumHelmValues } = require('../../../src/factories/cilium/resources/helm.js');
+      const {
+        validateCiliumHelmValues,
+      } = require('../../../src/factories/cilium/resources/helm.js');
       const validation = validateCiliumHelmValues(helmValues);
 
       expect(validation.valid).toBe(false);

@@ -3,19 +3,24 @@
  */
 
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
-
+import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
+import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
-import type { KroCompatibleType, SchemaProxy, Scope, InferType } from './serialization.js';
-import { NESTED_COMPOSITION_BRAND, CALLABLE_COMPOSITION_BRAND } from '../constants/brands.js';
+import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './schema.js';
 
 /**
- * Represents a deployed Kubernetes resource with metadata about its deployment status
+ * Represents a deployed Kubernetes resource with metadata about its deployment status.
  */
 export interface DeployedResource {
+  /**
+   * Resource graph identifier (camelCase). This is the internal tracking ID,
+   * not the Kubernetes `metadata.name`. Resolved via {@link getResourceId}.
+   */
   id: string;
   kind: string;
+  /** The Kubernetes `metadata.name` of the deployed resource. */
   name: string;
   namespace: string;
   manifest: KubernetesResource;
@@ -45,6 +50,7 @@ export interface AppliedResource {
  */
 export interface DeploymentContext {
   kubernetesApi?: KubernetesObjectApi;
+  kubeConfig?: KubeConfig; // For operations that need direct API access (e.g., CRD patching)
   alchemyScope?: Scope;
   namespace?: string;
   // Level-based execution context - enables future closure extensibility
@@ -96,17 +102,89 @@ export interface EnhancedDeploymentPlan {
  */
 export type ConflictStrategy = 'warn' | 'fail' | 'patch' | 'replace';
 
-export interface DeploymentOptions {
-  mode: 'direct' | 'kro' | 'alchemy' | 'auto';
+// =============================================================================
+// SHARED CONFIG SUB-TYPES
+// =============================================================================
+
+/** Event monitoring configuration for Kubernetes deployments */
+export interface EventMonitoringConfig {
+  /** Enable event monitoring (default: false) */
+  enabled?: boolean;
+  /** Event types to monitor (default: ['Warning', 'Error']) */
+  eventTypes?: ('Normal' | 'Warning' | 'Error')[];
+  /** Include child resources in monitoring (default: true) */
+  includeChildResources?: boolean;
+  /** Deduplication window in seconds (default: 60) */
+  deduplicationWindow?: number;
+  /** Maximum events per resource per minute (default: 100) */
+  maxEventsPerSecond?: number;
+}
+
+/** Debug logging configuration for deployment diagnostics */
+export interface DebugLoggingConfig {
+  /** Enable debug logging (default: false) */
+  enabled?: boolean;
+  /** Enable status polling debug logs (default: true when enabled) */
+  statusPolling?: boolean;
+  /** Enable readiness evaluation debug logs (default: true when enabled) */
+  readinessEvaluation?: boolean;
+  /** Maximum status object size to log in bytes (default: 1024) */
+  maxStatusObjectSize?: number;
+  /** Enable verbose mode with additional diagnostic information (default: false) */
+  verboseMode?: boolean;
+}
+
+/** Automatic environment fixes configuration */
+export interface AutoFixConfig {
+  /** Automatically patch Flux CRDs for Kubernetes 1.33+ compatibility (default: true) */
+  fluxCRDs?: boolean;
+  /** Log level for auto-fix operations (default: 'info') */
+  logLevel?: 'error' | 'warn' | 'info' | 'debug';
+}
+
+// =============================================================================
+// BASE DEPLOYMENT CONFIG
+// =============================================================================
+
+/**
+ * Common deployment configuration shared by DeploymentOptions,
+ * FactoryOptions, and AlchemyDeploymentOptions.
+ */
+export interface BaseDeploymentConfig {
+  /** Kubernetes namespace for deployment */
   namespace?: string;
+  /** Timeout in milliseconds for readiness waits */
   timeout?: number;
+  /** Wait for resources to become ready after deployment */
   waitForReady?: boolean;
+  /** Retry policy for transient failures */
+  retryPolicy?: RetryPolicy;
+  /** Callback for deployment progress events */
+  progressCallback?: (event: DeploymentEvent) => void;
+}
+
+// =============================================================================
+// DEPLOYMENT OPTIONS
+// =============================================================================
+
+export interface DeploymentOptions extends BaseDeploymentConfig {
+  mode: 'direct' | 'kro' | 'alchemy' | 'auto';
   dryRun?: boolean;
   rollbackOnFailure?: boolean;
-  retryPolicy?: RetryPolicy;
-  progressCallback?: (event: DeploymentEvent) => void;
 
-  /** Hydrate Enhanced proxy status fields with live cluster data (default: true) */
+  /**
+   * Abort readiness waits for all resources when any resource in the same level fails
+   * This significantly speeds up deployments when failures occur
+   * @default true
+   */
+  abortOnFailure?: boolean;
+
+  /**
+   * Hydrate Enhanced proxy status fields with live cluster data
+   * IMPORTANT: Requires waitForReady: true to ensure resources have status
+   * When false, status will be null and only spec will be accessible
+   * @default true
+   */
   hydrateStatus?: boolean;
 
   /**
@@ -120,32 +198,13 @@ export interface DeploymentOptions {
   conflictStrategy?: ConflictStrategy;
 
   /** Event monitoring configuration */
-  eventMonitoring?: {
-    /** Enable event monitoring (default: false) */
-    enabled?: boolean;
-    /** Event types to monitor (default: ['Warning', 'Error']) */
-    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
-    /** Include child resources in monitoring (default: true) */
-    includeChildResources?: boolean;
-    /** Deduplication window in seconds (default: 60) */
-    deduplicationWindow?: number;
-    /** Maximum events per resource per minute (default: 100) */
-    maxEventsPerSecond?: number;
-  };
+  eventMonitoring?: EventMonitoringConfig;
 
   /** Debug logging configuration */
-  debugLogging?: {
-    /** Enable debug logging (default: false) */
-    enabled?: boolean;
-    /** Enable status polling debug logs (default: true when enabled) */
-    statusPolling?: boolean;
-    /** Enable readiness evaluation debug logs (default: true when enabled) */
-    readinessEvaluation?: boolean;
-    /** Maximum status object size to log in bytes (default: 1024) */
-    maxStatusObjectSize?: number;
-    /** Enable verbose mode with additional diagnostic information (default: false) */
-    verboseMode?: boolean;
-  };
+  debugLogging?: DebugLoggingConfig;
+
+  /** Automatic environment fixes configuration */
+  autoFix?: AutoFixConfig;
 
   /** Output configuration */
   outputOptions?: {
@@ -156,16 +215,27 @@ export interface DeploymentOptions {
     /** Event types to deliver via progress callbacks (default: all) */
     progressCallbackEvents?: ('kubernetes-event' | 'status-debug' | 'child-resource-discovered')[];
   };
+
+  /**
+   * HTTP request timeout configuration for Kubernetes API operations
+   * Configures timeouts for different operation types (watch, GET, POST, PATCH, DELETE)
+   *
+   * These timeouts apply when running in Bun runtime to prevent requests from hanging
+   * indefinitely. The defaults are:
+   * - watch: 5 seconds (allows clean reconnection)
+   * - default (GET/LIST): 30 seconds
+   * - create (POST): 60 seconds (may trigger webhooks)
+   * - update (PATCH/PUT): 60 seconds (may trigger webhooks)
+   * - delete (DELETE): 90 seconds (may wait for finalizers)
+   *
+   * @default Uses built-in defaults for each operation type
+   */
+  httpTimeouts?: HttpTimeoutConfig;
 }
 
-export interface AlchemyDeploymentOptions {
-  namespace?: string;
-  timeout?: number;
-  waitForReady?: boolean;
+export interface AlchemyDeploymentOptions extends BaseDeploymentConfig {
   dryRun?: boolean;
   rollbackOnFailure?: boolean;
-  retryPolicy?: RetryPolicy;
-  progressCallback?: (event: DeploymentEvent) => void;
 
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
@@ -177,14 +247,31 @@ export interface AlchemyDeploymentOptions {
   skipTLSVerify?: boolean;
 }
 
+/**
+ * Configuration for exponential-backoff retry behaviour during resource deployment.
+ *
+ * The engine waits `initialDelay * backoffMultiplier^attempt` milliseconds between
+ * retries, capped at `maxDelay`.
+ */
 export interface RetryPolicy {
+  /** Maximum number of retry attempts before giving up */
   maxRetries: number;
+  /** Multiplier applied to the delay after each failed attempt */
   backoffMultiplier: number;
+  /** Delay (ms) before the first retry */
   initialDelay: number;
+  /** Upper bound (ms) on the computed backoff delay */
   maxDelay: number;
 }
 
+/**
+ * Event emitted during a deployment lifecycle.
+ *
+ * Subscribe via `DeploymentOptions.onProgress` to receive real-time
+ * updates about each resource's progress through the deployment pipeline.
+ */
 export interface DeploymentEvent {
+  /** Discriminator indicating the stage/nature of the event */
   type:
     | 'started'
     | 'progress'
@@ -198,11 +285,16 @@ export interface DeploymentEvent {
     | 'kubernetes-event'
     | 'status-debug'
     | 'child-resource-discovered';
+  /** Identifier of the resource this event relates to (if applicable) */
   resourceId?: string;
+  /** Human-readable description of the event */
   message: string;
+  /** When the event occurred (defaults to now) */
   timestamp?: Date;
+  /** Error object when `type` is `'failed'` */
   error?: Error;
-  details?: any;
+  /** Arbitrary payload with event-specific context */
+  details?: unknown;
 }
 
 /**
@@ -286,7 +378,13 @@ export interface ResourceGraphResource {
   manifest: DeployableK8sResource<Enhanced<unknown, unknown>>;
 }
 
-export interface ResourceGraph {
+/**
+ * Internal deployment-specific resource graph used by the deployment engine.
+ *
+ * Not to be confused with `ResourceGraph<TSpec, TStatus>` in `resource-graph.ts`,
+ * which is the generic, user-facing interface returned by `toResourceGraph()`.
+ */
+export interface DeploymentResourceGraph {
   name: string;
   resources: ResourceGraphResource[];
   dependencyGraph: DependencyGraph;
@@ -301,11 +399,13 @@ export interface TypedResourceGraph<
   resources: KubernetesResource[];
   closures?: Record<string, DeploymentClosure>; // Deployment closures for direct mode
 
-  // Factory creation with mode selection
-  factory<TMode extends 'kro' | 'direct'>(
-    mode: TMode,
-    options?: FactoryOptions
-  ): FactoryForMode<TMode, TSpec, TStatus>;
+  // Factory creation with mode selection — overloads provide exact return types
+  factory(mode: 'kro', options?: PublicFactoryOptions): KroResourceFactory<TSpec, TStatus>;
+  factory(mode: 'direct', options?: PublicFactoryOptions): DirectResourceFactory<TSpec, TStatus>;
+  factory(
+    mode: 'kro' | 'direct',
+    options?: PublicFactoryOptions
+  ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus>;
 
   // Utility methods
   toYaml(): string;
@@ -354,28 +454,31 @@ export type CallableComposition<
   readonly status: InferType<TStatus>;
 } & TypedResourceGraph<TSpec, TStatus>;
 
-// Factory options determine deployment strategy
-export interface FactoryOptions {
-  namespace?: string;
-  timeout?: number;
-  waitForReady?: boolean;
-  retryPolicy?: RetryPolicy;
-  progressCallback?: (event: DeploymentEvent) => void;
-
-  // Status hydration - if false, Enhanced proxy status fields won't be populated with live data
+/**
+ * Options passed to `deploy()` on a `TypedResourceGraph`.
+ *
+ * Extends {@link BaseDeploymentConfig} with factory-specific settings for
+ * status hydration, Alchemy scope binding, deployment closures, and
+ * Kubernetes API configuration.
+ */
+/**
+ * User-facing factory options for `TypedResourceGraph.factory()`.
+ *
+ * Contains only the settings that library consumers should configure
+ * when creating factories via `graph.factory('direct', options)` or
+ * `graph.factory('kro', options)`.
+ */
+export interface PublicFactoryOptions extends BaseDeploymentConfig {
+  /** When false, Enhanced proxy status fields won't be populated with live cluster data */
   hydrateStatus?: boolean;
 
-  // Alchemy integration - if provided, factory will use alchemy for deployment
+  /** Alchemy scope — when provided the factory will deploy via Alchemy */
   alchemyScope?: Scope;
+  /** Explicit KubeConfig override for cluster connection */
   kubeConfig?: KubeConfig;
 
-  // Deployment closures - for direct mode factories
+  /** Deployment closures for direct-mode factories */
   closures?: Record<string, DeploymentClosure>;
-
-  // Composition re-execution - for providing actual values to composition functions
-  compositionFn?: (spec: any) => any;
-  compositionDefinition?: any;
-  compositionOptions?: any;
 
   /**
    * SECURITY WARNING: Only set to true in non-production environments.
@@ -387,39 +490,116 @@ export interface FactoryOptions {
   skipTLSVerify?: boolean;
 
   /** Event monitoring configuration */
-  eventMonitoring?: {
-    /** Enable event monitoring (default: false) */
-    enabled?: boolean;
-    /** Event types to monitor (default: ['Warning', 'Error']) */
-    eventTypes?: ('Normal' | 'Warning' | 'Error')[];
-    /** Include child resources in monitoring (default: true) */
-    includeChildResources?: boolean;
-    /** Deduplication window in seconds (default: 60) */
-    deduplicationWindow?: number;
-    /** Maximum events per resource per minute (default: 100) */
-    maxEventsPerSecond?: number;
-  };
+  eventMonitoring?: EventMonitoringConfig;
 
   /** Debug logging configuration */
-  debugLogging?: {
-    /** Enable debug logging (default: false) */
-    enabled?: boolean;
-    /** Enable status polling debug logs (default: true when enabled) */
-    statusPolling?: boolean;
-    /** Enable readiness evaluation debug logs (default: true when enabled) */
-    readinessEvaluation?: boolean;
-    /** Maximum status object size to log in bytes (default: 1024) */
-    maxStatusObjectSize?: number;
-    /** Enable verbose mode with additional diagnostic information (default: false) */
-    verboseMode?: boolean;
-  };
+  debugLogging?: DebugLoggingConfig;
 
-  // Factory pattern integration for expression handling
-  /** Factory type for expression analysis and conversion */
-  factoryType?: 'direct' | 'kro';
-  /** Pre-analyzed status mappings for factory-specific handling */
-  statusMappings?: Record<string, any>;
+  /** Automatic environment fixes configuration */
+  autoFix?: AutoFixConfig;
+
+  /**
+   * HTTP request timeout configuration for Kubernetes API operations
+   * Configures timeouts for different operation types (watch, GET, POST, PATCH, DELETE)
+   *
+   * These timeouts apply when running in Bun runtime to prevent requests from hanging
+   * indefinitely. The defaults are:
+   * - watch: 5 seconds (allows clean reconnection)
+   * - default (GET/LIST): 30 seconds
+   * - create (POST): 60 seconds (may trigger webhooks)
+   * - update (PATCH/PUT): 60 seconds (may trigger webhooks)
+   * - delete (DELETE): 90 seconds (may wait for finalizers)
+   *
+   * @default Uses built-in defaults for each operation type
+   */
+  httpTimeouts?: HttpTimeoutConfig;
 }
+
+// ---------------------------------------------------------------------------
+// Dependency-inversion provider interfaces (Phase 3.5)
+// ---------------------------------------------------------------------------
+// `kro-factory.ts` lives in `core/` but needs capabilities supplied by
+// `factories/` and `alchemy/` (higher layers).  Rather than dynamic `import()`
+// calls that invert the dependency direction, the higher layers supply
+// implementations of these interfaces through `InternalFactoryOptions`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps a plain Kro custom-resource manifest into an {@link Enhanced} object
+ * with a readiness evaluator that understands Kro's status conventions.
+ *
+ * Implemented by `factories/kro/kro-custom-resource.ts`.
+ */
+export type KroCustomResourceProvider = (resource: {
+  apiVersion: string;
+  kind: string;
+  metadata: { name: string; namespace?: string };
+  spec: unknown;
+}) => Enhanced<unknown, unknown>;
+
+/**
+ * Wraps a ResourceGraphDefinition manifest into an {@link Enhanced} object
+ * with an RGD-specific readiness evaluator.
+ *
+ * Implemented by `factories/kro/resource-graph-definition.ts`.
+ */
+export type ResourceGraphDefinitionProvider = (rgd: {
+  metadata?: { name?: string; namespace?: string };
+  spec?: Record<string, unknown>;
+  [key: string]: unknown;
+}) => Enhanced<Record<string, unknown>, Record<string, unknown>>;
+
+/**
+ * Alchemy integration bridge.
+ *
+ * Only required when `alchemyScope` is provided. Supplies the three
+ * capabilities that `kro-factory.ts` previously obtained via dynamic imports
+ * from `alchemy/deployment.js`.
+ */
+export interface AlchemyBridge {
+  /** Create a deployer wrapping a {@link DirectDeploymentEngine}. */
+  createDeployer(engine: unknown): unknown;
+  /** Register a resource type in alchemy's global provider registry. */
+  ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): any;
+  /** Generate a deterministic alchemy resource ID. */
+  createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string): string;
+}
+
+/**
+ * Internal factory options used by the serialization and deployment engine.
+ *
+ * These fields are populated automatically when creating factories via
+ * `TypedResourceGraph.factory()` and should never be set by library consumers.
+ */
+export interface InternalFactoryOptions {
+  /** Re-execution function for the composition (internal use) */
+  compositionFn?: (spec: any) => any;
+  /** Original composition definition (internal use) */
+  compositionDefinition?: any;
+  /** Original composition options (internal use) */
+  compositionOptions?: any;
+
+  /** Factory type for expression analysis and conversion (internal use) */
+  factoryType?: 'direct' | 'kro';
+  /** Pre-analyzed status mappings for factory-specific handling (internal use) */
+  statusMappings?: Record<string, unknown>;
+
+  // Dependency-inversion providers (Phase 3.5) ---
+  /** Provider for creating Enhanced Kro custom resources with readiness evaluation */
+  kroCustomResourceProvider?: KroCustomResourceProvider;
+  /** Provider for creating Enhanced RGD resources with readiness evaluation */
+  rgdProvider?: ResourceGraphDefinitionProvider;
+  /** Alchemy integration bridge (only needed when alchemyScope is set) */
+  alchemyBridge?: AlchemyBridge;
+}
+
+/**
+ * Full factory options combining user-facing and internal fields.
+ *
+ * Internally the engine passes the complete set; the public API
+ * ({@link TypedResourceGraph.factory}) exposes only {@link PublicFactoryOptions}.
+ */
+export interface FactoryOptions extends PublicFactoryOptions, InternalFactoryOptions {}
 
 // Type mapping for factory selection
 export type FactoryForMode<
@@ -542,49 +722,10 @@ export interface DeploymentStateRecord {
 // =============================================================================
 // DEPLOYMENT ERROR CLASSES
 // =============================================================================
-
-export class ResourceDeploymentError extends Error {
-  constructor(resourceName: string, resourceKind: string, cause: Error) {
-    super(`Failed to deploy ${resourceKind}/${resourceName}: ${cause.message}`);
-    this.name = 'ResourceDeploymentError';
-    this.cause = cause;
-  }
-}
-
-/**
- * Error thrown when a resource already exists and conflictStrategy is 'fail'
- */
-export class ResourceConflictError extends Error {
-  public readonly resourceName: string;
-  public readonly resourceKind: string;
-  public readonly namespace: string | undefined;
-
-  constructor(resourceName: string, resourceKind: string, namespace?: string | undefined) {
-    const nsInfo = namespace ? ` in namespace '${namespace}'` : '';
-    super(`Resource ${resourceKind}/${resourceName} already exists${nsInfo}`);
-    this.name = 'ResourceConflictError';
-    this.resourceName = resourceName;
-    this.resourceKind = resourceKind;
-    this.namespace = namespace;
-  }
-}
-
-export class ResourceReadinessTimeoutError extends Error {
-  constructor(resource: DeployedResource, timeout: number) {
-    super(`Timeout after ${timeout}ms waiting for ${resource.kind}/${resource.name} to be ready`);
-    this.name = 'ResourceReadinessTimeoutError';
-  }
-}
-
-export class UnsupportedMediaTypeError extends Error {
-  constructor(resourceName: string, resourceKind: string, acceptedTypes: string[], cause: Error) {
-    super(
-      `Failed to deploy ${resourceKind}/${resourceName}: Server rejected request with HTTP 415 Unsupported Media Type. Accepted types: ${acceptedTypes.join(', ')}`
-    );
-    this.name = 'UnsupportedMediaTypeError';
-    this.cause = cause;
-  }
-}
+// Error classes are exported from '../deployment/errors.js' directly.
+// They were previously re-exported here, but that created a circular dependency:
+// deployment.ts → deployment/errors.ts → deployment.ts
+// Import errors from '../deployment/errors.js' or '../deployment/index.js' instead.
 
 // =============================================================================
 // REFERENCE RESOLUTION CONTEXT

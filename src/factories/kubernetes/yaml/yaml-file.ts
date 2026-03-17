@@ -1,16 +1,24 @@
+import type * as k8s from '@kubernetes/client-node';
+import { PatchStrategy } from '@kubernetes/client-node';
 import * as yaml from 'js-yaml';
-import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
+import { DEFAULT_CRD_PATCH_TIMEOUT } from '../../../core/config/defaults.js';
+import { ensureError, ResourceGraphFactoryError } from '../../../core/errors.js';
+import { createBunCompatibleApiextensionsV1Api } from '../../../core/kubernetes/bun-api-client.js';
+import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
+import { isKubernetesError } from '../../../core/kubernetes/type-guards.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
+import { generateSchemaFixPatches } from '../../../core/runtime-patches/crd-schema-fix.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
   AppliedResource,
   DeploymentClosure,
   DeploymentContext,
 } from '../../../core/types/deployment.js';
-import { PatchStrategy } from '@kubernetes/client-node';
-import type { KubernetesResource } from '../../../core/types/kubernetes.js';
-import { PathResolver } from '../../../core/yaml/path-resolver.js';
+import type { CRDManifest, KubernetesResource } from '../../../core/types/kubernetes.js';
+import { PathResolver, type ResolvedContent } from '../../../core/yaml/path-resolver.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
+import { handleConflict } from './conflict-handler.js';
 
 const logger = getComponentLogger('yaml-file');
 
@@ -18,7 +26,7 @@ const logger = getComponentLogger('yaml-file');
  * Parse YAML content into Kubernetes manifests
  */
 function parseYamlManifests(yamlContent: string): KubernetesResource[] {
-  const documents = yaml.loadAll(yamlContent);
+  const documents = yaml.loadAll(yamlContent, undefined, { schema: yaml.JSON_SCHEMA });
   const manifests: KubernetesResource[] = [];
 
   for (const doc of documents) {
@@ -38,18 +46,39 @@ function parseYamlManifests(yamlContent: string): KubernetesResource[] {
  * 2. Tracks field ownership to prevent conflicts
  * 3. Preserves fields managed by other controllers
  *
+ * For CRDs specifically, we use a read-modify-write pattern to ensure schema
+ * changes are properly applied, as server-side apply may not merge deeply
+ * nested schema fields correctly.
+ *
  * @param kubernetesApi - The Kubernetes API client
  * @param manifest - The manifest to apply
  * @param fieldManager - The field manager name (identifies who owns the fields)
  * @param forceConflicts - Whether to force ownership of conflicting fields
+ * @param kubeConfig - Optional KubeConfig for CRD schema patching
  */
 async function applyWithServerSideApply(
-  kubernetesApi: any,
+  kubernetesApi: k8s.KubernetesObjectApi,
   manifest: KubernetesResource,
   fieldManager: string,
-  forceConflicts: boolean
+  forceConflicts: boolean,
+  kubeConfig?: k8s.KubeConfig,
+  crdPatchTimeout?: number
 ): Promise<void> {
   const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
+
+  // For CRDs, use a special read-modify-write pattern to ensure schema changes are applied
+  // Server-side apply may not properly merge deeply nested schema fields
+  if (manifest.kind === 'CustomResourceDefinition') {
+    await applyCRDWithSchemaFix(
+      kubernetesApi,
+      manifest,
+      fieldManager,
+      forceConflicts,
+      kubeConfig,
+      crdPatchTimeout
+    );
+    return;
+  }
 
   try {
     // Server-side apply uses PATCH with specific content type
@@ -69,12 +98,9 @@ async function applyWithServerSideApply(
       fieldManager,
       forceConflicts,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     // If the resource doesn't exist, create it
-    const statusCode =
-      error?.response?.statusCode ||
-      error?.statusCode ||
-      error?.body?.code;
+    const statusCode = getErrorStatusCode(error);
 
     if (statusCode === 404) {
       logger.debug('Resource not found, creating with server-side apply', {
@@ -87,18 +113,208 @@ async function applyWithServerSideApply(
   }
 }
 
+/**
+ * Apply a CRD with special handling for schema changes
+ *
+ * CRDs require special handling because:
+ * 1. Server-side apply may not properly merge deeply nested schema fields
+ * 2. The x-kubernetes-preserve-unknown-fields annotation is critical for HelmRelease values
+ * 3. We need to ensure the schema changes are actually applied to the cluster
+ *
+ * This function uses a two-phase approach:
+ * 1. First, apply the CRD using server-side apply (handles most fields)
+ * 2. Then, use JSON patch via ApiextensionsV1Api to specifically update the schema fields
+ *
+ * @param kubernetesApi - The Kubernetes API client
+ * @param manifest - The CRD manifest to apply
+ * @param fieldManager - The field manager name
+ * @param forceConflicts - Whether to force ownership of conflicting fields
+ * @param kubeConfig - Optional KubeConfig for ApiextensionsV1Api (for JSON patching)
+ */
+async function applyCRDWithSchemaFix(
+  kubernetesApi: k8s.KubernetesObjectApi,
+  manifest: KubernetesResource,
+  fieldManager: string,
+  forceConflicts: boolean,
+  kubeConfig?: k8s.KubeConfig,
+  crdPatchTimeout?: number
+): Promise<void> {
+  const crdName = manifest.metadata?.name || 'unknown';
+  // Cast to CRDManifest for type-safe access to deeply nested CRD schema fields
+  const crd = manifest as unknown as CRDManifest;
+
+  // Log what we're applying for debugging
+  // Navigate deeply nested OpenAPI schema — typed as Record<string, unknown> so intermediate casts are needed
+  const openAPISchema = crd.spec?.versions?.[0]?.schema?.openAPIV3Schema;
+  const specProps = (openAPISchema?.properties as Record<string, unknown> | undefined)?.spec as
+    | Record<string, unknown>
+    | undefined;
+  const valuesField = (specProps?.properties as Record<string, unknown> | undefined)?.values as
+    | Record<string, unknown>
+    | undefined;
+  logger.debug('Applying CRD with schema fix', {
+    crdName,
+    fieldManager,
+    forceConflicts,
+    valuesFieldHasPreserveUnknown: valuesField?.['x-kubernetes-preserve-unknown-fields'] === true,
+    valuesFieldType: valuesField?.type,
+  });
+
+  try {
+    // First, try server-side apply with force to take ownership of schema fields
+    // This should work for most cases and properly merge the schema changes
+    await kubernetesApi.patch(
+      manifest,
+      undefined, // pretty
+      undefined, // dryRun
+      fieldManager, // fieldManager
+      forceConflicts, // force - take ownership of conflicting fields
+      PatchStrategy.ServerSideApply // patchStrategy
+    );
+
+    logger.info('Applied CRD with server-side apply', {
+      crdName,
+      valuesFieldHasPreserveUnknown: valuesField?.['x-kubernetes-preserve-unknown-fields'] === true,
+    });
+
+    // After server-side apply, use JSON patch via ApiextensionsV1Api to ensure
+    // the x-kubernetes-preserve-unknown-fields annotation is applied.
+    // This is needed because server-side apply may not properly merge deeply nested schema fields.
+    // Only call this for CRDs that are known to have fields needing the fix (e.g., HelmRelease)
+    const crdsNeedingPatch = [
+      'helmreleases.helm.toolkit.fluxcd.io',
+      'kustomizations.kustomize.toolkit.fluxcd.io',
+    ];
+    if (kubeConfig && crdsNeedingPatch.includes(crdName)) {
+      await applyCRDSchemaJsonPatch(kubeConfig, crd, crdPatchTimeout);
+    }
+  } catch (error: unknown) {
+    const statusCode = getErrorStatusCode(error);
+    const errDetails = isKubernetesError(error) ? error : undefined;
+
+    if (statusCode === 404) {
+      // CRD doesn't exist, create it
+      logger.debug('CRD not found, creating', { crdName });
+      await kubernetesApi.create(manifest);
+      logger.info('Created CRD with schema fix', { crdName });
+    } else if (statusCode === 422) {
+      // Validation error - this might happen if there are stored versions
+      // that can't be updated. Log and continue.
+      logger.warn('CRD validation error during server-side apply — falling back to existing CRD', {
+        crdName,
+        statusCode,
+        message: errDetails?.body?.message ?? ensureError(error).message,
+        note: 'This may happen if the CRD has stored versions that cannot be updated. The existing CRD will be used as-is, which may cause field stripping if the schema is incomplete.',
+      });
+    } else {
+      logger.error('Failed to apply CRD with schema fix', ensureError(error), {
+        crdName,
+        statusCode,
+      });
+      throw error;
+    }
+  }
+}
+
+/**
+ * Apply JSON patch to CRD schema using ApiextensionsV1Api
+ *
+ * This function uses the proper ApiextensionsV1Api to apply JSON patches to CRDs,
+ * which correctly handles the deeply nested schema fields.
+ *
+ * @param kubeConfig - Kubernetes configuration
+ * @param crd - The CRD manifest with the desired schema
+ */
+async function applyCRDSchemaJsonPatch(
+  kubeConfig: k8s.KubeConfig,
+  crd: CRDManifest,
+  timeout: number = DEFAULT_CRD_PATCH_TIMEOUT
+): Promise<void> {
+  const crdName = crd.metadata?.name || 'unknown';
+
+  logger.debug('Starting JSON patch for CRD schema', { crdName });
+
+  const apiextensionsApi = createBunCompatibleApiextensionsV1Api(kubeConfig);
+
+  try {
+    // Read the current CRD from the cluster to check what needs patching
+    logger.debug('Reading current CRD from cluster', { crdName });
+    const currentCrd = await apiextensionsApi.readCustomResourceDefinition({ name: crdName });
+    logger.debug('Read current CRD successfully', { crdName });
+
+    // Generate patches based on what the current CRD is missing
+    const patches: Array<{ op: string; path: string; value: unknown }> = [];
+    // V1CustomResourceDefinition has spec.versions properly typed — no cast needed
+    const versions = currentCrd.spec?.versions || [];
+
+    for (let i = 0; i < versions.length; i++) {
+      const version = versions[i];
+      if (version?.schema?.openAPIV3Schema) {
+        const basePath = `/spec/versions/${i}/schema/openAPIV3Schema`;
+        patches.push(...generateSchemaFixPatches(version.schema.openAPIV3Schema, basePath));
+      }
+    }
+
+    if (patches.length === 0) {
+      logger.debug('No JSON patches needed for CRD schema', { crdName });
+      return;
+    }
+
+    logger.info('Applying JSON patch to CRD schema', {
+      crdName,
+      patchCount: patches.length,
+      patches: patches.map((p) => p.path),
+    });
+
+    // Apply the patches using JSON Patch via ApiextensionsV1Api
+    // Use a timeout to prevent hanging
+    const patchPromise = apiextensionsApi.patchCustomResourceDefinition({
+      name: crdName,
+      body: patches,
+    });
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error(`JSON patch timed out after ${timeout}ms`)),
+        timeout
+      );
+    });
+
+    try {
+      await Promise.race([patchPromise, timeoutPromise]);
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    logger.info('CRD schema patched successfully', { crdName, patchCount: patches.length });
+  } catch (error: unknown) {
+    // Log but don't fail - the CRD may still work
+    logger.warn('Failed to apply JSON patch to CRD schema', {
+      crdName,
+      error: ensureError(error).message,
+      note: 'The CRD may still work, but values might be stripped',
+    });
+  }
+}
+
 export interface YamlFileConfig {
   name: string;
+  /** Resource graph identifier. Required when `name` is dynamic (e.g. from schema references). */
+  id?: string;
   path: string; // Supports: "./local/file.yaml", "git:github.com/org/repo/path/file.yaml"
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
-  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail' | 'serverSideApply'; // Default: 'replace'
+  /** @default 'replace' */
+  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail' | 'serverSideApply';
   /**
    * Optional transform function to apply to each manifest before deployment.
    * Useful for applying fixes or modifications to external manifests.
    *
    * @example
    * ```typescript
-   * import { fixCRDSchemaForK8s133 } from '../../../core/utils/crd-schema-fix.js';
+   * import { fixCRDSchemaForK8s133 } from '../../../core/runtime-patches/crd-schema-fix.js';
    *
    * yamlFile({
    *   name: 'flux-install',
@@ -121,6 +337,43 @@ export interface YamlFileConfig {
    * @default false
    */
   forceConflicts?: boolean;
+  /**
+   * Timeout in milliseconds for CRD JSON-patch operations.
+   * Only relevant when deploying CRD manifests with `serverSideApply` strategy,
+   * where a follow-up JSON patch is applied to ensure schema fields like
+   * `x-kubernetes-preserve-unknown-fields` are set correctly.
+   * @default 30000
+   */
+  crdPatchTimeout?: number;
+  /**
+   * Optional callback invoked when the YAML content cannot be fetched (e.g., HTTP error
+   * for remote URLs). If the callback returns `true`, the closure treats the failure as
+   * a no-op — meaning the resources are assumed to already exist on the cluster.
+   *
+   * This enables idempotent bootstrap patterns: if Flux is already installed and the
+   * download URL is temporarily unreachable, the deployment can proceed instead of
+   * failing the entire operation.
+   *
+   * The callback receives the Kubernetes API client so it can check for sentinel
+   * resources (e.g., CRDs, namespaces, deployments).
+   *
+   * @example
+   * ```typescript
+   * yamlFile({
+   *   name: 'flux-install',
+   *   path: 'https://github.com/fluxcd/flux2/releases/latest/download/install.yaml',
+   *   skipIfFetchFails: async (k8sApi) => {
+   *     // If Flux CRDs exist, the install is already done
+   *     try {
+   *       await k8sApi.read({ apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition',
+   *         metadata: { name: 'helmreleases.helm.toolkit.fluxcd.io' } });
+   *       return true; // Already installed
+   *     } catch { return false; }
+   *   },
+   * });
+   * ```
+   */
+  skipIfFetchFails?: (k8sApi: k8s.KubernetesObjectApi) => Promise<boolean>;
 }
 
 /**
@@ -171,7 +424,27 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
           ? await deploymentContext.resolveReference(config.namespace)
           : config.namespace;
 
-      const resolvedContent = await pathResolver.resolveContent(config.path, config.name);
+      let resolvedContent: ResolvedContent;
+      try {
+        resolvedContent = await pathResolver.resolveContent(config.path, config.name);
+      } catch (fetchError: unknown) {
+        // When content fetch fails (e.g., HTTP 500 for remote URLs), check if resources
+        // are already installed on the cluster. This enables idempotent bootstrap patterns
+        // where the download URL may be temporarily unreachable but the resources are
+        // already present from a previous deployment.
+        if (config.skipIfFetchFails && deploymentContext.kubernetesApi) {
+          const alreadyInstalled = await config.skipIfFetchFails(deploymentContext.kubernetesApi);
+          if (alreadyInstalled) {
+            logger.warn(
+              `YAML fetch failed for '${config.name}' but resources are already installed on cluster — skipping`,
+              { path: config.path, error: ensureError(fetchError).message }
+            );
+            return []; // Return empty results — resources already exist
+          }
+        }
+        // Not already installed or no check configured — re-throw
+        throw fetchError;
+      }
       const rawManifests = parseYamlManifests(resolvedContent.content);
 
       // Apply optional manifest transform (e.g., CRD schema fixes)
@@ -198,13 +471,19 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                   deploymentContext.kubernetesApi,
                   manifest,
                   config.fieldManager || 'typekro',
-                  config.forceConflicts || false
+                  config.forceConflicts || false,
+                  deploymentContext.kubeConfig,
+                  config.crdPatchTimeout
                 );
               } else {
                 await deploymentContext.kubernetesApi.create(manifest);
               }
             } else {
-              throw new Error('No Kubernetes API available for YAML deployment');
+              throw new ResourceGraphFactoryError(
+                'No Kubernetes API available for YAML deployment',
+                config.name,
+                'deployment'
+              );
             }
           } else if (deploymentContext.kubernetesApi) {
             if (strategy === 'serverSideApply') {
@@ -212,14 +491,18 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
                 deploymentContext.kubernetesApi,
                 manifest,
                 config.fieldManager || 'typekro',
-                config.forceConflicts || false
+                config.forceConflicts || false,
+                deploymentContext.kubeConfig,
+                config.crdPatchTimeout
               );
             } else {
               await deploymentContext.kubernetesApi.create(manifest);
             }
           } else {
-            throw new Error(
-              'No deployment method available: neither alchemyScope nor kubernetesApi provided'
+            throw new ResourceGraphFactoryError(
+              'No deployment method available: neither alchemyScope nor kubernetesApi provided',
+              config.name,
+              'deployment'
             );
           }
 
@@ -229,76 +512,25 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
             namespace: manifest.metadata?.namespace || undefined,
             apiVersion: manifest.apiVersion || 'v1',
           });
-        } catch (error: any) {
+        } catch (error: unknown) {
           // Extract status code from various error formats
+          const errorMessage = ensureError(error).message;
           const statusCode =
-            error?.response?.statusCode ||
-            error?.statusCode ||
-            error?.body?.code ||
-            (typeof error?.message === 'string' && error.message.includes('HTTP-Code: 409')
-              ? 409
-              : undefined);
+            getErrorStatusCode(error) ||
+            (errorMessage.includes('HTTP-Code: 409') ? 409 : undefined);
 
           // Handle conflicts (409) based on deployment strategy
           // Note: 422 validation errors are NOT handled here - they should fail hard
           // as they indicate a real problem with the manifest
           if (statusCode === 409) {
-            const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
-
-            if (strategy === 'skipIfExists') {
-              console.log(`⚠️ Skipping existing resource: ${resourceName}`);
-              results.push({
-                kind: manifest.kind || 'Unknown',
-                name: manifest.metadata?.name || 'unknown',
-                namespace: manifest.metadata?.namespace || undefined,
-                apiVersion: manifest.apiVersion || 'v1',
-              });
-            } else if (strategy === 'replace') {
-              console.log(`🔄 Replacing existing resource: ${resourceName}`);
-              // Try to update/replace the resource
-              try {
-                if (deploymentContext.kubernetesApi) {
-                  // Check if resource exists first
-                  let existing: any;
-                  try {
-                    // In the new API, methods return objects directly (no .body wrapper)
-                    existing = await deploymentContext.kubernetesApi.read({
-                      apiVersion: manifest.apiVersion,
-                      kind: manifest.kind,
-                      metadata: {
-                        name: manifest.metadata?.name || '',
-                        namespace: manifest.metadata?.namespace || 'default',
-                      },
-                    });
-                  } catch (error: any) {
-                    // If it's a 404, the resource doesn't exist
-                    if (error.statusCode !== 404) {
-                      throw error;
-                    }
-                  }
-
-                  if (existing) {
-                    // Resource exists, use patch for safer updates
-                    await deploymentContext.kubernetesApi.patch(manifest);
-                  } else {
-                    // Resource does not exist, create it
-                    await deploymentContext.kubernetesApi.create(manifest);
-                  }
-                }
-                results.push({
-                  kind: manifest.kind || 'Unknown',
-                  name: manifest.metadata?.name || 'unknown',
-                  namespace: manifest.metadata?.namespace || undefined,
-                  apiVersion: manifest.apiVersion || 'v1',
-                });
-              } catch (replaceError) {
-                console.error(`❌ Failed to replace resource ${resourceName}:`, replaceError);
-                throw replaceError;
-              }
-            } else {
-              // strategy === 'fail' (default behavior)
-              throw error;
-            }
+            const effectiveStrategy = strategy === 'serverSideApply' ? 'replace' : strategy;
+            const result = await handleConflict(
+              error,
+              manifest,
+              effectiveStrategy,
+              deploymentContext
+            );
+            results.push(result);
           } else {
             // Non-conflict errors should always be thrown
             throw error;
@@ -311,31 +543,4 @@ export function yamlFile(config: YamlFileConfig): DeploymentClosure<AppliedResou
 
     return closure;
   }, config.name);
-}
-
-/**
- * Simplified YAML file factory for quick usage
- * @example
- * ```typescript
- * simple.YamlFile('./manifests/configmap.yaml')
- * simple.YamlFile('git:github.com/fluxcd/flux2/manifests/install/flux-system.yaml@main', 'flux-system')
- * ```
- */
-/**
- * @deprecated Use simple.YamlFile() instead - import { simple } from 'typekro'; simple.YamlFile(...)
- */
-export function simpleYamlFile(
-  path: string,
-  namespace?: string
-): DeploymentClosure<AppliedResource[]> {
-  const name =
-    path
-      .split('/')
-      .pop()
-      ?.replace(/\.(yaml|yml)$/, '') || 'yaml-file';
-  return yamlFile({
-    name,
-    path,
-    ...(namespace && { namespace }),
-  });
 }

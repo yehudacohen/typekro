@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { V1Service } from '@kubernetes/client-node';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Service Factory with Readiness Evaluation', () => {
   it('should create service with readiness evaluator', () => {
@@ -22,8 +23,8 @@ describe('Service Factory with Readiness Evaluation', () => {
     const enhanced = service(serviceResource);
 
     expect(enhanced).toBeDefined();
-    expect((enhanced as any).readinessEvaluator).toBeDefined();
-    expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+    expect(getReadinessEvaluator(enhanced)).toBeDefined();
+    expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
   });
 
   it('should evaluate ClusterIP service as ready immediately', () => {
@@ -39,7 +40,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const result = evaluator({ spec: { type: 'ClusterIP' } });
 
@@ -60,7 +61,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const result = evaluator({ spec: { type: 'NodePort' } });
 
@@ -81,7 +82,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       spec: { type: 'LoadBalancer' },
@@ -109,7 +110,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       spec: { type: 'LoadBalancer' },
@@ -139,7 +140,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       spec: { type: 'LoadBalancer' },
@@ -168,7 +169,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       spec: {
@@ -195,7 +196,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const liveResource = {
       spec: { type: 'ExternalName' },
@@ -222,7 +223,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     const result = evaluator({ spec: {} });
 
@@ -243,7 +244,7 @@ describe('Service Factory with Readiness Evaluation', () => {
     };
 
     const enhanced = service(serviceResource);
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
 
     // Pass malformed resource that might cause errors
     const result = evaluator(null);

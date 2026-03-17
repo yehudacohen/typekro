@@ -8,6 +8,9 @@
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import type { KroCompatibleType, KubernetesRef, SchemaMagicProxy, SchemaProxy } from '../types.js';
 
+/** Callback type for array iteration methods (map, forEach, filter, some, every) on schema proxies. */
+type ArrayIterationCallback = (element: unknown, index: number, array: unknown[]) => unknown;
+
 /**
  * Creates a KubernetesRef object specifically for schema references
  * These are distinguished from external references by using a special resource ID prefix
@@ -19,6 +22,17 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
   Object.defineProperty(proxyTarget, KUBERNETES_REF_BRAND, { value: true, enumerable: false });
   Object.defineProperty(proxyTarget, 'resourceId', { value: '__schema__', enumerable: false });
   Object.defineProperty(proxyTarget, 'fieldPath', { value: fieldPath, enumerable: false });
+
+  // Create a single "element" proxy for iteration support.
+  // When the schema ref is used as an iterable (for-of) or array-like (.map(), .filter(), etc.),
+  // we yield a single element proxy. This causes factory calls inside loops to execute once,
+  // registering the resource. The AST analyzer later detects the loop and attaches forEach.
+  //
+  // SENTINEL: We use `$item` (not `__element__`) because the ref marker regex
+  // /__KUBERNETES_REF_{id}_{fieldPath}__/ uses [a-zA-Z0-9.] for fieldPath, and
+  // underscores in `__element__` would break the delimiter detection.
+  // `$item` uses `$` which is included in [a-zA-Z0-9.$] after we update the regex.
+  const createElement = (): unknown => createSchemaRefFactory(`${fieldPath}.$item`);
 
   return new Proxy(proxyTarget, {
     get(target, prop) {
@@ -42,12 +56,51 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
         return () => `__KUBERNETES_REF___schema___${fieldPath}__`;
       }
 
+      // Support for-of iteration: yield a single element proxy so loop bodies execute once
+      if (prop === Symbol.iterator) {
+        return function* () {
+          yield createElement();
+        };
+      }
+
+      // Array iteration methods: .map(), .forEach(), .filter(), .some(), .every()
+      // Execute the callback once with a dummy element proxy so factory calls register.
+      if (prop === 'map') {
+        return (callback: ArrayIterationCallback) => {
+          const elem = createElement();
+          const result = callback(elem, 0, [elem]);
+          return [result];
+        };
+      }
+      if (prop === 'forEach') {
+        return (callback: ArrayIterationCallback) => {
+          callback(createElement(), 0, [createElement()]);
+        };
+      }
+      if (prop === 'filter') {
+        return (callback: ArrayIterationCallback) => {
+          const elem = createElement();
+          // Execute the predicate but always return the array with the element.
+          // The predicate's return value is only used for AST analysis.
+          callback(elem, 0, [elem]);
+          // Return a proxy that also supports chaining (.filter().map())
+          return createSchemaArrayProxy(fieldPath, callback);
+        };
+      }
+      if (prop === 'some' || prop === 'every') {
+        return (callback: ArrayIterationCallback) => {
+          const elem = createElement();
+          return callback(elem, 0, [elem]);
+        };
+      }
+
+      // .length — return 1 (single element for iteration)
+      if (prop === 'length') {
+        return 1;
+      }
+
       // Preserve essential function properties
-      if (
-        prop === 'call' ||
-        prop === 'apply' ||
-        prop === 'bind'
-      ) {
+      if (prop === 'call' || prop === 'apply' || prop === 'bind') {
         return target[prop as keyof typeof target];
       }
 
@@ -55,6 +108,47 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
       return createSchemaRefFactory(`${fieldPath}.${String(prop)}`);
     },
   }) as unknown as T;
+}
+
+/**
+ * Creates a proxy for the result of .filter() calls on schema array refs.
+ * This allows chaining like `spec.workers.filter(...).map(...)`.
+ */
+function createSchemaArrayProxy(
+  baseFieldPath: string,
+  _filterCallback: ArrayIterationCallback
+): unknown[] {
+  // Use $item sentinel (same as the primary array proxy) so that the marker regex
+  // and YAML serializer's $item substitution work correctly for chained calls.
+  const createElement = (): unknown => createSchemaRefFactory(`${baseFieldPath}.$item`);
+  const arr = [createElement()];
+
+  return new Proxy(arr, {
+    get(target, prop) {
+      if (prop === 'map') {
+        return (callback: ArrayIterationCallback) => {
+          const elem = createElement();
+          const result = callback(elem, 0, arr);
+          return [result];
+        };
+      }
+      if (prop === 'forEach') {
+        return (callback: ArrayIterationCallback) => {
+          callback(createElement(), 0, arr);
+        };
+      }
+      if (prop === 'length') {
+        return 1;
+      }
+      if (prop === Symbol.iterator) {
+        return function* () {
+          yield createElement();
+        };
+      }
+      // Default: delegate to the actual array
+      return Reflect.get(target, prop);
+    },
+  });
 }
 
 /**
@@ -139,7 +233,7 @@ export function createResourcesProxy<TResources extends Record<string, any>>(
         }
         if (prop === 'spec' || prop === 'status') {
           // Return a proxy that converts the MagicProxy field access to resource references
-          return createResourceMagicProxy(resourceKey, prop, target[prop]);
+          return createResourceMagicProxy(resourceKey, prop);
         }
         // For all other properties, return the original value
         return target[prop];
@@ -151,10 +245,10 @@ export function createResourcesProxy<TResources extends Record<string, any>>(
 }
 
 /**
- * Create a magic proxy that converts Enhanced MagicProxy field access to resource references
- * Uses recursive proxy creation similar to createSchemaRefFactory for deep nesting support
+ * Create a magic proxy that converts Enhanced MagicProxy field access to resource references.
+ * Delegates to createResourceRefFactory for deep nesting support.
  */
-function createResourceMagicProxy(resourceId: string, fieldType: string, _originalProxy: any): any {
+function createResourceMagicProxy(resourceId: string, fieldType: string): unknown {
   return createResourceRefFactory(resourceId, fieldType);
 }
 
@@ -193,11 +287,7 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
       }
 
       // Preserve essential function properties
-      if (
-        prop === 'call' ||
-        prop === 'apply' ||
-        prop === 'bind'
-      ) {
+      if (prop === 'call' || prop === 'apply' || prop === 'bind') {
         return target[prop as keyof typeof target];
       }
 

@@ -4,7 +4,12 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node';
-import { kroCustomResource, kroCustomResourceDefinition, resourceGraphDefinition,  } from '../../src/factories/kro/index.js';
+import {
+  kroCustomResource,
+  kroCustomResourceDefinition,
+  resourceGraphDefinition,
+} from '../../src/factories/kro/index.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Kro Factory Functions', () => {
   describe('resourceGraphDefinition', () => {
@@ -25,8 +30,8 @@ describe('Kro Factory Functions', () => {
       expect(enhanced).toBeDefined();
       expect(enhanced.apiVersion).toBe('kro.run/v1alpha1');
       expect(enhanced.kind).toBe('ResourceGraphDefinition');
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate RGD as ready when phase is ready and Ready condition is True', () => {
@@ -36,7 +41,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = resourceGraphDefinition(rgd);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveRGD = {
         status: {
@@ -62,7 +67,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = resourceGraphDefinition(rgd);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveRGD = {
         status: {
@@ -86,7 +91,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = resourceGraphDefinition(rgd);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const result = evaluator({ status: null });
 
@@ -120,8 +125,8 @@ describe('Kro Factory Functions', () => {
       expect(enhanced).toBeDefined();
       expect(enhanced.apiVersion).toBe('kro.run/v1alpha1');
       expect(enhanced.kind).toBe('WebApplication');
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate Kro resource as ready when ACTIVE and Ready condition is True', () => {
@@ -133,7 +138,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = kroCustomResource(resource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveResource = {
         status: {
@@ -158,7 +163,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = kroCustomResource(resource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveResource = {
         status: {
@@ -185,7 +190,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = kroCustomResource(resource);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveResource = {
         status: {
@@ -269,8 +274,8 @@ describe('Kro Factory Functions', () => {
       expect(enhanced).toBeDefined();
       expect(enhanced.apiVersion).toBe('apiextensions.k8s.io/v1');
       expect(enhanced.kind).toBe('CustomResourceDefinition');
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate Kro CRD as ready when established and names accepted', () => {
@@ -287,7 +292,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = kroCustomResourceDefinition(crd);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveCRD = {
         metadata: { name: 'webapplications.kro.run' },
@@ -319,7 +324,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = kroCustomResourceDefinition(crd);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveCRD = {
         metadata: { name: 'deployments.apps' },
@@ -352,7 +357,7 @@ describe('Kro Factory Functions', () => {
       };
 
       const enhanced = kroCustomResourceDefinition(crd);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const liveCRD = {
         metadata: { name: 'webapplications.kro.run' },
@@ -399,9 +404,9 @@ describe('Kro Factory Functions', () => {
       });
 
       // All should have readiness evaluators
-      expect(typeof (rgd as any).readinessEvaluator).toBe('function');
-      expect(typeof (customResource as any).readinessEvaluator).toBe('function');
-      expect(typeof (crd as any).readinessEvaluator).toBe('function');
+      expect(typeof getReadinessEvaluator(rgd)).toBe('function');
+      expect(typeof getReadinessEvaluator(customResource)).toBe('function');
+      expect(typeof getReadinessEvaluator(crd)).toBe('function');
 
       // None should include evaluators in enumerable properties
       expect(Object.keys(rgd)).not.toContain('readinessEvaluator');

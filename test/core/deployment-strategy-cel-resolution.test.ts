@@ -8,15 +8,28 @@
 
 import { beforeEach, describe, expect, it, jest } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
+import { type } from 'arktype';
 import { BaseDeploymentStrategy } from '../../src/core/deployment/strategies/base-strategy.js';
+import { strategyInternals } from '../utils/mock-factories.js';
+
+const emptySchema = type({});
+
+/** Shape of a resolved CEL field from reference resolver */
+interface ResolvedCelField {
+  type: string;
+  expression: string;
+  resourceKeys: string[];
+}
 
 // Create a test implementation of BaseDeploymentStrategy
+// BaseDeploymentStrategy type params require arktype Type constraints,
+// so we must use `any` for the generic params in this test subclass
 class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
   constructor(
-    private mockEngine: any,
-    private mockResolver: any,
-    private mockReferenceResolver: any,
-    private mockCelEvaluator: any
+    private mockEngine: Record<string, unknown>,
+    private mockResolver: Record<string, unknown>,
+    private mockReferenceResolver: Record<string, unknown>,
+    private mockCelEvaluator: Record<string, unknown>
   ) {
     super(
       'test-factory',
@@ -24,8 +37,8 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
       {
         apiVersion: 'v1alpha1',
         kind: 'TestApp',
-        spec: {} as any,
-        status: {} as any,
+        spec: emptySchema,
+        status: emptySchema,
       },
       undefined, // statusBuilder
       undefined, // resourceKeys
@@ -33,43 +46,51 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
     );
 
     // Override private properties for testing
-    (this as any).referenceResolver = mockReferenceResolver;
-    (this as any).celEvaluator = mockCelEvaluator;
+    (this as unknown as Record<string, unknown>).referenceResolver = mockReferenceResolver;
+    (this as unknown as Record<string, unknown>).celEvaluator = mockCelEvaluator;
   }
 
   getStrategyMode(): 'direct' | 'kro' {
     return 'direct';
   }
 
-  protected async executeDeployment(spec: any, _instanceName: string): Promise<any> {
+  protected async executeDeployment(spec: unknown, _instanceName: string): Promise<any> {
     // Mock implementation that calls the CEL resolution logic
-    const resourceGraph = this.mockResolver.createResourceGraphForInstance(spec);
+    const createGraph = this.mockResolver.createResourceGraphForInstance as (s: unknown) => Record<
+      string,
+      unknown
+    > & {
+      resources: Array<{ id: string; manifest: Record<string, unknown> }>;
+    };
+    const resourceGraph = createGraph(spec);
 
     // Simulate the CEL resolution logic from base-strategy.ts
     try {
-      const resolvedReferences = await this.mockReferenceResolver.resolveReferences(
-        { spec, status: {} },
-        resourceGraph.resources
-      );
+      const resolveRefs = this.mockReferenceResolver.resolveReferences as (
+        ctx: unknown,
+        resources: unknown
+      ) => Promise<{ resolvedFields?: Record<string, ResolvedCelField> } | null>;
+      const resolvedReferences = await resolveRefs({ spec, status: {} }, resourceGraph.resources);
 
       if (resolvedReferences?.resolvedFields) {
         const celFields = Object.entries(resolvedReferences.resolvedFields).filter(
-          ([, field]: [string, any]) => field.type === 'cel'
+          ([, field]) => field.type === 'cel'
         );
 
         if (celFields.length > 0) {
           // Extract unique resource keys
           const resourceKeys = Array.from(
-            new Set(
-              celFields.flatMap(([, field]: [string, any]) => (field as any).resourceKeys || [])
-            )
+            new Set(celFields.flatMap(([, field]) => field.resourceKeys || []))
           );
 
-          let clusterData: Record<string, any> = {};
+          let clusterData: Record<string, Record<string, unknown>> = {};
 
           if (resourceKeys.length > 0) {
             try {
-              clusterData = await this.mockEngine.queryClusterStatus(resourceKeys);
+              const queryStatus = this.mockEngine.queryClusterStatus as (
+                keys: string[]
+              ) => Promise<Record<string, Record<string, unknown>>>;
+              clusterData = await queryStatus(resourceKeys);
             } catch (_error) {
               // Fall back to manifest data
               clusterData = {};
@@ -77,7 +98,7 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
           }
 
           // Merge cluster data with manifest data
-          const resourceDataMap: Record<string, any> = {};
+          const resourceDataMap: Record<string, Record<string, unknown>> = {};
           for (const resource of resourceGraph.resources) {
             resourceDataMap[resource.id] = {
               ...resource.manifest,
@@ -86,19 +107,20 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
           }
 
           // Evaluate CEL expressions
-          const resolvedStatus: Record<string, any> = {};
+          const resolvedStatus: Record<string, unknown> = {};
           for (const [fieldPath, field] of celFields) {
             try {
-              const result = this.mockCelEvaluator.evaluateExpression(
-                (field as any).expression,
-                resourceDataMap
-              );
+              const evalExpr = this.mockCelEvaluator.evaluateExpression as (
+                expr: string,
+                data: Record<string, unknown>
+              ) => unknown;
+              const result = evalExpr(field.expression, resourceDataMap);
               const keys = fieldPath.split('.');
-              let current: any = resolvedStatus;
+              let current: Record<string, unknown> = resolvedStatus;
               for (let i = 0; i < keys.length - 1; i++) {
                 const key = keys[i];
                 if (key && !current[key]) current[key] = {};
-                if (key) current = current[key];
+                if (key) current = current[key] as Record<string, unknown>;
               }
               const lastKey = keys[keys.length - 1];
               if (lastKey) current[lastKey] = result;
@@ -112,7 +134,11 @@ class TestDeploymentStrategy extends BaseDeploymentStrategy<any, any> {
       // Continue with deployment even if CEL resolution fails
     }
 
-    return this.mockEngine.deploy(resourceGraph, {});
+    const deploy = this.mockEngine.deploy as (
+      graph: unknown,
+      opts: Record<string, unknown>
+    ) => Promise<unknown>;
+    return deploy(resourceGraph, {});
   }
 }
 
@@ -204,7 +230,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       });
 
       const spec = { name: 'test-app' };
-      const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+      const result = await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
 
       expect(result).toBeDefined();
       expect(mockEngine.queryClusterStatus).toHaveBeenCalledWith(['deployment']);
@@ -234,7 +260,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       });
 
       const spec = { name: 'test-app' };
-      const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+      const result = await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
 
       expect(result).toBeDefined();
       expect(mockEngine.queryClusterStatus).not.toHaveBeenCalled();
@@ -265,7 +291,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       });
 
       const spec = { name: 'test-app' };
-      const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+      const result = await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
 
       expect(result).toBeDefined();
       expect(mockEngine.queryClusterStatus).toHaveBeenCalledWith(['deployment']);
@@ -309,7 +335,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       const spec = { name: 'test-app' };
 
       // The deployment should still succeed, but CEL resolution should be skipped
-      const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+      const result = await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
       expect(result).toBeDefined();
       expect(mockCelEvaluator.evaluateExpression).toHaveBeenCalled();
     });
@@ -328,7 +354,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       mockCelEvaluator.evaluateExpression.mockReturnValue('static-value');
 
       const spec = { name: 'test-app' };
-      await (strategy as any).executeDeployment(spec, 'test-instance');
+      await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
 
       expect(mockEngine.queryClusterStatus).not.toHaveBeenCalled();
       expect(mockCelEvaluator.evaluateExpression).toHaveBeenCalledWith(
@@ -345,7 +371,7 @@ describe('Deployment Strategy CEL Resolution', () => {
       });
 
       const spec = { name: 'test-app' };
-      const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+      const result = await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
 
       expect(result).toBeDefined();
       expect(mockEngine.deploy).toHaveBeenCalled();
