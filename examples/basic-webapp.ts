@@ -3,8 +3,10 @@
  */
 
 import { type } from 'arktype';
+// In production: import { Deployment, Service, Ingress, Job } from 'typekro/simple';
+import { Deployment, Ingress, Job, Service } from '../src/factories/simple/index.js';
+// In production: import { kubernetesComposition } from 'typekro';
 import { kubernetesComposition } from '../src/index.js';
-import { Deployment, Service, Ingress, Job } from '../src/factories/simple/index.js';
 
 // Define the schema for our WebApp stack
 const WebAppSpecSchema = type({
@@ -104,14 +106,15 @@ const webApp = kubernetesComposition(
     const _migration = Job({
       name: `${spec.name}-migration`,
       image: spec.webImage,
-      command: ['npm', 'run', 'migrate']
+      command: ['npm', 'run', 'migrate'],
     });
 
     // Return status (resources are auto-captured)
     // ✨ Natural JavaScript expressions - automatically converted to CEL
     return {
       url: `https://${spec.hostname}`,
-      ready: webDeployment.status.readyReplicas >= spec.replicas && database.status.readyReplicas > 0,
+      ready:
+        webDeployment.status.readyReplicas >= spec.replicas && database.status.readyReplicas > 0,
     };
   }
 );

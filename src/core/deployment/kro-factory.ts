@@ -6,37 +6,39 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import { compile as compileExpression } from 'angular-expressions';
+import { preserveNonEnumerableProperties } from '../../utils/helpers.js';
 import {
-  createAlchemyResourceId,
-  ensureResourceTypeRegistered,
-  KroTypeKroDeployer,
-} from '../../alchemy/deployment.js';
-
-import { kroCustomResource } from '../../factories/kro/kro-custom-resource.js';
-import { resourceGraphDefinition } from '../../factories/kro/resource-graph-definition.js';
-import {
-  createKubernetesClientProvider,
-  createKubernetesClientProviderWithKubeConfig,
-  type KubernetesClientConfig,
-  type KubernetesClientProvider,
-} from '../kubernetes/client-provider.js';
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_KRO_INSTANCE_TIMEOUT,
+  DEFAULT_RGD_TIMEOUT,
+} from '../config/defaults.js';
+import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { CRDInstanceError, ensureError, ResourceGraphFactoryError } from '../errors.js';
+import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
+// Dependency inversion: kroCustomResource, resourceGraphDefinition, and
+// alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
+// instead of dynamic import() from higher layers.
+import { getResourceId } from '../resources/id.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
-import type { KubernetesRef, CelExpression } from '../types/common.js';
+import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
+  AlchemyBridge,
   AppliedResource,
   DeploymentClosure,
   DeploymentContext,
   FactoryOptions,
   FactoryStatus,
+  KroCustomResourceProvider,
   KroResourceFactory,
+  ResourceGraphDefinitionProvider,
   RGDStatus,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
-// Alchemy integration
 import type {
   KroCompatibleType,
   MagicAssignableShape,
@@ -44,7 +46,15 @@ import type {
   SchemaProxy,
   Scope,
 } from '../types/serialization.js';
+import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
+import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-readiness.js';
+import {
+  convertToKubernetesName,
+  generateInstanceName,
+  pluralizeKind,
+  validateSpec,
+} from './shared-utilities.js';
 
 /**
  * KroResourceFactory implementation
@@ -67,12 +77,17 @@ export class KroResourceFactoryImpl<
   private readonly resources: Record<string, KubernetesResource>;
   private readonly closures: Record<string, DeploymentClosure>;
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
-  private readonly statusMappings: any;
+  private readonly statusMappings: Record<string, unknown>;
   private readonly alchemyScope: Scope | undefined;
   private readonly logger = getComponentLogger('kro-factory');
   private readonly factoryOptions: FactoryOptions;
-  private clientProvider?: KubernetesClientProvider;
-  private customObjectsApi?: k8s.CustomObjectsApi;
+  private readonly clientManager: KubernetesClientManager;
+
+  // Dependency-inversion providers (Phase 3.5) — injected via FactoryOptions
+  // instead of dynamic import() from factories/ and alchemy/ layers.
+  private readonly kroCustomResourceProvider: KroCustomResourceProvider | undefined;
+  private readonly rgdProvider: ResourceGraphDefinitionProvider | undefined;
+  private readonly alchemyBridge: AlchemyBridge | undefined;
 
   constructor(
     name: string,
@@ -85,19 +100,22 @@ export class KroResourceFactoryImpl<
     this.namespace = options.namespace || 'default';
     this.alchemyScope = options.alchemyScope;
     this.isAlchemyManaged = !!options.alchemyScope;
-    this.rgdName = this.convertToKubernetesName(name); // Convert to valid Kubernetes resource name
+    this.rgdName = convertToKubernetesName(name); // Convert to valid Kubernetes resource name
     this.resources = resources;
     this.closures = options.closures || {};
     this.schemaDefinition = schemaDefinition;
-    this.statusMappings = statusMappings;
+    this.statusMappings = statusMappings as Record<string, unknown>;
     this.factoryOptions = options;
+    this.clientManager = new KubernetesClientManager(options);
     this.schema = createSchemaProxy<TSpec, TStatus>();
+
+    // Injected providers — fall back to dynamic import() for backward compatibility
+    this.kroCustomResourceProvider = options.kroCustomResourceProvider;
+    this.rgdProvider = options.rgdProvider;
+    this.alchemyBridge = options.alchemyBridge;
 
     // Validate closures for Kro mode - detect KubernetesRef inputs and raise clear errors
     this.validateClosuresForKroMode();
-
-    // Don't initialize client provider in constructor - do it lazily when needed
-    // This allows tests to create factories without requiring a kubeconfig
   }
 
   /**
@@ -119,94 +137,24 @@ export class KroResourceFactoryImpl<
   }
 
   /**
-   * Convert camelCase resource graph name to valid Kubernetes resource name (kebab-case)
-   */
-  private convertToKubernetesName(name: string): string {
-    // Validate input name
-    if (!name || typeof name !== 'string') {
-      throw new Error(
-        `Invalid resource graph name: ${JSON.stringify(name)}. Resource graph name must be a non-empty string.`
-      );
-    }
-
-    const trimmedName = name.trim();
-    if (trimmedName.length === 0) {
-      throw new Error(
-        `Invalid resource graph name: Resource graph name cannot be empty or whitespace-only.`
-      );
-    }
-
-    // Convert to kebab-case and validate result
-    const kubernetesName = trimmedName
-      .replace(/([a-z])([A-Z])/g, '$1-$2') // Insert dash before capital letters
-      .toLowerCase(); // Convert to lowercase
-
-    // Validate Kubernetes naming conventions
-    if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(kubernetesName)) {
-      throw new Error(
-        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which is not a valid Kubernetes resource name. Names must consist of lowercase alphanumeric characters or '-', and must start and end with an alphanumeric character.`
-      );
-    }
-
-    if (kubernetesName.length > 253) {
-      throw new Error(
-        `Invalid resource graph name: "${name}" converts to "${kubernetesName}" which exceeds the 253 character limit for Kubernetes resource names.`
-      );
-    }
-
-    return kubernetesName;
-  }
-
-  /**
    * Get or create the Kubernetes client provider (lazy initialization)
    */
   private getClientProvider(): KubernetesClientProvider {
-    if (!this.clientProvider) {
-      this.clientProvider = this.createClientProvider(this.factoryOptions);
-    }
-    return this.clientProvider;
-  }
-
-  /**
-   * Create and configure the Kubernetes client provider
-   */
-  private createClientProvider(options: FactoryOptions): KubernetesClientProvider {
-    // If a pre-configured kubeConfig is provided, use it directly
-    if (options.kubeConfig) {
-      this.logger.debug('Using pre-configured KubeConfig from factory options');
-      return createKubernetesClientProviderWithKubeConfig(options.kubeConfig);
-    }
-
-    // Create client provider with configuration from factory options
-    const clientConfig: KubernetesClientConfig = {
-      ...(options.skipTLSVerify !== undefined && { skipTLSVerify: options.skipTLSVerify }),
-      // Add other configuration options as needed
-    };
-
-    this.logger.debug('Creating new KubernetesClientProvider with configuration', {
-      skipTLSVerify: clientConfig.skipTLSVerify,
-    });
-
-    return createKubernetesClientProvider(clientConfig);
+    return this.clientManager.getClientProvider();
   }
 
   /**
    * Get the Kubernetes config from the centralized provider
    */
   private getKubeConfig(): k8s.KubeConfig {
-    const clientProvider = this.getClientProvider();
-    return clientProvider.getKubeConfig();
+    return this.clientManager.getKubeConfig();
   }
 
   /**
    * Get CustomObjectsApi client
    */
   private getCustomObjectsApi(): k8s.CustomObjectsApi {
-    if (!this.customObjectsApi) {
-      const clientProvider = this.getClientProvider();
-      this.customObjectsApi = clientProvider.getCustomObjectsApi();
-    }
-    return this.customObjectsApi;
+    return this.clientManager.getCustomObjectsApi();
   }
 
   /**
@@ -214,10 +162,10 @@ export class KroResourceFactoryImpl<
    */
   async deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
     // Validate spec against ArkType schema
-    const validationResult = this.schemaDefinition.spec(spec);
-    if (validationResult instanceof Error) {
-      throw new Error(`Invalid spec: ${validationResult.message}`);
-    }
+    validateSpec(spec, this.schemaDefinition, {
+      kind: this.schemaDefinition.kind,
+      name: this.name,
+    });
 
     // Execute closures before RGD creation (Kro mode requirement)
     await this.executeClosuresBeforeRGD(spec);
@@ -246,12 +194,14 @@ export class KroResourceFactoryImpl<
     // The closures returned by the resource builder are deployment closures that expect a DeploymentContext
     // We need to execute them with a mock context to trigger validation
     const mockDeploymentContext: DeploymentContext = {
-      kubernetesApi: null as any, // Not needed for validation
+      // kubernetesApi intentionally omitted - not needed for validation
       namespace: this.namespace,
       deployedResources: new Map(),
       resolveReference: async (ref: KubernetesRef) => {
-        throw new Error(
-          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`
+        throw new ResourceGraphFactoryError(
+          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`,
+          this.name,
+          'deployment'
         );
       },
     };
@@ -260,7 +210,7 @@ export class KroResourceFactoryImpl<
       try {
         // Execute the deployment closure with mock context to trigger validation
         await closure(mockDeploymentContext);
-      } catch (error) {
+      } catch (error: unknown) {
         // If validation fails, throw the validation error immediately
         if (
           error instanceof Error &&
@@ -269,7 +219,11 @@ export class KroResourceFactoryImpl<
           throw error;
         }
         // For other errors, wrap them with context
-        throw new Error(`Failed to validate closure '${closureName}': ${error}`);
+        throw new ResourceGraphFactoryError(
+          `Failed to validate closure '${closureName}': ${ensureError(error).message}`,
+          this.name,
+          'deployment'
+        );
       }
     }
 
@@ -280,12 +234,15 @@ export class KroResourceFactoryImpl<
     const kubeConfig = this.getKubeConfig();
     const deploymentContext: DeploymentContext = {
       kubernetesApi: createBunCompatibleKubernetesObjectApi(kubeConfig),
+      kubeConfig: kubeConfig,
       ...(this.alchemyScope && { alchemyScope: this.alchemyScope }),
       namespace: this.namespace,
       deployedResources: new Map(), // Empty for pre-RGD execution
       resolveReference: async (ref: KubernetesRef) => {
-        throw new Error(
-          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`
+        throw new ResourceGraphFactoryError(
+          `Kro mode does not support dynamic reference resolution. Found reference: ${ref.resourceId}.${ref.fieldPath}`,
+          this.name,
+          'deployment'
         );
       },
     };
@@ -306,7 +263,7 @@ export class KroResourceFactoryImpl<
           name: closureName,
           resourceCount: results.length,
         });
-      } catch (error) {
+      } catch (error: unknown) {
         // Check if this is a KubernetesRef validation error and enhance it
         if (error instanceof Error && error.message.includes('KubernetesRef')) {
           this.logger.error(
@@ -321,10 +278,13 @@ export class KroResourceFactoryImpl<
 
         this.logger.error('Closure execution failed', {
           name: closureName,
-          message: error instanceof Error ? error.message : String(error),
+          message: ensureError(error).message,
         });
-        throw new Error(
-          `Failed to execute closure '${closureName}': ${error instanceof Error ? error.message : String(error)}`
+        throw new ResourceGraphFactoryError(
+          `Failed to execute closure '${closureName}': ${ensureError(error).message}`,
+          this.name,
+          'deployment',
+          ensureError(error)
         );
       }
     }
@@ -352,10 +312,13 @@ export class KroResourceFactoryImpl<
     );
 
     // Create custom resource instance
-    const instanceName = this.generateInstanceName(spec);
+    const instanceName = generateInstanceName(spec, this.name);
     const customResourceData = this.createCustomResourceInstance(instanceName, spec);
 
     // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
+    const kroCustomResource =
+      this.kroCustomResourceProvider ??
+      (await import('../../factories/kro/kro-custom-resource.js')).kroCustomResource;
     const enhancedCustomResource = kroCustomResource({
       apiVersion: customResourceData.apiVersion,
       kind: customResourceData.kind,
@@ -378,29 +341,33 @@ export class KroResourceFactoryImpl<
       spec: customResourceData.spec, // Use spec directly from customResourceData to ensure it's preserved
     } as DeployableK8sResource<typeof enhancedCustomResource>;
 
-    // Preserve the readiness evaluator (non-enumerable property)
-    const readinessEvaluator = (enhancedCustomResource as any).readinessEvaluator;
-    if (readinessEvaluator) {
-      Object.defineProperty(deployableResource, 'readinessEvaluator', {
-        value: readinessEvaluator,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedCustomResource, deployableResource);
 
     // Deploy without waiting for readiness - we'll handle that ourselves
+    this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
     const _deployedResource = await deploymentEngine.deployResource(deployableResource, {
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: false, // We'll handle Kro-specific readiness ourselves
-      timeout: this.factoryOptions.timeout || 300000,
+      timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
+    });
+    this.logger.info('Instance deployed, checking readiness', {
+      instanceName,
+      rgdName: this.rgdName,
     });
 
     // Handle Kro-specific readiness checking if requested
     if (this.factoryOptions.waitForReady ?? true) {
-      await this.waitForKroInstanceReady(instanceName, this.factoryOptions.timeout || 600000); // 10 minutes
+      await this.waitForKroInstanceReady(
+        instanceName,
+        this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
+      ); // 10 minutes
     }
+    this.logger.info('Instance ready, creating enhanced proxy', {
+      instanceName,
+      rgdName: this.rgdName,
+    });
 
     // Create Enhanced proxy for the deployed instance
     return await this.createEnhancedProxy(spec, instanceName);
@@ -413,7 +380,11 @@ export class KroResourceFactoryImpl<
    */
   private async deployWithAlchemy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
     if (!this.alchemyScope) {
-      throw new Error('Alchemy scope is required for alchemy deployment');
+      throw new ResourceGraphFactoryError(
+        'Alchemy scope is required for alchemy deployment',
+        this.name,
+        'deployment'
+      );
     }
 
     // Use static registration functions
@@ -425,7 +396,9 @@ export class KroResourceFactoryImpl<
       undefined,
       DeploymentMode.KRO
     );
-    const deployer = new KroTypeKroDeployer(kroEngine);
+    const deployer = this.alchemyBridge
+      ? this.alchemyBridge.createDeployer(kroEngine)
+      : new (await import('../../alchemy/deployment.js')).KroTypeKroDeployer(kroEngine);
 
     // 1. Ensure RGD is deployed via alchemy (once per factory)
     const kroSchema = generateKroSchemaFromArktype(
@@ -444,16 +417,20 @@ export class KroResourceFactoryImpl<
       spec: {
         schema: kroSchema,
         resources: Object.values(this.resources).map((resource) => ({
-          id: resource.id || resource.metadata?.name || 'unknown',
+          id: getResourceId(resource),
           template: resource,
         })),
       },
     };
 
     // Register RGD type dynamically
-    const rgdEnhanced = resourceGraphDefinition(rgdManifest);
-    const RGDProvider = ensureResourceTypeRegistered(rgdEnhanced);
-    const rgdId = createAlchemyResourceId(rgdEnhanced, this.namespace);
+    const rgdFactory =
+      this.rgdProvider ??
+      (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;
+    const rgdEnhanced = rgdFactory(rgdManifest);
+    const bridge = this.alchemyBridge ?? (await import('../../alchemy/deployment.js'));
+    const RGDProvider = bridge.ensureResourceTypeRegistered(rgdEnhanced);
+    const rgdId = bridge.createAlchemyResourceId(rgdEnhanced, this.namespace);
 
     await RGDProvider(rgdId, {
       resource: rgdEnhanced,
@@ -461,25 +438,28 @@ export class KroResourceFactoryImpl<
       deployer: deployer,
       options: {
         waitForReady: true,
-        timeout: 60000, // RGD should be ready quickly
+        timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
       },
     });
 
     // 2. Create instance via alchemy (once per deploy call)
-    const instanceName = this.generateInstanceName(spec);
+    const instanceName = generateInstanceName(spec, this.name);
     const crdInstanceManifest = this.createCustomResourceInstance(instanceName, spec);
 
     // Register CRD instance type dynamically
-    const CRDInstanceProvider = ensureResourceTypeRegistered(crdInstanceManifest as any);
-    const instanceId = createAlchemyResourceId(crdInstanceManifest as any, this.namespace);
+    // Cast required: crdInstanceManifest is a plain KubernetesResource, but alchemy functions
+    // expect Enhanced<unknown, unknown>. They only access kind/metadata.name for type inference.
+    const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
+    const CRDInstanceProvider = bridge.ensureResourceTypeRegistered(crdAsEnhanced);
+    const instanceId = bridge.createAlchemyResourceId(crdAsEnhanced, this.namespace);
 
     await CRDInstanceProvider(instanceId, {
-      resource: crdInstanceManifest as any,
+      resource: crdAsEnhanced,
       namespace: this.namespace,
       deployer: deployer,
       options: {
         waitForReady: this.factoryOptions.waitForReady ?? true,
-        timeout: this.factoryOptions.timeout ?? 300000,
+        timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
       },
     });
 
@@ -529,7 +509,7 @@ export class KroResourceFactoryImpl<
           );
         })
       );
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { message?: string; body?: string | object; statusCode?: number };
       // If the CRD doesn't exist yet or there are no instances, return empty array
       const bodyString =
@@ -546,7 +526,14 @@ export class KroResourceFactoryImpl<
       ) {
         return [];
       }
-      throw new Error(`Failed to list instances: ${k8sError.message || String(error)}`);
+      throw new CRDInstanceError(
+        `Failed to list instances: ${k8sError.message || String(error)}`,
+        this.schemaDefinition.apiVersion,
+        this.schemaDefinition.kind,
+        '*',
+        'statusResolution',
+        ensureError(error)
+      );
     }
   }
 
@@ -570,10 +557,17 @@ export class KroResourceFactoryImpl<
           namespace: this.namespace,
         },
       } as k8s.KubernetesObject);
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string };
       if (k8sError.statusCode !== 404) {
-        throw new Error(`Failed to delete instance ${name}: ${k8sError.message || String(error)}`);
+        throw new CRDInstanceError(
+          `Failed to delete instance ${name}: ${k8sError.message || String(error)}`,
+          this.schemaDefinition.apiVersion,
+          this.schemaDefinition.kind,
+          name,
+          'deletion',
+          ensureError(error)
+        );
       }
       // Instance already deleted, ignore 404
     }
@@ -643,7 +637,7 @@ export class KroResourceFactoryImpl<
         conditions: rgd.status?.conditions || [],
         observedGeneration: rgd.status?.observedGeneration || 0,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string; body?: string | object };
       // Check for 404 in multiple ways since different API clients report it differently
       const bodyString =
@@ -665,7 +659,12 @@ export class KroResourceFactoryImpl<
           conditions: [],
         };
       }
-      throw new Error(`Failed to get RGD status: ${k8sError.message || String(error)}`);
+      throw new ResourceGraphFactoryError(
+        `Failed to get RGD status: ${k8sError.message || String(error)}`,
+        this.name,
+        'getInstance',
+        ensureError(error)
+      );
     }
   }
 
@@ -683,7 +682,7 @@ export class KroResourceFactoryImpl<
   toYaml(spec?: TSpec): string {
     if (spec) {
       // Generate CRD instance YAML
-      const instanceName = this.generateInstanceName(spec);
+      const instanceName = generateInstanceName(spec, this.name);
       const customResource = this.createCustomResourceInstance(instanceName, spec);
 
       return `apiVersion: ${customResource.apiVersion}
@@ -753,7 +752,19 @@ ${Object.entries(spec as Record<string, any>)
     };
 
     // Create Enhanced RGD with readiness evaluator
-    const enhancedRGD = resourceGraphDefinition(rgdWithMetadata);
+    const rgdFactory =
+      this.rgdProvider ??
+      (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;
+    const enhancedRGD = rgdFactory(rgdWithMetadata);
+
+    // Create a deployable resource with the required 'id' field
+    const deployableRGD = {
+      ...enhancedRGD,
+      id: this.rgdName,
+    } as DeployableK8sResource<Enhanced<Record<string, unknown>, Record<string, unknown>>>;
+
+    // Preserve non-enumerable properties (readinessEvaluator, __resourceId) lost during spread
+    preserveNonEnumerableProperties(enhancedRGD, deployableRGD);
 
     // Debug: Log the RGD being deployed
     this.logger.debug('Deploying RGD', {
@@ -763,16 +774,19 @@ ${Object.entries(spec as Record<string, any>)
 
     try {
       // Deploy RGD using DirectDeploymentEngine with readiness checking
-      await deploymentEngine.deployResource(enhancedRGD as any, {
+      this.logger.info('Deploying RGD via engine', { rgdName: this.rgdName });
+      await deploymentEngine.deployResource(deployableRGD, {
         mode: 'direct',
         namespace: this.namespace,
         waitForReady: true,
-        timeout: this.factoryOptions.timeout || 60000,
+        timeout: this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT,
       });
+      this.logger.info('RGD deployed, waiting for CRD', { rgdName: this.rgdName });
 
       // Wait for the CRD to be created by Kro using DirectDeploymentEngine
       await this.waitForCRDReadyWithEngine(deploymentEngine);
-    } catch (error) {
+      this.logger.info('CRD ready', { rgdName: this.rgdName });
+    } catch (error: unknown) {
       // Debug: Check the actual RGD status when it fails
       try {
         const kubeConfig = this.getKubeConfig();
@@ -796,46 +810,16 @@ ${Object.entries(spec as Record<string, any>)
           status: rgdResult.status,
           conditions: rgdResult.status?.conditions,
         });
-      } catch (statusError) {
-        this.logger.error('Could not fetch RGD status for debugging', statusError as Error);
+      } catch (statusError: unknown) {
+        this.logger.error('Could not fetch RGD status for debugging', ensureError(statusError));
       }
 
-      throw new Error(
-        `Failed to deploy RGD using DirectDeploymentEngine: ${error instanceof Error ? error.message : String(error)}`
+      throw new ResourceGraphFactoryError(
+        `Failed to deploy RGD using DirectDeploymentEngine: ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
       );
-    }
-  }
-
-  /**
-   * Pluralize a Kubernetes Kind name following Kubernetes CRD naming conventions
-   * This matches the pluralization rules used by Kubernetes for CRD names
-   */
-  private pluralizeKind(kind: string): string {
-    const lowerKind = kind.toLowerCase();
-
-    // Handle common English pluralization rules that Kubernetes follows
-    if (
-      lowerKind.endsWith('s') ||
-      lowerKind.endsWith('sh') ||
-      lowerKind.endsWith('ch') ||
-      lowerKind.endsWith('x') ||
-      lowerKind.endsWith('z')
-    ) {
-      return `${lowerKind}es`;
-    } else if (lowerKind.endsWith('o')) {
-      return `${lowerKind}es`;
-    } else if (
-      lowerKind.endsWith('y') &&
-      lowerKind.length > 1 &&
-      !'aeiou'.includes(lowerKind[lowerKind.length - 2] || '')
-    ) {
-      return `${lowerKind.slice(0, -1)}ies`;
-    } else if (lowerKind.endsWith('f')) {
-      return `${lowerKind.slice(0, -1)}ves`;
-    } else if (lowerKind.endsWith('fe')) {
-      return `${lowerKind.slice(0, -2)}ves`;
-    } else {
-      return `${lowerKind}s`;
     }
   }
 
@@ -843,26 +827,31 @@ ${Object.entries(spec as Record<string, any>)
    * Wait for the CRD to be created by Kro using DirectDeploymentEngine
    */
   private async waitForCRDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
-    const crdName = `${this.pluralizeKind(this.schemaDefinition.kind)}.kro.run`;
+    const crdName = `${pluralizeKind(this.schemaDefinition.kind)}.kro.run`;
 
     // Debug: Check if the method exists
     if (typeof deploymentEngine.waitForCRDReady !== 'function') {
-      throw new Error(
-        `deploymentEngine.waitForCRDReady is not a function. Available methods: ${Object.getOwnPropertyNames(Object.getPrototypeOf(deploymentEngine)).join(', ')}`
+      throw new ResourceGraphFactoryError(
+        `deploymentEngine.waitForCRDReady is not a function. Available methods: ${Object.getOwnPropertyNames(Object.getPrototypeOf(deploymentEngine)).join(', ')}`,
+        this.name,
+        'deployment'
       );
     }
 
     // Use the deployment engine's built-in CRD readiness checking
     // This will wait for the CRD to be created by Kro and become ready
-    await deploymentEngine.waitForCRDReady(crdName, this.factoryOptions.timeout || 60000);
+    await deploymentEngine.waitForCRDReady(
+      crdName,
+      this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT
+    );
   }
 
   /**
    * Separate static and dynamic status fields
    */
   private async separateStatusFields(): Promise<{
-    staticFields: Record<string, any>;
-    dynamicFields: Record<string, any>;
+    staticFields: Record<string, unknown>;
+    dynamicFields: Record<string, unknown>;
   }> {
     if (!this.statusMappings) {
       return { staticFields: {}, dynamicFields: {} };
@@ -877,10 +866,10 @@ ${Object.entries(spec as Record<string, any>)
    * Evaluate static CEL expressions with actual spec values
    */
   private async evaluateStaticFields(
-    staticFields: Record<string, any>,
+    staticFields: Record<string, unknown>,
     spec: TSpec
-  ): Promise<Record<string, any>> {
-    const evaluatedFields: Record<string, any> = {};
+  ): Promise<Record<string, unknown>> {
+    const evaluatedFields: Record<string, unknown> = {};
 
     for (const [fieldName, fieldValue] of Object.entries(staticFields)) {
       if (this.isCelExpression(fieldValue)) {
@@ -888,13 +877,41 @@ ${Object.entries(spec as Record<string, any>)
           // Evaluate CEL expressions that contain only schema references
           const evaluatedValue = this.evaluateStaticCelExpression(fieldValue, spec);
           evaluatedFields[fieldName] = evaluatedValue;
-        } catch (error) {
+        } catch (error: unknown) {
           this.logger.warn('Failed to evaluate static CEL expression', {
             field: fieldName,
             expression: fieldValue.expression,
-            error: (error as Error).message,
+            error: ensureError(error).message,
           });
           // Fallback to the original value
+          evaluatedFields[fieldName] = fieldValue;
+        }
+      } else if (
+        typeof fieldValue === 'string' &&
+        fieldValue.includes('__KUBERNETES_REF___schema___')
+      ) {
+        // Resolve __KUBERNETES_REF_ marker strings from template literal coercion.
+        // When the composition function uses template literals like `${spec.name}-suffix`,
+        // the proxy's Symbol.toPrimitive produces marker strings at runtime. These need
+        // to be resolved to actual spec values at deploy time.
+        evaluatedFields[fieldName] = this.resolveSchemaRefMarkers(fieldValue, spec);
+      } else if (
+        typeof fieldValue === 'string' &&
+        fieldValue.startsWith('${') &&
+        fieldValue.endsWith('}')
+      ) {
+        // Evaluate inline CEL expression strings produced by the composition AST analyzer.
+        // statusOverrides from analyzeCompositionBody write ternary/conditional expressions
+        // as plain strings like "${schema.spec.enabled ? 2 : 1}" into statusMappings.
+        // These must be evaluated with actual spec values at deploy time.
+        try {
+          evaluatedFields[fieldName] = this.evaluateInlineCelString(fieldValue, spec);
+        } catch (error: unknown) {
+          this.logger.warn('Failed to evaluate inline CEL expression string', {
+            field: fieldName,
+            expression: fieldValue,
+            error: ensureError(error).message,
+          });
           evaluatedFields[fieldName] = fieldValue;
         }
       } else if (
@@ -903,7 +920,10 @@ ${Object.entries(spec as Record<string, any>)
         !Array.isArray(fieldValue)
       ) {
         // Recursively evaluate nested objects
-        evaluatedFields[fieldName] = await this.evaluateStaticFields(fieldValue, spec);
+        evaluatedFields[fieldName] = await this.evaluateStaticFields(
+          fieldValue as Record<string, unknown>,
+          spec
+        );
       } else {
         // Keep non-CEL values as-is
         evaluatedFields[fieldName] = fieldValue;
@@ -914,151 +934,147 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
-   * Evaluate a static CEL expression that contains only schema references or literal values
+   * Evaluate a static CEL expression that contains only schema references or literal values.
+   *
+   * Uses `angular-expressions` for safe AST-based evaluation instead of `new Function()` / `eval()`.
+   * Spec field references (e.g., `schema.spec.name`, `spec.replicas`) are resolved by passing the
+   * spec values as a scope object, eliminating string interpolation injection risks entirely.
    */
   private evaluateStaticCelExpression(celExpression: CelExpression, spec: TSpec): unknown {
     const expression = celExpression.expression;
+    // Use null-prototype object to prevent prototype chain access (defense-in-depth).
+    // angular-expressions has hasOwnProperty guards, but a null-prototype scope
+    // eliminates any residual risk from constructor/toString/__proto__ leaking.
+    // Object.freeze prevents expression-based mutation of the original spec data.
+    const specRecord = Object.freeze(
+      Object.assign(Object.create(null) as Record<string, unknown>, spec)
+    );
 
-    // Handle expressions that reference schema.spec fields FIRST (before checking just spec.)
+    // Build a scope expression by stripping schema.spec. or spec. prefixes so that
+    // angular-expressions can resolve field references directly from the spec scope.
+    let scopeExpression = expression;
+
     if (expression.includes('schema.spec.')) {
-      // Replace schema.spec.fieldName with actual spec values
-      let evaluatedExpression = expression;
-
-      // Find all schema.spec.fieldName patterns and replace them with actual values
-      const schemaRefPattern = /schema\.spec\.(\w+)/g;
-      const specRecord = spec as Record<string, unknown>;
-      evaluatedExpression = evaluatedExpression.replace(
-        schemaRefPattern,
-        (originalMatch: string, fieldName: string) => {
-          const fieldValue = specRecord[fieldName];
-
-          if (fieldValue !== undefined) {
-            // Return the properly formatted value for JavaScript evaluation
-            if (typeof fieldValue === 'string') {
-              return `"${fieldValue}"`; // Wrap strings in quotes
-            } else if (typeof fieldValue === 'boolean') {
-              return String(fieldValue); // true/false as-is
-            } else if (typeof fieldValue === 'number') {
-              return String(fieldValue); // Numbers as-is
-            } else {
-              return JSON.stringify(fieldValue); // Other types as JSON
-            }
-          }
-
-          // If field value is undefined, keep the original reference
-          return originalMatch;
-        }
-      );
-
-      // Now evaluate the expression with actual values
-      try {
-        // Use Function constructor for safer evaluation than eval
-        const result = new Function(`return ${evaluatedExpression}`)();
-        return result;
-      } catch (error) {
-        this.logger.warn('Failed to evaluate schema expression with Function constructor', {
-          expression: evaluatedExpression,
-          originalExpression: expression,
-          error: (error as Error).message,
-        });
-        throw error;
-      }
+      // Replace schema.spec.fieldName → fieldName (resolved from scope)
+      scopeExpression = scopeExpression.replace(/schema\.spec\.(\w+)/g, '$1');
     }
 
-    // Handle expressions that reference spec fields (not schema.spec, just spec)
-    if (expression.includes('spec.')) {
-      // Replace spec.fieldName with actual spec values
-      let evaluatedExpression = expression;
-
-      // Find all spec.fieldName patterns (not schema.spec) and replace them with actual values
-      const specRefPattern = /\bspec\.(\w+)/g;
-      const specRecord = spec as Record<string, unknown>;
-      evaluatedExpression = evaluatedExpression.replace(
-        specRefPattern,
-        (match: string, fieldName: string) => {
-          const fieldValue = specRecord[fieldName];
-
-          if (fieldValue !== undefined) {
-            // Return the properly formatted value for JavaScript evaluation
-            if (typeof fieldValue === 'string') {
-              return `"${fieldValue}"`; // Wrap strings in quotes
-            } else if (typeof fieldValue === 'boolean') {
-              return String(fieldValue); // true/false as-is
-            } else if (typeof fieldValue === 'number') {
-              return String(fieldValue); // Numbers as-is
-            } else {
-              return JSON.stringify(fieldValue); // Other types as JSON
-            }
-          }
-
-          // If field value is undefined, keep the original reference
-          return match;
-        }
-      );
-
-      // Now evaluate the expression with actual values
-      try {
-        // Use Function constructor for safer evaluation than eval
-        // This creates a new function that returns the result of the expression
-        const result = new Function(`return ${evaluatedExpression}`)();
-        return result;
-      } catch (error) {
-        this.logger.warn('Failed to evaluate expression with Function constructor', {
-          expression: evaluatedExpression,
-          originalExpression: expression,
-          error: (error as Error).message,
-        });
-        throw error;
-      }
+    if (scopeExpression.includes('spec.')) {
+      // Replace spec.fieldName → fieldName (resolved from scope)
+      scopeExpression = scopeExpression.replace(/\bspec\.(\w+)/g, '$1');
     }
 
-    // Handle static literal expressions (no schema or spec references)
-    // These are expressions like "running", 'http://example.com', true, 123, etc.
-    // Try to evaluate them directly as JavaScript expressions
     try {
-      const result = new Function(`return ${expression}`)();
+      const evaluator = compileExpression(scopeExpression);
+      const result = evaluator(specRecord) as unknown;
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       // If evaluation fails, the expression might be an unquoted string like: http://kro-webapp-service
       // In this case, return it as-is (it's already a string value)
-      this.logger.debug('Static expression evaluation failed, returning as string literal', {
-        expression,
-        error: (error as Error).message,
+      if (!expression.includes('schema.spec.') && !expression.includes('spec.')) {
+        this.logger.debug('Static expression evaluation failed, returning as string literal', {
+          expression,
+          error: ensureError(error).message,
+        });
+        return expression;
+      }
+      this.logger.warn('Failed to evaluate expression safely', {
+        expression: scopeExpression,
+        originalExpression: expression,
+        error: ensureError(error).message,
       });
-      return expression;
+      throw error;
     }
   }
 
   /**
-   * Check if a value is a CEL expression
+   * Resolve `__KUBERNETES_REF___schema___<fieldPath>__` markers in a string.
+   *
+   * When a composition function uses template literals like `` `${spec.name}-suffix` ``,
+   * the magic proxy's Symbol.toPrimitive returns a marker string at composition time.
+   * At deploy time we replace each marker with the actual spec value.
+   */
+  private resolveSchemaRefMarkers(value: string, spec: TSpec): unknown {
+    const resolved = value.replace(
+      /__KUBERNETES_REF___schema___([a-zA-Z0-9.$]+)__/g,
+      (_match, fieldPath: string) => {
+        // fieldPath is e.g. "spec.name" or "spec.nested.field"
+        const parts = fieldPath.replace(/^spec\./, '').split('.');
+        let current: unknown = spec;
+        for (const part of parts) {
+          if (current != null && typeof current === 'object') {
+            current = (current as Record<string, unknown>)[part];
+          } else {
+            this.logger.warn('Could not resolve schema ref marker', {
+              marker: _match,
+              fieldPath,
+              failedAt: part,
+            });
+            return _match; // Keep marker if unresolvable
+          }
+        }
+        return String(current ?? '');
+      }
+    );
+    return resolved;
+  }
+
+  /**
+   * Evaluate an inline CEL expression string like `"${schema.spec.enabled ? 2 : 1}"`.
+   *
+   * The composition body AST analyzer produces these for ternary expressions in
+   * status return values (statusOverrides). They are plain strings wrapping a CEL
+   * expression that must be evaluated with the real spec values.
+   */
+  private evaluateInlineCelString(celString: string, spec: TSpec): unknown {
+    // Strip the wrapping ${ ... }
+    const innerExpression = celString.slice(2, -1);
+
+    // Build scope expression: strip schema.spec. / spec. prefixes
+    let scopeExpression = innerExpression;
+    if (scopeExpression.includes('schema.spec.')) {
+      scopeExpression = scopeExpression.replace(/schema\.spec\.(\w+)/g, '$1');
+    }
+    if (scopeExpression.includes('spec.')) {
+      scopeExpression = scopeExpression.replace(/\bspec\.(\w+)/g, '$1');
+    }
+
+    // Resolve any __KUBERNETES_REF_ markers that may be embedded in the expression
+    // (e.g. from template literals inside ternary branches)
+    if (scopeExpression.includes('__KUBERNETES_REF___schema___')) {
+      scopeExpression = scopeExpression.replace(
+        /__KUBERNETES_REF___schema___([a-zA-Z0-9.$]+)__/g,
+        (_match, fieldPath: string) => {
+          const parts = fieldPath.replace(/^spec\./, '').split('.');
+          return parts.join('.');
+        }
+      );
+    }
+
+    // Convert CEL single-quoted string literals to double-quoted for angular-expressions
+    // Match single-quoted strings that are NOT inside backticks
+    scopeExpression = scopeExpression.replace(/'([^'\\]*)'/g, '"$1"');
+
+    const specRecord = Object.freeze(
+      Object.assign(Object.create(null) as Record<string, unknown>, spec)
+    );
+    const evaluator = compileExpression(scopeExpression);
+    return evaluator(specRecord) as unknown;
+  }
+
+  /**
+   * Check if a value is a CEL expression (using canonical brand symbol)
    */
   private isCelExpression(value: unknown): value is CelExpression {
-    return (
-      value !== null &&
-      typeof value === 'object' &&
-      (value as Record<symbol, unknown>)[Symbol.for('TypeKro.CelExpression')] === true &&
-      typeof (value as { expression?: unknown }).expression === 'string'
-    );
-  }
-
-  /**
-   * Generate instance name from spec
-   */
-  private generateInstanceName(spec: TSpec): string {
-    // Try to extract name from spec - check common name fields
-    if (typeof spec === 'object' && spec !== null) {
-      const specObj = spec as Record<string, unknown>;
-
-      // Check for common name fields in order of preference
-      for (const nameField of ['name', 'appName', 'serviceName', 'resourceName']) {
-        if (nameField in specObj && specObj[nameField]) {
-          return String(specObj[nameField]);
-        }
-      }
+    if (typeof value !== 'object' || value === null) {
+      return false;
     }
-
-    // Generate a unique name
-    return `${this.name}-${Date.now()}`;
+    return (
+      CEL_EXPRESSION_BRAND in value &&
+      (value as Record<symbol, unknown>)[CEL_EXPRESSION_BRAND] === true &&
+      'expression' in value &&
+      typeof (value as Record<string, unknown>).expression === 'string'
+    );
   }
 
   /**
@@ -1125,6 +1141,9 @@ ${Object.entries(spec as Record<string, any>)
           'typekro.io/kind': this.schemaDefinition.kind,
         },
       },
+      // Type cast: constructing a partial Enhanced proxy — only metadata.name and spec
+      // are accessed by callers at this call site. TypeScript cannot verify structural
+      // completeness; callers are responsible for only accessing these fields.
     } as unknown as Enhanced<TSpec, TStatus>;
 
     // Hydrate dynamic status fields if enabled and there are dynamic fields
@@ -1144,8 +1163,8 @@ ${Object.entries(spec as Record<string, any>)
 
         // Update the status using object assignment to avoid type issues
         Object.assign(enhancedProxy.status, mergedStatus);
-      } catch (error) {
-        hydrationLogger.warn('Dynamic status hydration failed', error as Error);
+      } catch (error: unknown) {
+        hydrationLogger.error('Dynamic status hydration failed', ensureError(error));
         // Continue with static fields only if dynamic hydration fails
       }
     }
@@ -1164,149 +1183,28 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
-   * Wait for Kro instance to be ready with Kro-specific logic
+   * Wait for Kro instance to be ready with Kro-specific logic.
+   * Delegates to the shared `waitForKroInstanceReady` in `kro-readiness.ts`.
    */
   private async waitForKroInstanceReady(instanceName: string, timeout: number): Promise<void> {
-    const startTime = Date.now();
-    const readinessLogger = this.logger.child({ instanceName, rgdName: this.name });
+    const apiVersion = this.schemaDefinition.apiVersion.includes('/')
+      ? this.schemaDefinition.apiVersion
+      : `kro.run/${this.schemaDefinition.apiVersion}`;
 
-    while (Date.now() - startTime < timeout) {
-      try {
-        const apiVersion = this.schemaDefinition.apiVersion.includes('/')
-          ? this.schemaDefinition.apiVersion
-          : `kro.run/${this.schemaDefinition.apiVersion}`;
+    const kubeConfig = this.getKubeConfig();
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
-        const kubeConfig = this.getKubeConfig();
-        const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-        const response = await k8sApi.read({
-          apiVersion,
-          kind: this.schemaDefinition.kind,
-          metadata: {
-            name: instanceName,
-            namespace: this.namespace,
-          },
-        });
-
-        // In the new API, methods return objects directly (no .body wrapper)
-        const instance = response as k8s.KubernetesObject & {
-          status?: {
-            state?: string;
-            phase?: string;
-            ready?: boolean;
-            message?: string;
-            conditions?: Array<{
-              type: string;
-              status: string;
-              reason?: string;
-              message?: string;
-            }>;
-          };
-        };
-
-        // Kro-specific readiness logic
-        const status = instance.status;
-        if (!status) {
-          readinessLogger.debug('No status found yet, continuing to wait', { instanceName });
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-          continue;
-        }
-
-        const state = status.state;
-        const conditions = status.conditions || [];
-        const syncedCondition = conditions.find((c) => c.type === 'InstanceSynced');
-
-        // Check if status has fields beyond the basic Kro fields (conditions, state)
-        const statusKeys = Object.keys(status);
-        const basicKroFields = ['conditions', 'state'];
-        const hasCustomStatusFields = statusKeys.some((key) => !basicKroFields.includes(key));
-
-        const isActive = state === 'ACTIVE';
-        const isSynced = syncedCondition?.status === 'True';
-
-        // Check what status fields are expected by looking at the ResourceGraphDefinition
-        let expectedCustomStatusFields = false;
-        try {
-          // In the new API, methods take request objects and return objects directly
-          const rgdResponse = await this.getCustomObjectsApi().getClusterCustomObject({
-            group: 'kro.run',
-            version: 'v1alpha1',
-            plural: 'resourcegraphdefinitions',
-            name: this.name,
-          });
-          const rgd = rgdResponse as any;
-          const rgdStatusSchema = rgd.spec?.schema?.status || {};
-          const rgdStatusKeys = Object.keys(rgdStatusSchema);
-          expectedCustomStatusFields = rgdStatusKeys.length > 0;
-
-          readinessLogger.debug('ResourceGraphDefinition status schema check', {
-            rgdName: this.name,
-            rgdStatusKeys,
-            expectedCustomStatusFields,
-          });
-        } catch (error) {
-          readinessLogger.warn('Could not fetch ResourceGraphDefinition for status schema check', {
-            rgdName: this.name,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          // If we can't fetch the RGD, be permissive: if instance is ACTIVE and synced, consider it ready
-          expectedCustomStatusFields = false;
-        }
-
-        readinessLogger.debug('Kro instance status check', {
-          instanceName,
-          state,
-          isActive,
-          isSynced,
-          hasCustomStatusFields,
-          expectedCustomStatusFields,
-          statusKeys,
-        });
-
-        // Resource is ready when it's active, synced, and either:
-        // 1. Has the expected custom status fields populated, OR
-        // 2. No custom status fields are expected (empty status schema in RGD)
-        const isReady =
-          isActive && isSynced && (hasCustomStatusFields || !expectedCustomStatusFields);
-
-        if (isReady) {
-          readinessLogger.info('Kro instance is ready', {
-            instanceName,
-            hasCustomStatusFields,
-            expectedCustomStatusFields,
-          });
-          return;
-        }
-
-        // Check for failure states
-        if (state === 'FAILED') {
-          const failedCondition = conditions.find((c) => c.status === 'False');
-          const errorMessage = failedCondition?.message || 'Unknown error';
-          throw new Error(`Kro instance deployment failed: ${errorMessage}`);
-        }
-
-        readinessLogger.debug('Kro instance not ready yet, continuing to wait', {
-          instanceName,
-          state,
-          isSynced,
-          hasCustomStatusFields,
-        });
-      } catch (error) {
-        const k8sError = error as { statusCode?: number };
-        if (k8sError.statusCode !== 404) {
-          throw error;
-        }
-        // Instance not found yet, continue waiting
-        readinessLogger.debug('Instance not found yet, continuing to wait', { instanceName });
-      }
-
-      // Wait before checking again - use shorter intervals for faster response
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-
-    const elapsed = Date.now() - startTime;
-    throw new Error(
-      `Timeout waiting for Kro instance ${instanceName} to be ready after ${elapsed}ms (timeout: ${timeout}ms). This usually means the Kro controller is not running or the RGD deployment failed. Check Kro controller logs: kubectl logs -n kro-system deployment/kro`
-    );
+    return waitForKroInstanceReadyShared({
+      instanceName,
+      timeout,
+      k8sApi,
+      customObjectsApi: this.getCustomObjectsApi(),
+      namespace: this.namespace,
+      apiVersion,
+      kind: this.schemaDefinition.kind,
+      rgdName: this.name,
+      factoryContext: this.name,
+    });
   }
 
   /**
@@ -1314,8 +1212,8 @@ ${Object.entries(spec as Record<string, any>)
    */
   private async hydrateDynamicStatusFields(
     instanceName: string,
-    dynamicFields: Record<string, any>
-  ): Promise<Record<string, any>> {
+    dynamicFields: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
     const dynamicLogger = this.logger.child({ instanceName });
 
     // Get the live custom resource to extract dynamic status fields
@@ -1335,7 +1233,7 @@ ${Object.entries(spec as Record<string, any>)
     });
 
     // In the new API, methods return objects directly (no .body wrapper)
-    const liveInstance = response as any;
+    const liveInstance = response as { status?: Record<string, unknown> };
 
     if (!liveInstance.status) {
       dynamicLogger.warn('No status found in live instance, returning empty dynamic fields');
@@ -1347,7 +1245,7 @@ ${Object.entries(spec as Record<string, any>)
     // against the live Kro resource data and return the evaluated results
 
     // Extract only the fields that were marked as dynamic
-    const hydratedFields: Record<string, any> = {};
+    const hydratedFields: Record<string, unknown> = {};
 
     for (const [fieldName, _fieldValue] of Object.entries(dynamicFields)) {
       if (liveInstance.status[fieldName] !== undefined) {
@@ -1368,14 +1266,14 @@ export function createKroResourceFactory<
   name: string,
   resources: Record<string, KubernetesResource>,
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
-  statusMappings: any,
+  statusMappings: Record<string, unknown>,
   options: FactoryOptions = {}
 ): KroResourceFactory<TSpec, TStatus> {
   return new KroResourceFactoryImpl<TSpec, TStatus>(
     name,
     resources,
     schemaDefinition,
-    statusMappings,
+    statusMappings as MagicAssignableShape<TStatus>,
     options
   );
 }

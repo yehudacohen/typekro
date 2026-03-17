@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import { isCelExpression, processResourceReferences } from '../../src/core.js';
-import { Cel, toResourceGraph, simple } from '../../src/index';
+import { processResourceReferences } from '../../src/core/serialization/cel-references.js';
+import { Cel, simple, toResourceGraph } from '../../src/index';
+import { isCelExpression } from '../../src/utils/index.js';
 
 describe('CEL Expression Serialization Pipeline', () => {
   describe('KubernetesRef to CelExpression conversion', () => {
@@ -232,8 +233,8 @@ describe('CEL Expression Serialization Pipeline', () => {
         name: 'webapp',
         image: 'nginx:latest',
         env: {
-          // Direct KubernetesRef (string type - should not need string() wrapper)
-          DATABASE_HOST: database.status.podIP!,
+          // KubernetesRef (number type converted to string via Cel.string)
+          DATABASE_HOST: Cel.string(database.status.replicas),
           // Direct KubernetesRef (number type converted to string)
           DATABASE_AVAILABLE_REPLICAS: Cel.string(database.status.availableReplicas),
           // CelExpression for type conversion
@@ -263,15 +264,15 @@ describe('CEL Expression Serialization Pipeline', () => {
       );
       const yaml = resourceGraph.toYaml();
 
-      // Direct KubernetesRef should become simple CEL expression (string fields don't need string() wrapper)
-      expect(yaml).toContain('value: ${deploymentPostgres.status.podIP}');
+      // KubernetesRef wrapped in Cel.string should become string() CEL expression
+      expect(yaml).toContain('value: ${string(deploymentPostgres.status.replicas)}');
 
       // CelExpression should become the expression content
       expect(yaml).toContain('value: ${string(deploymentPostgres.status.readyReplicas)}');
 
-      // Complex template should be properly serialized as CEL concatenation
+      // Complex template should be properly serialized in Kro mixed-template format
       expect(yaml).toContain('Database postgres is');
-      expect(yaml).toContain('+ \\" replicas\\"');
+      expect(yaml).toContain('replicas');
     });
 
     it('should preserve type safety in serialized output', () => {

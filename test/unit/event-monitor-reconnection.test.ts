@@ -9,6 +9,26 @@ import { describe, expect, it, mock, spyOn } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
 import { EventMonitor } from '../../src/core/deployment/event-monitor.js';
 
+/** Interface for accessing EventMonitor private members in tests */
+interface EventMonitorInternals {
+  options: {
+    maxReconnectAttempts: number;
+    reconnectBaseDelay: number;
+    reconnectMaxDelay: number;
+    reconnectJitter: number;
+  };
+  isMonitoring: boolean;
+  watchConnections: Map<string, { reconnectAttempts: number; isReconnecting: boolean }>;
+  calculateReconnectDelay(attempt: number): number;
+  attemptReconnection(connection: unknown): Promise<void>;
+  handleWatchError(error: Error, connection: unknown): void;
+}
+
+/** Type-safe cast to access EventMonitor private members in tests */
+function monitorInternals(monitor: EventMonitor): EventMonitorInternals {
+  return monitor as unknown as EventMonitorInternals;
+}
+
 describe('EventMonitor Reconnection Logic', () => {
   // Mock KubeConfig
   const createMockKubeConfig = () => {
@@ -86,7 +106,7 @@ describe('EventMonitor Reconnection Logic', () => {
       });
 
       // Access private method for testing
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       // Attempt 1: 1000 * 2^0 = 1000ms
       expect(monitorPrivate.calculateReconnectDelay(1)).toBe(1000);
@@ -114,7 +134,7 @@ describe('EventMonitor Reconnection Logic', () => {
         reconnectJitter: 0,
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       // Attempt 10: 1000 * 2^9 = 512000ms, but capped at 10000ms
       expect(monitorPrivate.calculateReconnectDelay(10)).toBe(10000);
@@ -133,7 +153,7 @@ describe('EventMonitor Reconnection Logic', () => {
         reconnectJitter: 0.2, // ±20%
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       // Run multiple times to test jitter range
       const delays: number[] = [];
@@ -163,7 +183,7 @@ describe('EventMonitor Reconnection Logic', () => {
         reconnectJitter: 0,
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       // With zero jitter, delay should be exactly the exponential value
       const delay1 = monitorPrivate.calculateReconnectDelay(1);
@@ -181,7 +201,7 @@ describe('EventMonitor Reconnection Logic', () => {
 
       const monitor = new EventMonitor(mockCoreV1Api, mockKubeConfig, {});
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       expect(monitorPrivate.options.maxReconnectAttempts).toBe(10);
       expect(monitorPrivate.options.reconnectBaseDelay).toBe(1000);
@@ -200,7 +220,7 @@ describe('EventMonitor Reconnection Logic', () => {
         reconnectJitter: 0.1,
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       expect(monitorPrivate.options.maxReconnectAttempts).toBe(5);
       expect(monitorPrivate.options.reconnectBaseDelay).toBe(500);
@@ -222,7 +242,7 @@ describe('EventMonitor Reconnection Logic', () => {
         mockWatchFactory
       );
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       // Start monitoring to create watch connections
       await monitor.startMonitoring([
@@ -271,7 +291,7 @@ describe('EventMonitor Reconnection Logic', () => {
         progressCallback,
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       // Simulate a connection that has exceeded max attempts
       const mockConnection = {
@@ -312,7 +332,7 @@ describe('EventMonitor Reconnection Logic', () => {
         maxReconnectAttempts: 10,
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
 
       // Ensure monitoring is stopped
       monitorPrivate.isMonitoring = false;
@@ -344,7 +364,7 @@ describe('EventMonitor Reconnection Logic', () => {
         maxReconnectAttempts: 10,
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
       monitorPrivate.isMonitoring = true;
 
       const mockConnection = {
@@ -374,7 +394,7 @@ describe('EventMonitor Reconnection Logic', () => {
         namespace: 'test-ns',
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
       monitorPrivate.isMonitoring = true;
 
       const mockConnection = {
@@ -394,10 +414,10 @@ describe('EventMonitor Reconnection Logic', () => {
       // Track what reconnectAttempts was when attemptReconnection was called
       let reconnectAttemptsWhenCalled: number | undefined;
       const originalAttemptReconnection = monitorPrivate.attemptReconnection.bind(monitorPrivate);
-      monitorPrivate.attemptReconnection = (conn: any) => {
-        reconnectAttemptsWhenCalled = conn.reconnectAttempts;
+      monitorPrivate.attemptReconnection = ((conn: Record<string, unknown>) => {
+        reconnectAttemptsWhenCalled = conn.reconnectAttempts as number;
         // Don't actually call the original to avoid async complications
-      };
+      }) as unknown as (connection: unknown) => Promise<void>;
 
       // Call handleWatchError with TimeoutError
       monitorPrivate.handleWatchError(timeoutError, mockConnection);
@@ -417,7 +437,7 @@ describe('EventMonitor Reconnection Logic', () => {
         namespace: 'test-ns',
       });
 
-      const monitorPrivate = monitor as any;
+      const monitorPrivate = monitorInternals(monitor);
       monitorPrivate.isMonitoring = false; // Monitoring stopped (cleanup)
 
       const mockConnection = {

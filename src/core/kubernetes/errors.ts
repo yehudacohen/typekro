@@ -49,7 +49,7 @@ export interface KubernetesApiError {
  * ```typescript
  * try {
  *   await api.read(resource);
- * } catch (error) {
+ * } catch (error: unknown) {
  *   const statusCode = getErrorStatusCode(error);
  *   if (statusCode === 404) {
  *     // Handle not found
@@ -101,7 +101,7 @@ export function getErrorStatusCode(error: unknown): number | undefined {
  * ```typescript
  * try {
  *   await api.read(resource);
- * } catch (error) {
+ * } catch (error: unknown) {
  *   if (isNotFoundError(error)) {
  *     console.log('Resource does not exist');
  *   }
@@ -126,7 +126,7 @@ export function isNotFoundError(error: unknown): boolean {
  * ```typescript
  * try {
  *   await api.create(resource);
- * } catch (error) {
+ * } catch (error: unknown) {
  *   if (isConflictError(error)) {
  *     console.log('Resource already exists');
  *   }
@@ -167,7 +167,7 @@ const RETRYABLE_STATUS_CODES = [
  * ```typescript
  * try {
  *   await api.read(resource);
- * } catch (error) {
+ * } catch (error: unknown) {
  *   if (isRetryableError(error)) {
  *     // Retry the operation
  *   } else {
@@ -235,7 +235,7 @@ export function isRetryableError(error: unknown): boolean {
  * ```typescript
  * try {
  *   await api.read(resource);
- * } catch (error) {
+ * } catch (error: unknown) {
  *   console.error(formatKubernetesError(error));
  *   // Output: "Kubernetes API error (404): Not Found - the resource does not exist"
  * }

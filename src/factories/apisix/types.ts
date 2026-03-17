@@ -5,13 +5,13 @@
  * following the same patterns as cert-manager types.
  */
 
-import { type, type Type } from 'arktype';
+import { type Type, type } from 'arktype';
 import type {
-  ResourceRequirements,
-  Toleration,
   Affinity,
-  SecurityContext,
   EnvVar,
+  ResourceRequirements,
+  SecurityContext,
+  Toleration,
 } from '../cert-manager/types.js';
 
 // APISix Bootstrap Configuration
@@ -58,6 +58,21 @@ export interface APISixBootstrapConfig {
         secretName?: string;
         hosts?: string[];
       }>;
+    };
+    /**
+     * Admin API credentials for the APISIX Admin API.
+     *
+     * Override the chart defaults for production deployments. When omitted,
+     * credentials are resolved from `APISIX_ADMIN_KEY` / `APISIX_VIEWER_KEY`
+     * environment variables, falling back to well-known chart defaults (with a
+     * warning) for local development only.
+     *
+     * @security These values are sensitive. Do not commit them to source control.
+     * Prefer environment variables or a secrets manager.
+     */
+    adminCredentials?: {
+      admin?: string;
+      viewer?: string;
     };
   };
 
@@ -129,6 +144,8 @@ export interface APISixBootstrapConfig {
   // etcd configuration
   etcd?: {
     enabled?: boolean;
+    /** Number of etcd replicas. Defaults to 1 for single-node clusters. */
+    replicaCount?: number;
     image?: {
       repository?: string;
       tag?: string;
@@ -385,7 +402,7 @@ export interface APISixHelmValues {
     };
   };
 
-  // APISix configuration
+  // APISix configuration (for main apisix chart)
   apisix?: {
     image?: {
       repository?: string;
@@ -401,6 +418,13 @@ export interface APISixHelmValues {
     extraArgs?: string[];
     env?: EnvVar[];
     config?: Record<string, any>;
+    // Admin service configuration (for ingress controller chart)
+    // This configures the init container to wait for the correct APISIX admin service
+    adminService?: {
+      namespace?: string;
+      name?: string;
+      port?: number;
+    };
   };
 
   // Dashboard configuration
@@ -418,6 +442,8 @@ export interface APISixHelmValues {
   // etcd configuration
   etcd?: {
     enabled?: boolean;
+    /** Number of etcd replicas. */
+    replicaCount?: number;
     image?: {
       repository?: string;
       tag?: string;
@@ -455,6 +481,8 @@ export interface APISixHelmValues {
   // Service configuration (for gateway service type)
   service?: {
     type?: 'NodePort' | 'LoadBalancer' | 'ClusterIP';
+    /** External traffic policy. Set to '' to disable for ClusterIP on Kubernetes 1.33+. */
+    externalTrafficPolicy?: string;
     annotations?: Record<string, string>;
     labels?: Record<string, string>;
     http?: {
@@ -470,14 +498,20 @@ export interface APISixHelmValues {
   };
 
   // Custom values override
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
-// Extended APISix configuration for admin access
+/**
+ * Extended APISix configuration for admin access.
+ *
+ * @security The `credentials` field contains sensitive admin API keys.
+ * Never log or persist these values in plain text.
+ */
 export interface APISixAdminConfig {
   allow?: {
     ipList?: string[];
   };
+  /** @security Admin and viewer API keys — treat as secrets. */
   credentials?: {
     admin?: string;
     viewer?: string;

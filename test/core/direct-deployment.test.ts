@@ -3,10 +3,33 @@
  */
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import type * as k8s from '@kubernetes/client-node';
+import type { Scope } from 'alchemy';
 import { type } from 'arktype';
-import { Cel, DependencyGraph, type DeployableK8sResource, type DeployedResource, type DeploymentOptions, DirectDeploymentEngine, type Enhanced, toResourceGraph } from '../../src/core.js';
-import { simple } from '../../src/index.js';
-import { configMap, daemonSet, deployment, job, persistentVolumeClaim, pod, secret, service, statefulSet,  } from '../../src/factories/index.js';
+import { DependencyGraph } from '../../src/core/dependencies/index.js';
+import type { ReferenceResolver } from '../../src/core/references/resolver.js';
+import type { DeploymentEvent } from '../../src/core/types/deployment.js';
+import {
+  configMap,
+  daemonSet,
+  deployment,
+  job,
+  persistentVolumeClaim,
+  pod,
+  secret,
+  service,
+  statefulSet,
+} from '../../src/factories/index.js';
+import {
+  Cel,
+  type DeployableK8sResource,
+  type DeployedResource,
+  type DeploymentOptions,
+  DirectDeploymentEngine,
+  type Enhanced,
+  simple,
+  toResourceGraph,
+} from '../../src/index.js';
 
 // Helper function to create properly typed test resources
 function createMockResource(
@@ -62,7 +85,7 @@ const mockSetTimeout = mock((callback: () => void, delay: number) => {
   // For short timeouts (like polling delays, typically < 2000ms), resolve immediately for faster tests
   return originalSetTimeout(callback, 0);
 });
-globalThis.setTimeout = mockSetTimeout as any;
+globalThis.setTimeout = mockSetTimeout as unknown as typeof globalThis.setTimeout;
 
 // Mock the Kubernetes client
 // NOTE: In the new @kubernetes/client-node API (v1.x), methods return objects directly
@@ -95,7 +118,7 @@ const mockK8sApi = {
 
 const mockKubeConfig = {
   makeApiClient: mock(() => mockK8sApi),
-} as any;
+} as unknown as k8s.KubeConfig;
 
 describe('DirectDeploymentEngine', () => {
   let engine: DirectDeploymentEngine;
@@ -105,8 +128,8 @@ describe('DirectDeploymentEngine', () => {
     const mockReferenceResolver = new MockReferenceResolver();
     engine = new DirectDeploymentEngine(
       mockKubeConfig,
-      mockK8sApi as any,
-      mockReferenceResolver as any
+      mockK8sApi as unknown as k8s.KubernetesObjectApi,
+      mockReferenceResolver as unknown as ReferenceResolver
     );
     defaultOptions = {
       mode: 'direct',
@@ -201,7 +224,7 @@ describe('DirectDeploymentEngine', () => {
       expect(mockK8sApi.create).toHaveBeenCalledTimes(2);
 
       // Check that both calls have the correct namespace
-      const createCalls = mockK8sApi.create.mock.calls as any[][];
+      const createCalls = mockK8sApi.create.mock.calls as unknown[][];
       expect(createCalls).toHaveLength(2);
       expect(createCalls[0]?.[0]).toEqual(
         expect.objectContaining({
@@ -316,10 +339,10 @@ describe('DirectDeploymentEngine', () => {
 
     it('should emit progress events', async () => {
       const graph = createTestResourceGraph();
-      const events: any[] = [];
+      const events: DeploymentEvent[] = [];
       const optionsWithCallback = {
         ...defaultOptions,
-        progressCallback: (event: any) => events.push(event),
+        progressCallback: (event: DeploymentEvent) => events.push(event),
       };
 
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
@@ -348,10 +371,11 @@ describe('DirectDeploymentEngine', () => {
       // Mock the deployment creation and readiness checks
       // NOTE: In the new API, methods return objects directly (no .body wrapper)
       let readCallCount = 0;
-      mockK8sApi.read.mockImplementation((...args: any[]) => {
-        const [resource] = args;
-        const name = resource?.metadata?.name;
-        const namespace = resource?.metadata?.namespace;
+      mockK8sApi.read.mockImplementation((...args: unknown[]) => {
+        const resource = args[0] as Record<string, unknown> | undefined;
+        const metadata = resource?.metadata as Record<string, unknown> | undefined;
+        const name = metadata?.name;
+        const namespace = metadata?.namespace;
         readCallCount++;
         if (readCallCount <= 2) {
           // First two calls are for checking if resources exist during deployment
@@ -373,14 +397,19 @@ describe('DirectDeploymentEngine', () => {
         }
       });
 
-      mockK8sApi.create.mockImplementation((...args: any[]) => {
-        const resource = args[0];
-        // Returns object directly (no .body wrapper)
-        return Promise.resolve({
-          ...resource,
-          metadata: { ...resource.metadata, uid: 'test-uid' },
-        });
-      });
+      (mockK8sApi.create.mockImplementation as (fn: (...args: unknown[]) => unknown) => void)(
+        (...args: unknown[]) => {
+          const resource = args[0] as {
+            metadata?: Record<string, unknown>;
+            [key: string]: unknown;
+          };
+          // Returns object directly (no .body wrapper)
+          return Promise.resolve({
+            ...resource,
+            metadata: { ...resource.metadata, uid: 'test-uid' },
+          });
+        }
+      );
 
       const result = await engine.deploy(graph, readyOptions);
 
@@ -422,12 +451,12 @@ describe('DirectDeploymentEngine', () => {
       const readyResult = readyDeploymentResource.readinessEvaluator?.({
         kind: 'Deployment',
         status: { readyReplicas: 3, availableReplicas: 3 },
-      } as any);
+      } as Record<string, unknown>);
 
       const notReadyResult = notReadyDeploymentResource.readinessEvaluator?.({
         kind: 'Deployment',
         status: { readyReplicas: 1, availableReplicas: 1 },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(readyResult?.ready).toBe(true);
       expect(notReadyResult?.ready).toBe(false);
@@ -452,12 +481,12 @@ describe('DirectDeploymentEngine', () => {
           phase: 'Running',
           containerStatuses: [{ ready: true }],
         },
-      } as any);
+      } as Record<string, unknown>);
 
       const notReadyResult = notReadyPodResource.readinessEvaluator?.({
         kind: 'Pod',
         status: { phase: 'Pending' },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(readyResult?.ready).toBe(true);
       expect(notReadyResult?.ready).toBe(false);
@@ -475,7 +504,7 @@ describe('DirectDeploymentEngine', () => {
       const result = configMapResource.readinessEvaluator?.({
         kind: 'ConfigMap',
         data: { key: 'value' },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(result?.ready).toBe(true);
     });
@@ -543,13 +572,13 @@ describe('DirectDeploymentEngine', () => {
         kind: 'StatefulSet',
         spec: { replicas: 3 },
         status: { readyReplicas: 3, currentReplicas: 3, updatedReplicas: 3 },
-      } as any);
+      } as Record<string, unknown>);
 
       const notReadyResult = await notReadyStatefulSetResource.readinessEvaluator?.({
         kind: 'StatefulSet',
         spec: { replicas: 3 },
         status: { readyReplicas: 1, currentReplicas: 1, updatedReplicas: 1 },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(readyResult?.ready).toBe(true);
       expect(notReadyResult?.ready).toBe(false);
@@ -583,12 +612,12 @@ describe('DirectDeploymentEngine', () => {
       const readyResult = readyDaemonSetResource.readinessEvaluator?.({
         kind: 'DaemonSet',
         status: { desiredNumberScheduled: 3, numberReady: 3 },
-      } as any);
+      } as Record<string, unknown>);
 
       const notReadyResult = notReadyDaemonSetResource.readinessEvaluator?.({
         kind: 'DaemonSet',
         status: { desiredNumberScheduled: 3, numberReady: 1 },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(readyResult?.ready).toBe(true);
       expect(notReadyResult?.ready).toBe(false);
@@ -627,13 +656,13 @@ describe('DirectDeploymentEngine', () => {
         kind: 'Job',
         spec: { completions: 1 },
         status: { succeeded: 1 },
-      } as any);
+      } as Record<string, unknown>);
 
       const notReadyResult = notReadyJobResource.readinessEvaluator?.({
         kind: 'Job',
         spec: { completions: 3 },
         status: { succeeded: 1 },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(readyResult?.ready).toBe(true);
       expect(notReadyResult?.ready).toBe(false);
@@ -661,12 +690,12 @@ describe('DirectDeploymentEngine', () => {
       const readyResult = readyPVCResource.readinessEvaluator?.({
         kind: 'PersistentVolumeClaim',
         status: { phase: 'Bound' },
-      } as any);
+      } as Record<string, unknown>);
 
       const notReadyResult = notReadyPVCResource.readinessEvaluator?.({
         kind: 'PersistentVolumeClaim',
         status: { phase: 'Pending' },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(readyResult?.ready).toBe(true);
       expect(notReadyResult?.ready).toBe(false);
@@ -701,13 +730,13 @@ describe('DirectDeploymentEngine', () => {
             ingress: [{ ip: '1.2.3.4' }],
           },
         },
-      } as any);
+      } as Record<string, unknown>);
 
       const notReadyResult = notReadyLBServiceResource.readinessEvaluator?.({
         kind: 'Service',
         spec: { type: 'LoadBalancer' },
         status: {},
-      } as any);
+      } as Record<string, unknown>);
 
       expect(readyResult?.ready).toBe(true);
       expect(notReadyResult?.ready).toBe(false);
@@ -729,12 +758,12 @@ describe('DirectDeploymentEngine', () => {
       const configMapResult = configMapResource.readinessEvaluator?.({
         kind: 'ConfigMap',
         data: { key: 'value' },
-      } as any);
+      } as Record<string, unknown>);
 
       const secretResult = secretResource.readinessEvaluator?.({
         kind: 'Secret',
         data: { key: 'dmFsdWU=' },
-      } as any);
+      } as Record<string, unknown>);
 
       expect(configMapResult?.ready).toBe(true);
       expect(secretResult?.ready).toBe(true);
@@ -974,7 +1003,7 @@ function createTestResourceGraph() {
     },
   });
   // Add the id property after creation to preserve the readiness evaluator
-  (databaseManifest as any).id = 'database';
+  (databaseManifest as Record<string, unknown>).id = 'database';
 
   const appManifest = deployment({
     apiVersion: 'apps/v1',
@@ -990,17 +1019,26 @@ function createTestResourceGraph() {
     },
   });
   // Add the id property after creation to preserve the readiness evaluator
-  (appManifest as any).id = 'app';
+  (appManifest as Record<string, unknown>).id = 'app';
 
-  graph.addNode('database', databaseManifest as any);
-  graph.addNode('app', appManifest as any);
+  graph.addNode(
+    'database',
+    databaseManifest as unknown as DeployableK8sResource<Enhanced<object, object>>
+  );
+  graph.addNode('app', appManifest as unknown as DeployableK8sResource<Enhanced<object, object>>);
   graph.addEdge('app', 'database'); // app depends on database
 
   return {
     name: 'test-graph',
     resources: [
-      { id: 'database', manifest: databaseManifest as any },
-      { id: 'app', manifest: appManifest as any },
+      {
+        id: 'database',
+        manifest: databaseManifest as unknown as DeployableK8sResource<Enhanced<object, object>>,
+      },
+      {
+        id: 'app',
+        manifest: appManifest as unknown as DeployableK8sResource<Enhanced<object, object>>,
+      },
     ],
     dependencyGraph: graph,
   };
@@ -1081,8 +1119,8 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
     const mockReferenceResolver = new MockReferenceResolver();
     _engine = new DirectDeploymentEngine(
       mockKubeConfig,
-      mockK8sApi as any,
-      mockReferenceResolver as any
+      mockK8sApi as unknown as k8s.KubernetesObjectApi,
+      mockReferenceResolver as unknown as ReferenceResolver
     );
     _defaultOptions = {
       mode: 'direct',
@@ -1172,7 +1210,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1196,7 +1234,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1218,7 +1256,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1242,7 +1280,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1270,7 +1308,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1294,7 +1332,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1323,7 +1361,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1347,7 +1385,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1370,7 +1408,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
       });
 
       const TestStatusSchema = type({
-        phase: 'string',
+        readyReplicas: 'number%1',
       });
 
       const schemaDefinition = {
@@ -1394,7 +1432,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
           }),
         }),
         (_schema, resources) => ({
-          phase: resources.deployment.status.phase,
+          readyReplicas: resources.deployment.status.readyReplicas,
         })
       );
 
@@ -1412,7 +1450,7 @@ describe('DirectDeploymentEngine Factory Pattern Integration', () => {
 
       const alchemyFactory = await graph.factory('direct', {
         namespace: 'test-namespace',
-        alchemyScope: mockAlchemyScope as any,
+        alchemyScope: mockAlchemyScope as unknown as Scope,
       });
 
       expect(alchemyFactory.isAlchemyManaged).toBe(true);

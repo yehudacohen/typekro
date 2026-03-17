@@ -166,7 +166,7 @@ const app = kubernetesComposition({
   });
 
   return {
-    ip: svc.status.loadBalancer.ingress[0].ip  // Runtime reference
+    ip: svc.status.loadBalancer.ingress[0].ip  // ingress[0] is valid in CEL — Enhanced types are NonOptional in status builder context
   };
 });
 ```
@@ -176,6 +176,70 @@ Key differences from Pulumi:
 - GitOps-ready YAML output via `toYaml()`
 - Runtime references via CEL (evaluated by Kro, not at deploy-time)
 - No provider configuration needed
+
+## Between TypeKro APIs
+
+TypeKro has two composition APIs: `kubernetesComposition` (recommended) and `toResourceGraph` (advanced). Here's how to migrate between them.
+
+### From `toResourceGraph` to `kubernetesComposition`
+
+Most compositions should use `kubernetesComposition`. To migrate:
+
+```typescript
+// Before: toResourceGraph (separate builders, explicit CEL)
+import { toResourceGraph, Cel, createDeployment, createService } from 'typekro';
+
+const app = toResourceGraph(
+  { name: 'app', apiVersion: 'example.com/v1', kind: 'App',
+    spec: type({ name: 'string', replicas: 'number' }),
+    status: type({ ready: 'boolean', url: 'string' }) },
+  (schema) => ({
+    deploy: createDeployment({ name: schema.spec.name, replicas: schema.spec.replicas }),
+    svc: createService({ name: schema.spec.name, ports: [{ port: 80 }] }),
+  }),
+  (_schema, resources) => ({
+    ready: Cel.expr<boolean>(resources.deploy.status.readyReplicas, ' > 0'),
+    url: Cel.template('http://%s', resources.svc.status.clusterIP),
+  })
+);
+
+// After: kubernetesComposition (single function, natural JS)
+import { kubernetesComposition } from 'typekro';
+import { Deployment, Service } from 'typekro/simple';
+
+const app = kubernetesComposition(
+  { name: 'app', apiVersion: 'example.com/v1', kind: 'App',
+    spec: type({ name: 'string', replicas: 'number' }),
+    status: type({ ready: 'boolean', url: 'string' }) },
+  (spec) => {
+    const deploy = Deployment({ id: 'deploy', name: spec.name, replicas: spec.replicas });
+    const svc = Service({ id: 'svc', name: spec.name, ports: [{ port: 80 }] });
+
+    return {
+      ready: deploy.status.readyReplicas > 0,
+      url: `http://${svc.status.clusterIP}`
+    };
+  }
+);
+```
+
+**Key changes:**
+1. Replace `createDeployment()` / `createService()` with `simple.Deployment()` / `simple.Service()` (or import from `typekro/simple`)
+2. Merge the two builder functions into one — create resources, then return status
+3. Replace `Cel.expr()` with natural JavaScript: `Cel.expr<boolean>(ref, ' > 0')` becomes `ref > 0`
+4. Replace `Cel.template()` with template literals: `` Cel.template('http://%s', ref) `` becomes `` `http://${ref}` ``
+5. Replace `schema.spec.name` with `spec.name` (parameter is the spec directly, not a schema wrapper)
+6. Add `id` to every resource for cross-resource references
+
+### From `kubernetesComposition` to `toResourceGraph`
+
+Switch to `toResourceGraph` when you need explicit CEL control:
+
+1. Split the composition function into a resource builder (returns a keyed object) and a status builder
+2. Replace `simple.Deployment()` with `createDeployment()` etc.
+3. Remove `id` from resources — the key in the returned object serves the same purpose
+4. Convert JavaScript status expressions to `Cel.expr()` / `Cel.template()`
+5. Replace `spec.name` with `schema.spec.name`
 
 ## Exporting Static YAML
 

@@ -5,36 +5,36 @@
  * in reverse dependency order with proper error handling.
  */
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, type Mock, mock } from 'bun:test';
 import * as k8s from '@kubernetes/client-node';
-import { createRollbackManager, createRollbackManagerWithKubeConfig, ResourceRollbackManager,  } from '../../src/core/deployment/rollback-manager.js';
+import {
+  createRollbackManager,
+  createRollbackManagerWithKubeConfig,
+  ResourceRollbackManager,
+} from '../../src/core/deployment/rollback-manager.js';
 import type { DeploymentEvent } from '../../src/core/types/deployment.js';
+import type { Enhanced } from '../../src/core/types/kubernetes.js';
 import { configMap } from '../../src/factories/kubernetes/config/config-map.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import { createK8sError, createMockK8sApi } from '../utils/mock-factories.js';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Mock type requires generic function signature
+type MockFn = Mock<(...args: any[]) => any>;
+
+/** Typed mock K8s API that exposes mock methods for test assertions */
+interface MockK8sApi extends k8s.KubernetesObjectApi {
+  create: MockFn;
+  read: MockFn;
+  delete: MockFn;
+  patch: MockFn;
+  replace: MockFn;
+  list: MockFn;
+}
 
 describe('ResourceRollbackManager', () => {
-  // Mock Kubernetes client following patterns from enhanced-deployment-engine.test.ts
-  const createMockK8sApi = () => {
-    const mockApi = {
-      create: mock(() => Promise.resolve({ body: {} })),
-      read: mock(() => Promise.resolve({ body: {} })),
-      delete: mock(() => Promise.resolve({ body: {} })),
-      patch: mock(() => Promise.resolve({ body: {} })),
-      replace: mock(() => Promise.resolve({ body: {} })),
-      list: mock(() => Promise.resolve({ body: { items: [] } })),
-    } as any;
-
-    // Reset all mocks before each test
-    mockApi.create.mockClear();
-    mockApi.read.mockClear();
-    mockApi.delete.mockClear();
-    mockApi.patch.mockClear();
-    mockApi.replace.mockClear();
-    mockApi.list.mockClear();
-
-    return mockApi;
-  };
+  // Create a typed mock K8s API using the shared factory, cast to MockK8sApi for mock method access
+  const createTestMockK8sApi = (): MockK8sApi => createMockK8sApi() as unknown as MockK8sApi;
 
   // Helper to create test resources
   const createTestDeployment = (name: string, namespace: string = 'default') =>
@@ -73,8 +73,8 @@ describe('ResourceRollbackManager', () => {
 
   describe('Factory Functions', () => {
     it('should create rollback manager with KubernetesObjectApi', () => {
-      const mockK8sApi = createMockK8sApi();
-      const manager = createRollbackManager(mockK8sApi);
+      const mockApi = createTestMockK8sApi();
+      const manager = createRollbackManager(mockApi);
 
       expect(manager).toBeInstanceOf(ResourceRollbackManager);
     });
@@ -99,11 +99,11 @@ describe('ResourceRollbackManager', () => {
   });
 
   describe('Graceful Rollback Scenarios', () => {
-    let mockK8sApi: any;
+    let mockK8sApi: MockK8sApi;
     let manager: ResourceRollbackManager;
 
     beforeEach(() => {
-      mockK8sApi = createMockK8sApi();
+      mockK8sApi = createTestMockK8sApi();
       manager = createRollbackManager(mockK8sApi);
     });
 
@@ -113,7 +113,7 @@ describe('ResourceRollbackManager', () => {
       const configmap1 = createTestConfigMap('app1-config');
 
       // Resources should be rolled back in reverse order: [deployment1, service1, configmap1]
-      const resources = [configmap1, service1, deployment1] as any[];
+      const resources = [configmap1, service1, deployment1] as Enhanced<unknown, unknown>[];
 
       // Mock successful deletions for all resources
       mockK8sApi.delete.mockResolvedValue({ body: {} });
@@ -129,14 +129,14 @@ describe('ResourceRollbackManager', () => {
 
       // Verify reverse order by checking the calls
       const deleteCalls = mockK8sApi.delete.mock.calls;
-      expect(deleteCalls[0][0].metadata.name).toBe('app1'); // deployment first (reversed)
-      expect(deleteCalls[1][0].metadata.name).toBe('app1-service'); // service second
-      expect(deleteCalls[2][0].metadata.name).toBe('app1-config'); // configmap last
+      expect(deleteCalls[0]![0]!.metadata.name).toBe('app1'); // deployment first (reversed)
+      expect(deleteCalls[1]![0]!.metadata.name).toBe('app1-service'); // service second
+      expect(deleteCalls[2]![0]!.metadata.name).toBe('app1-config'); // configmap last
     });
 
     it('should emit proper rollback events throughout the process', async () => {
       const deployment1 = createTestDeployment('test-app');
-      const resources = [deployment1] as any[];
+      const resources = [deployment1] as Enhanced<unknown, unknown>[];
       const events: DeploymentEvent[] = [];
 
       mockK8sApi.delete.mockResolvedValue({ body: {} });
@@ -162,12 +162,10 @@ describe('ResourceRollbackManager', () => {
     it('should handle resources that are already deleted (404 responses)', async () => {
       const deployment1 = createTestDeployment('already-deleted');
       const service1 = createTestService('still-exists');
-      const resources = [deployment1, service1] as any[];
+      const resources = [deployment1, service1] as Enhanced<unknown, unknown>[];
 
       // First deletion (deployment) returns 404 - already deleted
-      const notFoundError = new Error('Not found') as any;
-      notFoundError.statusCode = 404;
-      mockK8sApi.delete.mockRejectedValueOnce(notFoundError);
+      mockK8sApi.delete.mockRejectedValueOnce(createK8sError('Not found', 404));
 
       // Second deletion (service) succeeds
       mockK8sApi.delete.mockResolvedValueOnce({ body: {} });
@@ -181,7 +179,7 @@ describe('ResourceRollbackManager', () => {
 
     it.skip('should wait for deletion completion when timeout is specified', async () => {
       const deployment1 = createTestDeployment('wait-for-deletion');
-      const resources = [deployment1] as any[];
+      const resources = [deployment1] as Enhanced<unknown, unknown>[];
 
       // Mock successful deletion
       mockK8sApi.delete.mockResolvedValue({ body: {} });
@@ -190,9 +188,7 @@ describe('ResourceRollbackManager', () => {
       // First read: resource still exists
       mockK8sApi.read.mockResolvedValueOnce({ body: deployment1 });
       // Second read: resource is gone (404)
-      const notFoundError = new Error('Not found') as any;
-      notFoundError.statusCode = 404;
-      mockK8sApi.read.mockRejectedValueOnce(notFoundError);
+      mockK8sApi.read.mockRejectedValueOnce(createK8sError('Not found', 404));
 
       const startTime = Date.now();
       const result = await manager.rollbackResources(resources, {
@@ -214,22 +210,20 @@ describe('ResourceRollbackManager', () => {
   });
 
   describe('Force Deletion Scenarios', () => {
-    let mockK8sApi: any;
+    let mockK8sApi: MockK8sApi;
     let manager: ResourceRollbackManager;
 
     beforeEach(() => {
-      mockK8sApi = createMockK8sApi();
+      mockK8sApi = createTestMockK8sApi();
       manager = createRollbackManager(mockK8sApi);
     });
 
     it('should attempt graceful deletion first, then force delete on failure', async () => {
       const deployment1 = createTestDeployment('stubborn-resource');
-      const resources = [deployment1] as any[];
+      const resources = [deployment1] as Enhanced<unknown, unknown>[];
 
       // First deletion attempt fails (not 404)
-      const deleteError = new Error('Resource has finalizers') as any;
-      deleteError.statusCode = 409; // Conflict
-      mockK8sApi.delete.mockRejectedValueOnce(deleteError);
+      mockK8sApi.delete.mockRejectedValueOnce(createK8sError('Resource has finalizers', 409));
 
       // Force deletion succeeds
       mockK8sApi.delete.mockResolvedValueOnce({ body: {} });
@@ -242,13 +236,13 @@ describe('ResourceRollbackManager', () => {
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(2);
 
       // Check that second call used gracePeriod = 0 for force deletion
-      const forceDeletionCall = mockK8sApi.delete.mock.calls[1];
+      const forceDeletionCall = mockK8sApi.delete.mock.calls[1]!;
       expect(forceDeletionCall[3]).toBe(0); // gracePeriod parameter
     });
 
     it('should use gracePeriod=0 for force deletion', async () => {
       const service1 = createTestService('force-delete-me');
-      const resources = [service1] as any[];
+      const resources = [service1] as Enhanced<unknown, unknown>[];
 
       // Normal deletion fails
       mockK8sApi.delete.mockRejectedValueOnce(new Error('Finalizer blocking'));
@@ -261,15 +255,15 @@ describe('ResourceRollbackManager', () => {
       expect(calls).toHaveLength(2);
 
       // First call - normal deletion with undefined gracePeriod
-      expect(calls[0][3]).toBeUndefined();
+      expect(calls[0]![3]).toBeUndefined();
 
       // Second call - force deletion with gracePeriod = 0
-      expect(calls[1][3]).toBe(0);
+      expect(calls[1]![3]).toBe(0);
     });
 
     it('should handle force deletion failures gracefully', async () => {
       const deployment1 = createTestDeployment('impossible-to-delete');
-      const resources = [deployment1] as any[];
+      const resources = [deployment1] as Enhanced<unknown, unknown>[];
       const events: DeploymentEvent[] = [];
 
       // Both normal and force deletion fail
@@ -294,11 +288,11 @@ describe('ResourceRollbackManager', () => {
   });
 
   describe('Error Handling and Recovery', () => {
-    let mockK8sApi: any;
+    let mockK8sApi: MockK8sApi;
     let manager: ResourceRollbackManager;
 
     beforeEach(() => {
-      mockK8sApi = createMockK8sApi();
+      mockK8sApi = createTestMockK8sApi();
       manager = createRollbackManager(mockK8sApi);
     });
 
@@ -306,7 +300,7 @@ describe('ResourceRollbackManager', () => {
       const deployment1 = createTestDeployment('failing-resource');
       const service1 = createTestService('working-resource');
       const configmap1 = createTestConfigMap('another-working-resource');
-      const resources = [deployment1, service1, configmap1] as any[];
+      const resources = [deployment1, service1, configmap1] as Enhanced<unknown, unknown>[];
 
       // Middle resource (service) fails, others succeed
       mockK8sApi.delete.mockResolvedValueOnce({ body: {} }); // deployment succeeds
@@ -324,7 +318,7 @@ describe('ResourceRollbackManager', () => {
     it('should collect and report all rollback errors', async () => {
       const deployment1 = createTestDeployment('fail1');
       const service1 = createTestService('fail2');
-      const resources = [deployment1, service1] as any[];
+      const resources = [deployment1, service1] as Enhanced<unknown, unknown>[];
 
       // Both deletions fail with different errors
       mockK8sApi.delete.mockRejectedValueOnce(new Error('Deployment error'));
@@ -347,7 +341,7 @@ describe('ResourceRollbackManager', () => {
         kind: 'ConfigMap',
         metadata: {}, // No name!
         data: { test: 'value' },
-      } as any;
+      } as unknown as Enhanced<unknown, unknown>;
 
       const resources = [malformedResource];
 
@@ -360,7 +354,7 @@ describe('ResourceRollbackManager', () => {
 
     it('should timeout appropriately during deletion waiting', async () => {
       const deployment1 = createTestDeployment('slow-to-delete');
-      const resources = [deployment1] as any[];
+      const resources = [deployment1] as Enhanced<unknown, unknown>[];
 
       // Mock successful deletion
       mockK8sApi.delete.mockResolvedValue({ body: {} });
@@ -381,11 +375,11 @@ describe('ResourceRollbackManager', () => {
   });
 
   describe('Resource Identification and Metadata', () => {
-    let mockK8sApi: any;
+    let mockK8sApi: MockK8sApi;
     let manager: ResourceRollbackManager;
 
     beforeEach(() => {
-      mockK8sApi = createMockK8sApi();
+      mockK8sApi = createTestMockK8sApi();
       manager = createRollbackManager(mockK8sApi);
     });
 
@@ -398,7 +392,7 @@ describe('ResourceRollbackManager', () => {
           name: 'simple-string',
           namespace: 'simple-namespace',
         },
-      } as any;
+      } as unknown as Enhanced<unknown, unknown>;
 
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
@@ -424,9 +418,12 @@ describe('ResourceRollbackManager', () => {
 
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
-      const result = await manager.rollbackResources([deployment1] as any[], {
-        emitEvent: (event) => events.push(event),
-      });
+      const result = await manager.rollbackResources(
+        [deployment1] as Enhanced<unknown, unknown>[],
+        {
+          emitEvent: (event) => events.push(event),
+        }
+      );
 
       expect(result.status).toBe('success');
       expect(result.rolledBackResources[0]).toBe('Deployment/test-app (production)');
@@ -444,34 +441,34 @@ describe('ResourceRollbackManager', () => {
         apiVersion: 'v1',
         kind: 'PersistentVolume',
         metadata: { name: 'cluster-pv' }, // No namespace
-      } as any;
+      } as unknown as Enhanced<unknown, unknown>;
 
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
       const result = await manager.rollbackResources([
         namespacedResource,
         clusterResource,
-      ] as any[]);
+      ] as Enhanced<unknown, unknown>[]);
 
       expect(result.status).toBe('success');
       expect(mockK8sApi.delete).toHaveBeenCalledTimes(2);
 
       // Check namespaced resource call
-      const namespacedCall = mockK8sApi.delete.mock.calls[1][0]; // Second call (reverse order)
+      const namespacedCall = mockK8sApi.delete.mock.calls[1]![0]!; // Second call (reverse order)
       expect(namespacedCall.metadata.namespace).toBe('kube-system');
 
       // Check cluster-scoped resource call
-      const clusterCall = mockK8sApi.delete.mock.calls[0][0]; // First call (reverse order)
+      const clusterCall = mockK8sApi.delete.mock.calls[0]![0]!; // First call (reverse order)
       expect(clusterCall.metadata.namespace).toBeUndefined();
     });
   });
 
   describe('Edge Cases and Robustness', () => {
-    let mockK8sApi: any;
+    let mockK8sApi: MockK8sApi;
     let manager: ResourceRollbackManager;
 
     beforeEach(() => {
-      mockK8sApi = createMockK8sApi();
+      mockK8sApi = createTestMockK8sApi();
       manager = createRollbackManager(mockK8sApi);
     });
 
@@ -489,7 +486,7 @@ describe('ResourceRollbackManager', () => {
         apiVersion: 'v1',
         kind: 'ConfigMap',
         // metadata is undefined
-      } as any;
+      } as unknown as Enhanced<unknown, unknown>;
 
       const result = await manager.rollbackResources([resourceWithoutMetadata]);
 
@@ -502,7 +499,7 @@ describe('ResourceRollbackManager', () => {
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
       const startTime = Date.now();
-      const result = await manager.rollbackResources([deployment1] as any[]);
+      const result = await manager.rollbackResources([deployment1] as Enhanced<unknown, unknown>[]);
       const endTime = Date.now();
 
       expect(result.duration).toBeGreaterThanOrEqual(0);
@@ -513,7 +510,7 @@ describe('ResourceRollbackManager', () => {
       const deployment1 = createTestDeployment('result-test');
       mockK8sApi.delete.mockResolvedValue({ body: {} });
 
-      const result = await manager.rollbackResources([deployment1] as any[]);
+      const result = await manager.rollbackResources([deployment1] as Enhanced<unknown, unknown>[]);
 
       expect(result.deploymentId).toMatch(/^rollback-\d+$/);
       expect(typeof result.duration).toBe('number');

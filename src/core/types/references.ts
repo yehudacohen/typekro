@@ -2,6 +2,7 @@
  * Reference-related types for cross-resource references and CEL expressions
  */
 
+import { TypeKroError } from '../errors.js';
 import type { CelExpression, KubernetesRef, MagicAssignable } from './common.js';
 
 export interface ResourceReference<_T = unknown> {
@@ -89,13 +90,37 @@ type DistributivePick<T, K extends PropertyKey> = SafePropertyAccess<T, K>;
  * The magic here is that TypeScript sees the original types (T), allowing seamless use in
  * composition functions, while the runtime proxy handles the KubernetesRef conversion.
  */
+/**
+ * A proxy type that makes every known property of `T` assignable to
+ * `MagicAssignable<T[K]>` (allowing literal values, `KubernetesRef`, or
+ * `CelExpression`), while also accepting arbitrary string keys for
+ * cross-composition status references.
+ *
+ * **Caveat**: Because of the catch-all index signature, typos on property
+ * names will **not** produce compile-time errors — they will silently resolve
+ * to `MagicAssignable<any>`. If you get unexpected runtime behavior, double-check
+ * that your property names match the schema definition exactly.
+ */
 export type MagicProxy<T> = T & {
   // Distribute over union to get all possible keys, then map them to their types
   [P in DistributiveKeys<T> as P extends string ? P : never]: MagicAssignable<
     DistributivePick<T, P>
   >;
 } & {
-  // Index signature for truly unknown properties (fallback)
+  /**
+   * Catch-all index signature for dynamic property access.
+   *
+   * This MUST remain `MagicAssignable<any>` because it enables cross-composition
+   * status references — e.g., `nestedComp.status.customField` where `customField`
+   * is defined by the user's status schema, not a built-in K8s type. TypeScript
+   * resolves known properties from `T & MappedType` above; only truly unknown
+   * properties fall through to this index signature.
+   *
+   * Alternatives investigated and rejected:
+   * - Branded error type: breaks ~40+ cross-composition references in tests/examples/production
+   * - `MagicAssignable<unknown>`: produces unclear errors and breaks assignments
+   * - `never`: is a bottom type assignable to everything, provides no safety
+   */
   [key: string]: MagicAssignable<any>;
 };
 
@@ -130,9 +155,13 @@ export interface CelEvaluationContext {
 /**
  * Error thrown when CEL expression evaluation fails
  */
-export class CelEvaluationError extends Error {
+export class CelEvaluationError extends TypeKroError {
   constructor(expression: CelExpression, cause: Error) {
-    super(`Failed to evaluate CEL expression '${expression.expression}': ${cause.message}`);
+    super(
+      `Failed to evaluate CEL expression '${expression.expression}': ${cause.message}`,
+      'CEL_EVALUATION_ERROR',
+      { expression: expression.expression, cause: cause.message }
+    );
     this.name = 'CelEvaluationError';
     this.cause = cause;
   }

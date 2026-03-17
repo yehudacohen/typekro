@@ -1,5 +1,6 @@
 import * as yaml from 'js-yaml';
-import { isKubernetesRef } from '../../../core/dependencies/type-guards.js';
+import { ResourceGraphFactoryError } from '../../../core/errors.js';
+import { getErrorStatusCode } from '../../../core/kubernetes/errors.js';
 import type { KubernetesRef } from '../../../core/types/common.js';
 import type {
   AppliedResource,
@@ -8,13 +9,15 @@ import type {
 } from '../../../core/types/deployment.js';
 import type { KubernetesResource } from '../../../core/types/kubernetes.js';
 import { PathResolver } from '../../../core/yaml/path-resolver.js';
+import { isKubernetesRef } from '../../../utils/type-guards.js';
 import { registerDeploymentClosure } from '../../shared.js';
+import { handleConflict } from './conflict-handler.js';
 
 /**
  * Parse YAML content into Kubernetes manifests
  */
 function parseYamlManifests(yamlContent: string): KubernetesResource[] {
-  const documents = yaml.loadAll(yamlContent);
+  const documents = yaml.loadAll(yamlContent, undefined, { schema: yaml.JSON_SCHEMA });
   const manifests: KubernetesResource[] = [];
 
   for (const doc of documents) {
@@ -28,12 +31,18 @@ function parseYamlManifests(yamlContent: string): KubernetesResource[] {
 
 export interface YamlDirectoryConfig {
   name: string;
+  /** Resource graph identifier. Required when `name` is dynamic (e.g. from schema references). */
+  id?: string;
   path: string; // Supports: "./local/dir", "git:github.com/org/repo/path/dir"
+  /** @default true */
   recursive?: boolean;
+  /** @default ['**\/*.yaml', '**\/*.yml'] */
   include?: string[]; // Glob patterns
+  /** @default [] */
   exclude?: string[]; // Glob patterns
   namespace?: string | KubernetesRef<string>; // Can reference dynamically generated namespace
-  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail'; // Default: 'replace'
+  /** @default 'replace' */
+  deploymentStrategy?: 'replace' | 'skipIfExists' | 'fail';
 }
 
 /**
@@ -108,13 +117,19 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
               if (deploymentContext.kubernetesApi) {
                 await deploymentContext.kubernetesApi.create(manifest);
               } else {
-                throw new Error('No Kubernetes API available for YAML deployment');
+                throw new ResourceGraphFactoryError(
+                  'No Kubernetes API available for YAML deployment',
+                  config.name,
+                  'deployment'
+                );
               }
             } else if (deploymentContext.kubernetesApi) {
               await deploymentContext.kubernetesApi.create(manifest);
             } else {
-              throw new Error(
-                'No deployment method available: neither alchemyScope nor kubernetesApi provided'
+              throw new ResourceGraphFactoryError(
+                'No deployment method available: neither alchemyScope nor kubernetesApi provided',
+                config.name,
+                'deployment'
               );
             }
 
@@ -124,65 +139,11 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
               namespace: manifest.metadata?.namespace || undefined,
               apiVersion: manifest.apiVersion || 'v1',
             });
-          } catch (error: any) {
+          } catch (error: unknown) {
             // Handle conflicts based on deployment strategy
-            if (error?.response?.statusCode === 409 || error?.statusCode === 409) {
-              const resourceName = `${manifest.kind}/${manifest.metadata?.name}`;
-
-              if (strategy === 'skipIfExists') {
-                console.log(`⚠️ Skipping existing resource: ${resourceName}`);
-                allResults.push({
-                  kind: manifest.kind || 'Unknown',
-                  name: manifest.metadata?.name || 'unknown',
-                  namespace: manifest.metadata?.namespace || undefined,
-                  apiVersion: manifest.apiVersion || 'v1',
-                });
-              } else if (strategy === 'replace') {
-                console.log(`🔄 Replacing existing resource: ${resourceName}`);
-                // Try to update/replace the resource
-                try {
-                  if (deploymentContext.kubernetesApi) {
-                    // Check if resource exists first
-                    let existing: any;
-                    try {
-                      // In the new API, methods return objects directly (no .body wrapper)
-                      existing = await deploymentContext.kubernetesApi.read({
-                        apiVersion: manifest.apiVersion,
-                        kind: manifest.kind,
-                        metadata: {
-                          name: manifest.metadata?.name || '',
-                          namespace: manifest.metadata?.namespace || 'default',
-                        },
-                      });
-                    } catch (error: any) {
-                      // If it's a 404, the resource doesn't exist
-                      if (error.statusCode !== 404) {
-                        throw error;
-                      }
-                    }
-
-                    if (existing) {
-                      // Resource exists, use patch for safer updates
-                      await deploymentContext.kubernetesApi.patch(manifest);
-                    } else {
-                      // Resource does not exist, create it
-                      await deploymentContext.kubernetesApi.create(manifest);
-                    }
-                  }
-                  allResults.push({
-                    kind: manifest.kind || 'Unknown',
-                    name: manifest.metadata?.name || 'unknown',
-                    namespace: manifest.metadata?.namespace || undefined,
-                    apiVersion: manifest.apiVersion || 'v1',
-                  });
-                } catch (replaceError) {
-                  console.error(`❌ Failed to replace resource ${resourceName}:`, replaceError);
-                  throw replaceError;
-                }
-              } else {
-                // strategy === 'fail' (default behavior)
-                throw error;
-              }
+            if (getErrorStatusCode(error) === 409) {
+              const result = await handleConflict(error, manifest, strategy, deploymentContext);
+              allResults.push(result);
             } else {
               // Non-conflict errors should always be thrown
               throw error;
@@ -197,18 +158,3 @@ export function yamlDirectory(config: YamlDirectoryConfig): DeploymentClosure<Ap
     return closure;
   }, config.name);
 }
-
-/**
- * Common Git repository paths for popular controllers
- */
-export const GitPaths = {
-  fluxHelm: (version = 'main') => `git:github.com/fluxcd/helm-controller/config/default@${version}`,
-  fluxKustomize: (version = 'main') =>
-    `git:github.com/fluxcd/kustomize-controller/config/default@${version}`,
-  fluxSource: (version = 'main') =>
-    `git:github.com/fluxcd/source-controller/config/default@${version}`,
-  kro: (version = 'main') => `git:github.com/Azure/kro/config/default@${version}`,
-  argoCD: (version = 'stable') =>
-    `git:github.com/argoproj/argo-cd/manifests/install.yaml@${version}`,
-  istio: (version = 'master') => `git:github.com/istio/istio/manifests/charts/base@${version}`,
-} as const;

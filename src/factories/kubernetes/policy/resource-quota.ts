@@ -1,4 +1,5 @@
 import type { V1ResourceQuota } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -6,7 +7,7 @@ export type V1ResourceQuotaSpec = NonNullable<V1ResourceQuota['spec']>;
 export type V1ResourceQuotaStatus = NonNullable<V1ResourceQuota['status']>;
 
 export function resourceQuota(
-  resource: V1ResourceQuota
+  resource: V1ResourceQuota & { id?: string }
 ): Enhanced<V1ResourceQuotaSpec, V1ResourceQuotaStatus> {
   return createResource({
     ...resource,
@@ -41,12 +42,12 @@ export function resourceQuota(
         ready: true,
         message: 'ResourceQuota is ready',
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ResourceQuota readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating ResourceQuota readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

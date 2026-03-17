@@ -1,5 +1,5 @@
 import type { V1ValidatingWebhookConfiguration } from '@kubernetes/client-node';
-import type { Enhanced } from '../../../core/types/index.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1ValidatingWebhookConfigurationWebhooks = NonNullable<
@@ -7,12 +7,12 @@ export type V1ValidatingWebhookConfigurationWebhooks = NonNullable<
 >;
 
 export function validatingWebhookConfiguration(
-  resource: V1ValidatingWebhookConfiguration
-): Enhanced<V1ValidatingWebhookConfigurationWebhooks, unknown> {
+  resource: V1ValidatingWebhookConfiguration & { id?: string }
+) {
   return createResource({
     ...resource,
     apiVersion: 'admissionregistration.k8s.io/v1',
-    kind: 'ValidatingAdmissionWebhook',
+    kind: 'ValidatingWebhookConfiguration',
     metadata: resource.metadata ?? { name: 'unnamed-validatingwebhook' },
-  });
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator('ValidatingWebhookConfiguration'));
 }

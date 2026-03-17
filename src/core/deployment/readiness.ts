@@ -5,14 +5,21 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import {
+  DEFAULT_DEPLOYMENT_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_POLL_INTERVAL,
+  DEFAULT_READINESS_MAX_BACKOFF,
+} from '../config/defaults.js';
+import { ensureError } from '../errors.js';
 import type { DeploymentEvent, DeploymentOptions, ReadinessConfig } from '../types/deployment.js';
-import { ResourceReadinessTimeoutError } from '../types/deployment.js';
 import type {
   DeployedResource,
   DeploymentResource,
   GenericResourceStatus as K8sGenericResourceStatus,
 } from '../types.js';
 import type { DebugLogger } from './debug-logger.js';
+import { ResourceReadinessTimeoutError } from './errors.js';
 
 export class ResourceReadinessChecker {
   private onResourceReady?: (resource: DeployedResource) => void;
@@ -42,17 +49,6 @@ export class ResourceReadinessChecker {
     options: DeploymentOptions,
     emitEvent: (event: DeploymentEvent) => void
   ): Promise<void> {
-    // Skip polling for resources that are immediately ready
-    if (this.isImmediatelyReady(deployedResource.kind)) {
-      emitEvent({
-        type: 'progress',
-        resourceId: deployedResource.id,
-        message: `${deployedResource.kind}/${deployedResource.name} is ready after 0ms`,
-        timestamp: new Date(),
-      });
-      return;
-    }
-
     const readinessConfig = this.getReadinessConfig(options);
     await this.waitForResourceReadyWithPolling(
       deployedResource,
@@ -60,13 +56,6 @@ export class ResourceReadinessChecker {
       readinessConfig,
       emitEvent
     );
-  }
-
-  /**
-   * Check if a resource type is immediately ready when created
-   */
-  private isImmediatelyReady(kind: string): boolean {
-    return ['ConfigMap', 'Secret', 'CronJob'].includes(kind);
   }
 
   /**
@@ -153,10 +142,10 @@ export class ResourceReadinessChecker {
         );
 
         await new Promise((resolve) => setTimeout(resolve, delay));
-      } catch (error) {
+      } catch (error: unknown) {
         // Debug logging for API errors
         if (this.debugLogger) {
-          this.debugLogger.logApiError(deployedResource, error as Error, {
+          this.debugLogger.logApiError(deployedResource, ensureError(error), {
             attempt,
             elapsedTime: Date.now() - startTime,
             isTimeout: false,
@@ -169,7 +158,7 @@ export class ResourceReadinessChecker {
           emitEvent({
             type: 'progress',
             resourceId: deployedResource.id,
-            message: `Error checking readiness for ${deployedResource.kind}/${deployedResource.name}: ${error}`,
+            message: `Error checking readiness for ${deployedResource.kind}/${deployedResource.name}: ${ensureError(error).message}`,
             timestamp: new Date(),
           });
         }
@@ -198,7 +187,7 @@ export class ResourceReadinessChecker {
           Date.now() - startTime,
           attempt
         );
-      } catch (_error) {
+      } catch (_error: unknown) {
         // If we can't get final status, log timeout without it
         this.debugLogger.logTimeout(
           deployedResource,
@@ -217,11 +206,11 @@ export class ResourceReadinessChecker {
    */
   private getReadinessConfig(options: DeploymentOptions): ReadinessConfig {
     return {
-      timeout: options.timeout || 300000, // 5 minutes default
-      initialDelay: 1000, // 1 second
-      maxDelay: 10000, // 10 seconds max
+      timeout: options.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
+      initialDelay: DEFAULT_FAST_POLL_INTERVAL,
+      maxDelay: DEFAULT_READINESS_MAX_BACKOFF,
       backoffMultiplier: 1.5,
-      errorRetryDelay: 2000, // 2 seconds on error
+      errorRetryDelay: DEFAULT_POLL_INTERVAL,
       progressInterval: 5, // Emit progress every 5 attempts
     };
   }
@@ -248,11 +237,9 @@ export class ResourceReadinessChecker {
   }
 
   /**
-   * Check if a resource is ready based on its kind and status
-   */
-  /**
-   * Simple fallback readiness check for resources without custom evaluators
-   * This should only be used when factory-level readiness evaluators are not available
+   * Simple fallback readiness check for resources without custom evaluators.
+   * @deprecated All resources should have factory-provided readiness evaluators.
+   * This fallback exists only for backward compatibility during migration.
    */
   isResourceReady(resource: DeploymentResource): boolean {
     const status = this.getResourceStatus(resource);

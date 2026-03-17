@@ -2,7 +2,7 @@
  * Debug test to check if TypeKro runtime bootstrap also gets the status builder error
  */
 
-import { typeKroRuntimeBootstrap } from '../../../src/core/composition/typekro-runtime/index.js';
+import { typeKroRuntimeBootstrap } from '../../../src/compositions/typekro-runtime/index.js';
 
 console.log('🧪 Testing TypeKro runtime bootstrap...');
 
@@ -10,7 +10,7 @@ try {
   const bootstrap = typeKroRuntimeBootstrap({
     namespace: 'flux-system',
     fluxVersion: 'v2.4.0',
-    kroVersion: '0.3.0'
+    kroVersion: '0.8.5',
   });
 
   console.log('✅ TypeKro runtime bootstrap created successfully');

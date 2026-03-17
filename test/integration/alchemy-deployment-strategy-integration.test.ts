@@ -9,15 +9,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import type * as k8s from '@kubernetes/client-node';
 import alchemy from 'alchemy';
 import { type } from 'arktype';
 import { DependencyGraph } from '../../src/core/dependencies/graph.js';
+import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import {
   AlchemyDeploymentStrategy,
   DirectDeploymentStrategy,
-} from '../../src/core/deployment/deployment-strategies.js';
-import type { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
+} from '../../src/core/deployment/strategies/index.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/core/types/kubernetes.js';
 import { simple } from '../../src/index.js';
 import {
@@ -44,12 +46,24 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
   beforeAll(async () => {
     console.log('🔧 Creating alchemy scope for error handling tests...');
     try {
+      // Clean stale alchemy state from previous runs to prevent orphan destruction hangs.
+      // When a previous test run crashes or times out, state files are left with status "updating"
+      // which causes alchemy's finalize() to try destroying orphan resources in non-existent
+      // namespaces, hanging indefinitely with no timeout.
+      const ALCHEMY_STATE_DIR = './temp/.alchemy';
+      const SCOPE_NAME = 'alchemy-error-handling-test';
+      const scopeStateDir = join(ALCHEMY_STATE_DIR, SCOPE_NAME);
+      if (existsSync(scopeStateDir)) {
+        console.log(`🧹 Cleaning stale alchemy state: ${scopeStateDir}`);
+        rmSync(scopeStateDir, { recursive: true, force: true });
+      }
+
       const { FileSystemStateStore } = await import('alchemy/state');
 
       alchemyScope = await alchemy('alchemy-error-handling-test', {
         stateStore: (scope) =>
           new FileSystemStateStore(scope, {
-            rootDir: './temp/.alchemy',
+            rootDir: ALCHEMY_STATE_DIR,
           }),
       });
       console.log(`✅ Alchemy scope created: ${alchemyScope.name}`);
@@ -97,7 +111,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
       delete: async () => ({ success: true }),
       rollback: async () => ({ success: true }),
       getDeploymentStatus: async () => ({ status: 'failed' }),
-    } as any;
+    } as unknown as DirectDeploymentEngine;
 
     console.log(
       '✅ AlchemyDeploymentStrategy error handling test setup complete with mocked engine'
@@ -562,7 +576,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
                   // Missing apiVersion and kind - should cause inference issues
                   metadata: { name: 'invalid-resource' },
                   spec: { some: 'data' },
-                } as any,
+                } as unknown as DeployableK8sResource<Enhanced<unknown, unknown>>,
               },
             ],
             dependencyGraph: new DependencyGraph(),
@@ -659,7 +673,7 @@ describeOrSkip('AlchemyDeploymentStrategy Error Handling', () => {
           undefined, // statusBuilder
           undefined, // resourceKeys
           {},
-          undefined as any,
+          undefined as unknown as ConstructorParameters<typeof AlchemyDeploymentStrategy>[6],
           // Invalid scope
           baseStrategy
         );

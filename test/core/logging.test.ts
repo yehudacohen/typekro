@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createLogger, getComponentLogger, getDeploymentLogger, getResourceLogger, type LoggerConfig,  } from '../../src/core/logging/index.js';
+import { getLoggerConfigFromEnv } from '../../src/core/logging/config.js';
+import {
+  createLogger,
+  getComponentLogger,
+  getDeploymentLogger,
+  getResourceLogger,
+  type LoggerConfig,
+} from '../../src/core/logging/index.js';
 
 describe('TypeKro Logging', () => {
   let originalEnv: Record<string, string | undefined>;
@@ -9,6 +16,7 @@ describe('TypeKro Logging', () => {
     originalEnv = {
       TYPEKRO_LOG_LEVEL: process.env.TYPEKRO_LOG_LEVEL,
       TYPEKRO_LOG_PRETTY: process.env.TYPEKRO_LOG_PRETTY,
+      TYPEKRO_LOG_DESTINATION: process.env.TYPEKRO_LOG_DESTINATION,
       NODE_ENV: process.env.NODE_ENV,
     };
   });
@@ -132,14 +140,42 @@ describe('TypeKro Logging', () => {
   describe('Error Handling', () => {
     it('should handle invalid log levels gracefully', () => {
       expect(() => {
-        createLogger({ level: 'invalid' as any });
+        createLogger({ level: 'invalid' as unknown as 'info' });
       }).toThrow('Invalid log level');
     });
 
     it('should validate configuration', () => {
       expect(() => {
-        createLogger({ level: 'info', destination: 123 as any });
+        createLogger({ level: 'info', destination: 123 as unknown as string });
       }).toThrow('Log destination must be a string');
+    });
+  });
+
+  describe('Log Destination Path Validation', () => {
+    it('should reject path traversal sequences (..)', () => {
+      process.env.TYPEKRO_LOG_DESTINATION = '../../../etc/passwd';
+      expect(() => getLoggerConfigFromEnv()).toThrow('path traversal');
+    });
+
+    it('should reject null bytes in path', () => {
+      process.env.TYPEKRO_LOG_DESTINATION = 'logs/app.log\0.txt';
+      expect(() => getLoggerConfigFromEnv()).toThrow('null bytes');
+    });
+
+    it('should reject absolute Unix paths', () => {
+      process.env.TYPEKRO_LOG_DESTINATION = '/var/log/app.log';
+      expect(() => getLoggerConfigFromEnv()).toThrow('relative path');
+    });
+
+    it('should reject absolute Windows paths', () => {
+      process.env.TYPEKRO_LOG_DESTINATION = 'C:\\logs\\app.log';
+      expect(() => getLoggerConfigFromEnv()).toThrow('relative path');
+    });
+
+    it('should accept valid relative paths', () => {
+      process.env.TYPEKRO_LOG_DESTINATION = 'logs/app.log';
+      const config = getLoggerConfigFromEnv();
+      expect(config.destination).toBe('logs/app.log');
     });
   });
 });

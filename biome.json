@@ -133,15 +133,7 @@
       }
     },
     {
-      "includes": [
-        "src/alchemy/**",
-        "src/core/cel.ts",
-        "src/core/cel-evaluator.ts",
-        "src/core/errors.ts",
-        "src/core/reference-resolver.ts",
-        "src/core/schema-proxy.ts",
-        "src/core/types.ts"
-      ],
+      "includes": ["src/alchemy/**", "src/core/errors.ts", "src/core/types.ts"],
       "linter": {
         "rules": {
           "suspicious": {

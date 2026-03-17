@@ -6,6 +6,16 @@
  */
 
 import * as k8s from '@kubernetes/client-node';
+import {
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_MAX_RECONNECT_ATTEMPTS,
+  DEFAULT_MAX_WATCH_CONNECTIONS,
+  DEFAULT_RECONNECT_JITTER_FACTOR,
+  DEFAULT_RECONNECT_MAX_DELAY,
+  DEFAULT_RETRY_BASE_DELAY,
+  DEFAULT_WATCH_TIMEOUT_SECONDS,
+} from '../config/defaults.js';
+import { ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, DeploymentEvent } from '../types/deployment.js';
 
@@ -25,11 +35,11 @@ export interface EventMonitoringOptions {
   progressCallback?: (event: DeploymentEvent) => void;
   /** Maximum number of watch connections per namespace */
   maxWatchConnections?: number;
-  /** 
+  /**
    * Timeout for watch connections in seconds.
-   * Set to 0 (default) for no server-side timeout - connections stay alive until explicitly closed.
-   * This prevents TimeoutError spam from Kubernetes API server closing connections.
-   * @default 0
+   * Connections will be automatically reconnected when they timeout during active monitoring.
+   * A shorter timeout (e.g., 5 seconds) allows for cleaner process exit when monitoring stops.
+   * @default 5
    */
   watchTimeoutSeconds?: number;
   /**
@@ -159,14 +169,16 @@ export class EventMonitor {
         (() => {
           /* no-op */
         }),
-      maxWatchConnections: options.maxWatchConnections || 10,
-      // Set to 0 for no server-side timeout - connections stay alive until we close them
-      // This prevents TimeoutError spam from Kubernetes API server closing connections
-      watchTimeoutSeconds: options.watchTimeoutSeconds ?? 0,
-      maxReconnectAttempts: options.maxReconnectAttempts ?? 10,
-      reconnectBaseDelay: options.reconnectBaseDelay ?? 1000,
-      reconnectMaxDelay: options.reconnectMaxDelay ?? 30000,
-      reconnectJitter: options.reconnectJitter ?? 0.2,
+      maxWatchConnections: options.maxWatchConnections || DEFAULT_MAX_WATCH_CONNECTIONS,
+      // Use a short server-side timeout so connections close quickly
+      // and can be properly cleaned up when stopMonitoring is called.
+      // The reconnection logic will re-establish connections as needed during active monitoring.
+      // Setting to 0 causes connections to stay open indefinitely, which prevents clean exit.
+      watchTimeoutSeconds: options.watchTimeoutSeconds ?? DEFAULT_WATCH_TIMEOUT_SECONDS,
+      maxReconnectAttempts: options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS,
+      reconnectBaseDelay: options.reconnectBaseDelay ?? DEFAULT_RETRY_BASE_DELAY,
+      reconnectMaxDelay: options.reconnectMaxDelay ?? DEFAULT_RECONNECT_MAX_DELAY,
+      reconnectJitter: options.reconnectJitter ?? DEFAULT_RECONNECT_JITTER_FACTOR,
     };
   }
 
@@ -186,6 +198,10 @@ export class EventMonitor {
     });
 
     try {
+      // Set isMonitoring FIRST so that startWatchConnection doesn't skip the connection
+      // (it checks this.isMonitoring and returns early if false)
+      this.isMonitoring = true;
+
       // Get resource version for time-based filtering
       this.startResourceVersion = await this.getResourceVersionForTime(this.options.startTime);
 
@@ -200,13 +216,12 @@ export class EventMonitor {
         await this.createNamespaceWideWatchConnection();
       }
 
-      this.isMonitoring = true;
       this.logger.info('Event monitoring started successfully', {
         watchConnections: this.watchConnections.size,
         monitoredResources: this.monitoredResources.size,
       });
-    } catch (error) {
-      this.logger.error('Failed to start event monitoring', error as Error);
+    } catch (error: unknown) {
+      this.logger.error('Failed to start event monitoring', ensureError(error));
       await this.stopMonitoring();
       throw error;
     }
@@ -233,25 +248,18 @@ export class EventMonitor {
     }
     this.childDiscoveryTimeouts.clear();
 
-    // Close all watch connections
-    // Note: In Bun's runtime, calling abort() on fetch requests throws DOMException (AbortError)
-    // that escapes try-catch blocks and appears as "Unhandled error between tests".
-    // This is a known Bun behavior where native errors bypass JavaScript error handling.
-    // 
-    // Instead of aborting connections (which causes DOMException in Bun),
-    // we simply clear all references and let the connections timeout naturally.
-    // The handleWatchError callback will ignore TimeoutError when isMonitoring is false.
-    //
-    // This is a trade-off: we don't get immediate cleanup, but we avoid the
-    // "Unhandled error between tests" noise in Bun's test runner.
-    
-    for (const [key, connection] of this.watchConnections) {
-      // Clear the request reference - don't call abort() as it causes DOMException in Bun
-      if (connection.request) {
-        // Just clear the reference, don't abort
-        this.logger.debug('Cleared watch connection reference', { key, kind: connection.kind });
-      }
-    }
+    // Close all watch connections.
+    // IMPORTANT: We deliberately do NOT call abort() on connections because Bun's
+    // runtime throws DOMException/AbortError from native abort() that escapes
+    // try-catch blocks (tested with Bun 1.3.5 and 1.3.9). Instead, we clear the
+    // connection references and rely on:
+    //   1. isMonitoring = false (set above) — causes all handlers to ignore events
+    //   2. Short watchTimeoutSeconds (default 5s) — connections expire quickly
+    //   3. Garbage collection — orphaned connections are cleaned up by the GC
+    this.logger.debug('Clearing watch connections without explicit abort', {
+      connectionCount: this.watchConnections.size,
+      reason: 'DOMException from abort() escapes try-catch in Bun runtime',
+    });
 
     this.watchConnections.clear();
     this.monitoredResources.clear();
@@ -294,9 +302,9 @@ export class EventMonitor {
     if (this.options.includeChildResources && resourceIdentifier.uid) {
       // Use setTimeout to avoid blocking the main flow
       const timeoutId = setTimeout(() => {
-        this.discoverChildResources(resource).catch((error) => {
+        this.discoverChildResources(resource).catch((error: unknown) => {
           this.logger.warn('Child resource discovery failed', {
-            error: error as Error,
+            error: ensureError(error),
             resourceId,
             kind: resource.kind,
             name: resource.name,
@@ -304,7 +312,7 @@ export class EventMonitor {
         });
         // Clean up timeout reference after execution
         this.childDiscoveryTimeouts.delete(timeoutId);
-      }, 1000); // Wait 1 second to allow resource to be fully created
+      }, DEFAULT_FAST_POLL_INTERVAL); // Wait for resource to be fully created
 
       // Track timeout for cleanup
       this.childDiscoveryTimeouts.add(timeoutId);
@@ -436,8 +444,8 @@ export class EventMonitor {
           });
         }
       }
-    } catch (error) {
-      this.logger.error('Failed to discover child resources', error as Error, {
+    } catch (error: unknown) {
+      this.logger.error('Failed to discover child resources', ensureError(error), {
         parentId,
         parentKind: parentResource.kind,
         parentName: parentResource.name,
@@ -469,9 +477,9 @@ export class EventMonitor {
           );
 
           childResources.push(...resources);
-        } catch (error) {
+        } catch (error: unknown) {
           this.logger.debug('Failed to list child resources of type', {
-            error: error as Error,
+            error: ensureError(error),
             resourceType,
             parentKind: parentResource.kind,
             parentName: parentResource.name,
@@ -479,8 +487,8 @@ export class EventMonitor {
           // Continue with other resource types
         }
       }
-    } catch (error) {
-      this.logger.error('Error during child resource discovery', error as Error, {
+    } catch (error: unknown) {
+      this.logger.error('Error during child resource discovery', ensureError(error), {
         parentKind: parentResource.kind,
         parentName: parentResource.name,
       });
@@ -557,9 +565,9 @@ export class EventMonitor {
           }
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.debug('Failed to list resources for owner reference check', {
-        error: error as Error,
+        error: ensureError(error),
         resourceType,
         namespace,
         ownerUid,
@@ -678,6 +686,15 @@ export class EventMonitor {
    * Start a watch connection
    */
   private async startWatchConnection(connection: WatchConnection): Promise<void> {
+    // Don't start if monitoring has stopped
+    if (!this.isMonitoring) {
+      this.logger.debug('Skipping watch connection start - monitoring stopped', {
+        kind: connection.kind,
+        namespace: connection.namespace,
+      });
+      return;
+    }
+
     try {
       const watchOptions: Record<string, string | number | boolean | undefined> = {
         timeoutSeconds: this.options.watchTimeoutSeconds,
@@ -706,19 +723,39 @@ export class EventMonitor {
         `/api/v1/namespaces/${connection.namespace}/events`,
         watchOptions,
         (type: string, apiObj: k8s.CoreV1Event, watchObj: unknown) => {
+          // Check if monitoring is still active before processing events
+          if (!this.isMonitoring) {
+            return;
+          }
           this.handleWatchEvent(type, apiObj, watchObj, connection);
         },
         (error: unknown) => {
+          // Check if monitoring is still active before handling errors
+          // This prevents reconnection attempts after stopMonitoring is called
+          if (!this.isMonitoring) {
+            const errorName = ensureError(error).name;
+            if (errorName === 'AbortError' || errorName === 'TimeoutError') {
+              this.logger.debug(`Ignoring ${errorName} in error callback during cleanup`);
+              return;
+            }
+          }
           this.handleWatchError(error, connection);
         }
       );
-      
+
       // Handle any promise rejection from the watch
       const request = await watchPromise.catch((error: unknown) => {
         // Suppress AbortError and TimeoutError - these are expected during cleanup
-        const errorName = (error as Error)?.name;
+        const errorName = ensureError(error).name;
         if (errorName === 'AbortError' || errorName === 'TimeoutError') {
           this.logger.debug(`Suppressed ${errorName} from watch promise`);
+          return null;
+        }
+        // If monitoring has stopped, suppress all errors
+        if (!this.isMonitoring) {
+          this.logger.debug('Suppressed error from watch promise during cleanup', {
+            error: ensureError(error).message,
+          });
           return null;
         }
         throw error;
@@ -740,8 +777,18 @@ export class EventMonitor {
         namespace: connection.namespace,
         resourceCount: connection.resources.size,
       });
-    } catch (error) {
-      this.logger.error('Failed to start watch connection', error as Error, {
+    } catch (error: unknown) {
+      // If monitoring has stopped, suppress all errors
+      if (!this.isMonitoring) {
+        this.logger.debug('Suppressed error during watch connection start (monitoring stopped)', {
+          kind: connection.kind,
+          namespace: connection.namespace,
+          error: ensureError(error).message,
+        });
+        return;
+      }
+
+      this.logger.error('Failed to start watch connection', ensureError(error), {
         kind: connection.kind,
         namespace: connection.namespace,
       });
@@ -812,8 +859,8 @@ export class EventMonitor {
         message: event.message?.substring(0, 100),
         hasCallback: !!this.options.progressCallback,
       });
-    } catch (error) {
-      this.logger.error('Error handling watch event', error as Error, {
+    } catch (error: unknown) {
+      this.logger.error('Error handling watch event', ensureError(error), {
         eventType: type,
         eventReason: event.reason,
       });
@@ -827,25 +874,54 @@ export class EventMonitor {
     // Ignore AbortError and TimeoutError during cleanup - these are expected when stopMonitoring is called
     // or when watch connections timeout naturally
     if (!this.isMonitoring) {
-      const errorName = (error as Error)?.name;
-      if (errorName === 'AbortError' || errorName === 'TimeoutError') {
-        this.logger.debug(`Ignoring ${errorName} during cleanup`);
-        return;
-      }
+      const errorName = ensureError(error).name;
+      this.logger.debug(`Ignoring error during cleanup: ${errorName}`, {
+        kind: connection.kind,
+        namespace: connection.namespace,
+      });
+      return;
     }
-    
+
     // Also ignore TimeoutError even when monitoring - it's a normal occurrence for long-running watches
-    const errorName = (error as Error)?.name;
+    const errorName = ensureError(error).name;
     if (errorName === 'TimeoutError') {
       this.logger.debug('Watch connection timed out, will attempt reconnection');
       // Reset reconnect attempts on timeout (it's not a real error)
       connection.reconnectAttempts = 0;
-      this.attemptReconnection(connection);
+      // Don't await - let reconnection happen in background
+      try {
+        const reconnectPromise = this.attemptReconnection(connection);
+        if (reconnectPromise && typeof reconnectPromise.catch === 'function') {
+          reconnectPromise.catch((reconnectError: unknown) => {
+            // Ignore reconnection errors if monitoring has stopped
+            if (!this.isMonitoring) {
+              return;
+            }
+            this.logger.warn('Reconnection attempt failed', {
+              error: ensureError(reconnectError).message,
+              kind: connection.kind,
+              namespace: connection.namespace,
+            });
+          });
+        }
+      } catch (error: unknown) {
+        // Ignore errors from attemptReconnection
+        this.logger.debug('Ignored error from attemptReconnection', { err: error });
+      }
+      return;
+    }
+
+    // Ignore AbortError - this is expected when connections are aborted
+    if (errorName === 'AbortError') {
+      this.logger.debug('Watch connection aborted', {
+        kind: connection.kind,
+        namespace: connection.namespace,
+      });
       return;
     }
 
     this.logger.warn('Watch connection error', {
-      error: (error as Error)?.message,
+      error: ensureError(error).message,
       kind: connection.kind,
       namespace: connection.namespace,
       reconnectAttempts: connection.reconnectAttempts,
@@ -919,7 +995,7 @@ export class EventMonitor {
     try {
       // Restart the watch connection
       await this.startWatchConnection(connection);
-      
+
       // Reset reconnect attempts on successful reconnection
       connection.reconnectAttempts = 0;
       connection.isReconnecting = false;
@@ -928,11 +1004,11 @@ export class EventMonitor {
         kind: connection.kind,
         namespace: connection.namespace,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       connection.isReconnecting = false;
-      
+
       this.logger.warn('Reconnection attempt failed', {
-        error: (error as Error)?.message,
+        error: ensureError(error).message,
         kind: connection.kind,
         namespace: connection.namespace,
         attempt: connection.reconnectAttempts,
@@ -985,7 +1061,12 @@ export class EventMonitor {
     // If no resources left, remove the connection
     if (connection.resources.size === 0) {
       if (connection.request && typeof connection.request.abort === 'function') {
-        connection.request.abort();
+        try {
+          connection.request.abort();
+        } catch (error: unknown) {
+          // Ignore abort errors - expected during cleanup
+          this.logger.debug('Ignored abort error during watch connection cleanup', { err: error });
+        }
       }
       this.watchConnections.delete(connectionKey);
       this.logger.debug('Removed empty watch connection', { connectionKey });
@@ -1013,7 +1094,12 @@ export class EventMonitor {
 
       // Restart the watch connection with new field selector
       if (connection.request && typeof connection.request.abort === 'function') {
-        connection.request.abort();
+        try {
+          connection.request.abort();
+        } catch (error: unknown) {
+          // Ignore abort errors - expected during cleanup
+          this.logger.debug('Ignored abort error during field selector update', { err: error });
+        }
       }
 
       await this.startWatchConnection(connection);
@@ -1136,8 +1222,8 @@ export class EventMonitor {
       });
 
       return eventList.metadata?.resourceVersion || '0';
-    } catch (error) {
-      this.logger.warn('Failed to get resource version for time filtering', error as Error);
+    } catch (error: unknown) {
+      this.logger.error('Failed to get resource version for time filtering', ensureError(error));
       // Don't throw - continue with default resource version
       return '0';
     }

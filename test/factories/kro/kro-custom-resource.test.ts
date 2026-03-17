@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { kroCustomResource } from '../../../src/factories/kro/kro-custom-resource.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../../utils/mock-factories.js';
 
 describe('KroCustomResource Factory', () => {
   // Test spec and status types
@@ -81,7 +82,7 @@ describe('KroCustomResource Factory', () => {
         apiVersion: 'database.example.com/v1beta1',
         kind: 'PostgreSQLCluster',
         metadata: { name: 'pgCluster', namespace: 'databases' },
-        spec: { version: '14', replicas: 3 } as any,
+        spec: { version: '14', replicas: 3 } as unknown as Record<string, unknown>,
       };
 
       const enhanced = kroCustomResource(databaseConfig);
@@ -97,14 +98,14 @@ describe('KroCustomResource Factory', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
 
-      expect((enhanced as any).readinessEvaluator).toBeDefined();
-      expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+      expect(getReadinessEvaluator(enhanced)).toBeDefined();
+      expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
     });
 
     it('should evaluate as not ready when status is missing', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -121,7 +122,7 @@ describe('KroCustomResource Factory', () => {
     it('should evaluate as not ready when state field is missing', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -141,7 +142,7 @@ describe('KroCustomResource Factory', () => {
     it('should evaluate as ready when state is ACTIVE with Ready condition', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -162,7 +163,7 @@ describe('KroCustomResource Factory', () => {
     it('should evaluate as ready when state is ACTIVE with InstanceSynced condition', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -181,7 +182,7 @@ describe('KroCustomResource Factory', () => {
     it('should evaluate as not ready when state is FAILED', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -201,7 +202,7 @@ describe('KroCustomResource Factory', () => {
     it('should evaluate as not ready when state is PROGRESSING', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -221,7 +222,7 @@ describe('KroCustomResource Factory', () => {
     it('should evaluate as not ready when state is not ACTIVE', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -241,7 +242,7 @@ describe('KroCustomResource Factory', () => {
     it('should handle malformed status gracefully', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -257,7 +258,7 @@ describe('KroCustomResource Factory', () => {
     it('should handle Ready condition false status', () => {
       const resourceConfig = createTestResource();
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
-      const evaluator = (enhanced as any).readinessEvaluator;
+      const evaluator = requireReadinessEvaluator(enhanced);
 
       const mockResource = {
         metadata: { name: 'testResource' },
@@ -281,7 +282,7 @@ describe('KroCustomResource Factory', () => {
         apiVersion: 'example.com/v1',
         kind: 'TestResource',
         spec: { image: 'nginx' } as TestSpec,
-      } as any;
+      } as unknown as Parameters<typeof kroCustomResource<TestSpec, TestStatus>>[0];
 
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
 
@@ -295,7 +296,7 @@ describe('KroCustomResource Factory', () => {
         apiVersion: 'example.com/v1',
         kind: 'TestResource',
         metadata: { name: 'testResource' },
-      } as any;
+      } as unknown as Parameters<typeof kroCustomResource<TestSpec, TestStatus>>[0];
 
       const enhanced = kroCustomResource<TestSpec, TestStatus>(resourceConfig);
 

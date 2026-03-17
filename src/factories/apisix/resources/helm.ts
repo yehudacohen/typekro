@@ -1,14 +1,21 @@
 /**
  * APISix Helm Resources
- * 
+ *
  * Factory functions for creating APISix HelmRepository and HelmRelease resources
  * following the same patterns as cert-manager.
  */
 
-import { createResource } from '../../shared.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
+import {
+  createHelmRepositoryReadinessEvaluator,
+  type HelmRepositorySpec,
+  type HelmRepositoryStatus,
+} from '../../helm/helm-repository.js';
+import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluators.js';
+import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
+import { createResource } from '../../shared.js';
 import type { APISixHelmValues } from '../types.js';
-import type { HelmRepositorySpec, HelmRepositoryStatus } from '../../helm/helm-repository.js';
 
 /**
  * Configuration for APISix HelmRepository
@@ -40,33 +47,23 @@ export interface APISixHelmReleaseConfig {
 
 /**
  * Creates an APISix HelmRepository resource
- * 
+ *
  * @param config - HelmRepository configuration
  * @returns Enhanced HelmRepository resource
  */
-/**
- * Readiness evaluator for APISix HelmRepository resources
- * HelmRepository is ready when it has a Ready condition with status True
- */
-function apisixHelmRepositoryReadinessEvaluator(resource: any) {
-  const conditions = resource.status?.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-  const isReady = readyCondition?.status === 'True';
+/** APISix HelmRepository readiness evaluator (delegates to shared implementation) */
+const apisixHelmRepositoryReadinessEvaluator = createHelmRepositoryReadinessEvaluator('APISix');
 
-  return {
-    ready: isReady,
-    message: isReady ? 'APISix HelmRepository is ready' : 'APISix HelmRepository is not ready',
-  };
-}
-
-export function apisixHelmRepository(config: APISixHelmRepositoryConfig): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
+export function apisixHelmRepository(
+  config: APISixHelmRepositoryConfig
+): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return createResource<HelmRepositorySpec, HelmRepositoryStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'source.toolkit.fluxcd.io/v1',
     kind: 'HelmRepository',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       url: config.url || 'https://charts.apiseven.com',
@@ -77,25 +74,28 @@ export function apisixHelmRepository(config: APISixHelmRepositoryConfig): Enhanc
 
 /**
  * Creates an APISix HelmRelease resource
- * 
- * @param config - HelmRelease configuration  
+ *
+ * @param config - HelmRelease configuration
  * @returns Enhanced HelmRelease resource
  */
-export function apisixHelmRelease(config: APISixHelmReleaseConfig): Enhanced<any, any> {
+export function apisixHelmRelease(
+  config: APISixHelmReleaseConfig
+): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   // Determine if values should be passed through raw or mapped
   // If values has 'config' key (ingress controller chart structure), pass through raw
   // Otherwise, map using APISix values mapper
-  const rawValues = config.values as Record<string, any> | undefined;
-  const isRawValues = rawValues && ('config' in rawValues || 'serviceAccount' in rawValues || 'rbac' in rawValues);
+  const rawValues = config.values as Record<string, unknown> | undefined;
+  const isRawValues =
+    rawValues && ('config' in rawValues || 'serviceAccount' in rawValues || 'rbac' in rawValues);
   const helmValues = isRawValues ? rawValues : mapAPISixConfigToHelmValues(config.values || {});
 
-  return createResource<any, any>({
+  return createResource<HelmReleaseSpec, HelmReleaseStatus>({
     ...(config.id && { id: config.id }),
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
     kind: 'HelmRelease',
     metadata: {
       name: config.name,
-      namespace: config.namespace || 'flux-system',
+      namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     },
     spec: {
       interval: config.interval || '5m',
@@ -107,21 +107,21 @@ export function apisixHelmRelease(config: APISixHelmReleaseConfig): Enhanced<any
           sourceRef: {
             kind: 'HelmRepository' as const,
             name: config.repositoryName || `${config.name.replace('-release', '')}-repo`,
-            namespace: config.namespace || 'flux-system'
-          }
-        }
+            namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
+          },
+        },
       },
       targetNamespace: config.targetNamespace || config.namespace || 'apisix',
       install: {
         createNamespace: true,
         remediation: {
-          retries: 3
-        }
+          retries: 3,
+        },
       },
       upgrade: {
         remediation: {
-          retries: 3
-        }
+          retries: 3,
+        },
       },
 
       values: helmValues,
@@ -132,7 +132,7 @@ export function apisixHelmRelease(config: APISixHelmReleaseConfig): Enhanced<any
 /**
  * Maps APISix configuration to Helm values for the HelmRelease
  * This is a simpler version that just passes through the values
- * 
+ *
  * @param config - The APISix Helm values
  * @returns Helm values object for the APISix chart
  */
@@ -188,7 +188,7 @@ export function mapAPISixConfigToHelmValues(config: APISixHelmValues): Record<st
   }
 
   // Add any additional custom values
-  Object.keys(config).forEach(key => {
+  Object.keys(config).forEach((key) => {
     if (!values[key] && config[key] !== undefined) {
       values[key] = config[key];
     }
@@ -198,32 +198,9 @@ export function mapAPISixConfigToHelmValues(config: APISixHelmValues): Record<st
 }
 
 /**
- * Readiness evaluator for APISix HelmRelease
- * Checks if the HelmRelease is ready and all components are deployed
+ * Readiness evaluator for APISix HelmRelease (delegates to shared implementation).
+ *
+ * Exported for backward compatibility — prefer using the shared evaluator
+ * from `../../helm/readiness-evaluators.js` directly.
  */
-export function apisixHelmReleaseReadinessEvaluator(resource: any) {
-  const status = resource?.status;
-  
-  if (!status) {
-    return {
-      ready: false,
-      message: 'APISix HelmRelease status not available',
-    };
-  }
-
-  // Check if HelmRelease is ready
-  const conditions = status.conditions || [];
-  const readyCondition = conditions.find((c: any) => c.type === 'Ready');
-  
-  if (!readyCondition || readyCondition.status !== 'True') {
-    return {
-      ready: false,
-      message: 'APISix HelmRelease is not ready',
-    };
-  }
-
-  return {
-    ready: true,
-    message: 'APISix HelmRelease is ready',
-  };
-}
+export const apisixHelmReleaseReadinessEvaluator = createLabeledHelmReleaseEvaluator('APISix');

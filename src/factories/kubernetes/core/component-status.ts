@@ -2,7 +2,9 @@ import type { V1ComponentStatus } from '@kubernetes/client-node';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
-export function componentStatus(resource: V1ComponentStatus): Enhanced<object, unknown> {
+export function componentStatus(
+  resource: V1ComponentStatus & { id?: string }
+): Enhanced<object, unknown> {
   return createResource({
     ...resource,
     apiVersion: 'v1',

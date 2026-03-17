@@ -5,10 +5,17 @@
  * in alchemy resources with individual resource registration.
  */
 
-import { ensureReadinessEvaluator } from '../../../utils/helpers.js';
+import { DEFAULT_READINESS_TIMEOUT } from '../../config/defaults.js';
 import { DependencyGraph } from '../../dependencies/graph.js';
+import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
-import type { DeploymentResult, FactoryOptions, ResourceGraph } from '../../types/deployment.js';
+import { hasResourceMetadata } from '../../metadata/index.js';
+import { ensureReadinessEvaluator } from '../../readiness/index.js';
+import type {
+  DeploymentResourceGraph,
+  DeploymentResult,
+  FactoryOptions,
+} from '../../types/deployment.js';
 import type { KubernetesResource } from '../../types/kubernetes.js';
 import type {
   KroCompatibleType,
@@ -184,7 +191,7 @@ export class AlchemyDeploymentStrategy<
             resourceId: resource.id,
             resourceKind: resource.manifest.kind,
             resourceName: resource.manifest.metadata?.name,
-            hasReadinessEvaluator: 'readinessEvaluator' in resource.manifest,
+            hasReadinessEvaluator: hasResourceMetadata(resource.manifest),
           });
 
           const resourceWithEvaluator = ensureReadinessEvaluator(resource.manifest);
@@ -209,7 +216,7 @@ export class AlchemyDeploymentStrategy<
                 kubeConfigOptions,
                 options: {
                   waitForReady: this.factoryOptions.waitForReady ?? false, // Default to false for faster tests
-                  timeout: this.factoryOptions.timeout ?? 30000, // Default to 30 seconds instead of 5 minutes
+                  timeout: this.factoryOptions.timeout ?? DEFAULT_READINESS_TIMEOUT,
                 },
               });
 
@@ -232,8 +239,8 @@ export class AlchemyDeploymentStrategy<
                 alchemyResourceId: resourceId,
                 alchemyResourceType: ResourceProvider.name,
               });
-            } catch (deployError) {
-              const error = deployError as Error;
+            } catch (deployError: unknown) {
+              const error = ensureError(deployError);
               this.logger.error('Failed to deploy individual resource through Alchemy', error, {
                 resourceKind: resource.manifest.kind,
                 resourceName: resource.manifest.metadata?.name,
@@ -254,8 +261,8 @@ export class AlchemyDeploymentStrategy<
               });
             }
           });
-        } catch (registrationError) {
-          const error = registrationError as Error;
+        } catch (registrationError: unknown) {
+          const error = ensureError(registrationError);
           this.logger.error('Failed to register resource type with Alchemy', error, {
             resourceKind: resource.manifest.kind,
             resourceName: resource.manifest.metadata?.name,
@@ -311,8 +318,8 @@ export class AlchemyDeploymentStrategy<
           timestamp: e.timestamp,
         })),
       };
-    } catch (error) {
-      this.logger.error('Alchemy deployment strategy failed', error as Error);
+    } catch (error: unknown) {
+      this.logger.error('Alchemy deployment strategy failed', ensureError(error));
       throw error;
     }
   }
@@ -324,7 +331,10 @@ export class AlchemyDeploymentStrategy<
   /**
    * Create resource graph for instance using base strategy logic
    */
-  private createResourceGraphForInstance(spec: TSpec, instanceName: string): ResourceGraph {
+  private createResourceGraphForInstance(
+    spec: TSpec,
+    instanceName: string
+  ): DeploymentResourceGraph {
     // Delegate to the base strategy's resource resolution logic
     if (this.baseStrategy instanceof DirectDeploymentStrategy) {
       const baseStrategy = this.baseStrategy as DirectDeploymentStrategy<TSpec, TStatus>;
@@ -444,7 +454,10 @@ export class AlchemyDeploymentStrategy<
       };
 
       this.logger.debug('Extracted kubeconfig options', {
-        kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2),
+        server: cluster?.server ?? '(default)',
+        hasToken: !!user?.token,
+        hasCertData: !!user?.certData,
+        hasKeyData: !!user?.keyData,
       });
     } else {
       // Try extracting from the base strategy's factory options (common in tests)
@@ -519,13 +532,14 @@ export class AlchemyDeploymentStrategy<
             };
 
             this.logger.debug('Extracted kubeconfig options from base strategy', {
-              kubeConfigOptions: JSON.stringify(kubeConfigOptions, null, 2),
+              hasCluster: !!kubeConfigOptions.cluster,
+              hasUser: !!kubeConfigOptions.user,
             });
           }
         }
-      } catch (extractionError) {
+      } catch (extractionError: unknown) {
         this.logger.debug('Could not extract kubeconfig from base strategy, using default', {
-          error: (extractionError as Error).message,
+          error: ensureError(extractionError).message,
         });
       }
     }

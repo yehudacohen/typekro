@@ -15,6 +15,16 @@ import type { PvcConfig } from '../types.js';
  *
  * @param config - Configuration for the persistent volume claim
  * @returns Enhanced PersistentVolumeClaim resource
+ *
+ * @example
+ * ```typescript
+ * const storage = Pvc({
+ *   name: 'data-volume',
+ *   size: '10Gi',
+ *   storageClass: 'standard',
+ *   accessModes: ['ReadWriteOnce'],
+ * });
+ * ```
  */
 export function Pvc(config: PvcConfig): Enhanced<V1PvcSpec, V1PvcStatus> {
   return persistentVolumeClaim({

@@ -5,10 +5,10 @@
  * on KubernetesRef objects, matching the runtime Proxy behavior.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
-import { KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
+import { expectKubernetesRef } from '../utils/mock-factories.js';
 
 describe('DeepKubernetesRef Type System', () => {
   it('should allow nested property access on complex status objects', () => {
@@ -63,19 +63,12 @@ describe('DeepKubernetesRef Type System', () => {
     const healthRef = complexComp.status.health;
     const overallHealthRef = complexComp.status.health.overall;
 
-    // Verify they're all KubernetesRef objects (supports up to 2 levels deep)
-    expect((componentsRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((databaseRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((cacheRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((healthRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((overallHealthRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-
-    // Verify field paths are correct
-    expect((componentsRef as any).fieldPath).toBe('status.components');
-    expect((databaseRef as any).fieldPath).toBe('status.components.database');
-    expect((cacheRef as any).fieldPath).toBe('status.components.cache');
-    expect((healthRef as any).fieldPath).toBe('status.health');
-    expect((overallHealthRef as any).fieldPath).toBe('status.health.overall');
+    // Verify they're all KubernetesRef objects with correct field paths
+    expectKubernetesRef(componentsRef, { fieldPath: 'status.components' });
+    expectKubernetesRef(databaseRef, { fieldPath: 'status.components.database' });
+    expectKubernetesRef(cacheRef, { fieldPath: 'status.components.cache' });
+    expectKubernetesRef(healthRef, { fieldPath: 'status.health' });
+    expectKubernetesRef(overallHealthRef, { fieldPath: 'status.health.overall' });
 
     // Note: The current Proxy implementation supports up to 2 levels of nesting
     // Deeper nesting (3+ levels) requires recursive Proxy implementation
@@ -181,13 +174,9 @@ describe('DeepKubernetesRef Type System', () => {
     const countRef = simpleComp.status.count;
     const messageRef = simpleComp.status.message;
 
-    expect((readyRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((countRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-    expect((messageRef as any)[KUBERNETES_REF_BRAND]).toBe(true);
-
-    expect((readyRef as any).fieldPath).toBe('status.ready');
-    expect((countRef as any).fieldPath).toBe('status.count');
-    expect((messageRef as any).fieldPath).toBe('status.message');
+    expectKubernetesRef(readyRef, { fieldPath: 'status.ready' });
+    expectKubernetesRef(countRef, { fieldPath: 'status.count' });
+    expectKubernetesRef(messageRef, { fieldPath: 'status.message' });
   });
 
   it('should support 2 levels of nesting (current runtime limit)', () => {
@@ -229,8 +218,8 @@ describe('DeepKubernetesRef Type System', () => {
 
     // TypeScript allows these but runtime only creates Proxy for first 2 levels
     // This is sufficient for real-world patterns like: status.components.kroSystem
-    expect((level1Ref as any).fieldPath).toBe('status.level1');
-    expect((level2Ref as any).fieldPath).toBe('status.level1.level2');
+    expectKubernetesRef(level1Ref, { fieldPath: 'status.level1' });
+    expectKubernetesRef(level2Ref, { fieldPath: 'status.level1.level2' });
 
     // Note: 3+ levels would require recursive Proxy implementation
     // For now, type system supports it for DX, but runtime doesn't need it

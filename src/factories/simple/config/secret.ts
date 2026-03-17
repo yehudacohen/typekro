@@ -14,9 +14,9 @@ import type { SecretConfig } from '../types.js';
 
 // Secrets don't have a spec field in Kubernetes - data is at the root level
 // We use an empty spec type to match the base factory
-type SecretSpec = {}
+type SecretSpec = {};
 
-type SecretStatus = {}
+type SecretStatus = {};
 
 /**
  * Creates a simple Secret with sensible defaults
@@ -27,6 +27,17 @@ type SecretStatus = {}
  *
  * @param config - Configuration for the secret
  * @returns Enhanced Secret resource
+ *
+ * @example
+ * ```typescript
+ * const dbSecret = Secret({
+ *   name: 'db-credentials',
+ *   stringData: {
+ *     username: 'admin',
+ *     password: 's3cret',
+ *   },
+ * });
+ * ```
  */
 export function Secret(config: SecretConfig): Enhanced<SecretSpec, SecretStatus> {
   // Convert stringData to base64-encoded data
@@ -49,13 +60,16 @@ export function Secret(config: SecretConfig): Enhanced<SecretSpec, SecretStatus>
     secretData = { ...secretData, ...config.data };
   }
 
-  return secret({
+  const secretArg: import('@kubernetes/client-node').V1Secret & { id?: string } = {
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),
       labels: { app: config.name },
     },
     data: secretData, // Always use data field with base64-encoded values
-    ...(config.id && { id: config.id }),
-  } as any);
+  };
+  if (config.id) {
+    secretArg.id = config.id;
+  }
+  return secret(secretArg);
 }

@@ -2,39 +2,40 @@
  * Tests for Context-Aware Conversion functionality
  */
 
-import { describe, it, expect } from 'bun:test';
-import { 
-  ExpressionContextDetector,
+import { describe, expect, it } from 'bun:test';
+import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
+import {
   ContextAwareCelGenerator,
   ContextExpressionValidator,
-  createContextSwitcher
+  ExpressionContextDetector,
 } from '../../../src/core/expressions/index.js';
 import type { KubernetesRef } from '../../../src/core/types/common.js';
-import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 
 // Helper function to create mock KubernetesRef objects
-function createMockKubernetesRef<T>(resourceId: string, fieldPath: string, type?: string): KubernetesRef<T> {
+function createMockKubernetesRef<T>(
+  resourceId: string,
+  fieldPath: string,
+  type?: string
+): KubernetesRef<T> {
   return {
     [KUBERNETES_REF_BRAND]: true,
     resourceId,
     fieldPath,
-    _type: type
-  } as any;
+    _type: type,
+  } as unknown as KubernetesRef<T>;
 }
 
 describe('Context-Aware Conversion', () => {
   const contextDetector = new ExpressionContextDetector();
   const celGenerator = new ContextAwareCelGenerator();
   const validator = new ContextExpressionValidator();
-  const contextSwitcher = createContextSwitcher(contextDetector, celGenerator, validator);
-
   describe('ExpressionContextDetector', () => {
     it('should detect status builder context', () => {
       const mockRef = createMockKubernetesRef<number>('webapp', 'status.readyReplicas', 'number');
 
       const result = contextDetector.detectContext(mockRef, {
         factoryType: 'kro',
-        functionContext: 'statusBuilder'
+        functionContext: 'statusBuilder',
       });
 
       expect(result.context).toBe('status-builder');
@@ -49,7 +50,7 @@ describe('Context-Aware Conversion', () => {
 
       const result = contextDetector.detectContext(mockRef, {
         factoryType: 'direct',
-        functionContext: 'simpleDeployment'
+        functionContext: 'simpleDeployment',
       });
 
       expect(result.context).toBe('resource-builder');
@@ -60,9 +61,9 @@ describe('Context-Aware Conversion', () => {
 
     it('should detect conditional context', () => {
       const expression = 'database.status.ready && webapp.status.readyReplicas > 0';
-      
+
       const result = contextDetector.detectContext(expression, {
-        factoryType: 'kro'
+        factoryType: 'kro',
       });
 
       // The expression contains "ready" which triggers readiness context
@@ -73,9 +74,9 @@ describe('Context-Aware Conversion', () => {
 
     it('should detect template literal context', () => {
       const expression = '`https://${hostname}/api`';
-      
+
       const result = contextDetector.detectContext(expression, {
-        factoryType: 'kro'
+        factoryType: 'kro',
       });
 
       expect(result.context).toBe('template-literal');
@@ -86,7 +87,9 @@ describe('Context-Aware Conversion', () => {
 
   describe('ContextAwareCelGenerator', () => {
     it('should generate status expression CEL', () => {
-      const mockRefs = [createMockKubernetesRef<number>('webapp', 'status.readyReplicas', 'number')];
+      const mockRefs = [
+        createMockKubernetesRef<number>('webapp', 'status.readyReplicas', 'number'),
+      ];
 
       const result = celGenerator.generateCelExpression(
         mockRefs,
@@ -136,68 +139,26 @@ describe('Context-Aware Conversion', () => {
     it('should validate status builder expressions', () => {
       const mockRef = createMockKubernetesRef<number>('webapp', 'status.readyReplicas', 'number');
 
-      const report = validator.validateExpression(
-        mockRef,
-        'status-builder',
-        { factoryType: 'kro' }
-      );
+      const report = validator.validateExpression(mockRef, 'status-builder', {
+        factoryType: 'kro',
+      });
 
       expect(report.context).toBe('status-builder');
       expect(report.kubernetesRefs).toHaveLength(1);
       // The validation might have warnings but should not have critical errors
-      expect(report.errors.filter(e => e.severity === 'error')).toHaveLength(0);
+      expect(report.errors.filter((e) => e.severity === 'error')).toHaveLength(0);
     });
 
     it('should detect validation issues', () => {
       const expression = 'console.log("test")'; // Invalid for magic proxy
 
-      const report = validator.validateExpression(
-        expression,
-        'status-builder',
-        { 
-          factoryType: 'kro',
-          validateMagicProxy: true
-        }
-      );
+      const report = validator.validateExpression(expression, 'status-builder', {
+        factoryType: 'kro',
+        validateMagicProxy: true,
+      });
 
       // Should detect issues with console.log usage
       expect(report.errors.length + report.warnings.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('ExpressionContextSwitcher', () => {
-    it('should analyze simple expression without context switches', () => {
-      const mockRef = createMockKubernetesRef<string>('__schema__', 'spec.name', 'string');
-
-      const result = contextSwitcher.analyzeWithContextSwitching(mockRef, {
-        primaryContext: 'resource-builder',
-        factoryType: 'direct',
-        autoDetectContext: true,
-        validateContextSwitches: true
-      });
-
-      expect(result.primaryContext).toBe('resource-builder');
-      expect(result.allDependencies).toHaveLength(1);
-      expect(result.finalCelExpression).toBeDefined();
-    });
-
-    it('should detect context switches in nested expressions', () => {
-      const nestedExpression = {
-        name: 'test',
-        condition: 'database.status.ready',
-        template: '`URL: ${service.status.loadBalancer.ingress[0].ip}`'
-      };
-
-      const result = contextSwitcher.analyzeWithContextSwitching(nestedExpression, {
-        primaryContext: 'resource-builder',
-        factoryType: 'kro',
-        autoDetectContext: true,
-        maxNestingDepth: 5
-      });
-
-      expect(result.switchPoints.length).toBeGreaterThanOrEqual(0);
-      expect(result.performanceMetrics).toBeDefined();
-      expect(result.performanceMetrics!.contextSwitchCount).toBeGreaterThanOrEqual(0);
     });
   });
 
@@ -229,7 +190,7 @@ describe('Context-Aware Conversion', () => {
     it('should handle multiple KubernetesRef objects', () => {
       const mockRefs = [
         createMockKubernetesRef<boolean>('database', 'status.ready', 'boolean'),
-        createMockKubernetesRef<number>('webapp', 'status.readyReplicas', 'number')
+        createMockKubernetesRef<number>('webapp', 'status.readyReplicas', 'number'),
       ];
 
       const result = celGenerator.generateCelExpression(

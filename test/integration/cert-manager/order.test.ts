@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
-import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
-import { toResourceGraph, kubernetesComposition } from '../../../src/index.js';
 import { type } from 'arktype';
-import { ensureNamespaceExists, deleteNamespaceIfExists } from '../shared-kubeconfig.js';
+import { createBunCompatibleCustomObjectsApi } from '../../../src/core/kubernetes/bun-api-client.js';
+import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
+import { kubernetesComposition, toResourceGraph } from '../../../src/index.js';
+import { deleteNamespaceAndWait, ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('Cert-Manager Order Real Integration Tests', () => {
   let kubeConfig: k8s.KubeConfig;
@@ -19,7 +19,15 @@ describe('Cert-Manager Order Real Integration Tests', () => {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       customObjectsApi = createBunCompatibleCustomObjectsApi(kubeConfig);
       console.log('✅ Cluster connection established');
-      
+
+      // Ensure cert-manager is installed and ready
+      const { ensureCertManagerInstalled } = await import('../shared-kubeconfig.js');
+      await ensureCertManagerInstalled({
+        namespace: 'cert-manager',
+        version: '1.19.3',
+        kubeConfig,
+      });
+
       // Create test namespace
       await ensureNamespaceExists(testNamespace, kubeConfig);
     } catch (error) {
@@ -32,38 +40,42 @@ describe('Cert-Manager Order Real Integration Tests', () => {
     // Clean up test resources to prevent conflicts between tests
     try {
       console.log('🧹 Cleaning up Order test resources...');
-      
+
       // Delete all Orders in test namespace that start with 'test-'
-      await customObjectsApi.listNamespacedCustomObject({
-        group: 'acme.cert-manager.io',
-        version: 'v1',
-        namespace: testNamespace,
-        plural: 'orders'
-      }).then(async (response: any) => {
-        const items = response.items || [];
-        for (const item of items) {
-          if (item.metadata.name.startsWith('test-')) {
-            try {
-              await customObjectsApi.deleteNamespacedCustomObject({
-                group: 'acme.cert-manager.io',
-                version: 'v1',
-                namespace: testNamespace,
-                plural: 'orders',
-                name: item.metadata.name
-              });
-              console.log(`🗑️ Deleted Order: ${item.metadata.name}`);
-            } catch (deleteError) {
-              console.warn(`⚠️ Failed to delete Order ${item.metadata.name}:`, deleteError);
+      await customObjectsApi
+        .listNamespacedCustomObject({
+          group: 'acme.cert-manager.io',
+          version: 'v1',
+          namespace: testNamespace,
+          plural: 'orders',
+        })
+        .then(async (response: Record<string, unknown>) => {
+          const items = (response.items as Record<string, unknown>[]) || [];
+          for (const item of items) {
+            const itemMeta = item.metadata as Record<string, unknown>;
+            if ((itemMeta.name as string).startsWith('test-')) {
+              try {
+                await customObjectsApi.deleteNamespacedCustomObject({
+                  group: 'acme.cert-manager.io',
+                  version: 'v1',
+                  namespace: testNamespace,
+                  plural: 'orders',
+                  name: itemMeta.name as string,
+                });
+                console.log(`🗑️ Deleted Order: ${itemMeta.name}`);
+              } catch (deleteError) {
+                console.warn(`⚠️ Failed to delete Order ${itemMeta.name}:`, deleteError);
+              }
             }
           }
-        }
-      }).catch((error) => {
-        console.warn('⚠️ Failed to list Orders for cleanup:', error);
-      });
+        })
+        .catch((error) => {
+          console.warn('⚠️ Failed to list Orders for cleanup:', error);
+        });
 
       // Wait a moment for cleanup to complete
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
       console.log('✅ Order test resource cleanup completed');
     } catch (error) {
       console.warn('⚠️ Order test cleanup failed (non-critical):', error);
@@ -72,14 +84,14 @@ describe('Cert-Manager Order Real Integration Tests', () => {
 
   afterAll(async () => {
     console.log('Cleaning up cert-manager Order real integration tests...');
-    await deleteNamespaceIfExists(testNamespace, kubeConfig);
+    await deleteNamespaceAndWait(testNamespace, kubeConfig);
   });
 
   it('should deploy Order resource to Kubernetes using direct factory', async () => {
     console.log('🚀 Testing Order deployment with direct factory...');
-    
+
     const { order } = await import('../../../src/factories/cert-manager/resources/challenges.js');
-    
+
     // Create a sample CSR (Certificate Signing Request) in base64 format
     // This is a minimal CSR for testing purposes
     const sampleCSR = Buffer.from(`-----BEGIN CERTIFICATE REQUEST-----
@@ -93,19 +105,19 @@ AQEBBQADggEPADCCAQoCggEBAL2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
 wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
 9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
 -----END CERTIFICATE REQUEST-----`).toString('base64');
-    
+
     // Create an Order composition
     const OrderSpec = type({
       name: 'string',
       commonName: 'string',
       dnsNames: 'string[]',
-      issuerName: 'string'
+      issuerName: 'string',
     });
 
     const OrderStatus = type({
       state: 'string',
       certificateReady: 'boolean',
-      authorizationCount: 'number'
+      authorizationCount: 'number',
     });
 
     const orderComposition = kubernetesComposition(
@@ -124,39 +136,41 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
             request: sampleCSR,
             issuerRef: {
               name: spec.issuerName,
-              kind: 'ClusterIssuer'
+              kind: 'ClusterIssuer',
             },
             commonName: spec.commonName,
             dnsNames: spec.dnsNames,
-            duration: '2160h' // 90 days
+            duration: '2160h', // 90 days
           },
-          id: 'testOrder'
+          id: 'testOrder',
         });
 
         return {
           state: orderResource.status.state || 'pending',
           certificateReady: !!orderResource.status.certificate,
-          authorizationCount: orderResource.status.authorizations?.length || 0
+          authorizationCount: orderResource.status.authorizations?.length || 0,
         };
       }
     );
 
     // Test with direct factory - this will actually deploy to Kubernetes
-    // Note: Don't wait for readiness as Order resources won't complete in test environment
+    // Order resources will never reach "ready" without a real ACME server,
+    // so we use waitForReady: false since we're testing deployment mechanics
     const directFactory = orderComposition.factory('direct', {
       namespace: testNamespace,
       waitForReady: false,
+      timeout: 60000, // 1 minute - just needs to create the resource
       kubeConfig: kubeConfig,
     });
 
     const orderName = `test-order-${Date.now()}`;
     console.log(`📦 Deploying Order: ${orderName}`);
-    
+
     const deploymentResult = await directFactory.deploy({
       name: orderName,
       commonName: 'test.example.com',
       dnsNames: ['test.example.com', 'www.test.example.com'],
-      issuerName: 'test-issuer'
+      issuerName: 'test-issuer',
     });
 
     // Validate deployment result
@@ -170,31 +184,31 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       version: 'v1',
       namespace: testNamespace,
       plural: 'orders',
-      name: orderName
+      name: orderName,
     });
 
     expect(orderResource).toBeDefined();
-    const orderBody = orderResource as any;
+    const orderBody = orderResource as Record<string, unknown>;
     expect(orderBody.kind).toBe('Order');
-    expect(orderBody.metadata.name).toBe(orderName);
-    expect(orderBody.spec.request).toBe(sampleCSR);
-    expect(orderBody.spec.commonName).toBe('test.example.com');
-    expect(orderBody.spec.dnsNames).toEqual(['test.example.com', 'www.test.example.com']);
-    expect(orderBody.spec.issuerRef.name).toBe('test-issuer');
-    expect(orderBody.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(orderBody.spec.duration).toBe('2160h0m0s'); // cert-manager normalizes duration format
+    expect((orderBody.metadata as Record<string, unknown>).name).toBe(orderName);
+    const orderSpec = orderBody.spec as Record<string, unknown>;
+    expect(orderSpec.request).toBe(sampleCSR);
+    expect(orderSpec.commonName).toBe('test.example.com');
+    expect(orderSpec.dnsNames).toEqual(['test.example.com', 'www.test.example.com']);
+    expect((orderSpec.issuerRef as Record<string, unknown>).name).toBe('test-issuer');
+    expect((orderSpec.issuerRef as Record<string, unknown>).kind).toBe('ClusterIssuer');
+    expect(orderSpec.duration).toBe('2160h'); // cert-manager 1.19.3 normalizes duration format
 
     console.log('✅ Order successfully deployed to Kubernetes');
     console.log('📋 Order resource verified in cluster');
     console.log(`🔐 Order configured for domains: test.example.com, www.test.example.com`);
-    
   }, 120000); // 120 second timeout for real deployment
 
   it('should deploy comprehensive ACME order with multiple domains', async () => {
     console.log('🚀 Testing comprehensive ACME order deployment...');
-    
+
     const { order } = await import('../../../src/factories/cert-manager/resources/challenges.js');
-    
+
     // Create a more comprehensive CSR for multiple domains
     const multiDomainCSR = Buffer.from(`-----BEGIN CERTIFICATE REQUEST-----
 MIICZjCCAU4CAQAwGjEYMBYGA1UEAwwPbXVsdGkuZXhhbXBsZS5jb20wggEiMA0G
@@ -208,7 +222,7 @@ WfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWfWf
 wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
 9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
 -----END CERTIFICATE REQUEST-----`).toString('base64');
-    
+
     // Create a comprehensive Order composition
     const ComprehensiveOrderSpecSchema = type({
       name: 'string',
@@ -216,7 +230,7 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       dnsNames: 'string[]',
       ipAddresses: 'string[]',
       issuerName: 'string',
-      duration: 'string'
+      duration: 'string',
     });
 
     const ComprehensiveOrderStatusSchema = type({
@@ -224,7 +238,7 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       certificateReady: 'boolean',
       authorizationCount: 'number',
       finalizeURL: 'string',
-      orderURL: 'string'
+      orderURL: 'string',
     });
 
     const comprehensiveOrderGraph = toResourceGraph(
@@ -243,42 +257,45 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
             request: multiDomainCSR,
             issuerRef: {
               name: schema.spec.issuerName,
-              kind: 'ClusterIssuer'
+              kind: 'ClusterIssuer',
             },
             commonName: schema.spec.commonName,
             dnsNames: schema.spec.dnsNames,
             ipAddresses: schema.spec.ipAddresses,
-            duration: schema.spec.duration
+            duration: schema.spec.duration,
           },
-          id: 'comprehensiveOrder'
-        })
+          id: 'comprehensiveOrder',
+        }),
       }),
       (_schema, resources) => ({
         state: resources.comprehensiveOrder.status.state || 'pending',
         certificateReady: !!resources.comprehensiveOrder.status.certificate,
         authorizationCount: resources.comprehensiveOrder.status.authorizations?.length || 0,
         finalizeURL: resources.comprehensiveOrder.status.finalizeURL || '',
-        orderURL: resources.comprehensiveOrder.status.url || ''
+        orderURL: resources.comprehensiveOrder.status.url || '',
       })
     );
 
     // Deploy using direct factory
+    // Order resources will never reach "ready" without a real ACME server,
+    // so we use waitForReady: false since we're testing deployment mechanics
     const directFactory = comprehensiveOrderGraph.factory('direct', {
       namespace: testNamespace,
       waitForReady: false,
+      timeout: 60000, // 1 minute - just needs to create the resource
       kubeConfig: kubeConfig,
     });
 
     const orderName = `test-comprehensive-order-${Date.now()}`;
     console.log(`📦 Deploying comprehensive Order: ${orderName}`);
-    
+
     const deploymentResult = await directFactory.deploy({
       name: orderName,
       commonName: 'multi.example.com',
       dnsNames: ['multi.example.com', 'api.multi.example.com', 'www.multi.example.com'],
       ipAddresses: ['192.168.1.100', '10.0.0.100'],
       issuerName: 'test-comprehensive-issuer',
-      duration: '8760h' // 1 year
+      duration: '8760h', // 1 year
     });
 
     // Validate deployment result
@@ -290,28 +307,36 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       group: 'acme.cert-manager.io',
       version: 'v1',
       namespace: testNamespace,
-      plural: 'orders'
+      plural: 'orders',
     });
-    const createdOrder = (allOrders as any).items.find((order: any) => 
-      order.metadata.name.includes('comprehensive-order')
+    const allOrdersBody = allOrders as Record<string, unknown>;
+    const orderItems = (allOrdersBody.items as Record<string, unknown>[]) || [];
+    const createdOrder = orderItems.find((o) =>
+      ((o.metadata as Record<string, unknown>).name as string).includes('comprehensive-order')
     );
     expect(createdOrder).toBeDefined();
 
-    const orderBody = createdOrder as any;
+    const orderBody = createdOrder as Record<string, unknown>;
     expect(orderBody.kind).toBe('Order');
-    expect(orderBody.spec.request).toBe(multiDomainCSR);
-    expect(orderBody.spec.commonName).toBe('multi.example.com');
-    expect(orderBody.spec.dnsNames).toEqual(['multi.example.com', 'api.multi.example.com', 'www.multi.example.com']);
-    expect(orderBody.spec.ipAddresses).toEqual(['192.168.1.100', '10.0.0.100']);
-    expect(orderBody.spec.issuerRef.name).toBe('test-comprehensive-issuer');
-    expect(orderBody.spec.issuerRef.kind).toBe('ClusterIssuer');
-    expect(orderBody.spec.duration).toBe('8760h0m0s'); // cert-manager normalizes duration format
+    const orderSpec = orderBody.spec as Record<string, unknown>;
+    expect(orderSpec.request).toBe(multiDomainCSR);
+    expect(orderSpec.commonName).toBe('multi.example.com');
+    expect(orderSpec.dnsNames).toEqual([
+      'multi.example.com',
+      'api.multi.example.com',
+      'www.multi.example.com',
+    ]);
+    expect(orderSpec.ipAddresses).toEqual(['192.168.1.100', '10.0.0.100']);
+    expect((orderSpec.issuerRef as Record<string, unknown>).name).toBe('test-comprehensive-issuer');
+    expect((orderSpec.issuerRef as Record<string, unknown>).kind).toBe('ClusterIssuer');
+    expect(orderSpec.duration).toBe('8760h'); // cert-manager 1.19.3 normalizes duration format
 
     console.log('✅ Comprehensive Order successfully deployed to Kubernetes');
     console.log('📋 Order resource verified with multiple domains and IP addresses');
-    console.log(`🔐 Order configured for: multi.example.com, api.multi.example.com, www.multi.example.com`);
+    console.log(
+      `🔐 Order configured for: multi.example.com, api.multi.example.com, www.multi.example.com`
+    );
     console.log(`🌐 Order includes IP addresses: 192.168.1.100, 10.0.0.100`);
-    
   }, 120000); // 120 second timeout for comprehensive deployment
 
   it('should validate Order readiness evaluation with actual order completion status', async () => {
@@ -325,12 +350,12 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
         request: 'LS0tLS1CRUdJTi...',
         issuerRef: {
           name: 'test-issuer',
-          kind: 'ClusterIssuer'
+          kind: 'ClusterIssuer',
         },
         commonName: 'readiness.example.com',
-        dnsNames: ['readiness.example.com']
+        dnsNames: ['readiness.example.com'],
       },
-      id: 'readinessTestOrder'
+      id: 'readinessTestOrder',
     });
 
     expect(testOrder.readinessEvaluator).toBeDefined();
@@ -345,8 +370,8 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
         state: 'valid',
         certificate: 'LS0tLS1CRUdJTi...', // Base64 encoded certificate
         url: 'https://acme-v02.api.letsencrypt.org/acme/order/12345',
-        finalizeURL: 'https://acme-v02.api.letsencrypt.org/acme/finalize/12345'
-      }
+        finalizeURL: 'https://acme-v02.api.letsencrypt.org/acme/finalize/12345',
+      },
     };
 
     if (testOrder.readinessEvaluator) {
@@ -367,10 +392,10 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
         authorizations: [
           {
             url: 'https://acme-v02.api.letsencrypt.org/acme/authz-v3/12345',
-            identifier: { type: 'dns', value: 'readiness.example.com' }
-          }
-        ]
-      }
+            identifier: { type: 'dns', value: 'readiness.example.com' },
+          },
+        ],
+      },
     };
 
     if (testOrder.readinessEvaluator) {
@@ -389,14 +414,16 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       spec: { commonName: 'readiness.example.com' },
       status: {
         state: 'invalid',
-        reason: 'Authorization failed for domain readiness.example.com'
-      }
+        reason: 'Authorization failed for domain readiness.example.com',
+      },
     };
 
     if (testOrder.readinessEvaluator) {
       const failedResult = testOrder.readinessEvaluator(mockFailedOrder);
       expect(failedResult.ready).toBe(false);
-      expect(failedResult.message).toContain('Authorization failed for domain readiness.example.com');
+      expect(failedResult.message).toContain(
+        'Authorization failed for domain readiness.example.com'
+      );
       expect(failedResult.reason).toBe('OrderFailed');
     }
 
@@ -409,15 +436,17 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       status: {
         state: 'valid',
         url: 'https://acme-v02.api.letsencrypt.org/acme/order/12345',
-        finalizeURL: 'https://acme-v02.api.letsencrypt.org/acme/finalize/12345'
+        finalizeURL: 'https://acme-v02.api.letsencrypt.org/acme/finalize/12345',
         // No certificate field - still pending
-      }
+      },
     };
 
     if (testOrder.readinessEvaluator) {
       const validNoCertResult = testOrder.readinessEvaluator(mockValidNoCertOrder);
       expect(validNoCertResult.ready).toBe(false);
-      expect(validNoCertResult.message).toContain('Order is valid but certificate not yet available');
+      expect(validNoCertResult.message).toContain(
+        'Order is valid but certificate not yet available'
+      );
       expect(validNoCertResult.reason).toBe('CertificatePending');
     }
 
@@ -426,7 +455,7 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
       apiVersion: 'acme.cert-manager.io/v1',
       kind: 'Order',
       metadata: { name: 'test-order', namespace: testNamespace },
-      spec: { commonName: 'readiness.example.com' }
+      spec: { commonName: 'readiness.example.com' },
       // No status field - initial state
     };
 
@@ -438,6 +467,8 @@ wIDAQABoAAwDQYJKoZIhvcNAQELBQADggEBAK2Z8Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z9Z
     }
 
     console.log('✅ Order readiness evaluation with ACME order completion scenarios validated');
-    console.log('📋 Handles success, processing, failure, valid-no-cert, and initial states correctly');
+    console.log(
+      '📋 Handles success, processing, failure, valid-no-cert, and initial states correctly'
+    );
   });
 });

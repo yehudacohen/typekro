@@ -1,50 +1,32 @@
 /**
  * Resource Graph Types
  *
- * This module contains types related to resource graphs to avoid
- * circular dependencies between deployment and serialization types.
+ * This module contains the ResourceGraph interface that represents
+ * a complete resource graph with deployment capabilities.
  */
 
 import type { DependencyGraph } from '../dependencies/graph.js';
+import type {
+  AlchemyDeploymentOptions,
+  DeploymentOperationStatus,
+  DeploymentOptions,
+  DeploymentResult,
+  DirectResourceFactory,
+  KroResourceFactory,
+  PublicFactoryOptions,
+  RollbackResult,
+} from './deployment.js';
 import type { Enhanced } from './kubernetes.js';
 import type { SchemaMagicProxy } from './references.js';
-
-// Forward declare deployment types to avoid circular dependency
-export interface DeploymentOptions {
-  mode?: 'direct' | 'kro' | 'alchemy';
-  namespace?: string;
-  waitForReady?: boolean;
-  timeout?: number;
-}
-
-export interface DeploymentResult {
-  status: 'success' | 'failed' | 'partial';
-  deploymentId: string;
-  resources: any[];
-  dependencyGraph: DependencyGraph;
-  duration: number;
-  errors: any[];
-}
-
-export interface DeploymentOperationStatus {
-  status: 'pending' | 'deploying' | 'ready' | 'failed';
-  message?: string;
-  resources?: any[];
-}
-
-export interface RollbackResult {
-  status: 'success' | 'failed';
-  message?: string;
-}
-
-export interface AlchemyDeploymentOptions extends DeploymentOptions {
-  scope?: any;
-}
+import type { KroCompatibleType, Scope } from './schema.js';
 
 /**
  * Represents a complete resource graph with deployment capabilities
  */
-export interface ResourceGraph<TSpec = any, TStatus = any> {
+export interface ResourceGraph<
+  TSpec extends KroCompatibleType = KroCompatibleType,
+  TStatus extends KroCompatibleType = KroCompatibleType,
+> {
   /**
    * The name of this resource graph
    */
@@ -76,7 +58,7 @@ export interface ResourceGraph<TSpec = any, TStatus = any> {
   /**
    * Deploy the resource graph through alchemy's resource management system
    */
-  deployWithAlchemy(scope: any, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
+  deployWithAlchemy(scope: Scope, options?: AlchemyDeploymentOptions): Promise<DeploymentResult>;
 
   /**
    * Get the deployment status of this resource graph
@@ -101,8 +83,10 @@ export interface ResourceGraph<TSpec = any, TStatus = any> {
   /**
    * Create a factory for this resource graph that can create instances
    */
-  factory<TMode extends 'direct' | 'kro'>(
-    mode: TMode,
-    options?: { namespace?: string }
-  ): Promise<any>;
+  factory(mode: 'kro', options?: PublicFactoryOptions): KroResourceFactory<TSpec, TStatus>;
+  factory(mode: 'direct', options?: PublicFactoryOptions): DirectResourceFactory<TSpec, TStatus>;
+  factory(
+    mode: 'kro' | 'direct',
+    options?: PublicFactoryOptions
+  ): KroResourceFactory<TSpec, TStatus> | DirectResourceFactory<TSpec, TStatus>;
 }

@@ -6,9 +6,15 @@
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition } from '../../../index.js';
+import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { Cel } from '../../../core/references/cel.js';
+import {
+  ciliumHelmRelease,
+  ciliumHelmRepository,
+  mapCiliumConfigToHelmValues,
+} from '../resources/helm.js';
 import type { CiliumBootstrapConfig } from '../types.js';
-import { ciliumHelmRepository, ciliumHelmRelease, mapCiliumConfigToHelmValues } from '../resources/helm.js';
 
 // =============================================================================
 // ARKTYPE SCHEMAS
@@ -176,59 +182,78 @@ export const ciliumBootstrap = kubernetesComposition(
         networking: {
           ...(spec.networking.ipamMode && { ipam: { mode: spec.networking.ipamMode } }),
           // Include kubeProxyReplacement for mapCiliumConfigToHelmValues to process
-          ...(spec.networking.kubeProxyReplacement && { kubeProxyReplacement: spec.networking.kubeProxyReplacement }),
+          ...(spec.networking.kubeProxyReplacement && {
+            kubeProxyReplacement: spec.networking.kubeProxyReplacement,
+          }),
           ...(spec.networking.routingMode && { routingMode: spec.networking.routingMode }),
           ...(spec.networking.tunnelProtocol && { tunnelProtocol: spec.networking.tunnelProtocol }),
-          ...(spec.networking.autoDirectNodeRoutes !== undefined && { autoDirectNodeRoutes: spec.networking.autoDirectNodeRoutes }),
-        }
+          ...(spec.networking.autoDirectNodeRoutes !== undefined && {
+            autoDirectNodeRoutes: spec.networking.autoDirectNodeRoutes,
+          }),
+        },
       }),
       ...(spec.security && {
         security: {
           ...((spec.security.encryptionEnabled !== undefined || spec.security.encryptionType) && {
             encryption: {
-              ...(spec.security.encryptionEnabled !== undefined && { enabled: spec.security.encryptionEnabled }),
+              ...(spec.security.encryptionEnabled !== undefined && {
+                enabled: spec.security.encryptionEnabled,
+              }),
               ...(spec.security.encryptionType && { type: spec.security.encryptionType }),
-            }
+            },
           }),
-          ...(spec.security.policyEnforcement && { policyEnforcement: spec.security.policyEnforcement }),
-        }
+          ...(spec.security.policyEnforcement && {
+            policyEnforcement: spec.security.policyEnforcement,
+          }),
+        },
       }),
       ...(spec.bgp && {
         bgp: {
           ...(spec.bgp.enabled !== undefined && { enabled: spec.bgp.enabled }),
-          ...((spec.bgp.announceLoadBalancerIP !== undefined || spec.bgp.announcePodCIDR !== undefined) && {
+          ...((spec.bgp.announceLoadBalancerIP !== undefined ||
+            spec.bgp.announcePodCIDR !== undefined) && {
             announce: {
-              ...(spec.bgp.announceLoadBalancerIP !== undefined && { loadbalancerIP: spec.bgp.announceLoadBalancerIP }),
+              ...(spec.bgp.announceLoadBalancerIP !== undefined && {
+                loadbalancerIP: spec.bgp.announceLoadBalancerIP,
+              }),
               ...(spec.bgp.announcePodCIDR !== undefined && { podCIDR: spec.bgp.announcePodCIDR }),
-            }
+            },
           }),
-        }
+        },
       }),
       ...(spec.gatewayAPI && {
         gatewayAPI: {
           ...(spec.gatewayAPI.enabled !== undefined && { enabled: spec.gatewayAPI.enabled }),
-        }
+        },
       }),
       ...(spec.observability && {
         observability: {
-          ...((spec.observability.hubbleEnabled !== undefined || spec.observability.hubbleRelayEnabled !== undefined || spec.observability.hubbleUIEnabled !== undefined) && {
+          ...((spec.observability.hubbleEnabled !== undefined ||
+            spec.observability.hubbleRelayEnabled !== undefined ||
+            spec.observability.hubbleUIEnabled !== undefined) && {
             hubble: {
-              ...(spec.observability.hubbleEnabled !== undefined && { enabled: spec.observability.hubbleEnabled }),
-              ...(spec.observability.hubbleRelayEnabled !== undefined && { relay: { enabled: spec.observability.hubbleRelayEnabled } }),
-              ...(spec.observability.hubbleUIEnabled !== undefined && { ui: { enabled: spec.observability.hubbleUIEnabled } }),
-            }
+              ...(spec.observability.hubbleEnabled !== undefined && {
+                enabled: spec.observability.hubbleEnabled,
+              }),
+              ...(spec.observability.hubbleRelayEnabled !== undefined && {
+                relay: { enabled: spec.observability.hubbleRelayEnabled },
+              }),
+              ...(spec.observability.hubbleUIEnabled !== undefined && {
+                ui: { enabled: spec.observability.hubbleUIEnabled },
+              }),
+            },
           }),
           ...(spec.observability.prometheusEnabled !== undefined && {
             prometheus: {
               enabled: spec.observability.prometheusEnabled,
-            }
+            },
           }),
-        }
+        },
       }),
       ...(spec.operator && {
         operator: {
           ...(spec.operator.replicas !== undefined && { replicas: spec.operator.replicas }),
-        }
+        },
       }),
     };
 
@@ -238,7 +263,7 @@ export const ciliumBootstrap = kubernetesComposition(
     // Create HelmRepository for Cilium charts
     const _helmRepository = ciliumHelmRepository({
       name: 'cilium-repo', // Use static name to avoid schema proxy issues
-      namespace: spec.namespace || 'flux-system',
+      namespace: spec.namespace || DEFAULT_FLUX_NAMESPACE,
       id: 'helmRepository',
     });
 
@@ -249,22 +274,40 @@ export const ciliumBootstrap = kubernetesComposition(
       version: spec.version || '1.18.1',
       values: helmValues,
       repositoryName: 'cilium-repo', // Match the repository name
-      repositoryNamespace: spec.namespace || 'flux-system',
+      repositoryNamespace: spec.namespace || DEFAULT_FLUX_NAMESPACE,
       id: 'helmRelease',
     });
 
     // Return nested status matching the schema structure
-    // Use direct resource references to generate CEL expressions
+    // Use CEL expressions with actual HelmRelease conditions (Flux v2 pattern)
+    // HelmReleaseStatus has a conditions array, not a phase field.
+    // We use CEL .exists() to check for the Ready condition, matching the
+    // cert-manager-bootstrap pattern.
     return {
-      // Overall status derived from HelmRelease - these will become CEL expressions
-      phase: helmRelease.status.phase,
-      ready: helmRelease.status.phase as any, // Cast to satisfy TypeScript, will become CEL expression
+      // Overall status derived from HelmRelease conditions
+      phase: Cel.expr<'Installing' | 'Ready' | 'Failed' | 'Upgrading' | 'Pending'>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+      ),
+      ready: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
       version: spec.version || '1.18.1',
 
-      // Component readiness based on HelmRelease status - these will become CEL expressions
-      agentReady: helmRelease.status.phase as any, // Cast to satisfy TypeScript, will become CEL expression
-      operatorReady: helmRelease.status.phase as any, // Cast to satisfy TypeScript, will become CEL expression
-      hubbleReady: helmRelease.status.phase as any, // Cast to satisfy TypeScript, will become CEL expression
+      // Component readiness based on HelmRelease conditions
+      agentReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      operatorReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
+      hubbleReady: Cel.expr<boolean>(
+        helmRelease.status.conditions,
+        '.exists(c, c.type == "Ready" && c.status == "True")'
+      ),
 
       // Feature status based on configuration and deployment state
       encryptionEnabled: spec.security?.encryptionEnabled || false,
@@ -275,8 +318,12 @@ export const ciliumBootstrap = kubernetesComposition(
       endpoints: {
         health: `http://cilium-agent.${spec.namespace || 'kube-system'}.svc.cluster.local:9879/healthz`,
         metrics: `http://cilium-agent.${spec.namespace || 'kube-system'}.svc.cluster.local:9962/metrics`,
-        hubbleMetrics: spec.observability?.hubbleEnabled ? `http://hubble-metrics.${spec.namespace || 'kube-system'}.svc.cluster.local:9965/metrics` : undefined,
-        hubbleUI: spec.observability?.hubbleUIEnabled ? `http://hubble-ui.${spec.namespace || 'kube-system'}.svc.cluster.local:12000` : undefined,
+        hubbleMetrics: spec.observability?.hubbleEnabled
+          ? `http://hubble-metrics.${spec.namespace || 'kube-system'}.svc.cluster.local:9965/metrics`
+          : undefined,
+        hubbleUI: spec.observability?.hubbleUIEnabled
+          ? `http://hubble-ui.${spec.namespace || 'kube-system'}.svc.cluster.local:12000`
+          : undefined,
       },
 
       // CNI integration points
@@ -311,4 +358,3 @@ export const ciliumBootstrap = kubernetesComposition(
     };
   }
 );
-

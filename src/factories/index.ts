@@ -7,27 +7,47 @@
  */
 
 // =============================================================================
-// HELM ECOSYSTEM
+// APISIX ECOSYSTEM
 // =============================================================================
-export {
-  helmRelease,
-  simpleHelmChart,
-  helmRepository,
-  helmReleaseReadinessEvaluator,
-  createHelmRevisionReadinessEvaluator,
-  createHelmTestReadinessEvaluator,
-  createHelmTimeoutReadinessEvaluator,
-  createComprehensiveHelmReadinessEvaluator,
-} from './helm/index.js';
+export * as apisix from './apisix/index.js';
+// =============================================================================
+// CERT-MANAGER ECOSYSTEM
+// =============================================================================
+export * as certManager from './cert-manager/index.js';
+// =============================================================================
+// CILIUM ECOSYSTEM
+// =============================================================================
+export * from './cilium/index.js';
+// =============================================================================
+// EXTERNAL-DNS ECOSYSTEM
+// =============================================================================
+export * as externalDns from './external-dns/index.js';
+// =============================================================================
+// FLUX CD ECOSYSTEM
+// =============================================================================
+export * from './flux/index.js';
 export type {
   HelmReleaseConfig,
-  HelmRepositoryConfig,
   HelmReleaseSpec,
   HelmReleaseStatus,
+  HelmRepositoryConfig,
   HelmRepositorySpec,
   HelmRepositoryStatus,
 } from './helm/index.js';
-
+// =============================================================================
+// HELM ECOSYSTEM
+// =============================================================================
+export {
+  createComprehensiveHelmReadinessEvaluator,
+  createHelmRevisionReadinessEvaluator,
+  createHelmTestReadinessEvaluator,
+  createHelmTimeoutReadinessEvaluator,
+  createLabeledHelmReleaseEvaluator,
+  helmRelease,
+  helmReleaseReadinessEvaluator,
+  helmRepository,
+  simpleHelmChart,
+} from './helm/index.js';
 // =============================================================================
 // KRO ECOSYSTEM
 // =============================================================================
@@ -36,41 +56,19 @@ export * from './kro/index.js';
 // KUBERNETES ECOSYSTEM
 // =============================================================================
 export * from './kubernetes/index.js';
-export type { CompositionContext } from './shared.js';
 // =============================================================================
-// SHARED UTILITIES
+// PEBBLE ACME TEST SERVER ECOSYSTEM
 // =============================================================================
-export { createResource, getCurrentCompositionContext } from './shared.js';
+export * as pebble from './pebble/index.js';
+// NOTE: createResource, getCurrentCompositionContext, and CompositionContext
+// are intentionally NOT re-exported here. They are exported from the canonical
+// locations in src/index.ts to avoid duplicate export paths in IDE autocomplete.
+// Factories import them internally via ./shared.js.
 // =============================================================================
 // SIMPLE NAMESPACE
 // =============================================================================
 export { simple } from './simple/index.js';
 export type * from './simple/types.js';
-
-// =============================================================================
-// APISIX ECOSYSTEM
-// =============================================================================
-export * as apisix from './apisix/index.js';
-
-// =============================================================================
-// CERT-MANAGER ECOSYSTEM
-// =============================================================================
-export * as certManager from './cert-manager/index.js';
-
-// =============================================================================
-// CILIUM ECOSYSTEM
-// =============================================================================
-export * from './cilium/index.js';
-
-// =============================================================================
-// EXTERNAL-DNS ECOSYSTEM
-// =============================================================================
-export * as externalDns from './external-dns/index.js';
-
-// =============================================================================
-// PEBBLE ACME TEST SERVER ECOSYSTEM
-// =============================================================================
-export * as pebble from './pebble/index.js';
 
 // =============================================================================
 // FUTURE ECOSYSTEMS (Placeholder structure created)

@@ -1,6 +1,7 @@
-import { describe, test, expect } from 'bun:test';
-import { toResourceGraph } from '../../src';
+import { describe, expect, test } from 'bun:test';
 import { type } from 'arktype';
+import { toResourceGraph } from '../../src';
+import type { Enhanced } from '../../src/core/types/kubernetes.js';
 
 describe('Template Literal || Operator Fix', () => {
   test('should properly wrap || operators in parentheses for correct precedence', () => {
@@ -11,11 +12,11 @@ describe('Template Literal || Operator Fix', () => {
         kind: 'TemplateTest',
         spec: type({
           name: 'string',
-          'namespace?': 'string'
+          'namespace?': 'string',
         }),
         status: type({
-          endpoint: 'string'
-        })
+          endpoint: 'string',
+        }),
       },
       (schema) => ({
         testResource: {
@@ -23,19 +24,19 @@ describe('Template Literal || Operator Fix', () => {
           kind: 'ConfigMap',
           metadata: {
             name: schema.spec.name,
-            namespace: schema.spec.namespace || 'default-namespace'
+            namespace: schema.spec.namespace || 'default-namespace',
           },
-          data: {}
-        } as any
+          data: {},
+        } as unknown as Enhanced<object, object>,
       }),
       (schema, resources) => ({
-        endpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:8080`
+        endpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:8080`,
       })
     );
 
     expect(graph).toBeDefined();
     expect(graph.name).toBe('test-template-fix');
-    
+
     console.log('✓ Template literal with || operator converted successfully');
   });
 
@@ -48,12 +49,12 @@ describe('Template Literal || Operator Fix', () => {
         spec: type({
           name: 'string',
           'namespace?': 'string',
-          'port?': 'number'
+          'port?': 'number',
         }),
         status: type({
           url: 'string',
-          fullEndpoint: 'string'
-        })
+          fullEndpoint: 'string',
+        }),
       },
       (schema) => ({
         resource: {
@@ -61,24 +62,26 @@ describe('Template Literal || Operator Fix', () => {
           kind: 'Service',
           metadata: {
             name: schema.spec.name,
-            namespace: schema.spec.namespace || 'default'
+            namespace: schema.spec.namespace || 'default',
           },
           spec: {
-            ports: [{
-              port: schema.spec.port || 80
-            }]
-          }
-        } as any
+            ports: [
+              {
+                port: schema.spec.port || 80,
+              },
+            ],
+          },
+        } as unknown as Enhanced<object, object>,
       }),
       (schema, resources) => ({
         url: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc`,
-        fullEndpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:${schema.spec.port || 8080}/metrics`
+        fullEndpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:${schema.spec.port || 8080}/metrics`,
       })
     );
 
     expect(graph).toBeDefined();
     expect(graph.name).toBe('test-complex-template');
-    
+
     console.log('✓ Complex template with multiple || operators handled correctly');
   });
 });

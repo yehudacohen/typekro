@@ -3,21 +3,21 @@
  * These tests prevent regressions in resource lookup and proxy object handling
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { toResourceGraph, simple, Cel } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
 describe('Resource Metadata Handling', () => {
   const TestSpecSchema = type({
     name: 'string',
     image: 'string',
     port: 'number',
-    replicas: 'number'
+    replicas: 'number',
   });
 
   const TestStatusSchema = type({
     url: 'string',
-    phase: '"pending" | "running" | "failed"'
+    phase: '"pending" | "running" | "failed"',
   });
 
   describe('KubernetesRef in Resource Metadata', () => {
@@ -101,14 +101,14 @@ describe('Resource Metadata Handling', () => {
       });
 
       expect(factory).toBeDefined();
-      
+
       // YAML generation should work despite mixed metadata types
       expect(() => {
         const yaml = factory.toYaml({
           name: 'test-app',
           image: 'nginx',
           port: 8080,
-          replicas: 3
+          replicas: 3,
         });
         expect(yaml).toBeDefined();
         expect(yaml).toContain('static-service-name'); // Static name should appear
@@ -144,7 +144,7 @@ describe('Resource Metadata Handling', () => {
           configMap: simple.ConfigMap({
             name: 'static-config',
             data: {
-              'app.properties': `port=${schema.spec.port}`
+              'app.properties': `port=${schema.spec.port}`,
             },
             id: 'config',
           }),
@@ -152,11 +152,10 @@ describe('Resource Metadata Handling', () => {
           secret: simple.Secret({
             name: Cel.template('%s-secret', schema.spec.name),
             data: {
-              'password': 'base64encodedpassword'
+              password: 'base64encodedpassword',
             },
             id: 'secret',
           }),
-
         }),
         (_schema, _resources) => ({
           url: 'http://webapp-service',
@@ -174,12 +173,12 @@ describe('Resource Metadata Handling', () => {
           name: 'complex-app',
           image: 'nginx',
           port: 9000,
-          replicas: 2
+          replicas: 2,
         });
 
         expect(yaml).toBeDefined();
         expect(yaml).toContain('complex-app'); // Resolved KubernetesRef
-        expect(yaml).toContain('${complex-app}-svc'); // CEL template (not resolved in YAML)
+        expect(yaml).toContain('complex-app-svc'); // CEL template resolved in direct mode
         expect(yaml).toContain('static-config'); // Static name
         expect(yaml).toContain('9000'); // Resolved port
       }).not.toThrow();
@@ -190,50 +189,50 @@ describe('Resource Metadata Handling', () => {
     it('should handle empty or null metadata gracefully', () => {
       // Create a mock resource with problematic metadata
       const mockResourcesWithKeys = {
-        'resource1': {
+        resource1: {
           apiVersion: 'v1',
           kind: 'Service',
           metadata: {
             name: null, // Null name
           },
-          spec: {}
+          spec: {},
         },
-        'resource2': {
+        resource2: {
           apiVersion: 'v1',
           kind: 'Deployment',
           metadata: {
             name: undefined, // Undefined name
           },
-          spec: {}
+          spec: {},
         },
-        'resource3': {
+        resource3: {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: {
             // Missing name property
           },
-          spec: {}
+          spec: {},
         },
-        'resource4': {
+        resource4: {
           apiVersion: 'v1',
           kind: 'Secret',
           metadata: {
             name: 'valid-name', // Valid name
           },
-          spec: {}
-        }
+          spec: {},
+        },
       };
 
       // This simulates the findResourceByKey function behavior
       const findResourceByKey = (key: string) => {
         const keyLower = key.toLowerCase();
-        
+
         for (const [resourceId, resource] of Object.entries(mockResourcesWithKeys)) {
           const kind = resource.kind.toLowerCase();
-          
+
           // Handle case where metadata.name might be a KubernetesRef object or null/undefined
           let name = '';
-          const metadataName = (resource.metadata as any).name;
+          const metadataName = (resource.metadata as unknown as Record<string, unknown>).name;
           if (metadataName && typeof metadataName === 'string') {
             name = metadataName.toLowerCase();
           } else if (metadataName && typeof metadataName === 'object') {
@@ -241,13 +240,15 @@ describe('Resource Metadata Handling', () => {
             continue;
           }
           // For null/undefined, name remains empty string
-          
+
           const resourceIdLower = resourceId.toLowerCase();
-          
+
           // Simple matching logic - only match if we have a valid name or exact resource ID match
-          if ((name && (keyLower.includes(name) || name.includes(keyLower))) ||
-              keyLower === resourceIdLower ||
-              (name && keyLower.includes(kind) && name.length > 0)) {
+          if (
+            (name && (keyLower.includes(name) || name.includes(keyLower))) ||
+            keyLower === resourceIdLower ||
+            (name && keyLower.includes(kind) && name.length > 0)
+          ) {
             return resource;
           }
         }
@@ -269,34 +270,34 @@ describe('Resource Metadata Handling', () => {
       const mockKubernetesRef = {
         __brand: 'KubernetesRef',
         resourceId: 'schema',
-        fieldPath: 'spec.name'
+        fieldPath: 'spec.name',
       };
 
       const mockResourcesWithRefs = {
-        'deployment': {
+        deployment: {
           apiVersion: 'apps/v1',
           kind: 'Deployment',
           metadata: {
             name: mockKubernetesRef, // KubernetesRef object
           },
-          spec: {}
+          spec: {},
         },
-        'service': {
+        service: {
           apiVersion: 'v1',
           kind: 'Service',
           metadata: {
             name: 'static-service', // String name
           },
-          spec: {}
-        }
+          spec: {},
+        },
       };
 
       const findResourceByKey = (key: string) => {
         const keyLower = key.toLowerCase();
-        
+
         for (const [resourceId, resource] of Object.entries(mockResourcesWithRefs)) {
           const kind = resource.kind.toLowerCase();
-          
+
           // Handle case where metadata.name might be a KubernetesRef object
           let name = '';
           if (resource.metadata.name && typeof resource.metadata.name === 'string') {
@@ -305,12 +306,15 @@ describe('Resource Metadata Handling', () => {
             // Skip resources with unresolved references
             continue;
           }
-          
+
           const resourceIdLower = resourceId.toLowerCase();
-          
-          if (keyLower.includes(kind) || kind.includes(keyLower) || 
-              (name && (keyLower.includes(name) || name.includes(keyLower))) ||
-              keyLower === resourceIdLower) {
+
+          if (
+            keyLower.includes(kind) ||
+            kind.includes(keyLower) ||
+            (name && (keyLower.includes(name) || name.includes(keyLower))) ||
+            keyLower === resourceIdLower
+          ) {
             return resource;
           }
         }
@@ -323,6 +327,168 @@ describe('Resource Metadata Handling', () => {
         expect(findResourceByKey('service')).toBeTruthy(); // Should find service with string name
         expect(findResourceByKey('static-service')).toBeTruthy(); // Should find by string name
       }).not.toThrow();
+    });
+  });
+
+  describe('Direct Mode toYaml() Value Resolution', () => {
+    it('should resolve schema.spec references to actual values', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'direct-resolve-test',
+          apiVersion: 'v1alpha1',
+          kind: 'DirectResolveTest',
+          spec: TestSpecSchema,
+          status: TestStatusSchema,
+        },
+        (schema) => ({
+          deployment: simple.Deployment({
+            name: schema.spec.name,
+            image: schema.spec.image,
+            replicas: schema.spec.replicas,
+            id: 'deployment',
+          }),
+        }),
+        (_schema, _resources) => ({
+          url: 'http://test',
+          phase: 'running' as const,
+        })
+      );
+
+      const factory = graph.factory('direct', { namespace: 'test-ns' });
+      const yaml = factory.toYaml({
+        name: 'my-app',
+        image: 'nginx:latest',
+        port: 8080,
+        replicas: 3,
+      });
+
+      expect(yaml).toContain('my-app');
+      expect(yaml).toContain('nginx:latest');
+      expect(yaml).not.toContain('schema.spec');
+      expect(yaml).not.toContain('__KUBERNETES_REF_');
+    });
+
+    it('should resolve Cel.template with schema-only refs to actual values', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'cel-template-resolve-test',
+          apiVersion: 'v1alpha1',
+          kind: 'CelTemplateResolveTest',
+          spec: TestSpecSchema,
+          status: TestStatusSchema,
+        },
+        (schema) => ({
+          service: simple.Service({
+            name: Cel.template('%s-svc', schema.spec.name),
+            selector: { app: schema.spec.name },
+            ports: [{ port: 80, targetPort: schema.spec.port }],
+            id: 'service',
+          }),
+        }),
+        (_schema, _resources) => ({
+          url: 'http://test',
+          phase: 'running' as const,
+        })
+      );
+
+      const factory = graph.factory('direct', { namespace: 'test-ns' });
+      const yaml = factory.toYaml({
+        name: 'my-app',
+        image: 'nginx',
+        port: 9000,
+        replicas: 1,
+      });
+
+      // Cel.template with schema-only refs resolves to concrete value in direct mode
+      expect(yaml).toContain('my-app-svc');
+      expect(yaml).not.toContain('${');
+    });
+
+    it('should resolve template literals with schema refs to actual values', () => {
+      const graph = toResourceGraph(
+        {
+          name: 'template-literal-test',
+          apiVersion: 'v1alpha1',
+          kind: 'TemplateLiteralTest',
+          spec: TestSpecSchema,
+          status: TestStatusSchema,
+        },
+        (schema) => ({
+          deployment: simple.Deployment({
+            name: `${schema.spec.name}-deploy`,
+            image: schema.spec.image,
+            replicas: schema.spec.replicas,
+            id: 'deployment',
+          }),
+        }),
+        (_schema, _resources) => ({
+          url: 'http://test',
+          phase: 'running' as const,
+        })
+      );
+
+      const factory = graph.factory('direct', { namespace: 'test-ns' });
+      const yaml = factory.toYaml({
+        name: 'webapp',
+        image: 'node:20',
+        port: 3000,
+        replicas: 2,
+      });
+
+      expect(yaml).toContain('webapp-deploy');
+      expect(yaml).not.toContain('__KUBERNETES_REF_');
+    });
+
+    it('should handle conditional resources correctly (enableRedis: false)', () => {
+      const ConditionalSpec = type({
+        name: 'string',
+        enableCache: 'boolean',
+      });
+      const ConditionalStatus = type({ phase: '"ready"' });
+
+      const graph = toResourceGraph(
+        {
+          name: 'conditional-test',
+          apiVersion: 'v1alpha1',
+          kind: 'ConditionalTest',
+          spec: ConditionalSpec,
+          status: ConditionalStatus,
+        },
+        (schema) => ({
+          app: simple.Deployment({
+            name: schema.spec.name,
+            image: 'nginx',
+            replicas: 1,
+            id: 'app',
+          }),
+          // Conditional resource — should be excluded when enableCache is false
+          ...(schema.spec.enableCache
+            ? {
+                cache: simple.Deployment({
+                  name: 'redis',
+                  image: 'redis:7',
+                  replicas: 1,
+                  id: 'cache',
+                }),
+              }
+            : {}),
+        }),
+        (_schema, _resources) => ({
+          phase: 'ready' as const,
+        })
+      );
+
+      const factory = graph.factory('direct', { namespace: 'test-ns' });
+
+      // With enableCache: false, redis should not appear
+      const yamlWithout = factory.toYaml({ name: 'my-app', enableCache: false });
+      expect(yamlWithout).toContain('my-app');
+      expect(yamlWithout).not.toContain('redis');
+
+      // With enableCache: true, redis should appear
+      const yamlWith = factory.toYaml({ name: 'my-app', enableCache: true });
+      expect(yamlWith).toContain('my-app');
+      expect(yamlWith).toContain('redis');
     });
   });
 
@@ -361,7 +527,7 @@ describe('Resource Metadata Handling', () => {
       expect(() => {
         const directFactory = graph.factory('direct', { namespace: 'test' });
         expect(directFactory.mode).toBe('direct');
-        
+
         const kroFactory = graph.factory('kro', { namespace: 'test' });
         expect(kroFactory.mode).toBe('kro');
       }).not.toThrow();
@@ -403,13 +569,13 @@ describe('Resource Metadata Handling', () => {
           name: 'yaml-test-app',
           image: 'nginx',
           port: 8080,
-          replicas: 2
+          replicas: 2,
         });
 
         expect(yaml).toBeDefined();
         expect(typeof yaml).toBe('string');
         expect(yaml.length).toBeGreaterThan(0);
-        
+
         // Should contain resolved values
         expect(yaml).toContain('yaml-test-app');
         expect(yaml).toContain('yaml-service');

@@ -1,5 +1,12 @@
 import type * as k8s from '@kubernetes/client-node';
+import {
+  DEFAULT_MAX_RETRIES,
+  DEFAULT_STATUS_CACHE_TTL,
+  DEFAULT_STATUS_QUERY_TIMEOUT,
+} from '../config/defaults.js';
+import { ensureError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
+import { getResourceId } from '../metadata/index.js';
 import type { DeployedResource, Enhanced, KubernetesResource } from '../types.js';
 
 /**
@@ -33,9 +40,9 @@ export class StatusHydrator {
   private statusCache = new Map<string, StatusCacheEntry<unknown>>();
   private readonly defaultOptions: Required<StatusHydrationOptions> = {
     enableCaching: true,
-    cacheTtl: 30000, // 30 seconds
-    maxRetries: 3,
-    queryTimeout: 10000, // 10 seconds
+    cacheTtl: DEFAULT_STATUS_CACHE_TTL,
+    maxRetries: DEFAULT_MAX_RETRIES,
+    queryTimeout: DEFAULT_STATUS_QUERY_TIMEOUT,
   };
 
   private mergedOptions: Required<StatusHydrationOptions>;
@@ -115,14 +122,14 @@ export class StatusHydrator {
       }
 
       return { success: true, resourceId, hydratedFields };
-    } catch (error) {
+    } catch (error: unknown) {
       const resourceId = enhanced.metadata?.name || 'unknown';
-      this.logger.error('Failed to hydrate status', error as Error, { resourceId });
+      this.logger.error('Failed to hydrate status', ensureError(error), { resourceId });
       return {
         success: false,
         resourceId,
         hydratedFields: [],
-        error: error instanceof Error ? error : new Error(String(error)),
+        error: ensureError(error),
       };
     }
   }
@@ -162,13 +169,13 @@ export class StatusHydrator {
       }
 
       return { success: true, resourceId, hydratedFields };
-    } catch (error) {
+    } catch (error: unknown) {
       const resourceId = enhanced.metadata?.name || 'unknown';
       return {
         success: false,
         resourceId,
         hydratedFields: [],
-        error: error instanceof Error ? error : new Error(String(error)),
+        error: ensureError(error),
       };
     }
   }
@@ -181,8 +188,7 @@ export class StatusHydrator {
     status: TStatus,
     hydratedFields: string[]
   ): void {
-    const resourceId =
-      (enhanced as { __resourceId?: string }).__resourceId || enhanced.metadata?.name || 'unknown';
+    const resourceId = getResourceId(enhanced) || enhanced.metadata?.name || 'unknown';
     const statusLogger = this.logger.child({ resourceId });
 
     statusLogger.debug('Populating enhanced status', {
@@ -207,10 +213,10 @@ export class StatusHydrator {
           statusProxy[field] = statusRecord[field];
           hydratedFields.push(field);
           statusLogger.debug('Status field hydrated', { field, value: statusRecord[field] });
-        } catch (error) {
+        } catch (error: unknown) {
           statusLogger.debug('Failed to set status field', {
             field,
-            error: (error as Error).message,
+            error: ensureError(error).message,
           });
         }
       }
@@ -244,8 +250,8 @@ export class StatusHydrator {
       if (!result.success) {
         proxyLogger.warn('Status hydration failed', { error: result.error?.message });
       }
-    } catch (error) {
-      proxyLogger.error('Failed to hydrate Enhanced proxy status', error as Error);
+    } catch (error: unknown) {
+      proxyLogger.error('Failed to hydrate Enhanced proxy status', ensureError(error));
     }
   }
 
@@ -284,7 +290,7 @@ export class StatusHydrator {
       if (apiError.statusCode === 404) {
         queryLogger.warn('Resource not found');
       } else {
-        queryLogger.error('Failed to query resource status', error as Error);
+        queryLogger.error('Failed to query resource status', ensureError(error));
       }
       return null;
     }

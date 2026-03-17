@@ -73,7 +73,7 @@ export function isKubernetesResponse<T>(
  * ```typescript
  * try {
  *   await api.read(resource);
- * } catch (error) {
+ * } catch (error: unknown) {
  *   if (isKubernetesError(error)) {
  *     console.log('Status:', error.statusCode);
  *   }

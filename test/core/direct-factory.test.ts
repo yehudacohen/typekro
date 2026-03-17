@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
-import { Cel, toResourceGraph, simple } from '../../src/index.js';
+import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
 describe('DirectResourceFactory', () => {
   const WebAppSpecSchema = type({
@@ -84,7 +84,7 @@ describe('DirectResourceFactory', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -118,7 +118,7 @@ describe('DirectResourceFactory', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -161,7 +161,7 @@ describe('DirectResourceFactory', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -202,7 +202,7 @@ describe('DirectResourceFactory', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -239,7 +239,7 @@ describe('DirectResourceFactory', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -269,7 +269,7 @@ describe('DirectResourceFactory', () => {
           }),
         }),
         (_schema, resources) => ({
-          url: `http://${resources.deployment.status.podIP}`,
+          url: `http://${resources.deployment.metadata.name}`,
           readyReplicas: resources.deployment.status.readyReplicas,
           phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
         })
@@ -303,7 +303,7 @@ describe('DirectResourceFactory', () => {
             }),
           }),
           (_schema, resources) => ({
-            url: `http://${resources.deployment.status.podIP}`,
+            url: `http://${resources.deployment.metadata.name}`,
             readyReplicas: resources.deployment.status.readyReplicas,
             phase: Cel.expr<'pending' | 'running' | 'failed'>`'running'`,
           })

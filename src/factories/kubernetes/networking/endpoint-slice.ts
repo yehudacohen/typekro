@@ -3,7 +3,7 @@ import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export function endpointSlice(
-  resource: V1EndpointSlice
+  resource: V1EndpointSlice & { id?: string }
 ): V1EndpointSlice & Enhanced<V1EndpointSlice, object> {
   return createResource<V1EndpointSlice, object>({
     ...resource,

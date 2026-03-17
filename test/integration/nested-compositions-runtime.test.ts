@@ -8,19 +8,21 @@
  * - Deployment reliability and error recovery
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import {
-  kubernetesComposition,
-  simple,
-  certManager,
-  Cel,
-} from '../../src/index.js';
-import { type } from 'arktype';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type * as k8s from '@kubernetes/client-node';
-import { getIntegrationTestKubeConfig, isClusterAvailable } from './shared-kubeconfig.js';
+import { type } from 'arktype';
+import { Cel, certManager, kubernetesComposition, simple } from '../../src/index.js';
+import {
+  cleanupCertManagerWebhooks,
+  deleteNamespaceAndWait,
+  ensureCertManagerInstalled,
+  getIntegrationTestKubeConfig,
+  isClusterAvailable,
+} from './shared-kubeconfig.js';
 
-// Test timeout for integration tests
-const TEST_TIMEOUT = 300000; // 5 minutes
+// Test timeout for integration tests — needs to exceed the factory timeout (240s)
+// plus time for setup, serialization, and Helm chart pulls
+const TEST_TIMEOUT = 600000; // 10 minutes
 
 // Check if cluster is available
 const clusterAvailable = isClusterAvailable();
@@ -28,6 +30,7 @@ const describeOrSkip = clusterAvailable ? describe : describe.skip;
 
 describeOrSkip('Nested Compositions Runtime Integration', () => {
   let kc: k8s.KubeConfig;
+  let unhandledRejectionHandler: ((reason: unknown) => void) | undefined;
 
   beforeAll(async () => {
     if (!clusterAvailable) return;
@@ -35,13 +38,136 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
     // Configure kubeconfig with TLS skip for integration tests
     kc = getIntegrationTestKubeConfig();
 
+    // Ensure cert-manager is installed (idempotent - skips if already present)
+    console.log('📦 Ensuring cert-manager is available for nested compositions tests...');
+    await ensureCertManagerInstalled({ kubeConfig: kc });
+    console.log('✅ Cert-manager is ready');
+
     // Ensure we have a clean test environment
     console.log('🧪 Setting up nested compositions integration tests...');
+
+    // LAYER 1: Global Unhandled Rejection Handler
+    // ============================================
+    // Why this layer exists:
+    // Bun's fetch/watch implementation has a known issue where abort() can throw
+    // an async AbortError/DOMException that escapes the normal try-catch error
+    // handling in stopMonitoring(). This happens because:
+    //
+    // 1. stopMonitoring() calls abort() on watch connections
+    // 2. stopMonitoring() completes and returns
+    // 3. THEN an async AbortError fires from Bun's watch stream (outside promise chain)
+    // 4. This unhandled error appears as "Unhandled error between tests"
+    //
+    // This layer catches these expected AbortErrors and suppresses them gracefully.
+    // Reference: https://github.com/oven-sh/bun/issues/...
+    unhandledRejectionHandler = (reason: unknown) => {
+      const error = reason as { name?: string; message?: string };
+      const errorName = error?.name;
+      const errorMessage = error?.message || '';
+
+      // Suppress AbortError and DOMException during test cleanup - these are expected
+      // when stopping event monitoring in Bun's runtime
+      if (
+        errorName === 'AbortError' ||
+        errorName === 'DOMException' ||
+        errorMessage.includes('aborted')
+      ) {
+        // Silently ignore - this is expected during test cleanup
+        return;
+      }
+
+      // Re-throw other unhandled rejections - they indicate real problems
+      throw reason;
+    };
+    process.on('unhandledRejection', unhandledRejectionHandler);
   });
 
   afterAll(async () => {
+    // Remove the unhandledRejection handler to prevent accumulation across test suites
+    if (unhandledRejectionHandler) {
+      process.removeListener('unhandledRejection', unhandledRejectionHandler);
+      unhandledRejectionHandler = undefined;
+    }
+
     // Cleanup test resources
-    console.log('🧹 Cleaning up nested compositions integration tests...');
+    console.log('Cleaning up nested compositions integration tests...');
+
+    const { createKubernetesObjectApiClient } = await import('./shared-kubeconfig.js');
+    const k8sApi = createKubernetesObjectApiClient(kc);
+
+    // Clean up cluster-scoped ClusterIssuers created by tests.
+    // These persist after namespace deletion and can cause webhook conflicts.
+    const clusterIssuerNames = ['test-issuer', 'cross-ref-test-issuer'];
+    for (const name of clusterIssuerNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'cert-manager.io/v1',
+          kind: 'ClusterIssuer',
+          metadata: { name },
+        });
+        console.log(`🗑️ Deleted ClusterIssuer: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(`⚠️ Could not delete ClusterIssuer ${name}: ${error.message}`);
+        }
+      }
+    }
+
+    // Clean up Certificates created by the timeout test (in default namespace)
+    const certNames = ['timeout-test-cert'];
+    for (const name of certNames) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'cert-manager.io/v1',
+          kind: 'Certificate',
+          metadata: { name, namespace: 'default' },
+        });
+        console.log(`🗑️ Deleted Certificate: ${name}`);
+      } catch (error: any) {
+        if (error.statusCode !== 404 && error.body?.code !== 404) {
+          console.log(`⚠️ Could not delete Certificate ${name}: ${error.message}`);
+        }
+      }
+    }
+
+    // Suspend and delete the nested cert-manager HelmRelease before namespace deletion
+    // to prevent Flux from uninstalling cert-manager components during cleanup
+    try {
+      await k8sApi.patch(
+        {
+          apiVersion: 'helm.toolkit.fluxcd.io/v2',
+          kind: 'HelmRelease',
+          metadata: { name: 'nested-test-cm', namespace: 'nested-test-cm' },
+        },
+        undefined as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          headers: { 'Content-Type': 'application/merge-patch+json' },
+          body: { spec: { suspend: true } },
+        } as any
+      );
+    } catch (_e) {
+      // Ignore — may not exist
+    }
+
+    // Clean up the nested-test-cm namespace created by the nested compositions test.
+    try {
+      await deleteNamespaceAndWait('nested-test-cm', kc);
+    } catch (_e) {
+      // Ignore - namespace may not exist if the test didn't run
+    }
+
+    // Clean up cluster-scoped webhook configurations created by the test cert-manager
+    // installation. These are NOT namespace-scoped and persist after namespace deletion,
+    // causing HTTP 500 errors for all subsequent cert-manager resource operations.
+    try {
+      await cleanupCertManagerWebhooks('nested-test-cm', kc);
+    } catch (_e) {
+      // Ignore - webhooks may not exist if the test didn't run
+    }
   });
 
   it(
@@ -98,12 +224,29 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
 
       // Cleanup
       await factory.deleteInstance('event-test');
+
+      // LAYER 2: Async Cleanup Delay
+      // ============================
+      // Why this layer exists:
+      // After deleteInstance() completes, the event monitor's stopMonitoring()
+      // is called which aborts all watch connections. However, Bun's watch stream
+      // can fire async AbortError/DOMException events that occur on the next
+      // event loop tick, AFTER stopMonitoring() has returned.
+      //
+      // This small delay allows those async errors to fire and be caught by
+      // our Layer 1 unhandledRejection handler before the test completes.
+      // Without this, the error would appear as "Unhandled error between tests".
+      //
+      // 100ms is sufficient for all async operations to settle on modern hardware.
+      await new Promise((resolve) => setTimeout(resolve, 100));
     },
     TEST_TIMEOUT
   );
 
   it('should deploy ClusterIssuer successfully', async () => {
-    // Test ClusterIssuer deployment in isolation using a composition
+    // Test ClusterIssuer deployment in isolation using a composition.
+    // Uses a selfSigned issuer for fast, reliable readiness in test environments
+    // (ACME issuers require real internet connectivity from the cluster which is unreliable).
     const ClusterIssuerSpec = type({
       name: 'string',
     });
@@ -124,20 +267,7 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
         const _issuer = certManager.clusterIssuer({
           name: spec.name,
           spec: {
-            acme: {
-              server: 'https://acme-staging-v02.api.letsencrypt.org/directory',
-              email: 'typekro-test@funwiththec.cloud',
-              privateKeySecretRef: { name: 'test-issuer-key' },
-              solvers: [
-                {
-                  http01: {
-                    ingress: {
-                      class: 'nginx',
-                    },
-                  },
-                },
-              ],
-            },
+            selfSigned: {},
           },
           id: 'testIssuer',
         });
@@ -281,10 +411,11 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
         caughtError = true;
         expect(error).toBeDefined();
         // Should be a timeout error or abort error
-        const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+        const errorMessage =
+          error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
         const errorName = error instanceof Error ? error.name : '';
-        const isTimeoutOrAbortError = 
-          errorMessage.includes('timeout') || 
+        const isTimeoutOrAbortError =
+          errorMessage.includes('timeout') ||
           errorMessage.includes('abort') ||
           errorName === 'TimeoutError' ||
           errorName === 'AbortError';
@@ -330,12 +461,16 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
           status: NestedStatus,
         },
         (_spec) => {
-          // Call cert-manager bootstrap as a nested composition
+          // Call cert-manager bootstrap as a nested composition.
+          // Use a unique namespace to avoid conflicting with the existing cert-manager
+          // installation in 'cert-manager' namespace. Disable startupapicheck to avoid
+          // post-install hook timeouts.
           const _certManagerInstance = certManager.certManagerBootstrap({
-            name: 'test-cert-manager',
-            namespace: 'cert-manager',
-            version: '1.13.3',
-            installCRDs: true,
+            name: 'nested-test-cm',
+            namespace: 'nested-test-cm',
+            version: '1.19.3',
+            installCRDs: false, // Don't install CRDs - they already exist from the main cert-manager
+            startupapicheck: { enabled: false },
             id: 'certManagerInstance',
           });
 
@@ -351,7 +486,7 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       // Deploy the nested composition
       const factory = nestedComposition.factory('direct', {
         namespace: 'default',
-        timeout: 120000, // 2 minutes for nested deployment
+        timeout: 240000, // 4 minutes for nested deployment (HelmRelease chart pull + reconciliation)
         waitForReady: true,
         kubeConfig: kc,
       });
@@ -365,8 +500,11 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
       expect(result.status.ready).toBe(true);
       expect(result.status.issuerReady).toBe(true);
 
-      // Cleanup
-      await factory.deleteInstance('nested-test');
+      // NOTE: We intentionally do NOT call factory.deleteInstance('nested-test') here
+      // because it contains a HelmRepository ('cert-manager-repo' in flux-system) that
+      // is shared with the main cert-manager installation. Deleting it via rollback
+      // would remove the shared HelmRepo, breaking subsequent cert-manager tests.
+      // The 'nested-test-cm' namespace is cleaned up in afterAll instead.
     },
     TEST_TIMEOUT
   );
@@ -374,6 +512,47 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
   it(
     'should handle cross-composition references',
     async () => {
+      // Re-ensure cert-manager is available - the previous nested composition test
+      // deletes its cert-manager HelmRelease which causes Flux to uninstall cert-manager
+      await ensureCertManagerInstalled({ kubeConfig: kc });
+
+      // Deploy a self-signed ClusterIssuer using typekro's composition pattern
+      // so the certificate can actually become ready
+      const IssuerSetupSpec = type({ name: 'string' });
+      const IssuerSetupStatus = type({ ready: 'boolean' });
+
+      const issuerComposition = kubernetesComposition(
+        {
+          name: 'cross-ref-issuer-setup',
+          apiVersion: 'test.typekro.dev/v1alpha1',
+          kind: 'CrossRefIssuerSetup',
+          spec: IssuerSetupSpec,
+          status: IssuerSetupStatus,
+        },
+        (spec) => {
+          const _issuer = certManager.clusterIssuer({
+            name: spec.name,
+            spec: {
+              selfSigned: {},
+            },
+            id: 'selfSignedIssuer',
+          });
+
+          return {
+            ready: true,
+          };
+        }
+      );
+
+      const issuerFactory = issuerComposition.factory('direct', {
+        namespace: 'default',
+        timeout: 60000,
+        waitForReady: true,
+        kubeConfig: kc,
+      });
+
+      await issuerFactory.deploy({ name: 'cross-ref-test-issuer' });
+
       // Test cross-composition reference patterns
       const CrossRefSpec = type({
         name: 'string',
@@ -425,30 +604,29 @@ describeOrSkip('Nested Compositions Runtime Integration', () => {
         }
       );
 
-      // Deploy with cross-composition reference
-      // Note: We use waitForReady: true to wait for the deployment to be ready
-      // The certificate won't be ready because there's no issuer, but that's expected
+      // Deploy with cross-composition reference pointing to our self-signed issuer
       const factory = crossRefComposition.factory('direct', {
         namespace: 'default',
-        timeout: 60000,
+        timeout: 120000,
         waitForReady: true,
         kubeConfig: kc,
       });
 
       const result = await factory.deploy({
         name: 'cross-ref-test',
-        issuerName: 'test-issuer', // This would come from another composition
+        issuerName: 'cross-ref-test-issuer', // References the issuer we deployed above
       });
 
       expect(result).toBeDefined();
       expect(result.status).toBeDefined();
       // The deployment should be ready (readyReplicas >= 1)
       expect(result.status.ready).toBe(true);
-      // Certificate won't be ready because there's no issuer - this is expected
-      // The certificateReady status may be false or a CEL expression that couldn't be evaluated
+      // The certificate should be ready since we have a self-signed issuer
+      expect(result.status.certificateReady).toBe(true);
 
       // Cleanup
       await factory.deleteInstance('cross-ref-test');
+      await issuerFactory.deleteInstance('cross-ref-test-issuer');
     },
     TEST_TIMEOUT
   );

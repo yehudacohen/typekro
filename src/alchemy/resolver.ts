@@ -7,9 +7,10 @@
 
 // Phase 4 alchemy integration
 import type * as k8s from '@kubernetes/client-node';
+import { ensureError, TypeKroError } from '../core/errors.js';
+import { generateDeterministicResourceId } from '../core/resources/id.js';
 import type { ResolutionContext } from '../core/types/deployment.js';
 import type { KubernetesResource } from '../core/types/kubernetes.js';
-import { generateDeterministicResourceId } from '../utils/helpers.js';
 import { isCelExpression, isKubernetesRef } from '../utils/type-guards.js';
 
 // Define alchemy-compatible types based on the actual alchemy domain model
@@ -65,7 +66,7 @@ export function isAlchemyPromise(value: unknown): value is AlchemyPromise {
       (('__alchemyPromise' in value && (value as AlchemyPromise).__alchemyPromise === true) ||
         // Check for promise-like interface with alchemy symbols
         ('then' in value &&
-          typeof (value as any).then === 'function' &&
+          typeof (value as Record<string, unknown>).then === 'function' &&
           (ALCHEMY_PROMISE_SYMBOL in value ||
             RESOURCE_ID_SYMBOL in value ||
             RESOURCE_TYPE_SYMBOL in value ||
@@ -246,9 +247,11 @@ export async function resolveAlchemyPromise(
     context.alchemyResourceCache.set(resourceId, resolvedResource);
 
     return resolvedResource;
-  } catch (error) {
-    throw new Error(
-      `Failed to resolve alchemy resource ${resourceId}: ${error instanceof Error ? error.message : String(error)}`
+  } catch (error: unknown) {
+    throw new TypeKroError(
+      `Failed to resolve alchemy resource ${resourceId}: ${ensureError(error).message}`,
+      'ALCHEMY_RESOLUTION_FAILED',
+      { resourceId, cause: ensureError(error).message }
     );
   }
 }
@@ -259,11 +262,11 @@ export async function resolveAlchemyPromise(
 function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): string {
   // Try to get the resource ID from alchemy symbols
   if (RESOURCE_ID_SYMBOL in resource) {
-    return (resource as any)[RESOURCE_ID_SYMBOL];
+    return String(Reflect.get(resource, RESOURCE_ID_SYMBOL));
   }
 
   if (RESOURCE_FQN_SYMBOL in resource) {
-    return (resource as any)[RESOURCE_FQN_SYMBOL];
+    return String(Reflect.get(resource, RESOURCE_FQN_SYMBOL));
   }
 
   // For alchemy promises, try to get the resourceId property
@@ -274,7 +277,7 @@ function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): strin
   // Try to extract kind and name from the resource for deterministic ID
   const kind =
     RESOURCE_TYPE_SYMBOL in resource
-      ? (resource as any)[RESOURCE_TYPE_SYMBOL]
+      ? String(Reflect.get(resource, RESOURCE_TYPE_SYMBOL))
       : 'resourceType' in resource && typeof resource.resourceType === 'string'
         ? resource.resourceType
         : 'Resource';
@@ -299,7 +302,7 @@ function getAlchemyResourceId(resource: AlchemyPromise | AlchemyResource): strin
   // Use the same deterministic ID generation as TypeKro resources
   try {
     return generateDeterministicResourceId(kind, name);
-  } catch (_error) {
+  } catch (_error: unknown) {
     // Fallback to a simple deterministic approach if generation fails
     const cleanKind = kind.toLowerCase().replace(/[^a-zA-Z0-9]/g, '');
     const cleanName = name.toLowerCase().replace(/[^a-zA-Z0-9]/g, '');
@@ -477,7 +480,7 @@ export function hasMixedDependencies(resources: Record<string, unknown>): boolea
  * Recursively check if an object contains TypeKro references
  */
 function hasTypeKroReferencesRecursive(
-  obj: any,
+  obj: unknown,
   visited: WeakSet<object> = new WeakSet()
 ): boolean {
   if (isKubernetesRef(obj) || isCelExpression(obj)) {

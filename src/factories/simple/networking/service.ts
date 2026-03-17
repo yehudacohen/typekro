@@ -15,6 +15,16 @@ import type { ServiceConfig } from '../types.js';
  *
  * @param config - Configuration for the service
  * @returns Enhanced Service resource
+ *
+ * @example
+ * ```typescript
+ * const svc = Service({
+ *   name: 'web-service',
+ *   selector: { app: 'web-server' },
+ *   ports: [{ port: 80, targetPort: 8080 }],
+ *   type: 'ClusterIP',
+ * });
+ * ```
  */
 export function Service(config: ServiceConfig): Enhanced<V1ServiceSpec, V1ServiceStatus> {
   return service({

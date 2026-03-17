@@ -12,7 +12,7 @@ import type { DeployedResource } from '../../src/core/types/deployment.js';
 import type { Enhanced } from '../../src/core/types/kubernetes.js';
 
 // Mock Kubernetes API (new API returns objects directly, no .body wrapper)
-const createMockK8sApi = (mockResource?: any) =>
+const createMockK8sApi = (mockResource?: Record<string, unknown>) =>
   ({
     read: async () =>
       mockResource || {
@@ -29,12 +29,12 @@ const createMockK8sApi = (mockResource?: any) =>
           ],
         },
       },
-  }) as any as k8s.KubernetesObjectApi;
+  }) as unknown as k8s.KubernetesObjectApi;
 
 describe('StatusHydrator', () => {
   let statusHydrator: StatusHydrator;
   let mockDeployedResource: DeployedResource;
-  let mockEnhanced: Enhanced<any, any>;
+  let mockEnhanced: Enhanced<unknown, Record<string, unknown>>;
 
   beforeEach(() => {
     statusHydrator = new StatusHydrator(createMockK8sApi());
@@ -57,9 +57,9 @@ describe('StatusHydrator', () => {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
       metadata: { name: 'test-deployment', namespace: 'default' },
-      spec: {} as any,
-      status: {} as any,
-    } as Enhanced<any, any>;
+      spec: {} as unknown,
+      status: {} as Record<string, unknown>,
+    } as Enhanced<unknown, Record<string, unknown>>;
   });
 
   describe('hydrateStatus', () => {
@@ -105,7 +105,7 @@ describe('StatusHydrator', () => {
         ...mockEnhanced,
         kind: 'Service',
         metadata: { name: 'test-service', namespace: 'default' },
-      } as Enhanced<any, any>;
+      } as Enhanced<unknown, Record<string, unknown>>;
 
       const result = await statusHydrator.hydrateStatus(serviceEnhanced, serviceResource);
 
@@ -139,7 +139,7 @@ describe('StatusHydrator', () => {
         ...mockEnhanced,
         kind: 'Pod',
         metadata: { name: 'test-pod', namespace: 'default' },
-      } as Enhanced<any, any>;
+      } as Enhanced<unknown, Record<string, unknown>>;
 
       const result = await statusHydrator.hydrateStatus(podEnhanced, podResource);
 
@@ -157,7 +157,7 @@ describe('StatusHydrator', () => {
         read: async () => {
           throw new Error('Resource not found');
         },
-      } as any as k8s.KubernetesObjectApi;
+      } as unknown as k8s.KubernetesObjectApi;
 
       statusHydrator = new StatusHydrator(errorApi);
 
@@ -205,7 +205,7 @@ describe('StatusHydrator', () => {
             status: { replicas: 3 },
           };
         },
-      } as any as k8s.KubernetesObjectApi;
+      } as unknown as k8s.KubernetesObjectApi;
 
       statusHydrator = new StatusHydrator(cachingApi, { enableCaching: true });
 

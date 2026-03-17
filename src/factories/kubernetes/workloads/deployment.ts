@@ -1,9 +1,34 @@
 import type { V1Deployment } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
+import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { V1DeploymentSpec, V1DeploymentStatus } from '../types.js';
 
-export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
+// Self-register with semantic aliases for fuzzy resource key matching.
+// The base kind/apiVersion is auto-registered by createResource, but
+// semantic aliases require explicit registration.
+registerFactory({
+  factoryName: 'Deployment',
+  kind: 'Deployment',
+  apiVersion: 'apps/v1',
+  semanticAliases: ['deploy', 'database', 'db', 'cache', 'redis'],
+});
+
+/**
+ * Creates a Kubernetes Deployment resource with replica-based readiness evaluation.
+ *
+ * @param resource - The Deployment specification conforming to the Kubernetes V1Deployment API.
+ * @returns An Enhanced Deployment resource that tracks readiness based on ready and available replica counts.
+ * @example
+ * const app = deployment({
+ *   metadata: { name: 'my-app' },
+ *   spec: { replicas: 3, selector: { matchLabels: { app: 'my-app' } }, template: { ... } },
+ * });
+ */
+export function deployment(
+  resource: V1Deployment & { id?: string }
+): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   // Capture expected replicas in closure for readiness evaluation
   // Handle the case where replicas might be a KubernetesRef (magic proxy) instead of a number
   // When replicas is a KubernetesRef, we'll use the live resource's spec.replicas at evaluation time
@@ -58,12 +83,15 @@ export function deployment(resource: V1Deployment): Enhanced<V1DeploymentSpec, V
           },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating deployment readiness: ${error}`,
-        details: { expectedReplicas: staticExpectedReplicas ?? 1, error: String(error) },
+        message: `Error evaluating deployment readiness: ${ensureError(error).message}`,
+        details: {
+          expectedReplicas: staticExpectedReplicas ?? 1,
+          error: ensureError(error).message,
+        },
       };
     }
   });

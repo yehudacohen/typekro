@@ -1,18 +1,18 @@
 /**
  * Tests for Conditional Expression Processor
- * 
+ *
  * Tests the processing of conditional expressions like includeWhen and readyWhen
  * that contain KubernetesRef objects, ensuring proper CEL conversion.
  */
 
-import { describe, expect, it, beforeEach } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
-import type { KubernetesRef } from '../../../src/core/types/index.js';
-import { 
+import type { FactoryExpressionContext } from '../../../src/core/expressions/analysis/types.js';
+import {
+  type ConditionalExpressionConfig,
   ConditionalExpressionProcessor,
-  type ConditionalExpressionConfig 
-} from '../../../src/core/expressions/conditional-expression-processor.js';
-import type { FactoryExpressionContext } from '../../../src/core/expressions/types.js';
+} from '../../../src/core/expressions/conditional/conditional-expression-processor.js';
+import type { KubernetesRef } from '../../../src/core/types/index.js';
 
 describe('ConditionalExpressionProcessor', () => {
   let processor: ConditionalExpressionProcessor;
@@ -21,21 +21,21 @@ describe('ConditionalExpressionProcessor', () => {
 
   beforeEach(() => {
     processor = new ConditionalExpressionProcessor();
-    
+
     mockContext = {
       factoryType: 'kro',
       factoryName: 'simpleDeployment',
       analysisEnabled: true,
       resourceId: 'test-resource',
       availableResources: {},
-      schemaProxy: undefined
+      schemaProxy: undefined,
     };
 
     config = {
       factoryType: 'kro',
       strictValidation: false,
       includeDebugInfo: true,
-      maxDepth: 10
+      maxDepth: 10,
     };
   });
 
@@ -45,7 +45,7 @@ describe('ConditionalExpressionProcessor', () => {
       const schemaRef: KubernetesRef<boolean> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: '__schema__',
-        fieldPath: 'spec.enabled'
+        fieldPath: 'spec.enabled',
       } as KubernetesRef<boolean>;
 
       const result = processor.processIncludeWhenExpression(schemaRef, mockContext, config);
@@ -55,10 +55,12 @@ describe('ConditionalExpressionProcessor', () => {
       expect(result.contextResult.context).toBe('conditional');
       expect(result.metrics.referencesProcessed).toBe(1);
       expect(result.validationErrors).toHaveLength(0);
-      
+
       // For Kro factory, should convert to CEL expression
       expect(result.expression).toHaveProperty('expression');
-      expect((result.expression as any).expression).toBe('schema.spec.enabled');
+      expect((result.expression as unknown as Record<string, unknown>).expression).toBe(
+        'schema.spec.enabled'
+      );
     });
 
     it('should handle includeWhen expression without KubernetesRef objects', () => {
@@ -74,11 +76,11 @@ describe('ConditionalExpressionProcessor', () => {
 
     it('should preserve KubernetesRef for direct factory', () => {
       const directContext = { ...mockContext, factoryType: 'direct' as const };
-      
+
       const schemaRef: KubernetesRef<boolean> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: '__schema__',
-        fieldPath: 'spec.enabled'
+        fieldPath: 'spec.enabled',
       } as KubernetesRef<boolean>;
 
       const result = processor.processIncludeWhenExpression(schemaRef, directContext, config);
@@ -91,7 +93,11 @@ describe('ConditionalExpressionProcessor', () => {
       const invalidExpression = 'not a boolean expression';
       const strictConfig = { ...config, strictValidation: true };
 
-      const result = processor.processIncludeWhenExpression(invalidExpression, mockContext, strictConfig);
+      const result = processor.processIncludeWhenExpression(
+        invalidExpression,
+        mockContext,
+        strictConfig
+      );
 
       // The validation should detect that this doesn't look like a boolean expression
       expect(result.validationErrors.length).toBeGreaterThan(0);
@@ -103,13 +109,13 @@ describe('ConditionalExpressionProcessor', () => {
         condition: {
           [KUBERNETES_REF_BRAND]: true,
           resourceId: '__schema__',
-          fieldPath: 'spec.enabled'
+          fieldPath: 'spec.enabled',
         } as KubernetesRef<boolean>,
         fallback: {
           [KUBERNETES_REF_BRAND]: true,
           resourceId: '__schema__',
-          fieldPath: 'spec.defaultEnabled'
-        } as KubernetesRef<boolean>
+          fieldPath: 'spec.defaultEnabled',
+        } as KubernetesRef<boolean>,
       };
 
       const result = processor.processIncludeWhenExpression(complexExpression, mockContext, config);
@@ -125,7 +131,7 @@ describe('ConditionalExpressionProcessor', () => {
       const statusRef: KubernetesRef<number> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'status.readyReplicas'
+        fieldPath: 'status.readyReplicas',
       } as KubernetesRef<number>;
 
       const result = processor.processReadyWhenExpression(statusRef, mockContext, config);
@@ -134,10 +140,12 @@ describe('ConditionalExpressionProcessor', () => {
       expect(result.conditionalType).toBe('readyWhen');
       expect(result.contextResult.context).toBe('readiness');
       expect(result.metrics.referencesProcessed).toBe(1);
-      
+
       // For Kro factory, should convert to CEL expression
       expect(result.expression).toHaveProperty('expression');
-      expect((result.expression as any).expression).toBe('deployment.status.readyReplicas');
+      expect((result.expression as unknown as Record<string, unknown>).expression).toBe(
+        'deployment.status.readyReplicas'
+      );
     });
 
     it('should validate readyWhen expressions for status field references', () => {
@@ -145,17 +153,18 @@ describe('ConditionalExpressionProcessor', () => {
       const nonStatusRef: KubernetesRef<string> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'deployment',
-        fieldPath: 'spec.replicas'
+        fieldPath: 'spec.replicas',
       } as KubernetesRef<string>;
 
       const result = processor.processReadyWhenExpression(nonStatusRef, mockContext, config);
 
       expect(result.validationErrors.length).toBeGreaterThan(0);
-      expect(result.validationErrors.some(err => err.includes('status'))).toBe(true);
+      expect(result.validationErrors.some((err) => err.includes('status'))).toBe(true);
     });
 
     it('should handle readyWhen expressions with boolean logic', () => {
-      const booleanExpression = 'deployment.status.readyReplicas > 0 && service.status.ready';
+      const booleanExpression =
+        'deployment.status.readyReplicas > 0 && deployment.status.availableReplicas > 0';
 
       const result = processor.processReadyWhenExpression(booleanExpression, mockContext, config);
 
@@ -169,24 +178,34 @@ describe('ConditionalExpressionProcessor', () => {
       const customCondition: KubernetesRef<string> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: 'configmap',
-        fieldPath: 'data.environment'
+        fieldPath: 'data.environment',
       } as KubernetesRef<string>;
 
-      const result = processor.processCustomConditionalExpression(customCondition, mockContext, config);
+      const result = processor.processCustomConditionalExpression(
+        customCondition,
+        mockContext,
+        config
+      );
 
       expect(result.wasProcessed).toBe(true);
       expect(result.conditionalType).toBe('custom');
       expect(result.metrics.referencesProcessed).toBe(1);
-      
+
       // For Kro factory, should convert to CEL expression
       expect(result.expression).toHaveProperty('expression');
-      expect((result.expression as any).expression).toBe('configmap.data.environment');
+      expect((result.expression as unknown as Record<string, unknown>).expression).toBe(
+        'configmap.data.environment'
+      );
     });
 
     it('should validate ternary conditional expressions', () => {
       const invalidTernary = 'condition ? value'; // Missing : part
 
-      const result = processor.processCustomConditionalExpression(invalidTernary, mockContext, config);
+      const result = processor.processCustomConditionalExpression(
+        invalidTernary,
+        mockContext,
+        config
+      );
 
       expect(result.validationErrors.length).toBeGreaterThan(0);
       expect(result.validationErrors[0]).toContain('?');
@@ -220,7 +239,7 @@ describe('ConditionalExpressionProcessor', () => {
       const schemaRef: KubernetesRef<boolean> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: '__schema__',
-        fieldPath: 'spec.enabled'
+        fieldPath: 'spec.enabled',
       } as KubernetesRef<boolean>;
 
       const result = processor.processIncludeWhenExpression(schemaRef, mockContext, config);
@@ -234,7 +253,7 @@ describe('ConditionalExpressionProcessor', () => {
       const schemaRef: KubernetesRef<boolean> = {
         [KUBERNETES_REF_BRAND]: true,
         resourceId: '__schema__',
-        fieldPath: 'spec.enabled'
+        fieldPath: 'spec.enabled',
       } as KubernetesRef<boolean>;
 
       const result = processor.processIncludeWhenExpression(schemaRef, mockContext, config);
@@ -250,7 +269,7 @@ describe('ConditionalExpressionProcessor', () => {
       const invalidRef = {
         // Missing KUBERNETES_REF_BRAND
         resourceId: 'invalid',
-        fieldPath: 'invalid'
+        fieldPath: 'invalid',
       };
 
       const result = processor.processIncludeWhenExpression(invalidRef, mockContext, config);
@@ -261,7 +280,11 @@ describe('ConditionalExpressionProcessor', () => {
 
     it('should handle null and undefined expressions', () => {
       const nullResult = processor.processIncludeWhenExpression(null, mockContext, config);
-      const undefinedResult = processor.processIncludeWhenExpression(undefined, mockContext, config);
+      const undefinedResult = processor.processIncludeWhenExpression(
+        undefined,
+        mockContext,
+        config
+      );
 
       expect(nullResult.wasProcessed).toBe(false);
       expect(undefinedResult.wasProcessed).toBe(false);

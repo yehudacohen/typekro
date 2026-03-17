@@ -16,6 +16,17 @@ import type { StatefulSetConfig } from '../types.js';
  *
  * @param config - Configuration for the stateful set
  * @returns Enhanced StatefulSet resource
+ *
+ * @example
+ * ```typescript
+ * const db = StatefulSet({
+ *   name: 'postgres',
+ *   image: 'postgres:16',
+ *   serviceName: 'postgres-headless',
+ *   replicas: 3,
+ *   ports: [{ containerPort: 5432 }],
+ * });
+ * ```
  */
 export function StatefulSet(
   config: StatefulSetConfig
@@ -25,6 +36,7 @@ export function StatefulSet(
     : [];
 
   return statefulSet({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),

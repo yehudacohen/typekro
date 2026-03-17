@@ -2,6 +2,7 @@
  * Generic Kro custom resource factory with schema-based typing
  */
 
+import { ensureError } from '../../core/errors.js';
 import type { Enhanced, ResourceStatus, WithKroStatusFields } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 
@@ -156,12 +157,12 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
           observedGeneration: status.observedGeneration,
         },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ${resourceKind} readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating ${resourceKind} readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

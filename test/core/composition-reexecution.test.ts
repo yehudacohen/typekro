@@ -3,7 +3,7 @@
  * These tests prevent regressions in the schema proxy value resolution system
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition, simple } from '../../src/index.js';
 
@@ -11,14 +11,14 @@ describe('Composition Re-execution with Actual Values', () => {
   const TestSpecSchema = type({
     name: 'string',
     port: 'number',
-    replicas: 'number'
+    replicas: 'number',
   });
 
   const TestStatusSchema = type({
     ready: 'boolean',
     serviceName: 'string',
     endpoint: 'string',
-    replicaCount: 'number'
+    replicaCount: 'number',
   });
 
   describe('Schema Proxy Value Resolution', () => {
@@ -43,21 +43,21 @@ describe('Composition Re-execution with Actual Values', () => {
             port: spec.port,
             portType: typeof spec.port,
             replicas: spec.replicas,
-            replicasType: typeof spec.replicas
+            replicasType: typeof spec.replicas,
           });
 
           const _service = simple.Service({
             name: `${spec.name}-service`,
             selector: { app: spec.name },
             ports: [{ port: spec.port, targetPort: spec.port }],
-            id: 'testService'
+            id: 'testService',
           });
 
           return {
             ready: true,
             serviceName: `${spec.name}-service`,
             endpoint: `http://${spec.name}-service:${spec.port}`,
-            replicaCount: spec.replicas
+            replicaCount: spec.replicas,
           };
         }
       );
@@ -65,14 +65,14 @@ describe('Composition Re-execution with Actual Values', () => {
       // Create factory (this should trigger first composition execution with proxy functions)
       const factory = testComposition.factory('direct', {
         namespace: 'test',
-        waitForReady: false
+        waitForReady: false,
       });
 
       // Generate YAML (this should trigger re-execution with actual values)
       const yaml = factory.toYaml({
         name: 'my-test-app',
         port: 8080,
-        replicas: 3
+        replicas: 3,
       });
 
       // Verify composition was called twice
@@ -117,14 +117,14 @@ describe('Composition Re-execution with Actual Values', () => {
             name: spec.name,
             image: 'nginx',
             replicas: spec.replicas,
-            id: 'deployment'
+            id: 'deployment',
           });
 
           const computedStatus = {
             ready: true,
             serviceName: `${spec.name}-service`,
             endpoint: `https://${spec.name}.example.com:${spec.port}`,
-            replicaCount: spec.replicas
+            replicaCount: spec.replicas,
           };
 
           statusComputations.push({
@@ -132,7 +132,7 @@ describe('Composition Re-execution with Actual Values', () => {
             specNameType: typeof spec.name,
             computedServiceName: computedStatus.serviceName,
             computedEndpoint: computedStatus.endpoint,
-            computedReplicaCount: computedStatus.replicaCount
+            computedReplicaCount: computedStatus.replicaCount,
           });
 
           return computedStatus;
@@ -141,19 +141,19 @@ describe('Composition Re-execution with Actual Values', () => {
 
       const factory = testComposition.factory('direct', {
         namespace: 'test',
-        waitForReady: false
+        waitForReady: false,
       });
 
       // Test with actual values
       const _yaml = factory.toYaml({
         name: 'status-app',
         port: 443,
-        replicas: 5
+        replicas: 5,
       });
 
       // Should have at least one computation with actual values
       const actualValueComputation = statusComputations.find(
-        comp => comp.specNameType === 'string'
+        (comp) => comp.specNameType === 'string'
       );
 
       expect(actualValueComputation).toBeDefined();
@@ -179,14 +179,14 @@ describe('Composition Re-execution with Actual Values', () => {
             name: `${spec.name}-svc`,
             selector: { app: spec.name },
             ports: [{ port: spec.port, targetPort: spec.port }],
-            id: 'service'
+            id: 'service',
           });
 
           const templateResult = {
             serviceName: `${spec.name}-svc`,
             endpoint: `http://${spec.name}-svc:${spec.port}/api/v1`,
             configName: `${spec.name}-config-${spec.replicas}`,
-            fullUrl: `https://${spec.name}.example.com:${spec.port}/health?replicas=${spec.replicas}`
+            fullUrl: `https://${spec.name}.example.com:${spec.port}/health?replicas=${spec.replicas}`,
           };
 
           templateResults.push({
@@ -196,34 +196,34 @@ describe('Composition Re-execution with Actual Values', () => {
               port: spec.port,
               portType: typeof spec.port,
               replicas: spec.replicas,
-              replicasType: typeof spec.replicas
+              replicasType: typeof spec.replicas,
             },
-            templateResult
+            templateResult,
           });
 
           return {
             ready: true,
             serviceName: templateResult.serviceName,
             endpoint: templateResult.endpoint,
-            replicaCount: spec.replicas
+            replicaCount: spec.replicas,
           };
         }
       );
 
       const factory = testComposition.factory('direct', {
         namespace: 'test',
-        waitForReady: false
+        waitForReady: false,
       });
 
       const yaml = factory.toYaml({
         name: 'template-app',
         port: 9000,
-        replicas: 2
+        replicas: 2,
       });
 
       // Find the computation with actual values
       const actualValueResult = templateResults.find(
-        result => result.specValues.nameType === 'string'
+        (result) => result.specValues.nameType === 'string'
       );
 
       expect(actualValueResult).toBeDefined();
@@ -233,7 +233,9 @@ describe('Composition Re-execution with Actual Values', () => {
       expect(actualValueResult.templateResult.serviceName).toBe('template-app-svc');
       expect(actualValueResult.templateResult.endpoint).toBe('http://template-app-svc:9000/api/v1');
       expect(actualValueResult.templateResult.configName).toBe('template-app-config-2');
-      expect(actualValueResult.templateResult.fullUrl).toBe('https://template-app.example.com:9000/health?replicas=2');
+      expect(actualValueResult.templateResult.fullUrl).toBe(
+        'https://template-app.example.com:9000/health?replicas=2'
+      );
 
       // Verify YAML contains resolved template values
       expect(yaml).toContain('template-app-svc');
@@ -258,14 +260,14 @@ describe('Composition Re-execution with Actual Values', () => {
               name: spec.name,
               image: 'nginx',
               replicas: spec.replicas,
-              id: 'deployment'
+              id: 'deployment',
             });
 
             return {
               ready: true,
               serviceName: `${spec.name}-service`,
               endpoint: `http://${spec.name}:${spec.port}`,
-              replicaCount: spec.replicas
+              replicaCount: spec.replicas,
             };
           }
         );
@@ -290,30 +292,30 @@ describe('Composition Re-execution with Actual Values', () => {
             name: `${spec.name}-service`,
             selector: { app: spec.name },
             ports: [{ port: spec.port, targetPort: spec.port }],
-            id: 'service'
+            id: 'service',
           });
 
           return {
             ready: true,
             serviceName: `${spec.name}-service`,
             endpoint: `http://${spec.name}:${spec.port}`,
-            replicaCount: spec.replicas
+            replicaCount: spec.replicas,
           };
         }
       );
 
       // Check that composition metadata is accessible (non-enumerable properties)
-      const compositionAny = testComposition as any;
-      
+      const compositionAny = testComposition as unknown as Record<string, unknown>;
+
       // These properties should exist if metadata storage succeeded
       // If they don't exist, it means the try-catch block caught an error, which is also valid behavior
       const hasMetadata = compositionAny._compositionFn !== undefined;
-      
+
       if (hasMetadata) {
         // If metadata exists, verify it's properly configured
         expect(compositionAny._compositionFn).toBeDefined();
         expect(compositionAny._definition).toBeDefined();
-        
+
         // They should not appear in Object.keys() (non-enumerable)
         const keys = Object.keys(testComposition);
         expect(keys).not.toContain('_compositionFn');
@@ -323,7 +325,7 @@ describe('Composition Re-execution with Actual Values', () => {
         // If metadata doesn't exist, that's also acceptable (graceful failure)
         expect(compositionAny._compositionFn).toBeUndefined();
       }
-      
+
       // The important thing is that the composition itself works
       expect(testComposition).toBeDefined();
       expect(testComposition.factory).toBeDefined();
@@ -344,7 +346,7 @@ describe('Composition Re-execution with Actual Values', () => {
         },
         (spec) => {
           executionCount++;
-          
+
           // Throw error on re-execution (second call)
           if (executionCount === 2) {
             throw new Error('Re-execution error');
@@ -354,21 +356,21 @@ describe('Composition Re-execution with Actual Values', () => {
             name: `${spec.name}-service`,
             selector: { app: spec.name },
             ports: [{ port: spec.port, targetPort: spec.port }],
-            id: 'service'
+            id: 'service',
           });
 
           return {
             ready: true,
             serviceName: `${spec.name}-service`,
             endpoint: `http://${spec.name}:${spec.port}`,
-            replicaCount: spec.replicas
+            replicaCount: spec.replicas,
           };
         }
       );
 
       const factory = testComposition.factory('direct', {
         namespace: 'test',
-        waitForReady: false
+        waitForReady: false,
       });
 
       // This should not throw even if re-execution fails
@@ -377,7 +379,7 @@ describe('Composition Re-execution with Actual Values', () => {
         const yaml = factory.toYaml({
           name: 'error-app',
           port: 8080,
-          replicas: 1
+          replicas: 1,
         });
         expect(yaml).toBeDefined();
       }).not.toThrow();

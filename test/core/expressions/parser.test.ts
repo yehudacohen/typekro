@@ -13,13 +13,13 @@ import { describe, expect, it } from 'bun:test';
 import fc from 'fast-check';
 
 import {
+  canParse,
+  DEFAULT_PARSER_OPTIONS,
+  ParserError,
   parseExpression,
   parseExpressionSafe,
   parseScript,
-  canParse,
-  ParserError,
-  DEFAULT_PARSER_OPTIONS,
-} from '../../../src/core/expressions/parser.js';
+} from '../../../src/core/expressions/analysis/parser.js';
 
 describe('Parser Utility', () => {
   describe('parseExpression', () => {
@@ -57,7 +57,7 @@ describe('Parser Utility', () => {
       const ast = parseExpression('value ?? defaultValue');
       expect(ast).toBeDefined();
       expect(ast.type).toBe('LogicalExpression');
-      expect((ast as any).operator).toBe('??');
+      expect((ast as unknown as Record<string, unknown>).operator).toBe('??');
     });
 
     it('should parse complex expressions with optional chaining and nullish coalescing', () => {
@@ -119,7 +119,7 @@ describe('Parser Utility', () => {
     it('should parse function declarations', () => {
       const ast = parseScript('function foo() { return 42; }');
       expect(ast).toBeDefined();
-      expect((ast as any).body).toBeDefined();
+      expect((ast as unknown as Record<string, unknown>).body).toBeDefined();
     });
 
     it('should parse arrow functions', () => {
@@ -170,7 +170,6 @@ describe('Parser Utility', () => {
   });
 });
 
-
 /**
  * Property-Based Tests for Parser Unification
  *
@@ -188,12 +187,51 @@ describe('Property-Based Tests: Parser Unification', () => {
   const identifierArb = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/).filter((s) => {
     // Filter out JavaScript reserved words
     const reserved = [
-      'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete',
-      'do', 'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof',
-      'new', 'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var',
-      'void', 'while', 'with', 'class', 'const', 'enum', 'export', 'extends',
-      'import', 'super', 'implements', 'interface', 'let', 'package', 'private',
-      'protected', 'public', 'static', 'yield', 'null', 'true', 'false',
+      'break',
+      'case',
+      'catch',
+      'continue',
+      'debugger',
+      'default',
+      'delete',
+      'do',
+      'else',
+      'finally',
+      'for',
+      'function',
+      'if',
+      'in',
+      'instanceof',
+      'new',
+      'return',
+      'switch',
+      'this',
+      'throw',
+      'try',
+      'typeof',
+      'var',
+      'void',
+      'while',
+      'with',
+      'class',
+      'const',
+      'enum',
+      'export',
+      'extends',
+      'import',
+      'super',
+      'implements',
+      'interface',
+      'let',
+      'package',
+      'private',
+      'protected',
+      'public',
+      'static',
+      'yield',
+      'null',
+      'true',
+      'false',
     ];
     return s.length > 0 && s.length <= 20 && !reserved.includes(s);
   });
@@ -202,18 +240,29 @@ describe('Property-Based Tests: Parser Unification', () => {
    * Arbitrary for generating binary operators
    */
   const binaryOperatorArb = fc.constantFrom(
-    '+', '-', '*', '/', '%',
-    '===', '!==', '==', '!=',
-    '<', '>', '<=', '>=',
-    '&&', '||'
+    '+',
+    '-',
+    '*',
+    '/',
+    '%',
+    '===',
+    '!==',
+    '==',
+    '!=',
+    '<',
+    '>',
+    '<=',
+    '>=',
+    '&&',
+    '||'
   );
 
   /**
    * Arbitrary for generating simple binary expressions
    */
-  const binaryExpressionArb = fc.tuple(identifierArb, binaryOperatorArb, identifierArb).map(
-    ([left, op, right]) => `${left} ${op} ${right}`
-  );
+  const binaryExpressionArb = fc
+    .tuple(identifierArb, binaryOperatorArb, identifierArb)
+    .map(([left, op, right]) => `${left} ${op} ${right}`);
 
   /**
    * Arbitrary for generating member expressions
@@ -336,7 +385,8 @@ describe('Property-Based Tests: Parser Unification', () => {
         if (!result.success || !result.ast) return false;
         // Nullish coalescing should produce LogicalExpression with ?? operator
         return (
-          result.ast.type === 'LogicalExpression' && (result.ast as any).operator === '??'
+          result.ast.type === 'LogicalExpression' &&
+          (result.ast as unknown as Record<string, unknown>).operator === '??'
         );
       }),
       { numRuns: 100 }
@@ -349,7 +399,10 @@ describe('Property-Based Tests: Parser Unification', () => {
         const result = parseExpressionSafe(expression);
         if (!result.success || !result.ast) return false;
         // AST nodes should include loc property with line and column
-        const ast = result.ast as any;
+        const ast = result.ast as unknown as Record<
+          string,
+          Record<string, Record<string, unknown>>
+        >;
         return (
           ast.loc !== undefined &&
           typeof ast.loc.start?.line === 'number' &&
@@ -366,12 +419,12 @@ describe('Property-Based Tests: Parser Unification', () => {
         const result = parseExpressionSafe(expression);
         if (!result.success || !result.ast) return false;
         // AST nodes should include range property
-        const ast = result.ast as any;
+        const ast = result.ast as unknown as Record<string, unknown>;
         return (
           Array.isArray(ast.range) &&
-          ast.range.length === 2 &&
-          typeof ast.range[0] === 'number' &&
-          typeof ast.range[1] === 'number'
+          (ast.range as number[]).length === 2 &&
+          typeof (ast.range as number[])[0] === 'number' &&
+          typeof (ast.range as number[])[1] === 'number'
         );
       }),
       { numRuns: 100 }
@@ -391,7 +444,6 @@ describe('Property-Based Tests: Parser Unification', () => {
   });
 });
 
-
 /**
  * Property-Based Tests for Source Location Preservation
  *
@@ -408,12 +460,51 @@ describe('Property-Based Tests: Source Location Preservation', () => {
    */
   const identifierArb = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/).filter((s) => {
     const reserved = [
-      'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete',
-      'do', 'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof',
-      'new', 'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var',
-      'void', 'while', 'with', 'class', 'const', 'enum', 'export', 'extends',
-      'import', 'super', 'implements', 'interface', 'let', 'package', 'private',
-      'protected', 'public', 'static', 'yield', 'null', 'true', 'false',
+      'break',
+      'case',
+      'catch',
+      'continue',
+      'debugger',
+      'default',
+      'delete',
+      'do',
+      'else',
+      'finally',
+      'for',
+      'function',
+      'if',
+      'in',
+      'instanceof',
+      'new',
+      'return',
+      'switch',
+      'this',
+      'throw',
+      'try',
+      'typeof',
+      'var',
+      'void',
+      'while',
+      'with',
+      'class',
+      'const',
+      'enum',
+      'export',
+      'extends',
+      'import',
+      'super',
+      'implements',
+      'interface',
+      'let',
+      'package',
+      'private',
+      'protected',
+      'public',
+      'static',
+      'yield',
+      'null',
+      'true',
+      'false',
     ];
     return s.length > 0 && s.length <= 20 && !reserved.includes(s);
   });
@@ -428,23 +519,20 @@ describe('Property-Based Tests: Source Location Preservation', () => {
   /**
    * Arbitrary for generating binary expressions
    */
-  const binaryExpressionArb = fc.tuple(identifierArb, identifierArb).map(
-    ([left, right]) => `${left} + ${right}`
-  );
+  const binaryExpressionArb = fc
+    .tuple(identifierArb, identifierArb)
+    .map(([left, right]) => `${left} + ${right}`);
 
   it('Property 4.1: Source locations should have valid line numbers (starting from 1)', () => {
     fc.assert(
       fc.property(memberExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (!result.success || !result.ast) return false;
-        
-        const ast = result.ast as any;
+
+        const ast = result.ast as unknown as Record<string, unknown>;
+        const loc = ast.loc as { start: { line: number }; end: { line: number } } | undefined;
         // Line numbers should start from 1
-        return (
-          ast.loc !== undefined &&
-          ast.loc.start.line >= 1 &&
-          ast.loc.end.line >= 1
-        );
+        return loc !== undefined && loc.start.line >= 1 && loc.end.line >= 1;
       }),
       { numRuns: 100 }
     );
@@ -455,14 +543,11 @@ describe('Property-Based Tests: Source Location Preservation', () => {
       fc.property(memberExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (!result.success || !result.ast) return false;
-        
-        const ast = result.ast as any;
+
+        const ast = result.ast as unknown as Record<string, unknown>;
+        const loc = ast.loc as { start: { column: number }; end: { column: number } } | undefined;
         // Column numbers should start from 0
-        return (
-          ast.loc !== undefined &&
-          ast.loc.start.column >= 0 &&
-          ast.loc.end.column >= 0
-        );
+        return loc !== undefined && loc.start.column >= 0 && loc.end.column >= 0;
       }),
       { numRuns: 100 }
     );
@@ -473,14 +558,11 @@ describe('Property-Based Tests: Source Location Preservation', () => {
       fc.property(binaryExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (!result.success || !result.ast) return false;
-        
-        const ast = result.ast as any;
+
+        const ast = result.ast as unknown as Record<string, unknown>;
+        const range = ast.range as number[] | undefined;
         // Range should cover the expression (accounting for wrapping in parseExpression)
-        return (
-          Array.isArray(ast.range) &&
-          ast.range[0] >= 0 &&
-          ast.range[1] > ast.range[0]
-        );
+        return Array.isArray(range) && (range[0] ?? -1) >= 0 && (range[1] ?? 0) > (range[0] ?? -1);
       }),
       { numRuns: 100 }
     );
@@ -491,24 +573,24 @@ describe('Property-Based Tests: Source Location Preservation', () => {
       fc.property(memberExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (!result.success || !result.ast) return false;
-        
-        const ast = result.ast as any;
+
+        const ast = result.ast as unknown as Record<string, unknown>;
+        const loc = ast.loc as {
+          start: { line: number; column: number };
+          end: { line: number; column: number };
+        };
         // End should be after or equal to start
-        const startLine = ast.loc.start.line;
-        const endLine = ast.loc.end.line;
-        const startCol = ast.loc.start.column;
-        const endCol = ast.loc.end.column;
-        
-        return (
-          endLine > startLine ||
-          (endLine === startLine && endCol >= startCol)
-        );
+        const startLine = loc.start.line;
+        const endLine = loc.end.line;
+        const startCol = loc.start.column;
+        const endCol = loc.end.column;
+
+        return endLine > startLine || (endLine === startLine && endCol >= startCol);
       }),
       { numRuns: 100 }
     );
   });
 });
-
 
 /**
  * Property-Based Tests for Error Message Quality
@@ -525,39 +607,38 @@ describe('Property-Based Tests: Error Message Quality', () => {
   /**
    * Arbitrary for generating invalid expressions (incomplete binary operations)
    */
-  const invalidBinaryArb = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/)
+  const invalidBinaryArb = fc
+    .stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/)
     .filter((s) => s.length > 0 && s.length <= 10)
     .map((id) => `${id} +`);
 
   /**
    * Arbitrary for generating invalid expressions (unbalanced brackets)
    */
-  const unbalancedBracketArb = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/)
+  const unbalancedBracketArb = fc
+    .stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/)
     .filter((s) => s.length > 0 && s.length <= 10)
     .map((id) => `${id}[`);
 
   /**
    * Arbitrary for generating invalid expressions (unbalanced parentheses)
    */
-  const unbalancedParenArb = fc.stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/)
+  const unbalancedParenArb = fc
+    .stringMatching(/^[a-zA-Z_][a-zA-Z0-9_]*$/)
     .filter((s) => s.length > 0 && s.length <= 10)
     .map((id) => `(${id}`);
 
   /**
    * Combined arbitrary for invalid expressions
    */
-  const invalidExpressionArb = fc.oneof(
-    invalidBinaryArb,
-    unbalancedBracketArb,
-    unbalancedParenArb
-  );
+  const invalidExpressionArb = fc.oneof(invalidBinaryArb, unbalancedBracketArb, unbalancedParenArb);
 
   it('Property 5.1: Parse errors should include line number', () => {
     fc.assert(
       fc.property(invalidExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (result.success) return true; // Skip if it somehow parses
-        
+
         // Error should include line number
         const error = result.errors[0];
         return error instanceof ParserError && error.line >= 1;
@@ -571,7 +652,7 @@ describe('Property-Based Tests: Error Message Quality', () => {
       fc.property(invalidExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (result.success) return true; // Skip if it somehow parses
-        
+
         // Error should include column number
         const error = result.errors[0];
         return error instanceof ParserError && error.column >= 0;
@@ -585,13 +666,10 @@ describe('Property-Based Tests: Error Message Quality', () => {
       fc.property(invalidExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (result.success) return true; // Skip if it somehow parses
-        
+
         // Error should preserve original expression
         const error = result.errors[0];
-        return (
-          error instanceof ParserError &&
-          error.originalExpression === expression
-        );
+        return error instanceof ParserError && error.originalExpression === expression;
       }),
       { numRuns: 100 }
     );
@@ -602,13 +680,10 @@ describe('Property-Based Tests: Error Message Quality', () => {
       fc.property(invalidExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (result.success) return true; // Skip if it somehow parses
-        
+
         // Error should include suggestion to use Cel API
         const error = result.errors[0];
-        return (
-          error instanceof ParserError &&
-          error.suggestions.some((s) => s.includes('Cel'))
-        );
+        return error instanceof ParserError && error.suggestions.some((s) => s.includes('Cel'));
       }),
       { numRuns: 100 }
     );
@@ -619,7 +694,7 @@ describe('Property-Based Tests: Error Message Quality', () => {
       fc.property(invalidExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (result.success) return true; // Skip if it somehow parses
-        
+
         // Error should have at least one suggestion
         const error = result.errors[0];
         return (
@@ -637,10 +712,10 @@ describe('Property-Based Tests: Error Message Quality', () => {
       fc.property(invalidExpressionArb, (expression) => {
         const result = parseExpressionSafe(expression);
         if (result.success) return true; // Skip if it somehow parses
-        
+
         const error = result.errors[0];
         if (!(error instanceof ParserError)) return false;
-        
+
         const detailed = error.toDetailedString();
         // Detailed string should include key components
         return (

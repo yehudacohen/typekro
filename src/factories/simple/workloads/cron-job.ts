@@ -15,9 +15,20 @@ import type { CronJobConfig } from '../types.js';
  *
  * @param config - Configuration for the cron job
  * @returns Enhanced CronJob resource
+ *
+ * @example
+ * ```typescript
+ * const cleanup = CronJob({
+ *   name: 'log-cleanup',
+ *   image: 'busybox:latest',
+ *   schedule: '0 2 * * *',
+ *   command: ['sh', '-c', 'rm -rf /tmp/logs/*'],
+ * });
+ * ```
  */
 export function CronJob(config: CronJobConfig): Enhanced<V1CronJobSpec, V1CronJobStatus> {
   return cronJob({
+    ...(config.id && { id: config.id }),
     metadata: {
       name: config.name,
       ...(config.namespace && { namespace: config.namespace }),

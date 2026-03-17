@@ -6,15 +6,12 @@
  */
 
 import type { V1EnvVar } from '@kubernetes/client-node';
+import { processFactoryValue, withExpressionAnalysis } from '../../../core/expressions/index.js';
+import { getComponentLogger } from '../../../core/logging/index.js';
 import type { Enhanced } from '../../../core/types.js';
 import type { V1DeploymentSpec, V1DeploymentStatus } from '../../kubernetes/types.js';
 import { deployment } from '../../kubernetes/workloads/deployment.js';
 import type { DeploymentConfig } from '../types.js';
-import { 
-  withExpressionAnalysis, 
-  processFactoryValue,
-} from '../../../core/expressions/index.js';
-import { getComponentLogger } from '../../../core/logging/index.js';
 
 const _logger = getComponentLogger('simple-deployment-factory');
 
@@ -28,13 +25,13 @@ function createDeployment(
   config: DeploymentConfig
 ): Enhanced<V1DeploymentSpec, V1DeploymentStatus> {
   const env: V1EnvVar[] = config.env
-    ? Object.entries(config.env).map(([name, value]) => ({ 
-        name, 
+    ? Object.entries(config.env).map(([name, value]) => ({
+        name,
         value: processFactoryValue(
-          value, 
+          value,
           { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
           `env.${name}`
-        )
+        ),
       }))
     : [];
 
@@ -46,19 +43,19 @@ function createDeployment(
         { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
         'metadata.name'
       ),
-      ...(config.namespace && { 
+      ...(config.namespace && {
         namespace: processFactoryValue(
           config.namespace,
           { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
           'metadata.namespace'
-        )
+        ),
       }),
-      labels: { 
+      labels: {
         app: processFactoryValue(
           config.name,
           { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
           'metadata.labels.app'
-        )
+        ),
       },
     },
     spec: {
@@ -67,24 +64,24 @@ function createDeployment(
         { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
         'spec.replicas'
       ),
-      selector: { 
-        matchLabels: { 
+      selector: {
+        matchLabels: {
           app: processFactoryValue(
             config.name,
             { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
             'spec.selector.matchLabels.app'
-          )
-        }
+          ),
+        },
       },
       template: {
-        metadata: { 
-          labels: { 
+        metadata: {
+          labels: {
             app: processFactoryValue(
               config.name,
               { factoryType: 'kro', factoryName: 'Deployment', analysisEnabled: true },
               'spec.template.metadata.labels.app'
-            )
-          }
+            ),
+          },
         },
         spec: {
           containers: [
@@ -118,5 +115,15 @@ function createDeployment(
  * @param config - Configuration for the deployment
  * @param options - Analysis options
  * @returns Enhanced Deployment resource
+ *
+ * @example
+ * ```typescript
+ * const web = Deployment({
+ *   name: 'web-server',
+ *   image: 'nginx:latest',
+ *   replicas: 3,
+ *   ports: [{ containerPort: 80 }],
+ * });
+ * ```
  */
 export const Deployment = withExpressionAnalysis(createDeployment, 'Deployment');

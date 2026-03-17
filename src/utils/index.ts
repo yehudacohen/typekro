@@ -1,26 +1,27 @@
 /**
  * Utilities Module
  *
- * This module provides general utility functions and type guards
- * that are used throughout the TypeKro codebase.
+ * Pure utility functions, string helpers, and type guards.
+ * Domain-specific logic lives in its canonical core/ module.
  */
 
-// Export helper functions
+// Object utilities (canonical location: utils/helpers.ts)
+export { escapeRegExp, preserveNonEnumerableProperties, removeUndefinedValues } from './helpers';
+// String utilities (canonical location: utils/string.ts)
 export {
-  arktypeToKroSchema,
-  generateCelReference,
-  generateDeterministicResourceId,
-  generateResourceId,
-  getInnerCelPath,
+  calculateSimilarity,
+  ensureVersionPrefix,
+  levenshteinDistance,
   pascalCase,
-  processResourceReferences,
-} from './helpers';
+  toCamelCase,
+} from './string';
 
-// Export type guard functions
+// Type guard functions
 export {
   containsKubernetesRefs,
   extractResourceReferences,
   isCelExpression,
   isKubernetesRef,
+  isMixedTemplate,
   isResourceReference,
 } from './type-guards';

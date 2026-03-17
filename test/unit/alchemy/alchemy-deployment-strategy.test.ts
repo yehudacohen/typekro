@@ -12,6 +12,8 @@ import { type } from 'arktype';
 import { AlchemyDeploymentStrategy } from '../../../src/core/deployment/strategies/alchemy-strategy.js';
 import { DirectDeploymentStrategy } from '../../../src/core/deployment/strategies/direct-strategy.js';
 import type { FactoryOptions } from '../../../src/core/types/deployment.js';
+import type { Scope } from '../../../src/core/types/schema.js';
+import { strategyInternals } from '../../utils/mock-factories.js';
 
 describe('AlchemyDeploymentStrategy', () => {
   // Mock alchemy scope
@@ -116,10 +118,10 @@ describe('AlchemyDeploymentStrategy', () => {
   describe('Constructor', () => {
     it('should create AlchemyDeploymentStrategy with proper configuration', () => {
       expect(strategy).toBeInstanceOf(AlchemyDeploymentStrategy);
-      expect((strategy as any).factoryName).toBe('test-factory');
-      expect((strategy as any).namespace).toBe('default');
-      expect((strategy as any).alchemyScope).toBe(mockAlchemyScope);
-      expect((strategy as any).baseStrategy).toBe(mockBaseStrategy);
+      expect(strategyInternals(strategy).factoryName).toBe('test-factory');
+      expect(strategyInternals(strategy).namespace).toBe('default');
+      expect(strategyInternals(strategy).alchemyScope).toBe(mockAlchemyScope);
+      expect(strategyInternals(strategy).baseStrategy).toBe(mockBaseStrategy);
     });
 
     it('should handle different factory names', () => {
@@ -134,20 +136,20 @@ describe('AlchemyDeploymentStrategy', () => {
         mockBaseStrategy
       );
 
-      expect((customStrategy as any).factoryName).toBe('custom-factory-name');
-      expect((customStrategy as any).namespace).toBe('custom-namespace');
+      expect(strategyInternals(customStrategy).factoryName).toBe('custom-factory-name');
+      expect(strategyInternals(customStrategy).namespace).toBe('custom-namespace');
     });
 
     it('should store alchemy scope reference', () => {
-      expect((strategy as any).alchemyScope).toBe(mockAlchemyScope);
-      expect((strategy as any).alchemyScope.run).toBeDefined();
+      expect(strategyInternals(strategy).alchemyScope).toBe(mockAlchemyScope);
+      expect(mockAlchemyScope.run).toBeDefined();
     });
   });
 
   describe('executeDeployment', () => {
     it('should validate alchemy scope before deployment', async () => {
       // Strategy throws when alchemy scope is invalid
-      const invalidScope = null as any;
+      const invalidScope = null as unknown as Scope;
 
       const invalidStrategy = new AlchemyDeploymentStrategy(
         'test-factory',
@@ -164,7 +166,7 @@ describe('AlchemyDeploymentStrategy', () => {
 
       // Should throw due to invalid scope
       await expect(
-        (invalidStrategy as any).executeDeployment(spec, 'test-instance')
+        strategyInternals(invalidStrategy).executeDeployment(spec, 'test-instance')
       ).rejects.toThrow('Alchemy deployment: Alchemy scope is required for alchemy deployment');
     });
 
@@ -173,7 +175,7 @@ describe('AlchemyDeploymentStrategy', () => {
 
       // This will fail due to missing alchemy imports, but we can test the call
       try {
-        await (strategy as any).executeDeployment(spec, 'test-instance');
+        await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
       } catch (_error) {
         // Expected to fail on import, but should have called createResourceGraphForInstance
         expect(
@@ -193,7 +195,10 @@ describe('AlchemyDeploymentStrategy', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       try {
-        const result = await (strategy as any).executeDeployment(spec, 'empty-instance');
+        const result = (await strategyInternals(strategy).executeDeployment(
+          spec,
+          'empty-instance'
+        )) as Record<string, unknown>;
         expect(result).toBeDefined();
         expect(result.resources).toHaveLength(0);
       } catch (_error) {
@@ -206,7 +211,7 @@ describe('AlchemyDeploymentStrategy', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       try {
-        await (strategy as any).executeDeployment(spec, 'multi-instance');
+        await strategyInternals(strategy).executeDeployment(spec, 'multi-instance');
       } catch (_error) {
         // Should process all resources
         expect(
@@ -218,7 +223,7 @@ describe('AlchemyDeploymentStrategy', () => {
 
   describe('getStrategyMode', () => {
     it('should return direct mode', () => {
-      const mode = (strategy as any).getStrategyMode();
+      const mode = strategyInternals(strategy).getStrategyMode();
       expect(mode).toBe('direct');
     });
   });
@@ -228,7 +233,10 @@ describe('AlchemyDeploymentStrategy', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       // Access private method for testing
-      const resourceGraph = (strategy as any).createResourceGraphForInstance(spec, 'test-instance');
+      const resourceGraph = strategyInternals(strategy).createResourceGraphForInstance(
+        spec,
+        'test-instance'
+      ) as Record<string, unknown>;
 
       expect(mockBaseStrategy.resourceResolver.createResourceGraphForInstance).toHaveBeenCalledWith(
         spec
@@ -251,16 +259,16 @@ describe('AlchemyDeploymentStrategy', () => {
         undefined, // statusBuilder
         undefined, // resourceKeys
         factoryOptions,
-        mockAlchemyScope as any,
+        mockAlchemyScope as unknown as Scope,
         incompleteBaseStrategy
       );
 
       const spec = { name: 'test-app', replicas: 1 };
 
-      const resourceGraph = (incompleteStrategy as any).createResourceGraphForInstance(
+      const resourceGraph = strategyInternals(incompleteStrategy).createResourceGraphForInstance(
         spec,
         'test-instance'
-      );
+      ) as Record<string, unknown>;
 
       // Should return empty resource graph as fallback
       expect(resourceGraph.name).toBe('test-instance');
@@ -270,7 +278,7 @@ describe('AlchemyDeploymentStrategy', () => {
 
   describe('extractKubeConfigOptions', () => {
     it('should extract serializable kubeconfig options', () => {
-      const options = (strategy as any).extractKubeConfigOptions();
+      const options = strategyInternals(strategy).extractKubeConfigOptions();
       expect(options).toBeDefined();
       expect(typeof options).toBe('object');
     });
@@ -283,12 +291,12 @@ describe('AlchemyDeploymentStrategy', () => {
         testSchema,
         undefined, // statusBuilder
         undefined, // resourceKeys
-        { ...factoryOptions, kubeConfig: undefined as any },
+        (({ kubeConfig: _kc, ...rest }) => rest)(factoryOptions),
         mockAlchemyScope,
         mockBaseStrategy
       );
 
-      const options = (strategyWithoutKubeConfig as any).extractKubeConfigOptions();
+      const options = strategyInternals(strategyWithoutKubeConfig).extractKubeConfigOptions();
       expect(options).toEqual({});
     });
   });
@@ -306,14 +314,14 @@ describe('AlchemyDeploymentStrategy', () => {
         undefined, // statusBuilder
         undefined, // resourceKeys
         factoryOptions,
-        invalidScope as any,
+        invalidScope as unknown as Scope,
         mockBaseStrategy
       );
 
       const spec = { name: 'test-app', replicas: 1 };
 
       await expect(
-        (invalidStrategy as any).executeDeployment(spec, 'test-instance')
+        strategyInternals(invalidStrategy).executeDeployment(spec, 'test-instance')
       ).rejects.toThrow();
     });
 
@@ -325,9 +333,9 @@ describe('AlchemyDeploymentStrategy', () => {
 
       const spec = { name: 'test-app', replicas: 1 };
 
-      await expect((strategy as any).executeDeployment(spec, 'test-instance')).rejects.toThrow(
-        'Resource graph creation failed'
-      );
+      await expect(
+        strategyInternals(strategy).executeDeployment(spec, 'test-instance')
+      ).rejects.toThrow('Resource graph creation failed');
     });
 
     it('should collect individual resource deployment errors', async () => {
@@ -351,7 +359,7 @@ describe('AlchemyDeploymentStrategy', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       try {
-        const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+        const result = await strategyInternals(strategy).executeDeployment(spec, 'test-instance');
         // If it succeeds, check that it handled potential errors gracefully
         expect(result).toBeDefined();
       } catch (error) {
@@ -369,9 +377,11 @@ describe('AlchemyDeploymentStrategy', () => {
     });
 
     it('should preserve factory options from base strategy', () => {
-      expect((strategy as any).factoryOptions).toBe(factoryOptions);
-      expect((strategy as any).factoryOptions.waitForReady).toBe(true);
-      expect((strategy as any).factoryOptions.timeout).toBe(30000);
+      expect(strategyInternals(strategy).factoryOptions).toBe(factoryOptions);
+      expect((strategyInternals(strategy).factoryOptions as FactoryOptions).waitForReady).toBe(
+        true
+      );
+      expect((strategyInternals(strategy).factoryOptions as FactoryOptions).timeout).toBe(30000);
     });
   });
 
@@ -402,8 +412,8 @@ describe('AlchemyDeploymentStrategy', () => {
 
       // Both should be able to use the same strategy
       expect(() => {
-        (strategy as any).createResourceGraphForInstance(spec1, 'instance1');
-        (strategy as any).createResourceGraphForInstance(spec2, 'instance2');
+        strategyInternals(strategy).createResourceGraphForInstance(spec1, 'instance1');
+        strategyInternals(strategy).createResourceGraphForInstance(spec2, 'instance2');
       }).not.toThrow();
     });
   });
@@ -419,7 +429,10 @@ describe('AlchemyDeploymentStrategy', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       try {
-        const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+        const result = (await strategyInternals(strategy).executeDeployment(
+          spec,
+          'test-instance'
+        )) as Record<string, unknown>;
 
         // Check result structure even if alchemy import fails
         expect(result).toBeDefined();
@@ -443,7 +456,10 @@ describe('AlchemyDeploymentStrategy', () => {
       const spec = { name: 'test-app', replicas: 1 };
 
       try {
-        const result = await (strategy as any).executeDeployment(spec, 'test-instance');
+        const result = (await strategyInternals(strategy).executeDeployment(
+          spec,
+          'test-instance'
+        )) as Record<string, unknown>;
 
         if (result) {
           // Should include alchemy-specific deployment ID format

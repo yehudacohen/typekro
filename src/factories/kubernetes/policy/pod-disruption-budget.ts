@@ -1,4 +1,5 @@
 import type { V1PodDisruptionBudget } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -6,7 +7,7 @@ export type V1PdbSpec = NonNullable<V1PodDisruptionBudget['spec']>;
 export type V1PdbStatus = NonNullable<V1PodDisruptionBudget['status']>;
 
 export function podDisruptionBudget(
-  resource: V1PodDisruptionBudget
+  resource: V1PodDisruptionBudget & { id?: string }
 ): Enhanced<V1PdbSpec, V1PdbStatus> {
   return createResource({
     ...resource,
@@ -50,12 +51,12 @@ export function podDisruptionBudget(
           details: { currentHealthy, desiredHealthy, expectedPods },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating PodDisruptionBudget readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating PodDisruptionBudget readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

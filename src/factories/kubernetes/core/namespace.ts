@@ -1,4 +1,5 @@
 import type { V1Namespace } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
@@ -9,6 +10,16 @@ export interface NamespaceConfig extends V1Namespace {
   id?: string;
 }
 
+/**
+ * Creates a Kubernetes Namespace resource with phase-based readiness evaluation.
+ *
+ * @param resource - The Namespace configuration conforming to V1Namespace with an optional `id` field.
+ * @returns An Enhanced Namespace resource that is ready when the namespace phase is Active.
+ * @example
+ * const ns = namespace({
+ *   metadata: { name: 'my-namespace' },
+ * });
+ */
 export function namespace(resource: NamespaceConfig): Enhanced<V1NamespaceSpec, V1NamespaceStatus> {
   return createResource({
     ...resource,
@@ -47,12 +58,12 @@ export function namespace(resource: NamespaceConfig): Enhanced<V1NamespaceSpec, 
           details: { phase },
         };
       }
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating namespace readiness: ${error}`,
-        details: { error: String(error) },
+        message: `Error evaluating namespace readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message },
       };
     }
   });

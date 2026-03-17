@@ -2,28 +2,67 @@
  * ResourceGraphDefinition factory with readiness evaluation
  */
 
+import { ensureError } from '../../core/errors.js';
 import { getComponentLogger } from '../../core/logging/index.js';
-import type { Enhanced, ResourceStatus } from '../../core/types/index.js';
+import type {
+  Enhanced,
+  KubernetesCondition,
+  ResourceStatus,
+  RGDManifest,
+} from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 
 // Logger for RGD readiness evaluation
 const rgdLogger = getComponentLogger('rgd-readiness');
 
 /**
+ * Input type for the {@link resourceGraphDefinition} factory.
+ *
+ * Accepts any object with optional `metadata` and `spec` fields.
+ * `apiVersion` and `kind` are always overwritten to `kro.run/v1alpha1`
+ * / `ResourceGraphDefinition`, so callers may omit them.
+ *
+ * This is intentionally broader than `RGDManifest` to accommodate
+ * call sites that pass inline objects with concrete schema types
+ * (like `KroSimpleSchema`), which fail index-signature assignability
+ * checks under `exactOptionalPropertyTypes`.
+ */
+interface ResourceGraphDefinitionInput {
+  apiVersion?: string;
+  kind?: string;
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    [key: string]: unknown;
+  };
+  spec?: Record<string, unknown>;
+  status?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
  * ResourceGraphDefinition factory with readiness evaluation
  *
  * Creates an Enhanced ResourceGraphDefinition with Kro-specific readiness logic
  * that checks the RGD status phase and conditions for 'ready' state.
+ *
+ * @param rgd - An RGD manifest (all fields optional; `apiVersion` and `kind` are
+ *              forced to `kro.run/v1alpha1` / `ResourceGraphDefinition`).
  */
-export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
+export function resourceGraphDefinition(
+  rgd: ResourceGraphDefinitionInput
+): Enhanced<Record<string, unknown>, Record<string, unknown>> {
   // For RGDs, we need to preserve the original structure since they don't need magic proxy functionality
   const rgdResource = {
     ...rgd,
-    apiVersion: 'kro.run/v1alpha1',
-    kind: 'ResourceGraphDefinition',
+    apiVersion: 'kro.run/v1alpha1' as const,
+    kind: 'ResourceGraphDefinition' as const,
+    metadata: rgd.metadata ?? { name: 'unnamed-rgd' },
   };
 
-  return createResource(rgdResource).withReadinessEvaluator((liveRGD: any): ResourceStatus => {
+  return createResource<Record<string, unknown>, Record<string, unknown>>(
+    rgdResource
+  ).withReadinessEvaluator((liveRGD: RGDManifest): ResourceStatus => {
     // This robust readiness check ensures the Kro controller has fully processed the RGD.
     try {
       // Defensive checks for the live resource
@@ -58,7 +97,9 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
 
       // 2. Check for explicit failure conditions first for faster feedback.
       const conditions = Array.isArray(status.conditions) ? status.conditions : [];
-      const failedCondition = conditions.find((c: any) => c && c.status === 'False');
+      const failedCondition = conditions.find(
+        (c: KubernetesCondition) => c && c.status === 'False'
+      );
       if (status.state === 'failed' || failedCondition) {
         return {
           ready: false,
@@ -71,17 +112,35 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
       // 3. Check if RGD is in Active state with proper conditions
       const isStateReady = status.state === 'Active';
 
-      // Check for key readiness conditions (be defensive about conditions structure)
-      const reconcilerReady = conditions.find(
-        (c: any) => c && c.type === 'ReconcilerReady' && c.status === 'True'
+      // Check for key readiness conditions (be defensive about conditions structure).
+      // Support both Kro v0.3.x condition names (ReconcilerReady, GraphVerified,
+      // CustomResourceDefinitionSynced) and v0.8.x names (Ready, ControllerReady,
+      // KindReady, ResourceGraphAccepted).
+      const hasV08Conditions = conditions.some(
+        (c: KubernetesCondition) => c?.type === 'Ready' || c?.type === 'ControllerReady'
       );
-      const graphVerified = conditions.find(
-        (c: any) => c && c.type === 'GraphVerified' && c.status === 'True'
-      );
-      const crdSynced = conditions.find(
-        (c: any) => c && c.type === 'CustomResourceDefinitionSynced' && c.status === 'True'
-      );
-      const allConditionsReady = reconcilerReady && graphVerified && crdSynced;
+
+      let allConditionsReady: boolean;
+      if (hasV08Conditions) {
+        // Kro v0.8.x: check Ready condition
+        const readyCondition = conditions.find(
+          (c: KubernetesCondition) => c?.type === 'Ready' && c?.status === 'True'
+        );
+        allConditionsReady = !!readyCondition;
+      } else {
+        // Kro v0.3.x: check legacy conditions
+        const reconcilerReady = conditions.find(
+          (c: KubernetesCondition) => c?.type === 'ReconcilerReady' && c?.status === 'True'
+        );
+        const graphVerified = conditions.find(
+          (c: KubernetesCondition) => c?.type === 'GraphVerified' && c?.status === 'True'
+        );
+        const crdSynced = conditions.find(
+          (c: KubernetesCondition) =>
+            c?.type === 'CustomResourceDefinitionSynced' && c?.status === 'True'
+        );
+        allConditionsReady = !!(reconcilerReady && graphVerified && crdSynced);
+      }
 
       if (isStateReady && allConditionsReady) {
         return {
@@ -97,14 +156,14 @@ export function resourceGraphDefinition(rgd: any): Enhanced<any, any> {
         message: `Waiting for RGD to become active (current state: ${status.state || 'unknown'})`,
         details: { state: status.state, conditions },
       };
-    } catch (error) {
+    } catch (error: unknown) {
       // Log the error for debugging but don't let it crash the readiness evaluation
-      rgdLogger.error('Unexpected error in readiness evaluator', error as Error, { liveRGD });
+      rgdLogger.error('Unexpected error in readiness evaluator', ensureError(error), { liveRGD });
       return {
         ready: false,
         reason: 'EvaluationError',
-        message: `Error evaluating ResourceGraphDefinition readiness: ${error}`,
-        details: { error: String(error), liveRGD: liveRGD },
+        message: `Error evaluating ResourceGraphDefinition readiness: ${ensureError(error).message}`,
+        details: { error: ensureError(error).message, liveRGD: liveRGD },
       };
     }
   });

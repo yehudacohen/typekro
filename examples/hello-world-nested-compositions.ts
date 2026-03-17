@@ -9,16 +9,39 @@
  * 3. Webapp (direct mode, 2 instances) - references infrastructure status
  */
 
-import { type, type Type } from 'arktype';
+import { type Type, type } from 'arktype';
+import { namespace } from '../src/factories/kubernetes/core/namespace.js';
 import {
-  kubernetesComposition,
-  typeKroRuntimeBootstrap,
+  apisix,
   certManager,
   externalDns,
-  apisix,
+  kubernetesComposition,
   simple,
+  typeKroRuntimeBootstrap,
 } from '../src/index.js';
-import { namespace } from '../src/factories/kubernetes/core/namespace.js';
+
+// Global error handlers to suppress TimeoutError and AbortError from watch connections
+// These errors are expected during cleanup and should not cause the process to hang
+process.on('unhandledRejection', (reason: unknown) => {
+  const errorName = (reason as Error)?.name;
+  if (errorName === 'TimeoutError' || errorName === 'AbortError') {
+    // Suppress these errors - they're expected during cleanup
+    console.log(`🔇 Suppressed unhandled ${errorName} (expected during cleanup)`);
+    return;
+  }
+  console.error('Unhandled rejection:', reason);
+});
+
+process.on('uncaughtException', (error: Error) => {
+  const errorName = error?.name;
+  if (errorName === 'TimeoutError' || errorName === 'AbortError') {
+    // Suppress these errors - they're expected during cleanup
+    console.log(`🔇 Suppressed uncaught ${errorName} (expected during cleanup)`);
+    return;
+  }
+  console.error('Uncaught exception:', error);
+  process.exit(1);
+});
 
 // Get AWS credentials at module load time (before composition execution)
 const AWS_CREDENTIALS = (() => {
@@ -82,7 +105,7 @@ export const demoBootstrap = kubernetesComposition(
     const kroBootstrap = typeKroRuntimeBootstrap({
       namespace: spec.namespace,
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.3.0',
+      kroVersion: '0.8.5',
     });
 
     // Use pre-loaded AWS credentials
@@ -131,8 +154,6 @@ export const demoBootstrap = kubernetesComposition(
 type InfrastructureSpecType = {
   domain: string;
   email: string;
-  awsAccessKeyId: string;
-  awsSecretAccessKey: string;
 };
 
 type InfrastructureStatusType = {
@@ -151,8 +172,6 @@ type InfrastructureStatusType = {
 const InfrastructureSpec: Type<InfrastructureSpecType> = type({
   domain: 'string',
   email: 'string',
-  awsAccessKeyId: 'string',
-  awsSecretAccessKey: 'string',
 });
 
 const InfrastructureStatus: Type<InfrastructureStatusType> = type({
@@ -177,19 +196,19 @@ const infrastructureStack = kubernetesComposition(
     status: InfrastructureStatus,
   },
   (spec) => {
-    // Debug: Log AWS credentials to verify they're being passed correctly
-    console.log('🔍 Infrastructure AWS credentials:', {
-      accessKeyId: `${spec.awsAccessKeyId?.substring(0, 8)}...`,
-      secretAccessKey: `${spec.awsSecretAccessKey?.substring(0, 8)}...`,
-    });
+    // Use pre-loaded AWS credentials (loaded at module initialization time)
+    // NOTE: AWS credentials cannot be passed through spec because spec values are
+    // KubernetesRef proxies at runtime, not actual string values. The composition
+    // function runs at "composition time" where spec values are references, not data.
+    const awsCredentials = AWS_CREDENTIALS;
 
     // Create AWS credentials secret for external-dns
     simple.Secret({
       name: 'aws-route53-credentials',
       namespace: 'external-dns',
       stringData: {
-        'access-key-id': spec.awsAccessKeyId,
-        'secret-access-key': spec.awsSecretAccessKey,
+        'access-key-id': awsCredentials.accessKeyId,
+        'secret-access-key': awsCredentials.secretAccessKey,
       },
       id: 'awsCredentialsExternalDnsInfra',
     });
@@ -198,7 +217,7 @@ const infrastructureStack = kubernetesComposition(
     const certManagerInstance = certManager.certManagerBootstrap({
       name: 'cert-manager',
       namespace: 'cert-manager',
-      version: '1.13.3',
+      version: '1.19.3',
       installCRDs: true,
       controller: {
         extraArgs: [
@@ -220,7 +239,6 @@ const infrastructureStack = kubernetesComposition(
     const apisixInstance = apisix.apisixBootstrap({
       name: 'apisix',
       namespace: 'apisix-system',
-      version: '2.8.0',
       ingressController: {
         enabled: true,
         config: {
@@ -412,9 +430,6 @@ async function main() {
   console.log('🚀 TypeKro Nested Compositions Demo');
   console.log('====================================');
 
-  // Use pre-loaded AWS credentials
-  const awsCredentials = AWS_CREDENTIALS;
-
   // Step 1: Deploy Demo Bootstrap (TypeKro Runtime + AWS Credentials)
   console.log('📦 Step 1: Deploying Demo Bootstrap...');
   const bootstrap = demoBootstrap;
@@ -441,8 +456,17 @@ async function main() {
   const infraFactory = infrastructureStack.factory('direct', {
     namespace: 'default',
     skipTLSVerify: true,
-    timeout: 300000, // 5 minutes for infrastructure deployment
+    timeout: 600000, // 10 minutes for infrastructure deployment (cert-manager webhook takes 2-3 min to start)
     waitForReady: true, // Wait for cert-manager and external-dns to be ready
+    retryPolicy: {
+      // Generous retry policy for infrastructure deployment:
+      // cert-manager webhook pods need 30-60s to start after HelmRelease is "ready",
+      // so ClusterIssuer creation will fail with "no endpoints available" until then.
+      maxRetries: 15,
+      initialDelay: 3000,
+      backoffMultiplier: 1.5,
+      maxDelay: 30000,
+    },
     eventMonitoring: {
       enabled: true,
       eventTypes: ['Warning', 'Error', 'Normal'],
@@ -456,8 +480,6 @@ async function main() {
   const infrastructure = await infraFactory.deploy({
     domain: 'funwiththe.cloud',
     email: 'admin@funwiththe.cloud',
-    awsAccessKeyId: awsCredentials.accessKeyId,
-    awsSecretAccessKey: awsCredentials.secretAccessKey,
   });
   console.log('✅ Infrastructure deployed with nested cert-manager and external-dns');
 
@@ -466,7 +488,7 @@ async function main() {
   const webappFactory = webappStack.factory('direct', {
     namespace: 'default',
     skipTLSVerify: true,
-    timeout: 300000, // 5 minutes timeout for webapp deployment (certificates can take 2-5 minutes)
+    timeout: 600000, // 10 minutes timeout for webapp deployment (DNS-01 certificates can take 2-5 minutes)
     waitForReady: true, // Wait for certificates to be ready
     eventMonitoring: {
       enabled: true,
@@ -562,9 +584,7 @@ async function main() {
 
 if (import.meta.main) {
   await main();
-  
-  console.log('🔍 Testing if process exits naturally after all deployments...');
-  console.log('🔍 EventMonitor should be disabled due to initialization failure');
-  
-  // Wait to see if process exits naturally
+
+  console.log('🔍 Demo complete. Exiting...');
+  process.exit(0);
 }

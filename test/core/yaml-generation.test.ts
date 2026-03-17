@@ -2,7 +2,26 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as yaml from 'js-yaml';
-import { toResourceGraph, simple } from '../../src/index';
+import { simple, toResourceGraph } from '../../src/index';
+
+/** Loose type for parsed Kro YAML for test assertions */
+interface ParsedKroYaml {
+  apiVersion: string;
+  kind: string;
+  metadata: { name: string; namespace: string };
+  spec: {
+    schema: unknown;
+    resources: Array<{
+      id: string;
+      template: Record<string, unknown> & {
+        apiVersion?: string;
+        kind?: string;
+        metadata?: Record<string, unknown>;
+        spec?: Record<string, unknown>;
+      };
+    }>;
+  };
+}
 
 describe('YAML Generation Integration Test', () => {
   it('should generate valid Kro YAML for a comprehensive application stack', async () => {
@@ -159,9 +178,9 @@ describe('YAML Generation Integration Test', () => {
 
     // Validate that the YAML is well-formed
     console.log('✅ Validating generated YAML...');
-    let parsedYaml: any;
+    let parsedYaml: ParsedKroYaml;
     try {
-      parsedYaml = yaml.load(kroYaml);
+      parsedYaml = yaml.load(kroYaml) as ParsedKroYaml;
     } catch (error) {
       console.error('❌ Generated YAML is not valid:', error);
       throw error;
@@ -179,7 +198,7 @@ describe('YAML Generation Integration Test', () => {
     expect(Array.isArray(parsedYaml.spec.resources)).toBe(true);
 
     // Validate that all resources are included
-    const resourceIds = parsedYaml.spec.resources.map((r: any) => r.id);
+    const resourceIds = parsedYaml.spec.resources.map((r) => r.id);
     expect(resourceIds).toContain('configmapWebappConfig');
     expect(resourceIds).toContain('webappSecrets');
     expect(resourceIds).toContain('persistentvolumeclaimPostgresStorage');
@@ -194,18 +213,21 @@ describe('YAML Generation Integration Test', () => {
     console.log(`✅ All ${parsedYaml.spec.resources.length} resources included in the graph`);
 
     // Validate basic resource structure
-    const webappResource = (parsedYaml as any).spec.resources.find(
-      (r: any) => r.id === 'deploymentWebapp'
-    );
+    const webappResource = parsedYaml.spec.resources.find((r) => r.id === 'deploymentWebapp')!;
     expect(webappResource).toBeDefined();
     expect(webappResource.template.apiVersion).toBe('apps/v1');
     expect(webappResource.template.kind).toBe('Deployment');
-    expect(webappResource.template.metadata.name).toBe('webapp');
-    expect(webappResource.template.metadata.namespace).toBe('production');
+    expect(webappResource.template.metadata!.name).toBe('webapp');
+    expect(webappResource.template.metadata!.namespace).toBe('production');
 
-    const webappContainer = webappResource.template.spec.template.spec.containers[0];
+    const templateSpec = webappResource.template.spec as Record<string, unknown>;
+    const podSpec = (templateSpec.template as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    const webappContainer = (podSpec.containers as Record<string, unknown>[])[0]!;
     expect(webappContainer.image).toBe('nginx:alpine');
-    expect(webappContainer.ports[0].containerPort).toBe(8080);
+    expect((webappContainer.ports as Record<string, unknown>[])[0]!.containerPort).toBe(8080);
 
     console.log('✅ Resource structure validates correctly');
 
@@ -306,13 +328,13 @@ describe('YAML Generation Integration Test', () => {
     const kroYaml = resourceGraph.toYaml();
 
     // Validate the YAML is well-formed
-    const parsedYaml = yaml.load(kroYaml);
-    expect(parsedYaml).toBeDefined();
-    expect((parsedYaml as any).apiVersion).toBe('kro.run/v1alpha1');
-    expect((parsedYaml as any).kind).toBe('ResourceGraphDefinition');
+    const parsed = yaml.load(kroYaml) as ParsedKroYaml;
+    expect(parsed).toBeDefined();
+    expect(parsed.apiVersion).toBe('kro.run/v1alpha1');
+    expect(parsed.kind).toBe('ResourceGraphDefinition');
 
     // Validate all resources are present
-    const resourceIds = (parsedYaml as any).spec.resources.map((r: any) => r.id);
+    const resourceIds = parsed.spec.resources.map((r) => r.id);
     expect(resourceIds).toContain('configmapAppConfig');
     expect(resourceIds).toContain('appSecrets');
     expect(resourceIds).toContain('deploymentDatabase');
@@ -320,12 +342,15 @@ describe('YAML Generation Integration Test', () => {
     expect(resourceIds).toContain('deploymentApplication');
 
     // Find the application deployment and validate structure
-    const appResource = (parsedYaml as any).spec.resources.find(
-      (r: any) => r.id === 'deploymentApplication'
-    );
+    const appResource = parsed.spec.resources.find((r) => r.id === 'deploymentApplication')!;
     expect(appResource).toBeDefined();
     expect(appResource.template.kind).toBe('Deployment');
-    expect(appResource.template.spec.template.spec.containers[0].image).toBe('myapp:latest');
+    const appTemplateSpec = appResource.template.spec as Record<string, unknown>;
+    const appPodSpec = (appTemplateSpec.template as Record<string, unknown>).spec as Record<
+      string,
+      unknown
+    >;
+    expect((appPodSpec.containers as Record<string, unknown>[])[0]!.image).toBe('myapp:latest');
 
     console.log('✅ Multiple resource types handled correctly');
   });

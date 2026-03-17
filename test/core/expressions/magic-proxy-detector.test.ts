@@ -12,7 +12,7 @@ import {
   containsMagicProxyRefs,
   extractMagicProxyRefs,
   analyzeMagicProxyRefSource
-} from '../../../src/core/expressions/magic-proxy-detector.js';
+} from '../../../src/core/expressions/magic-proxy/magic-proxy-detector.js';
 import { KUBERNETES_REF_BRAND } from '../../../src/core/constants/brands.js';
 import type { KubernetesRef } from '../../../src/core/types/index.js';
 

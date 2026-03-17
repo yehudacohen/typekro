@@ -5,7 +5,7 @@
  * for nested composition patterns.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition, simple } from '../../src/index.js';
 
@@ -129,7 +129,7 @@ describe('Callable Composition API', () => {
           return {
             ready: deployment.status.readyReplicas >= 1,
             connectionString: `postgresql://${spec.name}:5432/db`,
-            phase: deployment.status.phase || 'Pending',
+            phase: deployment.status.readyReplicas > 0 ? 'Running' : 'Pending',
           };
         }
       );
@@ -152,9 +152,9 @@ describe('Callable Composition API', () => {
       expect(phaseRef).toBeDefined();
 
       // Should have the nested composition flag for CEL generation
-      expect((readyRef as any).__nestedComposition).toBe(true);
-      expect((connectionRef as any).__nestedComposition).toBe(true);
-      expect((phaseRef as any).__nestedComposition).toBe(true);
+      expect((readyRef as unknown as Record<string, unknown>).__nestedComposition).toBe(true);
+      expect((connectionRef as unknown as Record<string, unknown>).__nestedComposition).toBe(true);
+      expect((phaseRef as unknown as Record<string, unknown>).__nestedComposition).toBe(true);
     });
   });
 
@@ -195,7 +195,7 @@ describe('Callable Composition API', () => {
 
           return {
             ready: deployment.status.readyReplicas >= 1,
-            endpoint: `http://${service.status.clusterIP}:${spec.port}`,
+            endpoint: `http://${service.metadata.name}:${spec.port}`,
           };
         }
       );
@@ -382,7 +382,7 @@ describe('Callable Composition API', () => {
             ready:
               deployment.status.readyReplicas >= 1 &&
               deployment.status.readyReplicas >= spec.threshold,
-            phase: deployment.status.phase || 'Unknown',
+            phase: deployment.status.readyReplicas > 0 ? 'Running' : 'Unknown',
             score: (deployment.status.readyReplicas || 0) * 10,
             metadata: {
               lastUpdated: new Date().toISOString(),

@@ -11,9 +11,9 @@ import type { ConfigMapConfig } from '../types.js';
 
 // ConfigMaps don't have a spec field in Kubernetes - data is at the root level
 // We use an empty spec type to match the base factory
-type ConfigMapSpec = {}
+type ConfigMapSpec = {};
 
-type ConfigMapStatus = {}
+type ConfigMapStatus = {};
 
 /**
  * Creates a simple ConfigMap with sensible defaults
@@ -23,6 +23,17 @@ type ConfigMapStatus = {}
  *
  * @param config - Configuration for the config map
  * @returns Enhanced ConfigMap resource
+ *
+ * @example
+ * ```typescript
+ * const config = ConfigMap({
+ *   name: 'app-config',
+ *   data: {
+ *     DATABASE_HOST: 'postgres.default.svc',
+ *     LOG_LEVEL: 'info',
+ *   },
+ * });
+ * ```
  */
 export function ConfigMap(config: ConfigMapConfig): Enhanced<ConfigMapSpec, ConfigMapStatus> {
   return configMap({

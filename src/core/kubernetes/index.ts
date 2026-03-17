@@ -8,79 +8,72 @@
  * - Error handling utilities for consistent error management
  */
 
-// Client provider and configuration
-export {
-  KubernetesClientProvider,
-  createKubernetesClientProvider,
-  createKubernetesClientProviderWithKubeConfig,
-  getKubernetesClientProvider,
-  getKubernetesApi,
-  getKubeConfig,
-  getCoreV1Api,
-  getAppsV1Api,
-} from './client-provider.js';
-
-export type {
-  KubernetesClientConfig,
-  KubernetesApiConsumer,
-  KubeConfigConsumer,
-  RetryOptions,
-} from './client-provider.js';
-
 // API utilities
 export { KubernetesApi } from './api.js';
-
-// Error handling utilities
 export {
-  getErrorStatusCode,
-  isNotFoundError,
-  isConflictError,
-  isRetryableError,
-  formatKubernetesError,
-  isUnauthorizedError,
-  isForbiddenError,
-  isBadRequestError,
-  isValidationError,
-  getErrorReason,
-  getErrorDetails,
-} from './errors.js';
-
-export type { KubernetesApiError } from './errors.js';
-
-// Type guards
-export {
-  isKubernetesResponse,
-  isKubernetesError,
-  hasStatusCode,
-  isKubernetesResource,
-  hasBody,
-  isKubernetesList,
-  hasResourceVersion,
-} from './type-guards.js';
-
-export type {
-  KubernetesResponse,
-  KubernetesResourceShape,
-} from './type-guards.js';
-
+  createBunCompatibleApiClient,
+  createBunCompatibleApiextensionsV1Api,
+  createBunCompatibleAppsV1Api,
+  createBunCompatibleBatchV1Api,
+  createBunCompatibleCoreV1Api,
+  createBunCompatibleCustomObjectsApi,
+  createBunCompatibleKubernetesObjectApi,
+  createBunCompatibleNetworkingV1Api,
+  createBunCompatibleRbacAuthorizationV1Api,
+  createBunCompatibleStorageV1Api,
+} from './bun-api-client.js';
+export type { HttpTimeoutConfig } from './bun-http-library.js';
 // Bun compatibility utilities
 // These provide workarounds for Bun's fetch TLS issues
 // See: https://github.com/oven-sh/bun/issues/10642
 export {
   BunCompatibleHttpLibrary,
-  isBunRuntime,
   getHttpLibraryForRuntime,
+  isBunRuntime,
 } from './bun-http-library.js';
-
+export type {
+  KubeConfigConsumer,
+  KubernetesApiConsumer,
+  KubernetesClientConfig,
+  RetryOptions,
+} from './client-provider.js';
+// Client provider and configuration
 export {
-  createBunCompatibleApiClient,
-  createBunCompatibleCoreV1Api,
-  createBunCompatibleAppsV1Api,
-  createBunCompatibleCustomObjectsApi,
-  createBunCompatibleBatchV1Api,
-  createBunCompatibleNetworkingV1Api,
-  createBunCompatibleRbacAuthorizationV1Api,
-  createBunCompatibleStorageV1Api,
-  createBunCompatibleApiextensionsV1Api,
-  createBunCompatibleKubernetesObjectApi,
-} from './bun-api-client.js';
+  createKubernetesClientProvider,
+  createKubernetesClientProviderWithKubeConfig,
+  getAppsV1Api,
+  getCoreV1Api,
+  getKubeConfig,
+  getKubernetesApi,
+  getKubernetesClientProvider,
+  KubernetesClientProvider,
+} from './client-provider.js';
+export type { KubernetesApiError } from './errors.js';
+// Error handling utilities
+export {
+  formatKubernetesError,
+  getErrorDetails,
+  getErrorReason,
+  getErrorStatusCode,
+  isBadRequestError,
+  isConflictError,
+  isForbiddenError,
+  isNotFoundError,
+  isRetryableError,
+  isUnauthorizedError,
+  isValidationError,
+} from './errors.js';
+export type {
+  KubernetesResourceShape,
+  KubernetesResponse,
+} from './type-guards.js';
+// Type guards
+export {
+  hasBody,
+  hasResourceVersion,
+  hasStatusCode,
+  isKubernetesError,
+  isKubernetesList,
+  isKubernetesResource,
+  isKubernetesResponse,
+} from './type-guards.js';

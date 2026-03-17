@@ -6,14 +6,27 @@
  */
 
 import type * as k8s from '@kubernetes/client-node';
+import {
+  DEFAULT_DELETE_TIMEOUT,
+  DEFAULT_FAST_POLL_INTERVAL,
+  DEFAULT_POLL_INTERVAL,
+} from '../config/defaults.js';
+import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-import type { DeploymentError, DeploymentEvent, RollbackResult } from '../types/deployment.js';
+import type {
+  DeployedResource,
+  DeploymentError,
+  DeploymentEvent,
+  DeploymentOptions,
+  RollbackResult,
+} from '../types/deployment.js';
 import type {
   Enhanced,
   KubernetesResource,
   KubernetesResourceHeader,
 } from '../types/kubernetes.js';
+import { isNotFoundError } from './k8s-helpers.js';
 
 /**
  * Configuration for rollback operations
@@ -65,25 +78,25 @@ export class ResourceRollbackManager {
           message: `Successfully rolled back ${resource.kind}/${resource.metadata?.name}`,
           timestamp: new Date(),
         });
-      } catch (error) {
+      } catch (error: unknown) {
         const resourceId = this.getResourceIdentifier(resource);
         errors.push({
           resourceId,
           phase: 'rollback' as const,
-          error: error instanceof Error ? error : new Error(String(error)),
+          error: ensureError(error),
           timestamp: new Date(),
         });
 
         this.emitEvent(config, {
           type: 'failed',
           resourceId,
-          message: `Failed to rollback ${resource.kind}/${resource.metadata?.name}: ${error instanceof Error ? error.message : String(error)}`,
+          message: `Failed to rollback ${resource.kind}/${resource.metadata?.name}: ${ensureError(error).message}`,
           timestamp: new Date(),
-          error: error instanceof Error ? error : new Error(String(error)),
+          error: ensureError(error),
         });
 
         // Continue with remaining resources even if one fails
-        this.logger.warn('Rollback error', error as Error);
+        this.logger.error('Rollback error', ensureError(error));
       }
     }
 
@@ -118,8 +131,10 @@ export class ResourceRollbackManager {
     const namespace = this.extractStringValue(resource.metadata?.namespace);
 
     if (!name) {
-      throw new Error(
-        `Resource name is required for deletion: ${this.getResourceIdentifier(resource)}`
+      throw new TypeKroError(
+        `Resource name is required for deletion: ${this.getResourceIdentifier(resource)}`,
+        'MISSING_RESOURCE_NAME',
+        { resourceIdentifier: this.getResourceIdentifier(resource), operation: 'deletion' }
       );
     }
 
@@ -145,7 +160,7 @@ export class ResourceRollbackManager {
       if (config.timeout !== undefined) {
         await this.waitForResourceDeletion(resource, config.timeout);
       }
-    } catch (error) {
+    } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; message?: string };
 
       // If resource is already gone (404), consider it successful
@@ -158,7 +173,7 @@ export class ResourceRollbackManager {
         try {
           await this.forceDeleteResource(resource);
           return;
-        } catch (_forceError) {
+        } catch (_forceError: unknown) {
           // If force deletion also fails, throw the original error
           throw error;
         }
@@ -176,8 +191,10 @@ export class ResourceRollbackManager {
     const namespace = this.extractStringValue(resource.metadata?.namespace);
 
     if (!name) {
-      throw new Error(
-        `Resource name is required for force deletion: ${this.getResourceIdentifier(resource)}`
+      throw new TypeKroError(
+        `Resource name is required for force deletion: ${this.getResourceIdentifier(resource)}`,
+        'MISSING_RESOURCE_NAME',
+        { resourceIdentifier: this.getResourceIdentifier(resource), operation: 'force-deletion' }
       );
     }
 
@@ -207,7 +224,7 @@ export class ResourceRollbackManager {
     timeout: number
   ): Promise<void> {
     const startTime = Date.now();
-    const pollInterval = 2000; // 2 seconds
+    const pollInterval = DEFAULT_POLL_INTERVAL;
 
     while (Date.now() - startTime < timeout) {
       try {
@@ -215,13 +232,23 @@ export class ResourceRollbackManager {
         const namespace = this.extractStringValue(resource.metadata?.namespace);
 
         if (!name) {
-          throw new Error(
-            `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`
+          throw new TypeKroError(
+            `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`,
+            'MISSING_RESOURCE_NAME',
+            {
+              resourceIdentifier: this.getResourceIdentifier(resource),
+              operation: 'deletion-check',
+            }
           );
         }
         if (!namespace) {
-          throw new Error(
-            `Resource name is required for deletion check: ${this.getResourceIdentifier(resource)}`
+          throw new TypeKroError(
+            `Resource namespace is required for deletion check: ${this.getResourceIdentifier(resource)}`,
+            'MISSING_RESOURCE_NAMESPACE',
+            {
+              resourceIdentifier: this.getResourceIdentifier(resource),
+              operation: 'deletion-check',
+            }
           );
         }
 
@@ -239,7 +266,7 @@ export class ResourceRollbackManager {
 
         // Resource still exists, wait and try again
         await new Promise((resolve) => setTimeout(resolve, pollInterval));
-      } catch (error) {
+      } catch (error: unknown) {
         const k8sError = error as { statusCode?: number };
         if (k8sError.statusCode === 404) {
           // Resource is gone, deletion successful
@@ -250,8 +277,12 @@ export class ResourceRollbackManager {
       }
     }
 
-    throw new Error(
-      `Timeout waiting for resource deletion: ${this.getResourceIdentifier(resource)}`
+    throw new DeploymentTimeoutError(
+      `Timeout waiting for resource deletion: ${this.getResourceIdentifier(resource)}`,
+      resource.kind,
+      this.extractStringValue(resource.metadata?.name) || 'unknown',
+      timeout,
+      'deletion'
     );
   }
 
@@ -278,11 +309,139 @@ export class ResourceRollbackManager {
   }
 
   /**
-   * Emit an event if callback is provided
+   * Rollback deployed resources by deleting them in reverse order.
+   * Skips resources that failed to deploy. Used by the deployment engine
+   * for rollback-on-failure during level-based deployment.
+   */
+  async rollbackDeployedResources(
+    deployedResources: DeployedResource[],
+    options: DeploymentOptions
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+    this.emitDeploymentEvent(options, {
+      type: 'rollback',
+      message: 'Starting rollback of deployed resources',
+      timestamp: new Date(),
+    });
+
+    const rolledBackResources: string[] = [];
+    const errors: DeploymentError[] = [];
+
+    // Rollback in reverse order
+    const reversedResources = [...deployedResources].reverse();
+
+    for (const resource of reversedResources) {
+      // Only try to rollback resources that were actually deployed (not failed)
+      if (resource.status === 'failed') {
+        continue; // Skip resources that failed to deploy
+      }
+
+      try {
+        await this.k8sApi.delete({
+          apiVersion: resource.manifest.apiVersion || '',
+          kind: resource.kind,
+          metadata: {
+            name: resource.name,
+            namespace: resource.namespace,
+          },
+        } as k8s.KubernetesObject);
+
+        rolledBackResources.push(`${resource.kind}/${resource.name}`);
+      } catch (error: unknown) {
+        // Log and collect errors for individual resource deletion failures
+        this.logger.warn('Failed to delete resource during rollback', {
+          error: ensureError(error),
+          resourceId: resource.id,
+          kind: resource.kind,
+          name: resource.name,
+        });
+
+        errors.push({
+          resourceId: resource.id,
+          phase: 'rollback',
+          error: ensureError(error),
+          timestamp: new Date(),
+        });
+      }
+    }
+
+    return { rolledBackResources, errors };
+  }
+
+  /**
+   * Delete a single deployed resource from the cluster and wait for deletion to complete.
+   */
+  async deleteDeployedResource(resource: DeployedResource): Promise<void> {
+    const deleteLogger = this.logger.child({
+      resourceId: resource.id,
+      kind: resource.kind,
+      name: resource.name,
+    });
+
+    try {
+      await this.k8sApi.delete({
+        apiVersion: resource.manifest.apiVersion || '',
+        kind: resource.kind,
+        metadata: {
+          name: resource.name,
+          namespace: resource.namespace,
+        },
+      } as k8s.KubernetesObject);
+
+      // Wait for resource to be deleted
+      const timeout = DEFAULT_DELETE_TIMEOUT;
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < timeout) {
+        try {
+          await this.k8sApi.read({
+            apiVersion: resource.manifest.apiVersion || '',
+            kind: resource.kind,
+            metadata: {
+              name: resource.name,
+              namespace: resource.namespace,
+            },
+          });
+
+          // Resource still exists, wait and try again
+          await new Promise((resolve) => setTimeout(resolve, DEFAULT_FAST_POLL_INTERVAL));
+        } catch (error: unknown) {
+          // Resource not found, deletion successful
+          if (isNotFoundError(error)) {
+            deleteLogger.debug('Resource successfully deleted');
+            return;
+          }
+          throw error;
+        }
+      }
+
+      throw new DeploymentTimeoutError(
+        `Timeout waiting for resource ${resource.kind}/${resource.name} to be deleted`,
+        resource.kind,
+        resource.name,
+        timeout,
+        'deletion'
+      );
+    } catch (error: unknown) {
+      deleteLogger.error('Failed to delete resource', ensureError(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Emit an event if callback is provided (for RollbackConfig)
    */
   private emitEvent(config: RollbackConfig, event: DeploymentEvent): void {
     if (config.emitEvent) {
       config.emitEvent(event);
+    }
+  }
+
+  /**
+   * Emit an event if progressCallback is provided (for DeploymentOptions)
+   */
+  private emitDeploymentEvent(options: DeploymentOptions, event: DeploymentEvent): void {
+    if (options.progressCallback) {
+      options.progressCallback(event);
     }
   }
 }

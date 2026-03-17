@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
 
 /**
  * Complete Hello World Example with TypeKro
@@ -21,8 +20,8 @@
  */
 
 import { type } from 'arktype';
-import { kubernetesComposition, simple, certManager, externalDns } from '../src/index.js';
-import { typeKroRuntimeBootstrap } from '../src/core/composition/typekro-runtime/index.js';
+import { typeKroRuntimeBootstrap } from '../src/compositions/typekro-runtime/index.js';
+import { certManager, externalDns, kubernetesComposition, simple } from '../src/index.js';
 
 // Configuration - Update these for your environment
 const CONFIG = {
@@ -151,8 +150,8 @@ const webappComposition = kubernetesComposition(
     // Return status expressions using actual resource status
     return {
       deploymentReady: deployment.status.readyReplicas >= spec.replicas,
-      serviceReady: service.status.clusterIP !== undefined,
-      ingressReady: ingress.status.loadBalancer?.ingress?.length > 0 || false,
+      serviceReady: service.spec.clusterIP !== undefined,
+      ingressReady: (ingress.status.loadBalancer?.ingress?.length ?? 0) > 0,
       certificateReady:
         certificate.status?.conditions?.some(
           (c: any) => c.type === 'Ready' && c.status === 'True'
@@ -183,10 +182,12 @@ async function deployCompleteStack() {
   try {
     // Step 1: Bootstrap TypeKro Runtime (Direct Mode)
     console.log('🚀 Step 1: Bootstrapping TypeKro Runtime...');
-    const runtime = await typeKroRuntimeBootstrap({
-      namespace: 'default',
-    }).deploy({
-      namespace: 'default',
+    const runtimeFactory = typeKroRuntimeBootstrap({
+      namespace: 'flux-system',
+      fluxVersion: 'v2.4.0',
+      kroVersion: '0.8.5',
+    }).factory('direct', {
+      namespace: 'flux-system',
       skipTLSVerify: true,
       timeout: 300000,
       waitForReady: true,
@@ -195,9 +196,13 @@ async function deployCompleteStack() {
         eventTypes: ['Warning', 'Error', 'Normal'],
         includeChildResources: true,
       },
-      progressCallback: (event: any) => {
+      progressCallback: (event) => {
         console.log(`📡 Runtime: ${event.message}`);
       },
+    });
+
+    const runtime = await runtimeFactory.deploy({
+      namespace: 'flux-system',
     });
 
     console.log('✅ TypeKro Runtime deployed successfully!');
@@ -224,7 +229,7 @@ async function deployCompleteStack() {
     await certManagerFactory.deploy({
       name: 'cert-manager',
       namespace: 'cert-manager',
-      version: '1.13.3',
+      version: '1.19.3',
       installCRDs: true,
       controller: {
         resources: {
@@ -233,7 +238,6 @@ async function deployCompleteStack() {
         },
       },
       webhook: {
-        enabled: true,
         replicaCount: 1,
       },
       cainjector: {
@@ -364,11 +368,15 @@ async function deployCompleteStack() {
     await new Promise((resolve) => setTimeout(resolve, 120000));
 
     try {
-      const { execSync } = await import('node:child_process');
-      const curlResult = execSync(`curl -s -o /dev/null -w "%{http_code}" https://${FULL_DOMAIN}`, {
-        encoding: 'utf8',
-        timeout: 30000,
-      });
+      const { execFileSync } = await import('node:child_process');
+      const curlResult = execFileSync(
+        'curl',
+        ['-s', '-o', '/dev/null', '-w', '%{http_code}', `https://${FULL_DOMAIN}`],
+        {
+          encoding: 'utf8',
+          timeout: 30000,
+        }
+      );
 
       if (curlResult.trim() === '200') {
         console.log('✅ Webapp is accessible via HTTPS!');

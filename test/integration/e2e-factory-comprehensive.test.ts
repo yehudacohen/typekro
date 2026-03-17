@@ -256,12 +256,11 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         console.log('📝 No stuck instances found or API not available');
       }
 
-      // Also try to clean up any stuck RGDs
+      // Also try to clean up any stuck RGDs (cluster-scoped, not namespaced)
       try {
-        const rgds = await customApi.listNamespacedCustomObject({
+        const rgds = await customApi.listClusterCustomObject({
           group: 'kro.run',
           version: 'v1alpha1',
-          namespace: 'default', // Use default namespace for cleanup
           plural: 'resourcegraphdefinitions',
         });
 
@@ -274,10 +273,9 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
           ) {
             try {
               console.log(`🗑️ Deleting stuck RGD: ${rgd.metadata.name}`);
-              await customApi.deleteNamespacedCustomObject({
+              await customApi.deleteClusterCustomObject({
                 group: 'kro.run',
                 version: 'v1alpha1',
-                namespace: 'default', // Use default namespace for cleanup
                 plural: 'resourcegraphdefinitions',
                 name: rgd.metadata.name,
               });
@@ -313,8 +311,34 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
       }
     }
 
-    // Clean up any leftover test namespaces from this test suite
+    // Clean up RGDs created by this test suite
     if (kc) {
+      const customApi = createCustomObjectsApiClient(kc);
+      const rgdNames = [
+        'kro-e2e-comprehensive-webapp',
+        'kro-alchemy-e2e-comprehensive-webapp',
+        'compat-e2e-comprehensive-webapp',
+        'types-e2e-comprehensive-webapp',
+        'direct-e2e-comprehensive-webapp',
+        'direct-alchemy-e2e-comprehensive-webapp',
+      ];
+      for (const name of rgdNames) {
+        try {
+          await customApi.deleteClusterCustomObject({
+            group: 'kro.run',
+            version: 'v1alpha1',
+            plural: 'resourcegraphdefinitions',
+            name,
+          });
+          console.log(`🗑️ Deleted RGD: ${name}`);
+        } catch (error: unknown) {
+          const err = error as { statusCode?: number; body?: { reason?: string } };
+          if (err.statusCode !== 404 && err.body?.reason !== 'NotFound') {
+            console.warn(`⚠️ Failed to delete RGD ${name}:`, error);
+          }
+        }
+      }
+
       console.log('🧹 Cleaning up any leftover test namespaces...');
       await cleanupTestNamespaces(/^typekro-comprehensive-/, kc);
     }
@@ -324,11 +348,9 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
   });
 
   describe('DirectResourceFactory without Alchemy', () => {
-    it(
-      'should deploy, manage, and cleanup resources directly to Kubernetes',
-      async () => {
-        // Increase timeout for this test as it involves multiple resource operations
-        await withTestNamespace('direct-without-alchemy', async (testNamespace) => {
+    it('should deploy, manage, and cleanup resources directly to Kubernetes', async () => {
+      // Increase timeout for this test as it involves multiple resource operations
+      await withTestNamespace('direct-without-alchemy', async (testNamespace) => {
         console.log('🧪 Testing DirectResourceFactory without alchemy...');
 
         const graph = createTestResourceGraph('direct');
@@ -387,16 +409,25 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         const deploymentName = 'direct-webapp-deployment';
         const serviceName = 'direct-webapp-service';
 
-        const configMap = await k8sApi.readNamespacedConfigMap({ name: configMapName, namespace: testNamespace });
+        const configMap = await k8sApi.readNamespacedConfigMap({
+          name: configMapName,
+          namespace: testNamespace,
+        });
         expect(configMap.data?.MESSAGE).toBe('Hello from E2E test');
         expect(configMap.data?.ENVIRONMENT).toBe('test');
         expect(configMap.data?.REPLICA_COUNT).toBe('2');
 
-        const deployment = await appsApi.readNamespacedDeployment({ name: deploymentName, namespace: testNamespace });
+        const deployment = await appsApi.readNamespacedDeployment({
+          name: deploymentName,
+          namespace: testNamespace,
+        });
         expect(deployment.spec?.replicas).toBe(2);
         expect(deployment.spec?.template.spec?.containers?.[0]?.image).toBe('nginx:alpine');
 
-        const service = await k8sApi.readNamespacedService({ name: serviceName, namespace: testNamespace });
+        const service = await k8sApi.readNamespacedService({
+          name: serviceName,
+          namespace: testNamespace,
+        });
         expect(service.spec?.ports?.[0]?.port).toBe(80);
         expect(service.spec?.selector?.app).toBe('direct-webapp-deployment');
 
@@ -441,149 +472,146 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         }
         console.log('✅ DirectResourceFactory without alchemy test passed!');
       });
-      },
-      120000
-    ); // 2 minute timeout for deployment + cleanup
+    }, 120000); // 2 minute timeout for deployment + cleanup
   });
 
   describe('DirectResourceFactory with Alchemy', () => {
-    it(
-      'should deploy resources through alchemy integration',
-      async () => {
-        await withTestNamespace('direct-with-alchemy', async (testNamespace) => {
-          console.log('🧪 Testing DirectResourceFactory with alchemy...');
+    it('should deploy resources through alchemy integration', async () => {
+      await withTestNamespace('direct-with-alchemy', async (testNamespace) => {
+        console.log('🧪 Testing DirectResourceFactory with alchemy...');
 
-          const graph = createTestResourceGraph('direct-alchemy');
-          const factory = await graph.factory('direct', {
-            namespace: testNamespace,
-            alchemyScope: alchemyScope,
-            waitForReady: true,
-            timeout: 60000,
-            kubeConfig: kc,
+        const graph = createTestResourceGraph('direct-alchemy');
+        const factory = await graph.factory('direct', {
+          namespace: testNamespace,
+          alchemyScope: alchemyScope,
+          waitForReady: true,
+          timeout: 60000,
+          kubeConfig: kc,
+        });
+
+        // Verify factory properties
+        expect(factory.mode).toBe('direct');
+        expect(factory.namespace).toBe(testNamespace);
+        expect(factory.isAlchemyManaged).toBe(true);
+
+        // Deploy instance
+        const spec: WebAppSpec = {
+          name: 'alchemy-direct-app',
+          image: 'nginx:alpine',
+          replicas: 1,
+          environment: 'staging',
+          message: 'Hello from Alchemy DirectResourceFactory!',
+        };
+
+        // Test real alchemy integration within the scope context
+        // All alchemy operations must be inside alchemyScope.run()
+        console.log('🔧 Testing real alchemy integration...');
+
+        await alchemyScope.run(async () => {
+          // Deploy through alchemy - this should work since we're inside the scope
+          console.log('🚀 Deploying through alchemy...');
+          const instance = await factory.deploy(spec);
+          console.log('✅ Alchemy deployment succeeded');
+
+          // Verify the instance was created
+          expect(instance).toBeDefined();
+          expect(instance.spec.name).toBe('alchemy-direct-app');
+
+          // Create some alchemy resources to demonstrate integration
+          const sessionId = `direct-integration-${Date.now()}`;
+
+          // Create configuration files using real File provider
+          const configFile = await File(`test-direct-integration-${sessionId}`, {
+            path: `temp/config/direct-integration-${sessionId}.json`,
+            content: JSON.stringify(
+              {
+                message: 'DirectResourceFactory alchemy integration working!',
+                sessionId: sessionId,
+                timestamp: new Date().toISOString(),
+                factoryType: 'direct',
+              },
+              null,
+              2
+            ),
           });
 
-          // Verify factory properties
-          expect(factory.mode).toBe('direct');
-          expect(factory.namespace).toBe(testNamespace);
-          expect(factory.isAlchemyManaged).toBe(true);
+          // Create application log file
+          const logFile = await File(`app-log-${sessionId}`, {
+            path: `temp/logs/app-${sessionId}.log`,
+            content: `[${new Date().toISOString()}] INFO: DirectResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`,
+          });
 
-          // Deploy instance
-          const spec: WebAppSpec = {
-            name: 'alchemy-direct-app',
-            image: 'nginx:alpine',
-            replicas: 1,
-            environment: 'staging',
-            message: 'Hello from Alchemy DirectResourceFactory!',
+          const testResource = {
+            id: 'test-direct-integration',
+            message: 'DirectResourceFactory alchemy integration working!',
+            createdAt: Date.now(),
+            configFile: configFile,
+            logFile: logFile,
           };
 
-          // Test real alchemy integration within the scope context
-          // All alchemy operations must be inside alchemyScope.run()
-          console.log('🔧 Testing real alchemy integration...');
+          expect(testResource.id).toBe('test-direct-integration');
+          expect(testResource.message).toBe('DirectResourceFactory alchemy integration working!');
+          console.log('✅ Alchemy resource created successfully in DirectResourceFactory test');
 
-          await alchemyScope.run(async () => {
-            // Deploy through alchemy - this should work since we're inside the scope
-            console.log('🚀 Deploying through alchemy...');
-            const instance = await factory.deploy(spec);
-            console.log('✅ Alchemy deployment succeeded');
+          // Validate alchemy state for DirectResourceFactory test using built-in state store
+          const directState = await alchemyScope.state.all();
+          const directResourceIds = Object.keys(directState);
 
-            // Verify the instance was created
-            expect(instance).toBeDefined();
-            expect(instance.spec.name).toBe('alchemy-direct-app');
+          // Verify that our File resources are registered in alchemy state
+          const stateEntries = Object.values(directState) as Record<string, unknown>[];
+          const configFileState = stateEntries.find(
+            (state) =>
+              state.kind === 'fs::File' &&
+              (state.output as Record<string, unknown>)?.path === testResource.configFile.path
+          );
+          const logFileState = stateEntries.find(
+            (state) =>
+              state.kind === 'fs::File' &&
+              (state.output as Record<string, unknown>)?.path === testResource.logFile.path
+          );
 
-            // Create some alchemy resources to demonstrate integration
-            const sessionId = `direct-integration-${Date.now()}`;
+          expect(configFileState).toBeDefined();
+          expect(configFileState?.status).toBe('created');
+          expect((configFileState?.output as Record<string, unknown>)?.content).toContain(
+            'DirectResourceFactory alchemy integration working!'
+          );
 
-            // Create configuration files using real File provider
-            const configFile = await File(`test-direct-integration-${sessionId}`, {
-              path: `temp/config/direct-integration-${sessionId}.json`,
-              content: JSON.stringify(
-                {
-                  message: 'DirectResourceFactory alchemy integration working!',
-                  sessionId: sessionId,
-                  timestamp: new Date().toISOString(),
-                  factoryType: 'direct',
-                },
-                null,
-                2
-              ),
-            });
+          expect(logFileState).toBeDefined();
+          expect(logFileState?.status).toBe('created');
+          expect((logFileState?.output as Record<string, unknown>)?.content).toContain(
+            'DirectResourceFactory test started'
+          );
 
-            // Create application log file
-            const logFile = await File(`app-log-${sessionId}`, {
-              path: `temp/logs/app-${sessionId}.log`,
-              content: `[${new Date().toISOString()}] INFO: DirectResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`,
-            });
-
-            const testResource = {
-              id: 'test-direct-integration',
-              message: 'DirectResourceFactory alchemy integration working!',
-              createdAt: Date.now(),
-              configFile: configFile,
-              logFile: logFile,
-            };
-
-            expect(testResource.id).toBe('test-direct-integration');
-            expect(testResource.message).toBe('DirectResourceFactory alchemy integration working!');
-            console.log('✅ Alchemy resource created successfully in DirectResourceFactory test');
-
-            // Validate alchemy state for DirectResourceFactory test using built-in state store
-            const directState = await alchemyScope.state.all();
-            const directResourceIds = Object.keys(directState);
-
-            // Verify that our File resources are registered in alchemy state
-            const configFileState = Object.values(directState).find(
-              (state: any) =>
-                state.kind === 'fs::File' && state.output?.path === testResource.configFile.path
-            ) as any;
-            const logFileState = Object.values(directState).find(
-              (state: any) =>
-                state.kind === 'fs::File' && state.output?.path === testResource.logFile.path
-            ) as any;
-
-            expect(configFileState).toBeDefined();
-            expect(configFileState?.status).toBe('created');
-            expect(configFileState?.output.content).toContain(
-              'DirectResourceFactory alchemy integration working!'
-            );
-
-            expect(logFileState).toBeDefined();
-            expect(logFileState?.status).toBe('created');
-            expect(logFileState?.output.content).toContain('DirectResourceFactory test started');
-
-            console.log(
-              `✅ DirectResourceFactory alchemy state validation passed - ${directResourceIds.length} resources in state`
-            );
-            console.log(`   - Config file: ${configFileState?.id} (${configFileState?.status})`);
-            console.log(`   - Log file: ${logFileState?.id} (${logFileState?.status})`);
-          });
-
-          // Test that factory is properly configured for alchemy
-          const status = await factory.getStatus();
-          expect(status.mode).toBe('direct');
-          // Health should be healthy after successful deployment
-          expect(['healthy', 'degraded']).toContain(status.health);
-
-          // Cleanup using factory-based resource destruction
-          console.log('🧹 Cleaning up DirectResourceFactory with alchemy...');
-          try {
-            await factory.deleteInstance('alchemy-direct-app');
-            console.log('✅ DirectResourceFactory alchemy cleanup completed');
-          } catch (error) {
-            console.warn('⚠️ DirectResourceFactory alchemy cleanup failed:', error);
-          }
-          console.log('✅ DirectResourceFactory with alchemy test passed!');
+          console.log(
+            `✅ DirectResourceFactory alchemy state validation passed - ${directResourceIds.length} resources in state`
+          );
+          console.log(`   - Config file: ${configFileState?.id} (${configFileState?.status})`);
+          console.log(`   - Log file: ${logFileState?.id} (${logFileState?.status})`);
         });
-      },
-      120000
-    ); // 2 minute timeout for deployment + cleanup
+
+        // Test that factory is properly configured for alchemy
+        const status = await factory.getStatus();
+        expect(status.mode).toBe('direct');
+        // Health should be healthy after successful deployment
+        expect(['healthy', 'degraded']).toContain(status.health);
+
+        // Cleanup using factory-based resource destruction
+        console.log('🧹 Cleaning up DirectResourceFactory with alchemy...');
+        try {
+          await factory.deleteInstance('alchemy-direct-app');
+          console.log('✅ DirectResourceFactory alchemy cleanup completed');
+        } catch (error) {
+          console.warn('⚠️ DirectResourceFactory alchemy cleanup failed:', error);
+        }
+        console.log('✅ DirectResourceFactory with alchemy test passed!');
+      });
+    }, 120000); // 2 minute timeout for deployment + cleanup
   });
 
   describe('KroResourceFactory without Alchemy', () => {
-    it(
-      'should deploy ResourceGraphDefinition and create instances',
-      async () => {
-        // This test involves Kro RGD deployment which can take time
-        await withTestNamespace('kro-without-alchemy', async (testNamespace) => {
+    it('should deploy ResourceGraphDefinition and create instances', async () => {
+      // This test involves Kro RGD deployment which can take time
+      await withTestNamespace('kro-without-alchemy', async (testNamespace) => {
         console.log('🧪 Testing KroResourceFactory without alchemy...');
         console.log('📝 Test namespace:', testNamespace);
 
@@ -672,347 +700,334 @@ describe('Comprehensive E2E Factory Pattern Tests', () => {
         }
         console.log('✅ KroResourceFactory without alchemy test passed!');
       });
-      },
-      120000
-    ); // 2 minute timeout for deployment + cleanup
+    }, 120000); // 2 minute timeout for deployment + cleanup
 
     describe('KroResourceFactory with Alchemy', () => {
-      it(
-        'should deploy RGD through alchemy and create alchemy-managed instances',
-        async () => {
-          await withTestNamespace('kro-with-alchemy', async (testNamespace) => {
-            console.log('🧪 Testing KroResourceFactory with alchemy...');
+      it('should deploy RGD through alchemy and create alchemy-managed instances', async () => {
+        await withTestNamespace('kro-with-alchemy', async (testNamespace) => {
+          console.log('🧪 Testing KroResourceFactory with alchemy...');
 
-            const graph = createTestResourceGraph('kro-alchemy');
-            const factory = await graph.factory('kro', {
-              namespace: testNamespace,
-              alchemyScope: alchemyScope,
-              waitForReady: true,
-              timeout: 60000,
-              kubeConfig: kc,
+          const graph = createTestResourceGraph('kro-alchemy');
+          const factory = await graph.factory('kro', {
+            namespace: testNamespace,
+            alchemyScope: alchemyScope,
+            waitForReady: true,
+            timeout: 60000,
+            kubeConfig: kc,
+          });
+
+          // Verify factory properties
+          expect(factory.mode).toBe('kro');
+          expect(factory.namespace).toBe(testNamespace);
+          expect(factory.isAlchemyManaged).toBe(true);
+          expect(factory.rgdName).toBe('kro-alchemy-e2e-comprehensive-webapp');
+          expect(factory.schema).toBeDefined();
+
+          // Test RGD YAML generation (same as without alchemy)
+          const rgdYaml = factory.toYaml();
+          expect(rgdYaml).toContain('kind: ResourceGraphDefinition');
+          expect(rgdYaml).toContain('name: kro-alchemy-e2e-comprehensive-webapp');
+
+          // Test instance YAML generation
+          const spec: WebAppSpec = {
+            name: 'alchemy-kro-app',
+            image: 'nginx:alpine',
+            replicas: 2,
+            environment: 'production',
+            message: 'Hello from Alchemy KroResourceFactory!',
+          };
+
+          const instanceYaml = factory.toYaml(spec);
+          expect(instanceYaml).toContain('kind: WebApp');
+          expect(instanceYaml).toContain('name: alchemy-kro-app');
+
+          // Test real alchemy integration within the scope context
+          // All alchemy operations must be inside alchemyScope.run()
+          console.log('🔧 Testing real alchemy integration with KroResourceFactory...');
+
+          await alchemyScope.run(async () => {
+            // Deploy through alchemy - this should work since we're inside the scope
+            console.log('🚀 Deploying through alchemy...');
+            try {
+              const deployedInstance = await factory.deploy(spec);
+              console.log('✅ Alchemy Kro deployment succeeded');
+              expect(deployedInstance).toBeDefined();
+            } catch (error) {
+              // If deployment fails, it could be due to:
+              // 1. Kro controller issues (RGD deployment failed)
+              // 2. Alchemy serialization issues with pino logger (Cannot serialize unique symbol)
+              const errorMessage = (error as Error).message;
+              console.log('⚠️ Kro deployment failed:', errorMessage);
+              // Don't fail the test if it's a known issue
+              if (
+                !errorMessage.includes('RGD deployment failed') &&
+                !errorMessage.includes('Cannot serialize unique symbol')
+              ) {
+                throw error;
+              }
+            }
+
+            // Create some alchemy resources to demonstrate integration
+            const sessionId = `kro-integration-${Date.now()}`;
+
+            // Create configuration files using real File provider
+            const kroConfigFile = await File(`test-kro-integration-${sessionId}`, {
+              path: `temp/config/kro-integration-${sessionId}.json`,
+              content: JSON.stringify(
+                {
+                  message: 'KroResourceFactory alchemy integration working!',
+                  sessionId: sessionId,
+                  timestamp: new Date().toISOString(),
+                  factoryType: 'kro',
+                },
+                null,
+                2
+              ),
             });
 
-            // Verify factory properties
-            expect(factory.mode).toBe('kro');
-            expect(factory.namespace).toBe(testNamespace);
-            expect(factory.isAlchemyManaged).toBe(true);
-            expect(factory.rgdName).toBe('kro-alchemy-e2e-comprehensive-webapp');
-            expect(factory.schema).toBeDefined();
+            // Create application log file
+            const kroLogFile = await File(`kro-app-log-${sessionId}`, {
+              path: `temp/logs/kro-app-${sessionId}.log`,
+              content: `[${new Date().toISOString()}] INFO: KroResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`,
+            });
 
-            // Test RGD YAML generation (same as without alchemy)
-            const rgdYaml = factory.toYaml();
-            expect(rgdYaml).toContain('kind: ResourceGraphDefinition');
-            expect(rgdYaml).toContain('name: kro-alchemy-e2e-comprehensive-webapp');
-
-            // Test instance YAML generation
-            const spec: WebAppSpec = {
-              name: 'alchemy-kro-app',
-              image: 'nginx:alpine',
-              replicas: 2,
-              environment: 'production',
-              message: 'Hello from Alchemy KroResourceFactory!',
+            const kroTestResource = {
+              id: 'test-kro-integration',
+              message: 'KroResourceFactory alchemy integration working!',
+              createdAt: Date.now(),
+              configFile: kroConfigFile,
+              logFile: kroLogFile,
             };
 
-            const instanceYaml = factory.toYaml(spec);
-            expect(instanceYaml).toContain('kind: WebApp');
-            expect(instanceYaml).toContain('name: alchemy-kro-app');
+            expect(kroTestResource.id).toBe('test-kro-integration');
+            expect(kroTestResource.message).toBe('KroResourceFactory alchemy integration working!');
+            console.log('✅ Alchemy resource created successfully in KroResourceFactory test');
 
-            // Test real alchemy integration within the scope context
-            // All alchemy operations must be inside alchemyScope.run()
-            console.log('🔧 Testing real alchemy integration with KroResourceFactory...');
+            // Validate alchemy state for KroResourceFactory test using built-in state store
+            const kroState = await alchemyScope.state.all();
+            const kroResourceIds = Object.keys(kroState);
 
-            await alchemyScope.run(async () => {
-              // Deploy through alchemy - this should work since we're inside the scope
-              console.log('🚀 Deploying through alchemy...');
-              try {
-                const deployedInstance = await factory.deploy(spec);
-                console.log('✅ Alchemy Kro deployment succeeded');
-                expect(deployedInstance).toBeDefined();
-              } catch (error) {
-                // If deployment fails, it could be due to:
-                // 1. Kro controller issues (RGD deployment failed)
-                // 2. Alchemy serialization issues with pino logger (Cannot serialize unique symbol)
-                const errorMessage = (error as Error).message;
-                console.log('⚠️ Kro deployment failed:', errorMessage);
-                // Don't fail the test if it's a known issue
-                if (
-                  !errorMessage.includes('RGD deployment failed') &&
-                  !errorMessage.includes('Cannot serialize unique symbol')
-                ) {
-                  throw error;
-                }
-              }
+            // Verify that our File resources are registered in alchemy state
+            const kroStateEntries = Object.values(kroState) as Record<string, unknown>[];
+            const kroConfigFileState = kroStateEntries.find(
+              (state) =>
+                state.kind === 'fs::File' &&
+                (state.output as Record<string, unknown>)?.path === kroTestResource.configFile.path
+            );
+            const kroLogFileState = kroStateEntries.find(
+              (state) =>
+                state.kind === 'fs::File' &&
+                (state.output as Record<string, unknown>)?.path === kroTestResource.logFile.path
+            );
 
-              // Create some alchemy resources to demonstrate integration
-              const sessionId = `kro-integration-${Date.now()}`;
+            expect(kroConfigFileState).toBeDefined();
+            expect(kroConfigFileState?.status).toBe('created');
+            expect((kroConfigFileState?.output as Record<string, unknown>)?.content).toContain(
+              'KroResourceFactory alchemy integration working!'
+            );
 
-              // Create configuration files using real File provider
-              const kroConfigFile = await File(`test-kro-integration-${sessionId}`, {
-                path: `temp/config/kro-integration-${sessionId}.json`,
-                content: JSON.stringify(
-                  {
-                    message: 'KroResourceFactory alchemy integration working!',
-                    sessionId: sessionId,
-                    timestamp: new Date().toISOString(),
-                    factoryType: 'kro',
-                  },
-                  null,
-                  2
-                ),
-              });
+            expect(kroLogFileState).toBeDefined();
+            expect(kroLogFileState?.status).toBe('created');
+            expect((kroLogFileState?.output as Record<string, unknown>)?.content).toContain(
+              'KroResourceFactory test started'
+            );
 
-              // Create application log file
-              const kroLogFile = await File(`kro-app-log-${sessionId}`, {
-                path: `temp/logs/kro-app-${sessionId}.log`,
-                content: `[${new Date().toISOString()}] INFO: KroResourceFactory test started\n[${new Date().toISOString()}] INFO: Alchemy integration active\n[${new Date().toISOString()}] INFO: Session: ${sessionId}\n`,
-              });
-
-              const kroTestResource = {
-                id: 'test-kro-integration',
-                message: 'KroResourceFactory alchemy integration working!',
-                createdAt: Date.now(),
-                configFile: kroConfigFile,
-                logFile: kroLogFile,
-              };
-
-              expect(kroTestResource.id).toBe('test-kro-integration');
-              expect(kroTestResource.message).toBe('KroResourceFactory alchemy integration working!');
-              console.log('✅ Alchemy resource created successfully in KroResourceFactory test');
-
-              // Validate alchemy state for KroResourceFactory test using built-in state store
-              const kroState = await alchemyScope.state.all();
-              const kroResourceIds = Object.keys(kroState);
-
-              // Verify that our File resources are registered in alchemy state
-              const kroConfigFileState = Object.values(kroState).find(
-                (state: any) =>
-                  state.kind === 'fs::File' && state.output?.path === kroTestResource.configFile.path
-              ) as any;
-              const kroLogFileState = Object.values(kroState).find(
-                (state: any) =>
-                  state.kind === 'fs::File' && state.output?.path === kroTestResource.logFile.path
-              ) as any;
-
-              expect(kroConfigFileState).toBeDefined();
-              expect(kroConfigFileState?.status).toBe('created');
-              expect(kroConfigFileState?.output.content).toContain(
-                'KroResourceFactory alchemy integration working!'
-              );
-
-              expect(kroLogFileState).toBeDefined();
-              expect(kroLogFileState?.status).toBe('created');
-              expect(kroLogFileState?.output.content).toContain('KroResourceFactory test started');
-
-              console.log(
-                `✅ KroResourceFactory alchemy state validation passed - ${kroResourceIds.length} resources in state`
-              );
-              console.log(
-                `   - Config file: ${kroConfigFileState?.id} (${kroConfigFileState?.status})`
-              );
-              console.log(`   - Log file: ${kroLogFileState?.id} (${kroLogFileState?.status})`);
-            });
-
-            // Test factory status
-            const status = await factory.getStatus();
-            expect(status.mode).toBe('kro');
-            // Health can be either healthy or degraded depending on deployment success
-            expect(['healthy', 'degraded']).toContain(status.health);
-
-            // Cleanup using factory-based resource destruction
-            console.log('🧹 Cleaning up KroResourceFactory with alchemy...');
-            try {
-              await factory.deleteInstance('alchemy-kro-app');
-              console.log('✅ KroResourceFactory alchemy cleanup completed');
-            } catch (error) {
-              console.warn('⚠️ KroResourceFactory alchemy cleanup failed:', error);
-            }
-            console.log('✅ KroResourceFactory with alchemy test passed!');
+            console.log(
+              `✅ KroResourceFactory alchemy state validation passed - ${kroResourceIds.length} resources in state`
+            );
+            console.log(
+              `   - Config file: ${kroConfigFileState?.id} (${kroConfigFileState?.status})`
+            );
+            console.log(`   - Log file: ${kroLogFileState?.id} (${kroLogFileState?.status})`);
           });
-        },
-        120000
-      ); // 2 minute timeout for deployment + cleanup
+
+          // Test factory status
+          const status = await factory.getStatus();
+          expect(status.mode).toBe('kro');
+          // Health can be either healthy or degraded depending on deployment success
+          expect(['healthy', 'degraded']).toContain(status.health);
+
+          // Cleanup using factory-based resource destruction
+          console.log('🧹 Cleaning up KroResourceFactory with alchemy...');
+          try {
+            await factory.deleteInstance('alchemy-kro-app');
+            console.log('✅ KroResourceFactory alchemy cleanup completed');
+          } catch (error) {
+            console.warn('⚠️ KroResourceFactory alchemy cleanup failed:', error);
+          }
+          console.log('✅ KroResourceFactory with alchemy test passed!');
+        });
+      }, 120000); // 2 minute timeout for deployment + cleanup
     });
 
     describe('Cross-Factory Compatibility', () => {
-      it(
-        'should generate functionally identical resources across factory types',
-        async () => {
-          await withTestNamespace('cross-factory-compat', async (testNamespace) => {
-            console.log('🧪 Testing cross-factory compatibility...');
-            const graph = createTestResourceGraph('compat');
+      it('should generate functionally identical resources across factory types', async () => {
+        await withTestNamespace('cross-factory-compat', async (testNamespace) => {
+          console.log('🧪 Testing cross-factory compatibility...');
+          const graph = createTestResourceGraph('compat');
 
-            // Create all four factory types
-            const directFactory = await graph.factory('direct', {
-              namespace: testNamespace,
-              kubeConfig: kc,
-            });
-            const directAlchemyFactory = await graph.factory('direct', {
-              namespace: testNamespace,
-              alchemyScope: alchemyScope,
-              kubeConfig: kc,
-            });
-            const kroFactory = await graph.factory('kro', {
-              namespace: testNamespace,
-              kubeConfig: kc,
-            });
-            const kroAlchemyFactory = await graph.factory('kro', {
-              namespace: testNamespace,
-              alchemyScope: alchemyScope,
-              kubeConfig: kc,
-            });
-
-            const spec: WebAppSpec = {
-              name: 'compatibility-test',
-              image: 'nginx:alpine',
-              replicas: 1,
-              environment: 'development',
-              message: 'Compatibility test message',
-            };
-
-            // Test YAML generation consistency
-            const directYaml = directFactory.toYaml(spec);
-            const directAlchemyYaml = directAlchemyFactory.toYaml(spec);
-
-            // Direct factories should generate identical YAML regardless of alchemy
-            expect(directYaml).toBe(directAlchemyYaml);
-
-            // Kro factories should generate identical instance YAML
-            const kroInstanceYaml = kroFactory.toYaml(spec);
-            const kroAlchemyInstanceYaml = kroAlchemyFactory.toYaml(spec);
-            expect(kroInstanceYaml).toBe(kroAlchemyInstanceYaml);
-
-            // RGD YAML should be identical
-            const kroRgdYaml = kroFactory.toYaml();
-            const kroAlchemyRgdYaml = kroAlchemyFactory.toYaml();
-            expect(kroRgdYaml).toBe(kroAlchemyRgdYaml);
-
-            // Test factory properties
-            expect(directFactory.mode).toBe('direct');
-            expect(directAlchemyFactory.mode).toBe('direct');
-            expect(kroFactory.mode).toBe('kro');
-            expect(kroAlchemyFactory.mode).toBe('kro');
-
-            expect(directFactory.isAlchemyManaged).toBe(false);
-            expect(directAlchemyFactory.isAlchemyManaged).toBe(true);
-            expect(kroFactory.isAlchemyManaged).toBe(false);
-            expect(kroAlchemyFactory.isAlchemyManaged).toBe(true);
-
-            console.log('✅ Cross-factory compatibility test passed!');
+          // Create all four factory types
+          const directFactory = await graph.factory('direct', {
+            namespace: testNamespace,
+            kubeConfig: kc,
           });
-        },
-        120000
-      ); // 2 minute timeout for deployment + cleanup
+          const directAlchemyFactory = await graph.factory('direct', {
+            namespace: testNamespace,
+            alchemyScope: alchemyScope,
+            kubeConfig: kc,
+          });
+          const kroFactory = await graph.factory('kro', {
+            namespace: testNamespace,
+            kubeConfig: kc,
+          });
+          const kroAlchemyFactory = await graph.factory('kro', {
+            namespace: testNamespace,
+            alchemyScope: alchemyScope,
+            kubeConfig: kc,
+          });
+
+          const spec: WebAppSpec = {
+            name: 'compatibility-test',
+            image: 'nginx:alpine',
+            replicas: 1,
+            environment: 'development',
+            message: 'Compatibility test message',
+          };
+
+          // Test YAML generation consistency
+          const directYaml = directFactory.toYaml(spec);
+          const directAlchemyYaml = directAlchemyFactory.toYaml(spec);
+
+          // Direct factories should generate identical YAML regardless of alchemy
+          expect(directYaml).toBe(directAlchemyYaml);
+
+          // Kro factories should generate identical instance YAML
+          const kroInstanceYaml = kroFactory.toYaml(spec);
+          const kroAlchemyInstanceYaml = kroAlchemyFactory.toYaml(spec);
+          expect(kroInstanceYaml).toBe(kroAlchemyInstanceYaml);
+
+          // RGD YAML should be identical
+          const kroRgdYaml = kroFactory.toYaml();
+          const kroAlchemyRgdYaml = kroAlchemyFactory.toYaml();
+          expect(kroRgdYaml).toBe(kroAlchemyRgdYaml);
+
+          // Test factory properties
+          expect(directFactory.mode).toBe('direct');
+          expect(directAlchemyFactory.mode).toBe('direct');
+          expect(kroFactory.mode).toBe('kro');
+          expect(kroAlchemyFactory.mode).toBe('kro');
+
+          expect(directFactory.isAlchemyManaged).toBe(false);
+          expect(directAlchemyFactory.isAlchemyManaged).toBe(true);
+          expect(kroFactory.isAlchemyManaged).toBe(false);
+          expect(kroAlchemyFactory.isAlchemyManaged).toBe(true);
+
+          console.log('✅ Cross-factory compatibility test passed!');
+        });
+      }, 120000); // 2 minute timeout for deployment + cleanup
     });
 
     describe('Type Safety and Enhanced Proxy', () => {
-      it(
-        'should maintain type safety across all factory types',
-        async () => {
-          await withTestNamespace('type-safety', async (testNamespace) => {
-            console.log('🧪 Testing type safety and Enhanced proxy functionality...');
+      it('should maintain type safety across all factory types', async () => {
+        await withTestNamespace('type-safety', async (testNamespace) => {
+          console.log('🧪 Testing type safety and Enhanced proxy functionality...');
 
-            const graph = createTestResourceGraph('types');
+          const graph = createTestResourceGraph('types');
 
-            // Test that all factories maintain the same type safety
-            const directFactory = await graph.factory('direct', {
-              namespace: testNamespace,
-              kubeConfig: kc,
-            });
-            const kroFactory = await graph.factory('kro', {
-              namespace: testNamespace,
-              kubeConfig: kc,
-            });
-
-            const spec: WebAppSpec = {
-              name: 'type-safety-test',
-              image: 'nginx:alpine',
-              replicas: 2,
-              environment: 'staging',
-              message: 'Type safety test',
-            };
-
-            // Both factories should accept the same spec type
-            const directYaml = directFactory.toYaml(spec);
-            const kroInstanceYaml = kroFactory.toYaml(spec);
-
-            expect(typeof directYaml).toBe('string');
-            expect(typeof kroInstanceYaml).toBe('string');
-
-            // Test schema proxy on Kro factory
-            expect(kroFactory.schema).toBeDefined();
-            expect(kroFactory.schema.spec).toBeDefined();
-            expect(kroFactory.schema.status).toBeDefined();
-
-            // Test factory status consistency
-            const directStatus = await directFactory.getStatus();
-            const kroStatus = await kroFactory.getStatus();
-
-            expect(directStatus.mode).toBe('direct');
-            expect(kroStatus.mode).toBe('kro');
-            expect(directStatus.namespace).toBe(testNamespace);
-            expect(kroStatus.namespace).toBe(testNamespace);
-
-            console.log('✅ Type safety and Enhanced proxy test passed!');
+          // Test that all factories maintain the same type safety
+          const directFactory = await graph.factory('direct', {
+            namespace: testNamespace,
+            kubeConfig: kc,
           });
-        },
-        120000
-      ); // 2 minute timeout for deployment + cleanup
+          const kroFactory = await graph.factory('kro', {
+            namespace: testNamespace,
+            kubeConfig: kc,
+          });
+
+          const spec: WebAppSpec = {
+            name: 'type-safety-test',
+            image: 'nginx:alpine',
+            replicas: 2,
+            environment: 'staging',
+            message: 'Type safety test',
+          };
+
+          // Both factories should accept the same spec type
+          const directYaml = directFactory.toYaml(spec);
+          const kroInstanceYaml = kroFactory.toYaml(spec);
+
+          expect(typeof directYaml).toBe('string');
+          expect(typeof kroInstanceYaml).toBe('string');
+
+          // Test schema proxy on Kro factory
+          expect(kroFactory.schema).toBeDefined();
+          expect(kroFactory.schema.spec).toBeDefined();
+          expect(kroFactory.schema.status).toBeDefined();
+
+          // Test factory status consistency
+          const directStatus = await directFactory.getStatus();
+          const kroStatus = await kroFactory.getStatus();
+
+          expect(directStatus.mode).toBe('direct');
+          expect(kroStatus.mode).toBe('kro');
+          expect(directStatus.namespace).toBe(testNamespace);
+          expect(kroStatus.namespace).toBe(testNamespace);
+
+          console.log('✅ Type safety and Enhanced proxy test passed!');
+        });
+      }, 120000); // 2 minute timeout for deployment + cleanup
     });
 
     describe('Error Handling and Edge Cases', () => {
-      it(
-        'should handle invalid specs and deployment failures gracefully',
-        async () => {
-          await withTestNamespace('error-handling', async (testNamespace) => {
-            console.log('🧪 Testing error handling and edge cases...');
+      it('should handle invalid specs and deployment failures gracefully', async () => {
+        await withTestNamespace('error-handling', async (testNamespace) => {
+          console.log('🧪 Testing error handling and edge cases...');
 
-            const graph = createTestResourceGraph('errors');
-            const factory = await graph.factory('direct', { namespace: testNamespace });
+          const graph = createTestResourceGraph('errors');
+          const factory = await graph.factory('direct', { namespace: testNamespace });
 
-            // Test invalid spec (should be caught by ArkType validation when implemented)
-            const invalidSpec = {
-              name: 'invalid-test',
-              image: 'nginx:alpine',
-              replicas: 1,
-              environment: 'invalid-environment', // Not in union type
-              message: 'Test message',
-            } as any;
+          // Test invalid spec (should be caught by ArkType validation when implemented)
+          const invalidSpec = {
+            name: 'invalid-test',
+            image: 'nginx:alpine',
+            replicas: 1,
+            environment: 'invalid-environment', // Not in union type
+            message: 'Test message',
+          } as unknown as WebAppSpec;
 
-            try {
-              factory.toYaml(invalidSpec);
-              // If validation is implemented, this should throw
-              console.log('⚠️ Spec validation not yet implemented');
-            } catch (_error) {
-              console.log('✅ Invalid spec properly rejected');
-            }
+          try {
+            factory.toYaml(invalidSpec);
+            // If validation is implemented, this should throw
+            console.log('⚠️ Spec validation not yet implemented');
+          } catch (_error) {
+            console.log('✅ Invalid spec properly rejected');
+          }
 
-            // Test deployment to non-existent namespace
-            const factoryBadNamespace = await graph.factory('direct', {
-              namespace: 'non-existent-namespace',
-              kubeConfig: kc,
-            });
-
-            const validSpec: WebAppSpec = {
-              name: 'error-test',
-              image: 'nginx:alpine',
-              replicas: 1,
-              environment: 'development',
-              message: 'Error test',
-            };
-
-            try {
-              await factoryBadNamespace.deploy(validSpec);
-              console.log('⚠️ Deployment should have failed');
-            } catch (error) {
-              expect(error).toBeInstanceOf(Error);
-              console.log('✅ Deployment to bad namespace properly failed');
-            }
-
-            console.log('✅ Error handling test passed!');
+          // Test deployment to non-existent namespace
+          const factoryBadNamespace = await graph.factory('direct', {
+            namespace: 'non-existent-namespace',
+            kubeConfig: kc,
           });
-        },
-        120000
-      ); // 2 minute timeout for deployment + cleanup
+
+          const validSpec: WebAppSpec = {
+            name: 'error-test',
+            image: 'nginx:alpine',
+            replicas: 1,
+            environment: 'development',
+            message: 'Error test',
+          };
+
+          try {
+            await factoryBadNamespace.deploy(validSpec);
+            console.log('⚠️ Deployment should have failed');
+          } catch (error) {
+            expect(error).toBeInstanceOf(Error);
+            console.log('✅ Deployment to bad namespace properly failed');
+          }
+
+          console.log('✅ Error handling test passed!');
+        });
+      }, 120000); // 2 minute timeout for deployment + cleanup
     });
   });
 });

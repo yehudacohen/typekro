@@ -4,8 +4,10 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { V1Deployment, V1Service } from '@kubernetes/client-node';
+import { getReadinessEvaluator as getReadinessEvaluatorFromMeta } from '../../src/core/metadata/index.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
+import { getReadinessEvaluator, requireReadinessEvaluator } from '../utils/mock-factories.js';
 
 describe('Serialization Protection for Readiness Evaluators', () => {
   it('should exclude readiness evaluators from Object.keys()', () => {
@@ -30,7 +32,7 @@ describe('Serialization Protection for Readiness Evaluators', () => {
     expect(keys).not.toContain('withReadinessEvaluator');
   });
 
-  it('should include readiness evaluators in Object.getOwnPropertyNames() but not enumerable', () => {
+  it('should store readiness evaluator in WeakMap and keep withReadinessEvaluator as non-enumerable', () => {
     const deploymentResource: V1Deployment = {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
@@ -48,11 +50,16 @@ describe('Serialization Protection for Readiness Evaluators', () => {
     const enhanced = deployment(deploymentResource);
     const propertyNames = Object.getOwnPropertyNames(enhanced);
 
+    // withReadinessEvaluator is still set via Object.defineProperty
     expect(propertyNames).toContain('withReadinessEvaluator');
-    expect(propertyNames).toContain('readinessEvaluator');
-
     expect(Object.propertyIsEnumerable.call(enhanced, 'withReadinessEvaluator')).toBe(false);
-    expect(Object.propertyIsEnumerable.call(enhanced, 'readinessEvaluator')).toBe(false);
+
+    // readinessEvaluator is accessible via proxy get trap (WeakMap-backed)
+    const evaluator = getReadinessEvaluatorFromMeta(enhanced);
+    expect(typeof evaluator).toBe('function');
+
+    // readinessEvaluator should NOT be in enumerable keys
+    expect(Object.keys(enhanced)).not.toContain('readinessEvaluator');
   });
 
   it('should exclude readiness evaluators from JSON.stringify()', () => {
@@ -106,8 +113,8 @@ describe('Serialization Protection for Readiness Evaluators', () => {
     expect(enumerableProps).not.toContain('withReadinessEvaluator');
 
     // Test that the functions exist but are not enumerable
-    expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
-    expect(typeof (enhanced as any).withReadinessEvaluator).toBe('function');
+    expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
+    expect(typeof enhanced.withReadinessEvaluator).toBe('function');
 
     // Test that JSON.stringify excludes the functions
     const jsonString = JSON.stringify(enhanced);
@@ -133,7 +140,7 @@ describe('Serialization Protection for Readiness Evaluators', () => {
     const enhanced = deployment(deploymentResource);
 
     // Verify readiness evaluator works before serialization
-    const evaluator = (enhanced as any).readinessEvaluator;
+    const evaluator = requireReadinessEvaluator(enhanced);
     expect(typeof evaluator).toBe('function');
 
     const result = evaluator({
@@ -152,8 +159,8 @@ describe('Serialization Protection for Readiness Evaluators', () => {
     expect(parsed.readinessEvaluator).toBeUndefined();
 
     // But original enhanced object should still have it
-    expect((enhanced as any).readinessEvaluator).toBe(evaluator);
-    expect(typeof (enhanced as any).readinessEvaluator).toBe('function');
+    expect(getReadinessEvaluator(enhanced)).toBe(evaluator);
+    expect(typeof getReadinessEvaluator(enhanced)).toBe('function');
   });
 
   it('should handle multiple resources with different readiness evaluators', () => {
@@ -186,23 +193,23 @@ describe('Serialization Protection for Readiness Evaluators', () => {
     const enhancedService = service(serviceResource);
 
     // Both should have readiness evaluators
-    expect(typeof (enhancedDeployment as any).readinessEvaluator).toBe('function');
-    expect(typeof (enhancedService as any).readinessEvaluator).toBe('function');
+    expect(typeof getReadinessEvaluator(enhancedDeployment)).toBe('function');
+    expect(typeof getReadinessEvaluator(enhancedService)).toBe('function');
 
     // But they should be different functions
-    expect((enhancedDeployment as any).readinessEvaluator).not.toBe(
-      (enhancedService as any).readinessEvaluator
+    expect(getReadinessEvaluator(enhancedDeployment)).not.toBe(
+      getReadinessEvaluator(enhancedService)
     );
 
     // Test deployment evaluator
-    const deploymentResult = (enhancedDeployment as any).readinessEvaluator({
+    const deploymentResult = requireReadinessEvaluator(enhancedDeployment)({
       status: { readyReplicas: 2, availableReplicas: 2 },
     });
     expect(deploymentResult.ready).toBe(true);
     expect(deploymentResult.message).toContain('2/2 ready replicas');
 
     // Test service evaluator
-    const serviceResult = (enhancedService as any).readinessEvaluator({
+    const serviceResult = requireReadinessEvaluator(enhancedService)({
       spec: { type: 'ClusterIP' },
     });
     expect(serviceResult.ready).toBe(true);

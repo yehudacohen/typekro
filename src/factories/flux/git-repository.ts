@@ -1,17 +1,21 @@
-import type { Enhanced } from '../../core/types/index.js';
+import type { KubernetesCondition, ResourceStatus } from '../../core/types/index.js';
 import { createResource } from '../shared.js';
 
 export interface GitRepositorySpec {
   url: string;
-  ref?: {
-    branch?: string;
-    tag?: string;
-    commit?: string;
-  } | undefined;
+  ref?:
+    | {
+        branch?: string;
+        tag?: string;
+        commit?: string;
+      }
+    | undefined;
   interval: string;
-  secretRef?: {
-    name: string;
-  } | undefined;
+  secretRef?:
+    | {
+        name: string;
+      }
+    | undefined;
 }
 
 export interface GitRepositoryStatus {
@@ -63,9 +67,7 @@ export interface GitRepositoryConfig {
  * })
  * ```
  */
-export function gitRepository(
-  config: GitRepositoryConfig
-): Enhanced<GitRepositorySpec, GitRepositoryStatus> {
+export function gitRepository(config: GitRepositoryConfig) {
   return createResource({
     ...(config.id && { id: config.id }),
     apiVersion: 'source.toolkit.fluxcd.io/v1',
@@ -80,5 +82,41 @@ export function gitRepository(
       interval: config.interval,
       secretRef: config.secretRef,
     },
+  }).withReadinessEvaluator((liveResource: any): ResourceStatus => {
+    const status = liveResource.status;
+    if (!status) {
+      return {
+        ready: false,
+        reason: 'NoStatus',
+        message: 'GitRepository status not available yet',
+      };
+    }
+
+    // Check status.conditions for Ready=True
+    if (status.conditions && Array.isArray(status.conditions)) {
+      const readyCondition = status.conditions.find((c: KubernetesCondition) => c.type === 'Ready');
+      if (readyCondition?.status === 'True') {
+        return {
+          ready: true,
+          message:
+            readyCondition.message ||
+            `GitRepository is ready (artifact: ${status.artifact?.revision ?? 'unknown'})`,
+        };
+      }
+      if (readyCondition) {
+        return {
+          ready: false,
+          reason: readyCondition.reason || 'NotReady',
+          message: readyCondition.message || 'GitRepository is not ready',
+        };
+      }
+    }
+
+    // No Ready condition yet — still reconciling
+    return {
+      ready: false,
+      reason: 'Reconciling',
+      message: 'GitRepository is reconciling',
+    };
   });
 }

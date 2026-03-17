@@ -5,8 +5,10 @@
  * evaluation to help developers troubleshoot deployment issues.
  */
 
+import { DEFAULT_MAX_STATUS_OBJECT_SIZE } from '../config/defaults.js';
 import { getComponentLogger } from '../logging/index.js';
 import type { DeployedResource, DeploymentEvent, StatusDebugEvent } from '../types/deployment.js';
+import type { ResourceStatus } from '../types/kubernetes.js';
 
 /**
  * Debug logging configuration
@@ -37,20 +39,6 @@ export interface StatusLoggingContext {
 }
 
 /**
- * Readiness evaluation result
- */
-export interface ReadinessResult {
-  ready: boolean;
-  reason?: string;
-  details?: Record<string, unknown>;
-}
-
-/**
- * Readiness evaluator function type
- */
-export type ReadinessEvaluator = (resource: unknown) => boolean | ReadinessResult;
-
-/**
  * DebugLogger provides enhanced debug logging for deployment operations
  */
 export class DebugLogger {
@@ -69,7 +57,7 @@ export class DebugLogger {
       enabled: options.enabled ?? false,
       statusPolling: options.statusPolling ?? true,
       readinessEvaluation: options.readinessEvaluation ?? true,
-      maxStatusObjectSize: options.maxStatusObjectSize || 1024,
+      maxStatusObjectSize: options.maxStatusObjectSize || DEFAULT_MAX_STATUS_OBJECT_SIZE,
       verboseMode: options.verboseMode ?? false,
       ...(options.progressCallback && { progressCallback: options.progressCallback }),
     };
@@ -81,7 +69,7 @@ export class DebugLogger {
   logResourceStatus(
     resource: DeployedResource,
     currentStatus: unknown,
-    readinessResult: boolean | ReadinessResult,
+    readinessResult: boolean | ResourceStatus,
     context: StatusLoggingContext
   ): void {
     if (!this.options.enabled || !this.options.statusPolling) {
@@ -138,8 +126,8 @@ export class DebugLogger {
    */
   logReadinessEvaluation(
     resource: DeployedResource,
-    evaluator: ReadinessEvaluator,
-    result: ReadinessResult
+    evaluator: (resource: unknown) => boolean | ResourceStatus,
+    result: ResourceStatus
   ): void {
     if (!this.options.enabled || !this.options.readinessEvaluation) {
       return;
@@ -346,7 +334,7 @@ export class DebugLogger {
   /**
    * Format readiness result for display
    */
-  private formatReadinessResult(result: boolean | ReadinessResult): {
+  private formatReadinessResult(result: boolean | ResourceStatus): {
     summary: string;
     details?: string;
   } {
@@ -366,7 +354,10 @@ export class DebugLogger {
   /**
    * Get information about the readiness evaluator
    */
-  private getEvaluatorInfo(evaluator: ReadinessEvaluator): { type: string; name: string } {
+  private getEvaluatorInfo(evaluator: (resource: unknown) => boolean | ResourceStatus): {
+    type: string;
+    name: string;
+  } {
     const funcString = evaluator.toString();
 
     // Try to extract function name
@@ -399,13 +390,10 @@ export class DebugLogger {
       return status;
     }
 
-    // Truncate and add indicator
-    const truncated = statusString.substring(0, this.options.maxStatusObjectSize - 20);
-    try {
-      return JSON.parse(`${truncated}...[truncated]"}`);
-    } catch {
-      return `${truncated}...[truncated]`;
-    }
+    // Return truncated string directly — attempting JSON.parse on an
+    // arbitrarily-cut JSON string produces invalid or corrupted data.
+    const truncated = statusString.substring(0, this.options.maxStatusObjectSize - 15);
+    return `${truncated}...[truncated]`;
   }
 
   /**
@@ -420,7 +408,23 @@ export class DebugLogger {
     const sanitized: Record<string, unknown> = {};
 
     // List of potentially sensitive fields to exclude
-    const sensitiveFields = ['token', 'password', 'secret', 'key', 'cert', 'credential'];
+    const sensitiveFields = [
+      'token',
+      'password',
+      'secret',
+      'key',
+      'cert',
+      'credential',
+      'apikey',
+      'bearer',
+      'authorization',
+      'private',
+      'passphrase',
+      'accesstoken',
+      'refreshtoken',
+      'kubeconfig',
+      'ssh',
+    ];
 
     for (const [key, value] of Object.entries(statusObj)) {
       const lowerKey = key.toLowerCase();
@@ -457,7 +461,23 @@ export class DebugLogger {
     // Limit number of fields to prevent huge objects
     for (const [key, value] of entries.slice(0, 20)) {
       const lowerKey = key.toLowerCase();
-      const sensitiveFields = ['token', 'password', 'secret', 'key', 'cert', 'credential'];
+      const sensitiveFields = [
+        'token',
+        'password',
+        'secret',
+        'key',
+        'cert',
+        'credential',
+        'apikey',
+        'bearer',
+        'authorization',
+        'private',
+        'passphrase',
+        'accesstoken',
+        'refreshtoken',
+        'kubeconfig',
+        'ssh',
+      ];
       const isSensitive = sensitiveFields.some((field) => lowerKey.includes(field));
 
       if (isSensitive) {
@@ -499,7 +519,8 @@ export function createDebugLoggerFromDeploymentOptions(options: {
     enabled: options.debugLogging?.enabled ?? false,
     statusPolling: options.debugLogging?.statusPolling ?? false,
     readinessEvaluation: options.debugLogging?.readinessEvaluation ?? false,
-    maxStatusObjectSize: options.debugLogging?.maxStatusObjectSize ?? 1000,
+    maxStatusObjectSize:
+      options.debugLogging?.maxStatusObjectSize ?? DEFAULT_MAX_STATUS_OBJECT_SIZE,
     verboseMode: options.debugLogging?.verboseMode ?? false,
     ...(options.progressCallback && { progressCallback: options.progressCallback }),
   };

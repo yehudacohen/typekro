@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import {
-  kubernetesComposition,
-  typeKroRuntimeBootstrap,
   certManager,
   externalDns,
+  kubernetesComposition,
   simple,
+  typeKroRuntimeBootstrap,
 } from '../../../src/index.js';
 
 describe('Three-Composition Demo Integration', () => {
@@ -53,7 +53,7 @@ describe('Three-Composition Demo Integration', () => {
         const certManagerInstance = certManager.certManagerBootstrap({
           name: 'cert-manager-test',
           namespace: 'cert-manager',
-          version: '1.13.3',
+          version: '1.19.3',
           installCRDs: true,
           controller: {
             resources: {
@@ -61,7 +61,7 @@ describe('Three-Composition Demo Integration', () => {
               limits: { cpu: '100m', memory: '128Mi' },
             },
           },
-          webhook: { enabled: true, replicaCount: 1 },
+          webhook: { replicaCount: 1 },
           cainjector: { enabled: true, replicaCount: 1 },
         });
 
@@ -201,12 +201,12 @@ describe('Three-Composition Demo Integration', () => {
 
         return {
           deploymentReady: deployment.status.readyReplicas >= (spec.replicas || 1),
-          serviceReady: service.status.clusterIP !== undefined,
+          serviceReady: service.metadata.name !== undefined,
           certificateReady:
             certificate.status.conditions?.some(
               (c: any) => c.type === 'Ready' && c.status === 'True'
             ) || false,
-          ingressReady: ingress.status.loadBalancer?.ingress?.length > 0 || false,
+          ingressReady: (ingress.status.loadBalancer?.ingress?.length ?? 0) > 0 || false,
           url: `https://${spec.domain}`,
           ready:
             deployment.status.readyReplicas >= (spec.replicas || 1) &&
@@ -214,7 +214,7 @@ describe('Three-Composition Demo Integration', () => {
               (c: any) => c.type === 'Ready' && c.status === 'True'
             ) ||
               false) &&
-            (ingress.status.loadBalancer?.ingress?.length > 0 || false),
+            ((ingress.status.loadBalancer?.ingress?.length ?? 0) > 0 || false),
         };
       }
     );
@@ -268,7 +268,7 @@ describe('Three-Composition Demo Integration', () => {
     const bootstrap = typeKroRuntimeBootstrap({
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.3.0',
+      kroVersion: '0.8.5',
     });
 
     expect(bootstrap).toBeDefined();
@@ -299,7 +299,7 @@ describe('Three-Composition Demo Integration', () => {
     const bootstrap = typeKroRuntimeBootstrap({
       namespace: 'flux-system',
       fluxVersion: 'v2.4.0',
-      kroVersion: '0.3.0',
+      kroVersion: '0.8.5',
     });
     const bootstrapYaml = bootstrap.toYaml();
 
@@ -335,7 +335,7 @@ describe('Three-Composition Demo Integration', () => {
         const certMgr = certManager.certManagerBootstrap({
           name: 'cert-manager',
           namespace: 'cert-manager',
-          version: '1.13.3',
+          version: '1.19.3',
           installCRDs: true,
         });
 

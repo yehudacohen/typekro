@@ -1,6 +1,6 @@
 import pino from 'pino';
 import { getLoggerConfigFromEnv, validateLoggerConfig } from './config.js';
-import type { LoggerConfig, LoggerContext, TypeKroLogger } from './types.js';
+import type { LoggerConfig, LoggerContext, LogMetadata, TypeKroLogger } from './types.js';
 
 /**
  * Pino-based implementation of TypeKroLogger
@@ -12,55 +12,60 @@ class PinoLogger implements TypeKroLogger {
     this.pinoLogger = pinoLogger;
   }
 
-  trace(msg: string, meta?: Record<string, any>): void {
+  trace(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.trace(meta, msg);
   }
 
-  debug(msg: string, meta?: Record<string, any>): void {
+  debug(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.debug(meta, msg);
   }
 
-  info(msg: string, meta?: Record<string, any>): void {
+  info(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.info(meta, msg);
   }
 
-  warn(msg: string, meta?: Record<string, any>): void {
+  warn(msg: string, meta?: LogMetadata): void {
     this.pinoLogger.warn(meta, msg);
   }
 
-  error(msg: string, error?: Error, meta?: Record<string, any>): void {
-    const logData = { ...meta };
+  error(msg: string, error?: Error, meta?: LogMetadata): void {
+    this.pinoLogger.error(this.buildLogData(meta, error), msg);
+  }
+
+  fatal(msg: string, error?: Error, meta?: LogMetadata): void {
+    this.pinoLogger.fatal(this.buildLogData(meta, error), msg);
+  }
+
+  /** Build log payload, extracting K8s-specific error fields when present.
+   * In production, stack traces and K8s API response bodies are stripped
+   * to prevent information disclosure (internal paths, cluster state). */
+  private buildLogData(meta?: LogMetadata, error?: Error): Record<string, unknown> {
+    const logData: Record<string, unknown> = { ...meta };
     if (error) {
-      const k8sError = error as any;
+      const isProduction = process.env.NODE_ENV === 'production';
+      const k8sError = error as Error & {
+        statusCode?: number;
+        body?: unknown;
+        response?: { body?: unknown; statusCode?: number };
+      };
       logData.error = {
         name: error.name,
         message: error.message,
-        stack: error.stack,
-        statusCode: k8sError.statusCode,
-        body: k8sError.body,
-        response: k8sError.response?.body,
+        // Only include stack traces and K8s response bodies in non-production
+        ...(isProduction
+          ? {}
+          : {
+              stack: error.stack,
+              body: k8sError.body,
+              response: k8sError.response?.body,
+            }),
+        statusCode: k8sError.statusCode ?? k8sError.response?.statusCode,
       };
     }
-    this.pinoLogger.error(logData, msg);
+    return logData;
   }
 
-  fatal(msg: string, error?: Error, meta?: Record<string, any>): void {
-    const logData = { ...meta };
-    if (error) {
-      const k8sError = error as any;
-      logData.error = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-        statusCode: k8sError.statusCode,
-        body: k8sError.body,
-        response: k8sError.response?.body,
-      };
-    }
-    this.pinoLogger.fatal(logData, msg);
-  }
-
-  child(bindings: Record<string, any>): TypeKroLogger {
+  child(bindings: LogMetadata): TypeKroLogger {
     return new PinoLogger(this.pinoLogger.child(bindings));
   }
 }
@@ -127,7 +132,7 @@ export const logger: TypeKroLogger = createLogger();
  */
 export function getComponentLogger(
   component: string,
-  additionalContext?: Record<string, any>
+  additionalContext?: Record<string, unknown>
 ): TypeKroLogger {
   return logger.child({ component, ...additionalContext });
 }
@@ -137,7 +142,7 @@ export function getComponentLogger(
  */
 export function getResourceLogger(
   resourceId: string,
-  additionalContext?: Record<string, any>
+  additionalContext?: Record<string, unknown>
 ): TypeKroLogger {
   return logger.child({ resourceId, ...additionalContext });
 }
@@ -148,7 +153,7 @@ export function getResourceLogger(
 export function getDeploymentLogger(
   deploymentId: string,
   namespace?: string,
-  additionalContext?: Record<string, any>
+  additionalContext?: Record<string, unknown>
 ): TypeKroLogger {
   return logger.child({ deploymentId, namespace, ...additionalContext });
 }

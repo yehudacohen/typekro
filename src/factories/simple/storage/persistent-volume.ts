@@ -15,6 +15,17 @@ import type { PersistentVolumeConfig } from '../types.js';
  *
  * @param config - Configuration for the persistent volume
  * @returns Enhanced PersistentVolume resource
+ *
+ * @example
+ * ```typescript
+ * const pv = PersistentVolume({
+ *   name: 'nfs-volume',
+ *   size: '50Gi',
+ *   storageClass: 'nfs',
+ *   accessModes: ['ReadWriteMany'],
+ *   nfs: { server: '10.0.0.1', path: '/exports/data' },
+ * });
+ * ```
  */
 export function PersistentVolume(config: PersistentVolumeConfig): Enhanced<V1PvSpec, V1PvStatus> {
   const {
@@ -39,6 +50,7 @@ export function PersistentVolume(config: PersistentVolumeConfig): Enhanced<V1PvS
   }
 
   return persistentVolume({
+    ...(config.id && { id: config.id }),
     metadata: {
       name,
       ...(storageClass && {

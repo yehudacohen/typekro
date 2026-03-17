@@ -276,8 +276,9 @@ export interface CertManagerBootstrapConfig {
   };
 
   // Webhook configuration
+  // NOTE: cert-manager 1.19+ removed 'enabled' (webhook is always enabled),
+  // 'mutatingAdmissionWebhooks', and 'validatingAdmissionWebhooks'.
   webhook?: {
-    enabled?: boolean;
     replicaCount?: number;
     image?: {
       repository?: string;
@@ -296,24 +297,6 @@ export interface CertManagerBootstrapConfig {
       create?: boolean;
       name?: string;
       annotations?: Record<string, string>;
-    };
-    config?: {
-      apiVersion?: string;
-      kind?: string;
-      metadata?: {
-        name?: string;
-      };
-      webhooks?: WebhookConfig[];
-    };
-    mutatingAdmissionWebhooks?: {
-      failurePolicy?: 'Fail' | 'Ignore';
-      admissionReviewVersions?: string[];
-      timeoutSeconds?: number;
-    };
-    validatingAdmissionWebhooks?: {
-      failurePolicy?: 'Fail' | 'Ignore';
-      admissionReviewVersions?: string[];
-      timeoutSeconds?: number;
     };
   };
 
@@ -342,18 +325,13 @@ export interface CertManagerBootstrapConfig {
   };
 
   // ACME HTTP01 solver configuration
+  // NOTE: cert-manager 1.19+ only supports 'image' in this section.
   acmesolver?: {
     image?: {
       repository?: string;
       tag?: string;
       pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
     };
-    resources?: ResourceRequirements;
-    nodeSelector?: Record<string, string>;
-    tolerations?: Toleration[];
-    affinity?: Affinity;
-    securityContext?: SecurityContext;
-    containerSecurityContext?: SecurityContext;
   };
 
   // Startup API check configuration
@@ -419,35 +397,6 @@ export interface CertManagerBootstrapStatus {
   // - endpoints: Would require querying services created by Helm chart
   // - issuers/certificates: Would require querying cert-manager CRDs
   // These should be added in future compositions that manage resources directly
-}
-
-// Webhook configuration types
-export interface WebhookConfig {
-  name: string;
-  clientConfig: {
-    service?: {
-      name: string;
-      namespace: string;
-      path?: string;
-      port?: number;
-    };
-    url?: string;
-    caBundle?: string;
-  };
-  rules?: {
-    operations: ('CREATE' | 'UPDATE' | 'DELETE' | 'CONNECT')[];
-    apiGroups: string[];
-    apiVersions: string[];
-    resources: string[];
-    scope?: 'Cluster' | 'Namespaced' | '*';
-  }[];
-  admissionReviewVersions: string[];
-  sideEffects: 'None' | 'NoneOnDryRun' | 'Some' | 'Unknown';
-  timeoutSeconds?: number;
-  failurePolicy?: 'Fail' | 'Ignore';
-  matchPolicy?: 'Exact' | 'Equivalent';
-  namespaceSelector?: LabelSelector;
-  objectSelector?: LabelSelector;
 }
 
 // Certificate CRD Types (following cert-manager.io/v1 API)
@@ -977,7 +926,7 @@ export interface OrderStatus {
 // ARKTYPE SCHEMAS FOR BOOTSTRAP COMPOSITION
 // =============================================================================
 
-import { type, type Type } from 'arktype';
+import { type Type, type } from 'arktype';
 
 /**
  * ArkType schema for CertManagerBootstrapConfig
@@ -1039,9 +988,8 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
     },
   },
 
-  // Webhook configuration
+  // Webhook configuration (cert-manager 1.19+ — no 'enabled' or admission webhook config)
   'webhook?': {
-    'enabled?': 'boolean',
     'replicaCount?': 'number',
     'image?': {
       'repository?': 'string',
@@ -1062,14 +1010,6 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
     'serviceAccount?': {
       'create?': 'boolean',
       'name?': 'string',
-    },
-    'mutatingAdmissionWebhooks?': {
-      'failurePolicy?': '"Fail" | "Ignore"',
-      'timeoutSeconds?': 'number',
-    },
-    'validatingAdmissionWebhooks?': {
-      'failurePolicy?': '"Fail" | "Ignore"',
-      'timeoutSeconds?': 'number',
     },
   },
 
@@ -1099,24 +1039,13 @@ export const CertManagerBootstrapConfigSchema: Type<CertManagerBootstrapConfig> 
     },
   },
 
-  // ACME solver configuration
+  // ACME solver configuration (cert-manager 1.19+ — image only)
   'acmesolver?': {
     'image?': {
       'repository?': 'string',
       'tag?': 'string',
       'pullPolicy?': '"Always" | "IfNotPresent" | "Never"',
     },
-    'resources?': {
-      'limits?': {
-        'cpu?': 'string',
-        'memory?': 'string',
-      },
-      'requests?': {
-        'cpu?': 'string',
-        'memory?': 'string',
-      },
-    },
-    'nodeSelector?': 'Record<string, string>',
   },
 
   // Startup API check configuration
@@ -1244,14 +1173,27 @@ export interface CertManagerHelmValues {
     };
   };
 
-  // Image configuration
+  // Controller extra arguments (root-level in cert-manager Helm chart)
+  // Use this for flags like --dns01-recursive-nameservers
+  extraArgs?: string[];
+
+  // Controller extra environment variables (root-level in cert-manager Helm chart)
+  extraEnv?: EnvVar[];
+
+  // Image configuration (root-level = controller image in cert-manager Helm chart)
   image?: {
     repository?: string;
     tag?: string;
     pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
   };
 
-  // Controller configuration
+  // Resource requirements (root-level = controller resources in cert-manager Helm chart)
+  resources?: ResourceRequirements;
+
+  // Node selector (root-level = controller nodeSelector in cert-manager Helm chart)
+  nodeSelector?: Record<string, string>;
+
+  // Controller configuration (nested fields that ARE under 'controller' in the chart)
   controller?: {
     image?: {
       repository?: string;
@@ -1276,8 +1218,9 @@ export interface CertManagerHelmValues {
   };
 
   // Webhook configuration
+  // NOTE: cert-manager 1.19+ removed 'enabled', 'mutatingAdmissionWebhooks',
+  // and 'validatingAdmissionWebhooks' from the Helm values schema.
   webhook?: {
-    enabled?: boolean;
     replicaCount?: number;
     image?: {
       repository?: string;
@@ -1296,24 +1239,6 @@ export interface CertManagerHelmValues {
       create?: boolean;
       name?: string;
       annotations?: Record<string, string>;
-    };
-    config?: {
-      apiVersion?: string;
-      kind?: string;
-      metadata?: {
-        name?: string;
-      };
-      webhooks?: WebhookConfig[];
-    };
-    mutatingAdmissionWebhooks?: {
-      failurePolicy?: 'Fail' | 'Ignore';
-      admissionReviewVersions?: string[];
-      timeoutSeconds?: number;
-    };
-    validatingAdmissionWebhooks?: {
-      failurePolicy?: 'Fail' | 'Ignore';
-      admissionReviewVersions?: string[];
-      timeoutSeconds?: number;
     };
   };
 
@@ -1342,18 +1267,13 @@ export interface CertManagerHelmValues {
   };
 
   // ACME HTTP01 solver configuration
+  // NOTE: cert-manager 1.19+ only supports 'image' in this section.
   acmesolver?: {
     image?: {
       repository?: string;
       tag?: string;
       pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
     };
-    resources?: ResourceRequirements;
-    nodeSelector?: Record<string, string>;
-    tolerations?: Toleration[];
-    affinity?: Affinity;
-    securityContext?: SecurityContext;
-    containerSecurityContext?: SecurityContext;
   };
 
   // Startup API check configuration
@@ -1392,5 +1312,5 @@ export interface CertManagerHelmValues {
   };
 
   // Additional custom values
-  [key: string]: any;
+  [key: string]: unknown;
 }

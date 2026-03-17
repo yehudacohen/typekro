@@ -1,14 +1,14 @@
 import type { V1RuntimeClass } from '@kubernetes/client-node';
-import type { Enhanced } from '../../../core/types/index.js';
+import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1RuntimeClassHandler = V1RuntimeClass;
 
-export function runtimeClass(resource: V1RuntimeClass): Enhanced<V1RuntimeClassHandler, unknown> {
+export function runtimeClass(resource: V1RuntimeClass & { id?: string }) {
   return createResource({
     ...resource,
     apiVersion: 'node.k8s.io/v1',
     kind: 'RuntimeClass',
     metadata: resource.metadata ?? { name: 'unnamed-runtimeclass' },
-  });
+  }).withReadinessEvaluator(createAlwaysReadyEvaluator('RuntimeClass'));
 }

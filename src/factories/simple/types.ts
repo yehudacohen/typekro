@@ -28,6 +28,7 @@ import type { V1ServiceSpec } from '../kubernetes/types.js';
 export interface DeploymentConfig {
   name: string;
   image: string;
+  /** @default 1 */
   replicas?: number;
   namespace?: string;
   env?: Record<string, string>;
@@ -45,11 +46,14 @@ export interface StatefulSetConfig {
   name: string;
   image: string;
   serviceName: string;
+  /** @default 1 */
   replicas?: number;
   namespace?: string;
   env?: Record<string, string>;
   ports?: V1Container['ports'];
   volumeClaimTemplates?: V1PersistentVolumeClaim[];
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -62,7 +66,10 @@ export interface JobConfig {
   command?: string[];
   completions?: number;
   backoffLimit?: number;
+  /** @default 'OnFailure' */
   restartPolicy?: 'OnFailure' | 'Never';
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -74,6 +81,8 @@ export interface CronJobConfig {
   schedule: string;
   namespace?: string;
   command?: string[];
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -143,6 +152,7 @@ export interface PvcConfig {
   namespace?: string;
   size: string;
   storageClass?: string;
+  /** @default ['ReadWriteOnce'] */
   accessModes?: ('ReadWriteOnce' | 'ReadOnlyMany' | 'ReadWriteMany')[];
   /** Optional resource ID for cross-resource references. Required when name uses schema references. */
   id?: string;
@@ -158,6 +168,8 @@ export interface HpaConfig {
   minReplicas: number;
   maxReplicas: number;
   cpuUtilization?: number;
+  /** Custom resource ID for composition graph */
+  id?: string;
 }
 
 /**
@@ -182,11 +194,15 @@ export interface PersistentVolumeConfig {
   name: string;
   size: string;
   storageClass?: string;
+  /** @default ['ReadWriteOnce'] */
   accessModes?: ('ReadWriteOnce' | 'ReadOnlyMany' | 'ReadWriteMany')[];
   hostPath?: string;
   nfs?: {
     server: string;
     path: string;
   };
+  /** @default 'Retain' */
   persistentVolumeReclaimPolicy?: 'Retain' | 'Recycle' | 'Delete';
+  /** Custom resource ID for composition graph */
+  id?: string;
 }

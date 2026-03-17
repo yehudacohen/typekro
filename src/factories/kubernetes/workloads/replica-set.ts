@@ -1,11 +1,14 @@
 import type { V1ReplicaSet } from '@kubernetes/client-node';
+import { ensureError } from '../../../core/errors.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
 export type V1ReplicaSetSpec = NonNullable<V1ReplicaSet['spec']>;
 export type V1ReplicaSetStatus = NonNullable<V1ReplicaSet['status']>;
 
-export function replicaSet(resource: V1ReplicaSet): Enhanced<V1ReplicaSetSpec, V1ReplicaSetStatus> {
+export function replicaSet(
+  resource: V1ReplicaSet & { id?: string }
+): Enhanced<V1ReplicaSetSpec, V1ReplicaSetStatus> {
   return createResource({
     ...resource,
     apiVersion: 'apps/v1',
@@ -31,10 +34,10 @@ export function replicaSet(resource: V1ReplicaSet): Enhanced<V1ReplicaSetSpec, V
           ? `All ${expectedReplicas} replicas are ready`
           : `${readyReplicas}/${expectedReplicas} replicas ready`,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         ready: false,
-        reason: `Error checking ReplicaSet status: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error checking ReplicaSet status: ${ensureError(error).message}`,
       };
     }
   });
