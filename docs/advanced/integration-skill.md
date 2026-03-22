@@ -304,8 +304,13 @@ Before submitting, verify each item:
 
 **Tests:**
 - [ ] Every readiness state has a unit test
-- [ ] Integration test asserts ALL status fields
+- [ ] Integration test asserts ALL status fields (ready, phase, failed, version)
 - [ ] Helm unit tests verify defaults, custom values, readiness evaluators
+- [ ] `sanitizeHelmValues` tests construct mock branded objects with `Symbol.for('TypeKro.KubernetesRef')` and `Symbol.for('TypeKro.CelExpression')` and verify they are STRIPPED (not just that plain values pass through). KubernetesRef mocks need both `resourceId` and `fieldPath` string properties.
+- [ ] Values mapper test verifies bootstrap-only fields (`name`, `namespace`, `version`) are NOT in output
+- [ ] Version override test asserts the actual version value, not just other fields
+- [ ] No `exactOptionalPropertyTypes` violations (no `replicaCount: undefined` — use conditional spreads)
+- [ ] Config interface fields not exposed in the Helm chart (e.g., `type` on OCI-only repos) are removed from the interface, not silently ignored
 
 **Docs & exports:**
 - [ ] API reference page exists with readiness table and limitations noted
@@ -313,6 +318,34 @@ Before submitting, verify each item:
 - [ ] `package.json` export added
 - [ ] JSDoc on all public APIs with `@example`
 - [ ] JSDoc version strings match the `DEFAULT_*_VERSION` constant exactly (no `v` prefix mismatch)
+
+#### Step 9: Maintainer self-review (BEFORE opening PR)
+
+After all tests pass, conduct a thorough self-review before opening a PR. This step prevents 2-3 review rounds.
+
+**Run the full diff and review it as a picky maintainer:**
+```bash
+git diff master...HEAD --stat  # see all changed files
+git diff master...HEAD -- src/ # review all source changes
+```
+
+**Review as if you're deciding whether to APPROVE or REQUEST CHANGES. Check:**
+
+1. **Schema/interface alignment** — Open types.ts. For EVERY field in every Config interface, verify the ArkType schema has a matching entry. Don't skim — go line by line. This is the #1 source of review feedback.
+
+2. **String literal grep** — Run `grep -rn "'your-repo-name'" src/factories/{name}/` and verify every occurrence is a constant reference, not a duplicated literal. Check composition, factory defaults, and test assertions.
+
+3. **sanitizeHelmValues test quality** — Do the tests actually construct branded objects and verify stripping? Or do they only test that plain values pass through? The latter is NOT sufficient and will be flagged.
+
+4. **Status field completeness** — Does the integration test assert ALL status fields? (`ready`, `phase`, `failed`, `version`). Missing any one will be caught in review.
+
+5. **Dead code / unused fields** — Any interface field that's accepted but silently ignored in the factory? Any exported constant that's not actually used? Any default that can never trigger because the type is required?
+
+6. **Docs accuracy** — Do JSDoc version strings match the DEFAULT_*_VERSION constant? Do docs examples use only imports that actually exist? Are unused imports removed?
+
+7. **Comment quality** — Do inline comments explain WHY, not WHAT? Is the proxy spreading limitation documented? Are _-prefixed variables explained?
+
+**If you find issues during self-review, fix them before opening the PR.** The goal is zero blocking items on first external review.
 
 ### Code Style Rules
 
