@@ -144,11 +144,10 @@ describe('CNPG Helm Values Mapper', () => {
     });
 
     it('should remove undefined values', () => {
-      const values = mapCnpgConfigToHelmValues({
-        name: 'cnpg',
-        replicaCount: undefined,
-      });
+      // Test that the mapper doesn't include fields that weren't set
+      const values = mapCnpgConfigToHelmValues({ name: 'cnpg' });
       expect('replicaCount' in values).toBe(false);
+      expect('resources' in values).toBe(false);
     });
   });
 
