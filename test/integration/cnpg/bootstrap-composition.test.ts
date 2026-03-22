@@ -7,6 +7,7 @@ import { ensureNamespaceExists } from '../shared-kubeconfig.js';
 
 describe('CNPG Bootstrap Composition Tests', () => {
   let kubeConfig: any;
+  let factory: any;
   const testNamespace = 'typekro-test-cnpg-bootstrap';
   const operatorNs = 'cnpg-test-op';
   const clusterNs = 'cnpg-test-db';
@@ -15,13 +16,32 @@ describe('CNPG Bootstrap Composition Tests', () => {
     try {
       kubeConfig = getKubeConfig({ skipTLSVerify: true });
       await ensureNamespaceExists(testNamespace, kubeConfig);
+
+      // Deploy the operator ONCE and share across all tests.
+      // This avoids the test isolation issue where deleteInstance removes
+      // the shared HelmRepository in flux-system before the next test.
+      const { cnpgBootstrap } = await import(
+        '../../../src/factories/cnpg/compositions/cnpg-bootstrap.js'
+      );
+
+      factory = cnpgBootstrap.factory('direct', {
+        namespace: testNamespace,
+        waitForReady: true,
+        timeout: 600000,
+        kubeConfig,
+      });
     } catch (error) {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
     }
-  });
+  }, 30000);
 
   afterAll(async () => {
+    // Clean up the operator deployment
+    if (factory) {
+      await factory.deleteInstance('cnpg-operator').catch(() => {});
+    }
+
     const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
     await Promise.allSettled(
       [testNamespace, operatorNs, clusterNs].map((ns) =>
@@ -31,17 +51,6 @@ describe('CNPG Bootstrap Composition Tests', () => {
   });
 
   it('should deploy operator and hydrate all status fields', async () => {
-    const { cnpgBootstrap } = await import(
-      '../../../src/factories/cnpg/compositions/cnpg-bootstrap.js'
-    );
-
-    const factory = cnpgBootstrap.factory('direct', {
-      namespace: testNamespace,
-      waitForReady: true,
-      timeout: 600000,
-      kubeConfig,
-    });
-
     const instance = await factory.deploy({
       name: 'cnpg-operator',
       namespace: operatorNs,
@@ -59,33 +68,13 @@ describe('CNPG Bootstrap Composition Tests', () => {
     expect(instance.status.ready).toBe(true);
     expect(instance.status.phase).toBe('Ready');
     expect(instance.status.version).toBe('0.23.0');
-
-    await factory.deleteInstance('cnpg-operator');
   }, 900000);
 
   it('should make CNPG CRDs available after operator deploy', async () => {
-    const { cnpgBootstrap } = await import(
-      '../../../src/factories/cnpg/compositions/cnpg-bootstrap.js'
-    );
-
-    const factory = cnpgBootstrap.factory('direct', {
-      namespace: testNamespace,
-      waitForReady: true,
-      timeout: 600000,
-      kubeConfig,
-    });
-
-    await factory.deploy({
-      name: 'cnpg-crd-test',
-      namespace: operatorNs,
-      installCRDs: true,
-    });
-
-    // After operator is ready, CRDs should be registered
+    // The operator was deployed in the previous test — CRDs should be available
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
     await ensureNamespaceExists(clusterNs, kubeConfig);
 
-    // Listing clusters should succeed (empty list, not 404)
     const result: any = await customApi.listNamespacedCustomObject({
       group: 'postgresql.cnpg.io',
       version: 'v1',
@@ -95,35 +84,13 @@ describe('CNPG Bootstrap Composition Tests', () => {
 
     const items = result?.body?.items ?? result?.items ?? [];
     expect(Array.isArray(items)).toBe(true);
+  }, 60000);
 
-    await factory.deleteInstance('cnpg-crd-test');
-  }, 900000);
-
-  it('should create a PostgreSQL cluster via typed factory after operator deploy', async () => {
-    const { cnpgBootstrap } = await import(
-      '../../../src/factories/cnpg/compositions/cnpg-bootstrap.js'
-    );
+  it('should create a PostgreSQL cluster via typed factory', async () => {
     const { cluster } = await import(
       '../../../src/factories/cnpg/resources/cluster.js'
     );
 
-    // Deploy operator
-    const operatorFactory = cnpgBootstrap.factory('direct', {
-      namespace: testNamespace,
-      waitForReady: true,
-      timeout: 600000,
-      kubeConfig,
-    });
-
-    const operatorInstance = await operatorFactory.deploy({
-      name: 'cnpg-for-cluster',
-      namespace: operatorNs,
-      installCRDs: true,
-    });
-
-    expect(operatorInstance.status.ready).toBe(true);
-
-    // Create a Cluster resource
     await ensureNamespaceExists(clusterNs, kubeConfig);
     const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
 
@@ -187,7 +154,7 @@ describe('CNPG Bootstrap Composition Tests', () => {
     expect(lastStatus?.ready).toBe(true);
     expect(lastStatus?.reason).toBe('Healthy');
 
-    // Cleanup
+    // Cleanup the cluster resource (operator stays for other tests)
     await customApi.deleteNamespacedCustomObject({
       group: 'postgresql.cnpg.io',
       version: 'v1',
@@ -195,8 +162,6 @@ describe('CNPG Bootstrap Composition Tests', () => {
       plural: 'clusters',
       name: 'e2e-pg',
     }).catch(() => {});
-
-    await operatorFactory.deleteInstance('cnpg-for-cluster');
   }, 900000);
 
   it('should generate ResourceGraphDefinition YAML with CEL status expressions', async () => {
@@ -209,12 +174,8 @@ describe('CNPG Bootstrap Composition Tests', () => {
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: cnpg-bootstrap');
-
-    // Status section with CEL condition expressions
     expect(yaml).toContain('status:');
     expect(yaml).toContain('.exists(c, c.type == "Ready"');
-
-    // Phase CEL ternary expression (quotes are escaped in YAML)
     expect(yaml).toContain('Ready');
     expect(yaml).toContain('Installing');
   });
