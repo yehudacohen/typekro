@@ -8,7 +8,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -66,7 +66,7 @@ function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unk
  * ```
  */
 export function inngestHelmRepository(
-  config: InngestHelmRepositoryConfig
+  config: Composable<InngestHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return helmRepository({
     name: config.name || DEFAULT_INNGEST_REPO_NAME,
@@ -99,7 +99,7 @@ export function inngestHelmRepository(
  * ```
  */
 export function inngestHelmRelease(
-  config: InngestHelmReleaseConfig
+  config: Composable<InngestHelmReleaseConfig>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   const sanitizedValues = config.values ? sanitizeHelmValues(config.values) : {};
 

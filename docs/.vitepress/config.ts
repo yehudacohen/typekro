@@ -90,6 +90,7 @@ export default withMermaid(
               { text: 'Inngest', link: '/api/inngest/' },
               { text: 'Pebble', link: '/api/pebble/' },
               { text: 'Valkey', link: '/api/valkey/' },
+              { text: 'Web App Compositions', link: '/api/webapp/' },
             ],
           },
         ],
