@@ -164,7 +164,11 @@ export const webAppWithProcessing = kubernetesComposition(
           {
             eventKey: spec.processing.eventKey,
             signingKey: spec.processing.signingKey,
-            postgres: { uri: `postgresql://${dbOwner}:password@${dbClusterName}-rw:5432/${dbName}` },
+            // NOTE: CNPG auto-generates credentials in a Secret named {cluster}-app.
+            // In production, use Kubernetes Secret injection (envFrom/secretKeyRef)
+            // instead of embedding credentials in the URI. This URI uses the CNPG
+            // default where the password is auto-injected by the operator's init container.
+            postgres: { uri: `postgresql://${dbOwner}@${dbClusterName}-rw:5432/${dbName}` },
             redis: { uri: cacheUrl },
           },
           spec.processing.sdkUrl && { sdkUrl: spec.processing.sdkUrl },
@@ -213,7 +217,7 @@ export const webAppWithProcessing = kubernetesComposition(
     return {
       ready:
         appDeployment.status.readyReplicas >= appReplicas &&
-        _database.status.readyInstances >= (spec.database.instances || 1) &&
+        _database.status.readyInstances >= (spec.database.instances ?? 1) &&
         _cache.status.ready &&
         _inngest.status.ready,
       databaseUrl,
@@ -222,7 +226,7 @@ export const webAppWithProcessing = kubernetesComposition(
       appUrl,
       components: {
         app: appDeployment.status.readyReplicas >= appReplicas,
-        database: _database.status.readyInstances >= (spec.database.instances || 1),
+        database: _database.status.readyInstances >= (spec.database.instances ?? 1),
         cache: _cache.status.ready,
         inngest: _inngest.status.ready,
       },
