@@ -11,9 +11,12 @@ This document provides a structured prompt that an AI agent can follow to genera
 
 Before generating an integration, gather:
 
-1. **Operator CRD API reference** — the spec and status fields for each custom resource
-2. **Helm chart details** — repository URL, chart name, default version
-3. **Readiness semantics** — how each resource reports readiness (conditions, phase, custom)
+1. **Operator CRD API reference** — the spec and status fields for each custom resource. Read the Go types file (`api/v1/types.go`) if available — it's the source of truth.
+2. **Helm chart details**:
+   - Repository URL — is it HTTPS or OCI (`oci://`)? OCI requires `type: 'oci'` on the HelmRepository.
+   - Chart name — for OCI, Flux constructs `{repo_url}/{chart_name}:{version}`, so verify the path.
+   - Default version — check the exact tag format from GitHub releases (e.g., `v0.0.61-chart` vs `0.23.0`).
+3. **Readiness semantics** — how each resource reports readiness (conditions, phase, top-level boolean, custom).
 
 ## Generation Prompt
 
@@ -26,6 +29,7 @@ Use the following as a system prompt or task description:
 **API Group:** `{API_GROUP}/{VERSION}` (e.g., `postgresql.cnpg.io/v1`)
 **CRD Resources:** `{LIST_RESOURCES}` (e.g., Cluster, Backup, ScheduledBackup, Pooler)
 **Helm Chart:** `{REPO_URL}` / `{CHART_NAME}` / `{DEFAULT_VERSION}`
+**Helm Type:** HTTPS or OCI
 
 #### Step 1: Create directory structure
 
@@ -53,7 +57,7 @@ test/factories/{name}/
 
 test/integration/{name}/
 ├── bootstrap-composition.test.ts
-└── cluster-resources.test.ts
+└── {resource}-resources.test.ts
 
 docs/api/{name}/
 └── index.md
@@ -61,29 +65,30 @@ docs/api/{name}/
 
 #### Step 2: types.ts
 
-Follow this exact pattern for every type:
-
 ```typescript
 import { type Type, type } from 'arktype';
 
 // 1. Common Kubernetes types (SecretKeyRef, LocalObjectReference, ResourceRequirements, Toleration)
-//    Use precise union types for enums: 'Exists' | 'Equal', 'NoSchedule' | 'PreferNoSchedule' | 'NoExecute'
+//    Use precise union types: 'Exists' | 'Equal', 'NoSchedule' | 'PreferNoSchedule' | 'NoExecute'
 
-// 2. Bootstrap Config/Status (for Helm operator install)
-//    Config: name, namespace?, version?, installCRDs?, replicaCount?, resources?, customValues?
-//    Status: phase (union), ready (boolean), version? (string)
+// 2. Bootstrap Config/Status
+//    Config: name, namespace?, version?, customValues?
+//    Status: phase ('Ready' | 'Installing'), ready (boolean), failed (boolean), version? (string)
+//    ⚠️ phase is two-state only — nested CEL ternaries break (#48)
+//    ⚠️ Use `failed` boolean for failure detection (single .exists() is valid CEL)
 //    MUST have ArkType schemas: BootstrapConfigSchema, BootstrapStatusSchema
 
 // 3. For each CRD resource:
 //    - Config interface with name, namespace?, id?, spec: { ... }
 //    - Status interface with observable fields
 //    - ArkType schema: ConfigSchema
-//    CRITICAL: The ArkType schema MUST cover ALL fields in the Config interface.
-//    Every optional field in the interface must have a corresponding 'field?' in the schema.
-//    Test this by going field-by-field through the interface and checking the schema matches.
+//    ⚠️ CRITICAL: Go field-by-field through the interface and verify the schema matches.
+//    ⚠️ Extract shared schema shapes (e.g., barmanObjectStoreSchemaShape) for types
+//       used in multiple places to prevent drift.
 
 // 4. Helm integration types
-//    HelmRepositoryConfig, HelmReleaseConfig
+//    HelmRepositoryConfig (include type?: 'default' | 'oci' if operator uses OCI)
+//    HelmReleaseConfig
 ```
 
 **ArkType syntax reference:**
@@ -93,6 +98,8 @@ import { type Type, type } from 'arktype';
 - Records: `'Record<string, string>'`
 - Unions: `'"value1" | "value2" | "value3"'`
 - Nested objects: inline `{ field: 'string', 'optional?': 'number' }`
+
+**Defaults rule:** If a field has a default, make it optional in both the interface and schema, and apply the default in the factory. Never have a required type with a `?? default` in the factory — the type and runtime must agree.
 
 #### Step 3: Resource factories
 
@@ -105,37 +112,44 @@ import { createResource } from '../../shared.js';
 import type { MyConfig, MyStatus } from '../types.js';
 
 // Readiness evaluator — choose one:
-// A) Condition-based (standard k8s pattern): createConditionBasedReadinessEvaluator({ kind: 'MyKind' })
-// B) Phase-based (custom): function that checks status.phase
-// C) Hybrid: condition-based with phase fallback (recommended for operators with both)
+// A) Condition-based (standard k8s): createConditionBasedReadinessEvaluator({ kind: 'MyKind' })
+// B) Phase-based (custom): function that checks status.phase with named constants
+// C) Top-level boolean + condition fallback (Hyperspike pattern)
+// D) Hybrid: phase-based with condition fallback (CNPG pattern)
 
 function createMyResource(config: MyConfig): Enhanced<MyConfig['spec'], MyStatus> {
-  const fullConfig = {
-    ...config,
-    spec: { ...config.spec, /* apply defaults */ },
-  };
-
   return createResource(
     {
       apiVersion: '{api_group}/{version}',
       kind: '{Kind}',
       metadata: {
-        name: fullConfig.name,
-        ...(fullConfig.namespace && { namespace: fullConfig.namespace }),
+        name: config.name,
+        ...(config.namespace && { namespace: config.namespace }),
       },
-      spec: fullConfig.spec,
-      ...(fullConfig.id && { id: fullConfig.id }),
+      spec: config.spec,
+      ...(config.id && { id: config.id }),
     },
-    { scope: 'namespaced' }  // or 'cluster' for cluster-scoped
+    { scope: 'namespaced' }
   ).withReadinessEvaluator(evaluator) as Enhanced<MyConfig['spec'], MyStatus>;
 }
 
 export const myResource = createMyResource;
 ```
 
+**If the operator has human-readable phase strings**, extract them as named constants:
+```typescript
+export const MY_OPERATOR_PHASES = {
+  HEALTHY: 'Cluster in healthy state',
+  SETTING_UP: 'Setting up primary',
+} as const;
+```
+
 #### Step 4: Helm resources (helm.ts)
 
+**Export shared constants** — version, repo URL, repo name. These must be used everywhere, never duplicated as string literals:
+
 ```typescript
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -147,7 +161,12 @@ import { createLabeledHelmReleaseEvaluator } from '../../helm/readiness-evaluato
 import type { HelmReleaseSpec, HelmReleaseStatus } from '../../helm/types.js';
 import { helmRelease } from '../../helm/helm-release.js';
 
-// sanitizeHelmValues — MUST use isKubernetesRef/isCelExpression type guards
+export const DEFAULT_MY_REPO_URL = 'https://charts.example.com';  // or 'oci://...'
+export const DEFAULT_MY_VERSION = '1.0.0';
+export const DEFAULT_MY_REPO_NAME = 'my-operator-repo';
+
+// sanitizeHelmValues — MUST use type guards, not raw property checks
+// Note: JSON round-trip also drops Date, functions, Infinity, NaN
 function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(
     JSON.stringify(values, (_key, value) => {
@@ -159,6 +178,17 @@ function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unk
 }
 ```
 
+**For OCI registries**, pass `type: 'oci'` to `helmRepository()`:
+```typescript
+helmRepository({
+  name: config.name || DEFAULT_MY_REPO_NAME,
+  namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
+  url: config.url || DEFAULT_MY_REPO_URL,
+  type: 'oci',  // ⚠️ Required for OCI — without this, Flux rejects the URL
+  interval: config.interval || '5m',
+});
+```
+
 #### Step 5: Bootstrap composition
 
 ```typescript
@@ -166,88 +196,144 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { DEFAULT_MY_REPO_NAME, DEFAULT_MY_VERSION, myHelmRelease, myHelmRepository } from '../resources/helm.js';
+
+// ⚠️ If the chart version differs from the app version (e.g., 'v0.0.61-chart' vs 'v0.0.61'),
+//    strip the suffix for labels:
+function stripChartSuffix(version: string): string {
+  return version.replace(/-chart$/, '');
+}
 
 // Pattern: namespace + HelmRepository + HelmRelease
-// Status: Cel.expr for ready/phase from HelmRelease conditions
+// Resources are _-prefixed — registered via side effects in the composition callback.
+
+// Status pattern — ALWAYS include all three fields:
 return {
   ready: Cel.expr<boolean>(
     _helmRelease.status.conditions,
     '.exists(c, c.type == "Ready" && c.status == "True")'
   ),
+  // ⚠️ Phase is two-state only — nested CEL ternaries break (#48)
   phase: Cel.expr<'Ready' | 'Installing'>(
     _helmRelease.status.conditions,
     '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
   ),
-  version: resolvedVersion,
+  // ⚠️ Use separate failed boolean for failure detection
+  failed: Cel.expr<boolean>(
+    _helmRelease.status.conditions,
+    '.exists(c, c.type == "Ready" && c.status == "False")'
+  ),
+  // ⚠️ Static — reflects deploy-time version, not runtime.
+  // Document this limitation.
+  version: appVersion,
 };
 ```
+
+**Labels:** Use `app.kubernetes.io/version` with the app version, not the chart version tag.
 
 #### Step 6: Tests
 
 **Unit tests** — for each resource:
 - Create with minimal config
-- Create with comprehensive config
-- Verify defaults applied
-- Readiness evaluator: test EVERY possible state (ready, not-ready variants, missing status)
+- Create with comprehensive config (all fields populated)
+- Verify defaults applied (if any)
+- Readiness evaluator: test EVERY possible state (ready, not-ready variants, missing status, intermediate states)
+- Authentication/TLS configuration variants
 
 **Unit tests** — for helm:
-- HelmRepository with defaults
+- HelmRepository with defaults (verify URL, namespace, type)
 - HelmRelease with defaults and custom values
 - mapConfigToHelmValues with various inputs
-- getHelmValueWarnings
+- getHelmValueWarnings (if any)
 
 **Integration tests:**
 - Deploy operator via bootstrap composition with `waitForReady: true`
-- Assert ALL status fields (ready, phase, version)
-- Verify CRDs are available after operator deploy
-- Create actual CRD resources and verify readiness
+- Assert ALL status fields: `ready`, `phase`, `failed`, `version`
 - Test YAML generation for KRO mode
-- Clean up with deleteInstance and deleteNamespaceAndWait
+- Test both `'kro'` and `'direct'` factory mode creation
+- Clean up with `deleteInstance` and `deleteNamespaceAndWait`
 
 #### Step 7: Documentation
 
-- `docs/api/{name}/index.md` — API reference with import examples, factory docs, readiness tables, composition usage, prerequisites
-- `docs/.vitepress/config.ts` — add sidebar nav entry in Ecosystems section
-- `package.json` — add `"./{name}"` export with import and types paths
+`docs/api/{name}/index.md`:
+- Import examples
+- Quick example with real-world config
+- Factory reference with all options
+- Readiness state table
+- Bootstrap composition with status field docs
+- Note about `phase` limitation and `failed` field for failure detection
+- Note about `'kro'` vs `'direct'` factory modes
+- Prerequisites (operator install, cert-manager for TLS, etc.)
+- Links to upstream docs
 
-#### Step 8: Validation checklist
+Also update:
+- `docs/.vitepress/config.ts` — sidebar nav entry (alphabetical in Ecosystems)
+- `package.json` — `"./{name}"` export with `import` and `types` paths
 
-Before submitting:
-- [ ] `bun run typecheck:lib` passes
-- [ ] `bun run test` passes (no regressions)
-- [ ] `bun test test/factories/{name}/` passes
-- [ ] `bun test test/integration/{name}/` passes against real cluster
-- [ ] Every interface field has a corresponding ArkType schema field
-- [ ] Every readiness state has a unit test
-- [ ] sanitizeHelmValues uses type guards, not raw property checks
-- [ ] Toleration uses proper union types (Exists|Equal, NoSchedule|PreferNoSchedule|NoExecute)
-- [ ] Docs page exists with sidebar nav entry
-- [ ] Package.json export exists
+#### Step 8: Self-review checklist
+
+Before submitting, verify each item:
+
+**Type safety:**
+- [ ] Every interface field has a corresponding ArkType schema field (go field-by-field)
+- [ ] Shared nested types extracted as `const schemaShape = { ... } as const` to prevent duplication drift
 - [ ] No `as any` in source code
-- [ ] JSDoc on all public APIs with @example
+- [ ] Toleration uses proper union types
+- [ ] `exactOptionalPropertyTypes`: never pass `undefined` explicitly to optional fields in tests
+
+**Constants & coupling:**
+- [ ] All string literals that appear more than once are extracted as exported constants
+- [ ] Helm repo name, version, URL are constants used by both the factory and the composition
+- [ ] `DEFAULT_FLUX_NAMESPACE` imported from core, not redeclared locally
+
+**Status & CEL:**
+- [ ] Bootstrap status has: `ready`, `phase` ('Ready' | 'Installing'), `failed`, `version?`
+- [ ] Phase uses simple two-state ternary (no nested `.exists()`)
+- [ ] `failed` uses separate single `.exists()` expression
+- [ ] Status type exactly matches what the CEL actually produces
+- [ ] `version` is documented as deploy-time, not runtime
+- [ ] Labels use app version (stripped of `-chart` suffix if needed)
+
+**Helm:**
+- [ ] `sanitizeHelmValues` uses `isKubernetesRef`/`isCelExpression` type guards
+- [ ] OCI registries have `type: 'oci'` on HelmRepository
+- [ ] Chart version tag format verified from operator's GitHub releases
+
+**Tests:**
+- [ ] Every readiness state has a unit test
+- [ ] Integration test asserts ALL status fields
+- [ ] Helm unit tests verify defaults, custom values, readiness evaluators
+
+**Docs & exports:**
+- [ ] API reference page exists with readiness table and limitations noted
+- [ ] Sidebar nav entry added (alphabetical order)
+- [ ] `package.json` export added
+- [ ] JSDoc on all public APIs with `@example`
 
 ### Code Style Rules
 
 - 2 spaces, single quotes, 100 char lines, trailing commas ES5, semicolons
 - `type` keyword for type-only imports
 - External imports first, internal second, types last
-- camelCase functions/variables, PascalCase types, UPPER_SNAKE constants
+- camelCase functions/variables, PascalCase types/interfaces, UPPER_SNAKE constants
 - Use `createResource` pattern (never raw k8s client in factories)
 - Use `bun` (never npm)
 
 ### Common Mistakes to Avoid
 
-1. **ArkType schema drift** — The #1 issue. Go field-by-field through every interface and verify the schema matches. Missing fields = silent validation failures for users. Check nested types too (e.g., if `ExternalCluster` has a `barmanObjectStore` field, the schema's `externalClusters` entry must also validate it).
-2. **Raw property checks in sanitizeHelmValues** — Always use `isKubernetesRef()`/`isCelExpression()` from `utils/type-guards.js`. Never use `'__isKubernetesRef' in value`.
-3. **String types for enums** — Use proper union types (`'Exists' | 'Equal'`) not `string`. This applies to Kubernetes types like Toleration.operator/effect, imagePullPolicy, etc.
+1. **ArkType schema drift** — The #1 issue across both CNPG and Valkey PRs. Go field-by-field. Extract shared schema shapes for types used in multiple places.
+2. **Raw property checks in sanitizeHelmValues** — Use `isKubernetesRef()`/`isCelExpression()`.
+3. **String types for enums** — Use union types (`'Exists' | 'Equal'`).
 4. **Missing `id` parameter** — Every resource in a composition MUST have `id: 'camelCase'`.
-5. **Forgetting docs/exports** — Every integration needs: docs page, sidebar entry, package.json export.
-6. **Testing only happy path** — Test ALL readiness states including failure, intermediate, and missing status.
-7. **Dead-code defaults contradicting types** — If a field is required in the interface, don't add `?? defaultValue` in the factory. Either make it optional (with documented default) or don't add a fallback. The type and runtime must agree.
-8. **DRY violation with `DEFAULT_FLUX_NAMESPACE`** — Import from `'../../../core/config/defaults.js'`, never redeclare locally.
-9. **Status type wider than CEL expression** — If your CEL can only produce `'Ready' | 'Installing'`, don't type the status field as `'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading'`. The type must match what the runtime actually produces.
-10. **Missing `conditions` on status types** — If your readiness evaluator uses `createConditionBasedReadinessEvaluator`, the status type must include `conditions?: Condition[]` even if the upstream docs don't prominently list it.
-11. **sanitizeHelmValues drops more than proxies** — The JSON round-trip also drops Date, undefined, functions, Infinity, NaN. Add a comment noting custom values must be JSON-serializable.
-12. **Incomplete nested schemas** — If an interface references a shared type (like `BarmanObjectStoreConfiguration`), every usage in the schema must include all the fields, not just a subset. Don't assume "the main schema covers it" — each nested reference in the schema is independent.
-13. **Nested CEL ternaries with `.exists()`** — `Cel.expr(ref, operator)` prepends the resource path once. A ternary like `.exists(...) ? "A" : (.exists(...) ? "B" : "C")` fails because the second `.exists()` has no receiver. Use simple two-state ternaries only. See [#48](https://github.com/yehudacohen/typekro/issues/48).
-14. **OCI Helm repositories** — Flux `HelmRepository` with `type: 'oci'` has no status field. The readiness evaluator handles this (checks `spec.type === 'oci'` + metadata presence), but OCI repos need `type: 'oci'` passed explicitly to `helmRepository()`. Also, the version tag format varies per operator (e.g., Hyperspike uses `v0.0.61-chart` not `0.0.61`).
+5. **Forgetting docs/exports** — Docs page, sidebar entry, package.json export.
+6. **Testing only happy path** — Test ALL readiness states.
+7. **Dead-code defaults contradicting types** — Type and runtime must agree.
+8. **DRY violation with constants** — Import `DEFAULT_FLUX_NAMESPACE` from core. Extract repo name/version/URL as exported constants.
+9. **Status type wider than CEL expression** — Type must match runtime output.
+10. **Missing `conditions` on status types** — If using condition-based evaluator, status needs `conditions?`.
+11. **sanitizeHelmValues drops more than proxies** — Document that custom values must be JSON-serializable.
+12. **Incomplete nested schemas** — Each nested schema reference is independent.
+13. **Nested CEL ternaries** — Only simple two-state ternaries work. Use `failed` boolean for failure detection. See [#48](https://github.com/yehudacohen/typekro/issues/48).
+14. **OCI Helm repositories** — Need `type: 'oci'`, have no status field, version tag format varies per operator.
+15. **String literal coupling** — After writing, grep for any string that appears in both a factory default and a composition. Extract as a constant.
+16. **Chart version in labels** — `app.kubernetes.io/version` should be the app version, not the chart tag. Strip `-chart` suffix.
