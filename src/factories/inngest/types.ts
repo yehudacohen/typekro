@@ -318,8 +318,6 @@ export interface InngestHelmRepositoryConfig {
   namespace?: string;
   /** OCI registry URL (default: 'oci://ghcr.io/inngest/inngest-helm'). */
   url?: string;
-  /** Repository type (default: 'oci'). */
-  type?: 'default' | 'oci';
   /** Sync interval (default: '5m'). */
   interval?: string;
   /** Resource ID for composition references. */

@@ -133,10 +133,12 @@ instance.status.version  // deployed chart version (static, deploy-time)
 
 ## Usage in Compositions
 
+> **Note:** This example uses [CloudNativePG](/api/cnpg/) and [Valkey](/api/valkey/)
+> for external databases. See their respective docs for setup.
+
 ```typescript
 import { type } from 'arktype';
 import { kubernetesComposition } from 'typekro';
-import { Deployment, Service } from 'typekro/simple';
 import { inngestBootstrap } from 'typekro/inngest';
 import { cluster } from 'typekro/cnpg';
 import { valkey } from 'typekro/valkey';

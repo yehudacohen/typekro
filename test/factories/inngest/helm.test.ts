@@ -82,7 +82,7 @@ describe('Inngest Helm Resources', () => {
     });
   });
 
-  describe('sanitizeHelmValues', () => {
+  describe('sanitizeHelmValues (tested indirectly via inngestHelmRelease)', () => {
     it('should pass through plain values intact', () => {
       const release = inngestHelmRelease({
         name: 'inngest',
@@ -102,9 +102,73 @@ describe('Inngest Helm Resources', () => {
       expect(release.spec.values?.array).toEqual([1, 2, 3]);
     });
 
+    it('should strip KubernetesRef-branded objects from values', () => {
+      // Construct a mock object matching the KubernetesRef brand check.
+      // isKubernetesRef uses Reflect.get(obj, KUBERNETES_REF_BRAND) === true
+      const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.KubernetesRef');
+      const mockRef = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: 'someResource',
+        fieldPath: 'status.ready',
+      };
+
+      const release = inngestHelmRelease({
+        name: 'inngest',
+        values: {
+          safe: 'keep-me',
+          dangerous: mockRef as any,
+          nested: { alsoSafe: true, ref: mockRef as any },
+        },
+      });
+
+      expect(release.spec.values?.safe).toBe('keep-me');
+      // The branded ref should be stripped (undefined → omitted from JSON)
+      expect(release.spec.values?.dangerous).toBeUndefined();
+      expect((release.spec.values?.nested as any)?.alsoSafe).toBe(true);
+      expect((release.spec.values?.nested as any)?.ref).toBeUndefined();
+    });
+
+    it('should strip CelExpression-branded objects from values', () => {
+      const CEL_EXPRESSION_BRAND = Symbol.for('TypeKro.CelExpression');
+      const mockCel = {
+        [CEL_EXPRESSION_BRAND]: true,
+        expression: 'resource.status.ready',
+      };
+
+      const release = inngestHelmRelease({
+        name: 'inngest',
+        values: {
+          keep: 'this',
+          celValue: mockCel as any,
+        },
+      });
+
+      expect(release.spec.values?.keep).toBe('this');
+      expect(release.spec.values?.celValue).toBeUndefined();
+    });
+
+    it('should handle mixed plain and branded values', () => {
+      const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.KubernetesRef');
+      const CEL_EXPRESSION_BRAND = Symbol.for('TypeKro.CelExpression');
+
+      const release = inngestHelmRelease({
+        name: 'inngest',
+        values: {
+          replicaCount: 3,
+          ref: { [KUBERNETES_REF_BRAND]: true, resourceId: 'x', fieldPath: 'status.ready' } as any,
+          cel: { [CEL_EXPRESSION_BRAND]: true, expression: 'y' } as any,
+          inngest: { eventKey: 'abc', signingKey: 'def' },
+        },
+      });
+
+      expect(release.spec.values?.replicaCount).toBe(3);
+      expect(release.spec.values?.ref).toBeUndefined();
+      expect(release.spec.values?.cel).toBeUndefined();
+      expect((release.spec.values?.inngest as any)?.eventKey).toBe('abc');
+    });
+
     it('should return empty values when no values provided', () => {
       const release = inngestHelmRelease({ name: 'inngest' });
-      // Values should be an empty object (no undefined)
       expect(release.spec.values).toBeDefined();
     });
   });

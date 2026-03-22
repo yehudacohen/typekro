@@ -69,6 +69,7 @@ export interface InngestHelmValues {
     operator?: string;
     value?: string;
     effect?: string;
+    tolerationSeconds?: number;
   }>;
   [key: string]: unknown;
 }
