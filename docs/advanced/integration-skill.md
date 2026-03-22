@@ -273,9 +273,20 @@ Also update:
 - `docs/.vitepress/config.ts` — sidebar nav entry (alphabetical in Ecosystems)
 - `package.json` — `"./{name}"` export with `import` and `types` paths
 
-#### Step 8: Self-review checklist
+#### Step 8: Build, lint, and self-review checklist
 
-Before submitting, verify each item:
+Run the full build and lint before reviewing:
+```bash
+bun run typecheck:lib    # type-check
+bun run lint             # Biome lint — must have 0 errors
+bun run test             # full test suite — 0 failures
+bun test test/factories/{name}/       # integration-specific unit tests
+bun test test/integration/{name}/     # integration tests against cluster
+```
+
+⚠️ `bun run lint` catches unused imports, which the pre-commit hook and CI will reject. Always run it before pushing.
+
+Then verify each item:
 
 **Type safety:**
 - [ ] Every interface field has a corresponding ArkType schema field (go field-by-field)
