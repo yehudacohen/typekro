@@ -54,6 +54,10 @@
       "import": "./dist/factories/external-dns/index.js",
       "types": "./dist/factories/external-dns/index.d.ts"
     },
+    "./inngest": {
+      "import": "./dist/factories/inngest/index.js",
+      "types": "./dist/factories/inngest/index.d.ts"
+    },
     "./pebble": {
       "import": "./dist/factories/pebble/index.js",
       "types": "./dist/factories/pebble/index.d.ts"

@@ -87,6 +87,7 @@ export default withMermaid(
               { text: 'Kro Runtime Bootstrap', link: '/api/kro/compositions/runtime' },
               { text: 'APISix', link: '/api/apisix/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
+              { text: 'Inngest', link: '/api/inngest/' },
               { text: 'Pebble', link: '/api/pebble/' },
               { text: 'Valkey', link: '/api/valkey/' },
             ],
