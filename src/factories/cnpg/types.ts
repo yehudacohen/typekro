@@ -73,7 +73,7 @@ export interface CnpgBootstrapConfig {
  */
 export interface CnpgBootstrapStatus {
   /** Overall deployment phase (derived from HelmRelease Ready condition). */
-  phase: 'Ready' | 'Installing';
+  phase: 'Ready' | 'Installing' | 'Failed';
   /** Whether the operator is ready to manage clusters. */
   ready: boolean;
   /** Deployed chart version. */
@@ -97,7 +97,7 @@ export const CnpgBootstrapConfigSchema: Type<CnpgBootstrapConfig> = type({
 
 /** ArkType schema for CnpgBootstrapStatus. */
 export const CnpgBootstrapStatusSchema: Type<CnpgBootstrapStatus> = type({
-  phase: '"Ready" | "Installing"',
+  phase: '"Ready" | "Installing" | "Failed"',
   ready: 'boolean',
   'version?': 'string',
 });
@@ -108,8 +108,8 @@ export const CnpgBootstrapStatusSchema: Type<CnpgBootstrapStatus> = type({
 
 /** PVC-based storage configuration for a CNPG cluster. */
 export interface StorageConfiguration {
-  /** Storage size (e.g. '10Gi', '100Gi'). Default: '10Gi'. */
-  size?: string;
+  /** Storage size (e.g. '10Gi', '100Gi'). Required. */
+  size: string;
   /** Storage class name (e.g. 'gp3', 'standard'). */
   storageClass?: string;
   /** Allow online volume resize (default: true on supported storage classes). */
@@ -352,6 +352,38 @@ export interface ClusterStatus {
   };
 }
 
+/** Shared ArkType schema shape for BarmanObjectStoreConfiguration. */
+const barmanObjectStoreSchemaShape = {
+  destinationPath: 'string',
+  's3Credentials?': {
+    accessKeyId: { name: 'string', key: 'string' },
+    secretAccessKey: { name: 'string', key: 'string' },
+    'region?': 'string',
+    'sessionToken?': { name: 'string', key: 'string' },
+  },
+  'azureCredentials?': {
+    'connectionString?': { name: 'string', key: 'string' },
+    'storageAccount?': { name: 'string', key: 'string' },
+    'storageKey?': { name: 'string', key: 'string' },
+  },
+  'googleCredentials?': {
+    'gkeEnvironment?': 'boolean',
+  },
+  'endpointURL?': 'string',
+  'serverName?': 'string',
+  'data?': {
+    'compression?': 'string',
+    'encryption?': 'string',
+    'jobs?': 'number',
+    'immediateCheckpoint?': 'boolean',
+  },
+  'wal?': {
+    'compression?': 'string',
+    'maxParallel?': 'number',
+  },
+  'tags?': 'Record<string, string>',
+} as const;
+
 /** ArkType schema for ClusterConfig. */
 export const ClusterConfigSchema: Type<ClusterConfig> = type({
   name: 'string',
@@ -363,7 +395,7 @@ export const ClusterConfigSchema: Type<ClusterConfig> = type({
     'imagePullPolicy?': 'string',
     'imagePullSecrets?': type({ name: 'string' }).array(),
     storage: {
-      'size?': 'string',
+      size: 'string',
       'storageClass?': 'string',
       'resizeInUseVolumes?': 'boolean',
       'pvcTemplate?': {
@@ -399,36 +431,7 @@ export const ClusterConfigSchema: Type<ClusterConfig> = type({
       },
     },
     'backup?': {
-      'barmanObjectStore?': {
-        destinationPath: 'string',
-        's3Credentials?': {
-          accessKeyId: { name: 'string', key: 'string' },
-          secretAccessKey: { name: 'string', key: 'string' },
-          'region?': 'string',
-          'sessionToken?': { name: 'string', key: 'string' },
-        },
-        'azureCredentials?': {
-          'connectionString?': { name: 'string', key: 'string' },
-          'storageAccount?': { name: 'string', key: 'string' },
-          'storageKey?': { name: 'string', key: 'string' },
-        },
-        'googleCredentials?': {
-          'gkeEnvironment?': 'boolean',
-        },
-        'endpointURL?': 'string',
-        'serverName?': 'string',
-        'data?': {
-          'compression?': 'string',
-          'encryption?': 'string',
-          'jobs?': 'number',
-          'immediateCheckpoint?': 'boolean',
-        },
-        'wal?': {
-          'compression?': 'string',
-          'maxParallel?': 'number',
-        },
-        'tags?': 'Record<string, string>',
-      },
+      'barmanObjectStore?': barmanObjectStoreSchemaShape,
       'retentionPolicy?': 'string',
       'target?': '"primary" | "prefer-standby"',
       'volumeSnapshot?': {
@@ -471,36 +474,7 @@ export const ClusterConfigSchema: Type<ClusterConfig> = type({
     'externalClusters?': type({
       name: 'string',
       'connectionParameters?': 'Record<string, string>',
-      'barmanObjectStore?': {
-        destinationPath: 'string',
-        's3Credentials?': {
-          accessKeyId: { name: 'string', key: 'string' },
-          secretAccessKey: { name: 'string', key: 'string' },
-          'region?': 'string',
-          'sessionToken?': { name: 'string', key: 'string' },
-        },
-        'azureCredentials?': {
-          'connectionString?': { name: 'string', key: 'string' },
-          'storageAccount?': { name: 'string', key: 'string' },
-          'storageKey?': { name: 'string', key: 'string' },
-        },
-        'googleCredentials?': {
-          'gkeEnvironment?': 'boolean',
-        },
-        'endpointURL?': 'string',
-        'serverName?': 'string',
-        'data?': {
-          'compression?': 'string',
-          'encryption?': 'string',
-          'jobs?': 'number',
-          'immediateCheckpoint?': 'boolean',
-        },
-        'wal?': {
-          'compression?': 'string',
-          'maxParallel?': 'number',
-        },
-        'tags?': 'Record<string, string>',
-      },
+      'barmanObjectStore?': barmanObjectStoreSchemaShape,
       'password?': { name: 'string', key: 'string' },
     }).array(),
   },
@@ -685,7 +659,7 @@ export interface PoolerConfig {
   spec: {
     /** Target cluster reference. Required. */
     cluster: LocalObjectReference;
-    /** Pooler type: 'rw' (read-write), 'ro' (read-only), 'r' (replica). */
+    /** Pooler type: 'rw' (read-write primary), 'ro' (read-only, any replica), 'r' (load-balanced across all standbys). */
     type?: 'rw' | 'ro' | 'r';
     /** Number of PgBouncer replicas (default: 1). */
     instances?: number;

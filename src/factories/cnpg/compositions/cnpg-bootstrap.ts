@@ -57,7 +57,9 @@ export const cnpgBootstrap = kubernetesComposition(
       version: resolvedVersion,
     });
 
-    // Create namespace for the CNPG operator
+    // Resources are _-prefixed because they're registered via side effects in the
+    // kubernetesComposition callback — the composition captures them automatically.
+    // They're referenced in the status return via their `id`.
     const _cnpgNamespace = namespace({
       metadata: {
         name: resolvedNamespace,
@@ -95,9 +97,12 @@ export const cnpgBootstrap = kubernetesComposition(
         _helmRelease.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True")'
       ),
-      phase: Cel.expr<'Ready' | 'Installing'>(
+      // Three-state phase: Ready if condition is True, Failed if condition is
+      // explicitly False (not just missing/Unknown), Installing otherwise.
+      phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
         _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
+        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : '
+        + '(.exists(c, c.type == "Ready" && c.status == "False") ? "Failed" : "Installing")'
       ),
       version: resolvedVersion,
     };

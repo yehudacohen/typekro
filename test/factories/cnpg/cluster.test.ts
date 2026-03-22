@@ -109,17 +109,27 @@ describe('CNPG Cluster Factory', () => {
       expect(db.spec.backup?.retentionPolicy).toBe('30d');
     });
 
-    it('should apply default values', () => {
+    it('should default instances to 1 when omitted', () => {
       const db = cluster({
         name: 'defaults-test',
         spec: {
-          instances: 1,
           storage: { size: '10Gi' },
         },
       });
 
-      // instances should be passed through as-is
       expect(db.spec.instances).toBe(1);
+    });
+
+    it('should pass through explicit instances value', () => {
+      const db = cluster({
+        name: 'explicit-test',
+        spec: {
+          instances: 5,
+          storage: { size: '10Gi' },
+        },
+      });
+
+      expect(db.spec.instances).toBe(5);
     });
   });
 

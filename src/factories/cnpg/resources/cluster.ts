@@ -10,6 +10,21 @@ import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ClusterConfig, ClusterStatus } from '../types.js';
 
+/**
+ * Known CNPG cluster phase strings.
+ *
+ * These are human-readable strings from the CNPG operator status.phase field.
+ * Extracted as constants for maintainability — if CNPG changes these strings
+ * in a future operator release, updates are centralized here.
+ */
+export const CNPG_CLUSTER_PHASES = {
+  HEALTHY: 'Cluster in healthy state',
+  SETTING_UP_PRIMARY: 'Setting up primary',
+  CREATING_REPLICA: 'Creating replica',
+  FAILING_OVER: 'Failing over',
+  SWITCHOVER: 'Switchover in progress',
+} as const;
+
 /** Base condition-based evaluator for Cluster Ready condition. */
 const baseClusterEvaluator = createConditionBasedReadinessEvaluator({ kind: 'Cluster' });
 
@@ -32,9 +47,9 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
     };
   }
 
-  // Check phase-based readiness (CNPG-specific)
   const phase = status.phase;
-  if (phase === 'Cluster in healthy state') {
+
+  if (phase === CNPG_CLUSTER_PHASES.HEALTHY) {
     return {
       ready: true,
       message: `Cluster is healthy (${status.readyInstances ?? 0}/${status.instances ?? 0} instances ready)`,
@@ -42,7 +57,7 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
     };
   }
 
-  if (phase === 'Setting up primary') {
+  if (phase === CNPG_CLUSTER_PHASES.SETTING_UP_PRIMARY) {
     return {
       ready: false,
       message: 'Cluster is setting up the primary instance',
@@ -50,7 +65,7 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
     };
   }
 
-  if (phase === 'Creating replica') {
+  if (phase === CNPG_CLUSTER_PHASES.CREATING_REPLICA) {
     return {
       ready: false,
       message: `Creating replicas (${status.readyInstances ?? 0}/${status.instances ?? 0} ready)`,
@@ -58,7 +73,7 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
     };
   }
 
-  if (phase === 'Failing over' || phase === 'Switchover in progress') {
+  if (phase === CNPG_CLUSTER_PHASES.FAILING_OVER || phase === CNPG_CLUSTER_PHASES.SWITCHOVER) {
     return {
       ready: false,
       message: `Cluster is performing failover: ${phase}`,
@@ -66,7 +81,7 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
     };
   }
 
-  // Fall back to condition-based evaluation
+  // Fall back to condition-based evaluation for unknown phases
   return baseClusterEvaluator(liveResource);
 }
 
@@ -107,10 +122,6 @@ function createClusterResource(
     spec: {
       ...config.spec,
       instances: config.spec.instances ?? 1,
-      storage: {
-        ...config.spec.storage,
-        size: config.spec.storage?.size || '10Gi',
-      },
     },
   };
 

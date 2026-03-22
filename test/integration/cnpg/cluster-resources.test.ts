@@ -62,13 +62,14 @@ describe('CNPG Cluster Resource Integration Tests', () => {
       expect(db.spec.bootstrap?.initdb?.owner).toBe('app');
     });
 
-    it('should apply default storage size when not specified', () => {
+    it('should apply default instances when not specified', () => {
       const db = cluster({
         name: 'defaults-pg',
-        spec: { storage: {} },
+        spec: { storage: { size: '5Gi' } },
       });
 
-      expect(db.spec.storage.size).toBe('10Gi');
+      // instances defaults to 1 when omitted
+      expect(db.spec.instances).toBe(1);
     });
 
     it('should evaluate readiness for healthy cluster', () => {
