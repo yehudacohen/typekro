@@ -47,6 +47,7 @@ export default withMermaid(
               { text: 'JavaScript to CEL', link: '/guide/javascript-to-cel' },
               { text: 'Deployment Modes', link: '/guide/deployment-modes' },
               { text: 'External References', link: '/guide/external-references' },
+              { text: 'Type Safety Patterns', link: '/guide/type-safety' },
               { text: 'Troubleshooting', link: '/guide/troubleshooting' },
             ],
           },
