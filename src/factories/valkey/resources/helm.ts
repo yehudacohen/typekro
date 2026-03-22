@@ -72,7 +72,7 @@ export function valkeyHelmRepository(
   config: ValkeyHelmRepositoryConfig
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return helmRepository({
-    name: config.name || 'valkey-operator-repo',
+    name: config.name || DEFAULT_VALKEY_REPO_NAME,
     namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     url: config.url || DEFAULT_VALKEY_REPO_URL,
     type: 'oci',
@@ -114,7 +114,7 @@ export function valkeyHelmRelease(
       version: config.version || DEFAULT_VALKEY_VERSION,
     },
     sourceRef: {
-      name: config.repositoryName || 'valkey-operator-repo',
+      name: config.repositoryName || DEFAULT_VALKEY_REPO_NAME,
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
