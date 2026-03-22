@@ -73,7 +73,7 @@ export interface CnpgBootstrapConfig {
  */
 export interface CnpgBootstrapStatus {
   /** Overall deployment phase (derived from HelmRelease Ready condition). */
-  phase: 'Ready' | 'Installing' | 'Failed';
+  phase: 'Ready' | 'Installing';
   /** Whether the operator is ready to manage clusters. */
   ready: boolean;
   /** Deployed chart version. */
@@ -97,7 +97,7 @@ export const CnpgBootstrapConfigSchema: Type<CnpgBootstrapConfig> = type({
 
 /** ArkType schema for CnpgBootstrapStatus. */
 export const CnpgBootstrapStatusSchema: Type<CnpgBootstrapStatus> = type({
-  phase: '"Ready" | "Installing" | "Failed"',
+  phase: '"Ready" | "Installing"',
   ready: 'boolean',
   'version?': 'string',
 });

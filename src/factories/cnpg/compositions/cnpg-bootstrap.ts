@@ -97,12 +97,12 @@ export const cnpgBootstrap = kubernetesComposition(
         _helmRelease.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True")'
       ),
-      // Three-state phase: Ready if condition is True, Failed if condition is
-      // explicitly False (not just missing/Unknown), Installing otherwise.
-      phase: Cel.expr<'Ready' | 'Installing' | 'Failed'>(
+      // Two-state phase: nested ternaries with .exists() require repeating the
+      // full resource path in CEL, which Cel.expr(ref, operator) cannot express.
+      // The second .exists() lacks a receiver and produces invalid CEL.
+      phase: Cel.expr<'Ready' | 'Installing'>(
         _helmRelease.status.conditions,
-        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : '
-        + '(.exists(c, c.type == "Ready" && c.status == "False") ? "Failed" : "Installing")'
+        '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
       ),
       version: resolvedVersion,
     };
