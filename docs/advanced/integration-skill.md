@@ -237,9 +237,15 @@ Before submitting:
 
 ### Common Mistakes to Avoid
 
-1. **ArkType schema drift** — The #1 issue. Go field-by-field through every interface and verify the schema matches. Missing fields = silent validation failures for users.
-2. **Raw property checks in sanitizeHelmValues** — Always use `isKubernetesRef()`/`isCelExpression()` from `utils/type-guards.js`.
-3. **String types for enums** — Use proper union types (`'Exists' | 'Equal'`) not `string`.
+1. **ArkType schema drift** — The #1 issue. Go field-by-field through every interface and verify the schema matches. Missing fields = silent validation failures for users. Check nested types too (e.g., if `ExternalCluster` has a `barmanObjectStore` field, the schema's `externalClusters` entry must also validate it).
+2. **Raw property checks in sanitizeHelmValues** — Always use `isKubernetesRef()`/`isCelExpression()` from `utils/type-guards.js`. Never use `'__isKubernetesRef' in value`.
+3. **String types for enums** — Use proper union types (`'Exists' | 'Equal'`) not `string`. This applies to Kubernetes types like Toleration.operator/effect, imagePullPolicy, etc.
 4. **Missing `id` parameter** — Every resource in a composition MUST have `id: 'camelCase'`.
 5. **Forgetting docs/exports** — Every integration needs: docs page, sidebar entry, package.json export.
 6. **Testing only happy path** — Test ALL readiness states including failure, intermediate, and missing status.
+7. **Dead-code defaults contradicting types** — If a field is required in the interface, don't add `?? defaultValue` in the factory. Either make it optional (with documented default) or don't add a fallback. The type and runtime must agree.
+8. **DRY violation with `DEFAULT_FLUX_NAMESPACE`** — Import from `'../../../core/config/defaults.js'`, never redeclare locally.
+9. **Status type wider than CEL expression** — If your CEL can only produce `'Ready' | 'Installing'`, don't type the status field as `'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading'`. The type must match what the runtime actually produces.
+10. **Missing `conditions` on status types** — If your readiness evaluator uses `createConditionBasedReadinessEvaluator`, the status type must include `conditions?: Condition[]` even if the upstream docs don't prominently list it.
+11. **sanitizeHelmValues drops more than proxies** — The JSON round-trip also drops Date, undefined, functions, Infinity, NaN. Add a comment noting custom values must be JSON-serializable.
+12. **Incomplete nested schemas** — If an interface references a shared type (like `BarmanObjectStoreConfiguration`), every usage in the schema must include all the fields, not just a subset. Don't assume "the main schema covers it" — each nested reference in the schema is independent.
