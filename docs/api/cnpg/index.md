@@ -146,8 +146,10 @@ The cluster readiness evaluator tracks CNPG-specific lifecycle phases:
 | Setting up primary | `false` | `SettingUpPrimary` |
 | Creating replica | `false` | `CreatingReplica` |
 | Failing over | `false` | `Failover` |
-| Switchover in progress | `false` | `Failover` |
+| Switchover in progress | `false` | `Failover`* |
 | Unknown phase | Falls back to condition-based evaluation |
+
+*Switchover (planned) and failover (unplanned) are both transient non-ready states. They share the `Failover` reason since both represent a primary transition in progress.
 
 ### Bootstrap Methods
 
@@ -266,7 +268,7 @@ await factory.deploy({
 
 ```typescript
 instance.status.ready    // boolean — operator is running
-instance.status.phase    // 'Ready' | 'Installing'
+instance.status.phase    // 'Ready' | 'Installing' (derived from HelmRelease condition)
 instance.status.version  // deployed chart version
 ```
 

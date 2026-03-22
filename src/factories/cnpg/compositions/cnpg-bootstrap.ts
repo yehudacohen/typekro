@@ -95,7 +95,7 @@ export const cnpgBootstrap = kubernetesComposition(
         _helmRelease.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True")'
       ),
-      phase: Cel.expr<'Ready' | 'Pending' | 'Installing' | 'Failed' | 'Upgrading'>(
+      phase: Cel.expr<'Ready' | 'Installing'>(
         _helmRelease.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "True") ? "Ready" : "Installing"'
       ),

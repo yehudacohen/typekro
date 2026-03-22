@@ -5,6 +5,7 @@
  * Used by the cnpgBootstrap composition to install the operator.
  */
 
+import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
@@ -24,14 +25,12 @@ const DEFAULT_CNPG_REPO_URL = 'https://cloudnative-pg.github.io/charts';
 /** Default chart version. */
 const DEFAULT_CNPG_VERSION = '0.23.0';
 
-/** Default Flux namespace for HelmRepository resources. */
-const DEFAULT_FLUX_NAMESPACE = 'flux-system';
-
 /**
  * Sanitize Helm values by removing non-serializable objects.
  *
- * Helm values cannot contain KubernetesRef proxies or CelExpression objects.
- * This round-trips through JSON to strip them.
+ * Strips KubernetesRef proxies and CelExpression objects via JSON round-trip.
+ * Note: this also drops Date objects, functions, Infinity, and NaN — custom
+ * values must be JSON-serializable primitives, arrays, and plain objects.
  */
 function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(
@@ -98,6 +97,8 @@ export function cnpgHelmRelease(
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   const sanitizedValues = config.values ? sanitizeHelmValues(config.values) : {};
 
+  // chart.repository is used for chart identification; sourceRef is what Flux
+  // actually uses to resolve the chart. Both are required by the helmRelease factory.
   return helmRelease({
     name: config.name,
     namespace: config.namespace || 'cnpg-system',

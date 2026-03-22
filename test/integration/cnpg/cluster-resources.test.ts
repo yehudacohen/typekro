@@ -65,7 +65,7 @@ describe('CNPG Cluster Resource Integration Tests', () => {
     it('should apply default storage size when not specified', () => {
       const db = cluster({
         name: 'defaults-pg',
-        spec: { instances: 1, storage: {} as any },
+        spec: { storage: {} },
       });
 
       expect(db.spec.storage.size).toBe('10Gi');

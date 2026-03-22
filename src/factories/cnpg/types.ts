@@ -72,8 +72,8 @@ export interface CnpgBootstrapConfig {
  * Observed status of a CloudNativePG operator deployment.
  */
 export interface CnpgBootstrapStatus {
-  /** Overall deployment phase. */
-  phase: 'Pending' | 'Installing' | 'Ready' | 'Failed' | 'Upgrading';
+  /** Overall deployment phase (derived from HelmRelease Ready condition). */
+  phase: 'Ready' | 'Installing';
   /** Whether the operator is ready to manage clusters. */
   ready: boolean;
   /** Deployed chart version. */
@@ -97,7 +97,7 @@ export const CnpgBootstrapConfigSchema: Type<CnpgBootstrapConfig> = type({
 
 /** ArkType schema for CnpgBootstrapStatus. */
 export const CnpgBootstrapStatusSchema: Type<CnpgBootstrapStatus> = type({
-  phase: '"Pending" | "Installing" | "Ready" | "Failed" | "Upgrading"',
+  phase: '"Ready" | "Installing"',
   ready: 'boolean',
   'version?': 'string',
 });
@@ -108,8 +108,8 @@ export const CnpgBootstrapStatusSchema: Type<CnpgBootstrapStatus> = type({
 
 /** PVC-based storage configuration for a CNPG cluster. */
 export interface StorageConfiguration {
-  /** Storage size (e.g. '10Gi', '100Gi'). Required. */
-  size: string;
+  /** Storage size (e.g. '10Gi', '100Gi'). Default: '10Gi'. */
+  size?: string;
   /** Storage class name (e.g. 'gp3', 'standard'). */
   storageClass?: string;
   /** Allow online volume resize (default: true on supported storage classes). */
@@ -289,8 +289,8 @@ export interface ClusterConfig {
   id?: string;
   /** Cluster specification. */
   spec: {
-    /** Number of PostgreSQL instances (primary + replicas). Required. */
-    instances: number;
+    /** Number of PostgreSQL instances (primary + replicas). Default: 1. */
+    instances?: number;
     /** PostgreSQL container image. */
     imageName?: string;
     /** Image pull policy. */
@@ -358,12 +358,12 @@ export const ClusterConfigSchema: Type<ClusterConfig> = type({
   'namespace?': 'string',
   'id?': 'string',
   spec: {
-    instances: 'number',
+    'instances?': 'number',
     'imageName?': 'string',
     'imagePullPolicy?': 'string',
     'imagePullSecrets?': type({ name: 'string' }).array(),
     storage: {
-      size: 'string',
+      'size?': 'string',
       'storageClass?': 'string',
       'resizeInUseVolumes?': 'boolean',
       'pvcTemplate?': {
@@ -457,7 +457,11 @@ export const ClusterConfigSchema: Type<ClusterConfig> = type({
       'topologyKey?': 'string',
       'podAntiAffinityType?': '"preferred" | "required"',
     },
-    'monitoring?': { 'enabled?': 'boolean', 'podMonitorEnabled?': 'boolean' },
+    'monitoring?': {
+      'enabled?': 'boolean',
+      'customQueriesConfigMap?': type({ name: 'string' }).array(),
+      'podMonitorEnabled?': 'boolean',
+    },
     'certificates?': {
       'serverCASecret?': 'string',
       'serverTLSSecret?': 'string',
@@ -473,9 +477,29 @@ export const ClusterConfigSchema: Type<ClusterConfig> = type({
           accessKeyId: { name: 'string', key: 'string' },
           secretAccessKey: { name: 'string', key: 'string' },
           'region?': 'string',
+          'sessionToken?': { name: 'string', key: 'string' },
+        },
+        'azureCredentials?': {
+          'connectionString?': { name: 'string', key: 'string' },
+          'storageAccount?': { name: 'string', key: 'string' },
+          'storageKey?': { name: 'string', key: 'string' },
+        },
+        'googleCredentials?': {
+          'gkeEnvironment?': 'boolean',
         },
         'endpointURL?': 'string',
         'serverName?': 'string',
+        'data?': {
+          'compression?': 'string',
+          'encryption?': 'string',
+          'jobs?': 'number',
+          'immediateCheckpoint?': 'boolean',
+        },
+        'wal?': {
+          'compression?': 'string',
+          'maxParallel?': 'number',
+        },
+        'tags?': 'Record<string, string>',
       },
       'password?': { name: 'string', key: 'string' },
     }).array(),
@@ -597,6 +621,8 @@ export interface ScheduledBackupConfig {
  * Observed status of a scheduled backup.
  */
 export interface ScheduledBackupStatus {
+  /** Status conditions. */
+  conditions?: ClusterCondition[];
   /** Latest schedule evaluation time. */
   lastCheckTime?: string;
   /** Most recent backup trigger time. */
