@@ -136,6 +136,8 @@ Install the Hyperspike Valkey operator via Helm:
 ```typescript
 import { valkeyBootstrap } from 'typekro/valkey';
 
+// 'kro' = KRO mode — creates a ResourceGraphDefinition for continuous reconciliation
+// 'direct' = Direct mode — applies resources immediately without KRO controller
 const factory = valkeyBootstrap.factory('kro', {
   namespace: 'valkey-operator-system',
   waitForReady: true,
@@ -152,8 +154,14 @@ await factory.deploy({
 ```typescript
 instance.status.ready    // boolean — operator is running
 instance.status.phase    // 'Ready' | 'Installing'
-instance.status.version  // deployed chart version
+instance.status.failed   // boolean — true if Ready condition is explicitly False
+instance.status.version  // deployed operator version (app version, not chart version)
 ```
+
+> **Note:** `phase` cannot distinguish `'Failed'` from `'Installing'` due to a
+> [CEL evaluator limitation](https://github.com/yehudacohen/typekro/issues/48).
+> Use the `failed` field to detect deployment failures. If `failed` is `true`,
+> check the HelmRelease conditions directly for failure details.
 
 ## Usage in Compositions
 
@@ -187,7 +195,7 @@ const AppWithCache = kubernetesComposition({
 
   return {
     ready: deploy.status.readyReplicas > 0,
-    cacheReady: cache.status.ready || false,
+    cacheReady: cache.status.ready,
   };
 });
 ```

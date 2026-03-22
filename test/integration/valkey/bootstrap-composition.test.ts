@@ -50,7 +50,8 @@ describe('Valkey Bootstrap Composition Tests', () => {
     // All status fields — hydrated after waitForReady
     expect(instance.status.ready).toBe(true);
     expect(instance.status.phase).toBe('Ready');
-    expect(instance.status.version).toBe('v0.0.61-chart');
+    expect(instance.status.failed).toBe(false);
+    expect(instance.status.version).toBe('v0.0.61');
 
     await factory.deleteInstance('valkey-operator');
   }, 900000);

@@ -24,10 +24,13 @@ import { helmRelease } from '../../helm/helm-release.js';
 import type { ValkeyHelmReleaseConfig, ValkeyHelmRepositoryConfig } from '../types.js';
 
 /** Default OCI registry URL for the Hyperspike charts. */
-const DEFAULT_VALKEY_REPO_URL = 'oci://ghcr.io/hyperspike';
+export const DEFAULT_VALKEY_REPO_URL = 'oci://ghcr.io/hyperspike';
 
 /** Default chart version (Hyperspike uses 'v{version}-chart' tag format). */
-const DEFAULT_VALKEY_VERSION = 'v0.0.61-chart';
+export const DEFAULT_VALKEY_VERSION = 'v0.0.61-chart';
+
+/** Default HelmRepository resource name. */
+export const DEFAULT_VALKEY_REPO_NAME = 'valkey-operator-repo';
 
 /**
  * Sanitize Helm values by removing non-serializable objects.

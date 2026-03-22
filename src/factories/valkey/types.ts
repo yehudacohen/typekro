@@ -62,12 +62,15 @@ export interface ValkeyBootstrapConfig {
 export interface ValkeyBootstrapStatus {
   /**
    * Overall deployment phase (derived from HelmRelease Ready condition).
-   * 'Failed' indicates the Ready condition is explicitly False.
+   * Note: cannot distinguish Failed from Installing due to CEL limitation (#48).
+   * Use the `failed` field for failure detection.
    */
   phase: 'Ready' | 'Installing';
   /** Whether the operator is ready to manage Valkey clusters. */
   ready: boolean;
-  /** Deployed chart version. */
+  /** Whether the HelmRelease Ready condition is explicitly False. */
+  failed: boolean;
+  /** Deployed operator version (app version, not chart version). */
   version?: string;
 }
 
@@ -83,6 +86,7 @@ export const ValkeyBootstrapConfigSchema: Type<ValkeyBootstrapConfig> = type({
 export const ValkeyBootstrapStatusSchema: Type<ValkeyBootstrapStatus> = type({
   phase: '"Ready" | "Installing"',
   ready: 'boolean',
+  failed: 'boolean',
   'version?': 'string',
 });
 
