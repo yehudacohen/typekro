@@ -6,7 +6,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -62,7 +62,7 @@ function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unk
  * ```
  */
 export function cnpgHelmRepository(
-  config: CnpgHelmRepositoryConfig
+  config: Composable<CnpgHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return helmRepository({
     name: config.name || 'cnpg-repo',
@@ -93,7 +93,7 @@ export function cnpgHelmRepository(
  * ```
  */
 export function cnpgHelmRelease(
-  config: CnpgHelmReleaseConfig
+  config: Composable<CnpgHelmReleaseConfig>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   const sanitizedValues = config.values ? sanitizeHelmValues(config.values) : {};
 

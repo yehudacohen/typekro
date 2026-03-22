@@ -4,7 +4,7 @@
  * Creates a CNPG Backup resource for on-demand PostgreSQL backups.
  */
 
-import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { BackupConfig, BackupStatus } from '../types.js';
 
@@ -83,7 +83,7 @@ function backupReadinessEvaluator(liveResource: unknown): ResourceStatus {
  * ```
  */
 function createBackupResource(
-  config: BackupConfig
+  config: Composable<BackupConfig>
 ): Enhanced<BackupConfig['spec'], BackupStatus> {
   return createResource(
     {

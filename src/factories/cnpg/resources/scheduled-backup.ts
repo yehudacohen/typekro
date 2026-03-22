@@ -5,7 +5,7 @@
  */
 
 import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
-import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ScheduledBackupConfig, ScheduledBackupStatus } from '../types.js';
 
@@ -61,7 +61,7 @@ function scheduledBackupReadinessEvaluator(liveResource: unknown): ResourceStatu
  * ```
  */
 function createScheduledBackupResource(
-  config: ScheduledBackupConfig
+  config: Composable<ScheduledBackupConfig>
 ): Enhanced<ScheduledBackupConfig['spec'], ScheduledBackupStatus> {
   return createResource(
     {

@@ -5,7 +5,7 @@
  */
 
 import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { PoolerConfig, PoolerStatus } from '../types.js';
 
@@ -40,9 +40,9 @@ const poolerEvaluator = createConditionBasedReadinessEvaluator({ kind: 'Pooler' 
  * ```
  */
 function createPoolerResource(
-  config: PoolerConfig
+  config: Composable<PoolerConfig>
 ): Enhanced<PoolerConfig['spec'], PoolerStatus> {
-  const fullConfig: PoolerConfig = {
+  const fullConfig = {
     ...config,
     spec: {
       ...config.spec,

@@ -6,7 +6,7 @@
  */
 
 import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
-import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ValkeyConfig, ValkeyStatus } from '../types.js';
 
@@ -95,7 +95,7 @@ function valkeyReadinessEvaluator(liveResource: unknown): ResourceStatus {
  * ```
  */
 function createValkeyResource(
-  config: ValkeyConfig
+  config: Composable<ValkeyConfig>
 ): Enhanced<ValkeyConfig['spec'], ValkeyStatus> {
   return createResource(
     {

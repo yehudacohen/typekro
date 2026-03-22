@@ -10,7 +10,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -69,7 +69,7 @@ function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unk
  * ```
  */
 export function valkeyHelmRepository(
-  config: ValkeyHelmRepositoryConfig
+  config: Composable<ValkeyHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
   return helmRepository({
     name: config.name || DEFAULT_VALKEY_REPO_NAME,
@@ -99,7 +99,7 @@ export function valkeyHelmRepository(
  * ```
  */
 export function valkeyHelmRelease(
-  config: ValkeyHelmReleaseConfig
+  config: Composable<ValkeyHelmReleaseConfig>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   const sanitizedValues = config.values ? sanitizeHelmValues(config.values) : {};
 
