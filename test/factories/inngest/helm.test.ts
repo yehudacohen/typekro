@@ -4,7 +4,6 @@ import {
   inngestHelmRelease,
   DEFAULT_INNGEST_REPO_URL,
   DEFAULT_INNGEST_REPO_NAME,
-  DEFAULT_INNGEST_VERSION,
 } from '../../../src/factories/inngest/resources/helm.js';
 import { mapInngestConfigToHelmValues } from '../../../src/factories/inngest/utils/helm-values-mapper.js';
 
