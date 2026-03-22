@@ -87,6 +87,7 @@ export default withMermaid(
               { text: 'APISix', link: '/api/apisix/' },
               { text: 'External-DNS', link: '/api/external-dns/' },
               { text: 'Pebble', link: '/api/pebble/' },
+              { text: 'Valkey', link: '/api/valkey/' },
             ],
           },
         ],
