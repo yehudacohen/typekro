@@ -123,6 +123,9 @@ export const valkeyBootstrap = kubernetesComposition(
         _helmRelease.status.conditions,
         '.exists(c, c.type == "Ready" && c.status == "False")'
       ),
+      // Static version from deploy-time config, not derived from live HelmRelease
+      // status. If the operator is upgraded out-of-band (e.g. Flux automation),
+      // this value will not reflect the running version.
       version: appVersion,
     };
   }
