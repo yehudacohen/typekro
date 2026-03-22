@@ -38,6 +38,10 @@
       "import": "./dist/factories/cert-manager/index.js",
       "types": "./dist/factories/cert-manager/index.d.ts"
     },
+    "./cnpg": {
+      "import": "./dist/factories/cnpg/index.js",
+      "types": "./dist/factories/cnpg/index.d.ts"
+    },
     "./flux": {
       "import": "./dist/factories/flux/index.js",
       "types": "./dist/factories/flux/index.d.ts"
