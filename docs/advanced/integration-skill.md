@@ -243,7 +243,9 @@ return {
 **Unit tests** — for helm:
 - HelmRepository with defaults (verify URL, namespace, type)
 - HelmRelease with defaults and custom values
-- mapConfigToHelmValues with various inputs
+- `sanitizeHelmValues`: plain values survive intact (strings, numbers, booleans, nested objects, arrays), empty input returns defined object. ⚠️ This is consistently flagged in reviews — always include these tests.
+- mapConfigToHelmValues with various inputs (including verifying bootstrap-only fields like `name`/`namespace`/`version` are NOT passed through)
+- Version override test must assert the actual version value, not just other fields
 - getHelmValueWarnings (if any)
 
 **Integration tests:**
@@ -252,6 +254,7 @@ return {
 - Test YAML generation for KRO mode
 - Test both `'kro'` and `'direct'` factory mode creation
 - Clean up with `deleteInstance` and `deleteNamespaceAndWait`
+- ⚠️ Run with parallel kubectl monitoring via a background Bash command (not a subagent — subagents can't run Bash). Monitor HelmRepository, HelmRelease, HelmChart, and pods every 15s to catch OCI pull errors, CrashLoopBackOff, or SourceNotReady early.
 
 #### Step 7: Documentation
 
@@ -309,6 +312,7 @@ Before submitting, verify each item:
 - [ ] Sidebar nav entry added (alphabetical order)
 - [ ] `package.json` export added
 - [ ] JSDoc on all public APIs with `@example`
+- [ ] JSDoc version strings match the `DEFAULT_*_VERSION` constant exactly (no `v` prefix mismatch)
 
 ### Code Style Rules
 
@@ -337,3 +341,7 @@ Before submitting, verify each item:
 14. **OCI Helm repositories** — Need `type: 'oci'`, have no status field, version tag format varies per operator.
 15. **String literal coupling** — After writing, grep for any string that appears in both a factory default and a composition. Extract as a constant.
 16. **Chart version in labels** — `app.kubernetes.io/version` should be the app version, not the chart tag. Strip `-chart` suffix.
+17. **Missing `sanitizeHelmValues` tests** — Every review flags this. Always test that plain values survive and proxy objects are stripped. This is the safety barrier between the magic proxy and Helm YAML.
+18. **JSDoc version prefix mismatch** — If `DEFAULT_VERSION = '0.3.1'`, don't write `@default 'v0.3.1'` in JSDoc. Users copy from docs and pass the wrong value.
+19. **Spreading the magic proxy in compositions** — `{ ...spec }` doesn't work for nested proxy objects. Access fields explicitly: `{ name: spec.name, inngest: spec.inngest }`. Use `Object.assign` with conditional spreads for optional fields to satisfy `exactOptionalPropertyTypes`.
+20. **Hex key format for Inngest** — `eventKey` and `signingKey` must be hex strings. Test keys like `'test-key'` will crash the container. Use `'deadbeef0123456789abcdef01234567'` in tests.
