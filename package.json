@@ -58,6 +58,10 @@
       "import": "./dist/factories/pebble/index.js",
       "types": "./dist/factories/pebble/index.d.ts"
     },
+    "./valkey": {
+      "import": "./dist/factories/valkey/index.js",
+      "types": "./dist/factories/valkey/index.d.ts"
+    },
     "./alchemy": {
       "import": "./dist/alchemy/index.js",
       "types": "./dist/alchemy/index.d.ts"
