@@ -161,7 +161,7 @@ export interface InngestBootstrapConfig {
   name: string;
   /** Namespace for Inngest (default: 'inngest'). */
   namespace?: string;
-  /** Chart version (default: 'v0.3.1'). */
+  /** Chart version (default: '0.3.1'). */
   version?: string;
   /** Number of Inngest replicas (default: 1). */
   replicaCount?: number;
@@ -332,7 +332,7 @@ export interface InngestHelmReleaseConfig {
   name: string;
   /** Target namespace. */
   namespace?: string;
-  /** Chart version (default: 'v0.3.1'). */
+  /** Chart version (default: '0.3.1'). */
   version?: string;
   /** Helm values. */
   values?: Record<string, unknown>;

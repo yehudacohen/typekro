@@ -73,10 +73,39 @@ describe('Inngest Helm Resources', () => {
       const release = inngestHelmRelease({
         name: 'inngest',
         namespace: 'custom-ns',
-        version: 'v0.4.0',
+        version: '0.4.0',
       });
 
       expect(release.metadata.namespace).toBe('custom-ns');
+      // Version is embedded in the chart spec
+      expect(release.spec.chart?.spec?.version).toBe('0.4.0');
+    });
+  });
+
+  describe('sanitizeHelmValues', () => {
+    it('should pass through plain values intact', () => {
+      const release = inngestHelmRelease({
+        name: 'inngest',
+        values: {
+          stringVal: 'hello',
+          numberVal: 42,
+          boolVal: true,
+          nested: { deep: 'value' },
+          array: [1, 2, 3],
+        },
+      });
+
+      expect(release.spec.values?.stringVal).toBe('hello');
+      expect(release.spec.values?.numberVal).toBe(42);
+      expect(release.spec.values?.boolVal).toBe(true);
+      expect((release.spec.values?.nested as any)?.deep).toBe('value');
+      expect(release.spec.values?.array).toEqual([1, 2, 3]);
+    });
+
+    it('should return empty values when no values provided', () => {
+      const release = inngestHelmRelease({ name: 'inngest' });
+      // Values should be an empty object (no undefined)
+      expect(release.spec.values).toBeDefined();
     });
   });
 });
