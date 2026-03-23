@@ -122,9 +122,24 @@ export function mapInngestConfigToHelmValues(
     values.tolerations = config.tolerations;
   }
 
-  // Custom values last for user overrides
+  // Deep merge custom values — shallow Object.assign would overwrite nested
+  // objects like `inngest` entirely, losing eventKey/signingKey if customValues
+  // adds `inngest.extraEnv`.
   if (config.customValues) {
-    Object.assign(values, config.customValues);
+    for (const [key, value] of Object.entries(config.customValues)) {
+      if (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        values[key] !== null &&
+        typeof values[key] === 'object' &&
+        !Array.isArray(values[key])
+      ) {
+        values[key] = { ...(values[key] as Record<string, unknown>), ...value };
+      } else {
+        values[key] = value;
+      }
+    }
   }
 
   return removeUndefinedValues(values);
