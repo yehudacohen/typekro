@@ -1,8 +1,9 @@
 /**
  * Inngest Helm Chart Type Definitions
  *
- * TypeScript interfaces and ArkType schemas for deploying Inngest
- * on Kubernetes via the official Helm chart.
+ * ArkType schemas are the SINGLE source of truth for validated config types.
+ * TypeScript types are INFERRED from schemas using `typeof Schema.infer`.
+ * Status interfaces remain hand-written since they represent k8s API responses.
  *
  * Inngest is a workflow orchestration platform — it has no CRDs.
  * All configuration is via Helm values.
@@ -11,187 +12,164 @@
  * @see https://www.inngest.com/docs/self-hosting
  */
 
-import { type Type, type } from 'arktype';
+import { type } from 'arktype';
 
 // ============================================================================
-// Common Kubernetes Types
+// Shared Schema Shapes
 // ============================================================================
 
-/** Pod resource requests and limits. */
-export interface ResourceRequirements {
-  requests?: { cpu?: string; memory?: string };
-  limits?: { cpu?: string; memory?: string };
-}
+/** Shared ArkType schema shape for Kubernetes tolerations. */
+const tolerationSchemaShape = {
+  'key?': 'string',
+  'operator?': '"Exists" | "Equal"',
+  'value?': 'string',
+  'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
+  'tolerationSeconds?': 'number',
+} as const;
 
-/** Kubernetes toleration for pod scheduling. */
-export interface Toleration {
-  key?: string;
-  operator?: 'Exists' | 'Equal';
-  value?: string;
-  effect?: 'NoSchedule' | 'PreferNoSchedule' | 'NoExecute';
-  tolerationSeconds?: number;
-}
-
-// ============================================================================
-// Inngest Application Configuration
-// ============================================================================
-
-/** PostgreSQL connection configuration for Inngest. */
-export interface InngestPostgresConfig {
-  /** External PostgreSQL connection URI. */
-  uri?: string;
-}
-
-/** Redis/Valkey connection configuration for Inngest. */
-export interface InngestRedisConfig {
-  /** External Redis/Valkey connection URI. */
-  uri?: string;
-}
-
-/** Core Inngest application settings. */
-export interface InngestAppConfig {
-  /** Event authentication key (required). Generate with: openssl rand -hex 16 */
-  eventKey: string;
-  /** Request signing key (required). Generate with: openssl rand -hex 32 */
-  signingKey: string;
-  /** External PostgreSQL connection. If not set, uses bundled PostgreSQL. */
-  postgres?: InngestPostgresConfig;
-  /** External Redis/Valkey connection. If not set, uses bundled Redis. */
-  redis?: InngestRedisConfig;
-  /** Server hostname for external access. */
-  host?: string;
-  /** SDK URLs to auto-sync functions from. */
-  sdkUrl?: string[];
-  /** Disable the web UI. */
-  noUI?: boolean;
-  /** App polling interval in seconds (default: 60). */
-  pollInterval?: number;
-  /** Number of executor queue workers (default: 100). */
-  queueWorkers?: number;
-  /** Log level: 'trace' | 'debug' | 'info' | 'warn' | 'error' (default: 'info'). */
-  logLevel?: string;
-  /** Enable JSON log output. */
-  json?: boolean;
-  /** Extra environment variables for the Inngest container. */
-  extraEnv?: Array<{ name: string; value: string }>;
-}
-
-/** Bundled PostgreSQL subchart configuration. */
-export interface InngestBundledPostgresConfig {
-  /** Deploy bundled PostgreSQL (default: true). Set false when using external DB. */
-  enabled?: boolean;
-  /** Authentication settings. */
-  auth?: {
-    database?: string;
-    username?: string;
-    password?: string;
-  };
-  /** Persistence settings. */
-  persistence?: {
-    enabled?: boolean;
-    size?: string;
-    storageClass?: string;
-  };
-  /** Pod resources. */
-  resources?: ResourceRequirements;
-}
-
-/** Bundled Redis subchart configuration. */
-export interface InngestBundledRedisConfig {
-  /** Deploy bundled Redis (default: true). Set false when using external Valkey/Redis. */
-  enabled?: boolean;
-  /** Persistence settings. */
-  persistence?: {
-    enabled?: boolean;
-    size?: string;
-    storageClass?: string;
-  };
-  /** Pod resources. */
-  resources?: ResourceRequirements;
-}
-
-/** Ingress configuration for external access. */
-export interface InngestIngressConfig {
-  /** Enable ingress (default: false). */
-  enabled?: boolean;
-  /** Ingress class name (default: 'nginx'). */
-  className?: string;
-  /** Ingress annotations. */
-  annotations?: Record<string, string>;
-  /** Ingress host rules. */
-  hosts?: Array<{
-    host: string;
-    paths?: Array<{ path?: string; pathType?: string }>;
-  }>;
-  /** TLS configuration. */
-  tls?: Array<{
-    secretName?: string;
-    hosts?: string[];
-  }>;
-}
-
-/** KEDA autoscaling configuration. */
-export interface InngestKedaConfig {
-  /** Enable KEDA-based autoscaling (default: false). */
-  enabled?: boolean;
-  /** Minimum replicas (default: 1). */
-  minReplicas?: number;
-  /** Maximum replicas (default: 10). */
-  maxReplicas?: number;
-  /** Metric polling interval in seconds (default: 30). */
-  pollingInterval?: number;
-  /** Cooldown period after scaling in seconds (default: 300). */
-  cooldownPeriod?: number;
-}
+/** Shared ArkType schema shape for pod resource requirements. */
+const resourceRequirementsSchemaShape = {
+  'requests?': { 'cpu?': 'string', 'memory?': 'string' },
+  'limits?': { 'cpu?': 'string', 'memory?': 'string' },
+} as const;
 
 // ============================================================================
 // Bootstrap Config (Helm Install)
 // ============================================================================
 
 /**
- * Configuration for deploying Inngest via Helm.
+ * ArkType schema for Inngest bootstrap configuration.
  *
- * Used by the `inngestBootstrap` composition. Inngest requires
- * PostgreSQL and Redis — either bundled (default) or external.
+ * Deploying Inngest via Helm. Requires PostgreSQL and Redis — either
+ * bundled (default) or external (via CNPG + Valkey).
  *
  * @see https://github.com/inngest/inngest-helm
  */
-export interface InngestBootstrapConfig {
+export const InngestBootstrapConfigSchema = type({
   /** Release name for the Helm installation. */
-  name: string;
+  name: 'string',
   /** Namespace for Inngest (default: 'inngest'). */
-  namespace?: string;
+  'namespace?': 'string',
   /** Chart version (default: '0.3.1'). */
-  version?: string;
+  'version?': 'string',
   /** Number of Inngest replicas (default: 1). */
-  replicaCount?: number;
+  'replicaCount?': 'number',
 
   /** Core Inngest application configuration. */
-  inngest: InngestAppConfig;
+  inngest: {
+    /** Event authentication key (hex string, required). */
+    eventKey: 'string',
+    /** Request signing key (hex string, required). */
+    signingKey: 'string',
+    /** External PostgreSQL connection. */
+    'postgres?': { 'uri?': 'string' },
+    /** External Redis/Valkey connection. */
+    'redis?': { 'uri?': 'string' },
+    /** Server hostname for external access. */
+    'host?': 'string',
+    /** SDK URLs to auto-sync functions from. */
+    'sdkUrl?': 'string[]',
+    /** Disable the web UI. */
+    'noUI?': 'boolean',
+    /** App polling interval in seconds (default: 60). */
+    'pollInterval?': 'number',
+    /** Number of executor queue workers (default: 100). */
+    'queueWorkers?': 'number',
+    /** Log level (default: 'info'). */
+    'logLevel?': 'string',
+    /** Enable JSON log output. */
+    'json?': 'boolean',
+    /** Extra environment variables for the Inngest container. */
+    'extraEnv?': type({ name: 'string', value: 'string' }).array(),
+  },
 
   /** Pod resource requirements for the Inngest server. */
-  resources?: ResourceRequirements;
+  'resources?': resourceRequirementsSchemaShape,
+
   /** Bundled PostgreSQL configuration. Disable when using external CNPG. */
-  postgresql?: InngestBundledPostgresConfig;
+  'postgresql?': {
+    /** Deploy bundled PostgreSQL (default: true). */
+    'enabled?': 'boolean',
+    /** Authentication settings. */
+    'auth?': {
+      'database?': 'string',
+      'username?': 'string',
+      'password?': 'string',
+    },
+    /** Persistence settings. */
+    'persistence?': {
+      'enabled?': 'boolean',
+      'size?': 'string',
+      'storageClass?': 'string',
+    },
+    /** Pod resources. */
+    'resources?': resourceRequirementsSchemaShape,
+  },
+
   /** Bundled Redis configuration. Disable when using external Valkey. */
-  redis?: InngestBundledRedisConfig;
+  'redis?': {
+    /** Deploy bundled Redis (default: true). */
+    'enabled?': 'boolean',
+    /** Persistence settings. */
+    'persistence?': {
+      'enabled?': 'boolean',
+      'size?': 'string',
+      'storageClass?': 'string',
+    },
+    /** Pod resources. */
+    'resources?': resourceRequirementsSchemaShape,
+  },
+
   /** Ingress for external access. */
-  ingress?: InngestIngressConfig;
+  'ingress?': {
+    /** Enable ingress (default: false). */
+    'enabled?': 'boolean',
+    /** Ingress class name (default: 'nginx'). */
+    'className?': 'string',
+    /** Ingress annotations. */
+    'annotations?': 'Record<string, string>',
+    /** Ingress host rules. */
+    'hosts?': type({
+      host: 'string',
+      'paths?': type({ 'path?': 'string', 'pathType?': 'string' }).array(),
+    }).array(),
+    /** TLS configuration. */
+    'tls?': type({
+      'secretName?': 'string',
+      'hosts?': 'string[]',
+    }).array(),
+  },
+
   /** KEDA autoscaling. */
-  keda?: InngestKedaConfig;
+  'keda?': {
+    /** Enable KEDA-based autoscaling (default: false). */
+    'enabled?': 'boolean',
+    /** Minimum replicas (default: 1). */
+    'minReplicas?': 'number',
+    /** Maximum replicas (default: 10). */
+    'maxReplicas?': 'number',
+    /** Metric polling interval in seconds (default: 30). */
+    'pollingInterval?': 'number',
+    /** Cooldown period after scaling in seconds (default: 300). */
+    'cooldownPeriod?': 'number',
+  },
 
   /** Node selector for pod scheduling. */
-  nodeSelector?: Record<string, string>;
+  'nodeSelector?': 'Record<string, string>',
   /** Taint tolerations. */
-  tolerations?: Toleration[];
-
+  'tolerations?': type(tolerationSchemaShape).array(),
   /** Additional Helm values for user overrides. */
-  customValues?: Record<string, unknown>;
-}
+  'customValues?': 'Record<string, unknown>',
+});
 
-/**
- * Observed status of an Inngest deployment.
- */
+/** Configuration for deploying Inngest via Helm. */
+export type InngestBootstrapConfig = typeof InngestBootstrapConfigSchema.infer;
+
+// ============================================================================
+// Status Types (interfaces — not schema-validated)
+// ============================================================================
+
+/** Observed status of an Inngest deployment. */
 export interface InngestBootstrapStatus {
   /**
    * Overall deployment phase (derived from HelmRelease Ready condition).
@@ -207,99 +185,8 @@ export interface InngestBootstrapStatus {
   version?: string;
 }
 
-// ============================================================================
-// ArkType Schemas
-// ============================================================================
-
-/** Shared ArkType schema shape for Toleration. */
-const tolerationSchemaShape = {
-  'key?': 'string',
-  'operator?': '"Exists" | "Equal"',
-  'value?': 'string',
-  'effect?': '"NoSchedule" | "PreferNoSchedule" | "NoExecute"',
-  'tolerationSeconds?': 'number',
-} as const;
-
-/** ArkType schema for InngestBootstrapConfig. */
-export const InngestBootstrapConfigSchema: Type<InngestBootstrapConfig> = type({
-  name: 'string',
-  'namespace?': 'string',
-  'version?': 'string',
-  'replicaCount?': 'number',
-  inngest: {
-    eventKey: 'string',
-    signingKey: 'string',
-    'postgres?': { 'uri?': 'string' },
-    'redis?': { 'uri?': 'string' },
-    'host?': 'string',
-    'sdkUrl?': 'string[]',
-    'noUI?': 'boolean',
-    'pollInterval?': 'number',
-    'queueWorkers?': 'number',
-    'logLevel?': 'string',
-    'json?': 'boolean',
-    'extraEnv?': type({ name: 'string', value: 'string' }).array(),
-  },
-  'resources?': {
-    'requests?': { 'cpu?': 'string', 'memory?': 'string' },
-    'limits?': { 'cpu?': 'string', 'memory?': 'string' },
-  },
-  'postgresql?': {
-    'enabled?': 'boolean',
-    'auth?': {
-      'database?': 'string',
-      'username?': 'string',
-      'password?': 'string',
-    },
-    'persistence?': {
-      'enabled?': 'boolean',
-      'size?': 'string',
-      'storageClass?': 'string',
-    },
-    'resources?': {
-      'requests?': { 'cpu?': 'string', 'memory?': 'string' },
-      'limits?': { 'cpu?': 'string', 'memory?': 'string' },
-    },
-  },
-  'redis?': {
-    'enabled?': 'boolean',
-    'persistence?': {
-      'enabled?': 'boolean',
-      'size?': 'string',
-      'storageClass?': 'string',
-    },
-    'resources?': {
-      'requests?': { 'cpu?': 'string', 'memory?': 'string' },
-      'limits?': { 'cpu?': 'string', 'memory?': 'string' },
-    },
-  },
-  'ingress?': {
-    'enabled?': 'boolean',
-    'className?': 'string',
-    'annotations?': 'Record<string, string>',
-    'hosts?': type({
-      host: 'string',
-      'paths?': type({ 'path?': 'string', 'pathType?': 'string' }).array(),
-    }).array(),
-    'tls?': type({
-      'secretName?': 'string',
-      'hosts?': 'string[]',
-    }).array(),
-  },
-  'keda?': {
-    'enabled?': 'boolean',
-    'minReplicas?': 'number',
-    'maxReplicas?': 'number',
-    'pollingInterval?': 'number',
-    'cooldownPeriod?': 'number',
-  },
-  'nodeSelector?': 'Record<string, string>',
-  'tolerations?': type(tolerationSchemaShape).array(),
-  'customValues?': 'Record<string, unknown>',
-});
-
 /** ArkType schema for InngestBootstrapStatus. */
-export const InngestBootstrapStatusSchema: Type<InngestBootstrapStatus> = type({
+export const InngestBootstrapStatusSchema = type({
   phase: '"Ready" | "Installing"',
   ready: 'boolean',
   failed: 'boolean',
@@ -307,35 +194,41 @@ export const InngestBootstrapStatusSchema: Type<InngestBootstrapStatus> = type({
 });
 
 // ============================================================================
-// Helm Integration Types
+// Helm Integration
 // ============================================================================
 
-/** Configuration for the Inngest Helm chart repository. */
-export interface InngestHelmRepositoryConfig {
+/** ArkType schema for the Inngest Helm chart repository configuration. */
+export const InngestHelmRepositoryConfigSchema = type({
   /** Repository name (default: 'inngest-repo'). */
-  name?: string;
+  'name?': 'string',
   /** Namespace for the HelmRepository (default: flux-system). */
-  namespace?: string;
+  'namespace?': 'string',
   /** OCI registry URL (default: 'oci://ghcr.io/inngest/inngest-helm'). */
-  url?: string;
+  'url?': 'string',
   /** Sync interval (default: '5m'). */
-  interval?: string;
+  'interval?': 'string',
   /** Resource ID for composition references. */
-  id?: string;
-}
+  'id?': 'string',
+});
+
+/** Configuration for the Inngest Helm chart repository. */
+export type InngestHelmRepositoryConfig = typeof InngestHelmRepositoryConfigSchema.infer;
+
+/** ArkType schema for the Inngest Helm release configuration. */
+export const InngestHelmReleaseConfigSchema = type({
+  /** Release name. */
+  name: 'string',
+  /** Target namespace. */
+  'namespace?': 'string',
+  /** Chart version (default: '0.3.1'). */
+  'version?': 'string',
+  /** Helm values. */
+  'values?': 'Record<string, unknown>',
+  /** HelmRepository name to reference (default: 'inngest-repo'). */
+  'repositoryName?': 'string',
+  /** Resource ID for composition references. */
+  'id?': 'string',
+});
 
 /** Configuration for the Inngest Helm release. */
-export interface InngestHelmReleaseConfig {
-  /** Release name. */
-  name: string;
-  /** Target namespace. */
-  namespace?: string;
-  /** Chart version (default: '0.3.1'). */
-  version?: string;
-  /** Helm values. */
-  values?: Record<string, unknown>;
-  /** HelmRepository name to reference (default: 'inngest-repo'). */
-  repositoryName?: string;
-  /** Resource ID for composition references. */
-  id?: string;
-}
+export type InngestHelmReleaseConfig = typeof InngestHelmReleaseConfigSchema.infer;
