@@ -187,9 +187,13 @@ export const webAppWithProcessing = kubernetesComposition(
         ),
         postgresql: { enabled: false } as const,
         redis: { enabled: false } as const,
-        // Inject the real postgres URI from the CNPG Secret via secretKeyRef.
-        // This overrides the placeholder inngest.postgres.uri Helm value.
+        // Override chart defaults:
+        // 1. Deploy Inngest pods in the same namespace as CNPG so they can
+        //    access the database Secret via secretKeyRef (namespace-scoped).
+        // 2. Inject the real postgres URI from the CNPG Secret, overriding
+        //    the placeholder inngest.postgres.uri Helm value.
         customValues: {
+          namespace: { create: false, name: ns },
           inngest: {
             extraEnv: [
               {
