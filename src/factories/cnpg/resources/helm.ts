@@ -7,7 +7,6 @@
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
-import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   helmRepository,
@@ -24,27 +23,6 @@ const DEFAULT_CNPG_REPO_URL = 'https://cloudnative-pg.github.io/charts';
 
 /** Default chart version. */
 const DEFAULT_CNPG_VERSION = '0.23.0';
-
-/**
- * Sanitize Helm values by removing non-serializable objects.
- *
- * Strips KubernetesRef proxies and CelExpression objects via JSON round-trip.
- * Note: this also drops Date objects, functions, Infinity, and NaN — custom
- * values must be JSON-serializable primitives, arrays, and plain objects.
- */
-function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(
-    JSON.stringify(values, (_key, value) => {
-      if (isKubernetesRef(value)) {
-        return undefined;
-      }
-      if (isCelExpression(value)) {
-        return undefined;
-      }
-      return value;
-    })
-  );
-}
 
 /**
  * Create a HelmRepository for the CloudNativePG chart repository.
@@ -95,10 +73,7 @@ export function cnpgHelmRepository(
 export function cnpgHelmRelease(
   config: Composable<CnpgHelmReleaseConfig>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
-  const sanitizedValues = config.values ? sanitizeHelmValues(config.values) : {};
-
-  // chart.repository is used for chart identification; sourceRef is what Flux
-  // actually uses to resolve the chart. Both are required by the helmRelease factory.
+  // Pass values directly — the core proxy system handles serialization.
   return helmRelease({
     name: config.name,
     namespace: config.namespace || 'cnpg-system',
@@ -114,7 +89,7 @@ export function cnpgHelmRelease(
     },
     values: {
       crds: { create: true },
-      ...sanitizedValues,
+      ...(config.values || {}),
     },
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(

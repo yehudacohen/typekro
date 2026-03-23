@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { externalRef } from '../../../core/references/external-refs.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
 import { pooler } from '../../cnpg/resources/pooler.js';
 import { inngestBootstrap } from '../../inngest/compositions/inngest-bootstrap.js';
@@ -148,11 +149,25 @@ export const webAppWithProcessing = kubernetesComposition(
       id: 'cache',
     });
 
+    // ── Database credentials (external ref to CNPG-generated Secret) ────
+
+    // CNPG auto-generates credentials in a Secret named {cluster}-app.
+    // We reference it via externalRef so the name is derived from the proxy
+    // system rather than duplicated as a string literal.
+    const dbSecret = externalRef({
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: `${dbClusterName}-${dbOwner}`, namespace: ns },
+      id: 'dbCredentials',
+    });
+
     // ── Inngest (with external DB + cache) ──────────────────────────────
 
     // Inngest uses the CNPG database and Valkey cache — bundled deps disabled.
-    // The Inngest Helm chart creates its own namespace resources, so we pass
-    // connection URIs pointing to the CNPG and Valkey services in our namespace.
+    // The CNPG-generated Secret contains a full postgres URI with the auto-
+    // generated password. We inject it via extraEnv with secretKeyRef so the
+    // password never appears in Helm values or ResourceGraphDefinitions.
+    //
     // inngestBootstrap is a nested composition — its spec type doesn't use
     // Composable yet (that requires a core API change). Use Object.assign
     // to conditionally include optional fields.
@@ -164,10 +179,7 @@ export const webAppWithProcessing = kubernetesComposition(
           {
             eventKey: spec.processing.eventKey,
             signingKey: spec.processing.signingKey,
-            // NOTE: CNPG auto-generates credentials in a Secret named {cluster}-app.
-            // In production, use Kubernetes Secret injection (envFrom/secretKeyRef)
-            // instead of embedding credentials in the URI. This URI uses the CNPG
-            // default where the password is auto-injected by the operator's init container.
+            // Placeholder — overridden by extraEnv secretKeyRef below
             postgres: { uri: `postgresql://${dbOwner}@${dbClusterName}-rw:5432/${dbName}` },
             redis: { uri: cacheUrl },
           },
@@ -175,6 +187,23 @@ export const webAppWithProcessing = kubernetesComposition(
         ),
         postgresql: { enabled: false } as const,
         redis: { enabled: false } as const,
+        // Inject the real postgres URI from the CNPG Secret via secretKeyRef.
+        // This overrides the placeholder inngest.postgres.uri Helm value.
+        customValues: {
+          inngest: {
+            extraEnv: [
+              {
+                name: 'INNGEST_POSTGRES_URI',
+                valueFrom: {
+                  secretKeyRef: {
+                    name: dbSecret.metadata.name,
+                    key: 'uri',
+                  },
+                },
+              },
+            ],
+          },
+        },
       },
       spec.processing.replicas !== undefined && { replicaCount: spec.processing.replicas },
     ));

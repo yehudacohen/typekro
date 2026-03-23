@@ -101,9 +101,10 @@ describe('Inngest Helm Resources', () => {
       expect(release.spec.values?.array).toEqual([1, 2, 3]);
     });
 
-    it('should strip KubernetesRef-branded objects from values', () => {
-      // Construct a mock object matching the KubernetesRef brand check.
-      // isKubernetesRef uses Reflect.get(obj, KUBERNETES_REF_BRAND) === true
+    it('should preserve KubernetesRef proxy objects in values for CEL resolution', () => {
+      // Proxy references in Helm values should be preserved — the core
+      // serialization system resolves them to CEL expressions at deploy time.
+      // This was previously broken by sanitizeHelmValues stripping them.
       const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.KubernetesRef');
       const mockRef = {
         [KUBERNETES_REF_BRAND]: true,
@@ -115,19 +116,19 @@ describe('Inngest Helm Resources', () => {
         name: 'inngest',
         values: {
           safe: 'keep-me',
-          dangerous: mockRef as any,
+          proxyRef: mockRef as any,
           nested: { alsoSafe: true, ref: mockRef as any },
         },
       });
 
       expect(release.spec.values?.safe).toBe('keep-me');
-      // The branded ref should be stripped (undefined → omitted from JSON)
-      expect(release.spec.values?.dangerous).toBeUndefined();
+      // Proxy reference should be PRESERVED (not stripped)
+      expect(release.spec.values?.proxyRef).toBeDefined();
       expect((release.spec.values?.nested as any)?.alsoSafe).toBe(true);
-      expect((release.spec.values?.nested as any)?.ref).toBeUndefined();
+      expect((release.spec.values?.nested as any)?.ref).toBeDefined();
     });
 
-    it('should strip CelExpression-branded objects from values', () => {
+    it('should preserve CelExpression objects in values for CEL resolution', () => {
       const CEL_EXPRESSION_BRAND = Symbol.for('TypeKro.CelExpression');
       const mockCel = {
         [CEL_EXPRESSION_BRAND]: true,
@@ -143,10 +144,11 @@ describe('Inngest Helm Resources', () => {
       });
 
       expect(release.spec.values?.keep).toBe('this');
-      expect(release.spec.values?.celValue).toBeUndefined();
+      // CEL expression should be PRESERVED (not stripped)
+      expect(release.spec.values?.celValue).toBeDefined();
     });
 
-    it('should handle mixed plain and branded values', () => {
+    it('should preserve mixed plain and proxy values', () => {
       const KUBERNETES_REF_BRAND = Symbol.for('TypeKro.KubernetesRef');
       const CEL_EXPRESSION_BRAND = Symbol.for('TypeKro.CelExpression');
 
@@ -161,14 +163,77 @@ describe('Inngest Helm Resources', () => {
       });
 
       expect(release.spec.values?.replicaCount).toBe(3);
-      expect(release.spec.values?.ref).toBeUndefined();
-      expect(release.spec.values?.cel).toBeUndefined();
+      // Both proxy types should be preserved for CEL resolution
+      expect(release.spec.values?.ref).toBeDefined();
+      expect(release.spec.values?.cel).toBeDefined();
       expect((release.spec.values?.inngest as any)?.eventKey).toBe('abc');
     });
 
     it('should return empty values when no values provided', () => {
       const release = inngestHelmRelease({ name: 'inngest' });
       expect(release.spec.values).toBeDefined();
+    });
+  });
+
+  describe('proxy reference resolution in values', () => {
+    it('should resolve externalRef metadata.name in Helm values', async () => {
+      // This tests the real use case: referencing a CNPG-generated Secret
+      // name inside Inngest Helm values via the magic proxy system.
+      const { externalRef } = await import(
+        '../../../src/core/references/external-refs.js'
+      );
+
+      const dbSecret = externalRef({
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: 'my-db-app', namespace: 'default' },
+      });
+
+      const release = inngestHelmRelease({
+        name: 'inngest',
+        values: {
+          inngest: {
+            extraEnv: [
+              {
+                name: 'INNGEST_POSTGRES_URI',
+                valueFrom: {
+                  secretKeyRef: {
+                    name: dbSecret.metadata.name,
+                    key: 'uri',
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+
+      // The proxy should resolve the Secret name through the values
+      const extraEnv = (release.spec.values?.inngest as any)?.extraEnv;
+      expect(extraEnv).toBeDefined();
+
+      const secretRefName = extraEnv?.[0]?.valueFrom?.secretKeyRef?.name;
+      // In direct mode, the proxy resolves to the actual string value
+      expect(secretRefName).toBe('my-db-app');
+    });
+
+    it('should resolve spec proxy references in Helm values', () => {
+      // Simulating what happens when a composition passes spec values
+      // as Helm values — the proxy references should flow through
+      const release = inngestHelmRelease({
+        name: 'inngest',
+        values: {
+          inngest: {
+            eventKey: 'test-key',
+            signingKey: 'test-signing',
+          },
+          replicaCount: 2,
+        },
+      });
+
+      // Values should be accessible through the proxy
+      expect((release.spec.values?.inngest as any)?.eventKey).toBe('test-key');
+      expect(release.spec.values?.replicaCount).toBe(2);
     });
   });
 });
