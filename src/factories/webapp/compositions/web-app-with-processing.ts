@@ -134,24 +134,21 @@ export const webAppWithProcessing = kubernetesComposition(
 
     // ── Valkey Cache ────────────────────────────────────────────────────
 
-    const cacheConfig = spec.cache || {};
     const _cache = valkey({
       name: cacheName,
       namespace: ns,
-      spec: Object.assign(
-        {
-          volumePermissions: true,
-          // Storage is required by the Valkey operator for StatefulSet PVC creation
-          storage: {
+      spec: {
+        volumePermissions: spec.cache?.volumePermissions ?? true,
+        shards: spec.cache?.shards,
+        replicas: spec.cache?.replicas,
+        // Storage is required by the Valkey operator for StatefulSet PVC creation.
+        // Uses the PVC spec structure per the CRD Go type (*corev1.PersistentVolumeClaim).
+        storage: {
+          spec: {
             resources: { requests: { storage: '1Gi' } },
           },
         },
-        cacheConfig.shards !== undefined && { shards: cacheConfig.shards },
-        cacheConfig.replicas !== undefined && { replicas: cacheConfig.replicas },
-        cacheConfig.volumePermissions !== undefined && {
-          volumePermissions: cacheConfig.volumePermissions,
-        },
-      ),
+      },
       id: 'cache',
     });
 
