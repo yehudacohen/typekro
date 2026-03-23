@@ -139,7 +139,13 @@ export const webAppWithProcessing = kubernetesComposition(
       name: cacheName,
       namespace: ns,
       spec: Object.assign(
-        { volumePermissions: true },
+        {
+          volumePermissions: true,
+          // Storage is required by the Valkey operator for StatefulSet PVC creation
+          storage: {
+            resources: { requests: { storage: '1Gi' } },
+          },
+        },
         cacheConfig.shards !== undefined && { shards: cacheConfig.shards },
         cacheConfig.replicas !== undefined && { replicas: cacheConfig.replicas },
         cacheConfig.volumePermissions !== undefined && {
