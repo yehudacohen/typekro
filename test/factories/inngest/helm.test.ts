@@ -327,5 +327,32 @@ describe('Inngest Helm Values Mapper', () => {
 
       expect(values.extra).toBe('value');
     });
+
+    it('should deep merge customValues.inngest with existing inngest values', () => {
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        customValues: {
+          inngest: {
+            extraEnv: [{ name: 'FOO', value: 'bar' }],
+          },
+        },
+      });
+
+      // eventKey and signingKey should be preserved (not overwritten)
+      expect(values.inngest?.eventKey).toBe('abc');
+      expect(values.inngest?.signingKey).toBe('def');
+      // extraEnv from customValues should be merged in
+      expect((values.inngest as any)?.extraEnv?.[0]?.name).toBe('FOO');
+    });
+
+    it('should allow customValues to override non-object fields', () => {
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        customValues: { replicaCount: 5 },
+      });
+
+      // Primitive customValues override existing values
+      expect(values.replicaCount).toBe(5);
+    });
   });
 });
