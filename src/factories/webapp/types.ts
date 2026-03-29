@@ -45,8 +45,8 @@ export const WebAppWithProcessingConfigSchema = type({
     'instances?': 'number',
     /** Storage size (e.g., '10Gi', '50Gi'). */
     storageSize: 'string',
-    /** Storage class name. */
-    'storageClass?': 'string',
+    /** Storage class name (must match a StorageClass on the cluster). */
+    'storageClassName?': 'string',
     /** Database name to create (default: derived from app name). */
     'database?': 'string',
     /** Database owner (default: 'app'). */

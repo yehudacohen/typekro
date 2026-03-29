@@ -90,7 +90,7 @@ export const webAppWithProcessing = kubernetesComposition(
         instances: spec.database.instances,
         storage: {
           size: spec.database.storageSize,
-          ...(spec.database.storageClass ? { storageClassName: spec.database.storageClass } : {}),
+          ...(spec.database.storageClassName ? { storageClassName: spec.database.storageClassName } : {}),
         },
         bootstrap: {
           initdb: { database: dbName, owner: dbOwner },
