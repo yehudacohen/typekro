@@ -233,6 +233,13 @@ function executeNestedCompositionWithSpec<
   baseName = toCamelCase(baseName);
   const baseId = `${baseName}${instanceNumber}`;
 
+  // Register this nested composition ID so synthesizeNestedCompositionStatus
+  // can identify virtual parents without relying on digit-heuristics.
+  if (!parentContext.nestedCompositionIds) {
+    parentContext.nestedCompositionIds = new Set();
+  }
+  parentContext.nestedCompositionIds.add(baseId);
+
   // Determine if this composition has a single resource
   const resourceCount = Object.keys(executionContext.resources).length;
 
@@ -350,12 +357,12 @@ function executeNestedCompositionWithSpec<
             if (exactLower) return `${exactLower}.${field}.`;
             // 2. Single resource — unambiguous
             if (innerResourceIds.length === 1) return `${innerResourceIds[0]}.${field}.`;
-            // 3. Prefix match at camelCase boundary (e.g., "d" matches "deployment" only if "d" is a full word)
-            const prefixMatch = innerResourceIds.find(r =>
+            // 3. Prefix match at camelCase boundary — must be unambiguous (exactly one match)
+            const prefixMatches = innerResourceIds.filter(r =>
               r.toLowerCase().startsWith(lower) && (lower.length === r.length || /[A-Z_-]/.test(r[lower.length]!))
             );
-            if (prefixMatch) return `${prefixMatch}.${field}.`;
-            // No match — leave as-is (will produce invalid CEL, caught by validator)
+            if (prefixMatches.length === 1) return `${prefixMatches[0]}.${field}.`;
+            // No match or ambiguous — leave as-is (will produce invalid CEL, caught by validator)
             return match;
           });
         }

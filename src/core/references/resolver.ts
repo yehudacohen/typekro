@@ -8,7 +8,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { DEFAULT_RESOURCE_READY_TIMEOUT } from '../config/defaults.js';
-import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constants/brands.js';
 import { ResourceReadinessTimeoutError } from '../deployment/errors.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { ensureError, TypeKroError } from '../errors.js';
@@ -512,7 +512,7 @@ export class ReferenceResolver {
    * resources, resourceKeyMapping, then queries the cluster.
    */
   private async resolveMarkerStrings(value: string, context: ResolutionContext): Promise<string> {
-    const markerPattern = /__KUBERNETES_REF_(?!_schema__)([a-zA-Z0-9-]+)_([a-zA-Z0-9.$]+)__/g;
+    const markerPattern = new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g');
     let result = value;
     // Collect all matches first (can't replace during iteration with async)
     const replacements: Array<{ marker: string; resourceId: string; fieldPath: string }> = [];

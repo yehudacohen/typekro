@@ -6,7 +6,7 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
-import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
+import { KUBERNETES_REF_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constants/brands.js';
 import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { getResourceId } from '../metadata/index.js';
@@ -180,7 +180,7 @@ export class DependencyResolver {
     // resourceId: word chars, hyphens, digits (e.g., 'database', 'inngest-bootstrap1')
     // fieldPath: word chars, dots, hyphens (e.g., 'status.writeService', 'metadata.name')
     // Exclude __schema__ refs — those are schema proxy refs, not resource dependencies
-    const markerPattern = /__KUBERNETES_REF_(?!_schema__)([a-zA-Z0-9-]+)_([a-zA-Z0-9.$]+)__/g;
+    const markerPattern = new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g');
     let match: RegExpExecArray | null = markerPattern.exec(value);
 
     while (match !== null) {

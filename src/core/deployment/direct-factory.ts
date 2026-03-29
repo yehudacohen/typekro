@@ -249,10 +249,16 @@ export class DirectResourceFactoryImpl<
               const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace: ns });
               for (const pvc of pvcs.items) {
                 if (pvc.metadata?.name) {
+                  const pvcName = pvc.metadata?.name;
+                  if (!pvcName) continue;
                   await coreApi.deleteNamespacedPersistentVolumeClaim({
-                    name: pvc.metadata.name,
+                    name: pvcName,
                     namespace: ns,
-                  }).catch(() => { /* PVC may already be deleted */ });
+                  }).catch((err: unknown) => {
+                    this.logger.debug('PVC delete failed (best-effort)', {
+                      pvc: pvcName, namespace: ns, error: String(err),
+                    });
+                  });
                 }
               }
             } catch {
@@ -979,7 +985,8 @@ export class DirectResourceFactoryImpl<
       const enrichedMap = synthesizeNestedCompositionStatus(
         probeContext.resources,
         liveStatusMap,
-        this.logger
+        this.logger,
+        probeContext.nestedCompositionIds
       );
 
       // Phase 2: Real execution with enriched live status map
