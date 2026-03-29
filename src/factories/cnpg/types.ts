@@ -171,8 +171,8 @@ export const ClusterConfigSchema = type({
     storage: {
       /** Storage size (e.g. '10Gi', '100Gi'). Required. */
       size: 'string',
-      /** Storage class name (e.g. 'gp3', 'standard'). */
-      'storageClass?': 'string',
+      /** Storage class name (e.g. 'gp3', 'standard'). Matches CNPG CRD field. */
+      'storageClassName?': 'string',
       /** Allow online volume resize (default: true on supported storage classes). */
       'resizeInUseVolumes?': 'boolean',
       /** PVC template overrides. */
