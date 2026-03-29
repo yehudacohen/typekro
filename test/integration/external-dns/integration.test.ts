@@ -59,24 +59,27 @@ describeOrSkip('External-DNS Integration Tests', () => {
     );
     const { execSync } = require('node:child_process');
 
-    // Get AWS credentials from default profile
+    // Verify and export AWS credentials from any source (env vars, profiles, SSO, etc.)
     let awsAccessKeyId: string;
     let awsSecretAccessKey: string;
-
     try {
-      awsAccessKeyId = execSync('aws configure get aws_access_key_id', {
-        encoding: 'utf-8',
-      }).trim();
-      awsSecretAccessKey = execSync('aws configure get aws_secret_access_key', {
-        encoding: 'utf-8',
-      }).trim();
-
-      if (!awsAccessKeyId || !awsSecretAccessKey) {
-        throw new Error('AWS credentials not found');
-      }
-    } catch (_error) {
-      console.log('⏭️  Skipping test: AWS credentials not configured');
-      return; // Skip test if no credentials
+      execSync('aws sts get-caller-identity', { encoding: 'utf-8', timeout: 10000 });
+      // Export resolved credentials (works with SSO, env vars, profiles, instance roles)
+      const envOutput = execSync('aws configure export-credentials --format env-no-export', {
+        encoding: 'utf-8', timeout: 10000,
+      });
+      const envMap = Object.fromEntries(
+        envOutput.trim().split('\n').map((line: string) => {
+          const eq = line.indexOf('=');
+          return [line.slice(0, eq), line.slice(eq + 1)];
+        })
+      );
+      awsAccessKeyId = envMap.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || '';
+      awsSecretAccessKey = envMap.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '';
+      if (!awsAccessKeyId || !awsSecretAccessKey) throw new Error('empty');
+    } catch {
+      console.log('⏭️  Skipping test: no valid AWS credentials (run: aws sts get-caller-identity)');
+      return;
     }
 
     // Create the namespace first
@@ -262,16 +265,19 @@ describeOrSkip('External-DNS Integration Tests', () => {
   it('should handle DNS record management correctly', async () => {
     // External-dns with provider: 'aws' requires valid AWS credentials to start.
     // The pod will crash-loop without them, causing a 180s timeout.
+    // Use sts get-caller-identity to verify credentials from any source
+    // (env vars, profiles, SSO, instance roles, etc.).
     const { execSync } = require('node:child_process');
     try {
-      const key = execSync('aws configure get aws_access_key_id', { encoding: 'utf-8' }).trim();
-      if (!key) throw new Error('empty');
+      execSync('aws sts get-caller-identity', { encoding: 'utf-8', timeout: 10000 });
     } catch {
       throw new Error(
-        'AWS credentials required for external-dns integration test.\n' +
-        'Configure them with: aws configure\n' +
-        'Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.\n' +
-        'The external-dns pod needs valid AWS credentials to start (even in dryRun mode).'
+        'Valid AWS credentials required for external-dns integration test.\n' +
+        'Options:\n' +
+        '  • aws sso login --profile <your-profile>\n' +
+        '  • export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...\n' +
+        '  • aws configure\n' +
+        'Verify with: aws sts get-caller-identity'
       );
     }
 
