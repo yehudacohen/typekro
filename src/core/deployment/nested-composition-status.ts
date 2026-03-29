@@ -21,33 +21,44 @@ import type { Enhanced } from '../types/index.js';
  * synthesized nested composition statuses.
  *
  * @param probeResources - Resource map from a probe execution of the composition.
- *   Keys are full composition paths like "outer1-inngest-bootstrap1-inngestHelmRelease".
+ *   Keys are full composition paths like "outer1-inngestBootstrap1-inngestHelmRelease".
  * @param liveStatusMap - Live status data keyed by short resource IDs (e.g., "inngestHelmRelease").
  *   All resources in this map are considered "ready" (they passed waitForReady).
  * @param logger - Logger instance for debug output.
+ * @param knownNestedIds - Explicit set of known nested composition base IDs
+ *   (e.g., "inngestBootstrap1") from the composition context. When provided,
+ *   only these IDs are considered as potential parents — no string-pattern
+ *   heuristics are used. When absent, falls back to digit-suffix detection.
  * @returns Enriched map with additional entries for nested composition parent IDs.
  */
 export function synthesizeNestedCompositionStatus(
   probeResources: Record<string, Enhanced<unknown, unknown>>,
   liveStatusMap: Map<string, Record<string, unknown>>,
-  logger: TypeKroLogger
+  logger: TypeKroLogger,
+  knownNestedIds?: Set<string>
 ): Map<string, Record<string, unknown>> {
   const enrichedMap = new Map(liveStatusMap);
   const deployedChildIds = new Set(liveStatusMap.keys());
 
   // Scan probe resource keys for nested composition parents.
   // Full keys follow the pattern: "{outer}-{parent}-{child}"
-  // where {parent} ends with a digit (composition instance counter).
-  // The {child} suffix should match a key in the liveStatusMap.
-  const nestedParents = new Map<string, { childCount: number; readyCount: number }>();
+  // where {parent} is a known nested composition ID.
+  const nestedParents = new Map<string, { childCount: number }>();
 
   for (const fullKey of Object.keys(probeResources)) {
     const segments = fullKey.split('-');
 
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
-      // Composition instance IDs end with a digit (e.g., "bootstrap1", "processing1")
-      if (!/\d$/.test(segment)) continue;
+
+      // Check if this segment is a known nested composition ID.
+      // With the explicit registry, we match precisely. Without it,
+      // fall back to the digit-suffix heuristic (composition counters
+      // always end with a digit: bootstrap1, processing2, etc.).
+      const isNestedId = knownNestedIds
+        ? knownNestedIds.has(segment)
+        : /\d$/.test(segment);
+      if (!isNestedId) continue;
 
       const candidateParent = segments.slice(0, i + 1).join('-');
       // Skip if this is the entire key (no children)
@@ -61,21 +72,19 @@ export function synthesizeNestedCompositionStatus(
       // Check if this child was deployed (exists in liveStatusMap)
       if (deployedChildIds.has(childSuffix)) {
         if (!nestedParents.has(candidateParent)) {
-          nestedParents.set(candidateParent, { childCount: 0, readyCount: 0 });
+          nestedParents.set(candidateParent, { childCount: 0 });
         }
-        const entry = nestedParents.get(candidateParent)!;
-        entry.childCount++;
-        // All resources in liveStatusMap passed waitForReady → they're ready
-        entry.readyCount++;
+        nestedParents.get(candidateParent)!.childCount++;
       }
     }
   }
 
-  for (const [parentId, { childCount, readyCount }] of nestedParents) {
-    const allReady = childCount > 0 && readyCount === childCount;
+  for (const [parentId, { childCount }] of nestedParents) {
+    // All resources in liveStatusMap passed waitForReady, so if we found
+    // children, the parent is ready.
     const synthesizedStatus: Record<string, unknown> = {
-      ready: allReady,
-      phase: allReady ? 'Ready' : 'Installing',
+      ready: childCount > 0,
+      phase: childCount > 0 ? 'Ready' : 'Installing',
       failed: false,
     };
 
@@ -83,19 +92,22 @@ export function synthesizeNestedCompositionStatus(
     enrichedMap.set(parentId, synthesizedStatus);
 
     // Also add under shorter suffixes of the parent ID.
-    // The inner composition's proxy uses a baseId like "inngest-bootstrap1"
-    // but the full context key may be "web-app-with-processing1-inngest-bootstrap1".
+    // The inner composition's proxy uses a baseId like "inngestBootstrap1"
+    // but the full context key may be "webAppWithProcessing1-inngestBootstrap1".
     const parentSegments = parentId.split('-');
     for (let j = 1; j < parentSegments.length; j++) {
       const suffix = parentSegments.slice(j).join('-');
-      if (/\d$/.test(suffix) && !enrichedMap.has(suffix)) {
+      const isSuffixNested = knownNestedIds
+        ? knownNestedIds.has(suffix)
+        : /\d$/.test(suffix);
+      if (isSuffixNested && !enrichedMap.has(suffix)) {
         enrichedMap.set(suffix, synthesizedStatus);
       }
     }
 
     logger.debug('Synthesized nested composition status', {
       parentId,
-      ready: allReady,
+      ready: childCount > 0,
       childCount,
     });
   }

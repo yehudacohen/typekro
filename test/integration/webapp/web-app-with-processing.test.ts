@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from 'bu
 setDefaultTimeout(600000);
 import type * as k8s from '@kubernetes/client-node';
 import type { Enhanced } from '../../../src/core/types/index.js';
+import type { ResourceFactory } from '../../../src/core/types/deployment.js';
 import { createBunCompatibleKubernetesObjectApi } from '../../../src/core/kubernetes/index.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import type {
@@ -137,7 +138,7 @@ async function assertAllPodsHealthy(appNamespace: string): Promise<void> {
 
 describe('WebAppWithProcessing Direct Mode', () => {
   let kubeConfig: k8s.KubeConfig;
-  let directFactory: any;
+  let directFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
   const suffix = Date.now().toString().slice(-5);
   const factoryNamespace = `typekro-webapp-${suffix}`;
   const appNamespace = `webapp-app-${suffix}`;
@@ -213,7 +214,7 @@ describe('WebAppWithProcessing Direct Mode', () => {
 
 describe('WebAppWithProcessing KRO Mode', () => {
   let kubeConfig: k8s.KubeConfig;
-  let kroFactory: any;
+  let kroFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
   const suffix = Date.now().toString().slice(-5);
   const kroNamespace = `typekro-kro-${suffix}`;
   const appNamespace = `webapp-kro-${suffix}`;

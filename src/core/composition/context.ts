@@ -53,6 +53,13 @@ export interface CompositionContext {
    * so status comparisons (e.g., `readyInstances >= 1`) evaluate correctly.
    */
   liveStatusMap?: Map<string, Record<string, unknown>>;
+  /**
+   * Set of known nested composition base IDs.
+   * Populated during composition execution when nested compositions are created.
+   * Used by synthesizeNestedCompositionStatus to identify virtual parent IDs
+   * without relying on string-pattern heuristics.
+   */
+  nestedCompositionIds?: Set<string>;
 }
 
 /**

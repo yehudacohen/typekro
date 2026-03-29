@@ -1307,7 +1307,8 @@ ${Object.entries(spec as Record<string, any>)
     const enrichedMap = synthesizeNestedCompositionStatus(
       probeContext.resources,
       liveStatusMap,
-      this.logger
+      this.logger,
+      probeContext.nestedCompositionIds
     );
 
     // Real execution with live status

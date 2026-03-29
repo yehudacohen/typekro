@@ -196,10 +196,12 @@ export class DirectDeploymentStrategy<
     const liveStatusMap = new Map<string, Record<string, unknown>>();
     const k8sApi = this.deploymentEngine.getKubernetesApi();
 
-    for (const resource of deploymentResult.resources) {
-      if (resource.status !== 'ready' && resource.status !== 'deployed') continue;
+    const readyResources = deploymentResult.resources.filter(
+      r => r.status === 'ready' || r.status === 'deployed'
+    );
 
-      try {
+    const results = await Promise.allSettled(
+      readyResources.map(async (resource) => {
         const isClusterScoped = getMetadataField(resource.manifest, 'scope') === 'cluster';
         const liveResource = await k8sApi.read({
           apiVersion: resource.manifest.apiVersion || '',
@@ -212,20 +214,20 @@ export class DirectDeploymentStrategy<
 
         const status = (liveResource as Record<string, unknown>).status;
         if (status && typeof status === 'object') {
-          // Map from the resource's original composition ID (used by the proxy system).
-          // The metadata WeakMap stores the original ID set during composition execution.
           const originalId = getResourceId(resource.manifest) || resource.id;
-          liveStatusMap.set(originalId, status as Record<string, unknown>);
-
-          this.logger.debug('Captured live status for resource', {
-            originalId,
-            deployedId: resource.id,
-            kind: resource.kind,
-            statusKeys: Object.keys(status),
-          });
+          return { originalId, deployedId: resource.id, kind: resource.kind, status: status as Record<string, unknown> };
         }
-      } catch {
-        // Resource may not have status yet — skip silently
+        return null;
+      })
+    );
+
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) {
+        const { originalId, deployedId, kind, status } = result.value;
+        liveStatusMap.set(originalId, status);
+        this.logger.debug('Captured live status for resource', {
+          originalId, deployedId, kind, statusKeys: Object.keys(status),
+        });
       }
     }
 

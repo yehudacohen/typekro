@@ -34,3 +34,16 @@ export const NESTED_COMPOSITION_BRAND = Symbol.for('TypeKro.NestedComposition');
  * Brand symbol for CallableComposition objects
  */
 export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableComposition');
+
+/**
+ * Regex pattern for matching __KUBERNETES_REF__ marker strings in values.
+ *
+ * Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+ * - resourceId: camelCase with optional hyphens/digits (e.g., 'database', 'inngest-bootstrap1')
+ * - fieldPath: dot-separated path with optional $ for iteration (e.g., 'status.ready', 'spec.workers.$item.name')
+ * - Excludes __schema__ refs via negative lookahead
+ *
+ * This pattern is the single source of truth — all marker detection/resolution
+ * code must use this constant to stay in sync.
+ */
+export const KUBERNETES_REF_MARKER_PATTERN = /(?:__KUBERNETES_REF_)(?!_schema__)([a-zA-Z0-9-]+)_([a-zA-Z0-9.$]+)__/g;
