@@ -41,7 +41,7 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
   database: {
     instances: 1,
     storageSize: '1Gi',
-    storageClass: 'local-path',
+    storageClassName: 'local-path',
     database: 'testdb',
     owner: 'app',
   },
