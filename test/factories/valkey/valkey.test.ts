@@ -47,8 +47,10 @@ describe('Valkey Factory', () => {
           certIssuer: 'letsencrypt-prod',
           certIssuerType: 'ClusterIssuer',
           storage: {
-            storageClassName: 'gp3',
-            resources: { requests: { storage: '50Gi' } },
+            spec: {
+              storageClassName: 'gp3',
+              resources: { requests: { storage: '50Gi' } },
+            },
           },
           resources: {
             requests: { cpu: '500m', memory: '1Gi' },
@@ -70,10 +72,11 @@ describe('Valkey Factory', () => {
       });
 
       expect(cache.kind).toBe('Valkey');
-      expect(cache.spec.shards).toBe(3);
+      // shards maps to the CRD's `nodes` JSON tag
+      expect((cache.spec as Record<string, unknown>).nodes).toBe(3);
       expect(cache.spec.replicas).toBe(1);
       expect(cache.spec.tls).toBe(true);
-      expect(cache.spec.storage?.storageClassName).toBe('gp3');
+      expect(cache.spec.storage?.spec?.storageClassName).toBe('gp3');
       expect(cache.spec.prometheus).toBe(true);
       expect(cache.spec.externalAccess?.type).toBe('Proxy');
       expect(cache.spec.externalAccess?.proxy?.replicas).toBe(2);

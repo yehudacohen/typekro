@@ -81,8 +81,10 @@ function valkeyReadinessEvaluator(liveResource: unknown): ResourceStatus {
  *     shards: 3,
  *     replicas: 1,
  *     storage: {
- *       storageClassName: 'gp3',
- *       resources: { requests: { storage: '10Gi' } },
+ *       spec: {
+ *         storageClassName: 'gp3',
+ *         resources: { requests: { storage: '10Gi' } },
+ *       },
  *     },
  *     resources: {
  *       requests: { cpu: '250m', memory: '512Mi' },
@@ -97,6 +99,19 @@ function valkeyReadinessEvaluator(liveResource: unknown): ResourceStatus {
 function createValkeyResource(
   config: Composable<ValkeyConfig>
 ): Enhanced<ValkeyConfig['spec'], ValkeyStatus> {
+  // Map the user-facing `shards` field to the CRD's `nodes` JSON tag.
+  // The Hyperspike CRD Go type uses `Nodes int32 \`json:"nodes"\``
+  // but we expose it as `shards` for clarity.
+  const spec = config.spec;
+  const crdSpec: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(spec)) {
+    if (key === 'shards') {
+      crdSpec.nodes = value;
+    } else {
+      crdSpec[key] = value;
+    }
+  }
+
   return createResource(
     {
       apiVersion: 'hyperspike.io/v1',
@@ -104,8 +119,16 @@ function createValkeyResource(
       metadata: {
         name: config.name,
         ...(config.namespace && { namespace: config.namespace }),
+        // Labels must be non-empty: the Hyperspike operator's labels() function
+        // panics on nil map assignment when metadata.labels is absent.
+        // https://github.com/hyperspike/valkey-operator/blob/v0.0.61/internal/controller/valkey_controller.go#L250
+        labels: {
+          'app.kubernetes.io/name': 'valkey',
+          'app.kubernetes.io/instance': config.name,
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
       },
-      spec: config.spec,
+      spec: crdSpec as typeof spec,
       ...(config.id && { id: config.id }),
     },
     { scope: 'namespaced' }

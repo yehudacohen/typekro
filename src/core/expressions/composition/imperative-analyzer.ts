@@ -77,6 +77,16 @@ export function analyzeImperativeComposition(
       };
     }
 
+    // Build a variable scope map from all VariableDeclarations in the function body.
+    // This maps local variable names to their initializer source code so that
+    // expressions like `appReplicas` can be expanded to `spec.app.replicas || 1`.
+    const variableScope = buildVariableScope(ast, functionSource);
+
+    logger.debug('Built variable scope for imperative composition', {
+      variableCount: Object.keys(variableScope).length,
+      variables: Object.keys(variableScope),
+    });
+
     // Analyze each property in the returned object
     const statusMappings: Record<string, unknown> = {};
     const errors: string[] = [];
@@ -113,8 +123,10 @@ export function analyzeImperativeComposition(
               continue;
             }
 
-            // Convert the property value to source code
-            const propertySource = getNodeSource(property.value, functionSource);
+            // Convert the property value to source code, then inline local
+            // variables so KRO CEL can resolve them (e.g., `appReplicas` → `spec.app.replicas || 1`)
+            const rawSource = getNodeSource(property.value, functionSource);
+            const propertySource = inlineVariables(rawSource, variableScope);
 
             logger.debug('Analyzing property', {
               fieldName,
@@ -162,7 +174,7 @@ export function analyzeImperativeComposition(
               logger.debug('Created direct CEL expression for property', {
                 fieldName,
                 fullFieldName,
-                expression: convertedSource,
+                expression: propertySource.substring(0, 100),
               });
             } else {
               // No resource references, keep as static value
@@ -360,8 +372,10 @@ function convertResourceReferencesToCel(
     return convertStringWithKubernetesRefs(source);
   }
 
-  // For non-template literals, return as-is (other expressions should already be valid CEL)
-  return source;
+  // For non-template expressions, apply variable inlining and JS→CEL operator conversion.
+  // This is targeted conversion for the specific patterns produced by imperative compositions,
+  // not a full JS→CEL transpiler (which is handled by the analysis engine for other code paths).
+  return applyJsToCelConversions(source);
 }
 
 /**
@@ -429,20 +443,12 @@ function convertTemplateLiteralToCel(
  * Convert individual expressions within template literals to CEL format
  */
 function convertExpressionToCel(expression: string): string {
-  // Convert schema references: spec.hostname -> schema.spec.hostname
-  if (expression.startsWith('spec.')) {
-    expression = `schema.${expression}`;
-  }
+  // Apply the shared JS-to-CEL conversions (spec. → schema.spec., || → .orValue(), etc.)
+  expression = applyJsToCelConversions(expression);
 
   // Convert JavaScript operators to CEL operators
-  expression = expression.replace(/===/g, '=='); // Convert strict equality to CEL equality
-  expression = expression.replace(/!==/g, '!='); // Convert strict inequality to CEL inequality
-
-  // Wrap expressions containing || or && operators in parentheses to preserve precedence
-  // when they're part of string concatenation in template literals
-  if (expression.includes('||') || expression.includes('&&')) {
-    expression = `(${expression})`;
-  }
+  expression = expression.replace(/===/g, '==');
+  expression = expression.replace(/!==/g, '!=');
 
   // Resource references are already in correct format
   return expression;
@@ -560,4 +566,114 @@ function evaluateStaticExpression(node: any): any {
     default:
       return null;
   }
+}
+
+// ── JS → CEL expression conversion ───────────────────────────────────────
+
+/**
+ * Apply targeted JS-to-CEL conversions for imperative composition expressions.
+ *
+ * Only handles patterns that appear in status builder return statements:
+ * - `spec.X` → `schema.spec.X` (bare schema references)
+ * - `ref || literal` → `ref.orValue(literal)` (fallback/default patterns)
+ * - `ref ?? literal` → `ref.orValue(literal)` (nullish coalescing)
+ *
+ * Comparison operators (`>=`, `&&`, `===`) and resource references
+ * (`app.status.readyReplicas`) are already valid CEL and pass through.
+ */
+function applyJsToCelConversions(source: string): string {
+  let result = source;
+
+  // Prefix bare `spec.` references with `schema.` for KRO CEL
+  // Only match standalone `spec.` (not `schema.spec.` or `X.spec.`)
+  result = result.replace(/(?<![.\w])spec\./g, 'schema.spec.');
+
+  // Convert `ref || fallback` to `ref.orValue(fallback)` when ref is a schema path.
+  // Fallback can be a literal ("string", number) or another schema reference.
+  result = result.replace(
+    /(schema\.spec\.[a-zA-Z0-9_.]+)\s*\|\|\s*("[^"]*"|'[^']*'|\d+|schema\.spec\.[a-zA-Z0-9_.]+)/g,
+    '$1.orValue($2)'
+  );
+
+  // Convert nullish coalescing with/without parens
+  result = result.replace(
+    /\(?(schema\.spec\.[a-zA-Z0-9_.]+)\s*\?\?\s*("[^"]*"|'[^']*'|\d+|schema\.spec\.[a-zA-Z0-9_.]+)\)?/g,
+    '$1.orValue($2)'
+  );
+
+  return result;
+}
+
+// ── Variable scope resolution ────────────────────────────────────────────
+
+/**
+ * Build a scope map from VariableDeclaration nodes in the function body.
+ *
+ * Scans the function's AST for `const` declarations and maps each variable
+ * name to its initializer source code. This enables inlining local variables
+ * into status expressions so that KRO CEL can resolve them.
+ *
+ * Only captures simple initializers that reference `spec.*` (schema proxy
+ * accesses) or literal values — not complex expressions or factory calls.
+ */
+function buildVariableScope(ast: any, source: string): Record<string, string> {
+  const scope: Record<string, string> = {};
+
+  function visit(node: any): void {
+    if (!node || typeof node !== 'object') return;
+
+    if (node.type === 'VariableDeclaration') {
+      for (const decl of node.declarations || []) {
+        if (
+          decl.type === 'VariableDeclarator' &&
+          decl.id?.type === 'Identifier' &&
+          decl.init
+        ) {
+          const name = decl.id.name;
+          const initSource = getNodeSource(decl.init, source);
+
+          // Only track variables initialized from spec access, literals, or
+          // simple expressions (not factory calls like cluster(...))
+          if (
+            initSource.startsWith('spec.') ||
+            initSource.match(/^['"\d]/)
+          ) {
+            scope[name] = initSource;
+          }
+        }
+      }
+    }
+
+    // Recurse into child nodes
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'range' || key === 'loc' || key === 'start' || key === 'end') continue;
+      const child = node[key];
+      if (Array.isArray(child)) {
+        for (const item of child) visit(item);
+      } else if (child && typeof child === 'object' && child.type) {
+        visit(child);
+      }
+    }
+  }
+
+  visit(ast);
+  return scope;
+}
+
+/**
+ * Replace local variable names in an expression string with their
+ * initializer expressions from the variable scope.
+ *
+ * Only replaces standalone identifiers (word boundaries), not property
+ * accesses like `appDeployment.status.*` (which are resource references).
+ */
+export function inlineVariables(expression: string, scope: Record<string, string>): string {
+  let result = expression;
+  for (const [name, value] of Object.entries(scope)) {
+    // Replace standalone identifier (not followed by `.` which indicates property access)
+    // and not preceded by `.` (which would be a property of another object)
+    const pattern = new RegExp(`(?<!\\.)\\b${name}\\b(?!\\s*\\.)`, 'g');
+    result = result.replace(pattern, value);
+  }
+  return result;
 }

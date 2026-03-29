@@ -1,5 +1,4 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
-import { externalRef } from '../../../core/references/external-refs.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
 import { pooler } from '../../cnpg/resources/pooler.js';
 import { inngestBootstrap } from '../../inngest/compositions/inngest-bootstrap.js';
@@ -26,8 +25,10 @@ import {
  * - `INNGEST_BASE_URL` — points to the Inngest server
  * - `INNGEST_EVENT_KEY` / `INNGEST_SIGNING_KEY` — from config
  *
- * The Inngest server is configured to use the CNPG database and Valkey cache
- * instead of bundled PostgreSQL/Redis.
+ * Resource dependencies are expressed through proxy references:
+ * - Inngest references `cache.metadata.name` for the redis URI → deploys after Valkey
+ * - Inngest references `database.status.writeService` for the postgres URI → deploys after CNPG
+ * - App references service names derived from resource names → deploys after all infra
  *
  * @example
  * ```typescript
@@ -76,75 +77,52 @@ export const webAppWithProcessing = kubernetesComposition(
     const ns = spec.namespace || 'default';
     const appPort = spec.app.port || 3000;
     const appReplicas = spec.app.replicas || 1;
+    const inngestReplicas = spec.processing.replicas || 1;
     const dbName = spec.database.database || spec.name;
     const dbOwner = spec.database.owner || 'app';
 
-    // Resource name conventions — used for service discovery
-    const dbClusterName = `${spec.name}-db`;
-    const dbPoolerName = `${spec.name}-db-pooler`;
-    const cacheName = `${spec.name}-cache`;
-    const inngestName = `${spec.name}-inngest`;
-    const appName = spec.name;
-
-    // Connection URLs — derived from resource naming conventions.
-    // CNPG creates services: {cluster}-rw (primary), {cluster}-ro (replicas)
-    // PgBouncer pooler creates: {pooler} service
-    // Valkey creates: {name} service on port 6379
-    // Inngest runs on port 8288
-    const databaseUrl =
-      `postgresql://${dbOwner}@${dbPoolerName}:5432/${dbName}`;
-    const cacheUrl = `redis://${cacheName}:6379`;
-    const inngestUrl = `http://${inngestName}:8288`;
-    const appUrl = `http://${appName}:${appPort}`;
-
     // ── PostgreSQL (CNPG) ──────────────────────────────────────────────
 
-    // Resources auto-register in the composition context.
-    // _-prefixed vars are referenced by id in the status, not by variable.
-    const _database = cluster({
-      name: dbClusterName,
+    const database = cluster({
+      name: `${spec.name}-db`,
       namespace: ns,
       spec: {
         instances: spec.database.instances,
-        storage: Object.assign(
-          { size: spec.database.storageSize },
-          spec.database.storageClass && { storageClass: spec.database.storageClass },
-        ),
-        bootstrap: {
-          initdb: {
-            database: dbName,
-            owner: dbOwner,
-          },
+        storage: {
+          size: spec.database.storageSize,
+          ...(spec.database.storageClass ? { storageClass: spec.database.storageClass } : {}),
         },
-        monitoring: { enabled: true },
+        bootstrap: {
+          initdb: { database: dbName, owner: dbOwner },
+        },
       },
       id: 'database',
     });
 
-    const _pooler = pooler({
-      name: dbPoolerName,
+    const dbPooler = pooler({
+      name: `${spec.name}-db-pooler`,
       namespace: ns,
       spec: {
-        cluster: { name: dbClusterName },
+        cluster: { name: `${spec.name}-db` },
         type: 'rw',
         pgbouncer: { poolMode: 'transaction' },
       },
-      id: 'pooler',
+      id: 'dbPooler',
     });
 
     // ── Valkey Cache ────────────────────────────────────────────────────
 
-    const _cache = valkey({
-      name: cacheName,
+    const cache = valkey({
+      name: `${spec.name}-cache`,
       namespace: ns,
       spec: {
         volumePermissions: spec.cache?.volumePermissions ?? true,
-        shards: spec.cache?.shards,
-        replicas: spec.cache?.replicas,
-        // Storage is required by the Valkey operator for StatefulSet PVC creation.
-        // Uses the PVC spec structure per the CRD Go type (*corev1.PersistentVolumeClaim).
+        anonymousAuth: true,
+        ...(spec.cache?.shards != null ? { shards: spec.cache.shards } : {}),
+        ...(spec.cache?.replicas != null ? { replicas: spec.cache.replicas } : {}),
         storage: {
           spec: {
+            accessModes: ['ReadWriteOnce'],
             resources: { requests: { storage: '1Gi' } },
           },
         },
@@ -152,88 +130,82 @@ export const webAppWithProcessing = kubernetesComposition(
       id: 'cache',
     });
 
-    // ── Database credentials (external ref to CNPG-generated Secret) ────
-
-    // CNPG auto-generates credentials in a Secret named {cluster}-app.
-    // We reference it via externalRef so the name is derived from the proxy
-    // system rather than duplicated as a string literal.
-    const dbSecret = externalRef({
-      apiVersion: 'v1',
-      kind: 'Secret',
-      metadata: { name: `${dbClusterName}-${dbOwner}`, namespace: ns },
-      id: 'dbCredentials',
+    // The Valkey operator creates a client Service for each Valkey CR, but KRO's
+    // applyset pruning deletes Services it doesn't manage. Declare the cache
+    // Service explicitly so KRO includes it in its applyset and doesn't prune it.
+    simple.Service({
+      name: `${spec.name}-cache`,
+      namespace: ns,
+      selector: {
+        'app.kubernetes.io/name': 'valkey',
+        'app.kubernetes.io/instance': `${spec.name}-cache`,
+      },
+      ports: [{ port: 6379, targetPort: 6379 }],
+      id: 'cacheService',
     });
+
+    // ── Database credentials ──────────────────────────────────────────────
+
+    // CNPG auto-generates a Secret named {cluster}-{owner} during bootstrap.
+    // The name is deterministic — no need for an externalRef which would block
+    // KRO reconciliation (KRO waits for external refs to exist before creating
+    // dependent resources, but the Secret only exists after CNPG bootstraps).
+    const dbSecretName = `${spec.name}-db-${dbOwner}`;
 
     // ── Inngest (with external DB + cache) ──────────────────────────────
 
-    // Inngest uses the CNPG database and Valkey cache — bundled deps disabled.
-    // The CNPG-generated Secret contains a full postgres URI with the auto-
-    // generated password. We inject it via extraEnv with secretKeyRef so the
-    // password never appears in Helm values or ResourceGraphDefinitions.
-    //
-    // inngestBootstrap is a nested composition — its spec type doesn't use
-    // Composable yet (that requires a core API change). Use Object.assign
-    // to conditionally include optional fields.
-    const _inngest = inngestBootstrap(Object.assign(
-      {
-        name: inngestName,
-        namespace: ns,
-        inngest: Object.assign(
-          {
-            eventKey: spec.processing.eventKey,
-            signingKey: spec.processing.signingKey,
-            // Placeholder — overridden by extraEnv secretKeyRef below
-            postgres: { uri: `postgresql://${dbOwner}@${dbClusterName}-rw:5432/${dbName}` },
-            redis: { uri: cacheUrl },
-          },
-          spec.processing.sdkUrl && { sdkUrl: spec.processing.sdkUrl },
-        ),
-        postgresql: { enabled: false } as const,
-        redis: { enabled: false } as const,
-        // Override chart defaults:
-        // 1. Deploy Inngest pods in the same namespace as CNPG so they can
-        //    access the database Secret via secretKeyRef (namespace-scoped).
-        // 2. Inject the real postgres URI from the CNPG Secret, overriding
-        //    the placeholder inngest.postgres.uri Helm value.
-        customValues: {
-          namespace: { create: false, name: ns },
-          inngest: {
-            extraEnv: [
-              {
-                name: 'INNGEST_POSTGRES_URI',
-                valueFrom: {
-                  secretKeyRef: {
-                    name: dbSecret.metadata.name,
-                    key: 'uri',
-                  },
+    // database.status.writeService creates an implicit deployment dependency:
+    // the dependency resolver detects the reference and adds a DAG edge,
+    // ensuring the database is ready BEFORE Inngest deploys. The actual
+    // postgres credentials are injected via the CNPG Secret (secretKeyRef below).
+    const inngest = inngestBootstrap({
+      name: `${spec.name}-inngest`,
+      namespace: ns,
+      inngest: {
+        eventKey: spec.processing.eventKey,
+        signingKey: spec.processing.signingKey,
+        postgres: { uri: `postgresql://${dbOwner}@${database.status.writeService}:5432/${dbName}` },
+        redis: { uri: `redis://${cache.metadata.name}:6379` },
+        sdkUrl: spec.processing.sdkUrl,
+      },
+      postgresql: { enabled: false },
+      redis: { enabled: false },
+      replicaCount: inngestReplicas,
+      // Deploy Inngest pods in the same namespace as CNPG (for Secret access)
+      // and inject the real postgres URI from the CNPG Secret via secretKeyRef.
+      customValues: {
+        namespace: { create: false, name: ns },
+        inngest: {
+          extraEnv: [
+            {
+              name: 'INNGEST_POSTGRES_URI',
+              valueFrom: {
+                secretKeyRef: {
+                  name: dbSecretName,
+                  key: 'uri',
                 },
               },
-            ],
-          },
+            },
+          ],
         },
       },
-      spec.processing.replicas !== undefined && { replicaCount: spec.processing.replicas },
-    ));
+    });
 
     // ── Application ─────────────────────────────────────────────────────
 
-    // The app gets all connection details injected as environment variables.
-    const baseEnv: Record<string, string> = {
-      DATABASE_URL: databaseUrl,
-      VALKEY_URL: cacheUrl,
-      REDIS_URL: cacheUrl,
-      INNGEST_BASE_URL: inngestUrl,
+    const appEnv: Record<string, string> = {
+      DATABASE_URL: `postgresql://${dbOwner}@${dbPooler.metadata.name}:5432/${dbName}`,
+      VALKEY_URL: `redis://${cache.metadata.name}:6379`,
+      REDIS_URL: `redis://${cache.metadata.name}:6379`,
+      INNGEST_BASE_URL: `http://${spec.name}-inngest:8288`,
       INNGEST_EVENT_KEY: spec.processing.eventKey,
       INNGEST_SIGNING_KEY: spec.processing.signingKey,
+      ...spec.app.env,
     };
 
-    // Merge user-provided env vars (user's take precedence)
-    const appEnv = spec.app.env
-      ? Object.assign({}, baseEnv, spec.app.env)
-      : baseEnv;
-
-    const appDeployment = simple.Deployment({
-      name: appName,
+    const app = simple.Deployment({
+      name: spec.name,
+      namespace: ns,
       image: spec.app.image,
       replicas: appReplicas,
       ports: [{ containerPort: appPort }],
@@ -241,9 +213,10 @@ export const webAppWithProcessing = kubernetesComposition(
       id: 'app',
     });
 
-    const _appService = simple.Service({
-      name: appName,
-      selector: { app: appName },
+    simple.Service({
+      name: spec.name,
+      namespace: ns,
+      selector: { app: spec.name },
       ports: [{ port: appPort, targetPort: appPort }],
       id: 'appService',
     });
@@ -252,19 +225,19 @@ export const webAppWithProcessing = kubernetesComposition(
 
     return {
       ready:
-        appDeployment.status.readyReplicas >= appReplicas &&
-        _database.status.readyInstances >= (spec.database.instances ?? 1) &&
-        _cache.status.ready &&
-        _inngest.status.ready,
-      databaseUrl,
-      cacheUrl,
-      inngestUrl,
-      appUrl,
+        app.status.readyReplicas >= appReplicas &&
+        database.status.readyInstances >= (spec.database.instances ?? 1) &&
+        cache.status.ready &&
+        inngest.status.ready,
+      databaseUrl: `postgresql://${dbOwner}@${dbPooler.metadata.name}:5432/${dbName}`,
+      cacheUrl: `redis://${cache.metadata.name}:6379`,
+      inngestUrl: `http://${spec.name}-inngest:8288`,
+      appUrl: `http://${spec.name}:${appPort}`,
       components: {
-        app: appDeployment.status.readyReplicas >= appReplicas,
-        database: _database.status.readyInstances >= (spec.database.instances ?? 1),
-        cache: _cache.status.ready,
-        inngest: _inngest.status.ready,
+        app: app.status.readyReplicas >= appReplicas,
+        database: database.status.readyInstances >= (spec.database.instances ?? 1),
+        cache: cache.status.ready,
+        inngest: inngest.status.ready,
       },
     };
   }

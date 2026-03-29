@@ -1624,9 +1624,11 @@ describe('Imperative Composition Pattern', () => {
 
       // Should handle string manipulation in CEL for resource references
       const yaml = composition.toYaml();
-      // Fields with schema references are now static, so check for resource references instead
+      // Only resource.status.* references go to KRO status as CEL.
+      // Metadata refs are deterministic from the template and resolved at deploy time.
       expect(yaml).toContain('ready: ${stringManipulationDeployment.status.readyReplicas > 0}');
-      expect(yaml).toContain('namespace: ${stringManipulationDeployment.metadata.namespace}');
+      // namespace references metadata (deterministic) — resolved at deploy time, not in KRO YAML
+      expect(yaml).not.toContain('namespace: ${stringManipulationDeployment.metadata.namespace}');
     });
   });
 

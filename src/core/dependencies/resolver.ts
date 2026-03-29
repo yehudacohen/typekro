@@ -9,6 +9,7 @@ import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { KUBERNETES_REF_BRAND } from '../constants/brands.js';
 import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
+import { getResourceId } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
@@ -24,9 +25,18 @@ export class DependencyResolver {
   ): DependencyGraph {
     const graph = new DependencyGraph();
 
-    // Add all resources as nodes first
+    // Add all resources as nodes and build a reverse map from original
+    // composition IDs (e.g., 'database') to graph IDs (e.g., 'testappResource0Database').
+    // Marker strings in template literals use the original composition ID, but
+    // the graph nodes use the prefixed deployment ID.
+    const originalIdToGraphId = new Map<string, string>();
     for (const resource of resources) {
       graph.addNode(resource.id, resource);
+
+      const originalId = getResourceId(resource);
+      if (originalId && originalId !== resource.id) {
+        originalIdToGraphId.set(originalId, resource.id);
+      }
     }
 
     // Analyze each resource for references and add edges
@@ -36,15 +46,56 @@ export class DependencyResolver {
       for (const ref of references) {
         // Skip schema references (these are internal TypeKro references)
         if (ref.resourceId !== '__schema__') {
-          try {
-            graph.addEdge(resource.id, ref.resourceId);
-          } catch {
+          // Resolve the reference ID: try graph ID first, then original ID mapping
+          const targetId = graph.hasNode(ref.resourceId)
+            ? ref.resourceId
+            : originalIdToGraphId.get(ref.resourceId);
+
+          if (targetId) {
+            try {
+              graph.addEdge(resource.id, targetId);
+            } catch {
+              // Edge already exists — safe to ignore
+            }
+          } else {
             // Log warning if referenced resource doesn't exist in the graph
             // This might be an external reference that will be resolved at runtime
             this.logger.warn('Reference to unknown resource', {
               referencedResourceId: ref.resourceId,
               sourceResourceId: resource.id,
             });
+          }
+        }
+      }
+    }
+
+    // Detect implicit namespace dependencies: if a resource has metadata.namespace
+    // matching the metadata.name of a Namespace resource in the graph, the resource
+    // depends on that Namespace being created first.
+    const namespaceResources = new Map<string, string>(); // namespace name → resource graph ID
+    for (const resource of resources) {
+      if (resource.kind === 'Namespace' && resource.metadata?.name) {
+        namespaceResources.set(resource.metadata.name, resource.id);
+      }
+    }
+
+    if (namespaceResources.size > 0) {
+      for (const resource of resources) {
+        const ns = resource.metadata?.namespace;
+        if (ns && namespaceResources.has(ns)) {
+          const nsResourceId = namespaceResources.get(ns)!;
+          // Don't add self-dependency
+          if (nsResourceId !== resource.id) {
+            try {
+              graph.addEdge(resource.id, nsResourceId);
+              this.logger.debug('Added implicit namespace dependency', {
+                resource: resource.id,
+                namespace: ns,
+                namespaceResource: nsResourceId,
+              });
+            } catch {
+              // Edge already exists or other issue — safe to ignore
+            }
           }
         }
       }
@@ -91,6 +142,11 @@ export class DependencyResolver {
         // Parse CEL expression for references
         const celRefs = this.parseCelReferences(obj.expression);
         refs.push(...celRefs);
+      } else if (typeof obj === 'string') {
+        // Detect embedded KubernetesRef marker strings from template literals.
+        // Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+        const markerRefs = this.parseMarkerReferences(obj);
+        refs.push(...markerRefs);
       } else if (Array.isArray(obj)) {
         obj.forEach((item, index) => {
           traverse(item, `${path}[${index}]`);
@@ -103,6 +159,40 @@ export class DependencyResolver {
     };
 
     traverse(resource);
+    return refs;
+  }
+
+  /**
+   * Parse embedded KubernetesRef marker strings from serialized values.
+   *
+   * When a KubernetesRef proxy is used in a template literal (e.g.,
+   * `postgresql://${database.status.writeService}:5432/mydb`), the
+   * Symbol.toPrimitive handler produces a marker string:
+   *   __KUBERNETES_REF_{resourceId}_{fieldPath}__
+   *
+   * This method extracts those markers so the dependency resolver can
+   * detect references to other resources embedded in string values.
+   * The same marker format is used by schema-proxy.ts.
+   */
+  private parseMarkerReferences(value: string): KubernetesRef[] {
+    const refs: KubernetesRef[] = [];
+    // Match __KUBERNETES_REF_{resourceId}_{fieldPath}__
+    // resourceId: word chars, hyphens, digits (e.g., 'database', 'inngest-bootstrap1')
+    // fieldPath: word chars, dots, hyphens (e.g., 'status.writeService', 'metadata.name')
+    // Exclude __schema__ refs — those are schema proxy refs, not resource dependencies
+    const markerPattern = /__KUBERNETES_REF_(?!_schema__)([a-zA-Z0-9-]+)_([a-zA-Z0-9.$]+)__/g;
+    let match: RegExpExecArray | null = markerPattern.exec(value);
+
+    while (match !== null) {
+      const [, resourceId, fieldPath] = match;
+      refs.push({
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId,
+        fieldPath,
+      } as KubernetesRef);
+      match = markerPattern.exec(value);
+    }
+
     return refs;
   }
 
@@ -175,6 +265,62 @@ export class DependencyResolver {
       totalResources: topologicalOrder.length,
       maxParallelism: Math.max(...levels.map((level) => level.length)),
     };
+  }
+
+  /**
+   * Analyze deletion order — reverse of deployment levels.
+   *
+   * Returns parallelizable levels where the LAST deployment level (leaf
+   * resources with the most dependencies) is deleted FIRST. This ensures
+   * dependents are removed before their dependencies (e.g., App before
+   * Database, Database before Namespace).
+   *
+   * Resources with `lifecycle: 'shared'` are excluded from the deletion plan.
+   */
+  analyzeDeletionOrder(
+    graph: DependencyGraph,
+    sharedResourceIds?: Set<string>
+  ): DeploymentPlan {
+    // Build a subgraph excluding shared resources
+    const deletionGraph = sharedResourceIds
+      ? this.buildDeletionSubgraph(graph, sharedResourceIds)
+      : graph;
+
+    const deploymentPlan = this.analyzeDeploymentOrder(deletionGraph);
+
+    return {
+      levels: [...deploymentPlan.levels].reverse(),
+      totalResources: deploymentPlan.totalResources,
+      maxParallelism: deploymentPlan.maxParallelism,
+    };
+  }
+
+  /**
+   * Build a subgraph excluding shared resources for deletion planning.
+   */
+  private buildDeletionSubgraph(
+    graph: DependencyGraph,
+    sharedResourceIds: Set<string>
+  ): DependencyGraph {
+    const subgraph = new DependencyGraph();
+
+    for (const nodeId of graph.getTopologicalOrder()) {
+      if (sharedResourceIds.has(nodeId)) continue;
+      const node = graph.getNode(nodeId);
+      if (node) subgraph.addNode(nodeId, node.resource);
+    }
+
+    for (const nodeId of graph.getTopologicalOrder()) {
+      if (sharedResourceIds.has(nodeId)) continue;
+      for (const dep of graph.getDependencies(nodeId)) {
+        if (sharedResourceIds.has(dep)) continue;
+        if (subgraph.hasNode(dep)) {
+          subgraph.addEdge(nodeId, dep);
+        }
+      }
+    }
+
+    return subgraph;
   }
 
   /**

@@ -192,9 +192,12 @@ describe('JavaScript to CEL Template Literals', () => {
 
       // Schema-only expressions should be excluded from YAML (hydrated by TypeKro)
       expect(yaml).not.toContain('url:');
-      // Mixed expressions should be included in YAML (sent to Kro)
+      // Mixed expressions should be included in YAML (sent to Kro).
+      // `deployment.metadata.name` resolves to "test-app" at execution time since
+      // metadata is known from the resource template — only status fields produce
+      // KubernetesRef markers that become CEL references.
       expect(yaml).toContain(
-        'message: ${"Deployment " + deployment.metadata.name + " has " + deployment.status.readyReplicas + " replicas"}'
+        'message: ${"Deployment test-app has " + deployment.status.readyReplicas + " replicas"}'
       );
     });
 

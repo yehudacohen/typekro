@@ -525,24 +525,53 @@ describe('ReferenceResolver', () => {
   });
 
   describe('error handling', () => {
-    it('should throw ReferenceResolutionError for invalid references', async () => {
-      // Mock the k8s API to throw a 404 error for nonexistent resources
+    it('should defer resolution for virtual nested composition IDs', async () => {
+      // Virtual nested composition IDs (e.g., "inngestBootstrap1") are not real
+      // K8s resources and fail parseResourceId with UNKNOWN_RESOURCE_TYPE.
+      // The resolver should keep them in place for layered resolution.
+      const ref = {
+        [KUBERNETES_REF_BRAND]: true,
+        resourceId: 'inngestBootstrap1',
+        fieldPath: 'status.ready',
+      };
+      const resource = {
+        spec: {
+          value: ref,
+        },
+      };
+
+      const result = await resolver.resolveReferences(resource, context);
+      expect(result.spec.value).toHaveProperty('resourceId', 'inngestBootstrap1');
+      expect(result.spec.value).toHaveProperty('fieldPath', 'status.ready');
+    });
+
+    it('should throw ReferenceResolutionError for cluster 404 errors', async () => {
+      // 404 errors from the cluster (resource type is known but resource not found)
+      // should still throw — only UNKNOWN_RESOURCE_TYPE is deferred.
       mockK8sApi.read.mockImplementationOnce(() => {
         return Promise.reject(createK8sError('Resource not found', 404));
       });
+
+      // Add to resourceKeyMapping so parseResourceId isn't called
+      const contextWithMapping = {
+        ...context,
+        resourceKeyMapping: new Map([
+          ['missingDeploy', { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'missing', namespace: 'default' } }],
+        ]),
+      };
 
       const resource = {
         spec: {
           value: {
             [KUBERNETES_REF_BRAND]: true,
-            resourceId: 'nonexistent',
+            resourceId: 'missingDeploy',
             fieldPath: 'status.value',
           },
         },
       };
 
-      await expect(resolver.resolveReferences(resource, context)).rejects.toThrow(
-        'Failed to resolve reference nonexistent.status.value'
+      await expect(resolver.resolveReferences(resource, contextWithMapping)).rejects.toThrow(
+        'Failed to resolve reference missingDeploy.status.value'
       );
     });
 

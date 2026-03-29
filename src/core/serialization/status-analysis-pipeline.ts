@@ -21,7 +21,12 @@
  * @see ROADMAP.md Phase 2.9
  */
 
-import { containsCelExpressions, containsKubernetesRefs } from '../../utils/type-guards.js';
+import {
+  containsCelExpressions,
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../utils/type-guards.js';
 import { runInStatusBuilderContext } from '../composition/context.js';
 import { ensureError } from '../errors.js';
 import { analyzeImperativeComposition } from '../expressions/composition/imperative-analyzer.js';
@@ -134,6 +139,9 @@ function detectCompositionMode<TStatus extends KroCompatibleType>(
 interface AnalysisStageResult {
   analyzedStatusMappings: Record<string, unknown>;
   imperativeAnalysisSucceeded: boolean;
+  /** Raw Phase B fn.toString results before merge filtering. Used by
+   *  nested composition status extraction to recover garbled CEL. */
+  phaseBStatusMappings?: Record<string, unknown> | undefined;
 }
 
 /**
@@ -247,11 +255,23 @@ function analyzeImperativeStatusMappingsStage<
         });
       }
 
-      logger.debug('No conversion required, using original status mappings');
-      return success({
-        analyzedStatusMappings: statusMappings as Record<string, unknown>,
-        imperativeAnalysisSucceeded: false,
-      });
+      // If the analysis was invalid (e.g., status builder returns a captured
+      // variable instead of an object literal), fall through to Phase B which
+      // can parse the original composition function via fn.toString().
+      if (!statusBuilderAnalysis.valid) {
+        logger.debug(
+          'Phase A analysis invalid, falling through to Phase B fn.toString() analysis',
+          { errors: statusBuilderAnalysis.errors.map((e) => e.message) }
+        );
+        hasKubernetesRefs = false;
+        hasCelExpressions = false;
+      } else {
+        logger.debug('No conversion required, using original status mappings');
+        return success({
+          analyzedStatusMappings: statusMappings as Record<string, unknown>,
+          imperativeAnalysisSucceeded: false,
+        });
+      }
     } catch (statusAnalysisError: unknown) {
       logger.warn(
         'Status builder analysis failed for imperative composition, falling back to fn.toString() analysis',
@@ -264,6 +284,19 @@ function analyzeImperativeStatusMappingsStage<
   }
 
   // Phase B: imperative composition analysis via fn.toString()
+  //
+  // Phase B parses the original composition function's source code to extract
+  // CEL expressions for fields where Phase A only captured comparison artifacts
+  // (e.g., `false` from `readyReplicas >= 1`).
+  //
+  // The results are MERGED with Phase A's raw status at the field level:
+  //   - Phase A value is a KubernetesRef, CelExpression, or string → keep it
+  //     (already correct — strings may contain schema markers resolved at runtime)
+  //   - Phase A value is a comparison artifact (boolean/number primitive) → use
+  //     Phase B's CelExpression instead (fn.toString recovered the real expression)
+  //
+  // This avoids Phase B overwriting correct Phase A values (e.g., Cel.expr()
+  // results in inner compositions, or schema-marker strings in URL fields).
   if (!hasKubernetesRefs && !hasCelExpressions) {
     logger.debug(
       'No KubernetesRef objects or CelExpression objects found, analyzing original composition function'
@@ -282,11 +315,19 @@ function analyzeImperativeStatusMappingsStage<
       });
 
       if (imperativeAnalysis.hasJavaScriptExpressions) {
-        logger.debug('Using analyzed imperative composition mappings with CEL expressions', {
-          fieldCount: Object.keys(imperativeAnalysis.statusMappings).length,
+        // Merge Phase A (raw) + Phase B (fn.toString) at the field level.
+        const merged = mergePhaseAAndPhaseB(
+          statusMappings as Record<string, unknown>,
+          imperativeAnalysis.statusMappings,
+          logger
+        );
+
+        logger.debug('Merged Phase A raw + Phase B fn.toString analysis', {
+          fieldCount: Object.keys(merged).length,
         });
         return success({
-          analyzedStatusMappings: imperativeAnalysis.statusMappings,
+          analyzedStatusMappings: merged,
+          phaseBStatusMappings: imperativeAnalysis.statusMappings,
           imperativeAnalysisSucceeded: true,
         });
       }
@@ -630,6 +671,10 @@ export interface StatusAnalysisPipelineResult {
   analyzedStatusMappings: Record<string, unknown>;
   mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
   imperativeAnalysisSucceeded: boolean;
+  /** Raw Phase B fn.toString results (before merge filtering). Available when
+   *  Phase B ran for an imperative composition. Used by nested composition
+   *  status extraction to recover CEL from garbled fn.toString output. */
+  phaseBStatusMappings?: Record<string, unknown> | undefined;
 }
 
 /**
@@ -679,7 +724,7 @@ export function runStatusAnalysisPipeline<
       logger
     );
 
-    let { analyzedStatusMappings, imperativeAnalysisSucceeded } = analysisResult.value;
+    let { analyzedStatusMappings, imperativeAnalysisSucceeded, phaseBStatusMappings } = analysisResult.value;
 
     if (analysisResult.outcome === 'degraded') {
       logger.warn('Status analysis degraded', { reason: analysisResult.reason });
@@ -715,6 +760,7 @@ export function runStatusAnalysisPipeline<
       analyzedStatusMappings,
       mappingAnalysis,
       imperativeAnalysisSucceeded,
+      phaseBStatusMappings,
     };
   } catch (error: unknown) {
     logger.error('Failed to analyze status builder', ensureError(error));
@@ -726,3 +772,110 @@ export function runStatusAnalysisPipeline<
     };
   }
 }
+
+// ── Phase A + Phase B merge ──────────────────────────────────────────────
+
+/**
+ * Check if a Phase A value is a comparison artifact that should be replaced
+ * by Phase B's fn.toString CEL expression.
+ *
+ * Comparison artifacts arise when JavaScript comparison operators (`>=`, `&&`)
+ * evaluate on proxy values: `kubernetesRef >= 1` produces `NaN >= 1 = false`.
+ * These `false` / `NaN` values are not the real status — Phase B recovers the
+ * original expression from the source code.
+ *
+ * Non-artifacts (KubernetesRef, CelExpression, strings, objects) are already
+ * correct from Phase A and should be kept.
+ */
+function isComparisonArtifact(value: unknown): boolean {
+  // `false` from NaN comparisons (proxy >= 1 evaluates to NaN >= 1 = false).
+  // `true` is NOT an artifact — it's a legitimate static boolean default.
+  if (value === false) return true;
+  if (typeof value === 'number' && Number.isNaN(value)) return true;
+  return false;
+}
+
+/**
+ * Merge Phase A raw status mappings with Phase B fn.toString analysis results.
+ *
+ * Phase A captures the executed status object — it has correct values for
+ * KubernetesRef objects, CelExpression objects (from explicit Cel.expr()),
+ * and strings with schema markers. But comparison operators produce artifacts
+ * (`false` from `proxy >= 1`).
+ *
+ * Phase B parses the composition function's source code — it produces correct
+ * CEL for comparison expressions but may incorrectly classify schema-derived
+ * values as resource references (e.g., `cache.metadata.name` in source vs
+ * the resolved `${schema.spec.name}-cache` in the executed value).
+ *
+ * The merge uses Phase A for everything except comparison artifacts, which
+ * get Phase B's CEL expressions.
+ */
+function mergePhaseAAndPhaseB(
+  phaseA: Record<string, unknown>,
+  phaseB: Record<string, unknown>,
+  logger: PipelineLogger
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+
+  for (const [key, phaseAValue] of Object.entries(phaseA)) {
+    if (key.startsWith('__')) {
+      // Preserve internal fields from Phase A
+      merged[key] = phaseAValue;
+      continue;
+    }
+
+    const phaseBValue = phaseB[key];
+
+    // Nested objects: recurse
+    if (
+      phaseAValue &&
+      typeof phaseAValue === 'object' &&
+      !isKubernetesRef(phaseAValue) &&
+      !isCelExpression(phaseAValue) &&
+      !Array.isArray(phaseAValue) &&
+      phaseBValue &&
+      typeof phaseBValue === 'object' &&
+      !isCelExpression(phaseBValue)
+    ) {
+      merged[key] = mergePhaseAAndPhaseB(
+        phaseAValue as Record<string, unknown>,
+        phaseBValue as Record<string, unknown>,
+        logger
+      );
+      continue;
+    }
+
+    // Phase A has a comparison artifact → use Phase B's CEL expression,
+    // but only if Phase B produced clean CEL (not garbled fn.toString with
+    // factory calls like `simple.Deployment({...}).status.readyReplicas`).
+    if (isComparisonArtifact(phaseAValue) && phaseBValue && isCelExpression(phaseBValue)) {
+      const expr = (phaseBValue as { expression: string }).expression;
+      const isGarbled = expr.includes('({') || expr.includes('=>') || expr.includes('new ');
+      if (!isGarbled) {
+        logger.debug('Replacing Phase A artifact with Phase B CEL', {
+          field: key,
+          phaseAValue,
+          phaseBExpression: expr.substring(0, 80),
+        });
+        merged[key] = phaseBValue;
+        continue;
+      }
+      // Garbled Phase B → keep Phase A's artifact (will be classified as static)
+    }
+
+    // Phase A value is already correct
+    merged[key] = phaseAValue;
+  }
+
+  // Include Phase B-only fields (fields that Phase A missed entirely,
+  // e.g., computed fields the proxy execution never populated).
+  for (const [key, phaseBValue] of Object.entries(phaseB)) {
+    if (!(key in merged) && !key.startsWith('__')) {
+      merged[key] = phaseBValue;
+    }
+  }
+
+  return merged;
+}
+

@@ -22,6 +22,7 @@ import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
+import { getMetadataField } from '../metadata/index.js';
 import { getResourceId } from '../resources/id.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
@@ -116,6 +117,13 @@ export class KroResourceFactoryImpl<
 
     // Validate closures for Kro mode - detect KubernetesRef inputs and raise clear errors
     this.validateClosuresForKroMode();
+  }
+
+  /** Extract nested composition status CEL mappings from the raw status object. */
+  private getNestedStatusCel(): Record<string, string> | undefined {
+    return (this.statusMappings as Record<string, unknown>)?.__nestedStatusCel as
+      | Record<string, string>
+      | undefined;
   }
 
   /**
@@ -346,7 +354,7 @@ export class KroResourceFactoryImpl<
 
     // Deploy without waiting for readiness - we'll handle that ourselves
     this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
-    const _deployedResource = await deploymentEngine.deployResource(deployableResource, {
+    await deploymentEngine.deployResource(deployableResource, {
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: false, // We'll handle Kro-specific readiness ourselves
@@ -405,7 +413,8 @@ export class KroResourceFactoryImpl<
       this.name,
       this.schemaDefinition,
       this.resources,
-      this.statusMappings
+      this.statusMappings,
+      this.getNestedStatusCel()
     );
     const rgdManifest = {
       apiVersion: 'kro.run/v1alpha1',
@@ -549,6 +558,8 @@ export class KroResourceFactoryImpl<
       : `kro.run/${this.schemaDefinition.apiVersion}`;
 
     try {
+      // Delete the instance. KRO's controller processes kro.run/finalizer,
+      // which does graph-based deletion of all child resources.
       await k8sApi.delete({
         apiVersion,
         kind: this.schemaDefinition.kind,
@@ -557,9 +568,51 @@ export class KroResourceFactoryImpl<
           namespace: this.namespace,
         },
       } as k8s.KubernetesObject);
+
+      // Wait for KRO to finish cleanup (finalizer processing).
+      // KRO needs the RGD to exist during this phase — the caller must
+      // not delete the RGD until deleteInstance completes.
+      // Cap at 5 minutes — deletion should be faster than deployment.
+      // KRO processes ~15-30s per resource for finalizer cleanup.
+      const MAX_DELETION_WAIT = 300000;
+      const timeout = Math.min(this.factoryOptions.timeout ?? 120000, MAX_DELETION_WAIT);
+      const startTime = Date.now();
+      let deleted = false;
+      while (Date.now() - startTime < timeout) {
+        try {
+          await k8sApi.read({
+            apiVersion,
+            kind: this.schemaDefinition.kind,
+            metadata: { name, namespace: this.namespace },
+          });
+          // Still exists — KRO is processing finalizer
+          await new Promise(r => setTimeout(r, 2000));
+        } catch (pollError: unknown) {
+          const pollK8sError = pollError as { statusCode?: number; code?: number; body?: { code?: number } };
+          const errorCode = pollK8sError.statusCode ?? pollK8sError.code ?? pollK8sError.body?.code;
+          if (errorCode === 404) {
+            deleted = true;
+            break;
+          }
+          // Non-404 error (permissions, server error) — log and retry
+          this.logger.debug('Deletion poll error (retrying)', {
+            name,
+            errorCode,
+          });
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      if (!deleted) {
+        this.logger.warn('Instance deletion timed out — instance may still exist', {
+          name,
+          timeout,
+          elapsed: Date.now() - startTime,
+        });
+      }
     } catch (error: unknown) {
-      const k8sError = error as { statusCode?: number; message?: string };
-      if (k8sError.statusCode !== 404) {
+      const k8sError = error as { statusCode?: number; code?: number; body?: { code?: number }; message?: string };
+      const errorCode = k8sError.statusCode ?? k8sError.code ?? k8sError.body?.code;
+      if (errorCode !== 404) {
         throw new CRDInstanceError(
           `Failed to delete instance ${name}: ${k8sError.message || String(error)}`,
           this.schemaDefinition.apiVersion,
@@ -569,7 +622,6 @@ export class KroResourceFactoryImpl<
           ensureError(error)
         );
       }
-      // Instance already deleted, ignore 404
     }
   }
 
@@ -700,7 +752,8 @@ ${Object.entries(spec as Record<string, any>)
         this.name,
         this.schemaDefinition,
         this.resources,
-        this.statusMappings
+        this.statusMappings,
+        this.getNestedStatusCel()
       );
       return serializeResourceGraphToYaml(
         this.rgdName,
@@ -728,7 +781,8 @@ ${Object.entries(spec as Record<string, any>)
       this.name,
       this.schemaDefinition,
       this.resources,
-      this.statusMappings
+      this.statusMappings,
+      this.getNestedStatusCel()
     );
     const rgdYaml = serializeResourceGraphToYaml(
       this.rgdName,
@@ -1154,10 +1208,10 @@ ${Object.entries(spec as Record<string, any>)
           dynamicFields
         );
 
-        // Merge dynamic fields with static fields
-        // Dynamic fields from Kro take precedence over static fields with same names
+        // Merge evaluated static fields with dynamic fields from KRO.
+        // Use evaluatedStaticFields (resolved markers) not raw staticFields.
         const mergedStatus = {
-          ...staticFields, // Static fields first
+          ...evaluatedStaticFields,
           ...hydratedDynamicFields, // Dynamic fields from Kro override
         };
 
@@ -1169,7 +1223,103 @@ ${Object.entries(spec as Record<string, any>)
       }
     }
 
+    // Post-process: re-execute the composition with live cluster data to fill
+    // in status fields that neither static evaluation nor KRO could provide.
+    if (this.factoryOptions.compositionFn) {
+      try {
+        const liveStatus = await this.reExecuteWithLiveStatus(spec);
+        if (liveStatus) {
+          for (const [key, value] of Object.entries(liveStatus)) {
+            if (key.startsWith('__')) continue;
+            const current = (enhancedProxy.status as Record<string, unknown>)[key];
+            if (current === undefined || current === null || current === '') {
+              (enhancedProxy.status as Record<string, unknown>)[key] = value;
+            }
+          }
+        }
+      } catch (error: unknown) {
+        hydrationLogger.warn('Live status re-execution failed (non-fatal)', {
+          error: ensureError(error).message,
+        });
+      }
+    }
+
     return enhancedProxy;
+  }
+
+  /**
+   * Re-execute the composition function with live cluster data to hydrate
+   * status fields that KRO couldn't compute.
+   */
+  private async reExecuteWithLiveStatus(spec: TSpec): Promise<TStatus | null> {
+    const compositionFn = this.factoryOptions.compositionFn;
+    if (!compositionFn) return null;
+
+    const { createCompositionContext, runWithCompositionContext } = await import(
+      '../composition/context.js'
+    );
+    const { synthesizeNestedCompositionStatus } = await import(
+      './nested-composition-status.js'
+    );
+
+    // Build a live status map from deployed resources
+    const liveStatusMap = new Map<string, Record<string, unknown>>();
+    const kubeConfig = this.getKubeConfig();
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+
+    for (const [resourceId, resource] of Object.entries(this.resources)) {
+      try {
+        const name =
+          typeof resource.metadata?.name === 'string'
+            ? resource.metadata.name
+            : resourceId;
+        const ns =
+          typeof resource.metadata?.namespace === 'string'
+            ? resource.metadata.namespace
+            : this.namespace;
+
+        const isClusterScoped = getMetadataField(resource, 'scope') === 'cluster';
+        const live = await k8sApi.read({
+          apiVersion: resource.apiVersion || '',
+          kind: resource.kind || '',
+          metadata: { name, ...(isClusterScoped ? {} : { namespace: ns }) },
+        });
+
+        if (live && typeof live === 'object' && 'status' in live) {
+          liveStatusMap.set(
+            resourceId,
+            (live as Record<string, unknown>).status as Record<string, unknown>
+          );
+        }
+      } catch {
+        // Resource may not exist or may not have status
+      }
+    }
+
+    // Probe to discover nested composition IDs
+    const probeContext = createCompositionContext('kro-re-execution-probe', {
+      deduplicateIds: true,
+    });
+    probeContext.liveStatusMap = liveStatusMap;
+    runWithCompositionContext(probeContext, () => compositionFn(spec));
+
+    // Synthesize nested composition status
+    const enrichedMap = synthesizeNestedCompositionStatus(
+      probeContext.resources,
+      liveStatusMap,
+      this.logger
+    );
+
+    // Real execution with live status
+    const reExecutionContext = createCompositionContext('kro-re-execution', {
+      deduplicateIds: true,
+    });
+    reExecutionContext.liveStatusMap = enrichedMap;
+
+    const result = runWithCompositionContext(reExecutionContext, () =>
+      compositionFn(spec)
+    );
+    return result as TStatus;
   }
 
   /**

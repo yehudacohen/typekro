@@ -331,6 +331,8 @@ interface StatusAnalysisResult {
   mappingAnalysis: ReturnType<typeof analyzeStatusMappingTypes>;
   /** Whether imperative analysis succeeded and provided CEL expressions. */
   imperativeAnalysisSucceeded: boolean;
+  /** Raw Phase B fn.toString results (before merge filtering). */
+  phaseBStatusMappings?: Record<string, unknown> | undefined;
 }
 
 /**
@@ -689,7 +691,7 @@ function createTypedResourceGraph<
   const { resources: resourcesWithKeys, closures } = separateResourcesAndClosures(builderResult);
 
   // 3. Analyze status builder and convert JS expressions to CEL
-  const { statusMappings, analyzedStatusMappings, mappingAnalysis } =
+  const { statusMappings, analyzedStatusMappings, mappingAnalysis, phaseBStatusMappings } =
     analyzeAndConvertStatusMappings(
       definition,
       statusBuilder,
@@ -762,6 +764,7 @@ function createTypedResourceGraph<
       hasKubernetesRefs: mappingAnalysis.kubernetesRefFields.length > 0,
       statusMappings,
       analyzedStatusMappings,
+      phaseBStatusMappings,
     },
 
     factory(
@@ -800,6 +803,7 @@ function createTypedResourceGraph<
             ...factoryOptions,
             closures,
             factoryType: 'kro',
+            compositionFn: declarativeCompositionFn,
           }
         );
       } else {
@@ -830,11 +834,27 @@ function createTypedResourceGraph<
         }
       }
 
+      // Collect nested composition status CEL mappings from the composition context.
+      // These enable inlining the inner composition's real CEL expressions instead
+      // of referencing virtual nested composition IDs.
+      // Extract nested composition status CEL mappings attached by executeCompositionCore.
+      // These are on the raw statusMappings (capturedStatus from the composition function),
+      // not on the optimizedStatusMappings (which is a processed copy).
+      const nestedStatusCel: Record<string, string> =
+        (statusMappings as Record<string, unknown>).__nestedStatusCel as Record<string, string> ?? {};
+
+      serializationLogger.debug('Nested status CEL extraction', {
+        hasNestedStatusCel: Object.keys(nestedStatusCel).length > 0,
+        keys: Object.keys(nestedStatusCel),
+        statusMappingsHasField: '__nestedStatusCel' in (statusMappings as Record<string, unknown>),
+      });
+
       const kroSchema = generateKroSchemaFromArktype(
         definition.name,
         schemaDefinition,
         resourcesWithKeys,
-        optimizedStatusMappings
+        optimizedStatusMappings,
+        Object.keys(nestedStatusCel).length > 0 ? nestedStatusCel : undefined
       );
 
       if (definition.group) {

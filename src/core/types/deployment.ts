@@ -7,6 +7,7 @@ import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND } from '../constan
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { KubernetesRef } from './common.js';
+import type { Composable } from './composable.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
 import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './schema.js';
 
@@ -447,7 +448,7 @@ export type CallableComposition<
   TStatus extends KroCompatibleType,
 > = {
   readonly [CALLABLE_COMPOSITION_BRAND]: true;
-  (spec: TSpec): NestedCompositionResource<TSpec, TStatus>;
+  (spec: TSpec | Composable<TSpec>): NestedCompositionResource<TSpec, TStatus>;
 
   // Status proxy for cross-composition references
   // Enables: composition.status.field in status builders

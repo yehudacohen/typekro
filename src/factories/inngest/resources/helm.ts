@@ -8,6 +8,7 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
 import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
@@ -46,7 +47,7 @@ export const DEFAULT_INNGEST_REPO_NAME = 'inngest-repo';
 export function inngestHelmRepository(
   config: Composable<InngestHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
-  return helmRepository({
+  const repo = helmRepository({
     name: config.name || DEFAULT_INNGEST_REPO_NAME,
     namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     url: config.url || DEFAULT_INNGEST_REPO_URL,
@@ -56,6 +57,13 @@ export function inngestHelmRepository(
   }).withReadinessEvaluator(
     createHelmRepositoryReadinessEvaluator('Inngest')
   ) as Enhanced<HelmRepositorySpec, HelmRepositoryStatus>;
+
+  // HelmRepositories in flux-system are shared cluster-level resources.
+  // They should survive instance deletion — multiple compositions can
+  // reference the same repo.
+  setMetadataField(repo, 'lifecycle', 'shared');
+
+  return repo;
 }
 
 /**

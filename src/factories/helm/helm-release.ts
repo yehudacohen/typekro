@@ -159,6 +159,10 @@ export function helmRelease(
           },
         },
       },
+      // Retry on failed installs — required for charts that depend on external
+      // resources (e.g., Inngest waiting for Postgres/Redis to be ready).
+      install: { timeout: '10m', remediation: { retries: 3 } },
+      upgrade: { timeout: '10m', remediation: { retries: 3 } },
       ...(config.values && { values: config.values }),
     },
   }).withReadinessEvaluator(helmReleaseReadinessEvaluator);

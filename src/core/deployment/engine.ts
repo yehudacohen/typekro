@@ -15,7 +15,7 @@ import { DependencyResolver } from '../dependencies/index.js';
 import { CircularDependencyError, ensureError, ResourceGraphFactoryError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getResourceId as getResourceMetadataId } from '../metadata/index.js';
+import { copyResourceMetadata, getMetadataField, getResourceId as getResourceMetadataId } from '../metadata/index.js';
 import { ensureReadinessEvaluator } from '../readiness/index.js';
 import { DeploymentMode, ReferenceResolver } from '../references/index.js';
 import { getResourceId } from '../resources/id.js';
@@ -1068,6 +1068,11 @@ export class DirectDeploymentEngine {
       resourceLogger
     );
 
+    // Preserve metadata (readinessEvaluator, scope, resourceId, etc.) from the
+    // original Enhanced proxy onto the resolved resource. Reference resolution
+    // and namespace application create new plain objects, losing WeakMap entries.
+    copyResourceMetadata(resource, resolvedResource);
+
     // 3. Apply the resource to the cluster (or simulate for dry run)
     await this.resourceApplier.applyResourceToCluster(resolvedResource, options, resourceLogger);
 
@@ -1174,8 +1179,51 @@ export class DirectDeploymentEngine {
     }
 
     try {
+      // Use graph-based reverse-topological deletion when the dependency
+      // graph is available. This ensures dependents are deleted before their
+      // dependencies (e.g., App before Database, Database before Namespace),
+      // preventing finalizer deadlocks and stuck namespace termination.
+      let orderedResources = deploymentRecord.resources;
+      if (deploymentRecord.dependencyGraph) {
+        const sharedIds = new Set<string>();
+        for (const r of deploymentRecord.resources) {
+          if (getMetadataField(r.manifest, 'lifecycle') === 'shared') {
+            sharedIds.add(r.id);
+          }
+        }
+        try {
+          const deletionPlan = this.dependencyResolver.analyzeDeletionOrder(
+            deploymentRecord.dependencyGraph,
+            sharedIds.size > 0 ? sharedIds : undefined
+          );
+
+          // Map graph node IDs to DeployedResource objects in deletion order
+          const resourceMap = new Map(deploymentRecord.resources.map(r => [r.id, r]));
+          orderedResources = [];
+          for (const level of deletionPlan.levels) {
+            for (const id of level) {
+              const resource = resourceMap.get(id);
+              if (resource) orderedResources.push(resource);
+            }
+          }
+
+          this.logger.debug('Using graph-based deletion order', {
+            deploymentId,
+            levels: deletionPlan.levels.length,
+            resourceCount: orderedResources.length,
+            sharedSkipped: sharedIds.size,
+          });
+        } catch (graphError: unknown) {
+          this.logger.warn('Graph-based deletion order failed, falling back to reverse order', {
+            error: ensureError(graphError).message,
+          });
+          // Fall back to flat reverse order
+          orderedResources = [...deploymentRecord.resources].reverse();
+        }
+      }
+
       const { rolledBackResources, errors } = await this.rollbackDeployedResources(
-        deploymentRecord.resources,
+        orderedResources,
         deploymentRecord.options
       );
 
