@@ -260,10 +260,20 @@ describeOrSkip('External-DNS Integration Tests', () => {
   }, 360000); // 6 minute timeout for dual deployment (kro takes longer)
 
   it('should handle DNS record management correctly', async () => {
-    // Test DNS record management with test credentials (dryRun mode)
-    // Test DNS record management through external-dns bootstrap composition
-    // Note: This test validates the composition structure rather than actual DNS records
-    // since we use dryRun mode to avoid making real DNS changes
+    // External-dns with provider: 'aws' requires valid AWS credentials to start.
+    // The pod will crash-loop without them, causing a 180s timeout.
+    const { execSync } = require('node:child_process');
+    try {
+      const key = execSync('aws configure get aws_access_key_id', { encoding: 'utf-8' }).trim();
+      if (!key) throw new Error('empty');
+    } catch {
+      throw new Error(
+        'AWS credentials required for external-dns integration test.\n' +
+        'Configure them with: aws configure\n' +
+        'Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.\n' +
+        'The external-dns pod needs valid AWS credentials to start (even in dryRun mode).'
+      );
+    }
 
     const { externalDnsBootstrap } = await import(
       '../../../src/factories/external-dns/compositions/external-dns-bootstrap.js'
