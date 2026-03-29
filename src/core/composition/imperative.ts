@@ -8,6 +8,7 @@
  */
 
 import { toCamelCase } from '../../utils/string.js';
+import { extractNestedStatusCel as extractNestedStatusCelFn } from './nested-status-cel.js';
 import { CompositionDebugger } from '../composition-debugger.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
@@ -275,125 +276,11 @@ function executeNestedCompositionWithSpec<
   const innerStatusSource = innerAnalysis?.analyzedStatusMappings;
   const innerPhaseBFallback = innerAnalysis?.phaseBStatusMappings;
   if (innerStatusSource) {
-    // Register on the parent context's variable mappings keyed by the baseId.
-    // Format: `__nestedStatus:{baseId}:{fieldPath}` → CEL expression string
-    // Recursively flattens nested objects so deep paths like `metadata.name`
-    // are accessible as `__nestedStatus:{baseId}:metadata.name`.
-    function extractNestedStatusCel(
-      obj: Record<string, unknown>,
-      pathPrefix: string,
-      phaseBFallbackObj?: Record<string, unknown>
-    ): void {
-      for (const [field, celExpr] of Object.entries(obj)) {
-        if (field.startsWith('__')) continue; // skip internal fields
-
-        const fieldPath = pathPrefix ? `${pathPrefix}.${field}` : field;
-
-        // Recurse into nested objects (not CelExpression or KubernetesRef)
-        if (
-          celExpr &&
-          typeof celExpr === 'object' &&
-          !('expression' in celExpr) &&
-          !(KUBERNETES_REF_BRAND in (celExpr as Record<string | symbol, unknown>)) &&
-          !Array.isArray(celExpr)
-        ) {
-          // If the analyzed object is empty (proxy values lost during serialization)
-          // but Phase B has a non-empty object, use Phase B for this subtree.
-          const analyzedObj = celExpr as Record<string, unknown>;
-          const phaseBSub = phaseBFallbackObj?.[field];
-          const usePhaseB =
-            Object.keys(analyzedObj).length === 0 &&
-            phaseBSub &&
-            typeof phaseBSub === 'object' &&
-            !Array.isArray(phaseBSub) &&
-            Object.keys(phaseBSub as Record<string, unknown>).length > 0;
-
-          const subObj = usePhaseB ? (phaseBSub as Record<string, unknown>) : analyzedObj;
-          const subPhaseBFallback = phaseBSub && typeof phaseBSub === 'object'
-            ? (phaseBSub as Record<string, unknown>)
-            : undefined;
-
-          extractNestedStatusCel(subObj, fieldPath, subPhaseBFallback);
-          continue;
-        }
-
-        // Extract the expression string from the analyzed value.
-        let exprStr: string | undefined;
-        if (celExpr && typeof celExpr === 'object' && 'expression' in celExpr) {
-          // CelExpression from Phase A (explicit Cel.expr()) or Phase B
-          exprStr = (celExpr as { expression: string }).expression;
-        } else if (
-          celExpr &&
-          typeof celExpr === 'object' &&
-          KUBERNETES_REF_BRAND in (celExpr as Record<string | symbol, unknown>)
-        ) {
-          // KubernetesRef — build CEL from resourceId.fieldPath
-          const ref = celExpr as { resourceId: string; fieldPath: string };
-          exprStr = `${ref.resourceId}.${ref.fieldPath}`;
-        } else if (typeof celExpr === 'string') {
-          exprStr = celExpr;
-        } else {
-          // Comparison artifact (false/NaN) from the merged result.
-          // Fall back to Phase B which has the garbled but extractable CEL.
-          const phaseBValue = phaseBFallbackObj?.[field];
-          if (phaseBValue && typeof phaseBValue === 'object' && 'expression' in phaseBValue) {
-            exprStr = (phaseBValue as { expression: string }).expression;
-          } else {
-            continue;
-          }
-        }
-
-        // Phase B uses variable names (e.g., `d.metadata.name`) not resource IDs
-        // (e.g., `deployment.metadata.name`). Map unknown identifiers to the inner
-        // composition's actual resource IDs using scored matching.
-        if (exprStr) {
-          const innerResourceIds = Object.keys(executionContext.resources);
-          exprStr = exprStr.replace(/\b(\w+)\.(metadata|status|spec)\./g, (match, id, field) => {
-            if (innerResourceIds.includes(id) || id === 'schema') return match;
-            // Try to match the unknown identifier to a resource ID:
-            // 1. Exact match after lowercasing
-            const lower = id.toLowerCase();
-            const exactLower = innerResourceIds.find(r => r.toLowerCase() === lower);
-            if (exactLower) return `${exactLower}.${field}.`;
-            // 2. Single resource — unambiguous
-            if (innerResourceIds.length === 1) return `${innerResourceIds[0]}.${field}.`;
-            // 3. Prefix match at camelCase boundary — must be unambiguous (exactly one match)
-            const prefixMatches = innerResourceIds.filter(r =>
-              r.toLowerCase().startsWith(lower) && (lower.length === r.length || /[A-Z_-]/.test(r[lower.length]!))
-            );
-            if (prefixMatches.length === 1) return `${prefixMatches[0]}.${field}.`;
-            // No match or ambiguous — leave as-is (will produce invalid CEL, caught by validator)
-            return match;
-          });
-        }
-
-        // Garbled expressions from fn.toString (e.g., factory calls, Cel.expr() source)
-        // contain real resource references. Extract ALL `.status.field` patterns
-        // and map each to the best-matching inner resource ID.
-        if (!exprStr) continue;
-        if (exprStr.includes('({') || exprStr.includes('=>') || exprStr.includes('new ') || exprStr.includes('Cel.expr(')) {
-          const statusMatches = [...exprStr.matchAll(/(\w+)?\.status\.(\w+)/g)];
-          const innerResources = Object.keys(executionContext.resources);
-          if (statusMatches.length > 0 && innerResources.length > 0) {
-            // Use the first match's field, mapped to the best-matching resource
-            const [, varName, statusField] = statusMatches[0]!;
-            let targetResource = innerResources[0]!;
-            if (varName && innerResources.length > 1) {
-              const match = innerResources.find(r => r.toLowerCase().startsWith(varName.toLowerCase()));
-              if (match) targetResource = match;
-            }
-            exprStr = `${targetResource}.status.${statusField}`;
-          } else {
-            continue;
-          }
-        }
-
-        const key = `__nestedStatus:${baseId}:${fieldPath}`;
-        parentContext.addVariableMapping(key, exprStr);
-      }
-    }
-
-    extractNestedStatusCel(innerStatusSource, '', innerPhaseBFallback);
+    extractNestedStatusCelFn(innerStatusSource, {
+      baseId,
+      innerResourceIds: Object.keys(executionContext.resources),
+      registerMapping: (key, value) => parentContext.addVariableMapping(key, value),
+    }, '', innerPhaseBFallback);
   }
 
   // Create a NestedCompositionResource to return

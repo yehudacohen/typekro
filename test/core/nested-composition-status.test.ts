@@ -24,9 +24,9 @@ function mockResources(keys: string[]): Record<string, Enhanced<unknown, unknown
 describe('synthesizeNestedCompositionStatus', () => {
   it('should synthesize ready status for nested composition when all children are in liveStatusMap', () => {
     const probeResources = mockResources([
-      'outer1-inngest-bootstrap1-inngestHelmRelease',
-      'outer1-inngest-bootstrap1-inngestHelmRepository',
-      'outer1-inngest-bootstrap1-inngestNamespace',
+      'outer1-inngestBootstrap1-inngestHelmRelease',
+      'outer1-inngestBootstrap1-inngestHelmRepository',
+      'outer1-inngestBootstrap1-inngestNamespace',
       'outer1-database',
       'outer1-cache',
       'outer1-app',
@@ -41,31 +41,35 @@ describe('synthesizeNestedCompositionStatus', () => {
       ['app', { readyReplicas: 1 }],
     ]);
 
-    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger);
+    const knownNestedIds = new Set(['outer1', 'inngestBootstrap1']);
+
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
     // Should have the original entries plus synthesized nested composition entries
-    expect(enriched.has('inngest-bootstrap1')).toBe(true);
-    expect(enriched.get('inngest-bootstrap1')?.ready).toBe(true);
-    expect(enriched.get('inngest-bootstrap1')?.phase).toBe('Ready');
+    expect(enriched.has('inngestBootstrap1')).toBe(true);
+    expect(enriched.get('inngestBootstrap1')?.ready).toBe(true);
+    expect(enriched.get('inngestBootstrap1')?.phase).toBe('Ready');
   });
 
   it('should also add shorter suffix keys for the nested composition', () => {
     const probeResources = mockResources([
-      'web-app-with-processing1-inngest-bootstrap1-inngestHelmRelease',
+      'webAppWithProcessing1-inngestBootstrap1-inngestHelmRelease',
     ]);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
       ['inngestHelmRelease', {}],
     ]);
 
-    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger);
+    const knownNestedIds = new Set(['webAppWithProcessing1', 'inngestBootstrap1']);
+
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
     // Full path
-    expect(enriched.has('web-app-with-processing1-inngest-bootstrap1')).toBe(true);
+    expect(enriched.has('webAppWithProcessing1-inngestBootstrap1')).toBe(true);
     // Short suffix (used by the proxy)
-    expect(enriched.has('inngest-bootstrap1')).toBe(true);
+    expect(enriched.has('inngestBootstrap1')).toBe(true);
     // Both should be ready
-    expect(enriched.get('inngest-bootstrap1')?.ready).toBe(true);
+    expect(enriched.get('inngestBootstrap1')?.ready).toBe(true);
   });
 
   it('should only count children present in liveStatusMap (missing children are ignored)', () => {
@@ -79,21 +83,16 @@ describe('synthesizeNestedCompositionStatus', () => {
       ['childA', {}],
     ]);
 
-    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger);
+    const knownNestedIds = new Set(['outer1', 'inner1']);
+
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
     // inner1 found with 1 child (childA), childB not in map so not counted
-    // This means 1 child found and it's ready → parent ready
-    // (missing children don't count as "not ready" — they just aren't part of the count)
     expect(enriched.has('inner1')).toBe(true);
     expect(enriched.get('inner1')?.ready).toBe(true);
   });
 
-  it('should synthesize for parent segments ending with a digit (composition instance IDs)', () => {
-    // "outer1-database" → segments ['outer1', 'database']
-    // 'outer1' ends with digit → recognized as a composition instance ID.
-    // 'database' is in the live map → recognized as a deployed child.
-    // So "outer1" IS synthesized — this pattern matches nested compositions
-    // like inngestBootstrap1-inngestHelmRelease.
+  it('should use knownNestedIds for precise identification (no digit heuristic)', () => {
     const probeResources = mockResources([
       'outer1-database',
       'outer1-cache',
@@ -104,30 +103,53 @@ describe('synthesizeNestedCompositionStatus', () => {
       ['cache', {}],
     ]);
 
-    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger);
+    // outer1 IS a known nested ID
+    const knownNestedIds = new Set(['outer1']);
 
-    // outer1 IS synthesized — parent ends with digit, children are in live map
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
+
     expect(enriched.has('outer1')).toBe(true);
     expect(enriched.get('outer1')?.ready).toBe(true);
-    // Original entries preserved
-    expect(enriched.has('database')).toBe(true);
-    expect(enriched.has('cache')).toBe(true);
   });
 
-  it('should not create entries when no segment ends with a digit', () => {
+  it('should skip synthesis when knownNestedIds is absent', () => {
     const probeResources = mockResources([
-      'myapp-database',
-      'myapp-cache',
+      'outer1-database',
     ]);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
       ['database', {}],
-      ['cache', {}],
     ]);
 
+    // No knownNestedIds — synthesis is skipped entirely
     const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger);
 
-    expect(enriched.has('myapp')).toBe(false);
+    expect(enriched.has('outer1')).toBe(false);
+    // Original entries preserved
+    expect(enriched.has('database')).toBe(true);
+  });
+
+  it('should not misidentify user resource names ending in digits', () => {
+    const probeResources = mockResources([
+      'app1-workerV2-config',
+    ]);
+
+    const liveStatusMap = new Map<string, Record<string, unknown>>([
+      ['config', {}],
+    ]);
+
+    // Only app1 is a known nested ID, workerV2 is NOT
+    const knownNestedIds = new Set(['app1']);
+
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
+
+    // app1 should NOT be synthesized because 'workerV2-config' is not in liveStatusMap
+    // (workerV2 is not a known nested ID, so it's not split further)
+    expect(enriched.has('workerV2')).toBe(false);
+    // app1 IS synthesized because the child suffix 'workerV2-config' is not in liveStatusMap...
+    // Actually, 'workerV2' is not a known nested ID, so the only candidate parent is 'app1'
+    // with child suffix 'workerV2-config' which is NOT in liveStatusMap → no synthesis
+    expect(enriched.has('app1')).toBe(false);
   });
 
   it('should preserve all original liveStatusMap entries', () => {
@@ -138,7 +160,9 @@ describe('synthesizeNestedCompositionStatus', () => {
       ['other', { foo: 'bar' }],
     ]);
 
-    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger);
+    const knownNestedIds = new Set(['outer1']);
+
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
     expect(enriched.get('child')).toEqual({ custom: 'data' });
     expect(enriched.get('other')).toEqual({ foo: 'bar' });
@@ -159,7 +183,9 @@ describe('synthesizeNestedCompositionStatus', () => {
       ['database', {}],
     ]);
 
-    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger);
+    const knownNestedIds = new Set(['outer1', 'inngest1', 'valkey1']);
+
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
     expect(enriched.has('inngest1')).toBe(true);
     expect(enriched.get('inngest1')?.ready).toBe(true);

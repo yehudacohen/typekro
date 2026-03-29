@@ -60,6 +60,8 @@ export const WebAppWithProcessingConfigSchema = type({
     'replicas?': 'number',
     /** Enable volume permissions init container. */
     'volumePermissions?': 'boolean',
+    /** Storage size per shard (default: '1Gi'). */
+    'storageSize?': 'string',
   },
   /** Inngest background processing settings. */
   processing: {
