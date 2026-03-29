@@ -55,7 +55,7 @@ describe('CNPG Cluster Factory', () => {
           imageName: 'ghcr.io/cloudnative-pg/postgresql:16.2',
           storage: {
             size: '100Gi',
-            storageClass: 'gp3',
+            storageClassName: 'gp3',
           },
           postgresql: {
             parameters: {
@@ -109,36 +109,17 @@ describe('CNPG Cluster Factory', () => {
       expect(db.spec.backup?.retentionPolicy).toBe('30d');
     });
 
-    it('should map storageClass to storageClassName for CNPG CRD compatibility', () => {
+    it('should pass storageClassName directly to the CNPG CRD', () => {
       const db = cluster({
         name: 'storage-class-test',
         spec: {
           instances: 1,
-          storage: { size: '10Gi', storageClass: 'gp3' },
+          storage: { size: '10Gi', storageClassName: 'gp3' },
         },
       });
 
-      // The CNPG CRD uses storageClassName, not storageClass
-      const crdSpec = db.spec as Record<string, unknown>;
-      const storage = crdSpec.storage as Record<string, unknown>;
-      expect(storage.storageClassName).toBe('gp3');
-      expect(storage.storageClass).toBeUndefined();
-      expect(storage.size).toBe('10Gi');
-    });
-
-    it('should not add storageClassName when storageClass is not provided', () => {
-      const db = cluster({
-        name: 'no-storage-class-test',
-        spec: {
-          instances: 1,
-          storage: { size: '5Gi' },
-        },
-      });
-
-      const crdSpec = db.spec as Record<string, unknown>;
-      const storage = crdSpec.storage as Record<string, unknown>;
-      expect(storage.storageClassName).toBeUndefined();
-      expect(storage.size).toBe('5Gi');
+      expect(db.spec.storage.storageClassName).toBe('gp3');
+      expect(db.spec.storage.size).toBe('10Gi');
     });
 
     it('should default instances to 1 when omitted', () => {
