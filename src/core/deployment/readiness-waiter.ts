@@ -9,7 +9,7 @@ import type * as k8s from '@kubernetes/client-node';
 import { DEFAULT_DEPLOYMENT_TIMEOUT, DEFAULT_POLL_INTERVAL } from '../config/defaults.js';
 import { DeploymentTimeoutError, ensureError, ResourceGraphFactoryError } from '../errors.js';
 import type { TypeKroLogger } from '../logging/index.js';
-import { getReadinessEvaluator } from '../metadata/index.js';
+import { getMetadataField, getReadinessEvaluator } from '../metadata/index.js';
 import type { DeploymentEvent, DeploymentOptions } from '../types/deployment.js';
 import type { DeployedResource, ResourceStatus } from '../types.js';
 import type { DebugLogger } from './debug-logger.js';
@@ -53,13 +53,15 @@ export class ReadinessWaiter {
       // Check if the deployed resource has a factory-provided readiness evaluator (via WeakMap)
       const readinessEvaluator = getReadinessEvaluator(deployedResource.manifest);
 
-      // Create a resource reference for the API call (shared by both paths)
+      // Create a resource reference for the API call (shared by both paths).
+      // Cluster-scoped resources (Namespace, ClusterRole, etc.) must omit namespace.
+      const isClusterScoped = getMetadataField(deployedResource.manifest, 'scope') === 'cluster';
       const resourceRef = {
         apiVersion: deployedResource.manifest.apiVersion || '',
         kind: deployedResource.kind,
         metadata: {
           name: deployedResource.name,
-          namespace: deployedResource.namespace,
+          ...(isClusterScoped ? {} : { namespace: deployedResource.namespace }),
         },
       };
 
@@ -164,13 +166,14 @@ export class ReadinessWaiter {
         // Use custom readiness evaluator
         // In the new API, methods return objects directly (no .body wrapper)
         // Wrap with abort signal handling to stop waiting if aborted
+        const clusterScoped = getMetadataField(deployedResource.manifest, 'scope') === 'cluster';
         const liveResource = await this.withAbortSignal(
           this.k8sApi.read({
             apiVersion: deployedResource.manifest.apiVersion || '',
             kind: deployedResource.kind,
             metadata: {
               name: deployedResource.name,
-              namespace: deployedResource.namespace,
+              ...(clusterScoped ? {} : { namespace: deployedResource.namespace }),
             },
           }),
           abortSignal
@@ -212,8 +215,16 @@ export class ReadinessWaiter {
           }
         }
 
-        // Emit status update if we have status information
+        // Log and emit status update
         if (lastStatus && typeof lastStatus === 'object' && 'message' in lastStatus) {
+          this.logger.debug('Resource not ready yet', {
+            resourceId: deployedResource.id,
+            kind: deployedResource.kind,
+            name: deployedResource.name,
+            reason: lastStatus.reason,
+            message: lastStatus.message,
+          });
+
           this.emitEvent(options, {
             type: 'resource-status',
             resourceId: deployedResource.id,
@@ -243,7 +254,15 @@ export class ReadinessWaiter {
           throw error;
         }
 
-        // Emit error status event
+        // Log and emit error status event
+        this.logger.warn('Unable to read resource status during readiness poll', {
+          resourceId: deployedResource.id,
+          kind: deployedResource.kind,
+          name: deployedResource.name,
+          namespace: deployedResource.namespace,
+          error: ensureError(error).message,
+        });
+
         this.emitEvent(options, {
           type: 'resource-status',
           resourceId: deployedResource.id,

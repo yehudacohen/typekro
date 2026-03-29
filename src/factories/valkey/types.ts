@@ -202,6 +202,8 @@ export interface ValkeyCondition {
 export interface ValkeyStatus {
   /** Whether the cluster is operational. */
   ready?: boolean;
+  /** Cluster service hostname (derived from resource name). */
+  hostname?: string;
   /** Status conditions. */
   conditions?: ValkeyCondition[];
 }

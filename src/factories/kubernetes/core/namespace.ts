@@ -21,13 +21,16 @@ export interface NamespaceConfig extends V1Namespace {
  * });
  */
 export function namespace(resource: NamespaceConfig): Enhanced<V1NamespaceSpec, V1NamespaceStatus> {
-  return createResource({
-    ...resource,
-    ...(resource.id && { id: resource.id }),
-    apiVersion: 'v1',
-    kind: 'Namespace',
-    metadata: resource.metadata ?? { name: 'unnamed-namespace' },
-  }).withReadinessEvaluator((liveResource: V1Namespace) => {
+  return createResource(
+    {
+      ...resource,
+      ...(resource.id && { id: resource.id }),
+      apiVersion: 'v1',
+      kind: 'Namespace',
+      metadata: resource.metadata ?? { name: 'unnamed-namespace' },
+    },
+    { scope: 'cluster' }
+  ).withReadinessEvaluator((liveResource: V1Namespace) => {
     try {
       const status = liveResource.status;
 

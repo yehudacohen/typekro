@@ -10,9 +10,12 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { SerializationContext } from '../types/serialization.js';
+
+const logger = getComponentLogger('cel-references');
 
 // ---------------------------------------------------------------------------
 // Primitive helpers
@@ -39,10 +42,7 @@ export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
 /**
  * Wrap a {@link KubernetesRef} in `${…}` for Kro YAML output.
  */
-function generateCelExpression(
-  ref: KubernetesRef<unknown>,
-  _context?: SerializationContext
-): string {
+function generateCelExpression(ref: KubernetesRef<unknown>): string {
   const expression = getInnerCelPath(ref);
   return `\${${expression}}`;
 }
@@ -125,7 +125,7 @@ function convertKubernetesRefMarkersTocel(str: string): string {
  */
 export function processResourceReferences(obj: unknown, context?: SerializationContext): unknown {
   if (isKubernetesRef(obj)) {
-    return generateCelExpression(obj, context);
+    return generateCelExpression(obj);
   }
 
   if (isCelExpression(obj)) {
@@ -176,23 +176,129 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
  * Only processes dynamic fields that require Kro resolution.
  */
 export function serializeStatusMappingsToCel(
-  statusMappings: Record<string, unknown>
+  statusMappings: Record<string, unknown>,
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: Set<string>
 ): Record<string, string | Record<string, unknown>> {
+  logger.debug('Serializing status mappings to CEL', {
+    fieldCount: Object.keys(statusMappings).length,
+    hasNestedStatusCel: !!nestedStatusCel,
+    nestedStatusCelKeys: nestedStatusCel ? Object.keys(nestedStatusCel) : [],
+  });
   const celExpressions: Record<string, string | Record<string, unknown>> = {};
 
   function serializeValue(value: unknown): string | Record<string, unknown> {
     if (isKubernetesRef(value)) {
-      return `\${${(value as KubernetesRef<unknown>).resourceId}.${(value as KubernetesRef<unknown>).fieldPath}}`;
+      const ref = value as KubernetesRef<unknown> & { __nestedComposition?: boolean };
+
+      // For nested composition status references, inline the inner composition's
+      // actual CEL expression instead of referencing the virtual composition ID.
+      if (ref.__nestedComposition && nestedStatusCel) {
+        const fieldName = ref.fieldPath.replace(/^status\./, '');
+        // Try exact match
+        const exactKey = `__nestedStatus:${ref.resourceId}:${fieldName}`;
+        logger.debug('Resolving nested composition KubernetesRef', {
+          resourceId: ref.resourceId,
+          fieldPath: ref.fieldPath,
+          fieldName,
+          exactKey,
+          hasExactMatch: !!nestedStatusCel[exactKey],
+        });
+        if (nestedStatusCel[exactKey]) {
+          return `\${${nestedStatusCel[exactKey]}}`;
+        }
+        // Try base-name match: strip trailing digits and compare.
+        // The expression may use 'nestedService2' while the key has 'nestedService1'.
+        // Also try prefix match for variable name → composition baseId mapping.
+        const refBase = ref.resourceId.replace(/\d+$/, '');
+        for (const [key, cel] of Object.entries(nestedStatusCel)) {
+          const parts = key.split(':');
+          if (parts.length !== 3 || parts[2] !== fieldName) continue;
+          const keyBase = parts[1]!.replace(/\d+$/, '');
+          if (
+            refBase === keyBase ||
+            isCamelCasePrefix(refBase, keyBase) ||
+            isCamelCasePrefix(keyBase, refBase)
+          ) {
+            return `\${${cel}}`;
+          }
+        }
+      }
+
+      // Nested composition ref that couldn't be inlined — the virtual ID
+      // doesn't exist in the KRO RGD. Emit as-is; the validator will warn.
+      // When nestedStatusCel IS available but didn't match, this is a real
+      // missing mapping. When it's unavailable (simple compositions without
+      // inner status CEL), the ref passes through for backward compatibility.
+      return `\${${ref.resourceId}.${ref.fieldPath}}`;
     }
 
     if (isCelExpression(value)) {
       if (value.__isTemplate) {
-        // Template expressions from Cel.template() are already in Kro's mixed-template
-        // format (e.g. "http://${schema.spec.name}.${service.metadata.namespace}").
-        // Pass them through as-is — do NOT convert to CEL concat or re-wrap.
         return value.expression;
       }
-      return `\${${value.expression}}`;
+
+      // Replace nested composition status references with the inner composition's
+      // actual CEL expression. Handles both standalone refs and refs embedded in
+      // larger expressions (e.g., `... && inngest.status.ready`).
+      //
+      // The fn.toString analysis uses variable names (e.g., `inngest`) but the
+      // nested status CEL keys use baseIds with instance numbers (e.g.,
+      // `inngestBootstrap1`). We try the exact match first, then scan for keys
+      // that start with the variable name.
+      let expr = value.expression;
+      if (nestedStatusCel) {
+        expr = expr.replace(/(\w+)\.status\.([\w.]+)/g, (_match, compId, field) => {
+          // Try exact match first
+          const exactKey = `__nestedStatus:${compId}:${field}`;
+          if (nestedStatusCel[exactKey]) {
+            return `(${nestedStatusCel[exactKey]})`;
+          }
+          // Try base-name match: strip trailing digits and compare.
+          // Also try prefix match: the fn.toString variable name (e.g., `inngest`)
+          // may be a prefix of the nested composition's baseId (e.g., `inngestBootstrap`).
+          const compIdBase = compId.replace(/\d+$/, '');
+          for (const [key, cel] of Object.entries(nestedStatusCel)) {
+            const parts = key.split(':');
+            if (parts.length !== 3 || parts[2] !== field) continue;
+            const keyBase = parts[1]!.replace(/\d+$/, '');
+            if (
+              compIdBase === keyBase ||
+              isCamelCasePrefix(compIdBase, keyBase) ||
+              isCamelCasePrefix(keyBase, compIdBase)
+            ) {
+              return `(${cel})`;
+            }
+          }
+          return `${compId}.status.${field}`;
+        });
+      }
+
+      // KRO status CEL cannot reference `schema.spec.*` — only resource IDs.
+      // Replace schema references with their .orValue() defaults, or with the
+      // resource's own spec field if a mapping is available.
+      // Pattern: `schema.spec.X.Y.orValue(Z)` → `Z` (use the default)
+      expr = expr.replace(
+        /schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
+        '$1'
+      );
+      // For bare `schema.spec.X.Y` (no orValue): map to the resource's spec
+      // field ONLY if X is a known resource ID. E.g., `schema.spec.database.instances`
+      // → `database.spec.instances` when `database` is a resource in the RGD.
+      // Unknown segments are left as-is (they'll be resolved at deploy time).
+      expr = expr.replace(
+        /schema\.spec\.([a-zA-Z0-9]+)\.([a-zA-Z0-9.]+)/g,
+        (_match, firstSegment, rest) => {
+          if (resourceIds?.has(firstSegment)) {
+            return `${firstSegment}.spec.${rest}`;
+          }
+          // Not a known resource ID — keep the original schema ref.
+          // This will be resolved by the KRO factory at deploy time.
+          return _match;
+        }
+      );
+
+      return `\${${expr}}`;
     }
 
     if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -204,6 +310,10 @@ export function serializeStatusMappingsToCel(
     }
 
     if (typeof value === 'string') {
+      // Convert embedded __KUBERNETES_REF__ markers to CEL expressions
+      if (value.includes('__KUBERNETES_REF_')) {
+        return convertKubernetesRefMarkersTocel(value);
+      }
       return `\${"${value}"}`;
     }
     if (typeof value === 'number') {
@@ -221,4 +331,23 @@ export function serializeStatusMappingsToCel(
   }
 
   return celExpressions;
+}
+
+/**
+ * Check if `prefix` is a camelCase word prefix of `target`.
+ *
+ * A valid prefix must end at a camelCase word boundary in the target —
+ * the character after the prefix must be uppercase (start of a new word)
+ * or the prefix must exhaust the target.
+ *
+ * Examples:
+ *   isCamelCasePrefix('inngest', 'inngestBootstrap') → true  (B is uppercase)
+ *   isCamelCasePrefix('db', 'database')              → false (a is lowercase)
+ *   isCamelCasePrefix('cache', 'cacheService')       → true  (S is uppercase)
+ */
+function isCamelCasePrefix(prefix: string, target: string): boolean {
+  if (!target.startsWith(prefix)) return false;
+  if (prefix.length === target.length) return true;
+  // Character after the prefix must be uppercase (camelCase word boundary)
+  return /[A-Z]/.test(target[prefix.length]!);
 }

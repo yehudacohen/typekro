@@ -323,6 +323,10 @@ export interface ClusterStatus {
   readyInstances?: number;
   /** Active primary instance name. */
   currentPrimary?: string;
+  /** Write (primary) service name. */
+  writeService?: string;
+  /** Read (replica) service name. */
+  readService?: string;
   /** Cluster operational phase. */
   phase?: string;
   /** Status conditions. */
@@ -527,6 +531,8 @@ export interface PoolerStatus {
   instances?: number;
   /** Whether the pooler is ready. */
   ready?: boolean;
+  /** Pooler service hostname (derived from resource name). */
+  hostname?: string;
   /** Status conditions. */
   conditions?: ClusterCondition[];
 }

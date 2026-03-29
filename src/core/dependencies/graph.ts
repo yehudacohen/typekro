@@ -13,6 +13,13 @@ export class DependencyGraph {
   private nodes = new Map<string, DependencyNode>();
 
   /**
+   * Check if a node exists in the graph
+   */
+  hasNode(id: string): boolean {
+    return this.nodes.has(id);
+  }
+
+  /**
    * Add a node to the dependency graph
    */
   addNode(id: string, resource: DeployableK8sResource<Enhanced<unknown, unknown>>): void {

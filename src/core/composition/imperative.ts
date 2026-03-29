@@ -7,6 +7,7 @@
  * as the existing toResourceGraph API.
  */
 
+import { toCamelCase } from '../../utils/string.js';
 import { CompositionDebugger } from '../composition-debugger.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
@@ -222,10 +223,14 @@ function executeNestedCompositionWithSpec<
 
   // For composition names ending with '-composition', use the base name for resource IDs
   // This enables variable name mapping like worker1, worker2, etc.
+  // The base name is converted to camelCase to produce valid CEL identifiers
+  // (hyphens are not valid in CEL, e.g., 'inngest-bootstrap1' would be parsed
+  // as 'inngest' minus 'bootstrap1').
   let baseName = compositionName;
   if (baseName.endsWith('-composition')) {
     baseName = baseName.slice(0, -'-composition'.length);
   }
+  baseName = toCamelCase(baseName);
   const baseId = `${baseName}${instanceNumber}`;
 
   // Determine if this composition has a single resource
@@ -248,6 +253,141 @@ function executeNestedCompositionWithSpec<
     'NESTED_COMPOSITION',
     `Executed nested composition ${compositionName} with ${Object.keys(executionContext.resources).length} resources and ${Object.keys(executionContext.closures).length} closures`
   );
+
+  // Preserve the inner composition's analyzed status CEL expressions.
+  // These are needed by the outer composition's serializer to inline the real
+  // CEL when it encounters a reference like `inngestBootstrap1.status.ready`.
+  const innerAnalysis = (result as unknown as Record<string, unknown>)._analysisResults as
+    { analyzedStatusMappings?: Record<string, unknown>; phaseBStatusMappings?: Record<string, unknown> } | undefined;
+
+  // Store the inner status CEL mappings in the parent context so the serializer
+  // can look them up by the nested composition's baseId.
+  // Use analyzedStatusMappings (Phase A/B merged) as the primary source.
+  // For comparison artifacts (false from proxy >= 1), fall back to
+  // phaseBStatusMappings to recover the garbled but extractable CEL.
+  const innerStatusSource = innerAnalysis?.analyzedStatusMappings;
+  const innerPhaseBFallback = innerAnalysis?.phaseBStatusMappings;
+  if (innerStatusSource) {
+    // Register on the parent context's variable mappings keyed by the baseId.
+    // Format: `__nestedStatus:{baseId}:{fieldPath}` → CEL expression string
+    // Recursively flattens nested objects so deep paths like `metadata.name`
+    // are accessible as `__nestedStatus:{baseId}:metadata.name`.
+    function extractNestedStatusCel(
+      obj: Record<string, unknown>,
+      pathPrefix: string,
+      phaseBFallbackObj?: Record<string, unknown>
+    ): void {
+      for (const [field, celExpr] of Object.entries(obj)) {
+        if (field.startsWith('__')) continue; // skip internal fields
+
+        const fieldPath = pathPrefix ? `${pathPrefix}.${field}` : field;
+
+        // Recurse into nested objects (not CelExpression or KubernetesRef)
+        if (
+          celExpr &&
+          typeof celExpr === 'object' &&
+          !('expression' in celExpr) &&
+          !(KUBERNETES_REF_BRAND in (celExpr as Record<string | symbol, unknown>)) &&
+          !Array.isArray(celExpr)
+        ) {
+          // If the analyzed object is empty (proxy values lost during serialization)
+          // but Phase B has a non-empty object, use Phase B for this subtree.
+          const analyzedObj = celExpr as Record<string, unknown>;
+          const phaseBSub = phaseBFallbackObj?.[field];
+          const usePhaseB =
+            Object.keys(analyzedObj).length === 0 &&
+            phaseBSub &&
+            typeof phaseBSub === 'object' &&
+            !Array.isArray(phaseBSub) &&
+            Object.keys(phaseBSub as Record<string, unknown>).length > 0;
+
+          const subObj = usePhaseB ? (phaseBSub as Record<string, unknown>) : analyzedObj;
+          const subPhaseBFallback = phaseBSub && typeof phaseBSub === 'object'
+            ? (phaseBSub as Record<string, unknown>)
+            : undefined;
+
+          extractNestedStatusCel(subObj, fieldPath, subPhaseBFallback);
+          continue;
+        }
+
+        // Extract the expression string from the analyzed value.
+        let exprStr: string | undefined;
+        if (celExpr && typeof celExpr === 'object' && 'expression' in celExpr) {
+          // CelExpression from Phase A (explicit Cel.expr()) or Phase B
+          exprStr = (celExpr as { expression: string }).expression;
+        } else if (
+          celExpr &&
+          typeof celExpr === 'object' &&
+          KUBERNETES_REF_BRAND in (celExpr as Record<string | symbol, unknown>)
+        ) {
+          // KubernetesRef — build CEL from resourceId.fieldPath
+          const ref = celExpr as { resourceId: string; fieldPath: string };
+          exprStr = `${ref.resourceId}.${ref.fieldPath}`;
+        } else if (typeof celExpr === 'string') {
+          exprStr = celExpr;
+        } else {
+          // Comparison artifact (false/NaN) from the merged result.
+          // Fall back to Phase B which has the garbled but extractable CEL.
+          const phaseBValue = phaseBFallbackObj?.[field];
+          if (phaseBValue && typeof phaseBValue === 'object' && 'expression' in phaseBValue) {
+            exprStr = (phaseBValue as { expression: string }).expression;
+          } else {
+            continue;
+          }
+        }
+
+        // Phase B uses variable names (e.g., `d.metadata.name`) not resource IDs
+        // (e.g., `deployment.metadata.name`). Map unknown identifiers to the inner
+        // composition's actual resource IDs using scored matching.
+        if (exprStr) {
+          const innerResourceIds = Object.keys(executionContext.resources);
+          exprStr = exprStr.replace(/\b(\w+)\.(metadata|status|spec)\./g, (match, id, field) => {
+            if (innerResourceIds.includes(id) || id === 'schema') return match;
+            // Try to match the unknown identifier to a resource ID:
+            // 1. Exact match after lowercasing
+            const lower = id.toLowerCase();
+            const exactLower = innerResourceIds.find(r => r.toLowerCase() === lower);
+            if (exactLower) return `${exactLower}.${field}.`;
+            // 2. Single resource — unambiguous
+            if (innerResourceIds.length === 1) return `${innerResourceIds[0]}.${field}.`;
+            // 3. Prefix match at camelCase boundary (e.g., "d" matches "deployment" only if "d" is a full word)
+            const prefixMatch = innerResourceIds.find(r =>
+              r.toLowerCase().startsWith(lower) && (lower.length === r.length || /[A-Z_-]/.test(r[lower.length]!))
+            );
+            if (prefixMatch) return `${prefixMatch}.${field}.`;
+            // No match — leave as-is (will produce invalid CEL, caught by validator)
+            return match;
+          });
+        }
+
+        // Garbled expressions from fn.toString (e.g., factory calls, Cel.expr() source)
+        // contain real resource references. Extract ALL `.status.field` patterns
+        // and map each to the best-matching inner resource ID.
+        if (!exprStr) continue;
+        if (exprStr.includes('({') || exprStr.includes('=>') || exprStr.includes('new ') || exprStr.includes('Cel.expr(')) {
+          const statusMatches = [...exprStr.matchAll(/(\w+)?\.status\.(\w+)/g)];
+          const innerResources = Object.keys(executionContext.resources);
+          if (statusMatches.length > 0 && innerResources.length > 0) {
+            // Use the first match's field, mapped to the best-matching resource
+            const [, varName, statusField] = statusMatches[0]!;
+            let targetResource = innerResources[0]!;
+            if (varName && innerResources.length > 1) {
+              const match = innerResources.find(r => r.toLowerCase().startsWith(varName.toLowerCase()));
+              if (match) targetResource = match;
+            }
+            exprStr = `${targetResource}.status.${statusField}`;
+          } else {
+            continue;
+          }
+        }
+
+        const key = `__nestedStatus:${baseId}:${fieldPath}`;
+        parentContext.addVariableMapping(key, exprStr);
+      }
+    }
+
+    extractNestedStatusCel(innerStatusSource, '', innerPhaseBFallback);
+  }
 
   // Create a NestedCompositionResource to return
   // This is what enables: const db = databaseComposition({ name: 'mydb' }); db.spec; db.status.ready
@@ -310,8 +450,19 @@ function createKubernetesRefProxy(resourceId: string, basePath: string, useAllow
         return target[prop];
       }
 
-      // For any other string property, create a nested proxy
+      // For any other string property, check live status data first,
+      // then fall back to creating a nested proxy.
       if (typeof prop === 'string') {
+        // When live status data is available (post-deployment re-execution),
+        // return real values so status comparisons evaluate correctly.
+        if (basePath === 'status') {
+          const ctx = getCurrentCompositionContext();
+          const liveStatus = ctx?.liveStatusMap?.get(resourceId);
+          if (liveStatus && prop in liveStatus) {
+            return liveStatus[prop];
+          }
+        }
+
         const fullPath = basePath ? `${basePath}.${prop}` : prop;
         return createKubernetesRefProxy(resourceId, fullPath, useAllowlist);
       }
@@ -359,46 +510,6 @@ function createStatusProxy<TStatus>(
 let globalCompositionCounter = 0;
 
 /**
- * Creates a hybrid spec object that provides actual values for JavaScript logic
- * while still generating CEL expressions when needed for serialization
- */
-function _createHybridSpec<TSpec extends KroCompatibleType>(
-  actualSpec: TSpec,
-  schemaProxy: TSpec
-): TSpec {
-  // For primitive values, return the actual value directly
-  if (typeof actualSpec !== 'object' || actualSpec === null) {
-    return actualSpec;
-  }
-
-  // Create a proxy that intelligently returns actual values or proxy values
-  // based on the context of access
-  return new Proxy(actualSpec, {
-    get(target, prop) {
-      const actualValue = target[prop as keyof TSpec];
-      const proxyValue = schemaProxy[prop as keyof TSpec];
-
-      // For nested objects, create hybrid recursively
-      if (
-        typeof actualValue === 'object' &&
-        actualValue !== null &&
-        typeof proxyValue === 'object'
-      ) {
-        return _createHybridSpec(
-          actualValue as unknown as KroCompatibleType,
-          proxyValue as unknown as KroCompatibleType
-        );
-      }
-
-      // Return actual values for JavaScript operations
-      // The serialization system will analyze the original composition function
-      // and generate CEL expressions from the schema proxy separately
-      return actualValue;
-    },
-  }) as TSpec;
-}
-
-/**
  * Core composition execution logic shared between nested and top-level compositions
  */
 function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
@@ -426,8 +537,6 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
       const resourceKind = (resource as { kind?: string })?.kind || 'unknown';
       CompositionDebugger.logResourceRegistration(id, resourceKind, 'factory-function');
     };
-
-    const _resourceBuildStart = Date.now();
 
     const result = toResourceGraph(
       definition,
@@ -458,6 +567,18 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           // This allows the serialization system to analyze the original JavaScript expressions
           Reflect.set(capturedStatus, '__originalCompositionFn', compositionFn);
           Reflect.set(capturedStatus, '__originalSchema', schema.spec);
+
+          // Attach nested composition status CEL mappings from the context.
+          // These are populated by inner compositions' executeNestedCompositionWithSpec.
+          const nestedStatusMappings: Record<string, string> = {};
+          for (const [key, value] of Object.entries(context.variableMappings)) {
+            if (key.startsWith('__nestedStatus:')) {
+              nestedStatusMappings[key] = value;
+            }
+          }
+          if (Object.keys(nestedStatusMappings).length > 0) {
+            Reflect.set(capturedStatus, '__nestedStatusCel', nestedStatusMappings);
+          }
 
           const resourceBuildEnd = Date.now();
           CompositionDebugger.logPerformanceMetrics(

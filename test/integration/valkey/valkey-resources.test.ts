@@ -31,8 +31,11 @@ describe('Valkey Resource Integration Tests', () => {
           replicas: 1,
           volumePermissions: true,
           storage: {
-            storageClassName: 'standard',
-            resources: { requests: { storage: '10Gi' } },
+            spec: {
+              accessModes: ['ReadWriteOnce'],
+              storageClassName: 'standard',
+              resources: { requests: { storage: '10Gi' } },
+            },
           },
           resources: {
             requests: { cpu: '250m', memory: '512Mi' },
@@ -48,10 +51,10 @@ describe('Valkey Resource Integration Tests', () => {
       expect(cache.metadata.namespace).toBe(testNs);
 
       // Typed spec access
-      expect(cache.spec.shards).toBe(3);
+      expect((cache.spec as Record<string, unknown>).nodes).toBe(3);
       expect(cache.spec.replicas).toBe(1);
       expect(cache.spec.volumePermissions).toBe(true);
-      expect(cache.spec.storage?.storageClassName).toBe('standard');
+      expect(cache.spec.storage?.spec?.storageClassName).toBe('standard');
       expect(cache.spec.resources?.requests?.cpu).toBe('250m');
     });
 
