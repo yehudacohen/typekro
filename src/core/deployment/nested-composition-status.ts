@@ -26,9 +26,9 @@ import type { Enhanced } from '../types/index.js';
  *   All resources in this map are considered "ready" (they passed waitForReady).
  * @param logger - Logger instance for debug output.
  * @param knownNestedIds - Explicit set of known nested composition base IDs
- *   (e.g., "inngestBootstrap1") from the composition context. When provided,
- *   only these IDs are considered as potential parents — no string-pattern
- *   heuristics are used. When absent, falls back to digit-suffix detection.
+ *   (e.g., "inngestBootstrap1") from the composition context. Required — without
+ *   this, no synthesis is performed. The IDs are populated during composition
+ *   execution by `executeNestedCompositionWithSpec`.
  * @returns Enriched map with additional entries for nested composition parent IDs.
  */
 export function synthesizeNestedCompositionStatus(
@@ -38,6 +38,13 @@ export function synthesizeNestedCompositionStatus(
   knownNestedIds?: Set<string>
 ): Map<string, Record<string, unknown>> {
   const enrichedMap = new Map(liveStatusMap);
+
+  // Without an explicit registry of nested composition IDs, we cannot
+  // reliably identify virtual parents. Skip synthesis entirely.
+  if (!knownNestedIds || knownNestedIds.size === 0) {
+    return enrichedMap;
+  }
+
   const deployedChildIds = new Set(liveStatusMap.keys());
 
   // Scan probe resource keys for nested composition parents.
@@ -51,14 +58,7 @@ export function synthesizeNestedCompositionStatus(
     for (let i = 0; i < segments.length; i++) {
       const segment = segments[i]!;
 
-      // Check if this segment is a known nested composition ID.
-      // With the explicit registry, we match precisely. Without it,
-      // fall back to the digit-suffix heuristic (composition counters
-      // always end with a digit: bootstrap1, processing2, etc.).
-      const isNestedId = knownNestedIds
-        ? knownNestedIds.has(segment)
-        : /\d$/.test(segment);
-      if (!isNestedId) continue;
+      if (!knownNestedIds.has(segment)) continue;
 
       const candidateParent = segments.slice(0, i + 1).join('-');
       // Skip if this is the entire key (no children)
@@ -97,10 +97,7 @@ export function synthesizeNestedCompositionStatus(
     const parentSegments = parentId.split('-');
     for (let j = 1; j < parentSegments.length; j++) {
       const suffix = parentSegments.slice(j).join('-');
-      const isSuffixNested = knownNestedIds
-        ? knownNestedIds.has(suffix)
-        : /\d$/.test(suffix);
-      if (isSuffixNested && !enrichedMap.has(suffix)) {
+      if (knownNestedIds.has(suffix) && !enrichedMap.has(suffix)) {
         enrichedMap.set(suffix, synthesizedStatus);
       }
     }

@@ -123,7 +123,7 @@ export const webAppWithProcessing = kubernetesComposition(
         storage: {
           spec: {
             accessModes: ['ReadWriteOnce'],
-            resources: { requests: { storage: '1Gi' } },
+            resources: { requests: { storage: spec.cache?.storageSize || '1Gi' } },
           },
         },
       },
