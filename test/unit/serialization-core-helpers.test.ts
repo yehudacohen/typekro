@@ -8,6 +8,10 @@
 import { describe, expect, test } from 'bun:test';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { getResourceId } from '../../src/core/metadata/index.js';
+// Import factories to populate the FactoryRegistry via side effects.
+// Without this, getKindInfo/createStubResource return undefined/null
+// because the registry is only populated when factory modules are loaded.
+import '../../src/factories/index.js';
 import { getKindInfo } from '../../src/core/resources/factory-registry.js';
 import {
   analyzeStatusMappingTypes,
