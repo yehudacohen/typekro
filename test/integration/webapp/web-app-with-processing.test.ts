@@ -151,11 +151,19 @@ describe('WebAppWithProcessing Direct Mode', () => {
   afterAll(async () => {
     // Use the factory's graph-based deletion
     if (directFactory) {
-      try { await directFactory.deleteInstance('testapp'); } catch { /* ignore */ }
+      try {
+        await directFactory.deleteInstance('testapp');
+      } catch (e) {
+        console.error('⚠️ Direct deleteInstance failed:', (e as Error).message);
+      }
     }
     const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
     for (const ns of [factoryNamespace, appNamespace]) {
-      try { await deleteNamespaceIfExists(ns, kubeConfig); } catch { /* ignore */ }
+      try {
+        await deleteNamespaceIfExists(ns, kubeConfig);
+      } catch (e) {
+        console.error(`⚠️ Namespace ${ns} cleanup failed:`, (e as Error).message);
+      }
     }
   });
 
@@ -237,16 +245,23 @@ describe('WebAppWithProcessing KRO Mode', () => {
   });
 
   afterAll(async () => {
-    // Use the factory's deleteInstance — waits for KRO to process
-    // finalizers and clean up child resources via graph-based deletion.
+    // The factory's deleteInstance handles the full cleanup graph:
+    // instance → wait for KRO finalizer → RGD → child namespaces
     if (kroFactory) {
-      try { await kroFactory.deleteInstance('testapp'); } catch { /* ignore */ }
+      try {
+        await kroFactory.deleteInstance('testapp');
+      } catch (e) {
+        console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
+      }
     }
 
-    // Clean namespaces
-    const { deleteNamespaceAndWait, deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
-    try { await deleteNamespaceAndWait(appNamespace, kubeConfig, 30000); } catch { /* ignore */ }
-    try { await deleteNamespaceIfExists(kroNamespace, kubeConfig); } catch { /* ignore */ }
+    // Clean the factory namespace (the factory manages app namespaces internally)
+    const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
+    try {
+      await deleteNamespaceIfExists(kroNamespace, kubeConfig);
+    } catch (e) {
+      console.error(`⚠️ Namespace ${kroNamespace} cleanup failed:`, (e as Error).message);
+    }
   });
 
   it('should deploy via KRO controller and reconcile to ready', async () => {
