@@ -623,6 +623,51 @@ export class KroResourceFactoryImpl<
         );
       }
     }
+
+    // Delete the RGD after the instance is gone. The RGD must exist during
+    // instance deletion so KRO can process the finalizer. Now that the
+    // instance is deleted (or timed out), clean up the RGD and its CRD.
+    try {
+      await k8sApi.delete({
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: this.rgdName },
+      } as k8s.KubernetesObject);
+      this.logger.debug('RGD deleted', { rgdName: this.rgdName });
+    } catch (error: unknown) {
+      const errorCode = (error as { code?: number; body?: { code?: number } }).code
+        ?? (error as { body?: { code?: number } }).body?.code;
+      if (errorCode !== 404) {
+        this.logger.warn('RGD cleanup failed', { rgdName: this.rgdName, error: ensureError(error).message });
+      }
+    }
+
+    // Delete namespaces created by the composition's resources.
+    // Collect unique namespaces from resources (excluding cluster-scoped ones
+    // and the factory namespace which the caller manages).
+    const namespacesToDelete = new Set<string>();
+    for (const resource of Object.values(this.resources)) {
+      const ns = typeof resource.metadata?.namespace === 'string' ? resource.metadata.namespace : undefined;
+      if (ns && ns !== this.namespace) {
+        namespacesToDelete.add(ns);
+      }
+    }
+    for (const ns of namespacesToDelete) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: ns },
+        } as k8s.KubernetesObject);
+        this.logger.debug('Namespace deletion initiated', { namespace: ns });
+      } catch (error: unknown) {
+        const errorCode = (error as { code?: number; body?: { code?: number } }).code
+          ?? (error as { body?: { code?: number } }).body?.code;
+        if (errorCode !== 404) {
+          this.logger.debug('Namespace cleanup failed', { namespace: ns, error: ensureError(error).message });
+        }
+      }
+    }
   }
 
   /**

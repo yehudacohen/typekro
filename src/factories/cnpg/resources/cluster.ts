@@ -117,12 +117,22 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
 function createClusterResource(
   config: Composable<ClusterConfig>
 ): Enhanced<ClusterConfig['spec'], ClusterStatus> {
+  // Map TypeKro field names to CNPG CRD field names:
+  // storageClass → storageClassName (CNPG uses storageClassName in spec.storage)
+  const storage = config.spec.storage;
+  const crdStorage: Record<string, unknown> = { ...storage };
+  if ('storageClass' in crdStorage) {
+    crdStorage.storageClassName = crdStorage.storageClass;
+    delete crdStorage.storageClass;
+  }
+
   const fullConfig = {
     ...config,
     spec: {
       ...config.spec,
       instances: config.spec.instances ?? 1,
-    },
+      storage: crdStorage,
+    } as typeof config.spec,
   };
 
   return createResource(

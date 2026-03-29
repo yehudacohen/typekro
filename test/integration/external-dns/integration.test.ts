@@ -62,6 +62,7 @@ describeOrSkip('External-DNS Integration Tests', () => {
     // Verify and export AWS credentials from any source (env vars, profiles, SSO, etc.)
     let awsAccessKeyId: string;
     let awsSecretAccessKey: string;
+    let awsSessionToken: string | undefined;
     try {
       execSync('aws sts get-caller-identity', { encoding: 'utf-8', timeout: 10000 });
       // Export resolved credentials (works with SSO, env vars, profiles, instance roles)
@@ -76,6 +77,7 @@ describeOrSkip('External-DNS Integration Tests', () => {
       );
       awsAccessKeyId = envMap.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || '';
       awsSecretAccessKey = envMap.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '';
+      awsSessionToken = envMap.AWS_SESSION_TOKEN || process.env.AWS_SESSION_TOKEN;
       if (!awsAccessKeyId || !awsSecretAccessKey) throw new Error('empty');
     } catch {
       console.log('⏭️  Skipping test: no valid AWS credentials (run: aws sts get-caller-identity)');
@@ -112,6 +114,7 @@ describeOrSkip('External-DNS Integration Tests', () => {
           stringData: {
             'access-key-id': awsAccessKeyId,
             'secret-access-key': awsSecretAccessKey,
+            ...(awsSessionToken ? { 'session-token': awsSessionToken } : {}),
           },
         } as k8s.V1Secret,
       });

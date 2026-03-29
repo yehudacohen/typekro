@@ -109,6 +109,38 @@ describe('CNPG Cluster Factory', () => {
       expect(db.spec.backup?.retentionPolicy).toBe('30d');
     });
 
+    it('should map storageClass to storageClassName for CNPG CRD compatibility', () => {
+      const db = cluster({
+        name: 'storage-class-test',
+        spec: {
+          instances: 1,
+          storage: { size: '10Gi', storageClass: 'gp3' },
+        },
+      });
+
+      // The CNPG CRD uses storageClassName, not storageClass
+      const crdSpec = db.spec as Record<string, unknown>;
+      const storage = crdSpec.storage as Record<string, unknown>;
+      expect(storage.storageClassName).toBe('gp3');
+      expect(storage.storageClass).toBeUndefined();
+      expect(storage.size).toBe('10Gi');
+    });
+
+    it('should not add storageClassName when storageClass is not provided', () => {
+      const db = cluster({
+        name: 'no-storage-class-test',
+        spec: {
+          instances: 1,
+          storage: { size: '5Gi' },
+        },
+      });
+
+      const crdSpec = db.spec as Record<string, unknown>;
+      const storage = crdSpec.storage as Record<string, unknown>;
+      expect(storage.storageClassName).toBeUndefined();
+      expect(storage.size).toBe('5Gi');
+    });
+
     it('should default instances to 1 when omitted', () => {
       const db = cluster({
         name: 'defaults-test',
