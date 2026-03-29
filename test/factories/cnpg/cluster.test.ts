@@ -55,7 +55,7 @@ describe('CNPG Cluster Factory', () => {
           imageName: 'ghcr.io/cloudnative-pg/postgresql:16.2',
           storage: {
             size: '100Gi',
-            storageClassName: 'gp3',
+            storageClass: 'gp3',
           },
           postgresql: {
             parameters: {
@@ -109,16 +109,16 @@ describe('CNPG Cluster Factory', () => {
       expect(db.spec.backup?.retentionPolicy).toBe('30d');
     });
 
-    it('should pass storageClassName directly to the CNPG CRD', () => {
+    it('should pass storageClass through to the CNPG CRD', () => {
       const db = cluster({
         name: 'storage-class-test',
         spec: {
           instances: 1,
-          storage: { size: '10Gi', storageClassName: 'gp3' },
+          storage: { size: '10Gi', storageClass: 'gp3' },
         },
       });
 
-      expect(db.spec.storage.storageClassName).toBe('gp3');
+      expect(db.spec.storage.storageClass).toBe('gp3');
       expect(db.spec.storage.size).toBe('10Gi');
     });
 

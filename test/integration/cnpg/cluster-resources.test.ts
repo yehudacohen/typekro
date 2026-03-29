@@ -37,7 +37,7 @@ describe('CNPG Cluster Resource Integration Tests', () => {
         namespace: testNs,
         spec: {
           instances: 3,
-          storage: { size: '50Gi', storageClassName: 'gp3' },
+          storage: { size: '50Gi', storageClass: 'gp3' },
           postgresql: {
             parameters: { shared_buffers: '256MB', max_connections: '200' },
           },
@@ -56,7 +56,7 @@ describe('CNPG Cluster Resource Integration Tests', () => {
       // Typed spec access
       expect(db.spec.instances).toBe(3);
       expect(db.spec.storage.size).toBe('50Gi');
-      expect(db.spec.storage.storageClassName).toBe('gp3');
+      expect(db.spec.storage.storageClass).toBe('gp3');
       expect(db.spec.postgresql?.parameters?.shared_buffers).toBe('256MB');
       expect(db.spec.bootstrap?.initdb?.database).toBe('myapp');
       expect(db.spec.bootstrap?.initdb?.owner).toBe('app');

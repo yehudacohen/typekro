@@ -102,7 +102,7 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
  *   namespace: 'databases',
  *   spec: {
  *     instances: 3,
- *     storage: { size: '50Gi', storageClassName: 'gp3' },
+ *     storage: { size: '50Gi', storageClass: 'gp3' },
  *     postgresql: {
  *       parameters: { shared_buffers: '256MB' },
  *     },
