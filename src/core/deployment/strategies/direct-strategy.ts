@@ -307,6 +307,7 @@ function deepMergeLiveStatus(
         : {};
     const merged: Record<string, unknown> = {};
     for (const key of new Set([...Object.keys(liveObj), ...Object.keys(baseObj)])) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
       if (key.startsWith('__')) {
         merged[key] = liveObj[key] ?? baseObj[key];
       } else {

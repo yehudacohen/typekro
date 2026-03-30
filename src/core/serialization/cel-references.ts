@@ -215,11 +215,13 @@ export function serializeStatusMappingsToCel(
           const parts = key.split(':');
           if (parts.length !== 3 || parts[2] !== fieldName) continue;
           const keyBase = parts[1]!.replace(/\d+$/, '');
-          if (
-            refBase === keyBase ||
-            isCamelCasePrefix(refBase, keyBase) ||
-            isCamelCasePrefix(keyBase, refBase)
-          ) {
+          if (refBase === keyBase) {
+            return `\${${cel}}`;
+          }
+          if (isCamelCasePrefix(refBase, keyBase) || isCamelCasePrefix(keyBase, refBase)) {
+            logger.warn('Nested status CEL resolved via prefix match (not exact)', {
+              refResourceId: ref.resourceId, matchedKey: key, fieldName,
+            });
             return `\${${cel}}`;
           }
         }
@@ -262,11 +264,13 @@ export function serializeStatusMappingsToCel(
             const parts = key.split(':');
             if (parts.length !== 3 || parts[2] !== field) continue;
             const keyBase = parts[1]!.replace(/\d+$/, '');
-            if (
-              compIdBase === keyBase ||
-              isCamelCasePrefix(compIdBase, keyBase) ||
-              isCamelCasePrefix(keyBase, compIdBase)
-            ) {
+            if (compIdBase === keyBase) {
+              return `(${cel})`;
+            }
+            if (isCamelCasePrefix(compIdBase, keyBase) || isCamelCasePrefix(keyBase, compIdBase)) {
+              logger.warn('Nested status CEL expression resolved via prefix match', {
+                compId, matchedKey: key, field,
+              });
               return `(${cel})`;
             }
           }

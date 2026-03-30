@@ -234,6 +234,16 @@ function executeNestedCompositionWithSpec<
   baseName = toCamelCase(baseName);
   const baseId = `${baseName}${instanceNumber}`;
 
+  // Validate: nested composition IDs must not contain hyphens because
+  // synthesizeNestedCompositionStatus uses hyphen-delimited segment
+  // splitting to identify parent/child relationships.
+  if (baseId.includes('-')) {
+    throw new Error(
+      `Nested composition ID "${baseId}" contains hyphens. ` +
+      `toCamelCase should have removed them from "${compositionName}".`
+    );
+  }
+
   // Register this nested composition ID so synthesizeNestedCompositionStatus
   // can identify virtual parents without relying on digit-heuristics.
   if (!parentContext.nestedCompositionIds) {

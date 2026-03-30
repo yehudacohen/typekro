@@ -819,6 +819,7 @@ function mergePhaseAAndPhaseB(
   const merged: Record<string, unknown> = {};
 
   for (const [key, phaseAValue] of Object.entries(phaseA)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     if (key.startsWith('__')) {
       // Preserve internal fields from Phase A
       merged[key] = phaseAValue;
