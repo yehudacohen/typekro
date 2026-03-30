@@ -247,6 +247,11 @@ export class DirectResourceFactoryImpl<
           for (const ns of deletedNamespaces) {
             try {
               const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace: ns });
+              if (pvcs.items.length > 0) {
+                this.logger.info('Deleting PVCs to unblock namespace termination', {
+                  namespace: ns, count: pvcs.items.length,
+                });
+              }
               for (const pvc of pvcs.items) {
                 const pvcName = pvc.metadata?.name;
                 if (!pvcName) continue;
@@ -254,7 +259,7 @@ export class DirectResourceFactoryImpl<
                   name: pvcName,
                   namespace: ns,
                 }).catch((err: unknown) => {
-                  this.logger.debug('PVC delete failed (best-effort)', {
+                  this.logger.info('PVC delete failed', {
                     pvc: pvcName, namespace: ns, error: String(err),
                   });
                 });

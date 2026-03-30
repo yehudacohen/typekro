@@ -39,7 +39,9 @@ export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableCompositio
  * Regex pattern for matching __KUBERNETES_REF__ marker strings in values.
  *
  * Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__
- * - resourceId: camelCase with optional hyphens/digits (e.g., 'database', 'inngest-bootstrap1')
+ * - resourceId: camelCase with optional hyphens/digits (e.g., 'database', 'inngestBootstrap1')
+ *   Hyphens are allowed for backward compatibility with older ID formats, though
+ *   current convention enforces camelCase (toCamelCase in executeNestedCompositionWithSpec).
  * - fieldPath: dot-separated path with optional $ for iteration (e.g., 'status.ready', 'spec.workers.$item.name')
  * - Excludes __schema__ refs via negative lookahead
  *

@@ -52,7 +52,7 @@ export const WebAppWithProcessingConfigSchema = type({
     /** Database owner (default: 'app'). */
     'owner?': 'string',
   },
-  /** Valkey cache settings. */
+  /** Valkey cache settings. Always deployed (omitting uses defaults, does not skip cache). */
   'cache?': {
     /** Number of Valkey shards (default: 3). */
     'shards?': 'number',

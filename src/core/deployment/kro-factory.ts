@@ -633,42 +633,55 @@ export class KroResourceFactoryImpl<
       }
     }
 
-    // Delete the RGD after the instance is gone. The RGD must exist during
-    // instance deletion so KRO can process the finalizer. Now that the
-    // instance is deleted (or timed out), clean up the RGD and its CRD.
+    // Only delete the RGD and CRD if no other instances remain. Multiple
+    // instances can share one RGD — deleting it would break the others.
+    let hasRemainingInstances = false;
     try {
-      await k8sApi.delete({
-        apiVersion: 'kro.run/v1alpha1',
-        kind: 'ResourceGraphDefinition',
-        metadata: { name: this.rgdName },
-      } as k8s.KubernetesObject);
-      this.logger.debug('RGD deleted', { rgdName: this.rgdName });
-    } catch (error: unknown) {
-      const errorCode = (error as { code?: number; body?: { code?: number } }).code
-        ?? (error as { body?: { code?: number } }).body?.code;
-      if (errorCode !== 404) {
-        this.logger.warn('RGD cleanup failed', { rgdName: this.rgdName, error: ensureError(error).message });
-      }
+      const instances = await this.getInstances();
+      hasRemainingInstances = instances.length > 0;
+    } catch {
+      // If we can't list instances (CRD gone, permissions), assume safe to delete
     }
 
-    // Delete the CRD that KRO created from the RGD. KRO's default config has
-    // allowCRDDeletion=false, so it won't clean up the CRD when the RGD is
-    // deleted. A stale CRD causes "CRD is terminating" errors on the next
-    // test run and zombie instances that can never be finalized.
-    const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
-    try {
-      await k8sApi.delete({
-        apiVersion: 'apiextensions.k8s.io/v1',
-        kind: 'CustomResourceDefinition',
-        metadata: { name: crdName },
-      } as k8s.KubernetesObject);
-      this.logger.debug('CRD deleted', { crdName });
-    } catch (error: unknown) {
-      const errorCode = (error as { code?: number; body?: { code?: number } }).code
-        ?? (error as { body?: { code?: number } }).body?.code;
-      if (errorCode !== 404) {
-        this.logger.debug('CRD cleanup failed (non-critical)', { crdName, error: ensureError(error).message });
+    if (!hasRemainingInstances) {
+      // Delete the RGD after the instance is gone.
+      try {
+        await k8sApi.delete({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name: this.rgdName },
+        } as k8s.KubernetesObject);
+        this.logger.debug('RGD deleted', { rgdName: this.rgdName });
+      } catch (error: unknown) {
+        const errorCode = (error as { code?: number; body?: { code?: number } }).code
+          ?? (error as { body?: { code?: number } }).body?.code;
+        if (errorCode !== 404) {
+          this.logger.warn('RGD cleanup failed', { rgdName: this.rgdName, error: ensureError(error).message });
+        }
       }
+
+      // Delete the CRD that KRO created from the RGD. KRO's default config
+      // has allowCRDDeletion=false, so it won't clean up the CRD when the
+      // RGD is deleted.
+      const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
+      try {
+        await k8sApi.delete({
+          apiVersion: 'apiextensions.k8s.io/v1',
+          kind: 'CustomResourceDefinition',
+          metadata: { name: crdName },
+        } as k8s.KubernetesObject);
+        this.logger.debug('CRD deleted', { crdName });
+      } catch (error: unknown) {
+        const errorCode = (error as { code?: number; body?: { code?: number } }).code
+          ?? (error as { body?: { code?: number } }).body?.code;
+        if (errorCode !== 404) {
+          this.logger.debug('CRD cleanup failed (non-critical)', { crdName, error: ensureError(error).message });
+        }
+      }
+    } else {
+      this.logger.debug('Skipping RGD/CRD deletion — other instances still exist', {
+        rgdName: this.rgdName,
+      });
     }
 
     // Namespaces are resources in the composition's dependency graph.
@@ -1318,8 +1331,9 @@ ${Object.entries(spec as Record<string, any>)
     const kubeConfig = this.getKubeConfig();
     const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
-    for (const [resourceId, resource] of Object.entries(this.resources)) {
-      try {
+    const resourceEntries = Object.entries(this.resources);
+    const results = await Promise.allSettled(
+      resourceEntries.map(async ([resourceId, resource]) => {
         const name =
           typeof resource.metadata?.name === 'string'
             ? resource.metadata.name
@@ -1337,13 +1351,14 @@ ${Object.entries(spec as Record<string, any>)
         });
 
         if (live && typeof live === 'object' && 'status' in live) {
-          liveStatusMap.set(
-            resourceId,
-            (live as Record<string, unknown>).status as Record<string, unknown>
-          );
+          return { resourceId, status: (live as Record<string, unknown>).status as Record<string, unknown> };
         }
-      } catch {
-        // Resource may not exist or may not have status
+        return null;
+      })
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) {
+        liveStatusMap.set(result.value.resourceId, result.value.status);
       }
     }
 
