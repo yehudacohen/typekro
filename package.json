@@ -70,6 +70,10 @@
       "import": "./dist/factories/valkey/index.js",
       "types": "./dist/factories/valkey/index.d.ts"
     },
+    "./containers": {
+      "import": "./dist/core/containers/index.js",
+      "types": "./dist/core/containers/index.d.ts"
+    },
     "./alchemy": {
       "import": "./dist/alchemy/index.js",
       "types": "./dist/alchemy/index.d.ts"
@@ -151,6 +155,9 @@
   "author": "Skates Platform Team",
   "license": "Apache-2.0",
   "dependencies": {
+    "@aws-sdk/client-ecr": "^3.1019.0",
+    "@aws-sdk/client-sts": "^3.1019.0",
+    "@aws-sdk/credential-providers": "^3.1019.0",
     "@kubernetes/client-node": "1.3.0",
     "acorn": "8.15.0",
     "alchemy": "^0.62.3",
@@ -158,6 +165,7 @@
     "arktype": "^2.1.20",
     "cel-js": "^0.8.2",
     "estraverse": "^5.3.0",
+    "ignore": "^7.0.5",
     "js-yaml": "4.1.0",
     "pino": "^9.8.0"
   },
