@@ -603,20 +603,16 @@ export class KroResourceFactoryImpl<
         }
       }
       if (!deleted) {
-        // Don't proceed to RGD/namespace deletion — KRO needs the RGD to
-        // process the finalizer. Throw so the caller knows cleanup is incomplete
-        // and can retry or investigate.
-        throw new CRDInstanceError(
-          `Instance ${name} deletion timed out after ${timeout}ms. ` +
-            `The KRO controller may still be processing the finalizer. ` +
-            `The RGD has been preserved so KRO can complete cleanup. ` +
-            `Re-run deleteInstance or check KRO controller logs.`,
-          this.schemaDefinition.apiVersion,
-          this.schemaDefinition.kind,
+        // KRO is still processing the finalizer. Don't throw — the deletion
+        // IS in progress. The hasRemainingInstances guard below will see the
+        // instance (still DELETING) and skip RGD/CRD deletion, preserving
+        // them so KRO can complete cleanup in the background.
+        this.logger.warn('Instance deletion still in progress after timeout', {
           name,
-          'deletion',
-          new Error(`Timed out after ${timeout}ms waiting for kro.run/finalizer processing`)
-        );
+          timeout,
+          elapsed: Date.now() - startTime,
+          hint: 'KRO finalizer processing continues in the background. The RGD will be preserved.',
+        });
       }
     } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; code?: number; body?: { code?: number }; message?: string };
