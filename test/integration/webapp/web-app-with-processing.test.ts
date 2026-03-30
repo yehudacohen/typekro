@@ -140,7 +140,7 @@ async function assertAllPodsHealthy(appNamespace: string): Promise<void> {
 describe('WebAppWithProcessing Direct Mode', () => {
   let kubeConfig: k8s.KubeConfig;
   let directFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
-  const suffix = Date.now().toString().slice(-5);
+  const suffix = Math.random().toString(36).slice(2, 7);
   const factoryNamespace = `typekro-webapp-${suffix}`;
   const appNamespace = `webapp-app-${suffix}`;
 
@@ -224,7 +224,7 @@ describe('WebAppWithProcessing Direct Mode', () => {
 describe('WebAppWithProcessing KRO Mode', () => {
   let kubeConfig: k8s.KubeConfig;
   let kroFactory: ResourceFactory<WebAppWithProcessingConfig, WebAppWithProcessingStatus> | undefined;
-  const suffix = Date.now().toString().slice(-5);
+  const suffix = Math.random().toString(36).slice(2, 7);
   const kroNamespace = `typekro-kro-${suffix}`;
   const appNamespace = `webapp-kro-${suffix}`;
 

@@ -44,6 +44,8 @@ export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableCompositio
  * - Excludes __schema__ refs via negative lookahead
  *
  * This pattern is the single source of truth — all marker detection/resolution
- * code must use this constant to stay in sync.
+ * code must use this constant to stay in sync. Callers must create their own
+ * RegExp via `new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g')` to avoid
+ * stateful lastIndex issues with the global flag.
  */
-export const KUBERNETES_REF_MARKER_PATTERN = /(?:__KUBERNETES_REF_)(?!_schema__)([a-zA-Z0-9-]+)_([a-zA-Z0-9.$]+)__/g;
+export const KUBERNETES_REF_MARKER_PATTERN = /(?:__KUBERNETES_REF_)(?!_schema__)([a-zA-Z0-9-]+)_([a-zA-Z0-9.$]+)__/;

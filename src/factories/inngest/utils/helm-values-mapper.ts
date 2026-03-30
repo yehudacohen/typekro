@@ -122,9 +122,12 @@ export function mapInngestConfigToHelmValues(
     values.tolerations = config.tolerations;
   }
 
-  // Deep merge custom values — shallow Object.assign would overwrite nested
-  // objects like `inngest` entirely, losing eventKey/signingKey if customValues
-  // adds `inngest.extraEnv`.
+  // One-level-deep merge of custom values — shallow Object.assign would
+  // overwrite nested objects like `inngest` entirely, losing eventKey/signingKey
+  // if customValues adds `inngest.extraEnv`. This merge handles one level of
+  // nesting (e.g., `{ inngest: { extraEnv: [...] } }` merges into existing
+  // `inngest` keys). Two-level-deep overrides (e.g., `{ inngest: { postgres:
+  // { maxConnections: 50 } } }`) will still shallow-overwrite the inner object.
   if (config.customValues) {
     for (const [key, value] of Object.entries(config.customValues)) {
       if (
