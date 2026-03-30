@@ -162,6 +162,7 @@ function deepMerge(
   source: Record<string, unknown>
 ): void {
   for (const [key, sourceValue] of Object.entries(source)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     const targetValue = target[key];
     if (
       sourceValue !== null &&
