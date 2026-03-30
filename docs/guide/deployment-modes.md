@@ -318,6 +318,37 @@ const prodFactory = webapp.factory('kro', {
 const yaml = prodFactory.toYaml(prodSpec);
 ```
 
+## Instance Lifecycle
+
+### Deployment
+
+Both modes support `waitForReady: true` which blocks until all resources report ready:
+
+```typescript
+const factory = app.factory('direct', {
+  namespace: 'production',
+  waitForReady: true,  // Block until ready
+  timeout: 600000,     // 10 minute timeout
+});
+
+const instance = await factory.deploy(spec);
+// instance.status.ready === true (guaranteed)
+```
+
+In direct mode, TypeKro re-executes the composition with live cluster data after deployment to hydrate status fields with real values (not proxy artifacts).
+
+### Deletion
+
+Clean up with `factory.deleteInstance(name)`:
+
+```typescript
+await factory.deleteInstance('my-app');
+```
+
+**Direct mode:** Uses graph-based reverse-topological deletion — resources are deleted in the opposite order they were deployed (App before Database, Database before Namespace). PVCs are cleaned up to unblock namespace termination.
+
+**KRO mode:** Sends a DELETE to the custom resource instance. KRO's finalizer processes child resource cleanup via its applyset. After the instance is gone, TypeKro cleans up the RGD and CRD (only if no other instances share them).
+
 ## Next Steps
 
 - [Getting Started](./getting-started.md) - Deploy your first app

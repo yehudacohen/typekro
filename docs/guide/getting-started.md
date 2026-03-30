@@ -233,6 +233,35 @@ return {
 };
 ```
 
+## Full Stack in 5 Lines
+
+TypeKro includes pre-built compositions for common stacks. Deploy PostgreSQL, Valkey, Inngest, and your app in one call:
+
+```typescript
+import { webAppWithProcessing } from 'typekro/webapp';
+
+const factory = webAppWithProcessing.factory('direct', {
+  namespace: 'production',
+  waitForReady: true,
+  kubeConfig,
+});
+
+await factory.deploy({
+  name: 'my-app',
+  app: { image: 'my-app:latest', port: 3000 },
+  database: { storageSize: '10Gi' },
+  processing: {
+    eventKey: process.env.INNGEST_EVENT_KEY!,
+    signingKey: process.env.INNGEST_SIGNING_KEY!,
+  },
+});
+// Deploys: CNPG PostgreSQL + PgBouncer pooler + Valkey cache (3 shards)
+//          + Inngest workflow engine + your app Deployment + Service
+// All connection strings auto-wired into the app's environment.
+```
+
+See [Web App Compositions](/api/webapp/) for the full configuration reference.
+
 ## What's Next?
 
 Ready to dive deeper? Here's the recommended progression:
