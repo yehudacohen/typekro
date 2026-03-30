@@ -354,5 +354,50 @@ describe('Inngest Helm Values Mapper', () => {
       // Primitive customValues override existing values
       expect(values.replicaCount).toBe(5);
     });
+
+    it('should deep merge customValues at arbitrary depth', () => {
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        inngest: {
+          ...minimalConfig.inngest,
+          postgres: { uri: 'postgresql://user@host:5432/db' },
+        },
+        customValues: {
+          inngest: {
+            postgres: { maxConnections: 50 },
+            extraEnv: [{ name: 'FOO', value: 'bar' }],
+          },
+        },
+      });
+
+      // Two-level deep: inngest.postgres should have BOTH uri and maxConnections
+      const inngest = values.inngest as Record<string, unknown>;
+      const postgres = inngest.postgres as Record<string, unknown>;
+      expect(postgres.uri).toBe('postgresql://user@host:5432/db');
+      expect(postgres.maxConnections).toBe(50);
+      // One-level deep: inngest.extraEnv should be merged in
+      expect((inngest.extraEnv as any)?.[0]?.name).toBe('FOO');
+      // Original keys preserved
+      expect(inngest.eventKey).toBe('abc');
+    });
+
+    it('should not merge arrays (replace them)', () => {
+      const values = mapInngestConfigToHelmValues({
+        ...minimalConfig,
+        inngest: {
+          ...minimalConfig.inngest,
+          sdkUrl: ['http://original/api/inngest'],
+        },
+        customValues: {
+          inngest: {
+            sdkUrl: ['http://override/api/inngest'],
+          },
+        },
+      });
+
+      // Arrays should be replaced, not concatenated
+      const inngest = values.inngest as Record<string, unknown>;
+      expect(inngest.sdkUrl).toEqual(['http://override/api/inngest']);
+    });
   });
 });
