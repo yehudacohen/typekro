@@ -109,6 +109,19 @@ describe('CNPG Cluster Factory', () => {
       expect(db.spec.backup?.retentionPolicy).toBe('30d');
     });
 
+    it('should pass storageClass through to the CNPG CRD', () => {
+      const db = cluster({
+        name: 'storage-class-test',
+        spec: {
+          instances: 1,
+          storage: { size: '10Gi', storageClass: 'gp3' },
+        },
+      });
+
+      expect(db.spec.storage.storageClass).toBe('gp3');
+      expect(db.spec.storage.size).toBe('10Gi');
+    });
+
     it('should default instances to 1 when omitted', () => {
       const db = cluster({
         name: 'defaults-test',

@@ -24,6 +24,7 @@ import { getComponentLogger } from '../logging/index.js';
 import {
   getResourceId as getMetadataResourceId,
   getReadinessEvaluator,
+  setMetadataField,
   setReadinessEvaluator,
   setResourceId,
 } from '../metadata/index.js';
@@ -109,15 +110,9 @@ function createRefFactory(resourceId: string, basePath: string): unknown {
   Object.defineProperty(proxyTarget, 'resourceId', { value: resourceId });
   Object.defineProperty(proxyTarget, 'fieldPath', { value: basePath });
 
-  // Make the proxy compatible with string, number, and boolean types
-  Object.defineProperty(proxyTarget, 'valueOf', {
-    value: () => basePath,
-    enumerable: false,
-  });
-  Object.defineProperty(proxyTarget, 'toString', {
-    value: () => basePath,
-    enumerable: false,
-  });
+  // Marker string for serialization and dependency detection.
+  // Same format as schema-proxy.ts: __KUBERNETES_REF_{resourceId}_{fieldPath}__
+  const markerString = `__KUBERNETES_REF_${resourceId}_${basePath}__`;
 
   return new Proxy(proxyTarget, {
     get(target, prop) {
@@ -126,8 +121,30 @@ function createRefFactory(resourceId: string, basePath: string): unknown {
         return target[prop as keyof typeof target];
       }
 
-      // Check for other properties that exist on the target
-      if (prop in target) return target[prop as keyof typeof target];
+      // Handle type-coercion hooks. Matches schema-proxy.ts pattern.
+      //
+      // Symbol.toPrimitive receives a hint: "string" for template literals,
+      // "number" for arithmetic/comparison, "default" for == and +.
+      // For string coercion: return the marker string so template literals
+      //   produce detectable `__KUBERNETES_REF_...__` markers.
+      // For numeric coercion: return NaN so comparisons like `ref >= 1`
+      //   produce `false` (not `true`). This ensures the status analysis
+      //   pipeline's Phase B (fn.toString AST parsing) activates to generate
+      //   proper CEL expressions from the JavaScript source code.
+      if (prop === 'toString') {
+        return () => markerString;
+      }
+      if (prop === 'valueOf') {
+        return () => markerString;
+      }
+      if (prop === Symbol.toPrimitive) {
+        return (hint: string) => hint === 'string' ? markerString : NaN;
+      }
+
+      // toMarkerString() — explicit access to the marker string
+      if (prop === 'toMarkerString') {
+        return () => markerString;
+      }
 
       // .orValue(defaultValue) — returns a CelExpression with orValue helper
       // Used for externalRef optional field access with default values
@@ -145,16 +162,20 @@ function createRefFactory(resourceId: string, basePath: string): unknown {
         };
       }
 
-      const propStr = String(prop);
+      // Only create nested refs for string properties
+      if (typeof prop === 'string') {
+        // $ prefix — Kro optional access (.?field)
+        if (prop.startsWith('$')) {
+          const actualField = prop.substring(1);
+          return createRefFactory(resourceId, `${basePath}.?${actualField}`);
+        }
 
-      // $ prefix — Kro optional access (.?field)
-      if (propStr.startsWith('$')) {
-        const actualField = propStr.substring(1);
-        return createRefFactory(resourceId, `${basePath}.?${actualField}`);
+        // For unknown string properties, create nested references
+        return createRefFactory(resourceId, `${basePath}.${prop}`);
       }
 
-      // For unknown properties, create nested references
-      return createRefFactory(resourceId, `${basePath}.${propStr}`);
+      // Other symbols — return from target if present, otherwise undefined
+      return target[prop as keyof typeof target];
     },
     // Proxy-based KubernetesRef factory: returns a dynamically-typed proxy
   }) as unknown;
@@ -207,13 +228,34 @@ function createPropertyProxy<T extends object>(
       }
 
       // 3. For any other access, default to "eager value" or "implicit ref for unknown" logic.
+      // In status builder context, return KubernetesRef for CEL generation — UNLESS
+      // we have live status data available (post-deployment re-execution), in which
+      // case we fall through to return real values for status comparisons.
       if (isInStatusBuilderContext() && (basePath === 'status' || basePath === 'spec')) {
-        return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
+        // In SBC with live status data, fall through to return real values for
+        // status comparisons (e.g., `readyInstances >= 1`).
+        const hasLiveStatus = basePath === 'status' && getCurrentCompositionContext()?.liveStatusMap;
+        if (!hasLiveStatus) {
+          return createRefFactory(resourceId, `${basePath}.${String(prop)}`);
+        }
       }
 
       if (prop in obj) {
         return obj[prop as keyof T];
       } else {
+        // Check if there's live status data available from post-deployment re-execution.
+        // This allows status comparisons (e.g., `readyInstances >= 1`) to evaluate
+        // correctly against real cluster data instead of returning KubernetesRef proxies.
+        if (basePath === 'status') {
+          const ctx = getCurrentCompositionContext();
+          if (ctx?.liveStatusMap) {
+            const liveStatus = ctx.liveStatusMap.get(resourceId);
+            if (liveStatus && Object.hasOwn(liveStatus, prop as string)) {
+              return liveStatus[prop];
+            }
+          }
+        }
+
         // Runtime typo detection for status field access (Phase 2.12).
         // Only fires in debug mode, for known K8s kinds, when accessing status fields.
         if (IS_DEBUG_MODE && basePath === 'status' && kind) {
@@ -465,6 +507,11 @@ export function createResource<TSpec extends object, TStatus extends object>(
   // receives the proxy but the WeakMap entry was set on the target at line 194.
   // Without this, WeakMap lookups on the proxy return undefined.
   setResourceId(enhanced, resourceId);
+
+  // Store resource scope for readiness polling (cluster-scoped resources skip namespace)
+  if (options?.scope) {
+    setMetadataField(enhanced, 'scope', options.scope);
+  }
 
   // Auto-register with composition context if active (but not for external references)
   const context = getCurrentCompositionContext();

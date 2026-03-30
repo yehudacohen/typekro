@@ -22,6 +22,7 @@ import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
+import { getMetadataField } from '../metadata/index.js';
 import { getResourceId } from '../resources/id.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
@@ -116,6 +117,13 @@ export class KroResourceFactoryImpl<
 
     // Validate closures for Kro mode - detect KubernetesRef inputs and raise clear errors
     this.validateClosuresForKroMode();
+  }
+
+  /** Extract nested composition status CEL mappings from the raw status object. */
+  private getNestedStatusCel(): Record<string, string> | undefined {
+    return (this.statusMappings as Record<string, unknown>)?.__nestedStatusCel as
+      | Record<string, string>
+      | undefined;
   }
 
   /**
@@ -346,7 +354,7 @@ export class KroResourceFactoryImpl<
 
     // Deploy without waiting for readiness - we'll handle that ourselves
     this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
-    const _deployedResource = await deploymentEngine.deployResource(deployableResource, {
+    await deploymentEngine.deployResource(deployableResource, {
       mode: 'kro',
       namespace: this.namespace,
       waitForReady: false, // We'll handle Kro-specific readiness ourselves
@@ -405,7 +413,8 @@ export class KroResourceFactoryImpl<
       this.name,
       this.schemaDefinition,
       this.resources,
-      this.statusMappings
+      this.statusMappings,
+      this.getNestedStatusCel()
     );
     const rgdManifest = {
       apiVersion: 'kro.run/v1alpha1',
@@ -549,6 +558,8 @@ export class KroResourceFactoryImpl<
       : `kro.run/${this.schemaDefinition.apiVersion}`;
 
     try {
+      // Delete the instance. KRO's controller processes kro.run/finalizer,
+      // which does graph-based deletion of all child resources.
       await k8sApi.delete({
         apiVersion,
         kind: this.schemaDefinition.kind,
@@ -557,9 +568,56 @@ export class KroResourceFactoryImpl<
           namespace: this.namespace,
         },
       } as k8s.KubernetesObject);
+
+      // Wait for KRO to finish cleanup (finalizer processing).
+      // KRO needs the RGD to exist during this phase — the caller must
+      // not delete the RGD until deleteInstance completes.
+      // Cap at 5 minutes — deletion should be faster than deployment.
+      // KRO processes ~15-30s per resource for finalizer cleanup.
+      const MAX_DELETION_WAIT = 300000;
+      const timeout = Math.min(this.factoryOptions.timeout ?? 120000, MAX_DELETION_WAIT);
+      const startTime = Date.now();
+      let deleted = false;
+      while (Date.now() - startTime < timeout) {
+        try {
+          await k8sApi.read({
+            apiVersion,
+            kind: this.schemaDefinition.kind,
+            metadata: { name, namespace: this.namespace },
+          });
+          // Still exists — KRO is processing finalizer
+          await new Promise(r => setTimeout(r, 2000));
+        } catch (pollError: unknown) {
+          const pollK8sError = pollError as { statusCode?: number; code?: number; body?: { code?: number } };
+          const errorCode = pollK8sError.statusCode ?? pollK8sError.code ?? pollK8sError.body?.code;
+          if (errorCode === 404) {
+            deleted = true;
+            break;
+          }
+          // Non-404 error (permissions, server error) — log and retry
+          this.logger.debug('Deletion poll error (retrying)', {
+            name,
+            errorCode,
+          });
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      if (!deleted) {
+        // KRO is still processing the finalizer. Don't throw — the deletion
+        // IS in progress. The hasRemainingInstances guard below will see the
+        // instance (still DELETING) and skip RGD/CRD deletion, preserving
+        // them so KRO can complete cleanup in the background.
+        this.logger.warn('Instance deletion still in progress after timeout', {
+          name,
+          timeout,
+          elapsed: Date.now() - startTime,
+          hint: 'KRO finalizer processing continues in the background. The RGD will be preserved.',
+        });
+      }
     } catch (error: unknown) {
-      const k8sError = error as { statusCode?: number; message?: string };
-      if (k8sError.statusCode !== 404) {
+      const k8sError = error as { statusCode?: number; code?: number; body?: { code?: number }; message?: string };
+      const errorCode = k8sError.statusCode ?? k8sError.code ?? k8sError.body?.code;
+      if (errorCode !== 404) {
         throw new CRDInstanceError(
           `Failed to delete instance ${name}: ${k8sError.message || String(error)}`,
           this.schemaDefinition.apiVersion,
@@ -569,8 +627,72 @@ export class KroResourceFactoryImpl<
           ensureError(error)
         );
       }
-      // Instance already deleted, ignore 404
     }
+
+    // Only delete the RGD and CRD if no other instances remain. Multiple
+    // instances can share one RGD — deleting it would break the others.
+    let hasRemainingInstances = false;
+    try {
+      const instances = await this.getInstances();
+      // Filter out the just-deleted instance — it may still appear in the list
+      // if the API server's list cache hasn't caught up with the 404 on GET.
+      const others = instances.filter(i => i.metadata?.name !== name);
+      hasRemainingInstances = others.length > 0;
+    } catch (listError: unknown) {
+      // Can't list instances — could be CRD gone (safe) or transient error
+      // (unsafe to delete RGD). Default to preserving the RGD to avoid
+      // breaking other instances that might still be using it.
+      this.logger.warn('Cannot list instances to check for shared RGD — preserving RGD', {
+        rgdName: this.rgdName,
+        error: ensureError(listError).message,
+      });
+      hasRemainingInstances = true;
+    }
+
+    if (!hasRemainingInstances) {
+      // Delete the RGD after the instance is gone.
+      try {
+        await k8sApi.delete({
+          apiVersion: 'kro.run/v1alpha1',
+          kind: 'ResourceGraphDefinition',
+          metadata: { name: this.rgdName },
+        } as k8s.KubernetesObject);
+        this.logger.debug('RGD deleted', { rgdName: this.rgdName });
+      } catch (error: unknown) {
+        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+        const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+        if (errorCode !== 404) {
+          this.logger.warn('RGD cleanup failed', { rgdName: this.rgdName, error: ensureError(error).message });
+        }
+      }
+
+      // Delete the CRD that KRO created from the RGD. KRO's default config
+      // has allowCRDDeletion=false, so it won't clean up the CRD when the
+      // RGD is deleted.
+      const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
+      try {
+        await k8sApi.delete({
+          apiVersion: 'apiextensions.k8s.io/v1',
+          kind: 'CustomResourceDefinition',
+          metadata: { name: crdName },
+        } as k8s.KubernetesObject);
+        this.logger.debug('CRD deleted', { crdName });
+      } catch (error: unknown) {
+        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+        const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
+        if (errorCode !== 404) {
+          this.logger.debug('CRD cleanup failed (non-critical)', { crdName, error: ensureError(error).message });
+        }
+      }
+    } else {
+      this.logger.debug('Skipping RGD/CRD deletion — other instances still exist', {
+        rgdName: this.rgdName,
+      });
+    }
+
+    // Namespaces are resources in the composition's dependency graph.
+    // KRO's finalizer processing handles deleting all child resources
+    // (including Namespaces) via its applyset — no manual cleanup needed.
   }
 
   /**
@@ -700,7 +822,8 @@ ${Object.entries(spec as Record<string, any>)
         this.name,
         this.schemaDefinition,
         this.resources,
-        this.statusMappings
+        this.statusMappings,
+        this.getNestedStatusCel()
       );
       return serializeResourceGraphToYaml(
         this.rgdName,
@@ -728,7 +851,8 @@ ${Object.entries(spec as Record<string, any>)
       this.name,
       this.schemaDefinition,
       this.resources,
-      this.statusMappings
+      this.statusMappings,
+      this.getNestedStatusCel()
     );
     const rgdYaml = serializeResourceGraphToYaml(
       this.rgdName,
@@ -1154,10 +1278,10 @@ ${Object.entries(spec as Record<string, any>)
           dynamicFields
         );
 
-        // Merge dynamic fields with static fields
-        // Dynamic fields from Kro take precedence over static fields with same names
+        // Merge evaluated static fields with dynamic fields from KRO.
+        // Use evaluatedStaticFields (resolved markers) not raw staticFields.
         const mergedStatus = {
-          ...staticFields, // Static fields first
+          ...evaluatedStaticFields,
           ...hydratedDynamicFields, // Dynamic fields from Kro override
         };
 
@@ -1169,7 +1293,106 @@ ${Object.entries(spec as Record<string, any>)
       }
     }
 
+    // Post-process: re-execute the composition with live cluster data to fill
+    // in status fields that neither static evaluation nor KRO could provide.
+    if (this.factoryOptions.compositionFn) {
+      try {
+        const liveStatus = await this.reExecuteWithLiveStatus(spec);
+        if (liveStatus) {
+          for (const [key, value] of Object.entries(liveStatus)) {
+            if (key.startsWith('__')) continue;
+            const current = (enhancedProxy.status as Record<string, unknown>)[key];
+            if (current === undefined || current === null || current === '') {
+              (enhancedProxy.status as Record<string, unknown>)[key] = value;
+            }
+          }
+        }
+      } catch (error: unknown) {
+        hydrationLogger.warn('Live status re-execution failed (non-fatal)', {
+          error: ensureError(error).message,
+        });
+      }
+    }
+
     return enhancedProxy;
+  }
+
+  /**
+   * Re-execute the composition function with live cluster data to hydrate
+   * status fields that KRO couldn't compute.
+   */
+  private async reExecuteWithLiveStatus(spec: TSpec): Promise<TStatus | null> {
+    const compositionFn = this.factoryOptions.compositionFn;
+    if (!compositionFn) return null;
+
+    const { createCompositionContext, runWithCompositionContext } = await import(
+      '../composition/context.js'
+    );
+    const { synthesizeNestedCompositionStatus } = await import(
+      './nested-composition-status.js'
+    );
+
+    // Build a live status map from deployed resources
+    const liveStatusMap = new Map<string, Record<string, unknown>>();
+    const kubeConfig = this.getKubeConfig();
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+
+    const resourceEntries = Object.entries(this.resources);
+    const results = await Promise.allSettled(
+      resourceEntries.map(async ([resourceId, resource]) => {
+        const name =
+          typeof resource.metadata?.name === 'string'
+            ? resource.metadata.name
+            : resourceId;
+        const ns =
+          typeof resource.metadata?.namespace === 'string'
+            ? resource.metadata.namespace
+            : this.namespace;
+
+        const isClusterScoped = getMetadataField(resource, 'scope') === 'cluster';
+        const live = await k8sApi.read({
+          apiVersion: resource.apiVersion || '',
+          kind: resource.kind || '',
+          metadata: { name, ...(isClusterScoped ? {} : { namespace: ns }) },
+        });
+
+        if (live && typeof live === 'object' && 'status' in live) {
+          return { resourceId, status: (live as Record<string, unknown>).status as Record<string, unknown> };
+        }
+        return null;
+      })
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) {
+        liveStatusMap.set(result.value.resourceId, result.value.status);
+      }
+    }
+
+    // Probe to discover nested composition IDs
+    const probeContext = createCompositionContext('kro-re-execution-probe', {
+      deduplicateIds: true,
+    });
+    probeContext.liveStatusMap = liveStatusMap;
+    runWithCompositionContext(probeContext, () => compositionFn(spec));
+
+    // Synthesize nested composition status
+    const enrichedMap = synthesizeNestedCompositionStatus(
+      probeContext.resources,
+      liveStatusMap,
+      this.logger,
+      probeContext.nestedCompositionIds
+    );
+
+    // Real execution with live status
+    const reExecutionContext = createCompositionContext('kro-re-execution', {
+      deduplicateIds: true,
+    });
+    reExecutionContext.liveStatusMap = enrichedMap;
+
+    const result = runWithCompositionContext(reExecutionContext, () =>
+      compositionFn(spec)
+    );
+    return result as TStatus;
   }
 
   /**

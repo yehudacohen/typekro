@@ -8,7 +8,7 @@
 import type * as k8s from '@kubernetes/client-node';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { DEFAULT_RESOURCE_READY_TIMEOUT } from '../config/defaults.js';
-import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
+import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constants/brands.js';
 import { ResourceReadinessTimeoutError } from '../deployment/errors.js';
 import { ResourceReadinessChecker } from '../deployment/readiness.js';
 import { ensureError, TypeKroError } from '../errors.js';
@@ -37,14 +37,6 @@ interface ResourceIdentifier {
   readonly apiVersion: string;
   readonly name: string;
   readonly namespace?: string;
-}
-
-/**
- * Resource type information for inference
- */
-interface ResourceTypeInfo {
-  readonly kind: string;
-  readonly apiVersion: string;
 }
 
 /**
@@ -257,6 +249,11 @@ export class ReferenceResolver {
       return true;
     }
 
+    // Check strings for embedded __KUBERNETES_REF__ markers from template literals
+    if (typeof obj === 'string') {
+      return obj.includes('__KUBERNETES_REF_');
+    }
+
     if (typeof obj !== 'object') {
       return false;
     }
@@ -351,8 +348,22 @@ export class ReferenceResolver {
     }
 
     if (isKubernetesRef(obj)) {
-      // Replace with resolved value
-      return await this.resolveKubernetesRef(obj, context);
+      // Replace with resolved value. If resolution fails for a virtual nested
+      // composition ID (not a real K8s resource), keep the original ref so
+      // downstream handlers (like reExecuteWithLiveStatus) can resolve it.
+      // Re-throw unexpected errors (permissions, network, etc.) immediately.
+      try {
+        return await this.resolveKubernetesRef(obj, context);
+      } catch (error: unknown) {
+        if (isUnknownResourceTypeError(error)) {
+          this.logger.debug('Virtual resource ID not in deployment context, deferring resolution', {
+            resourceId: obj.resourceId,
+            fieldPath: obj.fieldPath,
+          });
+          return obj;
+        }
+        throw error;
+      }
     }
 
     if (isCelExpression(obj)) {
@@ -382,6 +393,16 @@ export class ReferenceResolver {
       }
       visited.delete(obj);
       return obj;
+    }
+
+    // Resolve embedded __KUBERNETES_REF__ marker strings in plain string values.
+    // These are produced when a KubernetesRef proxy is used in a template literal
+    // (e.g., `redis://${cache.status.hostname}:6379`). In direct mode, the markers
+    // must be replaced with live values from deployed resources.
+    if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_') && this.deploymentMode !== DeploymentMode.KRO) {
+      // resolveMarkerStrings handles per-marker errors internally (keeps
+      // unresolvable markers in place), so no outer try/catch needed.
+      return await this.resolveMarkerStrings(obj, context);
     }
 
     return obj;
@@ -425,8 +446,12 @@ export class ReferenceResolver {
     const deployedResource = this.findDeployedResource(ref.resourceId, context);
     if (deployedResource) {
       const value = this.extractFieldValue<T>(deployedResource.manifest, ref.fieldPath);
-      this.cache.set(cacheKey, value);
-      return value as T;
+      // For status fields, the manifest (applied spec) won't have live values.
+      // Fall through to cluster query if the value is undefined.
+      if (value !== undefined) {
+        this.cache.set(cacheKey, value);
+        return value as T;
+      }
     }
 
     // Check if resource is in the resourceKeyMapping (maps original keys like 'webappDeployment' to actual resources)
@@ -446,27 +471,82 @@ export class ReferenceResolver {
         });
         if (resource) {
           const value = this.extractFieldValue<T>(resource, ref.fieldPath);
-          this.logger.debug('Extracted field value from resourceKeyMapping', {
-            resourceId: ref.resourceId,
-            fieldPath: ref.fieldPath,
-            value,
-            valueType: typeof value,
-          });
-          this.cache.set(cacheKey, value);
-          return value as T;
+          // Fall through to cluster query for undefined status fields
+          if (value !== undefined) {
+            this.logger.debug('Extracted field value from resourceKeyMapping', {
+              resourceId: ref.resourceId,
+              fieldPath: ref.fieldPath,
+              value,
+              valueType: typeof value,
+            });
+            this.cache.set(cacheKey, value);
+            return value as T;
+          }
         }
       }
     }
 
-    // Otherwise query from cluster
+    // Query live resource from cluster — needed for status fields that aren't
+    // in the manifest (the manifest is the applied spec, not live state).
     try {
       const resource = await this.queryResourceFromCluster(ref, context);
       const value = this.extractFieldValue<T>(resource, ref.fieldPath);
       this.cache.set(cacheKey, value);
       return value as T;
     } catch (error: unknown) {
+      // queryResourceFromCluster already wraps errors in ReferenceResolutionError
+      if (error instanceof ReferenceResolutionError) throw error;
       throw new ReferenceResolutionError(ref, ensureError(error));
     }
+  }
+
+  /**
+   * Resolve __KUBERNETES_REF__ marker strings embedded in plain string values.
+   *
+   * Template literals like `redis://${cache.status.hostname}:6379` produce
+   * strings like `redis://__KUBERNETES_REF_cache_status.hostname__:6379`.
+   * In direct mode, these markers must be replaced with live values from
+   * deployed resources before the resource is sent to the cluster.
+   *
+   * Uses the same resolution logic as resolveKubernetesRef — checks deployed
+   * resources, resourceKeyMapping, then queries the cluster.
+   */
+  private async resolveMarkerStrings(value: string, context: ResolutionContext): Promise<string> {
+    const markerPattern = new RegExp(KUBERNETES_REF_MARKER_PATTERN.source, 'g');
+    let result = value;
+    // Collect all matches first (can't replace during iteration with async)
+    const replacements: Array<{ marker: string; resourceId: string; fieldPath: string }> = [];
+    for (let match = markerPattern.exec(value); match !== null; match = markerPattern.exec(value)) {
+      replacements.push({
+        marker: match[0],
+        resourceId: match[1]!,
+        fieldPath: match[2]!,
+      });
+    }
+
+    for (const { marker, resourceId, fieldPath } of replacements) {
+      try {
+        // Construct a minimal ref-like object for the resolution logic.
+        // resolveKubernetesRef only needs resourceId and fieldPath.
+        const ref = { resourceId, fieldPath } as unknown as KubernetesRef;
+
+        const resolved = await this.resolveKubernetesRef(ref, context);
+        if (resolved !== undefined && resolved !== null) {
+          result = result.replaceAll(marker, String(resolved));
+        } else {
+          this.logger.warn('Marker ref resolved to null/undefined, keeping marker', {
+            marker, resourceId, fieldPath,
+          });
+        }
+      } catch (error: unknown) {
+        this.logger.warn('Failed to resolve marker ref, keeping marker', {
+          marker, resourceId, fieldPath,
+          error: ensureError(error).message,
+        });
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -562,16 +642,6 @@ export class ReferenceResolver {
             resourceName: deployedResource.manifest?.metadata?.name,
           });
         }
-      }
-
-      // Add schema to resourcesMap if provided in context
-      if (context.schema) {
-        resourcesMap.set('schema', context.schema);
-        // Also add as __schema__ for backward compatibility
-        resourcesMap.set('__schema__', context.schema);
-        this.logger.debug('Added schema to CEL context', {
-          schemaSpec: Object.keys((context.schema.spec ?? {}) as Record<string, unknown>),
-        });
       }
 
       // Add schema to resourcesMap if provided in context
@@ -714,8 +784,23 @@ export class ReferenceResolver {
     });
 
     try {
-      // Parse the resource ID to extract resource information
-      const resourceInfo = this.parseResourceId(ref.resourceId);
+      // Look up the actual resource from the deployment context first.
+      // This gives us the correct apiVersion/kind (e.g., postgresql.cnpg.io/v1 Cluster)
+      // instead of falling back to name-based inference (which defaults to Deployment).
+      const knownResource = context.resourceKeyMapping?.get(ref.resourceId);
+      let resourceInfo: ResourceIdentifier;
+      if (knownResource && typeof knownResource === 'object') {
+        const kr = knownResource as KubernetesResource;
+        const ns = typeof kr.metadata?.namespace === 'string' ? kr.metadata.namespace : undefined;
+        resourceInfo = {
+          apiVersion: kr.apiVersion || 'apps/v1',
+          kind: kr.kind || 'Deployment',
+          name: typeof kr.metadata?.name === 'string' ? kr.metadata.name : ref.resourceId,
+          ...(ns && { namespace: ns }),
+        };
+      } else {
+        resourceInfo = this.parseResourceId(ref.resourceId);
+      }
       queryLogger.debug('Parsed resource info', { resourceInfo });
 
       // Build the resource reference for the Kubernetes API
@@ -768,16 +853,23 @@ export class ReferenceResolver {
         );
       }
 
-      queryLogger.error('Failed to query cluster resource', ensureError(error), {
-        resourceId: ref.resourceId,
-        statusCode: k8sError.statusCode,
-      });
+      // Use debug level for "not in deployment context" errors (e.g., virtual
+      // nested composition IDs like "inngestBootstrap1"). These are expected when
+      // layered resolution handles them in a later pass.
+      if ((error as TypeKroError)?.code === 'UNKNOWN_RESOURCE_TYPE') {
+        queryLogger.debug('Resource not in deployment context', {
+          resourceId: ref.resourceId,
+        });
+      } else {
+        queryLogger.error('Failed to query cluster resource', ensureError(error), {
+          resourceId: ref.resourceId,
+          statusCode: k8sError.statusCode,
+        });
+      }
 
       throw new ReferenceResolutionError(
         ref,
-        new Error(
-          `Failed to query cluster resource '${ref.resourceId}': ${k8sError.message || error}`
-        )
+        ensureError(error)
       );
     }
   }
@@ -809,48 +901,15 @@ export class ReferenceResolver {
       }
     }
 
-    // Infer resource type from common naming patterns
-    const inferredType = this.inferResourceTypeFromName(resourceId);
-
-    return {
-      kind: inferredType.kind,
-      apiVersion: inferredType.apiVersion,
-      name: resourceId,
-    };
-  }
-
-  /**
-   * Infer Kubernetes resource type from resource name patterns
-   */
-  private inferResourceTypeFromName(name: string): ResourceTypeInfo {
-    // Common naming patterns for different resource types
-    if (name.includes('-deployment') || name.includes('-deploy')) {
-      return { kind: 'Deployment', apiVersion: 'apps/v1' };
-    }
-    if (name.includes('-service') || name.includes('-svc')) {
-      return { kind: 'Service', apiVersion: 'v1' };
-    }
-    if (name.includes('-configmap') || name.includes('-config')) {
-      return { kind: 'ConfigMap', apiVersion: 'v1' };
-    }
-    if (name.includes('-secret')) {
-      return { kind: 'Secret', apiVersion: 'v1' };
-    }
-    if (name.includes('-ingress')) {
-      return { kind: 'Ingress', apiVersion: 'networking.k8s.io/v1' };
-    }
-    if (name.includes('-pvc') || name.includes('-volume')) {
-      return { kind: 'PersistentVolumeClaim', apiVersion: 'v1' };
-    }
-    if (name.includes('-job')) {
-      return { kind: 'Job', apiVersion: 'batch/v1' };
-    }
-    if (name.includes('-cronjob')) {
-      return { kind: 'CronJob', apiVersion: 'batch/v1' };
-    }
-
-    // Default to Deployment if no pattern matches
-    return { kind: 'Deployment', apiVersion: 'apps/v1' };
+    // No colon-delimited format and no deployment context — we can't guess.
+    // Silently defaulting to Deployment caused a real bug: "database" (a CNPG Cluster)
+    // was queried as deployments.apps, got 404, and the error was swallowed.
+    throw new TypeKroError(
+      `Cannot determine apiVersion/kind for resource '${resourceId}' — not found in deployment context. ` +
+        `The resolver needs the resource in resourceKeyMapping or deployedResources to know its type.`,
+      'UNKNOWN_RESOURCE_TYPE',
+      { resourceId }
+    );
   }
 
   /**
@@ -1026,6 +1085,19 @@ export class ReferenceResolver {
       keys: Array.from(this.cache.keys()),
     };
   }
+}
+
+/**
+ * Check if an error (or its cause chain) originated from an unknown resource type.
+ * This happens for virtual nested composition IDs like "inngestBootstrap1" that
+ * don't map to real Kubernetes resources. These are expected during layered
+ * resolution and should be deferred, not thrown.
+ */
+function isUnknownResourceTypeError(error: unknown): boolean {
+  if (error instanceof TypeKroError && error.code === 'UNKNOWN_RESOURCE_TYPE') return true;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause instanceof TypeKroError && cause.code === 'UNKNOWN_RESOURCE_TYPE') return true;
+  return false;
 }
 
 // Error classes

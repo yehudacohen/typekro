@@ -61,53 +61,73 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
 }
 
 /**
- * Determines if a CEL expression contains only schema references (no resource references)
+ * Check if a CEL expression string references any non-schema resource fields.
+ *
+ * Any reference to a deployed resource (status, metadata, or spec) requires
+ * KRO runtime resolution because:
+ * - `resource.status.*` — populated by the cluster after deployment
+ * - `resource.metadata.*` — set by K8s (may include generated fields like uid)
+ * - `resource.spec.*` — available on the deployed resource object
+ *
+ * Only `schema.spec.*` references are static (resolved from the user's spec
+ * by TypeKro at deploy time). KRO status CEL does NOT support `schema.spec.*`.
  */
-function containsOnlySchemaReferences(expression: string): boolean {
-  // Check if the expression contains any resource references
-  // This includes both direct resource references (deployment.status.field)
-  // and resources namespace references (resources.deployment.status.field)
-  const hasResourceReferences = /\b(resources\.\w+|\w+\.status\.|\.metadata\.)/.test(expression);
-
-  // Check if the expression contains schema references
-  const hasSchemaReferences = /\bschema\./.test(expression);
-
-  // If it has resource references, it needs Kro resolution (mixed or resource-only)
-  if (hasResourceReferences) {
-    return false;
-  }
-
-  // If it has schema references but no resource references, it can be hydrated by TypeKro
-  if (hasSchemaReferences) {
-    return true;
-  }
-
-  // If it has neither schema nor resource references, it's a static expression
-  // that can be hydrated by TypeKro
-  return true;
+function containsNonSchemaResourceReferences(expression: string): boolean {
+  // Match `identifier.(status|metadata|spec).field` but NOT `schema.*`
+  return /\b(?!schema\.)\w+\.(status|metadata|spec)\./.test(expression);
 }
 
 /**
- * Determines if a status field value requires Kro resolution (contains Kubernetes references or CEL expressions)
+ * Determines if a status field value requires Kro resolution.
+ *
+ * A value requires KRO resolution if it references any non-schema resource
+ * field (status, metadata, or spec). Schema refs and literal values are
+ * static — they can be hydrated by the TypeKro runtime at deploy time.
  */
 function requiresKroResolution(value: any): boolean {
   if (isKubernetesRef(value)) {
-    // Schema references should be hydrated by TypeKro, not sent to Kro
-    // because Kro controller doesn't have access to the 'schema' variable
+    // Schema refs are static — resolved from the user's spec at deploy time.
     if (value.resourceId === '__schema__') {
       return false;
     }
-    return true;
+    // Determine which fields require KRO runtime resolution vs. can be hydrated
+    // by TypeKro at deploy time.
+    //
+    // Dynamic (KRO resolves):
+    //   - status.*             — only available after deployment
+    //   - metadata.uid         — assigned by API server
+    //   - metadata.creationTimestamp — assigned by API server
+    //   - metadata.resourceVersion  — assigned by API server
+    //   - metadata.generation       — assigned by API server
+    //
+    // Static (TypeKro resolves at deploy time):
+    //   - spec.*                — deterministic from the template
+    //   - metadata.name         — set by the composition
+    //   - metadata.namespace    — set by the composition
+    //   - metadata.labels       — set by the composition
+    //   - metadata.annotations  — set by the composition
+    if (typeof value.fieldPath !== 'string') return false;
+    if (value.fieldPath.startsWith('status.')) return true;
+    if (value.fieldPath.startsWith('metadata.')) {
+      const staticMetadataFields = ['metadata.name', 'metadata.namespace', 'metadata.labels', 'metadata.annotations'];
+      return !staticMetadataFields.some(f => value.fieldPath === f || value.fieldPath.startsWith(`${f}.`));
+    }
+    return false;
   }
 
   if (isCelExpression(value)) {
-    // Check if the CEL expression contains only schema references
-    // If so, it should be hydrated by TypeKro, not sent to Kro
-    if (containsOnlySchemaReferences(value.expression)) {
-      return false;
+    return containsNonSchemaResourceReferences(value.expression);
+  }
+
+  // Strings containing __KUBERNETES_REF__ markers from template literals
+  if (typeof value === 'string' && value.includes('__KUBERNETES_REF_')) {
+    const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+    let match: RegExpExecArray | null = refPattern.exec(value);
+    while (match !== null) {
+      if (match[1] !== '__schema__') return true;
+      match = refPattern.exec(value);
     }
-    // CEL expressions with resource references should be sent to Kro
-    return true;
+    return false;
   }
 
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -280,9 +300,7 @@ export function validateStatusCelExpressions(
     validateExpression(fieldName, fieldValue);
   }
 
-  // Log info about field separation for debugging
   const staticFieldNames = Object.keys(staticFields);
-  const _dynamicFieldNames = Object.keys(dynamicFields);
 
   if (staticFieldNames.length > 0) {
     warnings.push({

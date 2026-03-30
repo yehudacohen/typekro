@@ -46,6 +46,20 @@ export interface CompositionContext {
   generateResourceId(kind: string, name?: string): string;
   /** Generate a unique closure ID */
   generateClosureId(name?: string): string;
+  /**
+   * Live status data from deployed resources, keyed by resource ID.
+   * When set, the proxy system returns real status values instead of
+   * KubernetesRef objects. Used during post-deployment re-execution
+   * so status comparisons (e.g., `readyInstances >= 1`) evaluate correctly.
+   */
+  liveStatusMap?: Map<string, Record<string, unknown>>;
+  /**
+   * Set of known nested composition base IDs.
+   * Populated during composition execution when nested compositions are created.
+   * Used by synthesizeNestedCompositionStatus to identify virtual parent IDs
+   * without relying on string-pattern heuristics.
+   */
+  nestedCompositionIds?: Set<string>;
 }
 
 /**

@@ -4,13 +4,55 @@
  * Creates a CNPG Pooler resource for PgBouncer connection pooling.
  */
 
-import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
-import type { Enhanced } from '../../../core/types/index.js';
+import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { PoolerConfig, PoolerStatus } from '../types.js';
 
-/** Condition-based readiness evaluator for Pooler Ready condition. */
-const poolerEvaluator = createConditionBasedReadinessEvaluator({ kind: 'Pooler' });
+/**
+ * Pooler Readiness Evaluator
+ *
+ * CNPG Pooler status varies by version. Some report `status.instances` and
+ * `status.conditions`, others only report `status.secrets` once configured.
+ * We check multiple signals:
+ *   1. `status.ready === true` (if available)
+ *   2. `status.instances >= 1` (if available)
+ *   3. `status.secrets` populated (PgBouncer configured and connected to cluster)
+ *   4. Condition-based fallback
+ */
+function poolerReadinessEvaluator(liveResource: unknown): ResourceStatus {
+  const resource = liveResource as { status?: PoolerStatus & { secrets?: unknown } } | null | undefined;
+  const status = resource?.status;
+
+  if (!status) {
+    return { ready: false, message: 'Pooler has no status yet', reason: 'StatusMissing' };
+  }
+
+  // Explicit ready field
+  if (status.ready === true) {
+    return { ready: true, message: 'Pooler is ready', reason: 'Ready' };
+  }
+
+  // Instance count check
+  if (typeof status.instances === 'number' && status.instances >= 1) {
+    return { ready: true, message: `Pooler has ${status.instances} instance(s)`, reason: 'Ready' };
+  }
+
+  // Secrets populated = PgBouncer is configured and connected
+  if (status.secrets && typeof status.secrets === 'object' && Object.keys(status.secrets).length > 0) {
+    return { ready: true, message: 'Pooler secrets configured', reason: 'Ready' };
+  }
+
+  // Condition-based fallback
+  const readyCondition = status.conditions?.find((c) => c.type === 'Ready');
+  if (readyCondition?.status === 'True') {
+    return { ready: true, message: readyCondition.message || 'Pooler is ready', reason: 'Ready' };
+  }
+  if (readyCondition) {
+    return { ready: false, message: readyCondition.message || 'Pooler is not ready', reason: readyCondition.reason || 'NotReady' };
+  }
+
+  return { ready: false, message: 'Pooler status incomplete', reason: 'Unknown' };
+}
 
 /**
  * CloudNativePG Pooler Factory
@@ -40,9 +82,9 @@ const poolerEvaluator = createConditionBasedReadinessEvaluator({ kind: 'Pooler' 
  * ```
  */
 function createPoolerResource(
-  config: PoolerConfig
+  config: Composable<PoolerConfig>
 ): Enhanced<PoolerConfig['spec'], PoolerStatus> {
-  const fullConfig: PoolerConfig = {
+  const fullConfig = {
     ...config,
     spec: {
       ...config.spec,
@@ -66,7 +108,7 @@ function createPoolerResource(
       ...(fullConfig.id && { id: fullConfig.id }),
     },
     { scope: 'namespaced' }
-  ).withReadinessEvaluator(poolerEvaluator) as Enhanced<
+  ).withReadinessEvaluator(poolerReadinessEvaluator) as Enhanced<
     PoolerConfig['spec'],
     PoolerStatus
   >;

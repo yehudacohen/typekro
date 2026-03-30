@@ -450,12 +450,17 @@ function buildResourceEntry(
     const metadataDesc = Object.getOwnPropertyDescriptor(resource, 'metadata');
     const rawMeta = metadataDesc?.value as Record<string, unknown> | undefined;
 
+    // Process marker strings in metadata values to convert them to CEL expressions.
+    // externalRef metadata.name may contain __KUBERNETES_REF__ markers from template
+    // literals (e.g., `${spec.name}-db-${dbOwner}`).
+    const rawName = typeof rawMeta?.name === 'string' ? rawMeta.name : '';
+    const rawNamespace = typeof rawMeta?.namespace === 'string' ? rawMeta.namespace : undefined;
     const extRef: KroExternalRef = {
       apiVersion: String(apiVersionDesc?.value ?? ''),
       kind: String(kindDesc?.value ?? ''),
       metadata: {
-        name: typeof rawMeta?.name === 'string' ? rawMeta.name : '',
-        ...(typeof rawMeta?.namespace === 'string' && { namespace: rawMeta.namespace }),
+        name: String(processResourceReferences(rawName)),
+        ...(rawNamespace && { namespace: String(processResourceReferences(rawNamespace)) }),
       },
     };
 
