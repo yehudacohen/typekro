@@ -65,31 +65,55 @@ docs/api/{name}/
 
 #### Step 2: types.ts
 
+The ArkType schema is the **single source of truth** for types. Config types are INFERRED from schemas (never hand-written interfaces). Only Status types are hand-written interfaces (they represent K8s API responses, not user input).
+
 ```typescript
-import { type Type, type } from 'arktype';
+import { type } from 'arktype';
+// Only import `Type` if you need it as a generic parameter (rare).
 
 // 1. Common Kubernetes types (SecretKeyRef, LocalObjectReference, ResourceRequirements, Toleration)
 //    Use precise union types: 'Exists' | 'Equal', 'NoSchedule' | 'PreferNoSchedule' | 'NoExecute'
 
-// 2. Bootstrap Config/Status
-//    Config: name, namespace?, version?, customValues?
-//    Status: phase ('Ready' | 'Installing'), ready (boolean), failed (boolean), version? (string)
+// 2. Bootstrap Config — ArkType schema, then infer the type:
+export const MyBootstrapConfigSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+  'version?': 'string',
+  'customValues?': 'Record<string, unknown>',
+  // ... operator-specific fields
+});
+export type MyBootstrapConfig = typeof MyBootstrapConfigSchema.infer;
+
+// 3. Bootstrap Status — hand-written interface (represents K8s API response):
+//    ⚠️ ALWAYS include: ready, phase, failed, version
 //    ⚠️ phase is two-state only — nested CEL ternaries break (#48)
-//    ⚠️ Use `failed` boolean for failure detection (single .exists() is valid CEL)
-//    MUST have ArkType schemas: BootstrapConfigSchema, BootstrapStatusSchema
+export const MyBootstrapStatusSchema = type({
+  ready: 'boolean',
+  phase: '"Ready" | "Installing"',
+  failed: 'boolean',
+  'version?': 'string',
+});
+export type MyBootstrapStatus = typeof MyBootstrapStatusSchema.infer;
 
-// 3. For each CRD resource:
-//    - Config interface with name, namespace?, id?, spec: { ... }
-//    - Status interface with observable fields
-//    - ArkType schema: ConfigSchema
-//    ⚠️ CRITICAL: Go field-by-field through the interface and verify the schema matches.
-//    ⚠️ Extract shared schema shapes (e.g., barmanObjectStoreSchemaShape) for types
-//       used in multiple places to prevent drift.
+// 4. For each CRD resource — schema-first, then infer:
+export const MyResourceConfigSchema = type({
+  name: 'string',
+  'namespace?': 'string',
+  'id?': 'string',
+  spec: { /* CRD spec fields */ },
+});
+export type MyResourceConfig = typeof MyResourceConfigSchema.infer;
 
-// 4. Helm integration types
-//    HelmRepositoryConfig (include type?: 'default' | 'oci' if operator uses OCI)
-//    HelmReleaseConfig
+// 5. Status interface (hand-written — represents observable K8s status fields):
+export interface MyResourceStatus {
+  ready?: boolean;
+  conditions?: Array<{ type: string; status: string; message?: string }>;
+}
 ```
+
+⚠️ CRITICAL: Go field-by-field through the CRD's OpenAPI schema and verify the ArkType schema matches. Extract shared schema shapes as `const schemaShape = { ... } as const` for types used in multiple places.
+
+⚠️ You will likely revisit types.ts as you write resource factories and compositions. The schema is the source of truth — keep it updated as you discover needed fields.
 
 **ArkType syntax reference:**
 - Basic types: `'string'`, `'number'`, `'boolean'`
@@ -173,16 +197,53 @@ export const DEFAULT_MY_REPO_URL = 'https://charts.example.com';  // or 'oci://.
 export const DEFAULT_MY_VERSION = '1.0.0';
 export const DEFAULT_MY_REPO_NAME = 'my-operator-repo';
 
-// sanitizeHelmValues — MUST use type guards, not raw property checks
-// Note: JSON round-trip also drops Date, functions, Infinity, NaN
-function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(
-    JSON.stringify(values, (_key, value) => {
-      if (isKubernetesRef(value)) return undefined;
-      if (isCelExpression(value)) return undefined;
-      return value;
-    })
-  );
+// ⚠️ sanitizeHelmValues is NOT needed when using the helmRelease() wrapper.
+// The wrapper handles proxy serialization internally. Only add sanitizeHelmValues
+// if you use createResource() directly for HelmReleases (rare).
+```
+
+#### Step 4.5: Helm values mapper (utils/helm-values-mapper.ts)
+
+Every integration needs a mapper that translates the TypeKro config into Helm chart values:
+
+```typescript
+import type { MyBootstrapConfig } from '../types.js';
+
+export function mapMyConfigToHelmValues(config: MyBootstrapConfig): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+
+  // Map TypeKro config fields to the Helm chart's values.yaml structure.
+  // ⚠️ Bootstrap-only fields (name, namespace, version) must NOT appear in output.
+  // ⚠️ Use ?? for defaults: config.replicaCount ?? 1
+
+  if (config.replicaCount != null) values.replicaCount = config.replicaCount;
+
+  // Map nested config to chart-specific structure
+  values.myOperator = {
+    key1: config.operatorConfig?.key1,
+    key2: config.operatorConfig?.key2,
+  };
+
+  // Deep merge customValues last — recursive, prototype-safe
+  if (config.customValues) {
+    deepMerge(values, config.customValues);
+  }
+
+  return values;
+}
+
+// Recursive deep merge (plain objects merge, arrays/primitives replace)
+function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  for (const [key, sourceValue] of Object.entries(source)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    const targetValue = target[key];
+    if (sourceValue !== null && typeof sourceValue === 'object' && !Array.isArray(sourceValue) &&
+        targetValue !== null && typeof targetValue === 'object' && !Array.isArray(targetValue)) {
+      deepMerge(targetValue as Record<string, unknown>, sourceValue as Record<string, unknown>);
+    } else {
+      target[key] = sourceValue;
+    }
+  }
 }
 ```
 
@@ -215,15 +276,24 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { DEFAULT_MY_REPO_NAME, DEFAULT_MY_VERSION, myHelmRelease, myHelmRepository } from '../resources/helm.js';
+import { mapMyConfigToHelmValues } from '../utils/helm-values-mapper.js';
+import { type MyBootstrapConfig, MyBootstrapConfigSchema, MyBootstrapStatusSchema } from '../types.js';
 
-// ⚠️ If the chart version differs from the app version (e.g., 'v0.0.61-chart' vs 'v0.0.61'),
-//    strip the suffix for labels:
-function stripChartSuffix(version: string): string {
-  return version.replace(/-chart$/, '');
-}
+// Complete composition export — this is the public API:
+export const myBootstrap = kubernetesComposition(
+  {
+    name: 'my-bootstrap',
+    kind: 'MyBootstrap',
+    spec: MyBootstrapConfigSchema,
+    status: MyBootstrapStatusSchema,
+  },
+  (spec: MyBootstrapConfig) => {
+    const resolvedNamespace = spec.namespace ?? 'my-system';
+    const resolvedVersion = spec.version ?? DEFAULT_MY_VERSION;
+    const helmValues = mapMyConfigToHelmValues({ ...spec, namespace: resolvedNamespace, version: resolvedVersion });
 
-// Pattern: namespace + HelmRepository + HelmRelease
-// Resources are _-prefixed — registered via side effects in the composition callback.
+    // Resources are _-prefixed — registered via side effects in the composition callback.
+    // ⚠️ Spreading spec is safe here (mapper input), but NOT for objects passed to resource factories.
 //
 // ⚠️ Use ?? (not ||) for all defaults to prevent 0 from being treated as falsy:
 //    const port = spec.port ?? 3000;  // ✓
@@ -252,9 +322,34 @@ return {
   // Document this limitation.
   version: appVersion,
 };
+  }  // end of composition callback
+);
 ```
 
 **Labels:** Use `app.kubernetes.io/version` with the app version, not the chart version tag.
+
+**Multi-resource compositions (non-bootstrap):** For compositions that combine multiple CRD resources (not just Helm), use direct property comparisons on resource proxy objects for status — do NOT use `Cel.expr`:
+```typescript
+return {
+  ready: database.status.readyInstances >= (spec.instances ?? 1) &&
+         cache.status.ready &&
+         app.status.readyReplicas >= appReplicas,
+  components: {
+    database: database.status.readyInstances >= (spec.instances ?? 1),
+    cache: cache.status.ready,
+    app: app.status.readyReplicas >= appReplicas,
+  },
+};
+```
+`Cel.expr` is only needed for bootstrap (Helm-based) compositions where status is derived from conditions arrays.
+
+**Barrel exports (`index.ts`):** Each directory needs a barrel export:
+```typescript
+// src/factories/{name}/index.ts
+export { myBootstrap } from './compositions/index.js';
+export { myResource } from './resources/index.js';
+export type { MyConfig, MyStatus } from './types.js';
+```
 
 #### Step 6: Tests
 
@@ -309,12 +404,13 @@ Also update:
 
 #### Step 8: Build, lint, and self-review checklist
 
+⚠️ **Checkpoint:** Run `bun run typecheck:lib` after completing Steps 2-5 (types, factories, composition) to catch type errors before writing tests.
+
 Run the full build and lint before reviewing:
 ```bash
-bun run typecheck:lib    # type-check
+bun run typecheck        # type-check (lib + examples + tests)
 bun run lint             # Biome lint — must have 0 errors
-bun run test             # full test suite — 0 failures
-bun test test/factories/{name}/       # integration-specific unit tests
+bun run test             # full unit test suite — 0 failures (uses bun run test, NOT bun test)
 bun test test/integration/{name}/     # integration tests against cluster
 ```
 
@@ -351,6 +447,11 @@ Then verify each item:
 - [ ] Chart version tag format verified from operator's GitHub releases
 - [ ] Cross-namespace HelmRepositories (flux-system) marked `lifecycle: 'shared'`
 - [ ] `customValues` deep merge tested at 2+ levels of nesting
+- [ ] Values mapper excludes bootstrap-only fields (`name`, `namespace`, `version`) from Helm output
+
+**Integration:**
+- [ ] Integration test covers both `'kro'` and `'direct'` factory modes
+- [ ] Config types are inferred from ArkType schemas (`typeof Schema.infer`), not hand-written interfaces
 
 **Resource metadata:**
 - [ ] Cluster-scoped resources use `{ scope: 'cluster' }` in `createResource`
