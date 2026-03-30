@@ -88,7 +88,46 @@ await factory.deploy({ name: 'myapp', appImage: 'node:20', replicas: 2 });
 The Secret in this example has `id: 'dbSecret'` but it's not referenced anywhere. You could omit it, but including `id` on all resources is good practice for consistency and future-proofing.
 :::
 
+## Production Version: Full Stack Composition
+
+For production, use the `webAppWithProcessing` composition which deploys a real PostgreSQL cluster (CNPG), connection pooler (PgBouncer), cache (Valkey), and workflow engine (Inngest) — all with proper readiness checks and auto-wired connection strings:
+
+```typescript
+import { buildContainer } from 'typekro/containers';
+import { webAppWithProcessing } from 'typekro/webapp';
+
+const { imageUri } = await buildContainer({
+  context: './apps/my-app',
+  imageName: 'my-app',
+  registry: { type: 'orbstack' },
+});
+
+const factory = webAppWithProcessing.factory('direct', {
+  namespace: 'production',
+  waitForReady: true,
+  kubeConfig,
+});
+
+await factory.deploy({
+  name: 'my-app',
+  app: { image: imageUri, port: 3000 },
+  database: {
+    storageSize: '50Gi',
+    storageClass: 'gp3',
+    instances: 3,
+  },
+  cache: { shards: 3 },
+  processing: {
+    eventKey: process.env.INNGEST_EVENT_KEY!,
+    signingKey: process.env.INNGEST_SIGNING_KEY!,
+  },
+});
+```
+
+See [Web App Compositions](/api/webapp/) for the full reference.
+
 ## Next Steps
 
 - [Helm Integration](./helm-integration.md) - Use Helm charts for databases
 - [Multi-Environment](./multi-environment.md) - Environment-specific configs
+- [Collections & forEach](./collections.md) - Deploy multiple instances from arrays

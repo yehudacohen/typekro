@@ -87,6 +87,69 @@ const app = kubernetesComposition({
 const yaml = app.toYaml();
 ```
 
+## Generated Schema
+
+TypeKro generates nested SimpleSchema objects that map directly to your TypeScript types:
+
+```typescript
+// TypeScript spec
+const spec = type({
+  name: 'string',
+  database: {
+    instances: 'number',
+    storageSize: 'string',
+  },
+  cache: {
+    shards: 'number',
+    replicas: 'number',
+  },
+});
+```
+
+```yaml
+# Generated KRO SimpleSchema (nested, not flattened)
+spec:
+  name: string
+  database:
+    instances: integer
+    storageSize: string
+  cache:
+    shards: integer
+    replicas: integer
+```
+
+Resources reference these nested paths in CEL expressions: `${schema.spec.database.storageSize}`, `${schema.spec.cache.shards}`.
+
+## forEach Collections
+
+Deploy multiple instances from an array in the spec — TypeKro converts JavaScript `for...of` loops to KRO's `forEach` directive:
+
+```typescript
+for (const worker of spec.workers) {
+  Deployment({
+    id: `worker-${worker.name}`,
+    name: `${spec.name}-${worker.name}`,
+    image: worker.image,
+    replicas: worker.replicas,
+  });
+}
+```
+
+KRO creates one Deployment per array element, with automatic cleanup when elements are removed. See [Collections & forEach](/examples/collections) for complete examples.
+
+## Nested Compositions
+
+Compositions can nest other compositions. TypeKro inlines the inner composition's status CEL into the outer RGD — no virtual resource IDs leak into the YAML:
+
+```typescript
+const inngest = inngestBootstrap({ name: `${spec.name}-inngest`, ... });
+
+return {
+  ready: database.status.ready && inngest.status.ready,
+  //     ↑ Direct CEL ref      ↑ Inlined from inner composition
+};
+```
+
 ## Direct vs Kro Deployment
 
 | Mode | Description | Use When |

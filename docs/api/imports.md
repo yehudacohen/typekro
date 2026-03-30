@@ -113,6 +113,21 @@ import * as externalDns from 'typekro/external-dns';
 
 // Pebble ACME test server
 import * as pebble from 'typekro/pebble';
+
+// CloudNativePG PostgreSQL
+import { cluster, pooler, backup } from 'typekro/cnpg';
+
+// Hyperspike Valkey cache
+import { valkey } from 'typekro/valkey';
+
+// Inngest workflow engine
+import { inngestBootstrap } from 'typekro/inngest';
+
+// Full-stack web app compositions
+import { webAppWithProcessing } from 'typekro/webapp';
+
+// Container build utilities
+import { buildContainer } from 'typekro/containers';
 ```
 
 ## Additional Core Factories
