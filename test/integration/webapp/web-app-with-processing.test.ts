@@ -49,6 +49,7 @@ const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
     shards: 3,
     replicas: 0,
     volumePermissions: true,
+    storageSize: '1Gi',
   },
   processing: {
     eventKey: 'deadbeef0123456789abcdef01234567',

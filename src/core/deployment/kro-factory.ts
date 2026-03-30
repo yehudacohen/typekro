@@ -603,11 +603,20 @@ export class KroResourceFactoryImpl<
         }
       }
       if (!deleted) {
-        this.logger.warn('Instance deletion timed out — instance may still exist', {
+        // Don't proceed to RGD/namespace deletion — KRO needs the RGD to
+        // process the finalizer. Throw so the caller knows cleanup is incomplete
+        // and can retry or investigate.
+        throw new CRDInstanceError(
+          `Instance ${name} deletion timed out after ${timeout}ms. ` +
+            `The KRO controller may still be processing the finalizer. ` +
+            `The RGD has been preserved so KRO can complete cleanup. ` +
+            `Re-run deleteInstance or check KRO controller logs.`,
+          this.schemaDefinition.apiVersion,
+          this.schemaDefinition.kind,
           name,
-          timeout,
-          elapsed: Date.now() - startTime,
-        });
+          'deletion',
+          new Error(`Timed out after ${timeout}ms waiting for kro.run/finalizer processing`)
+        );
       }
     } catch (error: unknown) {
       const k8sError = error as { statusCode?: number; code?: number; body?: { code?: number }; message?: string };
