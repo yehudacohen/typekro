@@ -651,32 +651,29 @@ export class KroResourceFactoryImpl<
       }
     }
 
-    // Delete namespaces created by the composition's resources.
-    // Collect unique namespaces from resources (excluding cluster-scoped ones
-    // and the factory namespace which the caller manages).
-    const namespacesToDelete = new Set<string>();
-    for (const resource of Object.values(this.resources)) {
-      const ns = typeof resource.metadata?.namespace === 'string' ? resource.metadata.namespace : undefined;
-      if (ns && ns !== this.namespace) {
-        namespacesToDelete.add(ns);
+    // Delete the CRD that KRO created from the RGD. KRO's default config has
+    // allowCRDDeletion=false, so it won't clean up the CRD when the RGD is
+    // deleted. A stale CRD causes "CRD is terminating" errors on the next
+    // test run and zombie instances that can never be finalized.
+    const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
+    try {
+      await k8sApi.delete({
+        apiVersion: 'apiextensions.k8s.io/v1',
+        kind: 'CustomResourceDefinition',
+        metadata: { name: crdName },
+      } as k8s.KubernetesObject);
+      this.logger.debug('CRD deleted', { crdName });
+    } catch (error: unknown) {
+      const errorCode = (error as { code?: number; body?: { code?: number } }).code
+        ?? (error as { body?: { code?: number } }).body?.code;
+      if (errorCode !== 404) {
+        this.logger.debug('CRD cleanup failed (non-critical)', { crdName, error: ensureError(error).message });
       }
     }
-    for (const ns of namespacesToDelete) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'v1',
-          kind: 'Namespace',
-          metadata: { name: ns },
-        } as k8s.KubernetesObject);
-        this.logger.debug('Namespace deletion initiated', { namespace: ns });
-      } catch (error: unknown) {
-        const errorCode = (error as { code?: number; body?: { code?: number } }).code
-          ?? (error as { body?: { code?: number } }).body?.code;
-        if (errorCode !== 404) {
-          this.logger.debug('Namespace cleanup failed', { namespace: ns, error: ensureError(error).message });
-        }
-      }
-    }
+
+    // Namespaces are resources in the composition's dependency graph.
+    // KRO's finalizer processing handles deleting all child resources
+    // (including Namespaces) via its applyset — no manual cleanup needed.
   }
 
   /**
