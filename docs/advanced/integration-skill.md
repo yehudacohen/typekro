@@ -101,13 +101,15 @@ import { type Type, type } from 'arktype';
 
 **Defaults rule:** If a field has a default, make it optional in both the interface and schema, and apply the default in the factory. Never have a required type with a `?? default` in the factory — the type and runtime must agree.
 
+**CRD field names:** ⚠️ ArkType schema field names MUST match the CRD's OpenAPI schema field names exactly. KRO validates CEL paths against the CRD's schema — mismatches cause the RGD to be rejected as `Inactive`. Check the CRD: `kubectl get crd {name} -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}'`. For example, CNPG uses `storageClass` (not `storageClassName`).
+
 #### Step 3: Resource factories
 
 Each resource factory follows this exact pattern:
 
 ```typescript
 import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
-import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { MyConfig, MyStatus } from '../types.js';
 
@@ -117,7 +119,8 @@ import type { MyConfig, MyStatus } from '../types.js';
 // C) Top-level boolean + condition fallback (Hyperspike pattern)
 // D) Hybrid: phase-based with condition fallback (CNPG pattern)
 
-function createMyResource(config: MyConfig): Enhanced<MyConfig['spec'], MyStatus> {
+// ⚠️ Use Composable<MyConfig> — not MyConfig — to accept composition proxy objects.
+function createMyResource(config: Composable<MyConfig>): Enhanced<MyConfig['spec'], MyStatus> {
   return createResource(
     {
       apiVersion: '{api_group}/{version}',
@@ -129,12 +132,17 @@ function createMyResource(config: MyConfig): Enhanced<MyConfig['spec'], MyStatus
       spec: config.spec,
       ...(config.id && { id: config.id }),
     },
+    // Use 'cluster' for cluster-scoped resources (Namespace, ClusterRole, etc.)
     { scope: 'namespaced' }
   ).withReadinessEvaluator(evaluator) as Enhanced<MyConfig['spec'], MyStatus>;
 }
 
 export const myResource = createMyResource;
 ```
+
+**Cluster-scoped resources:** Use `{ scope: 'cluster' }` for Namespaces, ClusterRoles, CRDs, etc. This is needed for readiness polling (omits namespace from API calls) and deletion ordering.
+
+**Operator-required labels:** Some operators (e.g., Hyperspike Valkey) panic if labels are nil. Always include `app.kubernetes.io/name`, `app.kubernetes.io/instance`, and `app.kubernetes.io/managed-by: typekro` on resources where the operator copies labels to child resources.
 
 **If the operator has human-readable phase strings**, extract them as named constants:
 ```typescript
@@ -178,6 +186,16 @@ function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unk
 }
 ```
 
+**Shared resource lifecycle:** HelmRepositories that live in shared namespaces like `flux-system` must be marked with `lifecycle: 'shared'` so they survive instance deletion:
+```typescript
+import { setMetadataField } from '../../../core/metadata/index.js';
+
+const repo = myHelmRepository({ ... });
+setMetadataField(repo, 'lifecycle', 'shared');
+```
+
+**Custom values merge:** The helm-values-mapper uses recursive deep merge for `customValues`. Plain objects merge key-by-key at arbitrary depth. Arrays and primitives replace. Prototype pollution is guarded (`__proto__`, `constructor`, `prototype` keys are skipped).
+
 **For OCI registries**, pass `type: 'oci'` to `helmRepository()`:
 ```typescript
 helmRepository({
@@ -206,6 +224,13 @@ function stripChartSuffix(version: string): string {
 
 // Pattern: namespace + HelmRepository + HelmRelease
 // Resources are _-prefixed — registered via side effects in the composition callback.
+//
+// ⚠️ Use ?? (not ||) for all defaults to prevent 0 from being treated as falsy:
+//    const port = spec.port ?? 3000;  // ✓
+//    const port = spec.port || 3000;  // ✗ (0 becomes 3000)
+//
+// ⚠️ If referencing operator-generated secrets by name convention, document the
+//    operator version: `const secretName = \`${name}-${owner}\`; // CNPG v1.25`
 
 // Status pattern — ALWAYS include all three fields:
 return {
@@ -251,10 +276,19 @@ return {
 **Integration tests:**
 - Deploy operator via bootstrap composition with `waitForReady: true`
 - Assert ALL status fields: `ready`, `phase`, `failed`, `version`
+- **Ground-truth pod verification**: After status assertions, run `kubectl get pods -n {ns} -o json` and verify all pods are Running with all containers Ready. Allow up to 10 restarts for KRO mode (simultaneous deploy causes transient CrashLoopBackOff while dependencies start).
 - Test YAML generation for KRO mode
 - Test both `'kro'` and `'direct'` factory mode creation
-- Clean up with `deleteInstance` and `deleteNamespaceAndWait`
+- **Cleanup**: Use `factory.deleteInstance(name)` only — it handles the full lifecycle (instance → RGD → CRD). Do NOT manually delete RGDs, CRDs, or namespaces — KRO's finalizer handles child resource cleanup including Namespaces. The only manual cleanup needed is the factory namespace itself.
+- ⚠️ afterAll hooks should log errors, not silently swallow: `catch (e) { console.error('cleanup failed:', e.message); }`
+- Use random namespace suffixes (`Math.random().toString(36).slice(2, 7)`) for parallel-safe isolation.
 - ⚠️ Run with parallel kubectl monitoring via a background Bash command (not a subagent — subagents can't run Bash). Monitor HelmRepository, HelmRelease, HelmChart, and pods every 15s to catch OCI pull errors, CrashLoopBackOff, or SourceNotReady early.
+
+**Deep merge for customValues:**
+- Test one-level deep merge (existing keys preserved)
+- Test two-level deep merge (nested objects merged recursively)
+- Test array replacement (not concatenation)
+- Test primitive override
 
 #### Step 7: Documentation
 
@@ -290,10 +324,13 @@ Then verify each item:
 
 **Type safety:**
 - [ ] Every interface field has a corresponding ArkType schema field (go field-by-field)
+- [ ] ArkType schema field names match CRD OpenAPI schema field names exactly (check with kubectl)
+- [ ] All factory functions use `Composable<MyConfig>` (not `MyConfig`)
 - [ ] Shared nested types extracted as `const schemaShape = { ... } as const` to prevent duplication drift
 - [ ] No `as any` in source code
 - [ ] Toleration uses proper union types
 - [ ] `exactOptionalPropertyTypes`: never pass `undefined` explicitly to optional fields in tests
+- [ ] All defaults use `??` (not `||`) to preserve falsy values like `0`
 
 **Constants & coupling:**
 - [ ] All string literals that appear more than once are extracted as exported constants
@@ -312,6 +349,13 @@ Then verify each item:
 - [ ] `sanitizeHelmValues` uses `isKubernetesRef`/`isCelExpression` type guards
 - [ ] OCI registries have `type: 'oci'` on HelmRepository
 - [ ] Chart version tag format verified from operator's GitHub releases
+- [ ] Cross-namespace HelmRepositories (flux-system) marked `lifecycle: 'shared'`
+- [ ] `customValues` deep merge tested at 2+ levels of nesting
+
+**Resource metadata:**
+- [ ] Cluster-scoped resources use `{ scope: 'cluster' }` in `createResource`
+- [ ] Resources that operators copy labels from have required `app.kubernetes.io/*` labels
+- [ ] K8s API catch blocks check `statusCode ?? code ?? body?.code` (not just `statusCode`)
 
 **Tests:**
 - [ ] Every readiness state has a unit test
@@ -322,6 +366,9 @@ Then verify each item:
 - [ ] Version override test asserts the actual version value, not just other fields
 - [ ] No `exactOptionalPropertyTypes` violations (no `replicaCount: undefined` — use conditional spreads)
 - [ ] Config interface fields not exposed in the Helm chart (e.g., `type` on OCI-only repos) are removed from the interface, not silently ignored
+- [ ] Integration test cleanup uses `factory.deleteInstance()` only (no manual RGD/CRD/namespace deletion)
+- [ ] Integration test includes ground-truth pod health verification via kubectl
+- [ ] afterAll hooks log errors instead of silently swallowing
 
 **Docs & exports:**
 - [ ] API reference page exists with readiness table and limitations noted
@@ -389,3 +436,11 @@ git diff master...HEAD -- src/ # review all source changes
 18. **JSDoc version prefix mismatch** — If `DEFAULT_VERSION = '0.3.1'`, don't write `@default 'v0.3.1'` in JSDoc. Users copy from docs and pass the wrong value.
 19. **Spreading the magic proxy in compositions** — `{ ...spec }` doesn't work for nested proxy objects. Access fields explicitly: `{ name: spec.name, inngest: spec.inngest }`. Use `Object.assign` with conditional spreads for optional fields to satisfy `exactOptionalPropertyTypes`.
 20. **Hex key format for Inngest** — `eventKey` and `signingKey` must be hex strings. Test keys like `'test-key'` will crash the container. Use `'deadbeef0123456789abcdef01234567'` in tests.
+21. **CRD field name mismatch** — ArkType schema field names must match the CRD's OpenAPI schema exactly. KRO validates CEL paths against the CRD. Check with: `kubectl get crd {name} -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}'`. Go struct field tags (JSON tags) are the source of truth, not Go field names (e.g., Valkey uses `nodes` in JSON, not `Shards` from the Go struct).
+22. **Missing `Composable<T>` on factory signatures** — All factory functions must accept `Composable<MyConfig>` (not `MyConfig`) so they work inside compositions where proxy objects are passed. Import from `'../../../core/types/index.js'`.
+23. **Missing `lifecycle: 'shared'` on cross-namespace resources** — HelmRepositories in `flux-system` must be marked shared, otherwise graph-based deletion removes shared infrastructure.
+24. **Missing `scope: 'cluster'` on cluster-scoped resources** — Namespaces, ClusterRoles, etc. need `{ scope: 'cluster' }` in `createResource` for correct readiness polling and deletion ordering.
+25. **Using `||` instead of `??` for defaults** — `||` treats `0` as falsy. Use `??` for all optional fields with defaults: `spec.port ?? 3000`.
+26. **Manually deleting RGDs/CRDs/namespaces in tests** — Use `factory.deleteInstance()` which handles the full cleanup graph. Manual deletion causes zombie instances and stale CRDs.
+27. **K8s API error format** — `@kubernetes/client-node` `ApiException` uses `.code` (not `.statusCode`) for HTTP status. All catch blocks must check: `error.statusCode ?? error.code ?? error.body?.code`.
+28. **Operator-required labels** — Some operators (e.g., Hyperspike Valkey) panic on nil label maps. Always include standard `app.kubernetes.io/*` labels on resources where the operator copies labels to child resources.
