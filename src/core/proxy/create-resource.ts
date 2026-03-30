@@ -250,7 +250,7 @@ function createPropertyProxy<T extends object>(
           const ctx = getCurrentCompositionContext();
           if (ctx?.liveStatusMap) {
             const liveStatus = ctx.liveStatusMap.get(resourceId);
-            if (liveStatus && prop in liveStatus) {
+            if (liveStatus && Object.hasOwn(liveStatus, prop as string)) {
               return liveStatus[prop];
             }
           }

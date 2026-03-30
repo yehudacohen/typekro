@@ -652,8 +652,8 @@ export class KroResourceFactoryImpl<
         } as k8s.KubernetesObject);
         this.logger.debug('RGD deleted', { rgdName: this.rgdName });
       } catch (error: unknown) {
-        const errorCode = (error as { code?: number; body?: { code?: number } }).code
-          ?? (error as { body?: { code?: number } }).body?.code;
+        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+        const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
         if (errorCode !== 404) {
           this.logger.warn('RGD cleanup failed', { rgdName: this.rgdName, error: ensureError(error).message });
         }
@@ -671,8 +671,8 @@ export class KroResourceFactoryImpl<
         } as k8s.KubernetesObject);
         this.logger.debug('CRD deleted', { crdName });
       } catch (error: unknown) {
-        const errorCode = (error as { code?: number; body?: { code?: number } }).code
-          ?? (error as { body?: { code?: number } }).body?.code;
+        const k8sErr = error as { statusCode?: number; code?: number; body?: { code?: number } };
+        const errorCode = k8sErr.statusCode ?? k8sErr.code ?? k8sErr.body?.code;
         if (errorCode !== 404) {
           this.logger.debug('CRD cleanup failed (non-critical)', { crdName, error: ensureError(error).message });
         }
