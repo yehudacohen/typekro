@@ -634,12 +634,19 @@ export class KroResourceFactoryImpl<
     let hasRemainingInstances = false;
     try {
       const instances = await this.getInstances();
-      // Filter out the just-deleted instance in case the API server hasn't
-      // fully removed it yet (race between 404 on GET and list cache).
+      // Filter out the just-deleted instance — it may still appear in the list
+      // if the API server's list cache hasn't caught up with the 404 on GET.
       const others = instances.filter(i => i.metadata?.name !== name);
       hasRemainingInstances = others.length > 0;
-    } catch {
-      // If we can't list instances (CRD gone, permissions), assume safe to delete
+    } catch (listError: unknown) {
+      // Can't list instances — could be CRD gone (safe) or transient error
+      // (unsafe to delete RGD). Default to preserving the RGD to avoid
+      // breaking other instances that might still be using it.
+      this.logger.warn('Cannot list instances to check for shared RGD — preserving RGD', {
+        rgdName: this.rgdName,
+        error: ensureError(listError).message,
+      });
+      hasRemainingInstances = true;
     }
 
     if (!hasRemainingInstances) {
