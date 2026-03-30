@@ -44,11 +44,10 @@ import {
  *   namespace: 'production',
  *   app: {
  *     image: 'my-app:latest',
- *     port: 5173,
+ *     port: 3000,
  *     replicas: 2,
  *     env: {
  *       NODE_ENV: 'production',
- *       BETTER_AUTH_SECRET: 'your-secret',
  *     },
  *   },
  *   database: {
@@ -61,7 +60,7 @@ import {
  *   processing: {
  *     eventKey: 'deadbeef0123456789abcdef01234567',
  *     signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
- *     sdkUrl: ['http://my-app:5173/api/inngest'],
+ *     sdkUrl: ['http://my-app:3000/api/inngest'],
  *   },
  * });
  * ```

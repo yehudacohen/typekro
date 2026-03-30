@@ -70,7 +70,7 @@ await factory.deploy({
     signingKey: 'your-signing-key',
     postgres: { uri: 'postgresql://inngest:password@my-db-rw:5432/inngest' },
     redis: { uri: 'redis://my-cache:6379' },
-    sdkUrl: ['http://my-app:5173/api/inngest'],
+    sdkUrl: ['http://my-app:3000/api/inngest'],
   },
   postgresql: { enabled: false },
   redis: { enabled: false },

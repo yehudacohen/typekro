@@ -40,11 +40,10 @@ const instance = await factory.deploy({
   namespace: 'production',
   app: {
     image: 'my-app:latest',
-    port: 5173,
+    port: 3000,
     replicas: 2,
     env: {
       NODE_ENV: 'production',
-      BETTER_AUTH_SECRET: 'your-secret',
     },
   },
   database: {
@@ -60,7 +59,7 @@ const instance = await factory.deploy({
   processing: {
     eventKey: 'your-hex-event-key',
     signingKey: 'your-hex-signing-key',
-    sdkUrl: ['http://my-app:5173/api/inngest'],
+    sdkUrl: ['http://my-app:3000/api/inngest'],
   },
 });
 ```
@@ -97,7 +96,7 @@ instance.status.ready       // all components healthy
 instance.status.databaseUrl // postgresql://app@...-db-pooler:5432/...
 instance.status.cacheUrl    // redis://...-cache:6379
 instance.status.inngestUrl  // http://...-inngest:8288
-instance.status.appUrl      // http://...:5173
+instance.status.appUrl      // http://...:3000
 
 instance.status.components.app       // app deployment ready
 instance.status.components.database  // CNPG cluster healthy
