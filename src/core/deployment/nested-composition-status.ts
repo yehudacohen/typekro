@@ -48,8 +48,14 @@ export function synthesizeNestedCompositionStatus(
   const deployedChildIds = new Set(liveStatusMap.keys());
 
   // Scan probe resource keys for nested composition parents.
-  // Full keys follow the pattern: "{outer}-{parent}-{child}"
-  // where {parent} is a known nested composition ID.
+  // Full keys follow the pattern: "{outer}-{parent}-{child}" where segments
+  // are hyphen-delimited and {parent} is a known nested composition ID.
+  //
+  // NAMING CONVENTION ASSUMPTION: composition IDs are camelCase (no hyphens)
+  // because toCamelCase() is applied in executeNestedCompositionWithSpec.
+  // Resource IDs are also camelCase (enforced by validateResourceId). This
+  // means hyphens only appear as segment delimiters, never inside IDs.
+  // If this convention changes, this parsing logic must be updated.
   const nestedParents = new Map<string, { childCount: number }>();
 
   for (const fullKey of Object.keys(probeResources)) {

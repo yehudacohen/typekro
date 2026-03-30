@@ -74,12 +74,12 @@ export const webAppWithProcessing = kubernetesComposition(
     status: WebAppWithProcessingStatusSchema,
   },
   (spec: WebAppWithProcessingConfig) => {
-    const ns = spec.namespace || 'default';
-    const appPort = spec.app.port || 3000;
-    const appReplicas = spec.app.replicas || 1;
-    const inngestReplicas = spec.processing.replicas || 1;
-    const dbName = spec.database.database || spec.name;
-    const dbOwner = spec.database.owner || 'app';
+    const ns = spec.namespace ?? 'default';
+    const appPort = spec.app.port ?? 3000;
+    const appReplicas = spec.app.replicas ?? 1;
+    const inngestReplicas = spec.processing.replicas ?? 1;
+    const dbName = spec.database.database ?? spec.name;
+    const dbOwner = spec.database.owner ?? 'app';
 
     // ── PostgreSQL (CNPG) ──────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ export const webAppWithProcessing = kubernetesComposition(
         storage: {
           spec: {
             accessModes: ['ReadWriteOnce'],
-            resources: { requests: { storage: spec.cache?.storageSize || '1Gi' } },
+            resources: { requests: { storage: spec.cache?.storageSize ?? '1Gi' } },
           },
         },
       },
@@ -147,6 +147,7 @@ export const webAppWithProcessing = kubernetesComposition(
     // ── Database credentials ──────────────────────────────────────────────
 
     // CNPG auto-generates a Secret named {cluster}-{owner} during bootstrap.
+    // Validated against CNPG v1.25 (cloudnative-pg chart 0.23.0).
     // The name is deterministic — no need for an externalRef which would block
     // KRO reconciliation (KRO waits for external refs to exist before creating
     // dependent resources, but the Secret only exists after CNPG bootstraps).
