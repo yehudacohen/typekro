@@ -638,7 +638,10 @@ export class KroResourceFactoryImpl<
     let hasRemainingInstances = false;
     try {
       const instances = await this.getInstances();
-      hasRemainingInstances = instances.length > 0;
+      // Filter out the just-deleted instance in case the API server hasn't
+      // fully removed it yet (race between 404 on GET and list cache).
+      const others = instances.filter(i => i.metadata?.name !== name);
+      hasRemainingInstances = others.length > 0;
     } catch {
       // If we can't list instances (CRD gone, permissions), assume safe to delete
     }
