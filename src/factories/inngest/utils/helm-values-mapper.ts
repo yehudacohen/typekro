@@ -122,27 +122,11 @@ export function mapInngestConfigToHelmValues(
     values.tolerations = config.tolerations;
   }
 
-  // One-level-deep merge of custom values — shallow Object.assign would
-  // overwrite nested objects like `inngest` entirely, losing eventKey/signingKey
-  // if customValues adds `inngest.extraEnv`. This merge handles one level of
-  // nesting (e.g., `{ inngest: { extraEnv: [...] } }` merges into existing
-  // `inngest` keys). Two-level-deep overrides (e.g., `{ inngest: { postgres:
-  // { maxConnections: 50 } } }`) will still shallow-overwrite the inner object.
+  // Recursively deep merge custom values into the generated Helm values.
+  // Plain objects are merged key-by-key at arbitrary depth. Arrays and
+  // primitives are replaced (not concatenated or coerced).
   if (config.customValues) {
-    for (const [key, value] of Object.entries(config.customValues)) {
-      if (
-        value !== null &&
-        typeof value === 'object' &&
-        !Array.isArray(value) &&
-        values[key] !== null &&
-        typeof values[key] === 'object' &&
-        !Array.isArray(values[key])
-      ) {
-        values[key] = { ...(values[key] as Record<string, unknown>), ...value };
-      } else {
-        values[key] = value;
-      }
-    }
+    deepMerge(values, config.customValues);
   }
 
   return removeUndefinedValues(values);
@@ -165,4 +149,34 @@ function removeUndefinedValues<T extends Record<string, unknown>>(obj: T): T {
     }
   }
   return result as T;
+}
+
+/**
+ * Recursively deep merge `source` into `target` in place.
+ * - Plain objects are merged key-by-key at arbitrary depth.
+ * - Arrays and primitives in source replace the target value.
+ * - null and undefined in source replace the target value.
+ */
+function deepMerge(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>
+): void {
+  for (const [key, sourceValue] of Object.entries(source)) {
+    const targetValue = target[key];
+    if (
+      sourceValue !== null &&
+      typeof sourceValue === 'object' &&
+      !Array.isArray(sourceValue) &&
+      targetValue !== null &&
+      typeof targetValue === 'object' &&
+      !Array.isArray(targetValue)
+    ) {
+      deepMerge(
+        targetValue as Record<string, unknown>,
+        sourceValue as Record<string, unknown>
+      );
+    } else {
+      target[key] = sourceValue;
+    }
+  }
 }
