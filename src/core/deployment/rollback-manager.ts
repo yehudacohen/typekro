@@ -14,6 +14,7 @@ import {
 import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
+import { getMetadataField } from '../metadata/resource-metadata.js';
 import type {
   DeployedResource,
   DeploymentError,
@@ -335,6 +336,16 @@ export class ResourceRollbackManager {
         continue; // Skip resources that failed to deploy
       }
 
+      // Skip shared resources — they survive instance deletion (e.g., HelmRepository in flux-system)
+      if (getMetadataField(resource.manifest, 'lifecycle') === 'shared') {
+        this.logger.debug('Skipping shared resource during rollback', {
+          resourceId: resource.id,
+          kind: resource.kind,
+          name: resource.name,
+        });
+        continue;
+      }
+
       try {
         await this.k8sApi.delete({
           apiVersion: resource.manifest.apiVersion || '',
@@ -371,6 +382,16 @@ export class ResourceRollbackManager {
    * Delete a single deployed resource from the cluster and wait for deletion to complete.
    */
   async deleteDeployedResource(resource: DeployedResource): Promise<void> {
+    // Skip shared resources — they survive instance deletion
+    if (getMetadataField(resource.manifest, 'lifecycle') === 'shared') {
+      this.logger.debug('Skipping shared resource deletion', {
+        resourceId: resource.id,
+        kind: resource.kind,
+        name: resource.name,
+      });
+      return;
+    }
+
     const deleteLogger = this.logger.child({
       resourceId: resource.id,
       kind: resource.kind,

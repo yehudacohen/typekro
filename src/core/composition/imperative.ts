@@ -7,6 +7,8 @@
  * as the existing toResourceGraph API.
  */
 
+import { toCamelCase } from '../../utils/string.js';
+import { extractNestedStatusCel as extractNestedStatusCelFn } from './nested-status-cel.js';
 import { CompositionDebugger } from '../composition-debugger.js';
 import {
   CALLABLE_COMPOSITION_BRAND,
@@ -222,11 +224,32 @@ function executeNestedCompositionWithSpec<
 
   // For composition names ending with '-composition', use the base name for resource IDs
   // This enables variable name mapping like worker1, worker2, etc.
+  // The base name is converted to camelCase to produce valid CEL identifiers
+  // (hyphens are not valid in CEL, e.g., 'inngest-bootstrap1' would be parsed
+  // as 'inngest' minus 'bootstrap1').
   let baseName = compositionName;
   if (baseName.endsWith('-composition')) {
     baseName = baseName.slice(0, -'-composition'.length);
   }
+  baseName = toCamelCase(baseName);
   const baseId = `${baseName}${instanceNumber}`;
+
+  // Validate: nested composition IDs must not contain hyphens because
+  // synthesizeNestedCompositionStatus uses hyphen-delimited segment
+  // splitting to identify parent/child relationships.
+  if (baseId.includes('-')) {
+    throw new Error(
+      `Nested composition ID "${baseId}" contains hyphens. ` +
+      `toCamelCase should have removed them from "${compositionName}".`
+    );
+  }
+
+  // Register this nested composition ID so synthesizeNestedCompositionStatus
+  // can identify virtual parents without relying on digit-heuristics.
+  if (!parentContext.nestedCompositionIds) {
+    parentContext.nestedCompositionIds = new Set();
+  }
+  parentContext.nestedCompositionIds.add(baseId);
 
   // Determine if this composition has a single resource
   const resourceCount = Object.keys(executionContext.resources).length;
@@ -248,6 +271,27 @@ function executeNestedCompositionWithSpec<
     'NESTED_COMPOSITION',
     `Executed nested composition ${compositionName} with ${Object.keys(executionContext.resources).length} resources and ${Object.keys(executionContext.closures).length} closures`
   );
+
+  // Preserve the inner composition's analyzed status CEL expressions.
+  // These are needed by the outer composition's serializer to inline the real
+  // CEL when it encounters a reference like `inngestBootstrap1.status.ready`.
+  const innerAnalysis = (result as unknown as Record<string, unknown>)._analysisResults as
+    { analyzedStatusMappings?: Record<string, unknown>; phaseBStatusMappings?: Record<string, unknown> } | undefined;
+
+  // Store the inner status CEL mappings in the parent context so the serializer
+  // can look them up by the nested composition's baseId.
+  // Use analyzedStatusMappings (Phase A/B merged) as the primary source.
+  // For comparison artifacts (false from proxy >= 1), fall back to
+  // phaseBStatusMappings to recover the garbled but extractable CEL.
+  const innerStatusSource = innerAnalysis?.analyzedStatusMappings;
+  const innerPhaseBFallback = innerAnalysis?.phaseBStatusMappings;
+  if (innerStatusSource) {
+    extractNestedStatusCelFn(innerStatusSource, {
+      baseId,
+      innerResourceIds: Object.keys(executionContext.resources),
+      registerMapping: (key, value) => parentContext.addVariableMapping(key, value),
+    }, '', innerPhaseBFallback);
+  }
 
   // Create a NestedCompositionResource to return
   // This is what enables: const db = databaseComposition({ name: 'mydb' }); db.spec; db.status.ready
@@ -310,8 +354,19 @@ function createKubernetesRefProxy(resourceId: string, basePath: string, useAllow
         return target[prop];
       }
 
-      // For any other string property, create a nested proxy
+      // For any other string property, check live status data first,
+      // then fall back to creating a nested proxy.
       if (typeof prop === 'string') {
+        // When live status data is available (post-deployment re-execution),
+        // return real values so status comparisons evaluate correctly.
+        if (basePath === 'status') {
+          const ctx = getCurrentCompositionContext();
+          const liveStatus = ctx?.liveStatusMap?.get(resourceId);
+          if (liveStatus && Object.hasOwn(liveStatus, prop as string)) {
+            return liveStatus[prop];
+          }
+        }
+
         const fullPath = basePath ? `${basePath}.${prop}` : prop;
         return createKubernetesRefProxy(resourceId, fullPath, useAllowlist);
       }
@@ -359,46 +414,6 @@ function createStatusProxy<TStatus>(
 let globalCompositionCounter = 0;
 
 /**
- * Creates a hybrid spec object that provides actual values for JavaScript logic
- * while still generating CEL expressions when needed for serialization
- */
-function _createHybridSpec<TSpec extends KroCompatibleType>(
-  actualSpec: TSpec,
-  schemaProxy: TSpec
-): TSpec {
-  // For primitive values, return the actual value directly
-  if (typeof actualSpec !== 'object' || actualSpec === null) {
-    return actualSpec;
-  }
-
-  // Create a proxy that intelligently returns actual values or proxy values
-  // based on the context of access
-  return new Proxy(actualSpec, {
-    get(target, prop) {
-      const actualValue = target[prop as keyof TSpec];
-      const proxyValue = schemaProxy[prop as keyof TSpec];
-
-      // For nested objects, create hybrid recursively
-      if (
-        typeof actualValue === 'object' &&
-        actualValue !== null &&
-        typeof proxyValue === 'object'
-      ) {
-        return _createHybridSpec(
-          actualValue as unknown as KroCompatibleType,
-          proxyValue as unknown as KroCompatibleType
-        );
-      }
-
-      // Return actual values for JavaScript operations
-      // The serialization system will analyze the original composition function
-      // and generate CEL expressions from the schema proxy separately
-      return actualValue;
-    },
-  }) as TSpec;
-}
-
-/**
  * Core composition execution logic shared between nested and top-level compositions
  */
 function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
@@ -426,8 +441,6 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
       const resourceKind = (resource as { kind?: string })?.kind || 'unknown';
       CompositionDebugger.logResourceRegistration(id, resourceKind, 'factory-function');
     };
-
-    const _resourceBuildStart = Date.now();
 
     const result = toResourceGraph(
       definition,
@@ -458,6 +471,18 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           // This allows the serialization system to analyze the original JavaScript expressions
           Reflect.set(capturedStatus, '__originalCompositionFn', compositionFn);
           Reflect.set(capturedStatus, '__originalSchema', schema.spec);
+
+          // Attach nested composition status CEL mappings from the context.
+          // These are populated by inner compositions' executeNestedCompositionWithSpec.
+          const nestedStatusMappings: Record<string, string> = {};
+          for (const [key, value] of Object.entries(context.variableMappings)) {
+            if (key.startsWith('__nestedStatus:')) {
+              nestedStatusMappings[key] = value;
+            }
+          }
+          if (Object.keys(nestedStatusMappings).length > 0) {
+            Reflect.set(capturedStatus, '__nestedStatusCel', nestedStatusMappings);
+          }
 
           const resourceBuildEnd = Date.now();
           CompositionDebugger.logPerformanceMetrics(

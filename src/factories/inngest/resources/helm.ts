@@ -8,8 +8,8 @@
  */
 
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
-import type { Enhanced } from '../../../core/types/index.js';
-import { isCelExpression, isKubernetesRef } from '../../../utils/type-guards.js';
+import { setMetadataField } from '../../../core/metadata/resource-metadata.js';
+import type { Composable, Enhanced } from '../../../core/types/index.js';
 import {
   createHelmRepositoryReadinessEvaluator,
   helmRepository,
@@ -31,27 +31,6 @@ export const DEFAULT_INNGEST_VERSION = '0.3.1';
 export const DEFAULT_INNGEST_REPO_NAME = 'inngest-repo';
 
 /**
- * Sanitize Helm values by removing non-serializable objects.
- *
- * Strips KubernetesRef proxies and CelExpression objects via JSON round-trip.
- * Note: this also drops Date objects, functions, Infinity, and NaN — custom
- * values must be JSON-serializable primitives, arrays, and plain objects.
- */
-function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(
-    JSON.stringify(values, (_key, value) => {
-      if (isKubernetesRef(value)) {
-        return undefined;
-      }
-      if (isCelExpression(value)) {
-        return undefined;
-      }
-      return value;
-    })
-  );
-}
-
-/**
  * Create a HelmRepository for the Inngest OCI chart registry.
  *
  * @param config - Repository configuration with Inngest-specific defaults
@@ -66,9 +45,9 @@ function sanitizeHelmValues(values: Record<string, unknown>): Record<string, unk
  * ```
  */
 export function inngestHelmRepository(
-  config: InngestHelmRepositoryConfig
+  config: Composable<InngestHelmRepositoryConfig>
 ): Enhanced<HelmRepositorySpec, HelmRepositoryStatus> {
-  return helmRepository({
+  const repo = helmRepository({
     name: config.name || DEFAULT_INNGEST_REPO_NAME,
     namespace: config.namespace || DEFAULT_FLUX_NAMESPACE,
     url: config.url || DEFAULT_INNGEST_REPO_URL,
@@ -78,6 +57,13 @@ export function inngestHelmRepository(
   }).withReadinessEvaluator(
     createHelmRepositoryReadinessEvaluator('Inngest')
   ) as Enhanced<HelmRepositorySpec, HelmRepositoryStatus>;
+
+  // HelmRepositories in flux-system are shared cluster-level resources.
+  // They should survive instance deletion — multiple compositions can
+  // reference the same repo.
+  setMetadataField(repo, 'lifecycle', 'shared');
+
+  return repo;
 }
 
 /**
@@ -99,12 +85,11 @@ export function inngestHelmRepository(
  * ```
  */
 export function inngestHelmRelease(
-  config: InngestHelmReleaseConfig
+  config: Composable<InngestHelmReleaseConfig>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
-  const sanitizedValues = config.values ? sanitizeHelmValues(config.values) : {};
-
-  // chart.repository is used for chart identification; sourceRef is what Flux
-  // actually uses to resolve the chart. Both are required by the helmRelease factory.
+  // Pass values directly to helmRelease — the core proxy system handles
+  // serialization of KubernetesRef and CelExpression objects correctly.
+  // Do NOT sanitize/strip proxy references here.
   return helmRelease({
     name: config.name,
     namespace: config.namespace || 'inngest',
@@ -118,7 +103,7 @@ export function inngestHelmRelease(
       namespace: DEFAULT_FLUX_NAMESPACE,
       kind: 'HelmRepository',
     },
-    values: sanitizedValues,
+    values: config.values || {},
     ...(config.id && { id: config.id }),
   }).withReadinessEvaluator(
     createLabeledHelmReleaseEvaluator('Inngest')

@@ -169,7 +169,27 @@ export async function deleteNamespaceAndWait(
   const startTime = Date.now();
 
   try {
-    // First, try to delete the namespace
+    // Delete PVCs first — StatefulSet PVCs have finalizers that block
+    // namespace termination until the volume is released. Deleting them
+    // explicitly avoids long waits during test cleanup.
+    try {
+      const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace });
+      for (const pvc of pvcs.items) {
+        if (pvc.metadata?.name) {
+          await coreApi.deleteNamespacedPersistentVolumeClaim({
+            name: pvc.metadata.name,
+            namespace,
+          });
+        }
+      }
+      if (pvcs.items.length > 0) {
+        console.log(`🗑️ Deleted ${pvcs.items.length} PVCs in ${namespace}`);
+      }
+    } catch {
+      // PVC cleanup is best-effort
+    }
+
+    // Then delete the namespace
     await coreApi.deleteNamespace({ name: namespace });
     console.log(`🗑️ Initiated deletion of test namespace: ${namespace}`);
   } catch (error: any) {

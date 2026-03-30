@@ -62,6 +62,10 @@
       "import": "./dist/factories/pebble/index.js",
       "types": "./dist/factories/pebble/index.d.ts"
     },
+    "./webapp": {
+      "import": "./dist/factories/webapp/index.js",
+      "types": "./dist/factories/webapp/index.d.ts"
+    },
     "./valkey": {
       "import": "./dist/factories/valkey/index.js",
       "types": "./dist/factories/valkey/index.d.ts"

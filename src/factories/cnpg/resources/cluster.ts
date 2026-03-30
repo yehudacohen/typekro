@@ -6,7 +6,7 @@
  */
 
 import { createConditionBasedReadinessEvaluator } from '../../../core/readiness/index.js';
-import type { Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import type { ClusterConfig, ClusterStatus } from '../types.js';
 
@@ -115,9 +115,9 @@ function clusterReadinessEvaluator(liveResource: unknown): ResourceStatus {
  * ```
  */
 function createClusterResource(
-  config: ClusterConfig
+  config: Composable<ClusterConfig>
 ): Enhanced<ClusterConfig['spec'], ClusterStatus> {
-  const fullConfig: ClusterConfig = {
+  const fullConfig = {
     ...config,
     spec: {
       ...config.spec,

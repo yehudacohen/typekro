@@ -44,6 +44,7 @@ import type {
 } from '../types/serialization.js';
 import { KubernetesClientManager } from './client-provider-manager.js';
 import { DirectDeploymentEngine } from './engine.js';
+import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
 import { generateInstanceName } from './shared-utilities.js';
@@ -237,6 +238,40 @@ export class DirectResourceFactoryImpl<
         .map((r) => r.split('/')[1]!);
 
       if (deletedNamespaces.length > 0) {
+        // Delete PVCs in namespaces before waiting — StatefulSet PVCs have
+        // finalizers that block namespace termination until volumes are released.
+        const kubeConfig = this.getClientProvider().getKubeConfig();
+        try {
+          const { CoreV1Api } = await import('@kubernetes/client-node');
+          const coreApi = kubeConfig.makeApiClient(CoreV1Api);
+          for (const ns of deletedNamespaces) {
+            try {
+              const pvcs = await coreApi.listNamespacedPersistentVolumeClaim({ namespace: ns });
+              if (pvcs.items.length > 0) {
+                this.logger.info('Deleting PVCs to unblock namespace termination', {
+                  namespace: ns, count: pvcs.items.length,
+                });
+              }
+              for (const pvc of pvcs.items) {
+                const pvcName = pvc.metadata?.name;
+                if (!pvcName) continue;
+                await coreApi.deleteNamespacedPersistentVolumeClaim({
+                  name: pvcName,
+                  namespace: ns,
+                }).catch((err: unknown) => {
+                  this.logger.info('PVC delete failed', {
+                    pvc: pvcName, namespace: ns, error: String(err),
+                  });
+                });
+              }
+            } catch {
+              // Namespace may already be gone
+            }
+          }
+        } catch {
+          // PVC cleanup is best-effort
+        }
+
         const k8sApi = engine.getKubernetesApi();
         const deleteTimeout = this.factoryOptions.timeout ?? DEFAULT_DELETE_TIMEOUT;
         await this.waitForNamespaceDeletion(k8sApi, deletedNamespaces, deleteTimeout);
@@ -902,6 +937,83 @@ export class DirectResourceFactoryImpl<
    */
   public getReExecutedStatus(): TStatus | null {
     return this.reExecutedStatus;
+  }
+
+  /**
+   * Re-execute the composition with live status data from deployed resources.
+   *
+   * After deployment completes, we have live status for each resource.
+   * This method re-runs the composition function with that live data injected
+   * into the proxy system, so status comparisons like
+   * `database.status.readyInstances >= 1` evaluate correctly.
+   *
+   * @param spec - The original spec
+   * @param liveStatusMap - Map of resource ID to live status object
+   * @returns Re-executed status with live data, or null on failure
+   */
+  public reExecuteWithLiveStatus(
+    spec: TSpec,
+    liveStatusMap: Map<string, Record<string, unknown>>
+  ): TStatus | null {
+    if (!this.factoryOptions.compositionFn) return null;
+
+    try {
+      this.logger.debug('Re-executing composition with live status data', {
+        liveResourceCount: liveStatusMap.size,
+        resourceIds: [...liveStatusMap.keys()],
+      });
+
+      // Phase 1: Probe execution to discover nested composition IDs.
+      // Nested compositions generate IDs like "inngest-bootstrap1" via the
+      // composition instance counter. We need to discover these IDs so we can
+      // synthesize status entries from child resources' live data.
+      const probeContext = createCompositionContext('re-execution-probe', {
+        deduplicateIds: true,
+      });
+      probeContext.liveStatusMap = liveStatusMap;
+
+      runWithCompositionContext(probeContext, () => {
+        this.factoryOptions.compositionFn?.(spec);
+      });
+
+      // Synthesize status for nested compositions from deployment readiness.
+      //
+      // Every deployed resource has a readiness status from its factory-provided
+      // evaluator (the deployment engine confirmed each one via waitForReady).
+      // Nested compositions are "ready" when ALL their children are ready.
+      //
+      // This uses synthesizeNestedCompositionStatus which is shared between
+      // direct and KRO deployment strategies — it only depends on the probe
+      // context's resource keys and the liveStatusMap's deployed resource keys.
+      const enrichedMap = synthesizeNestedCompositionStatus(
+        probeContext.resources,
+        liveStatusMap,
+        this.logger,
+        probeContext.nestedCompositionIds
+      );
+
+      // Phase 2: Real execution with enriched live status map
+      const reExecutionContext = createCompositionContext('re-execution', {
+        deduplicateIds: true,
+      });
+      reExecutionContext.liveStatusMap = enrichedMap;
+
+      const { status } = runWithCompositionContext(reExecutionContext, () => {
+        const computedStatus = this.factoryOptions.compositionFn?.(spec);
+        return { status: computedStatus };
+      });
+
+      this.logger.debug('Live status re-execution completed', {
+        statusFields: status ? Object.keys(status) : [],
+      });
+
+      return status as TStatus;
+    } catch (error: unknown) {
+      this.logger.warn('Failed to re-execute composition with live status', {
+        error: ensureError(error).message,
+      });
+      return null;
+    }
   }
 
   /**

@@ -34,7 +34,7 @@ describe('CNPG Bootstrap Composition Tests', () => {
       console.error('❌ Failed to connect to cluster:', error);
       throw error;
     }
-  }, 30000);
+  });
 
   afterAll(async () => {
     // Clean up the operator deployment

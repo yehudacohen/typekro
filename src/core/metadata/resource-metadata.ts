@@ -43,6 +43,10 @@ export interface ResourceMetadata {
   forEach?: Record<string, string>[];
   /** Ternary CEL expression overrides from AST analysis */
   templateOverrides?: Array<{ propertyPath: string; celExpression: string }>;
+  /** Kubernetes scope — 'cluster' for cluster-scoped resources (Namespace, ClusterRole, etc.) */
+  scope?: 'namespaced' | 'cluster';
+  /** Resource lifecycle — 'shared' resources survive instance deletion (e.g., HelmRepository in flux-system) */
+  lifecycle?: 'managed' | 'shared';
 }
 
 /** Keys of ResourceMetadata that are valid metadata field names */

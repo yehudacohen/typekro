@@ -5,7 +5,8 @@
  * individual Kubernetes resources directly to the cluster.
  */
 
-import { isCelExpression } from '../../../utils/type-guards.js';
+import { isCelExpression, isKubernetesRef, containsKubernetesRefs, containsCelExpressions } from '../../../utils/type-guards.js';
+import { getMetadataField, getResourceId } from '../../metadata/index.js';
 import type {
   DeployedResource,
   DeploymentContext,
@@ -43,6 +44,7 @@ export class DirectDeploymentStrategy<
     public resourceResolver: {
       createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph;
       getReExecutedStatus?(): TStatus | null;
+      reExecuteWithLiveStatus?(spec: TSpec, liveStatusMap: Map<string, Record<string, unknown>>): TStatus | null;
     } // Resource resolution logic
   ) {
     super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
@@ -116,66 +118,124 @@ export class DirectDeploymentStrategy<
     instanceName: string,
     deploymentResult: DeploymentResult
   ): Promise<Enhanced<TSpec, TStatus>> {
-    // Check if we have re-executed status from composition re-execution
+    // Get the base proxy first
+    const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
+
+    // Try live status re-execution: re-run the composition function with real
+    // status data from the cluster injected into the proxy system. This makes
+    // status comparisons like `database.status.readyInstances >= 1` evaluate
+    // correctly instead of returning proxy artifacts.
+    if (
+      deploymentResult.status === 'success' &&
+      this.resourceResolver.reExecuteWithLiveStatus
+    ) {
+      const liveStatusMap = await this.buildLiveStatusMap(deploymentResult);
+
+      if (liveStatusMap.size > 0) {
+        const liveStatus = this.resourceResolver.reExecuteWithLiveStatus(spec, liveStatusMap);
+
+        if (liveStatus) {
+          this.logger.debug('Using live-status re-execution for status hydration', {
+            instanceName,
+            liveResourceCount: liveStatusMap.size,
+            statusFields: Object.keys(liveStatus),
+          });
+
+          // Deep merge: recursively walk the status tree, replacing proxy artifacts
+          // (KubernetesRef, CelExpression) with base values while keeping resolved values.
+          const mergedStatus = deepMergeLiveStatus(liveStatus, baseProxy.status ?? {});
+
+          return {
+            ...baseProxy,
+            status: mergedStatus as TStatus,
+          } as Enhanced<TSpec, TStatus>;
+        }
+      }
+    }
+
+    // Fallback: use pre-deployment re-executed status.
+    // This works correctly for spec-derived values (e.g., `spec.replicas > 0`)
+    // but may have proxy artifacts for status-derived fields.
     const reExecutedStatus = this.resourceResolver.getReExecutedStatus?.();
-
     if (reExecutedStatus) {
-      this.logger.debug('Using hybrid status approach (re-executed + base strategy)', {
-        instanceName,
-        reExecutedStatusFields: Object.keys(reExecutedStatus),
-      });
+      this.logger.debug('Falling back to pre-deployment re-executed status', { instanceName });
 
-      // Get the base proxy which includes CEL expression resolution
-      const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
-
-      // If base status is null (e.g., waitForReady: false), use re-executed status directly
       if (baseProxy.status == null) {
-        this.logger.debug('Base status is null, using re-executed status directly', {
-          instanceName,
-        });
         return {
           ...baseProxy,
           status: reExecutedStatus as TStatus,
         } as Enhanced<TSpec, TStatus>;
       }
 
-      // Merge re-executed status with base status
-      // Priority: resolved spec-based values from re-execution > evaluated CEL expressions from base
+      // Merge: use re-executed values unless they're CEL expressions or proxy artifacts
       const hybridStatus: Record<string, unknown> = { ...baseProxy.status };
-
       for (const [key, value] of Object.entries(reExecutedStatus)) {
-        const baseValue = (baseProxy.status as Record<string, unknown>)[key];
-        const reExecutedValue = value;
-
-        // If the re-executed value is not a CEL expression, it's a resolved spec-based value - use it
-        if (!isCelExpression(reExecutedValue)) {
-          hybridStatus[key] = reExecutedValue;
-          this.logger.debug('Using re-executed value for spec-based field', {
-            field: key,
-            value: reExecutedValue,
-            type: typeof reExecutedValue,
-          });
+        if (isCelExpression(value)) {
+          hybridStatus[key] = (baseProxy.status as Record<string, unknown>)[key];
+        } else if (isKubernetesRef(value) || containsKubernetesRefs(value)) {
+          hybridStatus[key] = (baseProxy.status as Record<string, unknown>)[key];
         } else {
-          // Re-executed value is a CEL expression - let the base strategy handle it
-          // The base strategy will have already evaluated it if possible
-          hybridStatus[key] = baseValue;
-          this.logger.debug('Using base strategy value for CEL expression field', {
-            field: key,
-            baseValue,
-            baseValueType: typeof baseValue,
-            isCelExpression: isCelExpression(baseValue),
-          });
+          hybridStatus[key] = value;
         }
       }
-
       return {
         ...baseProxy,
         status: hybridStatus as TStatus,
       } as Enhanced<TSpec, TStatus>;
     }
 
-    // Fallback to base implementation if no re-executed status
-    return super.createEnhancedProxy(spec, instanceName, deploymentResult);
+    return baseProxy;
+  }
+
+  /**
+   * Build a map of resource ID → live status by querying the cluster.
+   */
+  private async buildLiveStatusMap(
+    deploymentResult: DeploymentResult
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const liveStatusMap = new Map<string, Record<string, unknown>>();
+    const k8sApi = this.deploymentEngine.getKubernetesApi();
+
+    const readyResources = deploymentResult.resources.filter(
+      r => r.status === 'ready' || r.status === 'deployed'
+    );
+
+    const results = await Promise.allSettled(
+      readyResources.map(async (resource) => {
+        const isClusterScoped = getMetadataField(resource.manifest, 'scope') === 'cluster';
+        const liveResource = await k8sApi.read({
+          apiVersion: resource.manifest.apiVersion || '',
+          kind: resource.kind,
+          metadata: {
+            name: resource.name,
+            ...(isClusterScoped ? {} : { namespace: resource.namespace }),
+          },
+        });
+
+        const status = (liveResource as Record<string, unknown>).status;
+        if (status && typeof status === 'object') {
+          const originalId = getResourceId(resource.manifest) || resource.id;
+          return { originalId, deployedId: resource.id, kind: resource.kind, status: status as Record<string, unknown> };
+        }
+        return null;
+      })
+    );
+
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value) {
+        const { originalId, deployedId, kind, status } = result.value;
+        liveStatusMap.set(originalId, status);
+        this.logger.debug('Captured live status for resource', {
+          originalId, deployedId, kind, statusKeys: Object.keys(status),
+        });
+      }
+    }
+
+    // Nested composition status synthesis is handled by reExecuteWithLiveStatus —
+    // during re-execution, synthesizeNestedCompositionStatus creates entries
+    // for virtual parent IDs (e.g., "inngestBootstrap1") from child readiness.
+
+    return liveStatusMap;
   }
 
   /**
@@ -207,4 +267,63 @@ export class DirectDeploymentStrategy<
   protected getStrategyMode(): 'direct' | 'kro' {
     return 'direct';
   }
+}
+
+// ── Module-level helpers ─────────────────────────────────────────────────
+
+/**
+ * Recursively merge live-status re-execution output with base values.
+ *
+ * Walks the value tree and for each leaf:
+ * - KubernetesRef / CelExpression → proxy artifact, use base value
+ * - Plain object containing refs → recurse into each key
+ * - Array containing refs → recurse into each element
+ * - Primitive / clean object → correctly resolved, use live value
+ *
+ * Internal fields (keys starting with `__`) are always taken from live.
+ */
+function deepMergeLiveStatus(
+  liveValue: unknown,
+  baseValue: unknown
+): unknown {
+  // Internal metadata fields — always from live
+  // (handled by callers for top-level, but included for safety)
+
+  // Proxy artifacts — use base
+  if (isKubernetesRef(liveValue)) return baseValue;
+  if (isCelExpression(liveValue)) return baseValue;
+
+  // Plain objects — may contain a mix of resolved values and artifacts
+  if (liveValue !== null && typeof liveValue === 'object' && !Array.isArray(liveValue)) {
+    if (!containsKubernetesRefs(liveValue) && !containsCelExpressions(liveValue)) {
+      // Entire object is clean — use it directly
+      return liveValue;
+    }
+    // Mixed object — recurse into each key
+    const liveObj = liveValue as Record<string, unknown>;
+    const baseObj =
+      baseValue !== null && typeof baseValue === 'object' && !Array.isArray(baseValue)
+        ? (baseValue as Record<string, unknown>)
+        : {};
+    const merged: Record<string, unknown> = {};
+    for (const key of new Set([...Object.keys(liveObj), ...Object.keys(baseObj)])) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      if (key.startsWith('__')) {
+        merged[key] = liveObj[key] ?? baseObj[key];
+      } else {
+        merged[key] = deepMergeLiveStatus(liveObj[key], baseObj[key]);
+      }
+    }
+    return merged;
+  }
+
+  // Arrays — may contain mixed elements
+  if (Array.isArray(liveValue)) {
+    if (!containsKubernetesRefs(liveValue) && !containsCelExpressions(liveValue)) return liveValue;
+    const baseArr = Array.isArray(baseValue) ? baseValue : [];
+    return liveValue.map((item, i) => deepMergeLiveStatus(item, baseArr[i]));
+  }
+
+  // Primitives (string, number, boolean, null, undefined) — correctly resolved
+  return liveValue;
 }

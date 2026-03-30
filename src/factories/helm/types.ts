@@ -18,9 +18,11 @@ export interface HelmReleaseSpec {
   targetNamespace?: string;
   install?: {
     createNamespace?: boolean;
+    timeout?: string;
     remediation?: { retries?: number };
   };
   upgrade?: {
+    timeout?: string;
     remediation?: { retries?: number };
   };
 }

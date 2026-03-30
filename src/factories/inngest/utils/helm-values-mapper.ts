@@ -122,9 +122,11 @@ export function mapInngestConfigToHelmValues(
     values.tolerations = config.tolerations;
   }
 
-  // Custom values last for user overrides
+  // Recursively deep merge custom values into the generated Helm values.
+  // Plain objects are merged key-by-key at arbitrary depth. Arrays and
+  // primitives are replaced (not concatenated or coerced).
   if (config.customValues) {
-    Object.assign(values, config.customValues);
+    deepMerge(values, config.customValues);
   }
 
   return removeUndefinedValues(values);
@@ -147,4 +149,35 @@ function removeUndefinedValues<T extends Record<string, unknown>>(obj: T): T {
     }
   }
   return result as T;
+}
+
+/**
+ * Recursively deep merge `source` into `target` in place.
+ * - Plain objects are merged key-by-key at arbitrary depth.
+ * - Arrays and primitives in source replace the target value.
+ * - null and undefined in source replace the target value.
+ */
+function deepMerge(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>
+): void {
+  for (const [key, sourceValue] of Object.entries(source)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    const targetValue = target[key];
+    if (
+      sourceValue !== null &&
+      typeof sourceValue === 'object' &&
+      !Array.isArray(sourceValue) &&
+      targetValue !== null &&
+      typeof targetValue === 'object' &&
+      !Array.isArray(targetValue)
+    ) {
+      deepMerge(
+        targetValue as Record<string, unknown>,
+        sourceValue as Record<string, unknown>
+      );
+    } else {
+      target[key] = sourceValue;
+    }
+  }
 }

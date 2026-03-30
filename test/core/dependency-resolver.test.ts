@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'bun:test';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { DependencyGraph, DependencyResolver } from '../../src/core/dependencies/index.js';
 import { CircularDependencyError } from '../../src/core/errors.js';
+import { setResourceId } from '../../src/core/metadata/index.js';
 import type { DeployableK8sResource, Enhanced } from '../../src/index.js';
 
 // Helper function to create properly typed test resources
@@ -465,6 +466,315 @@ describe('DependencyGraph', () => {
 
       expect(subgraph.getDependencies('b')).toContain('c');
       expect(subgraph.getDependents('b')).toHaveLength(0); // 'a' is excluded
+    });
+  });
+
+  describe('Implicit Namespace Dependencies', () => {
+    let resolver: DependencyResolver;
+
+    beforeEach(() => {
+      resolver = new DependencyResolver();
+    });
+
+    it('should detect that namespaced resources depend on their Namespace resource', () => {
+      const ns = createMockResource({
+        id: 'appNamespace',
+        kind: 'Namespace',
+        apiVersion: 'v1',
+        metadata: { name: 'my-app' },
+      });
+      const deployment = createMockResource({
+        id: 'appDeployment',
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
+        metadata: { name: 'web', namespace: 'my-app' },
+      });
+      const service = createMockResource({
+        id: 'appService',
+        kind: 'Service',
+        apiVersion: 'v1',
+        metadata: { name: 'web-svc', namespace: 'my-app' },
+      });
+
+      const graph = resolver.buildDependencyGraph([ns, deployment, service]);
+      const plan = resolver.analyzeDeploymentOrder(graph);
+
+      // Namespace should be at level 0, resources in that namespace at level 1+
+      expect(plan.levels.length).toBeGreaterThanOrEqual(2);
+      expect(plan.levels[0]).toContain('appNamespace');
+      // Deployment and Service should NOT be at level 0
+      expect(plan.levels[0]).not.toContain('appDeployment');
+      expect(plan.levels[0]).not.toContain('appService');
+    });
+
+    it('should not add dependency for resources in a different namespace', () => {
+      const ns = createMockResource({
+        id: 'appNamespace',
+        kind: 'Namespace',
+        apiVersion: 'v1',
+        metadata: { name: 'my-app' },
+      });
+      const deployment = createMockResource({
+        id: 'otherDeployment',
+        kind: 'Deployment',
+        apiVersion: 'apps/v1',
+        metadata: { name: 'other', namespace: 'default' },
+      });
+
+      const graph = resolver.buildDependencyGraph([ns, deployment]);
+
+      // No dependency — deployment is in 'default', not 'my-app'
+      expect(graph.getDependencies('otherDeployment')).not.toContain('appNamespace');
+    });
+
+    it('should handle resources without metadata.namespace (cluster-scoped)', () => {
+      const ns = createMockResource({
+        id: 'appNamespace',
+        kind: 'Namespace',
+        apiVersion: 'v1',
+        metadata: { name: 'my-app' },
+      });
+      const clusterRole = createMockResource({
+        id: 'myClusterRole',
+        kind: 'ClusterRole',
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        metadata: { name: 'admin-role' },
+      });
+
+      const graph = resolver.buildDependencyGraph([ns, clusterRole]);
+
+      // No dependency — ClusterRole has no namespace
+      expect(graph.getDependencies('myClusterRole')).not.toContain('appNamespace');
+    });
+
+    it('should not add self-dependency for Namespace resources', () => {
+      const ns = createMockResource({
+        id: 'appNamespace',
+        kind: 'Namespace',
+        apiVersion: 'v1',
+        metadata: { name: 'my-app' },
+      });
+
+      const graph = resolver.buildDependencyGraph([ns]);
+
+      expect(graph.getDependencies('appNamespace')).toHaveLength(0);
+    });
+  });
+
+  describe('Embedded Marker String Dependencies', () => {
+    let resolver: DependencyResolver;
+
+    beforeEach(() => {
+      resolver = new DependencyResolver();
+    });
+
+    it('should detect dependencies from __KUBERNETES_REF__ marker strings in values', () => {
+      const database = createMockResource({
+        id: 'database',
+        kind: 'Cluster',
+        apiVersion: 'postgresql.cnpg.io/v1',
+        metadata: { name: 'testapp-db' },
+      });
+      const helmRelease = createMockResource({
+        id: 'inngestRelease',
+        kind: 'HelmRelease',
+        apiVersion: 'helm.toolkit.fluxcd.io/v2',
+        metadata: { name: 'testapp-inngest' },
+        spec: {
+          values: {
+            inngest: {
+              postgres: {
+                uri: 'postgresql://app@__KUBERNETES_REF_database_status.writeService__:5432/testdb',
+              },
+            },
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([database, helmRelease]);
+
+      // The marker string should create a dependency: inngestRelease -> database
+      expect(graph.getDependencies('inngestRelease')).toContain('database');
+    });
+
+    it('should detect multiple marker refs in the same string', () => {
+      const database = createMockResource({
+        id: 'database',
+        kind: 'Cluster',
+        metadata: { name: 'db' },
+      });
+      const cache = createMockResource({
+        id: 'cache',
+        kind: 'Valkey',
+        metadata: { name: 'cache' },
+      });
+      const app = createMockResource({
+        id: 'app',
+        kind: 'Deployment',
+        metadata: { name: 'app' },
+        spec: {
+          env: {
+            DB_URL: 'postgresql://__KUBERNETES_REF_database_status.writeService__:5432/db',
+            REDIS_URL: 'redis://__KUBERNETES_REF_cache_status.hostname__:6379',
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([database, cache, app]);
+
+      expect(graph.getDependencies('app')).toContain('database');
+      expect(graph.getDependencies('app')).toContain('cache');
+    });
+
+    it('should NOT detect __schema__ refs as resource dependencies', () => {
+      const app = createMockResource({
+        id: 'app',
+        kind: 'Deployment',
+        metadata: { name: 'app' },
+        spec: {
+          image: '__KUBERNETES_REF___schema___spec.image__',
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([app]);
+
+      // Schema refs are internal — no dependency edges
+      expect(graph.getDependencies('app')).toHaveLength(0);
+    });
+
+    it('should detect marker refs in deeply nested objects', () => {
+      const database = createMockResource({
+        id: 'database',
+        kind: 'Cluster',
+        metadata: { name: 'db' },
+      });
+      const helmRelease = createMockResource({
+        id: 'helmRelease',
+        kind: 'HelmRelease',
+        metadata: { name: 'inngest' },
+        spec: {
+          values: {
+            level1: {
+              level2: {
+                level3: {
+                  uri: '__KUBERNETES_REF_database_status.writeService__',
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([database, helmRelease]);
+
+      expect(graph.getDependencies('helmRelease')).toContain('database');
+    });
+
+    it('should detect marker refs in arrays', () => {
+      const database = createMockResource({
+        id: 'database',
+        kind: 'Cluster',
+        metadata: { name: 'db' },
+      });
+      const helmRelease = createMockResource({
+        id: 'helmRelease',
+        kind: 'HelmRelease',
+        metadata: { name: 'inngest' },
+        spec: {
+          values: {
+            extraEnv: [
+              { name: 'DB_HOST', value: '__KUBERNETES_REF_database_status.writeService__' },
+              { name: 'OTHER', value: 'static-value' },
+            ],
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([database, helmRelease]);
+
+      expect(graph.getDependencies('helmRelease')).toContain('database');
+    });
+
+    it('should resolve marker refs using original composition IDs mapped to graph IDs', () => {
+      // Simulates the real deployment: graph IDs are prefixed (testappResource0Database)
+      // but marker strings reference the original composition ID (database)
+      const database = createMockResource({
+        id: 'testappResource0Database',
+        kind: 'Cluster',
+        apiVersion: 'postgresql.cnpg.io/v1',
+        metadata: { name: 'testapp-db' },
+      });
+      // Set the original composition ID on the resource metadata
+      setResourceId(database, 'database');
+
+      const helmRelease = createMockResource({
+        id: 'testappResource5Inngesthelmrelease',
+        kind: 'HelmRelease',
+        apiVersion: 'helm.toolkit.fluxcd.io/v2',
+        metadata: { name: 'testapp-inngest' },
+        spec: {
+          values: {
+            inngest: {
+              postgres: {
+                uri: 'postgresql://app@__KUBERNETES_REF_database_status.writeService__:5432/testdb',
+              },
+            },
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([database, helmRelease]);
+
+      // The marker ref 'database' should be resolved to 'testappResource0Database'
+      expect(graph.getDependencies('testappResource5Inngesthelmrelease'))
+        .toContain('testappResource0Database');
+    });
+
+    it('should produce correct deployment levels with marker + namespace deps', () => {
+      const ns = createMockResource({
+        id: 'appNamespace',
+        kind: 'Namespace',
+        apiVersion: 'v1',
+        metadata: { name: 'my-app' },
+      });
+      const database = createMockResource({
+        id: 'database',
+        kind: 'Cluster',
+        metadata: { name: 'db', namespace: 'my-app' },
+      });
+      const cache = createMockResource({
+        id: 'cache',
+        kind: 'Valkey',
+        metadata: { name: 'cache', namespace: 'my-app' },
+      });
+      const helmRelease = createMockResource({
+        id: 'inngest',
+        kind: 'HelmRelease',
+        metadata: { name: 'inngest', namespace: 'my-app' },
+        spec: {
+          values: {
+            postgres: { uri: 'pg://__KUBERNETES_REF_database_status.writeService__:5432' },
+            redis: { uri: 'redis://__KUBERNETES_REF_cache_status.hostname__:6379' },
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([ns, database, cache, helmRelease]);
+      const plan = resolver.analyzeDeploymentOrder(graph);
+
+      // Level 0: Namespace (no deps)
+      expect(plan.levels[0]).toContain('appNamespace');
+      expect(plan.levels[0]).not.toContain('database');
+      expect(plan.levels[0]).not.toContain('cache');
+      expect(plan.levels[0]).not.toContain('inngest');
+
+      // Level 1: database + cache (depend on namespace only)
+      expect(plan.levels[1]).toContain('database');
+      expect(plan.levels[1]).toContain('cache');
+      expect(plan.levels[1]).not.toContain('inngest');
+
+      // Level 2: inngest (depends on database + cache via markers, and namespace)
+      expect(plan.levels[2]).toContain('inngest');
     });
   });
 });

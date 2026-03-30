@@ -51,9 +51,10 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
         return () => `__KUBERNETES_REF___schema___${fieldPath}__`;
       }
 
-      // Handle Symbol.toPrimitive for template literal coercion
+      // Handle Symbol.toPrimitive — marker string for string coercion (template
+      // literals), NaN for numeric coercion (comparisons like `ref >= 1`).
       if (prop === Symbol.toPrimitive) {
-        return () => `__KUBERNETES_REF___schema___${fieldPath}__`;
+        return (hint: string) => hint === 'string' ? `__KUBERNETES_REF___schema___${fieldPath}__` : NaN;
       }
 
       // Support for-of iteration: yield a single element proxy so loop bodies execute once
@@ -281,9 +282,9 @@ function createResourceRefFactory<T = unknown>(resourceId: string, fieldPath: st
         return () => `__KUBERNETES_REF_${resourceId}_${fieldPath}__`;
       }
 
-      // Handle Symbol.toPrimitive for template literal coercion
+      // Handle Symbol.toPrimitive — marker string for string coercion, NaN for numeric.
       if (prop === Symbol.toPrimitive) {
-        return () => `__KUBERNETES_REF_${resourceId}_${fieldPath}__`;
+        return (hint: string) => hint === 'string' ? `__KUBERNETES_REF_${resourceId}_${fieldPath}__` : NaN;
       }
 
       // Preserve essential function properties

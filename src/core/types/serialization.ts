@@ -42,7 +42,8 @@ export interface KroSimpleSchema {
   kind: string;
   /** Custom API group for the CRD (defaults to 'kro.run' in Kro) */
   group?: string;
-  spec: Record<string, string>;
+  /** Spec fields — nested objects represent KRO SimpleSchema nested types. */
+  spec: Record<string, unknown>;
   /** Status fields may be plain CEL expression strings or nested objects for nested status mappings. */
   status?: Record<string, string | Record<string, unknown>>;
 }

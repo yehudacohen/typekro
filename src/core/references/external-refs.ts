@@ -35,6 +35,8 @@ export interface ExternalRefConfig {
     name: string;
     namespace?: string;
   };
+  /** Explicit resource ID for composition tracking. Required when name is dynamic. */
+  id?: string;
 }
 
 /**
@@ -92,6 +94,9 @@ export function externalRef<TSpec extends object, TStatus extends object>(
     resolvedNamespace = namespace;
   }
 
+  // Extract id from object-form config
+  const resolvedId = typeof configOrApiVersion === 'object' ? configOrApiVersion.id : undefined;
+
   // Create a KubernetesResource marked as external reference
   const resource: KubernetesResource<TSpec, TStatus> = {
     apiVersion,
@@ -104,6 +109,7 @@ export function externalRef<TSpec extends object, TStatus extends object>(
     status: {} as TStatus,
     // Mark this as an external reference for serialization
     __externalRef: true,
+    ...(resolvedId && { id: resolvedId }),
   };
 
   // Use existing createResource function to get Enhanced proxy

@@ -8,7 +8,20 @@
 import { describe, expect, test } from 'bun:test';
 import { CEL_EXPRESSION_BRAND, KUBERNETES_REF_BRAND } from '../../src/core/constants/brands.js';
 import { getResourceId } from '../../src/core/metadata/index.js';
-import { getKindInfo } from '../../src/core/resources/factory-registry.js';
+// Ensure FactoryRegistry is populated before tests. Factory registrations
+// happen via side effects at module scope. Import the Kubernetes factory
+// modules directly (the barrel re-export in factories/index.js may be
+// tree-shaken when no named exports are consumed).
+import '../../src/factories/kubernetes/workloads/deployment.js';
+import '../../src/factories/kubernetes/workloads/stateful-set.js';
+import '../../src/factories/kubernetes/networking/service.js';
+import '../../src/factories/kubernetes/networking/ingress.js';
+import '../../src/factories/kubernetes/config/config-map.js';
+import '../../src/factories/kubernetes/config/secret.js';
+// HelmRelease is auto-registered when createResource() is called with kind: HelmRelease.
+// For test isolation, register it explicitly.
+import { registerFactory, getKindInfo } from '../../src/core/resources/factory-registry.js';
+registerFactory({ factoryName: 'HelmRelease', kind: 'HelmRelease', apiVersion: 'helm.toolkit.fluxcd.io/v2' });
 import {
   analyzeStatusMappingTypes,
   analyzeValueType,
