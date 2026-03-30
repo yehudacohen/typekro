@@ -352,7 +352,7 @@ function createKubernetesRefProxy(resourceId: string, basePath: string, useAllow
         if (basePath === 'status') {
           const ctx = getCurrentCompositionContext();
           const liveStatus = ctx?.liveStatusMap?.get(resourceId);
-          if (liveStatus && prop in liveStatus) {
+          if (liveStatus && Object.hasOwn(liveStatus, prop as string)) {
             return liveStatus[prop];
           }
         }
