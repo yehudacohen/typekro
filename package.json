@@ -74,6 +74,10 @@
       "import": "./dist/core/containers/index.js",
       "types": "./dist/core/containers/index.d.ts"
     },
+    "./searxng": {
+      "import": "./dist/factories/searxng/index.js",
+      "types": "./dist/factories/searxng/index.d.ts"
+    },
     "./alchemy": {
       "import": "./dist/alchemy/index.js",
       "types": "./dist/alchemy/index.d.ts"

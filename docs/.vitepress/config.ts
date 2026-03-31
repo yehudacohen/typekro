@@ -91,6 +91,7 @@ export default withMermaid(
               { text: 'External-DNS', link: '/api/external-dns/' },
               { text: 'Inngest', link: '/api/inngest/' },
               { text: 'Pebble', link: '/api/pebble/' },
+              { text: 'SearXNG', link: '/api/searxng/' },
               { text: 'Valkey', link: '/api/valkey/' },
               { text: 'Web App Compositions', link: '/api/webapp/' },
             ],
