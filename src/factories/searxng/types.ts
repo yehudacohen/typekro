@@ -54,7 +54,7 @@ export const SearxngConfigSchema = type({
   /** Composition resource ID. */
   'id?': 'string',
   spec: {
-    /** Container image (default: 'searxng/searxng:latest'). */
+    /** Container image (default: 'searxng/searxng:2026.3.29-7ac4ff39f'). */
     'image?': 'string',
     /** Image pull policy. */
     'imagePullPolicy?': '"Always" | "Never" | "IfNotPresent"',
@@ -117,7 +117,7 @@ export const SearxngBootstrapConfigSchema = type({
   name: 'string',
   /** Target namespace (default: 'searxng'). */
   'namespace?': 'string',
-  /** Container image (default: 'searxng/searxng:latest'). */
+  /** Container image (default: 'searxng/searxng:2026.3.29-7ac4ff39f'). */
   'image?': 'string',
   /** Number of replicas (default: 1). */
   'replicas?': 'number',
@@ -125,12 +125,18 @@ export const SearxngBootstrapConfigSchema = type({
   'instanceName?': 'string',
   /** Base URL for the instance. */
   'baseUrl?': 'string',
-  /** Server configuration. */
+  /** Server configuration (secret_key injected via SEARXNG_SECRET env var). */
   'server?': serverConfigShape,
   /** Search configuration. */
   'search?': searchConfigShape,
-  /** Redis/Valkey URL for the built-in rate limiter. */
+  /** Redis/Valkey URL for the built-in rate limiter (e.g., 'redis://valkey:6379/0'). */
   'redisUrl?': 'string',
+  /**
+   * Complete settings.yml content as a string. When provided in direct mode,
+   * this overrides the auto-generated settings. Use buildSearxngSettings()
+   * or read from a file.
+   */
+  'settingsYaml?': 'string',
   /** Additional environment variables. */
   'env?': 'Record<string, string>',
   /** Resource requests and limits. */
@@ -152,8 +158,8 @@ export const SearxngBootstrapStatusSchema = type({
 
 export type SearxngBootstrapStatus = typeof SearxngBootstrapStatusSchema.infer;
 
-/** Default SearXNG image. */
-export const DEFAULT_SEARXNG_IMAGE = 'searxng/searxng:latest';
+/** Default SearXNG image. Pinned to a specific version to avoid breaking config changes. */
+export const DEFAULT_SEARXNG_IMAGE = 'searxng/searxng:2026.3.29-7ac4ff39f';
 
 /** Default SearXNG port. */
 export const DEFAULT_SEARXNG_PORT = 8080;

@@ -42,7 +42,7 @@ await factory.deploy({
 |-------|------|---------|-------------|
 | `name` | `string` | required | Instance name |
 | `namespace` | `string` | `'searxng'` | Target namespace |
-| `image` | `string` | `'searxng/searxng:latest'` | Container image |
+| `image` | `string` | `'searxng/searxng:2026.3.29-7ac4ff39f'` | Container image (pinned to avoid breaking config changes between releases) |
 | `replicas` | `number` | `1` | Number of replicas |
 | `instanceName` | `string` | `name` | Displayed in the UI |
 | `baseUrl` | `string` | auto | Base URL for links |

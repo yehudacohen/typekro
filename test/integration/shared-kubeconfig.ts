@@ -709,7 +709,7 @@ export async function ensureFluxInstalled(options: EnsureFluxOptions = {}): Prom
   const runtimeComposition = typeKroRuntimeBootstrap({
     namespace,
     fluxVersion: version,
-    kroVersion: '0.8.5',
+    kroVersion: '0.9.0',
   });
 
   const factory = runtimeComposition.factory('direct', {

@@ -196,8 +196,9 @@ describe('JavaScript to CEL Template Literals', () => {
       // `deployment.metadata.name` resolves to "test-app" at execution time since
       // metadata is known from the resource template — only status fields produce
       // KubernetesRef markers that become CEL references.
+      // Uses KRO's native mixed template format with string() for type safety
       expect(yaml).toContain(
-        'message: ${"Deployment test-app has " + deployment.status.readyReplicas + " replicas"}'
+        'message: Deployment test-app has ${string(deployment.status.readyReplicas)} replicas'
       );
     });
 

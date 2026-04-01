@@ -71,9 +71,6 @@ describe('SearXNG Bootstrap Composition', () => {
         secret_key: 'test-integration-key-not-for-production',
         limiter: false,
       },
-      search: {
-        formats: ['html', 'json'],
-      },
     });
 
     // Status assertions
@@ -117,25 +114,97 @@ describe('SearXNG Bootstrap Composition', () => {
        'wget', '-q', '-O-', 'http://localhost:8080/healthz'],
       { stdout: 'pipe', stderr: 'pipe' }
     );
-    const healthOutput = await new Response(healthProc.stdout).text();
+    await new Response(healthProc.stdout).text(); // drain stdout
     const healthExit = await healthProc.exited;
     // healthz returns empty 200 or a small response
     expect(healthExit).toBe(0);
   }, 90000);
 
-  it('should generate valid KRO YAML', async () => {
+  it('should generate valid KRO YAML with CEL expressions', async () => {
     const { searxngBootstrap } = await import(
       '../../../src/factories/searxng/compositions/searxng-bootstrap.js'
     );
 
     const yaml: string = searxngBootstrap.toYaml();
 
+    // RGD structure
     expect(yaml).toContain('apiVersion: kro.run/v1alpha1');
     expect(yaml).toContain('kind: ResourceGraphDefinition');
     expect(yaml).toContain('name: searxng-bootstrap');
+
+    // All resource types present
     expect(yaml).toContain('kind: Deployment');
     expect(yaml).toContain('kind: Service');
     expect(yaml).toContain('kind: ConfigMap');
+    expect(yaml).toContain('kind: Namespace');
+
+    // CEL expressions in status (not raw property access)
+    expect(yaml).toContain('.exists(c,');
+
+    // ConfigMap settings YAML uses mixed templates with string()-wrapped CEL refs
+    expect(yaml).toContain('limiter: ${string(schema.spec.server.limiter)}');
+
+    // REGRESSION: required fields in template literals (like `${spec.name}-config`)
+    // should produce clean mixed templates, NOT be wrapped in has() conditionals.
+    // Only OPTIONAL fields should get ternary wrapping.
+    expect(yaml).toContain('name: ${string(schema.spec.name)}-config');
+    expect(yaml).not.toContain('has(schema.spec.name)');
+
+    // No proxy artifacts
     expect(yaml).not.toContain('undefined');
+    expect(yaml).not.toContain('[object Object]');
   });
+
+  it('should deploy via KRO controller and reconcile', async () => {
+    const { searxngBootstrap } = await import(
+      '../../../src/factories/searxng/compositions/searxng-bootstrap.js'
+    );
+
+    const kroNamespace = `typekro-kro-searxng-${suffix}`;
+    const appNamespace = `searxng-kro-${suffix}`;
+
+    await ensureNamespaceExists(kroNamespace, kubeConfig);
+
+    let kroFactory: ResourceFactory<SearxngBootstrapConfig, SearxngBootstrapStatus> | undefined;
+    try {
+      kroFactory = searxngBootstrap.factory('kro', {
+        namespace: kroNamespace,
+        waitForReady: true,
+        timeout: 120000,
+        kubeConfig,
+      });
+
+      const instance = await kroFactory.deploy({
+        name: 'searxng-kro',
+        namespace: appNamespace,
+        server: { secret_key: 'kro-test-key', limiter: false },
+      });
+
+      expect(instance.spec.name).toBe('searxng-kro');
+      expect(instance.status.ready).toBe(true);
+
+      // Verify pod health
+      const proc = Bun.spawn(
+        ['kubectl', 'get', 'pods', '-n', appNamespace, '-o', 'json'],
+        { stdout: 'pipe', stderr: 'pipe' }
+      );
+      const output = await new Response(proc.stdout).text();
+      const exitCode = await proc.exited;
+      if (exitCode === 0) {
+        const podList = JSON.parse(output);
+        for (const pod of podList.items) {
+          expect(pod.status?.phase).toBe('Running');
+        }
+      }
+    } finally {
+      if (kroFactory) {
+        try { await kroFactory.deleteInstance('searxng-kro'); } catch (e) {
+          console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
+        }
+      }
+      const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
+      try { await deleteNamespaceIfExists(kroNamespace, kubeConfig); } catch {}
+      try { await deleteNamespaceIfExists(appNamespace, kubeConfig); } catch {}
+    }
+  }, 180000);
 });

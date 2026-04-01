@@ -414,10 +414,9 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const resource = findResource(parsed, 'dep');
         const templateName = resource.template.metadata.name;
 
-        // CEL string concatenation: schema.spec.name + "-" + region
+        // KRO mixed template: ${schema.spec.name}-${...region}
         expect(templateName).toContain('schema.spec.name');
         expect(templateName).toContain('region');
-        expect(templateName).toContain('+');
       });
 
       it('ternary in factory arg produces CEL conditional in template', () => {

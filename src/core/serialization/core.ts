@@ -35,6 +35,7 @@ import type {
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
+import { applyOmitWrappers, applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
@@ -389,7 +390,7 @@ interface CompositionBodyAnalysisResult {
    * Mutable flag tracking whether `applyAnalysisToResources` has been called.
    * Wrapped in an object so Biome doesn't hoist it to `const`.
    */
-  analysisState: { appliedToResources: boolean };
+  analysisState: { appliedToResources: boolean; ternaryAndOmitApplied: boolean };
 }
 
 /**
@@ -411,7 +412,7 @@ function processCompositionBodyAnalysis(
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): CompositionBodyAnalysisResult {
   let compositionAnalysis: ASTAnalysisResult | null = null;
-  const analysisState = { appliedToResources: false };
+  const analysisState = { appliedToResources: false, ternaryAndOmitApplied: false };
 
   const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
     ?.__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
@@ -874,7 +875,26 @@ function createTypedResourceGraph<
         }
       }
 
-      return serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
+      // Apply ternary conditionals and omit wrappers (once only — guard
+      // prevents double-processing if toYaml() is called multiple times).
+      if (!analysisState.ternaryAndOmitApplied) {
+        analysisState.ternaryAndOmitApplied = true;
+
+        const ternaryConditionals = (kroSchema as unknown as Record<string, unknown>).__ternaryConditionals as
+          Array<{ proxySection: string; falsyValue: string; conditionField: string }> | undefined;
+        if (ternaryConditionals?.length) {
+          applyTernaryConditionalsToResources(resourcesWithKeys, ternaryConditionals);
+        }
+      }
+
+      let yaml = serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
+
+      const omitFields = (kroSchema as unknown as Record<string, unknown>).__omitFields as string[] | undefined;
+      if (omitFields?.length) {
+        yaml = applyOmitWrappers(yaml, omitFields);
+      }
+
+      return yaml;
     },
   };
 

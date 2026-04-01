@@ -2,7 +2,7 @@
  * SearXNG Bootstrap Composition
  *
  * Deploys a complete SearXNG instance: Namespace + ConfigMap + Deployment + Service.
- * Configurable search settings, optional rate limiter via Redis/Valkey URL.
+ * Settings are built from typed spec fields — no proxy objects pass through to YAML.
  *
  * @example
  * ```typescript
@@ -23,9 +23,9 @@
 
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
+import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { simple } from '../../simple/index.js';
-import { searxngConfigMap } from '../resources/config.js';
 import { searxng } from '../resources/searxng.js';
 import {
   DEFAULT_SEARXNG_IMAGE,
@@ -62,35 +62,47 @@ export const searxngBootstrap = kubernetesComposition(
     });
 
     // ── Settings ConfigMap ─────────────────────────────────────────────
-    // secret_key is stripped from the ConfigMap — injected via SEARXNG_SECRET env var
+    // Direct mode: if settingsYaml is provided (string), use it as-is.
+    // Otherwise, build from individual spec fields via template literals.
+    // KRO mode: proxy fields are always truthy, so typeof distinguishes
+    // real strings from proxies. Template literals produce mixed templates
+    // with ${CEL} refs that KRO evaluates at reconciliation time.
+    // secret_key goes via SEARXNG_SECRET env var, not in ConfigMap.
+    // Build Redis section only when redisUrl is provided (non-empty string).
+    // In KRO mode this becomes a CEL conditional via the mixed template.
+    const redisSection = spec.redisUrl
+      ? `\nredis:\n  url: ${spec.redisUrl}`
+      : '';
 
-    const settings: Record<string, unknown> = {
-      use_default_settings: true,
-    };
+    // Build search formats: use spec.search.formats in direct mode (real array),
+    // fall back to defaults in KRO mode (proxy isn't a real array).
+    const searchFormats = Array.isArray(spec.search?.formats)
+      ? spec.search.formats.map((f: string) => `    - ${f}`).join('\n')
+      : '    - html\n    - json';
 
-    if (spec.server) {
-      settings.server = { ...spec.server };
-    }
-    if (spec.search) {
-      settings.search = spec.search;
-    }
-
-    // If redisUrl is provided, configure the rate limiter in settings.yml
-    // UNLESS the user explicitly set limiter: false
-    if (spec.redisUrl) {
-      if (!settings.server) settings.server = {};
-      const server = settings.server as Record<string, unknown>;
-      if (server.limiter !== false) {
-        server.limiter = true;
-      }
-      settings.redis = { url: spec.redisUrl };
-    }
-
+    const settingsYaml =
+      typeof spec.settingsYaml === 'string'
+        ? spec.settingsYaml
+        : `use_default_settings: true
+server:
+  limiter: ${spec.server?.limiter ?? false}
+search:
+  formats:
+${searchFormats}
+${redisSection}`;
     const configMapName = `${spec.name}-config`;
-    const _config = searxngConfigMap({
-      name: configMapName,
-      namespace: resolvedNamespace,
-      settings,
+
+    const _config = configMap({
+      metadata: {
+        name: configMapName,
+        namespace: resolvedNamespace,
+        labels: {
+          'app.kubernetes.io/name': 'searxng',
+          'app.kubernetes.io/component': 'config',
+          'app.kubernetes.io/managed-by': 'typekro',
+        },
+      },
+      data: { 'settings.yml': settingsYaml },
       id: 'searxngConfig',
     });
 
@@ -126,8 +138,6 @@ export const searxngBootstrap = kubernetesComposition(
     });
 
     // ── Status ─────────────────────────────────────────────────────────
-    // Use Cel.expr for KRO compatibility — direct property access doesn't
-    // work in KRO mode where resources are proxy objects.
 
     return {
       ready: Cel.expr<boolean>(

@@ -4,7 +4,6 @@
 
 import { describe, expect, it } from 'bun:test';
 import { searxng } from '../../../src/factories/searxng/resources/searxng.js';
-import { searxngConfigMap } from '../../../src/factories/searxng/resources/config.js';
 
 describe('SearXNG Factory', () => {
   describe('searxng deployment', () => {
@@ -32,7 +31,7 @@ describe('SearXNG Factory', () => {
     it('should use default image when not specified', () => {
       const deploy = searxng({ name: 'test', spec: {} });
       const containers = (deploy.spec as any).template.spec.containers;
-      expect(containers[0].image).toBe('searxng/searxng:latest');
+      expect(containers[0].image).toBe('searxng/searxng:2026.3.29-7ac4ff39f');
     });
 
     it('should use custom image when specified', () => {
@@ -52,41 +51,59 @@ describe('SearXNG Factory', () => {
       expect((deploy.spec as any).replicas).toBe(3);
     });
 
-    it('should include environment variables', () => {
+    it('should inject secret_key via SEARXNG_SECRET env var', () => {
+      const deploy = searxng({
+        name: 'test',
+        spec: {
+          server: { secret_key: 'my-secret' },
+        },
+      });
+      const env = (deploy.spec as any).template.spec.containers[0].env;
+      expect(env).toContainEqual({ name: 'SEARXNG_SECRET', value: 'my-secret' });
+    });
+
+    it('should include environment variables from spec', () => {
       const deploy = searxng({
         name: 'test',
         spec: {
           instanceName: 'My Search',
           baseUrl: 'https://search.example.com/',
-          server: { secret_key: 'test-secret' },
           env: { TZ: 'UTC' },
         },
       });
       const env = (deploy.spec as any).template.spec.containers[0].env;
       expect(env).toContainEqual({ name: 'INSTANCE_NAME', value: 'My Search' });
       expect(env).toContainEqual({ name: 'BASE_URL', value: 'https://search.example.com/' });
-      // secret_key injected via SEARXNG_SECRET env var (not in ConfigMap)
-      expect(env).toContainEqual({ name: 'SEARXNG_SECRET', value: 'test-secret' });
       expect(env).toContainEqual({ name: 'TZ', value: 'UTC' });
     });
 
-    it('should mount settings configmap', () => {
+    it('should use default configMapName when not specified', () => {
       const deploy = searxng({ name: 'test', spec: {} });
       const volumes = (deploy.spec as any).template.spec.volumes;
-      const mounts = (deploy.spec as any).template.spec.containers[0].volumeMounts;
-
-      expect(volumes[0].name).toBe('searxng-config');
       expect(volumes[0].configMap.name).toBe('test-config');
-      expect(mounts[0].mountPath).toBe('/etc/searxng/settings.yml');
-      expect(mounts[0].subPath).toBe('settings.yml');
     });
 
-    it('should include health probes', () => {
+    it('should use custom configMapName when specified', () => {
+      const deploy = searxng({ name: 'test', spec: { configMapName: 'custom-settings' } });
+      const volumes = (deploy.spec as any).template.spec.volumes;
+      expect(volumes[0].configMap.name).toBe('custom-settings');
+    });
+
+    it('should mount settings at /etc/searxng/settings.yml', () => {
+      const deploy = searxng({ name: 'test', spec: {} });
+      const mounts = (deploy.spec as any).template.spec.containers[0].volumeMounts;
+      expect(mounts[0].mountPath).toBe('/etc/searxng/settings.yml');
+      expect(mounts[0].subPath).toBe('settings.yml');
+      expect(mounts[0].readOnly).toBe(true);
+    });
+
+    it('should include startup, liveness, and readiness probes', () => {
       const deploy = searxng({ name: 'test', spec: {} });
       const container = (deploy.spec as any).template.spec.containers[0];
-
+      expect(container.startupProbe.httpGet.path).toBe('/healthz');
       expect(container.livenessProbe.httpGet.path).toBe('/healthz');
       expect(container.readinessProbe.httpGet.path).toBe('/healthz');
+      expect(container.startupProbe.failureThreshold).toBe(6);
     });
 
     it('should set resource limits', () => {
@@ -109,68 +126,6 @@ describe('SearXNG Factory', () => {
       expect(deploy.metadata.labels?.['app.kubernetes.io/name']).toBe('searxng');
       expect(deploy.metadata.labels?.['app.kubernetes.io/instance']).toBe('my-search');
       expect(deploy.metadata.labels?.['app.kubernetes.io/managed-by']).toBe('typekro');
-    });
-  });
-
-  describe('searxng readiness evaluator', () => {
-    it('should attach readiness evaluator', () => {
-      const deploy = searxng({ name: 'test', spec: {} });
-      // The readiness evaluator is attached via WeakMap metadata
-      expect(deploy).toBeDefined();
-    });
-  });
-
-  describe('searxngConfigMap', () => {
-    it('should create a ConfigMap with settings', () => {
-      const cm = searxngConfigMap({
-        name: 'test-config',
-        settings: {
-          use_default_settings: true,
-          server: { secret_key: 'test-key', limiter: false },
-          search: { formats: ['html', 'json'] },
-        },
-      });
-
-      expect(cm.kind).toBe('ConfigMap');
-      expect(cm.apiVersion).toBe('v1');
-      expect(cm.metadata.name).toBe('test-config');
-
-      const data = (cm as any).data;
-      expect(data['settings.yml']).toContain('use_default_settings: true');
-      // secret_key is stripped from ConfigMap (injected via SEARXNG_SECRET env var)
-      expect(data['settings.yml']).not.toContain('secret_key');
-      expect(data['settings.yml']).toContain('limiter: false');
-    });
-
-    it('should handle nested settings', () => {
-      const cm = searxngConfigMap({
-        name: 'test-config',
-        settings: {
-          search: {
-            formats: ['html', 'json'],
-            default_lang: 'en',
-          },
-        },
-      });
-
-      const yaml = (cm as any).data['settings.yml'];
-      expect(yaml).toContain('formats:');
-      expect(yaml).toContain('- html');
-      expect(yaml).toContain('- json');
-      expect(yaml).toContain('default_lang: en');
-    });
-
-    it('should handle special YAML values via js-yaml', () => {
-      const cm = searxngConfigMap({
-        name: 'test-config',
-        settings: {
-          server: { bind_address: '0.0.0.0:8080' },
-        },
-      });
-
-      const yaml = (cm as any).data['settings.yml'];
-      // js-yaml quotes strings with colons
-      expect(yaml).toContain('0.0.0.0:8080');
     });
   });
 });

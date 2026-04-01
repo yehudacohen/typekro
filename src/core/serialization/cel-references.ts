@@ -59,7 +59,7 @@ function generateCelExpression(ref: KubernetesRef<unknown>): string {
  * template literals, e.g.:
  *
  * - `__KUBERNETES_REF___schema___spec.name__-policy`
- *   → `${schema.spec.name + "-policy"}`
+ *   → `${string(schema.spec.name)}-policy`
  *
  * Pattern: `__KUBERNETES_REF_{resourceId}_{fieldPath}__`
  * For schema: `__KUBERNETES_REF___schema___{fieldPath}__`
@@ -79,8 +79,11 @@ function convertKubernetesRefMarkersTocel(str: string): string {
     return `\${${celPath}}`;
   }
 
-  // Mixed content → CEL concatenation
-  const parts: string[] = [];
+  // Mixed content → KRO mixed-template format: literal${string(ref)}literal
+  // Each ${…} is independently evaluated. We wrap in string() so KRO's type
+  // validator accepts non-string types (booleans, numbers) in string contexts
+  // like ConfigMap data values.
+  let result = '';
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -88,29 +91,23 @@ function convertKubernetesRefMarkersTocel(str: string): string {
   match = refPattern.exec(str);
   while (match !== null) {
     if (match.index > lastIndex) {
-      const textBefore = str.slice(lastIndex, match.index);
-      parts.push(`"${textBefore}"`);
+      result += str.slice(lastIndex, match.index);
     }
 
     const [, resourceId, fieldPath] = match;
     const celPath =
       resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
-    parts.push(celPath);
+    result += `\${string(${celPath})}`;
 
     lastIndex = match.index + match[0].length;
     match = refPattern.exec(str);
   }
 
   if (lastIndex < str.length) {
-    const textAfter = str.slice(lastIndex);
-    parts.push(`"${textAfter}"`);
+    result += str.slice(lastIndex);
   }
 
-  if (parts.length === 1) {
-    return `\${${parts[0]}}`;
-  }
-
-  return `\${${parts.join(' + ')}}`;
+  return result;
 }
 
 // ---------------------------------------------------------------------------

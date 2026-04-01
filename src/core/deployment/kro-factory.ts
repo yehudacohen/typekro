@@ -25,6 +25,7 @@ import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import { getResourceId } from '../resources/id.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
+import { applyOmitWrappers, applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
@@ -854,12 +855,32 @@ ${Object.entries(spec as Record<string, any>)
       this.statusMappings,
       this.getNestedStatusCel()
     );
-    const rgdYaml = serializeResourceGraphToYaml(
+    // Apply ternary conditionals to this.resources BEFORE serialization.
+    // Mutates in place (matches core.ts behavior). This is idempotent because
+    // applyTernaryConditionalsToResources replaces raw __KUBERNETES_REF__ markers
+    // in the ternary sections with CEL expressions — a second call finds no
+    // matches. JSON.clone is NOT safe here because it strips proxy-valued fields
+    // like `metadata.namespace` that are KubernetesRef proxies (typeof function).
+    const ternaryConditionals = (kroSchema as unknown as Record<string, unknown>).__ternaryConditionals as
+      Array<{ proxySection: string; falsyValue: string; conditionField: string }> | undefined;
+    if (ternaryConditionals?.length) {
+      applyTernaryConditionalsToResources(this.resources as Record<string, unknown>, ternaryConditionals);
+    }
+
+    let rgdYaml = serializeResourceGraphToYaml(
       this.rgdName,
       this.resources,
       { namespace: this.namespace },
       kroSchema
     );
+
+    // Apply omit() wrappers for optional fields without defaults (KRO 0.9+).
+    // applyOmitWrappers is idempotent: the regex matches bare `${schema.spec.field}`
+    // which won't exist after wrapping (becomes `"${has(...) ? ... : omit()}"`).
+    const omitFields = (kroSchema as unknown as Record<string, unknown>).__omitFields as string[] | undefined;
+    if (omitFields?.length) {
+      rgdYaml = applyOmitWrappers(rgdYaml, omitFields);
+    }
 
     // Parse the YAML to get the RGD object
     const rgdManifests = k8s.loadAllYaml(rgdYaml);

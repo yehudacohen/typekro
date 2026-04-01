@@ -22,7 +22,7 @@
  */
 
 export { searxngBootstrap } from './compositions/index.js';
-export { searxng, searxngConfigMap } from './resources/index.js';
+export { searxng } from './resources/index.js';
 export type {
   SearxngBootstrapConfig,
   SearxngBootstrapStatus,
@@ -30,3 +30,5 @@ export type {
   SearxngStatus,
 } from './types.js';
 export { DEFAULT_SEARXNG_IMAGE, DEFAULT_SEARXNG_PORT } from './types.js';
+export { buildSearxngSettings } from './utils/settings-builder.js';
+export type { SearxngSettingsInput } from './utils/settings-builder.js';

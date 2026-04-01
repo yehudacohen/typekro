@@ -7,11 +7,15 @@
  */
 
 import type { Type } from 'arktype';
+import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { getComponentLogger } from '../logging/index.js';
 import { pascalCase } from '../../utils/string.js';
 import type { SchemaDefinition } from '../types/serialization.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
 import { separateStatusFields } from '../validation/cel-validator.js';
 import { serializeStatusMappingsToCel } from './cel-references.js';
+
+const logger = getComponentLogger('schema-defaults');
 
 // ---------------------------------------------------------------------------
 // Arktype JSON AST → Kro type helpers (private)
@@ -103,13 +107,392 @@ function arktypeJsonToKroFields(node: unknown): Record<string, unknown> {
       childNode !== null &&
       (childNode.required || childNode.optional)
     ) {
-      // Nested object — recurse to produce a nested schema
       fields[prop.key] = arktypeJsonToKroFields(childNode);
     } else {
       fields[prop.key] = getKroTypeFromJson(childNode);
     }
   }
   return fields;
+}
+
+// ---------------------------------------------------------------------------
+// Nullish coalescing default extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract literal default values from `spec.field ?? literalValue` patterns
+ * in a composition function's source code.
+ *
+ * In KRO mode, `??` doesn't trigger for proxy objects (they're truthy).
+ * Instead, we detect these patterns via fn.toString() and add
+ * `| default=<value>` annotations to the KRO SimpleSchema so that KRO
+ * uses the intended default when the field isn't provided in the CR.
+ *
+ * NOTE: `.orValue()` is NOT supported in KRO resource templates (only in
+ * status CEL). Schema `| default=` is the correct mechanism for resource
+ * template defaults.
+ *
+ * Handles:
+ * - `spec.field ?? 'string'` or `spec.field ?? "string"`
+ * - `spec.field ?? 123` (numbers)
+ * - `spec.field ?? true/false` (booleans, including minified !0/!1)
+ * - `spec.parent?.child ?? value` (optional chaining)
+ */
+export function extractNullishDefaults(fnSource: string): Record<string, string | number | boolean> {
+  const defaults: Record<string, string | number | boolean> = {};
+
+  const pattern =
+    /spec\.([\w]+(?:\??\.\w+)*)\s*\?\?\s*(?:(['"])([^'"]*)\2|(-?\d+(?:\.\d+)?)|true|false|!0|!1)(?=\s*[;,)}\n])/g;
+
+  let match: RegExpExecArray | null = pattern.exec(fnSource);
+  while (match !== null) {
+    const fieldPath = match[1]!.replace(/\?\./g, '.');
+    const stringValue = match[3];
+    const numericValue = match[4];
+
+    if (stringValue !== undefined) {
+      defaults[fieldPath] = stringValue;
+    } else if (numericValue !== undefined) {
+      defaults[fieldPath] = Number(numericValue);
+    } else {
+      const fullMatch = match[0];
+      if (fullMatch.endsWith('true') || fullMatch.endsWith('!0')) defaults[fieldPath] = true;
+      else if (fullMatch.endsWith('false') || fullMatch.endsWith('!1'))
+        defaults[fieldPath] = false;
+    }
+    match = pattern.exec(fnSource);
+  }
+
+  return defaults;
+}
+
+/** Result of re-execution defaults analysis. */
+interface ReExecutionResult {
+  /** Resolved ?? default values for spec fields (field → value). */
+  defaults: Record<string, string | number | boolean>;
+  /**
+   * Ternary conditional sections detected in string values.
+   *
+   * Each entry contains the raw truthy-branch text (with __KUBERNETES_REF__
+   * markers, NOT yet converted to CEL), the falsy-branch value, and the
+   * controlling spec field name. Consumers (core.ts, kro-factory.ts) convert
+   * the markers to CEL and build `has(schema.spec.field) ? "truthy" : "falsy"`
+   * conditionals.
+   */
+  ternaryConditionals: Array<{ proxySection: string; falsyValue: string; conditionField: string }>;
+}
+
+/**
+ * Resolve ?? defaults by re-executing the composition function with undefined
+ * for optional spec fields. This triggers ?? fallbacks naturally, resolving
+ * imported constants from the closure (e.g., DEFAULT_SEARXNG_IMAGE).
+ *
+ * Also detects ternary conditional sections (spec.field ? section : '') by
+ * comparing resource strings between proxy-run and defaults-run.
+ *
+ * Runs in a temporary, isolated composition context. Resource registrations
+ * are contained within the temp context. However, composition functions with
+ * external side effects (API calls, logging, metrics) will fire during this
+ * re-execution. Composition functions should be side-effect-free beyond
+ * resource creation for this mechanism to work safely.
+ */
+function resolveDefaultsByReExecution(
+  compositionFn: (...args: unknown[]) => unknown,
+  specType: Type,
+  proxyResources: Record<string, KubernetesResource>
+): ReExecutionResult | undefined {
+  try {
+    const specJson = specType.json as {
+      required?: { key: string }[];
+      optional?: { key: string }[];
+    };
+    if (!specJson) return undefined;
+
+    const defaultsSpec: Record<string, unknown> = {};
+    for (const p of specJson.required ?? []) defaultsSpec[p.key] = '__typekro_default__';
+    for (const p of specJson.optional ?? []) defaultsSpec[p.key] = undefined;
+
+    // Build the set of optional top-level field names. Only optional fields
+    // can be ternary-controlled (required fields always have a value).
+    const optionalFieldNames = new Set((specJson.optional ?? []).map(p => p.key));
+
+    const tempCtx = createCompositionContext('defaults-extraction');
+    runWithCompositionContext(tempCtx, () => {
+      compositionFn(defaultsSpec);
+    });
+
+    const defaults: Record<string, string | number | boolean> = {};
+    const ternaryConditionals: ReExecutionResult['ternaryConditionals'] = [];
+
+    // Match resources by index position. Both runs execute the same composition
+    // function deterministically, so resources are created in the same order.
+    // This is robust for compositions with duplicate kinds (e.g., two Deployments).
+    const proxyList = Object.values(proxyResources) as unknown as Record<string, unknown>[];
+    const defaultsList = Object.values(tempCtx.resources) as unknown as Record<string, unknown>[];
+
+    for (let i = 0; i < Math.min(proxyList.length, defaultsList.length); i++) {
+      extractDefaultsByComparison(proxyList[i]!, defaultsList[i]!, defaults);
+      extractTernaryConditionals(proxyList[i]!, defaultsList[i]!, ternaryConditionals, optionalFieldNames);
+    }
+
+    const hasResults =
+      Object.keys(defaults).length > 0 || ternaryConditionals.length > 0;
+    return hasResults ? { defaults, ternaryConditionals } : undefined;
+  } catch (err) {
+    // Best-effort: composition functions with undefined spec fields may throw
+    // (e.g., accessing spec.nested.field without optional chaining). Log at
+    // debug level for troubleshooting but don't fail schema generation.
+    logger.debug('Defaults re-execution failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  }
+}
+
+/**
+ * Recursively compare proxy-run resource values (with __KUBERNETES_REF__ markers)
+ * against defaults-run values (with resolved constants) to find field defaults.
+ *
+ * When a proxy value is `__KUBERNETES_REF___schema___spec.FIELD__` and the
+ * corresponding defaults value is a concrete scalar, we record FIELD → value.
+ */
+function extractDefaultsByComparison(
+  proxyVal: unknown,
+  defaultsVal: unknown,
+  result: Record<string, string | number | boolean>
+): void {
+  // KubernetesRef proxies are functions whose toString() returns a marker string.
+  // Coerce to string to check for __KUBERNETES_REF__ markers.
+  const proxyStr = typeof proxyVal === 'function' || typeof proxyVal === 'string'
+    ? String(proxyVal) : null;
+
+  // Only match when the proxy value IS the marker (exact, single reference).
+  // If the marker is embedded inside a larger string (template literal), the
+  // value is a transformation, not a default — e.g., `\`has-${spec.extra}\``
+  // produces `"has-<marker>"` which is NOT a default for `extra`.
+  const exactMarkerMatch = proxyStr?.match(
+    /^__KUBERNETES_REF___schema___spec\.(\w+(?:\.\w+)*)__$/
+  );
+  if (exactMarkerMatch) {
+    if (
+      typeof defaultsVal === 'string' ||
+      typeof defaultsVal === 'number' ||
+      typeof defaultsVal === 'boolean'
+    ) {
+      // Skip values that contain the required-field sentinel — these aren't real defaults
+      if (typeof defaultsVal === 'string' && defaultsVal.includes('__typekro_default__')) return;
+      result[exactMarkerMatch[1]!] = defaultsVal;
+    }
+    return;
+  }
+  // If the proxy is a string but contains the marker as part of larger content,
+  // skip the defaults check (recursion into arrays/objects still applies below).
+  if (proxyStr?.includes('__KUBERNETES_REF___schema___')) {
+    return;
+  }
+
+  if (Array.isArray(proxyVal) && Array.isArray(defaultsVal)) {
+    for (let i = 0; i < Math.min(proxyVal.length, defaultsVal.length); i++) {
+      extractDefaultsByComparison(proxyVal[i], defaultsVal[i], result);
+    }
+    return;
+  }
+
+  if (proxyVal && typeof proxyVal === 'object' && defaultsVal && typeof defaultsVal === 'object') {
+    for (const key of Object.keys(proxyVal as Record<string, unknown>)) {
+      extractDefaultsByComparison(
+        (proxyVal as Record<string, unknown>)[key],
+        (defaultsVal as Record<string, unknown>)[key],
+        result
+      );
+    }
+  }
+}
+
+/**
+ * Detect ternary conditional sections by finding markers in the proxy-run
+ * string that are completely ABSENT from the defaults-run string.
+ *
+ * When `spec.redisUrl ? \`redis: ...\` : ''` is evaluated:
+ * - Proxy run (truthy): the redis section with markers is included
+ * - Defaults run (falsy): the redis section is empty — the marker is absent
+ *
+ * For each such "orphan" marker, we extract the surrounding section
+ * (from the previous newline-at-start-of-key to the marker's end) as a
+ * ternary-controlled conditional.
+ */
+function extractTernaryConditionals(
+  proxyVal: unknown,
+  defaultsVal: unknown,
+  result: ReExecutionResult['ternaryConditionals'],
+  optionalFieldNames: Set<string>
+): void {
+  const proxyStr = typeof proxyVal === 'string' ? proxyVal : null;
+  const defaultsStr = typeof defaultsVal === 'string' ? defaultsVal : null;
+
+  if (proxyStr && defaultsStr && proxyStr !== defaultsStr && proxyStr.length > defaultsStr.length) {
+    // Find all __KUBERNETES_REF__ markers in the proxy string
+    const markerPattern = /__KUBERNETES_REF___schema___spec\.(\w+(?:\.\w+)*)__/g;
+    let match: RegExpExecArray | null = markerPattern.exec(proxyStr);
+
+    while (match !== null) {
+      const field = match[1]!;
+      const marker = match[0];
+
+      // Only optional fields can be ternary-controlled. Required fields always
+      // have a value (the sentinel in the defaults run), so their markers are
+      // always "absent" from the defaults string but they're substitutions,
+      // not conditionals.
+      const topLevelField = field.split('.')[0]!;
+      if (!optionalFieldNames.has(topLevelField)) {
+        match = markerPattern.exec(proxyStr);
+        continue;
+      }
+
+      // Check if this marker is a TERNARY conditional (section absent from defaults)
+      // vs a ?? fallback (same key exists with a different value in defaults).
+      // Find the YAML key before the marker (e.g., `url: ` before the redisUrl marker).
+      const lineStart = proxyStr.lastIndexOf('\n', match.index) + 1;
+      const line = proxyStr.slice(lineStart, match.index + marker.length);
+      const keyMatch = line.match(/(\w+):\s*$/)?.[1] || line.match(/^\s*(\w+):/)?.[1];
+      const keyExistsInDefaults = keyMatch
+        ? new RegExp(`\\b${keyMatch}\\s*:`).test(defaultsStr)
+        : false;
+
+      // If the key exists in defaults, this is a ?? fallback (handled elsewhere).
+      // If the key is absent, this is a ternary conditional (section not present).
+      if (!keyExistsInDefaults && !defaultsStr.includes(marker)) {
+        // Extract the section containing this marker.
+        // Walk backward from the marker to find the start of the conditional
+        // section. Include parent YAML keys at ALL nesting levels (not just one)
+        // so that `redis:\n  connection:\n    url: ${ref}` captures all three lines.
+        let sectionStart = match.index;
+        while (sectionStart > 0 && proxyStr[sectionStart - 1] !== '\n') {
+          sectionStart--;
+        }
+        // Walk back through preceding blank lines
+        while (sectionStart > 0 && proxyStr[sectionStart - 1] === '\n') {
+          sectionStart--;
+        }
+        // Walk back through parent YAML keys (lines with `key:` and no value).
+        // Keep walking as long as the previous line is a key-only line that
+        // doesn't exist as a complete line in the defaults. Set membership
+        // (not substring match) avoids false stops on coincidental substrings.
+        const defaultsLines = new Set(defaultsStr.split('\n'));
+        const allLines = proxyStr.slice(0, sectionStart).split('\n');
+        while (allLines.length > 0) {
+          const prevLine = allLines[allLines.length - 1]!;
+          const isKeyOnlyLine = /^\s*\w+:\s*$/.test(prevLine);
+          const lineExistsInDefaults = defaultsLines.has(prevLine);
+          if (isKeyOnlyLine && !lineExistsInDefaults) {
+            sectionStart -= prevLine.length + 1; // +1 for the \n
+            allLines.pop();
+          } else {
+            break;
+          }
+        }
+
+        // Section ends after the marker
+        const sectionEnd = match.index + marker.length;
+
+        const proxySection = proxyStr.slice(sectionStart, sectionEnd);
+
+        // Verify the section, when removed from proxy string, makes it closer to defaults
+        if (proxySection.includes(marker)) {
+          result.push({
+            proxySection,
+            falsyValue: '',
+            conditionField: field,
+          });
+        }
+      }
+      match = markerPattern.exec(proxyStr);
+    }
+    return;
+  }
+
+  // Recurse into arrays and objects
+  if (Array.isArray(proxyVal) && Array.isArray(defaultsVal)) {
+    for (let i = 0; i < Math.min(proxyVal.length, defaultsVal.length); i++) {
+      extractTernaryConditionals(proxyVal[i], defaultsVal[i], result, optionalFieldNames);
+    }
+    return;
+  }
+
+  if (proxyVal && typeof proxyVal === 'object' && defaultsVal && typeof defaultsVal === 'object') {
+    for (const key of Object.keys(proxyVal as Record<string, unknown>)) {
+      extractTernaryConditionals(
+        (proxyVal as Record<string, unknown>)[key],
+        (defaultsVal as Record<string, unknown>)[key],
+        result,
+        optionalFieldNames
+      );
+    }
+  }
+}
+
+/**
+ * Apply extracted nullish defaults to a KRO SimpleSchema spec fields object.
+ * Appends `| default=<value>` to the field's type string.
+ */
+function applyNullishDefaults(
+  specFields: Record<string, unknown>,
+  defaults: Record<string, string | number | boolean>
+): void {
+  for (const [path, value] of Object.entries(defaults)) {
+    const parts = path.split('.');
+    let current: Record<string, unknown> = specFields;
+
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i]!;
+      if (current[part] && typeof current[part] === 'object') {
+        current = current[part] as Record<string, unknown>;
+      } else {
+        current = undefined as unknown as Record<string, unknown>;
+        break;
+      }
+    }
+
+    if (!current) continue;
+
+    const fieldName = parts[parts.length - 1]!;
+    const existingType = current[fieldName];
+    if (typeof existingType === 'string' && !existingType.includes('default=')) {
+      const defaultStr = typeof value === 'string' ? `"${value}"` : String(value);
+      current[fieldName] = `${existingType} | default=${defaultStr}`;
+    }
+  }
+}
+
+/**
+ * Collect optional spec fields that don't have | default= annotations.
+ * These fields need omit() wrapping in resource templates (KRO 0.9+)
+ * so they're removed from the K8s resource when not provided, rather
+ * than failing with an invalid zero value.
+ *
+ * Returns field paths (e.g., ['baseUrl', 'resources', 'env']).
+ */
+function collectOmitFields(
+  specFields: Record<string, unknown>,
+  specType: Type
+): string[] {
+  const specJson = specType.json as { optional?: { key: string }[] } | undefined;
+  const optionalKeys = (specJson?.optional ?? []).map((p: { key: string }) => p.key);
+  const omitFields: string[] = [];
+
+  for (const fieldName of optionalKeys) {
+    const existingType = specFields[fieldName];
+    // Scalar without default → needs omit()
+    if (typeof existingType === 'string' && !existingType.includes('default=')) {
+      omitFields.push(fieldName);
+    }
+    // Object without defaults on children → needs omit()
+    if (typeof existingType === 'object' && existingType !== null) {
+      omitFields.push(fieldName);
+    }
+  }
+
+  return omitFields;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +526,44 @@ export function arktypeToKroSchema(
     specFields.name = `string | default="${name}"`;
   }
 
+  // Extract ?? defaults and add | default= annotations to the schema.
+  // KRO uses these when a field isn't provided in the CR instance.
+  //
+  // Phase 1: fn.toString() regex — extracts literal ?? fallbacks quickly.
+  // Phase 2: Defaults resolution run — calls the composition function with
+  //   undefined for optional fields, triggering ?? and resolving imported
+  //   constants from the closure. Compares resolved resources with the
+  //   proxy-run resources (markers) to extract field → default mappings.
+  const statusMeta = statusMappings as Record<string, unknown> | undefined;
+  const compositionFn = statusMeta?.__originalCompositionFn;
+
+  // Phase 1: regex extraction for literals
+  if (typeof compositionFn === 'function') {
+    const regexDefaults = extractNullishDefaults(compositionFn.toString());
+    applyNullishDefaults(specFields, regexDefaults);
+  }
+
+  // Phase 2: resolve imported constants + detect ternary conditionals
+  let ternaryConditionals: ReExecutionResult['ternaryConditionals'] = [];
+  if (typeof compositionFn === 'function' && resources) {
+    const reExecutionResult = resolveDefaultsByReExecution(
+      compositionFn as (...args: unknown[]) => unknown,
+      schemaDefinition.spec,
+      resources
+    );
+    if (reExecutionResult) {
+      applyNullishDefaults(specFields, reExecutionResult.defaults);
+      ternaryConditionals = reExecutionResult.ternaryConditionals;
+    }
+  }
+
+  // Collect optional fields that DON'T have | default= after ?? extraction
+  // AND aren't already handled by ternary conditionals.
+  // These need omit() wrapping in resource templates (KRO 0.9+).
+  const ternaryFieldNames = new Set(ternaryConditionals.map(t => t.conditionField));
+  const omitFields = collectOmitFields(specFields, schemaDefinition.spec)
+    .filter(f => !ternaryFieldNames.has(f));
+
   // Filter internal fields (prefixed with __) before classification.
   // These are TypeKro metadata (e.g., __nestedStatusCel, __originalCompositionFn)
   // that should never appear in the KRO schema.
@@ -174,7 +595,7 @@ export function arktypeToKroSchema(
     ? schemaDefinition.apiVersion.split('/')[1] || schemaDefinition.apiVersion
     : schemaDefinition.apiVersion;
 
-  return {
+  const schema: KroSimpleSchema = {
     apiVersion: schemaApiVersion,
     kind: schemaDefinition.kind,
     spec: specFields,
@@ -182,6 +603,23 @@ export function arktypeToKroSchema(
       ...statusCelExpressions,
     },
   };
+
+  // Attach metadata as non-enumerable properties — available for
+  // resource template processing but don't appear in the schema YAML.
+  if (ternaryConditionals.length > 0) {
+    Object.defineProperty(schema, '__ternaryConditionals', {
+      value: ternaryConditionals,
+      enumerable: false,
+    });
+  }
+  if (omitFields.length > 0) {
+    Object.defineProperty(schema, '__omitFields', {
+      value: omitFields,
+      enumerable: false,
+    });
+  }
+
+  return schema;
 }
 
 /**
