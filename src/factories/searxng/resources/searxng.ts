@@ -60,7 +60,7 @@ function searxngReadinessEvaluator(liveResource: unknown): ResourceStatus {
 /**
  * Create a SearXNG Deployment resource.
  *
- * @example
+ * @example Recommended — mount an existing Secret via `secretKeyRef`
  * ```typescript
  * const search = searxng({
  *   name: 'my-searxng',
@@ -68,7 +68,26 @@ function searxngReadinessEvaluator(liveResource: unknown): ResourceStatus {
  *   spec: {
  *     instanceName: 'My Search',
  *     search: { formats: ['html', 'json'] },
- *     server: { secret_key: 'injected-via-env', limiter: false },
+ *     server: { limiter: false },
+ *     // Secret is managed externally (Vault, external-secrets operator,
+ *     // or created alongside this factory). The Deployment mounts
+ *     // SEARXNG_SECRET via valueFrom.secretKeyRef — the plaintext
+ *     // never enters the Deployment spec.
+ *     secretKeyRef: { name: 'my-searxng-secret', key: 'secret_key' },
+ *   },
+ * });
+ * ```
+ *
+ * @example Discouraged — plaintext `secret_key` in the config
+ * ```typescript
+ * // Works, but the secret appears in `kubectl get deploy -o yaml` as
+ * // Deployment.spec.template.spec.containers[0].env[].value. Prefer the
+ * // `secretKeyRef` path above or use the `searxngBootstrap` composition
+ * // which auto-creates a K8s Secret and wires it through for you.
+ * const search = searxng({
+ *   name: 'my-searxng',
+ *   spec: {
+ *     server: { secret_key: 'change-me-in-production', limiter: false },
  *   },
  * });
  * ```
