@@ -166,4 +166,92 @@ describe('Secret Factory Base64 Encoding', () => {
     expect(secretResource.data?.number).toBe(Buffer.from('123').toString('base64'));
     expect(secretResource.data?.boolean).toBe(Buffer.from('true').toString('base64'));
   });
+
+  // =========================================================================
+  // Proxy-value guard (integration-skill rule #31)
+  // =========================================================================
+  //
+  // simple.Secret must refuse stringData values that are KubernetesRef proxies
+  // or that contain __KUBERNETES_REF__ marker tokens. Base64-encoding these
+  // at composition time would bake the marker into the final Secret instead
+  // of the user's actual secret — a silent and catastrophic failure.
+  // Compositions that pass schema.spec references into a Secret should use
+  // the low-level `secret()` factory instead.
+
+  describe('Proxy-value guard (rule #31)', () => {
+    it('throws a descriptive error when stringData value is a KubernetesRef proxy', async () => {
+      const { createSchemaProxy } = await import('../../src/core/references/schema-proxy.js');
+      const schema = createSchemaProxy<
+        { apiKey: string },
+        Record<string, never>
+      >();
+
+      expect(() =>
+        Secret({
+          name: 'api-secret',
+          stringData: {
+            api_key: schema.spec.apiKey as unknown as string,
+          },
+        })
+      ).toThrow(/simple\.Secret received a KubernetesRef proxy for stringData\["api_key"\]/);
+    });
+
+    it('error message points at the low-level `secret()` factory', async () => {
+      const { createSchemaProxy } = await import('../../src/core/references/schema-proxy.js');
+      const schema = createSchemaProxy<{ token: string }, Record<string, never>>();
+
+      try {
+        Secret({
+          name: 'token-secret',
+          stringData: { token: schema.spec.token as unknown as string },
+        });
+        throw new Error('expected Secret() to throw');
+      } catch (err) {
+        const msg = (err as Error).message;
+        expect(msg).toContain('low-level `secret()` factory');
+        expect(msg).toContain('kubernetes/config/secret');
+        expect(msg).toContain('rule #31');
+      }
+    });
+
+    it('throws when stringData contains a string with __KUBERNETES_REF__ markers', () => {
+      // Simulate what a template literal containing a schema proxy produces:
+      // a real string whose content is the marker token.
+      const markerString = '__KUBERNETES_REF___schema___spec.dbPassword__';
+
+      expect(() =>
+        Secret({
+          name: 'db-secret',
+          stringData: {
+            password: markerString,
+          },
+        })
+      ).toThrow(/string with __KUBERNETES_REF__ markers for stringData\["password"\]/);
+    });
+
+    it('does NOT throw for plain string values (regression guard)', () => {
+      expect(() =>
+        Secret({
+          name: 'plain-secret',
+          stringData: {
+            username: 'admin',
+            password: 'correct-horse-battery-staple',
+          },
+        })
+      ).not.toThrow();
+    });
+
+    it('does NOT throw for data (already-base64) values even if they contain "REF"', () => {
+      // The guard applies to stringData only — `data` values are already
+      // base64-encoded by the caller and bypass the encoding loop.
+      expect(() =>
+        Secret({
+          name: 'data-secret',
+          data: {
+            content: Buffer.from('__KUBERNETES_REF__fake__').toString('base64'),
+          },
+        })
+      ).not.toThrow();
+    });
+  });
 });

@@ -173,6 +173,92 @@ function conditional<T = unknown>(
 }
 
 /**
+ * Creates a CEL `has(path)` expression for checking whether an optional
+ * schema or resource field is present.
+ *
+ * Use this in `includeWhen`, `readyWhen`, and other conditional contexts
+ * where you need to test whether a user provided an optional spec field.
+ * In KRO mode, the result is emitted as `has(schema.spec.X)` (or
+ * `has(resources.X.Y)`); in direct mode, the caller should use native
+ * JavaScript truthiness checks instead — this helper is only meaningful
+ * when the argument is a KubernetesRef proxy.
+ *
+ * @example
+ * ```typescript
+ * // Create a Secret only when the user did NOT provide an external ref
+ * setIncludeWhen(autoSecret, [Cel.not(Cel.has(spec.externalSecretRef))]);
+ *
+ * // Branch a field value on whether an optional field is present
+ * valueFrom: {
+ *   secretKeyRef: {
+ *     name: Cel.conditional(
+ *       Cel.has(spec.externalSecretRef),
+ *       spec.externalSecretRef.name,
+ *       Cel.str(spec.name, '-secret')
+ *     ),
+ *   },
+ * }
+ * ```
+ */
+function has(ref: RefOrValue<unknown>): CelExpression<boolean> & boolean {
+  if (isKubernetesRef(ref)) {
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: `has(${getInnerCelPath(ref)})`,
+    } as CelExpression<boolean> & boolean;
+  }
+  if (isCelExpression(ref)) {
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: `has(${ref.expression})`,
+    } as CelExpression<boolean> & boolean;
+  }
+  throw new Error(
+    'Cel.has() requires a KubernetesRef or CelExpression argument. Direct-mode callers should use native JavaScript truthiness checks instead.'
+  );
+}
+
+/**
+ * Negate a CEL boolean expression or a KubernetesRef.
+ *
+ * When passed a bare KubernetesRef, this is equivalent to
+ * `!has(path)` — i.e., "the optional field is NOT set". This is the
+ * natural read for conditions like "create this resource only when the
+ * user didn't provide X".
+ *
+ * When passed a CelExpression, it produces `!(expression)`.
+ *
+ * @example
+ * ```typescript
+ * // Create the auto-Secret only when the user hasn't provided an external one
+ * setIncludeWhen(autoSecret, [Cel.not(spec.externalSecretRef)]);
+ * ```
+ */
+function not(operand: RefOrValue<unknown>): CelExpression<boolean> & boolean {
+  if (isKubernetesRef(operand)) {
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: `!has(${getInnerCelPath(operand)})`,
+    } as CelExpression<boolean> & boolean;
+  }
+  if (isCelExpression(operand)) {
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: `!(${operand.expression})`,
+    } as CelExpression<boolean> & boolean;
+  }
+  if (typeof operand === 'boolean') {
+    return {
+      [CEL_EXPRESSION_BRAND]: true,
+      expression: String(!operand),
+    } as CelExpression<boolean> & boolean;
+  }
+  throw new Error(
+    'Cel.not() requires a KubernetesRef, CelExpression, or boolean argument.'
+  );
+}
+
+/**
  * Creates a CEL expression for mathematical operations
  */
 function math<T = unknown>(
@@ -366,6 +452,8 @@ export const Cel = {
   math,
   template,
   concat,
+  has,
+  not,
   /** Tagged template literal for CEL expressions. Alias: standalone `cel` export. */
   tag: cel,
 

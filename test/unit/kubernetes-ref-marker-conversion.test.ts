@@ -30,36 +30,36 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
   });
 
   describe('Mixed Content Conversion (Template Literals)', () => {
-    it('should convert marker with suffix to CEL concatenation', () => {
+    it('should convert marker with suffix to mixed template with string()', () => {
       const input = '__KUBERNETES_REF___schema___spec.name__-namespace-policy';
       const result = processResourceReferences(input);
-      expect(result).toBe('${schema.spec.name + "-namespace-policy"}');
+      expect(result).toBe('${string(schema.spec.name)}-namespace-policy');
     });
 
-    it('should convert marker with prefix to CEL concatenation', () => {
+    it('should convert marker with prefix to mixed template with string()', () => {
       const input = 'prefix-__KUBERNETES_REF___schema___spec.name__';
       const result = processResourceReferences(input);
-      expect(result).toBe('${"prefix-" + schema.spec.name}');
+      expect(result).toBe('prefix-${string(schema.spec.name)}');
     });
 
-    it('should convert marker with both prefix and suffix to CEL concatenation', () => {
+    it('should convert marker with both prefix and suffix to mixed template with string()', () => {
       const input = 'app-__KUBERNETES_REF___schema___spec.name__-service';
       const result = processResourceReferences(input);
-      expect(result).toBe('${"app-" + schema.spec.name + "-service"}');
+      expect(result).toBe('app-${string(schema.spec.name)}-service');
     });
 
-    it('should convert multiple markers in a string to CEL concatenation', () => {
+    it('should convert multiple markers in a string to mixed template with string()', () => {
       const input =
         '__KUBERNETES_REF___schema___spec.name__-__KUBERNETES_REF___schema___spec.tier__';
       const result = processResourceReferences(input);
-      expect(result).toBe('${schema.spec.name + "-" + schema.spec.tier}');
+      expect(result).toBe('${string(schema.spec.name)}-${string(schema.spec.tier)}');
     });
 
     it('should handle complex template with multiple markers and text', () => {
       const input =
         'https://__KUBERNETES_REF___schema___spec.hostname__:__KUBERNETES_REF___schema___spec.port__/api';
       const result = processResourceReferences(input);
-      expect(result).toBe('${"https://" + schema.spec.hostname + ":" + schema.spec.port + "/api"}');
+      expect(result).toBe('https://${string(schema.spec.hostname)}:${string(schema.spec.port)}/api');
     });
   });
 
@@ -72,7 +72,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         },
       };
       const result = processResourceReferences(input) as Record<string, Record<string, unknown>>;
-      expect(result.metadata!.name).toBe('${schema.spec.name + "-policy"}');
+      expect(result.metadata!.name).toBe('${string(schema.spec.name)}-policy');
       expect(result.metadata!.namespace).toBe('default');
     });
 
@@ -129,7 +129,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
         clusterIP: '__KUBERNETES_REF_service_status.clusterIP__',
       };
       const result = processResourceReferences(input) as Record<string, unknown>;
-      expect(result.name).toBe('${schema.spec.name + "-svc"}');
+      expect(result.name).toBe('${string(schema.spec.name)}-svc');
       expect(result.clusterIP).toBe('${service.status.clusterIP}');
     });
   });
@@ -210,7 +210,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
       const endpointSelector = spec.endpointSelector as Record<string, unknown>;
       const matchLabels = endpointSelector.matchLabels as Record<string, unknown>;
 
-      expect(metadata.name).toBe('${schema.spec.name + "-namespace-policy"}');
+      expect(metadata.name).toBe('${string(schema.spec.name)}-namespace-policy');
       expect(metadata.namespace).toBe('typekro-test-cross-resource');
       expect(matchLabels.app).toBe('${schema.spec.name}');
       expect(matchLabels.tier).toBe('${schema.spec.tier}');
@@ -272,7 +272,7 @@ describe('__KUBERNETES_REF__ Marker to CEL Conversion', () => {
       const selector = spec.selector as Record<string, unknown>;
       const ports = spec.ports as Record<string, unknown>[];
 
-      expect(metadata.name).toBe('${schema.spec.name + "-svc"}');
+      expect(metadata.name).toBe('${string(schema.spec.name)}-svc');
       expect(selector.app).toBe('${schema.spec.name}');
       expect(ports[0]!.port).toBe(80);
       expect(ports[0]!.targetPort).toBe('${schema.spec.containerPort}');

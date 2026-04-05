@@ -25,6 +25,7 @@ import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import { getResourceId } from '../resources/id.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
+import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
@@ -83,6 +84,14 @@ export class KroResourceFactoryImpl<
   private readonly logger = getComponentLogger('kro-factory');
   private readonly factoryOptions: FactoryOptions;
   private readonly clientManager: KubernetesClientManager;
+  /**
+   * Tracks whether ternary-conditional post-processing has already been applied
+   * to `this.resources`. The mutation is idempotent today (consumed markers are
+   * replaced with CEL in the first pass), but we guard explicitly for symmetry
+   * with `core.ts` and to avoid relying on that idempotency claim across future
+   * refactors. Applies across both `toYaml()` and `ensureRGDDeployed()` paths.
+   */
+  private ternaryAndOmitApplied = false;
 
   // Dependency-inversion providers (Phase 3.5) — injected via FactoryOptions
   // instead of dynamic import() from factories/ and alchemy/ layers.
@@ -817,21 +826,54 @@ ${Object.entries(spec as Record<string, any>)
   .map(([key, value]) => `  ${key}: ${typeof value === 'string' ? `"${value}"` : value}`)
   .join('\n')}`;
     } else {
-      // Generate RGD YAML
-      const kroSchema = generateKroSchemaFromArktype(
-        this.name,
-        this.schemaDefinition,
-        this.resources,
-        this.statusMappings,
-        this.getNestedStatusCel()
-      );
-      return serializeResourceGraphToYaml(
-        this.rgdName,
-        this.resources,
-        { namespace: this.namespace },
-        kroSchema
-      );
+      return this.buildRgdYaml();
     }
+  }
+
+  /**
+   * Build the RGD YAML string shared by `toYaml()` and `ensureRGDDeployed()`.
+   *
+   * Both call sites must apply ternary-conditional post-processing;
+   * extracting the logic ensures the two paths stay in sync and share the
+   * single-apply guard on `this.ternaryAndOmitApplied`.
+   *
+   * Note: omit() wrapping for optional fields is no longer a post-processing
+   * step — it's applied inline during ref-to-CEL conversion via
+   * `SerializationContext.omitFields`, which `serializeResourceGraphToYaml`
+   * populates from `kroSchema.__omitFields` automatically.
+   */
+  private buildRgdYaml(): string {
+    const kroSchema = generateKroSchemaFromArktype(
+      this.name,
+      this.schemaDefinition,
+      this.resources,
+      this.statusMappings,
+      this.getNestedStatusCel()
+    );
+
+    // Apply ternary conditionals to this.resources BEFORE serialization.
+    // Mutates in place (JSON.clone is NOT safe here because it strips
+    // proxy-valued fields like `metadata.namespace` that are KubernetesRef
+    // proxies with typeof function). The single-apply guard mirrors
+    // core.ts — the underlying operation is idempotent today, but we
+    // explicitly skip re-runs to keep both paths structurally identical
+    // and avoid depending on that idempotency across future refactors.
+    if (!this.ternaryAndOmitApplied) {
+      this.ternaryAndOmitApplied = true;
+      if (kroSchema.__ternaryConditionals?.length) {
+        applyTernaryConditionalsToResources(
+          this.resources as Record<string, unknown>,
+          kroSchema.__ternaryConditionals
+        );
+      }
+    }
+
+    return serializeResourceGraphToYaml(
+      this.rgdName,
+      this.resources,
+      { namespace: this.namespace },
+      kroSchema
+    );
   }
 
   /**
@@ -846,20 +888,9 @@ ${Object.entries(spec as Record<string, any>)
       DeploymentMode.KRO
     );
 
-    // Create the RGD using the same serialization logic as toYaml()
-    const kroSchema = generateKroSchemaFromArktype(
-      this.name,
-      this.schemaDefinition,
-      this.resources,
-      this.statusMappings,
-      this.getNestedStatusCel()
-    );
-    const rgdYaml = serializeResourceGraphToYaml(
-      this.rgdName,
-      this.resources,
-      { namespace: this.namespace },
-      kroSchema
-    );
+    // Build the RGD YAML — shared with toYaml() so both call sites emit
+    // identical post-processed output and share the single-apply guard.
+    const rgdYaml = this.buildRgdYaml();
 
     // Parse the YAML to get the RGD object
     const rgdManifests = k8s.loadAllYaml(rgdYaml);

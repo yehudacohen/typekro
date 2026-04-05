@@ -25,6 +25,7 @@ import type {
   KroResourceGraphDefinition,
   KroResourceTemplate,
   KroSimpleSchema,
+  KroSimpleSchemaWithMetadata,
   ResourceDependency,
   SerializationContext,
   SerializationOptions,
@@ -95,8 +96,15 @@ function readTemplateOverrides(
  * Convert a single includeWhen value to a CEL expression string.
  *
  * Accepted input types:
- *  - KubernetesRef proxy  → `${schema.spec.field}`
- *  - CelExpression object → `${expression}`
+ *  - KubernetesRef proxy  → `${schema.spec.field}` — the field's value is
+ *    used as the boolean condition. This is the semantics of the explicit
+ *    `.withIncludeWhen(spec.boolField)` API: the caller is being deliberate
+ *    about the field they want as the test. Callers who need a presence
+ *    check on an optional field should use `Cel.has(ref)` explicitly, or
+ *    write `if (spec.optional)` in the composition body (which the AST
+ *    analyzer rewrites to `has(...)` automatically based on the schema).
+ *  - CelExpression object → `${expression}` — use Cel.has / Cel.not /
+ *    Cel.expr to build explicit conditions.
  *  - string (already CEL) → pass-through
  *  - string with __KUBERNETES_REF__ markers → convert markers to CEL
  */
@@ -459,8 +467,10 @@ function buildResourceEntry(
       apiVersion: String(apiVersionDesc?.value ?? ''),
       kind: String(kindDesc?.value ?? ''),
       metadata: {
-        name: String(processResourceReferences(rawName)),
-        ...(rawNamespace && { namespace: String(processResourceReferences(rawNamespace)) }),
+        name: String(processResourceReferences(rawName, context)),
+        ...(rawNamespace && {
+          namespace: String(processResourceReferences(rawNamespace, context)),
+        }),
       },
     };
 
@@ -555,11 +565,21 @@ export function serializeResourceGraphToYaml(
   options?: SerializationOptions,
   customSchema?: KroSimpleSchema
 ): string {
+  // Extract optional-field omit list from schema metadata (if present).
+  // These fields get `has() ? ... : omit()` wrapping applied inline during
+  // ref-to-CEL conversion — no post-hoc YAML-string rewriting needed.
+  const schemaWithMeta = customSchema as KroSimpleSchemaWithMetadata | undefined;
+  const omitFieldsList = schemaWithMeta?.__omitFields;
+  const omitFields = omitFieldsList && omitFieldsList.length > 0
+    ? new Set(omitFieldsList)
+    : undefined;
+
   // Create serialization context
   const context: SerializationContext = {
     celPrefix: 'resources', // Default Kro prefix, but now configurable
     ...(options?.namespace && { namespace: options.namespace }),
     resourceIdStrategy: 'deterministic',
+    ...(omitFields && { omitFields }),
   };
 
   // 1. Use embedded resource IDs and build dependency graph

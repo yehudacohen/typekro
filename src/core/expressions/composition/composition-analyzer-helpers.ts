@@ -142,9 +142,20 @@ export function extractFactoryId(call: CallExpression): string | undefined {
  *
  * - Replaces `spec.` with `schema.spec.` (for the schema proxy parameter)
  * - Converts `===` to `==`, `!==` to `!=`
- * - Wraps in `${}` for Kro CEL syntax
+ * - Wraps bare schema field references that name an OPTIONAL field with
+ *   `has()` so `if (spec.x)` and `!spec.x` express field-presence checks
+ *   (matching JavaScript truthiness) rather than reading the field's
+ *   value as a boolean. Required fields pass through unchanged because
+ *   `has(schema.spec.required)` is always true and would make the
+ *   condition vacuous.
+ * - Wraps the result in `${}` for Kro CEL syntax.
  */
-export function conditionToCel(node: ASTNode, fullSource: string, specParamName: string): string {
+export function conditionToCel(
+  node: ASTNode,
+  fullSource: string,
+  specParamName: string,
+  optionalFieldNames?: Set<string>
+): string {
   let source = getSource(node, fullSource);
 
   // Replace the spec parameter name with schema.spec
@@ -156,11 +167,37 @@ export function conditionToCel(node: ASTNode, fullSource: string, specParamName:
   source = source.replace(/===/g, '==');
   source = source.replace(/!==/g, '!=');
 
+  // Truthiness → has() for OPTIONAL fields only. JavaScript's
+  // `if (spec.x)` means "the field is set" when x is optional, but
+  // "the value is truthy" when x is a required boolean. We pick the
+  // right interpretation based on whether the tested field is declared
+  // as optional in the schema.
+  //
+  // We handle three shapes, all of which must resolve to a bare
+  // `schema.spec.<path>` expression with nothing else around them:
+  //   (a) `schema.spec.x`        → `has(schema.spec.x)` (if x optional)
+  //   (b) `!schema.spec.x`       → `!has(schema.spec.x)` (if x optional)
+  //   (c) `schema.spec.x.y.z`    → `has(schema.spec.x.y.z)` (if x optional)
+  //
+  // Compound conditions (`&&`, `||`, `==`, `!=`) are left alone — the user
+  // is expressing a value-based test and the authored CEL is already
+  // correct after the operator conversions above.
+  //
   // Note: We do NOT convert quotes here. Bun's transpiler normalizes JS strings
   // to double quotes in fn.toString(), so the source text already uses double quotes.
   // For template values (inside resource templates), double quotes work fine because
   // they're nested in the YAML structure. For status values, the caller is responsible
   // for converting double quotes to single quotes if needed to avoid YAML escaping.
+  const bareRefPattern = /^(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)\s*$/;
+  const bareMatch = bareRefPattern.exec(source);
+  if (bareMatch) {
+    const negation = bareMatch[1];
+    const path = bareMatch[2];
+    const topLevelField = bareMatch[3];
+    if (topLevelField && optionalFieldNames?.has(topLevelField)) {
+      source = `${negation}has(${path})`;
+    }
+  }
 
   return `\${${source}}`;
 }

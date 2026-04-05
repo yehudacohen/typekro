@@ -934,7 +934,12 @@ describe('DirectDeploymentEngine', () => {
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 }); // Resource doesn't exist
       mockK8sApi.create.mockRejectedValue(new Error('Deployment failed')); // Create fails
 
-      const deployResult = await engine.deploy(graph, defaultOptions);
+      // Skip retries — this test is about rollback behavior, not retry logic.
+      // Default retry policy (3 retries, exponential backoff) exceeds the 5s timeout.
+      const deployResult = await engine.deploy(graph, {
+        ...defaultOptions,
+        retryPolicy: { maxRetries: 0, backoffMultiplier: 1, initialDelay: 0, maxDelay: 0 },
+      });
       expect(deployResult.status).toBe('failed');
 
       // Rollback should succeed but do nothing

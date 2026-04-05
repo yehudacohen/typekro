@@ -5,6 +5,7 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
+import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
@@ -35,6 +36,7 @@ import type {
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
+import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
@@ -389,7 +391,7 @@ interface CompositionBodyAnalysisResult {
    * Mutable flag tracking whether `applyAnalysisToResources` has been called.
    * Wrapped in an object so Biome doesn't hoist it to `const`.
    */
-  analysisState: { appliedToResources: boolean };
+  analysisState: { appliedToResources: boolean; ternaryAndOmitApplied: boolean };
 }
 
 /**
@@ -408,10 +410,11 @@ function processCompositionBodyAnalysis(
   statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
   resourcesWithKeys: Record<string, Enhanced<any, any>>,
   analyzedStatusMappings: Record<string, unknown>,
-  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
+  serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>,
+  schemaDefinition?: { spec: { json?: unknown } }
 ): CompositionBodyAnalysisResult {
   let compositionAnalysis: ASTAnalysisResult | null = null;
-  const analysisState = { appliedToResources: false };
+  const analysisState = { appliedToResources: false, ternaryAndOmitApplied: false };
 
   const originalCompositionFnForAnalysis = (statusMappings as Record<string, unknown>)
     ?.__originalCompositionFn as ((...args: unknown[]) => unknown) | undefined;
@@ -419,9 +422,94 @@ function processCompositionBodyAnalysis(
   if (originalCompositionFnForAnalysis) {
     try {
       const resourceIds = new Set(Object.keys(resourcesWithKeys));
-      compositionAnalysis = analyzeCompositionBody(originalCompositionFnForAnalysis, resourceIds);
+      const specJson = (schemaDefinition?.spec as { json?: unknown } | undefined)?.json as
+        | { optional?: { key: string }[] }
+        | undefined;
+      const optionalFieldNames = specJson
+        ? new Set((specJson.optional ?? []).map((p) => p.key))
+        : undefined;
+      compositionAnalysis = analyzeCompositionBody(
+        originalCompositionFnForAnalysis,
+        resourceIds,
+        optionalFieldNames
+      );
 
-      // Create stub resources for factory calls that weren't registered at runtime
+      // Differential execution to capture untaken-branch resources.
+      //
+      // When a composition uses plain JS control flow (`if (!spec.optional) { ... }`),
+      // the truthy proxy pass takes the OPPOSITE branch because `!proxy === false`,
+      // which means the resource inside the branch is never registered at runtime.
+      // We re-execute the composition with optional fields set to `undefined`
+      // (where `!undefined === true` triggers those branches) in an ISOLATED
+      // composition context and merge any resources captured there into the main
+      // resource map. The AST analyzer has already recorded the correct
+      // `includeWhen` for each such resource, and `applyAnalysisToResources`
+      // (called later during toYaml()) attaches that metadata — so the final
+      // RGD emits the resource with a CEL `has()` / `!has()` conditional
+      // derived from the composition's native `if`/`else` statements.
+      //
+      // Prerequisites: we need the schema definition to know which fields
+      // are optional (so we set them to undefined) and which are required
+      // (so we set them to a sentinel that prevents the composition from
+      // dereferencing undefined). Both runs use the same composition
+      // function, so resource IDs and factory calls are deterministic.
+      if (
+        schemaDefinition &&
+        (compositionAnalysis.unregisteredFactories.length > 0 ||
+          collectOverridableOptionalFields(schemaDefinition, compositionAnalysis).size > 0)
+      ) {
+        const { captured, overriddenFields } = captureHybridRunResources(
+          originalCompositionFnForAnalysis,
+          schemaDefinition,
+          compositionAnalysis
+        );
+
+        // (a) Merge resources that exist ONLY in the hybrid run — these
+        // come from branches the proxy run didn't take (e.g., `if (!spec.x)`).
+        // The AST analyzer has already attached the appropriate includeWhen.
+        for (const [id, resource] of Object.entries(captured)) {
+          if (!resourceIds.has(id)) {
+            resourcesWithKeys[id] = resource as Enhanced<unknown, unknown>;
+            resourceIds.add(id);
+            serializationLogger.debug('Captured resource from untaken branch', {
+              resourceId: id,
+            });
+          }
+        }
+
+        // (b) For resources that exist in BOTH runs, walk them in parallel
+        // and detect field-level differences. Each differing leaf becomes
+        // a CEL `has(...) ? <proxy value> : <hybrid value>` conditional
+        // applied in place on the proxy-run resource. This covers the
+        // "ternary inside a custom factory's internal transformation" case
+        // where the AST analyzer can't see the final template path, since
+        // the comparison works on the emitted resource structure directly.
+        //
+        // MUTATION SAFETY: this step replaces LEAF values (strings, numbers,
+        // KubernetesRef proxies) inside the proxy-run resources with CEL
+        // conditional strings. It runs after status analysis has captured
+        // its own references (so status builders see the pre-mutation state)
+        // and before YAML serialization (so the mutated state is what gets
+        // emitted). The tree structure is preserved; only leaves change.
+        // `processCompositionBodyAnalysis` is called exactly once per
+        // `toResourceGraph` invocation, and the walk itself is idempotent
+        // (a second pass finds `leafEquals` true for every leaf and no-ops),
+        // so multiple `toYaml()` calls on the resulting TypedResourceGraph
+        // all see a consistent final state.
+        if (overriddenFields.size > 0) {
+          for (const id of Object.keys(resourcesWithKeys)) {
+            const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
+            const hybridRes = captured[id] as unknown as Record<string, unknown> | undefined;
+            if (proxyRes && hybridRes) {
+              applyDifferentialFieldConditionals(proxyRes, hybridRes, overriddenFields);
+            }
+          }
+        }
+      }
+
+      // Create stub resources for factory calls that STILL weren't registered
+      // (e.g., branches the differential run also didn't take because they
+      // required a different condition to be truthy).
       for (const unregistered of compositionAnalysis.unregisteredFactories) {
         if (!resourceIds.has(unregistered.resourceId)) {
           const stub = createStubResource(unregistered.factoryName, unregistered.resourceId);
@@ -455,6 +543,383 @@ function processCompositionBodyAnalysis(
   }
 
   return { compositionAnalysis, analysisState };
+}
+
+/**
+ * Collect the top-level optional spec fields that should be overridden
+ * when running the composition for differential branch/field capture.
+ *
+ * We only override fields that the AST analyzer observed being TESTED
+ * in a condition — `if (spec.x)`, `spec.x ? a : b`, or similar.
+ * Overriding fields that the composition only READS unconditionally
+ * (e.g., `spec.server.secret_key` inside a ConfigMap's stringData) is
+ * counterproductive: it would replace those proxy references with
+ * `undefined` in the hybrid run, producing incorrect captured
+ * resources.
+ *
+ * The tested fields are extracted from the AST analyzer's recorded
+ * `includeWhen` expressions (which, after the `conditionToCel` fix,
+ * wrap bare truthiness checks with `has(...)`) by scanning for
+ * `schema.spec.<field>` paths.
+ */
+function collectOverridableOptionalFields(
+  schemaDefinition: { spec: { json?: unknown } },
+  analysis: ASTAnalysisResult
+): Set<string> {
+  const specJson = schemaDefinition.spec.json as
+    | { optional?: { key: string }[] }
+    | undefined;
+  if (!specJson) return new Set();
+  const optionalFields = new Set((specJson.optional ?? []).map((p) => p.key));
+
+  const testedFields = new Set<string>();
+  // Pull field names from every includeWhen condition the AST analyzer
+  // attached to a resource (including resources that were never
+  // runtime-registered because their branch wasn't taken).
+  for (const entry of analysis.resources.values()) {
+    for (const cond of entry.includeWhen) {
+      const matches = cond.expression.matchAll(/schema\.spec\.([A-Za-z_$][\w$]*)/g);
+      for (const m of matches) {
+        const field = m[1];
+        if (field && optionalFields.has(field)) {
+          testedFields.add(field);
+        }
+      }
+    }
+  }
+  return testedFields;
+}
+
+/**
+ * Re-execute the composition function in an isolated composition context
+ * with a HYBRID schema spec — the original schema proxy for most fields
+ * (so `spec.name`, `spec.server.secret_key`, etc. still produce
+ * `KubernetesRef` proxy values that serialize into CEL references) but
+ * with specific top-level optional fields overridden to `undefined` so
+ * that `if (!spec.x)`, `if (spec.x === undefined)`, and similar
+ * field-presence tests take the opposite branch from the proxy run.
+ *
+ * Used by {@link processCompositionBodyAnalysis} to capture BOTH:
+ *   (a) resources registered inside branches that the main proxy run
+ *       skipped because `!proxy === false`
+ *   (b) resources that exist in both runs but with field-level
+ *       differences caused by ternary/fallback logic that depends on
+ *       the overridden fields — used for differential CEL conditional
+ *       emission by {@link applyDifferentialFieldConditionals}
+ *
+ * The branches run with real proxy values for every field EXCEPT the
+ * overridden ones, so the captured resources contain the correct CEL
+ * references just like the proxy-run resources.
+ *
+ * Composition functions with external side effects will fire those
+ * effects a second time during this re-execution — see integration-skill
+ * rule #30 for the full contract.
+ */
+function captureHybridRunResources(
+  compositionFn: (...args: unknown[]) => unknown,
+  schemaDefinition: { spec: { json?: unknown } },
+  analysis: ASTAnalysisResult
+): {
+  captured: Record<string, Enhanced<any, any>>;
+  overriddenFields: Set<string>;
+} {
+  try {
+    const overriddenFields = collectOverridableOptionalFields(schemaDefinition, analysis);
+    if (overriddenFields.size === 0) return { captured: {}, overriddenFields };
+
+    // Build the hybrid spec: the real schema proxy (so all other field
+    // accesses produce KubernetesRef values) wrapped in a Proxy that
+    // intercepts the overridden keys and returns `undefined`. Accessing
+    // an overridden key's sub-property (e.g., `spec.secretKeyRef.name`)
+    // will throw — but that's exactly the code path the override is
+    // meant to skip, so the thrown access lives inside the `else`
+    // branch that this run intentionally does not execute.
+    const realSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>();
+    const hybridSpec = new Proxy(realSchema.spec as object, {
+      get(target, prop: string | symbol, receiver) {
+        if (typeof prop === 'string' && overriddenFields.has(prop)) {
+          return undefined;
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+      has(target, prop: string | symbol) {
+        if (typeof prop === 'string' && overriddenFields.has(prop)) {
+          return false;
+        }
+        return Reflect.has(target, prop);
+      },
+    });
+
+    const tempCtx = createCompositionContext('hybrid-capture');
+    runWithCompositionContext(tempCtx, () => {
+      compositionFn(hybridSpec);
+    });
+    return {
+      captured: tempCtx.resources as Record<string, Enhanced<any, any>>,
+      overriddenFields,
+    };
+  } catch {
+    // Best-effort: compositions that throw when running with a hybrid spec
+    // degrade gracefully — stub resources still cover the missing factories
+    // and the proxy-run resources are used as-is.
+    return { captured: {}, overriddenFields: new Set() };
+  }
+}
+
+/**
+ * Walk `proxyRes` and `hybridRes` in parallel and replace any leaf value
+ * in `proxyRes` that differs from the corresponding leaf in `hybridRes`
+ * with a CEL `has(...) ? <proxy value> : <hybrid value>` conditional.
+ *
+ * This is how differential field-level branch detection works: when a
+ * composition writes `spec.x ? foo(spec.y) : bar()` at a deep nested
+ * location inside a custom factory's emitted resource, the proxy run
+ * produces one leaf and the hybrid run (with `spec.x` overridden to
+ * `undefined`) produces the other. Comparing the two resource trees
+ * field-by-field surfaces the divergence and lets us emit the correct
+ * KRO CEL conditional without needing to thread AST information through
+ * the factory's internal transformations.
+ *
+ * Assumptions and caveats:
+ *   - Both resources come from the same factory call with the same
+ *     resource ID, so their structures are shape-compatible.
+ *   - The `overriddenFields` set drives the `has(...)` check — with a
+ *     single overridden field we can emit a direct `has(schema.spec.X)`
+ *     test. With multiple fields, we use the first one that appears in
+ *     either leaf value; this is a heuristic, but in practice
+ *     compositions rarely have multiple optional fields driving the
+ *     same leaf.
+ *   - Marker strings (`__KUBERNETES_REF__...__`) and CEL expressions
+ *     are converted to their dollar-wrapped forms before embedding in
+ *     the conditional.
+ */
+function applyDifferentialFieldConditionals(
+  proxyRes: Record<string, unknown>,
+  hybridRes: Record<string, unknown>,
+  overriddenFields: Set<string>
+): void {
+  walkAndConditionalize(proxyRes, hybridRes, overriddenFields);
+}
+
+function walkAndConditionalize(
+  proxy: unknown,
+  hybrid: unknown,
+  overriddenFields: Set<string>
+): unknown {
+  if (Array.isArray(proxy) && Array.isArray(hybrid)) {
+    const maxLen = Math.max(proxy.length, hybrid.length);
+    for (let i = 0; i < maxLen; i++) {
+      const p = proxy[i];
+      const h = hybrid[i];
+      if (i >= proxy.length) {
+        // New element added by hybrid run — copy it over.
+        proxy.push(h);
+        continue;
+      }
+      if (i >= hybrid.length) {
+        // Element removed in hybrid — leave the proxy value as-is.
+        continue;
+      }
+      if (isLeafValue(p) && isLeafValue(h)) {
+        if (!leafEquals(p, h)) {
+          proxy[i] = buildCelConditional(p, h, overriddenFields);
+        }
+      } else {
+        walkAndConditionalize(p, h, overriddenFields);
+      }
+    }
+    return proxy;
+  }
+
+  if (isPlainObject(proxy) && isPlainObject(hybrid)) {
+    const keys = new Set([...Object.keys(proxy), ...Object.keys(hybrid)]);
+    for (const key of keys) {
+      const p = (proxy as Record<string, unknown>)[key];
+      const h = (hybrid as Record<string, unknown>)[key];
+      if (!(key in (hybrid as Record<string, unknown>))) {
+        continue; // Proxy has it, hybrid doesn't — keep proxy value
+      }
+      if (!(key in (proxy as Record<string, unknown>))) {
+        (proxy as Record<string, unknown>)[key] = h;
+        continue;
+      }
+      if (isLeafValue(p) && isLeafValue(h)) {
+        if (!leafEquals(p, h)) {
+          (proxy as Record<string, unknown>)[key] = buildCelConditional(
+            p,
+            h,
+            overriddenFields
+          );
+        }
+      } else {
+        walkAndConditionalize(p, h, overriddenFields);
+      }
+    }
+    return proxy;
+  }
+
+  return proxy;
+}
+
+function isLeafValue(v: unknown): boolean {
+  return (
+    v === null ||
+    v === undefined ||
+    typeof v === 'string' ||
+    typeof v === 'number' ||
+    typeof v === 'boolean' ||
+    // KubernetesRef proxies register as functions (typeof fn is 'function')
+    typeof v === 'function'
+  );
+}
+
+function leafEquals(a: unknown, b: unknown): boolean {
+  // For KubernetesRef proxies, compare their string coercions (marker tokens).
+  if (typeof a === 'function' || typeof b === 'function') {
+    return String(a) === String(b);
+  }
+  return a === b;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Build a CEL conditional string from two diverging leaf values.
+ *
+ * Both values may be concrete primitives, marker strings (from template
+ * literals containing proxy references), or KubernetesRef proxies. The
+ * returned string is a KRO mixed-template value like
+ * `${has(schema.spec.X) ? <proxy repr> : <hybrid repr>}` that later
+ * serialization phases treat as a final CEL expression.
+ */
+function buildCelConditional(
+  proxyValue: unknown,
+  hybridValue: unknown,
+  overriddenFields: Set<string>
+): string {
+  const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
+  const proxyRepr = celValueRepr(proxyValue);
+  const hybridRepr = celValueRepr(hybridValue);
+  return `\${has(schema.spec.${field}) ? ${proxyRepr} : ${hybridRepr}}`;
+}
+
+/**
+ * Pick the "controlling" optional field for a diverging leaf. If exactly
+ * one overridden field's marker appears in either value, use that. If
+ * neither appears explicitly, default to the first field in the set —
+ * this covers the common case of a single overridden field driving the
+ * whole divergence.
+ */
+function pickConditionField(
+  proxyValue: unknown,
+  hybridValue: unknown,
+  overriddenFields: Set<string>
+): string {
+  const proxyStr = String(proxyValue);
+  const hybridStr = String(hybridValue);
+  for (const field of overriddenFields) {
+    const marker = `__KUBERNETES_REF___schema___spec.${field}`;
+    if (proxyStr.includes(marker) || hybridStr.includes(marker)) {
+      return field;
+    }
+  }
+  // Fallback: first overridden field (iteration order = insertion order).
+  // Single-field overrides are the common case so this is usually correct;
+  // the explicit-marker check above handles the multi-field case. When the
+  // fallback fires, the emitted CEL may pick the wrong `has()` condition
+  // for compositions with multiple optional fields driving the same leaf —
+  // log it at debug level so the case is diagnosable if anyone reports
+  // incorrect CEL output.
+  const fallback = overriddenFields.values().next().value ?? '';
+  getComponentLogger('serialization').debug(
+    'pickConditionField fallback: no marker matched, using first overridden field',
+    {
+      fallbackField: fallback,
+      overriddenFields: Array.from(overriddenFields),
+      proxyValuePreview: proxyStr.slice(0, 120),
+      hybridValuePreview: hybridStr.slice(0, 120),
+    }
+  );
+  return fallback;
+}
+
+/**
+ * Convert a leaf value into its CEL expression representation.
+ *
+ * - Marker strings become `schema.spec.X` paths (bare, no `${}`)
+ * - KubernetesRef proxies become their inner CEL path
+ * - String literals become double-quoted CEL string literals (with
+ *   embedded markers converted to string() concatenations so the
+ *   result is valid CEL, not just a raw string)
+ * - Numbers and booleans are emitted verbatim
+ */
+function celValueRepr(value: unknown): string {
+  if (value === null || value === undefined) return '""';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'function') {
+    // KubernetesRef proxy — toString yields the marker token which we
+    // convert to a bare CEL path via the marker → CEL rules.
+    return markerStringToCelBare(String(value));
+  }
+  if (typeof value === 'string') {
+    if (value.includes('__KUBERNETES_REF_')) {
+      return markerStringToCelExpr(value);
+    }
+    // Plain string literal — escape for CEL embedding
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  return '""';
+}
+
+/**
+ * Convert a single-marker string (the whole string is one marker) to
+ * its bare CEL path form: `schema.spec.X` or `resources.X.field`.
+ */
+function markerStringToCelBare(str: string): string {
+  const m = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
+  if (!m) return markerStringToCelExpr(str);
+  const [, resourceId, fieldPath] = m;
+  return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+}
+
+/**
+ * Convert a mixed string containing literal text and markers to a CEL
+ * concatenation expression using `string()` wrappers, suitable for
+ * embedding inside a CEL ternary.
+ */
+function markerStringToCelExpr(str: string): string {
+  // Fast path: whole string is a single marker
+  const singleMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
+  if (singleMatch) {
+    const [, resourceId, fieldPath] = singleMatch;
+    return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+  }
+
+  // Slow path: interleave literal text and markers via CEL string concatenation
+  const parts: string[] = [];
+  let lastIndex = 0;
+  const pattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+  let m: RegExpExecArray | null = pattern.exec(str);
+  while (m !== null) {
+    if (m.index > lastIndex) {
+      const literal = str.slice(lastIndex, m.index);
+      parts.push(`"${literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+    }
+    const resourceId = m[1]!;
+    const fieldPath = m[2]!;
+    const celPath =
+      resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+    parts.push(`string(${celPath})`);
+    lastIndex = m.index + m[0].length;
+    m = pattern.exec(str);
+  }
+  if (lastIndex < str.length) {
+    const literal = str.slice(lastIndex);
+    parts.push(`"${literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+  }
+  return parts.length === 1 ? parts[0]! : parts.join(' + ');
 }
 
 // =============================================================================
@@ -705,7 +1170,8 @@ function createTypedResourceGraph<
     statusMappings,
     resourcesWithKeys,
     analyzedStatusMappings,
-    serializationLogger
+    serializationLogger,
+    schemaDefinition as unknown as { spec: { json?: unknown } }
   );
 
   // 5. Validate resource IDs and CEL expressions
@@ -871,6 +1337,20 @@ function createTypedResourceGraph<
         for (const override of statusOverrides) {
           const yamlSafe = override.celExpression.replace(/"([^"\\]*)"/g, "'$1'");
           kroSchema.status[override.propertyPath] = yamlSafe;
+        }
+      }
+
+      // Apply ternary conditionals (once only — guard prevents
+      // double-processing if toYaml() is called multiple times).
+      // Note: omit() wrapping for optional fields is no longer a
+      // post-processing step — it's applied inline during ref-to-CEL
+      // conversion via `SerializationContext.omitFields`, which reads
+      // from `kroSchema.__omitFields` inside `serializeResourceGraphToYaml`.
+      if (!analysisState.ternaryAndOmitApplied) {
+        analysisState.ternaryAndOmitApplied = true;
+
+        if (kroSchema.__ternaryConditionals?.length) {
+          applyTernaryConditionalsToResources(resourcesWithKeys, kroSchema.__ternaryConditionals);
         }
       }
 

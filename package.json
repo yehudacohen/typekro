@@ -1,6 +1,6 @@
 {
   "name": "typekro",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "A control plane aware framework for orchestrating kubernetes resources like a programmer.",
   "type": "module",
   "repository": {
@@ -73,6 +73,10 @@
     "./containers": {
       "import": "./dist/core/containers/index.js",
       "types": "./dist/core/containers/index.d.ts"
+    },
+    "./searxng": {
+      "import": "./dist/factories/searxng/index.js",
+      "types": "./dist/factories/searxng/index.d.ts"
     },
     "./alchemy": {
       "import": "./dist/alchemy/index.js",

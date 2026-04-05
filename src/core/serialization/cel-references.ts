@@ -40,11 +40,41 @@ export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * If `celPath` is exactly `schema.spec.<field>` for a top-level optional
+ * field listed in the context's omit set, wrap it with KRO 0.9+
+ * `has(...) ? ... : omit()`. Otherwise return it unchanged.
+ *
+ * The wrapper is only applied to single-ref expressions — never to mixed
+ * templates like `${string(schema.spec.name)}-suffix` because those
+ * produce string values, not fields, and omit() operates at the field
+ * level. Sub-path refs (`schema.spec.env.FOO`) are also not wrapped;
+ * omit() removes the containing field, so the wrapper must target the
+ * top-level optional field (`schema.spec.env`) and not its children.
+ */
+function maybeWrapWithOmit(
+  celPath: string,
+  stringWrap: boolean,
+  omitFields: ReadonlySet<string> | undefined
+): string {
+  const value = stringWrap ? `string(${celPath})` : celPath;
+  if (!omitFields || omitFields.size === 0) return value;
+  // Top-level schema.spec.<field> with no dotted subpath
+  const match = /^schema\.spec\.([A-Za-z_$][\w$]*)$/.exec(celPath);
+  const field = match?.[1];
+  if (!field || !omitFields.has(field)) return value;
+  return `has(${celPath}) ? ${value} : omit()`;
+}
+
+/**
  * Wrap a {@link KubernetesRef} in `${…}` for Kro YAML output.
  */
-function generateCelExpression(ref: KubernetesRef<unknown>): string {
+function generateCelExpression(
+  ref: KubernetesRef<unknown>,
+  context?: SerializationContext
+): string {
   const expression = getInnerCelPath(ref);
-  return `\${${expression}}`;
+  const body = maybeWrapWithOmit(expression, false, context?.omitFields);
+  return `\${${body}}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,12 +89,12 @@ function generateCelExpression(ref: KubernetesRef<unknown>): string {
  * template literals, e.g.:
  *
  * - `__KUBERNETES_REF___schema___spec.name__-policy`
- *   → `${schema.spec.name + "-policy"}`
+ *   → `${string(schema.spec.name)}-policy`
  *
  * Pattern: `__KUBERNETES_REF_{resourceId}_{fieldPath}__`
  * For schema: `__KUBERNETES_REF___schema___{fieldPath}__`
  */
-function convertKubernetesRefMarkersTocel(str: string): string {
+function convertKubernetesRefMarkersTocel(str: string, context?: SerializationContext): string {
   // Pattern handles both regular resource IDs and __schema__ (which has underscores)
   // The field path is matched with [a-zA-Z0-9.$]+ which captures dot-separated identifiers
   // like "spec.name", "status.readyReplicas", or "spec.workers.$item.name"
@@ -76,11 +106,20 @@ function convertKubernetesRefMarkersTocel(str: string): string {
     const [, resourceId, fieldPath] = singleRefMatch;
     const celPath =
       resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
-    return `\${${celPath}}`;
+    // Single-ref: safe to wrap with has()/omit() for optional schema fields.
+    const body = maybeWrapWithOmit(celPath, false, context?.omitFields);
+    return `\${${body}}`;
   }
 
-  // Mixed content → CEL concatenation
-  const parts: string[] = [];
+  // Mixed content → KRO mixed-template format: literal${string(ref)}literal
+  // Each ${…} is independently evaluated. We wrap in string() so KRO's type
+  // validator accepts non-string types (booleans, numbers) in string contexts
+  // like ConfigMap data values.
+  //
+  // Mixed templates produce STRING values (not fields), so has()/omit() wrapping
+  // is intentionally NOT applied here — omit() operates at the YAML field level,
+  // and mixing it into a concatenation would be a type error.
+  let result = '';
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -88,29 +127,23 @@ function convertKubernetesRefMarkersTocel(str: string): string {
   match = refPattern.exec(str);
   while (match !== null) {
     if (match.index > lastIndex) {
-      const textBefore = str.slice(lastIndex, match.index);
-      parts.push(`"${textBefore}"`);
+      result += str.slice(lastIndex, match.index);
     }
 
     const [, resourceId, fieldPath] = match;
     const celPath =
       resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
-    parts.push(celPath);
+    result += `\${string(${celPath})}`;
 
     lastIndex = match.index + match[0].length;
     match = refPattern.exec(str);
   }
 
   if (lastIndex < str.length) {
-    const textAfter = str.slice(lastIndex);
-    parts.push(`"${textAfter}"`);
+    result += str.slice(lastIndex);
   }
 
-  if (parts.length === 1) {
-    return `\${${parts[0]}}`;
-  }
-
-  return `\${${parts.join(' + ')}}`;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +158,7 @@ function convertKubernetesRefMarkersTocel(str: string): string {
  */
 export function processResourceReferences(obj: unknown, context?: SerializationContext): unknown {
   if (isKubernetesRef(obj)) {
-    return generateCelExpression(obj);
+    return generateCelExpression(obj, context);
   }
 
   if (isCelExpression(obj)) {
@@ -135,12 +168,26 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
       // Pass them through as-is — do NOT convert to CEL concat or re-wrap.
       return obj.expression;
     }
-    return `\${${obj.expression}}`;
+    // Bare CelExpression — may be a single schema.spec.X reference (possibly
+    // wrapped in `string(...)`). Apply omit() wrapping only when the whole
+    // expression is exactly one schema.spec.<field> (or string() of one),
+    // and <field> is a top-level optional field.
+    const expr = obj.expression;
+    const bareField = /^schema\.spec\.([A-Za-z_$][\w$]*)$/.exec(expr)?.[1];
+    if (bareField && context?.omitFields?.has(bareField)) {
+      return `\${${maybeWrapWithOmit(expr, false, context.omitFields)}}`;
+    }
+    const stringField = /^string\(schema\.spec\.([A-Za-z_$][\w$]*)\)$/.exec(expr)?.[1];
+    if (stringField && context?.omitFields?.has(stringField)) {
+      const innerPath = `schema.spec.${stringField}`;
+      return `\${${maybeWrapWithOmit(innerPath, true, context.omitFields)}}`;
+    }
+    return `\${${expr}}`;
   }
 
   // Strings containing __KUBERNETES_REF__ markers from template literals
   if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_')) {
-    return convertKubernetesRefMarkersTocel(obj);
+    return convertKubernetesRefMarkersTocel(obj, context);
   }
 
   if (Array.isArray(obj)) {

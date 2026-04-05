@@ -1,17 +1,23 @@
 /**
- * Kro v0.8.x Feature Serialization Tests
+ * Kro RGD Feature Serialization Tests
  *
  * Tests that TypeKro compositions serialize to correct Kro RGD YAML
- * with new v0.8.x fields: forEach, includeWhen, readyWhen, externalRef.
+ * for RGD features: forEach, includeWhen, readyWhen, externalRef, and
+ * the KRO 0.9+ `omit()` / mixed-template features.
  *
  * These tests define the expected YAML output for each feature pattern.
  *
+ * Historical note: the filename retains the `v08-features` suffix for git
+ * history continuity, but many tests now assert behavior that requires
+ * **KRO 0.9.0+** (mixed-template CEL format, `omit()` for optional fields).
+ * Running the emitted RGDs against a KRO 0.8.x controller will fail.
+ *
  * Kro spec references:
- * - Collections: https://kro.run/0.8.4/docs/concepts/rgd/resource-definitions/collections
- * - Conditionals: https://kro.run/0.8.4/docs/concepts/rgd/resource-definitions/conditional-creation
- * - Readiness: https://kro.run/0.8.4/docs/concepts/rgd/resource-definitions/readiness
- * - External Refs: https://kro.run/0.8.4/docs/concepts/rgd/resource-definitions/external-references
- * - CEL Expressions: https://kro.run/0.8.4/docs/concepts/rgd/cel-expressions
+ * - Collections: https://kro.run/docs/concepts/rgd/resource-definitions/collections
+ * - Conditionals: https://kro.run/docs/concepts/rgd/resource-definitions/conditional-creation
+ * - Readiness: https://kro.run/docs/concepts/rgd/resource-definitions/readiness
+ * - External Refs: https://kro.run/docs/concepts/rgd/resource-definitions/external-references
+ * - CEL Expressions: https://kro.run/docs/concepts/rgd/cel-expressions
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -110,7 +116,7 @@ const ConditionalStatus = type({
 // forEach — Collections
 // =============================================================================
 
-describe('Kro v0.8.x Feature Serialization', () => {
+describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
   describe('forEach — Collections', () => {
     describe('Basic Iteration Patterns', () => {
       it('for...of over schema array produces forEach directive', () => {
@@ -414,10 +420,9 @@ describe('Kro v0.8.x Feature Serialization', () => {
         const resource = findResource(parsed, 'dep');
         const templateName = resource.template.metadata.name;
 
-        // CEL string concatenation: schema.spec.name + "-" + region
+        // KRO mixed template: ${schema.spec.name}-${...region}
         expect(templateName).toContain('schema.spec.name');
         expect(templateName).toContain('region');
-        expect(templateName).toContain('+');
       });
 
       it('ternary in factory arg produces CEL conditional in template', () => {
