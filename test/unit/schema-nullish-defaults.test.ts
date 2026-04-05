@@ -95,38 +95,100 @@ describe('Schema Nullish Defaults', () => {
     });
   });
 
-  describe('applyOmitWrappers', () => {
-    let applyOmitWrappers: (yaml: string, omitFields: string[]) => string;
+  describe('omit() wrapping (inline ref-to-CEL conversion)', () => {
+    // omit() wrapping is no longer post-processing on serialized YAML —
+    // it's applied inline during KubernetesRef → CEL conversion via
+    // `SerializationContext.omitFields`. These tests exercise the new
+    // `processResourceReferences` code path directly so the behavior is
+    // pinned at the unit level (the end-to-end tests below verify the
+    // full pipeline through `toYaml()`).
+
+    let processResourceReferences: (
+      obj: unknown,
+      ctx?: { celPrefix: string; resourceIdStrategy: 'deterministic' | 'random'; omitFields?: ReadonlySet<string> }
+    ) => unknown;
 
     beforeAll(async () => {
-      const mod = await import('../../src/core/serialization/kro-post-processing.js');
-      applyOmitWrappers = mod.applyOmitWrappers;
+      const mod = await import('../../src/core/serialization/cel-references.js');
+      processResourceReferences = mod.processResourceReferences;
     });
 
-    it('should wrap single-reference fields with has() + omit()', () => {
-      const yaml = '  resources: ${schema.spec.resources}\n';
-      const result = applyOmitWrappers(yaml, ['resources']);
-      expect(result).toContain('"${has(schema.spec.resources) ? schema.spec.resources : omit()}"');
+    const ctx = (fields: string[]) => ({
+      celPrefix: 'resources',
+      resourceIdStrategy: 'deterministic' as const,
+      omitFields: new Set(fields),
     });
 
-    it('should wrap string()-wrapped fields with has() + omit()', () => {
-      const yaml = '  value: ${string(schema.spec.baseUrl)}\n';
-      const result = applyOmitWrappers(yaml, ['baseUrl']);
-      expect(result).toContain('"${has(schema.spec.baseUrl) ? string(schema.spec.baseUrl) : omit()}"');
+    it('wraps bare single-ref markers with has() + omit()', () => {
+      const marker = '__KUBERNETES_REF___schema___spec.resources__';
+      const result = processResourceReferences(marker, ctx(['resources']));
+      expect(result).toBe('${has(schema.spec.resources) ? schema.spec.resources : omit()}');
     });
 
-    it('should not affect fields not in the omit list', () => {
-      const yaml = '  name: ${schema.spec.name}\n  image: ${schema.spec.image}\n';
-      const result = applyOmitWrappers(yaml, ['image']);
-      expect(result).toContain('name: ${schema.spec.name}');
-      expect(result).toContain('"${has(schema.spec.image) ? schema.spec.image : omit()}"');
+    it('does NOT wrap mixed-template refs (strings containing a ref + literal text)', () => {
+      // Mixed templates produce STRING values, not fields — omit() would
+      // be a type error there. The literal-text-carrying path must stay clean.
+      const marker = '__KUBERNETES_REF___schema___spec.baseUrl__-suffix';
+      const result = processResourceReferences(marker, ctx(['baseUrl']));
+      expect(result).toBe('${string(schema.spec.baseUrl)}-suffix');
+      expect(String(result)).not.toContain('omit()');
     });
 
-    it('should be idempotent (second call is a no-op)', () => {
-      const yaml = '  resources: ${schema.spec.resources}\n';
-      const first = applyOmitWrappers(yaml, ['resources']);
-      const second = applyOmitWrappers(first, ['resources']);
-      expect(second).toBe(first);
+    it('does not wrap fields not in the omit list', () => {
+      const nameMarker = '__KUBERNETES_REF___schema___spec.name__';
+      const imageMarker = '__KUBERNETES_REF___schema___spec.image__';
+      expect(processResourceReferences(nameMarker, ctx(['image']))).toBe(
+        '${schema.spec.name}'
+      );
+      expect(processResourceReferences(imageMarker, ctx(['image']))).toBe(
+        '${has(schema.spec.image) ? schema.spec.image : omit()}'
+      );
+    });
+
+    it('does not wrap sub-path refs (only top-level optional fields are omittable)', () => {
+      // omit() removes the CONTAINING field, so wrapping schema.spec.env.FOO
+      // would try to omit a sub-key of env rather than env itself — that's
+      // the wrong semantics. Only top-level matches are wrapped.
+      const marker = '__KUBERNETES_REF___schema___spec.env.FOO__';
+      const result = processResourceReferences(marker, ctx(['env']));
+      expect(result).toBe('${schema.spec.env.FOO}');
+      expect(String(result)).not.toContain('omit()');
+    });
+
+    it('wraps CelExpression objects that are a single schema.spec.<field>', async () => {
+      // The Cel.expr() path also needs omit wrapping when the expression
+      // is a single schema ref (e.g., from a status builder that passes
+      // a schema proxy directly).
+      const { Cel } = await import('../../src/core/references/cel.js');
+      const expr = Cel.expr('schema.spec.resources');
+      const result = processResourceReferences(expr, ctx(['resources']));
+      expect(result).toBe('${has(schema.spec.resources) ? schema.spec.resources : omit()}');
+    });
+
+    it('wraps CelExpression objects that are string(schema.spec.<field>)', async () => {
+      const { Cel } = await import('../../src/core/references/cel.js');
+      const expr = Cel.expr('string(schema.spec.baseUrl)');
+      const result = processResourceReferences(expr, ctx(['baseUrl']));
+      expect(result).toBe(
+        '${has(schema.spec.baseUrl) ? string(schema.spec.baseUrl) : omit()}'
+      );
+    });
+
+    it('YAML serializer naturally single-quotes the wrapper (no post-processing needed)', async () => {
+      // Regression check: the `?` and `:` characters inside the has()/omit()
+      // expression are YAML-special, but js-yaml dump automatically picks a
+      // quoting style that escapes them. If this ever changes, the inline
+      // approach breaks and we'd need to re-introduce post-hoc quoting.
+      const yaml = await import('js-yaml');
+      const out = yaml.dump({
+        resources: '${has(schema.spec.resources) ? schema.spec.resources : omit()}',
+      });
+      // Either single- or double-quoted is acceptable; the key requirement
+      // is that the `?` and `:` are protected from YAML interpretation.
+      expect(
+        out.includes("'${has(schema.spec.resources) ? schema.spec.resources : omit()}'") ||
+          out.includes('"${has(schema.spec.resources) ? schema.spec.resources : omit()}"')
+      ).toBe(true);
     });
   });
 
@@ -339,6 +401,135 @@ describe('Schema Nullish Defaults', () => {
       expect(yaml).toContain('redis:');
       expect(yaml).toContain('url: redis://valkey:6379/0');
       expect(yaml).toContain('limiter: true');
+    });
+
+    it('should respect explicit server.limiter=false when redisUrl is also provided', async () => {
+      // Regression: the redisUrl branch auto-enables the limiter, but
+      // only when it hasn't been explicitly disabled. A user may want to
+      // run Redis-backed search cache without the rate limiter.
+      const { buildSearxngSettings } = await import(
+        '../../src/factories/searxng/utils/settings-builder.js'
+      );
+      const yaml = buildSearxngSettings({
+        server: { limiter: false },
+        redisUrl: 'redis://valkey:6379/0',
+      });
+      expect(yaml).toContain('limiter: false');
+      expect(yaml).not.toContain('limiter: true');
+      expect(yaml).toContain('url: redis://valkey:6379/0');
+    });
+  });
+
+  describe('SearXNG composition (direct-mode array formats + KRO-mode fallback)', () => {
+    it('KRO mode: searchFormats fallback produces a literal default list when spec.search is a proxy', async () => {
+      // In KRO mode `spec.search?.formats` is a KubernetesRef proxy, not a real
+      // array — `Array.isArray()` returns false and the composition falls back
+      // to the literal default list so the resulting settings.yml stays valid.
+      // We exercise this by calling toYaml() (KRO path) and asserting that
+      // the literal list appears in the RGD YAML.
+      const { searxngBootstrap } = await import(
+        '../../src/factories/searxng/compositions/searxng-bootstrap.js'
+      );
+      const yaml: string = searxngBootstrap.toYaml();
+
+      // The fallback emits the literal two-line list. It should appear
+      // verbatim in the settings.yml payload inside the ConfigMap data.
+      expect(yaml).toContain('- html');
+      expect(yaml).toContain('- json');
+    });
+
+    it('Direct mode: spec.search.formats array is rendered as YAML list items', async () => {
+      const { buildSearxngSettings } = await import(
+        '../../src/factories/searxng/utils/settings-builder.js'
+      );
+      // The builder is used by the direct-mode code path to produce a
+      // pre-rendered settings.yml string; the composition then skips its
+      // internal template and uses the string as-is.
+      const yaml = buildSearxngSettings({
+        search: { formats: ['html', 'json', 'csv'] },
+      });
+      expect(yaml).toContain('formats:');
+      expect(yaml).toContain('- html');
+      expect(yaml).toContain('- json');
+      expect(yaml).toContain('- csv');
+    });
+
+    it('safe_search schema field accepts only 0, 1, or 2 (numeric literal union)', async () => {
+      // Regression: ArkType `'0 | 1 | 2'` should parse as a numeric literal
+      // union, not a string literal union. A runtime ArkType validation
+      // ensures the schema doesn't drift into string types.
+      const { SearxngBootstrapConfigSchema } = await import(
+        '../../src/factories/searxng/types.js'
+      );
+      // Navigate to the safe_search node via the search object. ArkType
+      // exposes the JSON AST, which should report the safe_search branch
+      // as a numeric union.
+      const json = SearxngBootstrapConfigSchema.json as Record<string, unknown>;
+      expect(json).toBeDefined();
+      // Positive cases — these should type-check and validate.
+      const good0 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 0 } });
+      const good1 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 1 } });
+      const good2 = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 2 } });
+      // Must not have produced an error-shaped return (ArkType returns
+      // `ArkErrors` on validation failure, objects on success).
+      expect((good0 as { search?: { safe_search?: number } }).search?.safe_search).toBe(0);
+      expect((good1 as { search?: { safe_search?: number } }).search?.safe_search).toBe(1);
+      expect((good2 as { search?: { safe_search?: number } }).search?.safe_search).toBe(2);
+      // Out-of-range numeric values must be rejected.
+      const bad = SearxngBootstrapConfigSchema({ name: 'x', search: { safe_search: 3 } });
+      // ArkType returns an ArkErrors instance (iterable + has `.summary`)
+      // on failure; a successful result is a plain object without it.
+      expect('summary' in (bad as object)).toBe(true);
+    });
+  });
+
+  describe('resolveDefaultsByReExecution failure handling', () => {
+    // The re-execution phase calls the composition function a second time
+    // with a synthetic spec (optional fields → undefined, required fields →
+    // sentinel). If the composition throws during that re-run, we must
+    // degrade gracefully: the regex-phase defaults still apply and the
+    // RGD still serializes — the ternary-detection features are simply
+    // skipped for that composition.
+    it('should not throw when the composition function throws during re-execution', async () => {
+      const { kubernetesComposition } = await import('../../src/core/composition/imperative.js');
+      const { simple } = await import('../../src/factories/simple/index.js');
+      const { type } = await import('arktype');
+
+      let callCount = 0;
+      const composition = kubernetesComposition(
+        {
+          name: 'reexec-failure',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'ReexecFailure',
+          spec: type({ name: 'string', 'optionalFlag?': 'boolean' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          callCount++;
+          // First invocation is the proxy run — succeed.
+          // Second invocation is the defaults/re-execution run — throw.
+          // (The framework catches this and logs at debug level.)
+          if (callCount >= 2) {
+            throw new Error('intentional re-execution failure');
+          }
+          simple.ConfigMap({
+            name: `${spec.name}-config`,
+            data: { key: 'value' },
+            id: 'config',
+          });
+          return { ready: true };
+        }
+      );
+
+      // toYaml() must succeed even though re-execution throws. The
+      // returned YAML should still contain the resources from the
+      // proxy run.
+      let yaml = '';
+      expect(() => {
+        yaml = composition.toYaml();
+      }).not.toThrow();
+      expect(yaml).toContain('kind: ConfigMap');
+      expect(yaml).toContain('${string(schema.spec.name)}-config');
     });
   });
 });

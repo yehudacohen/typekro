@@ -546,3 +546,14 @@ git diff master...HEAD -- src/ # review all source changes
 27. **K8s API error format** — `@kubernetes/client-node` `ApiException` uses `.code` (not `.statusCode`) for HTTP status. All catch blocks must check: `error.statusCode ?? error.code ?? error.body?.code`.
 28. **Operator-required labels** — Some operators (e.g., Hyperspike Valkey) panic on nil label maps. Always include standard `app.kubernetes.io/*` labels on resources where the operator copies labels to child resources.
 29. **Using `createResource` for standard K8s types** — Always use the built-in factories (`configMap()`, `secret()`, `deployment()`, etc.) instead of `createResource` directly for standard K8s resources. The built-in factories include readiness evaluators that the deployment engine requires. Without a readiness evaluator, `waitForReady: true` will fail with "No readiness evaluator found."
+30. **Composition functions must be side-effect-free beyond resource creation** — During KRO schema generation, the framework re-executes the composition function with a synthetic spec (optional fields set to `undefined`, required fields set to a sentinel) to detect `??` defaults that reference imported constants and to detect ternary-controlled optional sections. This happens automatically whenever `toYaml()` is called or an RGD is deployed. The re-execution runs inside a temporary, isolated composition context so resource registrations are contained — but **any other side effects fire a second time**:
+    - `console.log`/metrics/tracing calls will double-emit.
+    - HTTP requests, file reads, or any I/O performed at composition time will run twice.
+    - Non-deterministic values (`Date.now()`, `Math.random()`, `crypto.randomUUID()`) produce different outputs between the proxy run and the defaults run, which breaks ternary detection by making unrelated sections look ternary-controlled.
+    - Closures that capture stateful objects (caches, counters) may observe doubled mutations.
+
+    **Rules of thumb:**
+    - All work inside a composition function should be resource construction (`factory.Deployment(...)`, `createResource(...)`, returning status objects).
+    - If you need logging, do it outside the composition (in `factory.deploy(...)` callers) or in status-building code paths that aren't re-executed.
+    - If you need a deterministic ID, derive it from a spec field — do not call `crypto.randomUUID()`.
+    - Re-execution failures are caught and logged at debug level; the framework degrades gracefully to only the regex-based default extraction, but compositions that *silently* produce wrong YAML due to non-determinism will not trigger the catch block. When debugging KRO schemas that look wrong, set `DEBUG=typekro:schema-defaults` to see re-execution diagnostics.

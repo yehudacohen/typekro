@@ -1,46 +1,19 @@
 /**
  * KRO YAML Post-Processing Utilities
  *
- * Shared functions for applying omit() wrappers and ternary conditionals
- * to serialized KRO RGD YAML. Used by both the toResourceGraph pipeline
- * (core.ts) and the KRO factory deployment path (kro-factory.ts).
+ * Shared helpers for applying ternary conditionals to resource data before
+ * YAML serialization. Used by both the toResourceGraph pipeline (core.ts)
+ * and the KRO factory deployment path (kro-factory.ts).
  *
  * Extracted to avoid circular dependencies between core.ts and kro-factory.ts.
- */
-
-/**
- * Wrap optional fields without defaults in omit() conditionals (KRO 0.9+).
  *
- * For each optional field, replaces bare `${schema.spec.field}` with
- * `${has(schema.spec.field) ? schema.spec.field : omit()}` in the YAML.
- * The omit() function removes the containing field from the K8s resource
- * when the user doesn't provide it in the CR.
- *
- * Values are double-quoted because `has() ? : omit()` contains YAML-special
- * characters (? and :).
+ * Note: KRO 0.9+ omit() wrapping for optional fields is NOT in this module —
+ * it's applied inline during ref-to-CEL conversion via
+ * `SerializationContext.omitFields` in `cel-references.ts`. That keeps
+ * `has() ? ... : omit()` generation as a structured operation on
+ * KubernetesRef objects instead of a post-hoc regex rewrite of the
+ * serialized YAML string.
  */
-export function applyOmitWrappers(yaml: string, omitFields: string[]): string {
-  let result = yaml;
-  for (const field of omitFields) {
-    const ref = `schema.spec.${field}`;
-    const omitExpr = `\${has(${ref}) ? ${ref} : omit()}`;
-    const stringOmitExpr = `\${has(${ref}) ? string(${ref}) : omit()}`;
-
-    // Match `key: ${ref}` and replace with `key: "omitExpr"`
-    const singlePattern = new RegExp(
-      `(:\\s+)\\$\\{${ref.replace(/\./g, '\\.')}\\}`,
-      'g'
-    );
-    result = result.replace(singlePattern, `$1"${omitExpr}"`);
-
-    const stringPattern = new RegExp(
-      `(:\\s+)\\$\\{string\\(${ref.replace(/\./g, '\\.')}\\)\\}`,
-      'g'
-    );
-    result = result.replace(stringPattern, `$1"${stringOmitExpr}"`);
-  }
-  return result;
-}
 
 /**
  * Apply ternary conditionals to resource data by replacing raw marker sections
@@ -52,6 +25,19 @@ export function applyOmitWrappers(yaml: string, omitFields: string[]): string {
  * settings.yml string contains the redis section with a __KUBERNETES_REF__
  * marker. This function replaces that section with a CEL conditional that
  * processResourceReferences will then convert to the final mixed-template form.
+ *
+ * FRAGILE: operates on raw string values inside resource data by substring
+ * matching. The `proxySection` must be byte-identical to what was extracted
+ * by `extractTernaryConditionals` in schema.ts — meaning the composition's
+ * string construction (typically a template literal) and the re-execution
+ * pass both need to produce the same newline/indentation layout. If a
+ * composition author post-processes the settings string, interpolates it
+ * through another templating layer, or if the extraction heuristic in
+ * schema.ts is updated to include/exclude different surrounding context,
+ * the match will fail silently and the ternary will not be applied.
+ *
+ * Tracked for replacement with AST-based detection in
+ * https://github.com/yehudacohen/typekro/issues/57
  */
 export function applyTernaryConditionalsToResources(
   resources: Record<string, unknown>,

@@ -48,6 +48,37 @@ export interface KroSimpleSchema {
   status?: Record<string, string | Record<string, unknown>>;
 }
 
+/**
+ * Ternary conditional metadata — one entry per detected
+ * `spec.optionalField ? truthySection : falsySection` expression in a
+ * composition. Used during YAML post-processing to replace the truthy
+ * section with a CEL `has() ? ... : ''` conditional.
+ */
+export interface TernaryConditional {
+  /** Raw marker-containing section emitted when the ternary is truthy. */
+  proxySection: string;
+  /** Value emitted when the condition is falsy (usually an empty string). */
+  falsyValue: string;
+  /** Dotted path to the optional spec field that controls the ternary. */
+  conditionField: string;
+}
+
+/**
+ * KroSimpleSchema augmented with post-processing metadata attached during
+ * schema generation. The metadata fields are attached as non-enumerable
+ * properties so they don't serialize to YAML, but consumers can still read
+ * them in a type-safe way.
+ *
+ * - `__ternaryConditionals`: Ternary expressions detected via re-execution
+ *   analysis. Applied to resource bodies before YAML serialization.
+ * - `__omitFields`: Optional spec fields without defaults. Applied as
+ *   `has() ? ... : omit()` wrappers on the YAML string after serialization.
+ */
+export interface KroSimpleSchemaWithMetadata extends KroSimpleSchema {
+  readonly __ternaryConditionals?: TernaryConditional[];
+  readonly __omitFields?: string[];
+}
+
 export interface KroFieldDefinition {
   type: string;
   markers?: string;
@@ -277,6 +308,15 @@ export interface SerializationContext {
   celPrefix: string;
   namespace?: string;
   resourceIdStrategy: 'deterministic' | 'random';
+  /**
+   * Top-level optional spec field names (without `schema.spec.` prefix) that
+   * should be wrapped with KRO 0.9+ `has(...) ? ... : omit()` when referenced
+   * as a single CEL expression in a resource template. Populated from the
+   * schema metadata (`KroSimpleSchemaWithMetadata.__omitFields`). Applied
+   * inline during ref-to-CEL conversion so no post-hoc YAML-string rewriting
+   * is required.
+   */
+  omitFields?: ReadonlySet<string>;
 }
 
 export interface ResourceDependency {

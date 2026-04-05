@@ -62,20 +62,51 @@ export const searxngBootstrap = kubernetesComposition(
     });
 
     // ── Settings ConfigMap ─────────────────────────────────────────────
-    // Direct mode: if settingsYaml is provided (string), use it as-is.
-    // Otherwise, build from individual spec fields via template literals.
-    // KRO mode: proxy fields are always truthy, so typeof distinguishes
-    // real strings from proxies. Template literals produce mixed templates
-    // with ${CEL} refs that KRO evaluates at reconciliation time.
-    // secret_key goes via SEARXNG_SECRET env var, not in ConfigMap.
-    // Build Redis section only when redisUrl is provided (non-empty string).
-    // In KRO mode this becomes a CEL conditional via the mixed template.
+    //
+    // WHY TEMPLATE LITERALS (not `yaml.dump(...)`):
+    //
+    // The composition function runs in two very different modes:
+    //
+    //   (1) Direct mode — spec fields are real values (`'redis://...'`,
+    //       `['html', 'json']`, `false`). `yaml.dump()` would work fine
+    //       and is in fact used by the `buildSearxngSettings` helper for
+    //       direct-mode callers who pass a pre-built `settingsYaml`.
+    //
+    //   (2) KRO mode — spec fields are `KubernetesRef` proxy objects
+    //       whose string coercion yields `__KUBERNETES_REF___schema___spec.xxx__`
+    //       marker tokens. These markers are recognized by the framework
+    //       later and rewritten into CEL expressions like
+    //       `${string(schema.spec.redisUrl)}` inside the final RGD YAML.
+    //       `yaml.dump()` cannot produce those markers — it would call
+    //       `.toString()`/`.toJSON()` on the proxy and flatten everything
+    //       into the wrong thing, losing the reference entirely.
+    //
+    // The template-literal approach is what makes mixed templates work:
+    // the literal text (`use_default_settings: true`, key names, indentation)
+    // is rendered as-is, while `${spec.redisUrl}` interpolation emits the
+    // marker token that the framework then converts to CEL. This is the
+    // only way to build a string that is BOTH (a) valid YAML when the
+    // spec is concrete, and (b) a carrier for CEL references when it
+    // isn't. Changing this to `yaml.dump()` will break KRO mode.
+    //
+    // The `typeof spec.settingsYaml === 'string'` branch lets advanced
+    // direct-mode callers override the entire file with a hand-crafted
+    // (or `buildSearxngSettings`-generated) string — in KRO mode the
+    // proxy isn't a string, so this branch is never taken.
+    //
+    // `secret_key` is intentionally NOT written into the ConfigMap — it
+    // flows through the SEARXNG_SECRET env var on the Deployment instead
+    // so the ConfigMap can stay ReadOnly and the secret can be rotated
+    // without reconciling config.
     const redisSection = spec.redisUrl
       ? `\nredis:\n  url: ${spec.redisUrl}`
       : '';
 
     // Build search formats: use spec.search.formats in direct mode (real array),
-    // fall back to defaults in KRO mode (proxy isn't a real array).
+    // fall back to defaults in KRO mode (the proxy isn't a real array, so
+    // `Array.isArray()` returns false and the literal default list is emitted).
+    // TODO(typekro#array-cel): once CEL template support for arrays lands,
+    // this can emit `${spec.search.formats}` in KRO mode too.
     const searchFormats = Array.isArray(spec.search?.formats)
       ? spec.search.formats.map((f: string) => `    - ${f}`).join('\n')
       : '    - html\n    - json';

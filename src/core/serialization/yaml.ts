@@ -25,6 +25,7 @@ import type {
   KroResourceGraphDefinition,
   KroResourceTemplate,
   KroSimpleSchema,
+  KroSimpleSchemaWithMetadata,
   ResourceDependency,
   SerializationContext,
   SerializationOptions,
@@ -459,8 +460,10 @@ function buildResourceEntry(
       apiVersion: String(apiVersionDesc?.value ?? ''),
       kind: String(kindDesc?.value ?? ''),
       metadata: {
-        name: String(processResourceReferences(rawName)),
-        ...(rawNamespace && { namespace: String(processResourceReferences(rawNamespace)) }),
+        name: String(processResourceReferences(rawName, context)),
+        ...(rawNamespace && {
+          namespace: String(processResourceReferences(rawNamespace, context)),
+        }),
       },
     };
 
@@ -555,11 +558,21 @@ export function serializeResourceGraphToYaml(
   options?: SerializationOptions,
   customSchema?: KroSimpleSchema
 ): string {
+  // Extract optional-field omit list from schema metadata (if present).
+  // These fields get `has() ? ... : omit()` wrapping applied inline during
+  // ref-to-CEL conversion — no post-hoc YAML-string rewriting needed.
+  const schemaWithMeta = customSchema as KroSimpleSchemaWithMetadata | undefined;
+  const omitFieldsList = schemaWithMeta?.__omitFields;
+  const omitFields = omitFieldsList && omitFieldsList.length > 0
+    ? new Set(omitFieldsList)
+    : undefined;
+
   // Create serialization context
   const context: SerializationContext = {
     celPrefix: 'resources', // Default Kro prefix, but now configurable
     ...(options?.namespace && { namespace: options.namespace }),
     resourceIdStrategy: 'deterministic',
+    ...(omitFields && { omitFields }),
   };
 
   // 1. Use embedded resource IDs and build dependency graph

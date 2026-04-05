@@ -10,7 +10,11 @@ import type { Type } from 'arktype';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { getComponentLogger } from '../logging/index.js';
 import { pascalCase } from '../../utils/string.js';
-import type { SchemaDefinition } from '../types/serialization.js';
+import type {
+  KroSimpleSchemaWithMetadata,
+  SchemaDefinition,
+  TernaryConditional,
+} from '../types/serialization.js';
 import type { KroCompatibleType, KroSimpleSchema, KubernetesResource } from '../types.js';
 import { separateStatusFields } from '../validation/cel-validator.js';
 import { serializeStatusMappingsToCel } from './cel-references.js';
@@ -179,7 +183,7 @@ interface ReExecutionResult {
    * the markers to CEL and build `has(schema.spec.field) ? "truthy" : "falsy"`
    * conditionals.
    */
-  ternaryConditionals: Array<{ proxySection: string; falsyValue: string; conditionField: string }>;
+  ternaryConditionals: TernaryConditional[];
 }
 
 /**
@@ -320,6 +324,21 @@ function extractDefaultsByComparison(
  * For each such "orphan" marker, we extract the surrounding section
  * (from the previous newline-at-start-of-key to the marker's end) as a
  * ternary-controlled conditional.
+ *
+ * FRAGILE: this walks line-by-line through the proxy string and backs
+ * through parent YAML keys by regex-matching `^\s*\w+:\s*$` and comparing
+ * against a set of lines from the defaults string. It assumes the
+ * composition constructs YAML-ish content directly (typically via template
+ * literal) with 2-space indentation, canonical key: value syntax, and no
+ * block scalars (`|`, `>`). Compositions that emit flow-style YAML, that
+ * use tab indentation, that quote keys, or that assemble the string
+ * through multiple splice operations will not match cleanly. The
+ * extracted `proxySection` is later consumed by
+ * `applyTernaryConditionalsToResources` via exact substring match — keep
+ * both functions' assumptions in sync when updating either side.
+ *
+ * Tracked for replacement with AST-based detection in
+ * https://github.com/yehudacohen/typekro/issues/57
  */
 function extractTernaryConditionals(
   proxyVal: unknown,
@@ -519,7 +538,7 @@ export function arktypeToKroSchema(
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>
-): KroSimpleSchema {
+): KroSimpleSchemaWithMetadata {
   const specFields = arktypeJsonToKroFields(schemaDefinition.spec.json);
 
   if (!specFields.name) {
@@ -544,7 +563,7 @@ export function arktypeToKroSchema(
   }
 
   // Phase 2: resolve imported constants + detect ternary conditionals
-  let ternaryConditionals: ReExecutionResult['ternaryConditionals'] = [];
+  let ternaryConditionals: TernaryConditional[] = [];
   if (typeof compositionFn === 'function' && resources) {
     const reExecutionResult = resolveDefaultsByReExecution(
       compositionFn as (...args: unknown[]) => unknown,
@@ -595,7 +614,7 @@ export function arktypeToKroSchema(
     ? schemaDefinition.apiVersion.split('/')[1] || schemaDefinition.apiVersion
     : schemaDefinition.apiVersion;
 
-  const schema: KroSimpleSchema = {
+  const schema: KroSimpleSchemaWithMetadata = {
     apiVersion: schemaApiVersion,
     kind: schemaDefinition.kind,
     spec: specFields,
@@ -604,8 +623,9 @@ export function arktypeToKroSchema(
     },
   };
 
-  // Attach metadata as non-enumerable properties — available for
-  // resource template processing but don't appear in the schema YAML.
+  // Attach metadata as non-enumerable properties — they're typed on
+  // KroSimpleSchemaWithMetadata so consumers can read them without casts,
+  // but non-enumerable so they don't appear in the schema YAML.
   if (ternaryConditionals.length > 0) {
     Object.defineProperty(schema, '__ternaryConditionals', {
       value: ternaryConditionals,
@@ -666,6 +686,6 @@ export function generateKroSchemaFromArktype<
   resources?: Record<string, KubernetesResource>,
   statusMappings?: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>
-): KroSimpleSchema {
+): KroSimpleSchemaWithMetadata {
   return arktypeToKroSchema(name, schemaDefinition, resources, statusMappings, nestedStatusCel);
 }

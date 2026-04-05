@@ -7,6 +7,16 @@ description: Privacy-respecting metasearch engine integration
 
 Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch engine that aggregates results from multiple providers (Google, Bing, DuckDuckGo, Brave, etc.).
 
+## Requirements
+
+- **KRO 0.9.0+** with the `CELOmitFunction` feature gate enabled. The composition uses `omit()` in its CEL expressions to drop optional fields that the user leaves unset — KRO 0.8.x will reject the resulting RGD at reconciliation time.
+- TypeKro's bundled `typekro-runtime` already pins KRO 0.9.0 and enables the feature gate, so no manual configuration is needed if you bootstrap your cluster via `typekroRuntime.factory(...)`. If you install KRO yourself, add this to your Helm values:
+  ```yaml
+  config:
+    featureGates:
+      CELOmitFunction: true
+  ```
+
 ## Quick Start
 
 ```typescript

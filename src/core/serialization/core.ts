@@ -35,7 +35,7 @@ import type {
 import type { Enhanced, KroCompatibleType, KubernetesResource } from '../types.js';
 import { validateResourceGraphDefinition } from '../validation/cel-validator.js';
 import { optimizeStatusMappings } from './cel-optimizer.js';
-import { applyOmitWrappers, applyTernaryConditionalsToResources } from './kro-post-processing.js';
+import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
@@ -875,26 +875,21 @@ function createTypedResourceGraph<
         }
       }
 
-      // Apply ternary conditionals and omit wrappers (once only — guard
-      // prevents double-processing if toYaml() is called multiple times).
+      // Apply ternary conditionals (once only — guard prevents
+      // double-processing if toYaml() is called multiple times).
+      // Note: omit() wrapping for optional fields is no longer a
+      // post-processing step — it's applied inline during ref-to-CEL
+      // conversion via `SerializationContext.omitFields`, which reads
+      // from `kroSchema.__omitFields` inside `serializeResourceGraphToYaml`.
       if (!analysisState.ternaryAndOmitApplied) {
         analysisState.ternaryAndOmitApplied = true;
 
-        const ternaryConditionals = (kroSchema as unknown as Record<string, unknown>).__ternaryConditionals as
-          Array<{ proxySection: string; falsyValue: string; conditionField: string }> | undefined;
-        if (ternaryConditionals?.length) {
-          applyTernaryConditionalsToResources(resourcesWithKeys, ternaryConditionals);
+        if (kroSchema.__ternaryConditionals?.length) {
+          applyTernaryConditionalsToResources(resourcesWithKeys, kroSchema.__ternaryConditionals);
         }
       }
 
-      let yaml = serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
-
-      const omitFields = (kroSchema as unknown as Record<string, unknown>).__omitFields as string[] | undefined;
-      if (omitFields?.length) {
-        yaml = applyOmitWrappers(yaml, omitFields);
-      }
-
-      return yaml;
+      return serializeResourceGraphToYaml(definition.name, resourcesWithKeys, options, kroSchema);
     },
   };
 
