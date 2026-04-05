@@ -41,7 +41,7 @@ function extractResourceSection(yaml: string, id: string): string | undefined {
   const startIdx = lines.findIndex((l) => startPattern.test(l));
   if (startIdx === -1) return undefined;
   const endIdx = lines.findIndex(
-    (l, i) => i > startIdx && (/^    - id:/.test(l) || !/^\s/.test(l) || l === '')
+    (l, i) => i > startIdx && (/^ {4}- id:/.test(l) || !/^\s/.test(l) || l === '')
   );
   return lines.slice(startIdx, endIdx === -1 ? undefined : endIdx).join('\n');
 }
@@ -143,8 +143,8 @@ describe('Differential Branch Capture', () => {
       // is the more conservative choice (matches JS truthiness for the
       // common case where the field is a presence flag). Users who need
       // value-based testing should use `if (spec.useExternalCache === true)`.
-      const externalSection = yaml.match(/- id: externalCacheCfg[\s\S]*?(?=\n  - id: |$)/)?.[0];
-      const internalSection = yaml.match(/- id: internalCacheCfg[\s\S]*?(?=\n  - id: |$)/)?.[0];
+      const externalSection = yaml.match(/- id: externalCacheCfg[\s\S]*?(?=\n {2}- id: |$)/)?.[0];
+      const internalSection = yaml.match(/- id: internalCacheCfg[\s\S]*?(?=\n {2}- id: |$)/)?.[0];
 
       expect(externalSection).toContain('includeWhen');
       expect(internalSection).toContain('includeWhen');
@@ -277,7 +277,7 @@ describe('Differential Branch Capture', () => {
 
       // The captured auto-secret should reference schema.spec.apiKey
       // (not a sentinel like "__typekro_default__") inside stringData.
-      const secretSection = yaml.match(/- id: autoSecret[\s\S]*?(?=\n  - id: |$)/)?.[0];
+      const secretSection = yaml.match(/- id: autoSecret[\s\S]*?(?=\n {2}- id: |$)/)?.[0];
       expect(secretSection).toBeDefined();
       expect(secretSection).toContain('schema.spec.apiKey');
       expect(secretSection).not.toContain('__typekro_default__');
