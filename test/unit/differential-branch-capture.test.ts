@@ -23,11 +23,12 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
-import { secret } from '../../src/factories/kubernetes/config/secret.js';
 // Direct imports: the composition-analyzer's `isFactoryCall` only recognises
 // Identifier callees (`ConfigMap(...)`), not MemberExpression callees
-// (`ConfigMap(...)`), so we import the factory functions by name
-// throughout this test file.
+// (`simple.ConfigMap(...)`), so we import the factory functions by name
+// throughout this test file. We also stick to factories in the baseline
+// `KNOWN_FACTORY_NAMES` set (ConfigMap, Deployment) to avoid depending on
+// module-load ordering for self-registered factories.
 import { ConfigMap, Deployment } from '../../src/factories/simple/index.js';
 
 /**
@@ -59,17 +60,16 @@ describe('Differential Branch Capture', () => {
         },
         (spec) => {
           if (!spec.externalSecretName) {
-            secret({
-              metadata: { name: `${spec.name}-secret` },
-              type: 'Opaque',
-              stringData: { key: 'placeholder' },
-              id: 'autoSecret',
+            ConfigMap({
+              name: `${spec.name}-autocfg`,
+              data: { generated: 'true' },
+              id: 'autoCfg',
             });
           }
           ConfigMap({
-            name: `${spec.name}-cfg`,
+            name: `${spec.name}-main`,
             data: { k: 'v' },
-            id: 'cfg',
+            id: 'mainCfg',
           });
           return { ready: true };
         }
@@ -77,25 +77,22 @@ describe('Differential Branch Capture', () => {
 
       const yaml = composition.toYaml();
 
-      // The auto-secret resource was registered in the framework's
-      // hybrid-run branch (where externalSecretName = undefined makes
-      // !spec.externalSecretName truthy) and then merged into the
-      // main resource map.
-      expect(yaml).toContain('id: autoSecret');
-      expect(yaml).toContain('kind: Secret');
+      // The auto-cfg resource was registered in the framework's hybrid
+      // run (where externalSecretName = undefined makes
+      // !spec.externalSecretName truthy) and then merged into the main
+      // resource map.
+      expect(yaml).toContain('id: autoCfg');
 
       // And it carries the correct includeWhen from the AST analyzer's
       // if (!spec.externalSecretName) test.
       expect(yaml).toContain('!has(schema.spec.externalSecretName)');
 
       // The unconditional ConfigMap should NOT have an includeWhen.
-      // Use a per-resource section helper that splits cleanly on the
-      // YAML resource-entry delimiter (four-space-prefixed `- id:`).
-      const cfgSection = extractResourceSection(yaml, 'cfg');
-      expect(cfgSection).toBeDefined();
-      expect(cfgSection).not.toContain('includeWhen');
-      const autoSecretSection = extractResourceSection(yaml, 'autoSecret');
-      expect(autoSecretSection).toContain('includeWhen');
+      const mainSection = extractResourceSection(yaml, 'mainCfg');
+      expect(mainSection).toBeDefined();
+      expect(mainSection).not.toContain('includeWhen');
+      const autoSection = extractResourceSection(yaml, 'autoCfg');
+      expect(autoSection).toContain('includeWhen');
     });
   });
 
@@ -250,23 +247,22 @@ describe('Differential Branch Capture', () => {
           kind: 'PreserveProxies',
           spec: type({
             name: 'string',
-            'externalKeyRef?': 'string',
+            'externalCfgRef?': 'string',
             apiKey: 'string',
           }),
           status: type({ ready: 'boolean' }),
         },
         (spec) => {
-          if (!spec.externalKeyRef) {
-            secret({
-              metadata: { name: `${spec.name}-auto-secret` },
-              type: 'Opaque',
-              stringData: {
+          if (!spec.externalCfgRef) {
+            ConfigMap({
+              name: `${spec.name}-auto-cfg`,
+              data: {
                 // Required field, accessed unconditionally. MUST remain
                 // as a schema.spec.apiKey reference in the captured
                 // resource, not a sentinel or proxy marker.
                 api_key: spec.apiKey as unknown as string,
               },
-              id: 'autoSecret',
+              id: 'autoCfg',
             });
           }
           return { ready: true };
@@ -275,12 +271,12 @@ describe('Differential Branch Capture', () => {
 
       const yaml = composition.toYaml();
 
-      // The captured auto-secret should reference schema.spec.apiKey
-      // (not a sentinel like "__typekro_default__") inside stringData.
-      const secretSection = yaml.match(/- id: autoSecret[\s\S]*?(?=\n {2}- id: |$)/)?.[0];
-      expect(secretSection).toBeDefined();
-      expect(secretSection).toContain('schema.spec.apiKey');
-      expect(secretSection).not.toContain('__typekro_default__');
+      // The captured auto-cfg should reference schema.spec.apiKey
+      // (not a sentinel like "__typekro_default__") inside data.
+      const cfgSection = extractResourceSection(yaml, 'autoCfg');
+      expect(cfgSection).toBeDefined();
+      expect(cfgSection).toContain('schema.spec.apiKey');
+      expect(cfgSection).not.toContain('__typekro_default__');
     });
   });
 
