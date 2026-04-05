@@ -6,6 +6,7 @@
  * The secret_key is injected via SEARXNG_SECRET env var (not in ConfigMap).
  */
 
+import { getComponentLogger } from '../../../core/logging/index.js';
 import type {
   CelExpression,
   Composable,
@@ -13,6 +14,8 @@ import type {
   ResourceStatus,
 } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
+
+const readinessLogger = getComponentLogger('searxng-readiness');
 import {
   DEFAULT_SEARXNG_IMAGE,
   DEFAULT_SEARXNG_PORT,
@@ -52,7 +55,15 @@ function searxngReadinessEvaluator(liveResource: unknown): ResourceStatus {
       return { ready: true, reason: 'DeploymentReady', message: `${ready}/${desired} replicas ready` };
     }
     return { ready: false, reason: 'ReplicasNotReady', message: `${ready}/${desired} replicas ready` };
-  } catch {
+  } catch (err) {
+    // Log the underlying error at debug level for diagnosability — the
+    // generic "EvaluationError" message is what the deployment engine
+    // surfaces to the user, but the actual cause (bad shape, type
+    // coercion failure, etc.) is only useful during debugging.
+    readinessLogger.debug('SearXNG readiness evaluation threw', {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     return { ready: false, reason: 'EvaluationError', message: 'Failed to evaluate SearXNG readiness' };
   }
 }

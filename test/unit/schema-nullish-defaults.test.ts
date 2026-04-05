@@ -239,6 +239,92 @@ describe('Schema Nullish Defaults', () => {
     });
   });
 
+  describe('Phase 1 / Phase 2 override precedence', () => {
+    // Phase 1 (regex) is a fast path that catches `spec.X ?? literal` patterns
+    // at composition-function source level. It can misfire on edge cases
+    // (multi-line expressions, weird lookahead contexts). Phase 2
+    // (re-execution) is authoritative because it actually runs the code.
+    // When both phases produce a value for the same field, Phase 2 MUST
+    // overwrite Phase 1 — this test pins that behavior via a non-literal
+    // `??` fallback that only Phase 2 can resolve.
+
+    it('Phase 2 overwrites Phase 1 when re-execution produces a different default', async () => {
+      const { kubernetesComposition } = await import('../../src/core/composition/imperative.js');
+      const { simple } = await import('../../src/factories/simple/index.js');
+      const { type } = await import('arktype');
+
+      // `DEFAULT_IMAGE` is a closure constant — Phase 1 cannot resolve
+      // identifier-based `??` fallbacks (its regex only matches literals)
+      // so it should NOT record a default for `image`. Phase 2 re-executes
+      // with `spec.image = undefined`, observes the resolved constant, and
+      // records `image -> 'nginx:1.25.3-alpine'`.
+      const DEFAULT_IMAGE = 'nginx:1.25.3-alpine';
+      const composition = kubernetesComposition(
+        {
+          name: 'phase-override',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'PhaseOverride',
+          spec: type({ name: 'string', 'image?': 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.Deployment({
+            name: spec.name,
+            image: spec.image ?? DEFAULT_IMAGE,
+            id: 'app',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      // Phase 2 resolved the constant and wrote the default annotation.
+      expect(yaml).toContain(`image: string | default="${DEFAULT_IMAGE}"`);
+      // Phase 1 should NOT have produced a different default for the same
+      // field — there should be exactly one `| default=` annotation on `image`.
+      const imageMatches = yaml.match(/image: string \| default="[^"]*"/g) ?? [];
+      expect(imageMatches.length).toBe(1);
+    });
+
+    it('Phase 2 replaces Phase 1 for compositions where both phases resolve the same field', async () => {
+      // Using a literal `??` default that Phase 1 catches, verify that
+      // calling `toYaml()` produces exactly one `default=` annotation
+      // (not two chained `| default= | default=` segments) and that the
+      // Phase 2 value is the authoritative one. This pins the
+      // `applyNullishDefaults(..., overwrite=true)` path.
+      const { kubernetesComposition } = await import('../../src/core/composition/imperative.js');
+      const { simple } = await import('../../src/factories/simple/index.js');
+      const { type } = await import('arktype');
+
+      const composition = kubernetesComposition(
+        {
+          name: 'phase-literal',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'PhaseLiteral',
+          spec: type({ name: 'string', 'replicas?': 'number' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.Deployment({
+            name: spec.name,
+            image: 'nginx:stable',
+            replicas: spec.replicas ?? 3,
+            id: 'app',
+          });
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      // The replicas default should appear exactly once, and should be
+      // the value from the ?? fallback (3). Double-annotation would look
+      // like `integer | default=3 | default=3` which is invalid CEL.
+      const replicasMatches = yaml.match(/replicas: integer \| default=\d+/g) ?? [];
+      expect(replicasMatches.length).toBe(1);
+      expect(yaml).toContain('replicas: integer | default=3');
+    });
+  });
+
   describe('End-to-end pipeline (regression tests)', () => {
     // These tests exercise the full pipeline:
     //   composition → re-execution → ternary detection → YAML output

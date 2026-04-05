@@ -484,6 +484,18 @@ function processCompositionBodyAnalysis(
         // "ternary inside a custom factory's internal transformation" case
         // where the AST analyzer can't see the final template path, since
         // the comparison works on the emitted resource structure directly.
+        //
+        // MUTATION SAFETY: this step replaces LEAF values (strings, numbers,
+        // KubernetesRef proxies) inside the proxy-run resources with CEL
+        // conditional strings. It runs after status analysis has captured
+        // its own references (so status builders see the pre-mutation state)
+        // and before YAML serialization (so the mutated state is what gets
+        // emitted). The tree structure is preserved; only leaves change.
+        // `processCompositionBodyAnalysis` is called exactly once per
+        // `toResourceGraph` invocation, and the walk itself is idempotent
+        // (a second pass finds `leafEquals` true for every leaf and no-ops),
+        // so multiple `toYaml()` calls on the resulting TypedResourceGraph
+        // all see a consistent final state.
         if (overriddenFields.size > 0) {
           for (const id of Object.keys(resourcesWithKeys)) {
             const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
@@ -813,10 +825,24 @@ function pickConditionField(
       return field;
     }
   }
-  // Fallback: first overridden field. Single-field overrides are the
-  // common case so this is usually correct; the explicit-marker check
-  // above handles the multi-field case.
-  return overriddenFields.values().next().value ?? '';
+  // Fallback: first overridden field (iteration order = insertion order).
+  // Single-field overrides are the common case so this is usually correct;
+  // the explicit-marker check above handles the multi-field case. When the
+  // fallback fires, the emitted CEL may pick the wrong `has()` condition
+  // for compositions with multiple optional fields driving the same leaf —
+  // log it at debug level so the case is diagnosable if anyone reports
+  // incorrect CEL output.
+  const fallback = overriddenFields.values().next().value ?? '';
+  getComponentLogger('serialization').debug(
+    'pickConditionField fallback: no marker matched, using first overridden field',
+    {
+      fallbackField: fallback,
+      overriddenFields: Array.from(overriddenFields),
+      proxyValuePreview: proxyStr.slice(0, 120),
+      hybridValuePreview: hybridStr.slice(0, 120),
+    }
+  );
+  return fallback;
 }
 
 /**

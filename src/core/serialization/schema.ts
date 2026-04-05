@@ -186,6 +186,42 @@ export function extractNullishDefaults(fnSource: string): Record<string, string 
   return defaults;
 }
 
+/**
+ * Placeholder value passed in place of required spec fields during the
+ * defaults-extraction re-execution. Any captured leaf value that IS this
+ * string, CONTAINS this string as a substring (from template-literal
+ * interpolation), or is NaN (from arithmetic coercion of the string) is
+ * filtered out by the sentinel-detection logic in `extractDefaultsByComparison`
+ * so it never gets recorded as a real schema default.
+ *
+ * The choice of a string (rather than a Symbol or object) is deliberate:
+ *   - String concatenation preserves the token so template-literal usage
+ *     produces a clearly-identifiable captured value (e.g. `"__typekro_default__-cfg"`).
+ *   - Truthiness matches the real proxy behavior (proxies are truthy), so
+ *     `if (spec.requiredField)` takes the same branch in both runs.
+ *   - Numeric contexts coerce to NaN in both runs (proxies also coerce to
+ *     NaN because functions have no numeric value), so arithmetic-derived
+ *     NaN values are symmetric across runs and don't produce spurious defaults.
+ *
+ * If the propagation ever drifts out of this sentinel's shape (e.g. someone
+ * introduces a Symbol-based sentinel), update `isSentinelDerivedValue` below
+ * to match.
+ */
+export const REQUIRED_FIELD_SENTINEL = '__typekro_default__';
+
+/**
+ * Check whether a captured value is derived from the required-field sentinel
+ * and therefore should NOT be recorded as a real schema default. Handles:
+ *   - Direct sentinel or substring (template-literal propagation)
+ *   - NaN (numeric-coercion propagation — both runs produce NaN symmetrically,
+ *     but the defaults run's NaN must be filtered out of the defaults map)
+ */
+function isSentinelDerivedValue(v: unknown): boolean {
+  if (typeof v === 'string') return v.includes(REQUIRED_FIELD_SENTINEL);
+  if (typeof v === 'number') return Number.isNaN(v);
+  return false;
+}
+
 /** Result of re-execution defaults analysis. */
 interface ReExecutionResult {
   /** Resolved ?? default values for spec fields (field → value). */
@@ -229,7 +265,7 @@ function resolveDefaultsByReExecution(
     if (!specJson) return undefined;
 
     const defaultsSpec: Record<string, unknown> = {};
-    for (const p of specJson.required ?? []) defaultsSpec[p.key] = '__typekro_default__';
+    for (const p of specJson.required ?? []) defaultsSpec[p.key] = REQUIRED_FIELD_SENTINEL;
     for (const p of specJson.optional ?? []) defaultsSpec[p.key] = undefined;
 
     // Build the set of optional top-level field names. Only optional fields
@@ -321,8 +357,11 @@ function extractDefaultsByComparison(
       typeof defaultsVal === 'number' ||
       typeof defaultsVal === 'boolean'
     ) {
-      // Skip values that contain the required-field sentinel — these aren't real defaults
-      if (typeof defaultsVal === 'string' && defaultsVal.includes('__typekro_default__')) return;
+      // Skip values derived from the required-field sentinel — these aren't
+      // real defaults. Covers: string containing the sentinel token
+      // (template-literal propagation), NaN (arithmetic-coercion
+      // propagation), and the sentinel itself.
+      if (isSentinelDerivedValue(defaultsVal)) return;
       result[exactMarkerMatch[1]!] = defaultsVal;
     }
     return;
@@ -513,10 +552,20 @@ function extractTernaryConditionals(
 /**
  * Apply extracted nullish defaults to a KRO SimpleSchema spec fields object.
  * Appends `| default=<value>` to the field's type string.
+ *
+ * The two-phase default extraction uses this function twice:
+ *   - Phase 1 (regex, `extractNullishDefaults`) — fast but may misfire on
+ *     edge cases (multi-line expressions, nested parens). Called with
+ *     `overwrite: false` so it doesn't clobber existing annotations.
+ *   - Phase 2 (re-execution, `resolveDefaultsByReExecution`) — slower but
+ *     authoritative. Called with `overwrite: true` so it REPLACES any
+ *     Phase 1 annotation for the same field, ensuring a wrong Phase 1
+ *     result doesn't survive when Phase 2 produces a corrected value.
  */
 function applyNullishDefaults(
   specFields: Record<string, unknown>,
-  defaults: Record<string, string | number | boolean>
+  defaults: Record<string, string | number | boolean>,
+  overwrite = false
 ): void {
   for (const [path, value] of Object.entries(defaults)) {
     const parts = path.split('.');
@@ -536,9 +585,19 @@ function applyNullishDefaults(
 
     const fieldName = parts[parts.length - 1]!;
     const existingType = current[fieldName];
-    if (typeof existingType === 'string' && !existingType.includes('default=')) {
-      const defaultStr = typeof value === 'string' ? `"${value}"` : String(value);
+    if (typeof existingType !== 'string') continue;
+
+    const defaultStr = typeof value === 'string' ? `"${value}"` : String(value);
+    const hasDefault = existingType.includes('default=');
+    if (!hasDefault) {
       current[fieldName] = `${existingType} | default=${defaultStr}`;
+    } else if (overwrite) {
+      // Strip any existing `| default=...` segment and replace with the
+      // authoritative Phase 2 value. The segment may appear as `| default="x"`,
+      // `| default=123`, or `| default=true` — match to the end of the value
+      // or to the next `|` (for additional annotations chained after it).
+      const withoutDefault = existingType.replace(/\s*\|\s*default=(?:"[^"]*"|[^|]*)/, '');
+      current[fieldName] = `${withoutDefault} | default=${defaultStr}`;
     }
   }
 }
@@ -622,7 +681,11 @@ export function arktypeToKroSchema(
     applyNullishDefaults(specFields, regexDefaults);
   }
 
-  // Phase 2: resolve imported constants + detect ternary conditionals
+  // Phase 2: resolve imported constants + detect ternary conditionals.
+  // Phase 2 is AUTHORITATIVE — if it produces a value for a field that
+  // Phase 1 also annotated, Phase 2 wins. This corrects Phase 1 misfires
+  // on edge cases (multi-line expressions, nested parens) without breaking
+  // the common case where both phases agree.
   let ternaryConditionals: TernaryConditional[] = [];
   if (typeof compositionFn === 'function' && resources) {
     const reExecutionResult = resolveDefaultsByReExecution(
@@ -631,7 +694,7 @@ export function arktypeToKroSchema(
       resources
     );
     if (reExecutionResult) {
-      applyNullishDefaults(specFields, reExecutionResult.defaults);
+      applyNullishDefaults(specFields, reExecutionResult.defaults, true);
       ternaryConditionals = reExecutionResult.ternaryConditionals;
     }
   }

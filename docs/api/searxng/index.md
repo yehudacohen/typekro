@@ -17,6 +17,11 @@ Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch 
       CELOmitFunction: true
   ```
 
+## Known Limitations
+
+- **`search.formats` is direct-mode only.** In KRO mode the user-supplied `formats` array is currently ignored and the composition falls back to the literal default `['html', 'json']`. This is because KRO's CEL mixed templates don't yet support iterating a schema array into a YAML list. If you need a custom `formats` list in KRO mode, deploy via direct mode, or provide a pre-built `settingsYaml` string with your desired formats. Array-valued CEL templating is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) and this limitation will be removed once it lands.
+- **KRO 0.9.0+ required.** See [Requirements](#requirements) above.
+
 ## Quick Start
 
 ```typescript
@@ -31,6 +36,7 @@ const factory = searxngBootstrap.factory('direct', {
 await factory.deploy({
   name: 'searxng',
   server: { secret_key: 'change-me-in-production', limiter: false },
+  // search.formats only takes effect in direct mode — see "Known Limitations" above
   search: { formats: ['html', 'json'] },
 });
 ```
@@ -118,12 +124,16 @@ SearXNG works well alongside `webAppWithProcessing` — the Valkey cache can dou
 import { searxngBootstrap } from 'typekro/searxng';
 import { webAppWithProcessing } from 'typekro/webapp';
 
+// Build the factories for each composition
+const searchFactory = searxngBootstrap.factory('direct', { namespace: 'my-app', kubeConfig });
+const appFactory = webAppWithProcessing.factory('direct', { namespace: 'my-app', kubeConfig });
+
 // Deploy search engine
 const search = await searchFactory.deploy({
   name: 'searxng',
   namespace: 'my-app',
   redisUrl: 'redis://my-app-cache:6379/0',
-  search: { formats: ['html', 'json'] },
+  search: { formats: ['html', 'json'] }, // ⚠️ direct mode only — see "Known Limitations"
 });
 
 // Deploy app stack with SEARXNG_URL
