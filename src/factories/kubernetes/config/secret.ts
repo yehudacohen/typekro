@@ -4,12 +4,22 @@ import { registerFactory } from '../../../core/resources/factory-registry.js';
 import type { Enhanced } from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 
-// Self-register with semantic alias for fuzzy resource key matching.
+// Self-register under both the PascalCase `Secret` name (used by
+// `simple.Secret`) and the lowercase `secret` name (this module's
+// exported function). Registering both ensures that composition-body
+// AST analysis (`isKnownFactory`) recognises direct calls like
+// `secret({...})` inside compositions and can extract control-flow
+// directives (includeWhen, forEach, etc).
 registerFactory({
   factoryName: 'Secret',
   kind: 'Secret',
   apiVersion: 'v1',
   semanticAliases: ['secret'],
+});
+registerFactory({
+  factoryName: 'secret',
+  kind: 'Secret',
+  apiVersion: 'v1',
 });
 
 export type V1SecretData = NonNullable<V1Secret['data']>;

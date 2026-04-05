@@ -54,24 +54,36 @@ export function analyzeFactoryArgTernaries(
   const firstArg = call.arguments[0];
   if (!firstArg || firstArg.type !== 'ObjectExpression') return;
 
-  const properties = (firstArg as ASTNode & { properties: Property[] }).properties;
+  walkObjectForTernaries(firstArg, '', resourceId, fullSource, specParamName, result);
+}
+
+/**
+ * Recursively walk an ObjectExpression looking for Property nodes whose value
+ * is a ConditionalExpression that references the spec parameter. Each match is
+ * recorded as a template override at the full dotted property path.
+ *
+ * This enables authors to write plain JavaScript ternaries deep inside
+ * structured factory arguments — e.g., `{ spec: { replicas: spec.env === 'prod' ? 3 : 1 } }`
+ * or `{ env: [{ name: 'MODE', value: spec.debug ? 'debug' : 'prod' }] }` — and
+ * still get correct CEL conditionals in the emitted template. Without this
+ * recursion only top-level ternaries (direct children of the factory's first
+ * argument) were detected.
+ */
+function walkObjectForTernaries(
+  objectNode: ASTNode,
+  parentPath: string,
+  resourceId: string,
+  fullSource: string,
+  specParamName: string,
+  result: ASTAnalysisResult
+): void {
+  if (objectNode.type !== 'ObjectExpression') return;
+  const properties = (objectNode as ASTNode & { properties: Property[] }).properties;
   if (!properties) return;
 
   for (const prop of properties) {
     if (prop.type !== 'Property') continue;
 
-    // Only handle ternary values
-    if (prop.value.type !== 'ConditionalExpression') continue;
-
-    const ternary = prop.value as ConditionalExpression;
-
-    // Only convert if the condition references the spec parameter
-    if (!referencesSpec(ternary.test, specParamName)) continue;
-
-    // Skip if condition is a compile-time literal
-    if (isCompileTimeLiteral(ternary.test)) continue;
-
-    // Get the property key name
     const key = prop.key;
     const keyName =
       key.type === 'Identifier'
@@ -81,26 +93,50 @@ export function analyzeFactoryArgTernaries(
           : undefined;
     if (!keyName) continue;
 
-    const templatePath = factoryArgKeyToTemplatePath(keyName);
-    if (!templatePath) continue;
+    // Ternary value → emit template override at the full dotted path
+    if (prop.value.type === 'ConditionalExpression') {
+      const ternary = prop.value as ConditionalExpression;
+      if (!referencesSpec(ternary.test, specParamName)) continue;
+      if (isCompileTimeLiteral(ternary.test)) continue;
 
-    // Convert the full ternary expression to CEL
-    const celExpr = expressionToCel(ternary, fullSource, specParamName);
+      // Build the full property path. The top-level caller passes an empty
+      // parentPath; nested calls pass the dotted path built so far.
+      const topLevelPath = parentPath === '' ? factoryArgKeyToTemplatePath(keyName) : null;
+      const fullPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
+      if (!fullPath) continue;
 
-    // Store the override
-    let overrides = result.templateOverrides.get(resourceId);
-    if (!overrides) {
-      overrides = [];
-      result.templateOverrides.set(resourceId, overrides);
+      const celExpr = expressionToCel(ternary, fullSource, specParamName);
+
+      let overrides = result.templateOverrides.get(resourceId);
+      if (!overrides) {
+        overrides = [];
+        result.templateOverrides.set(resourceId, overrides);
+      }
+      overrides.push({ propertyPath: fullPath, celExpression: celExpr });
+
+      logger.debug('Detected ternary in factory argument', {
+        resourceId,
+        property: keyName,
+        templatePath: fullPath,
+        cel: celExpr,
+      });
+      continue;
     }
-    overrides.push({ propertyPath: templatePath, celExpression: celExpr });
 
-    logger.debug('Detected ternary in factory argument', {
-      resourceId,
-      property: keyName,
-      templatePath,
-      cel: celExpr,
-    });
+    // Nested object → recurse, extending the dotted path
+    if (prop.value.type === 'ObjectExpression') {
+      const topLevelPath = parentPath === '' ? factoryArgKeyToTemplatePath(keyName) : null;
+      const childPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
+      if (!childPath) continue;
+      walkObjectForTernaries(
+        prop.value,
+        childPath,
+        resourceId,
+        fullSource,
+        specParamName,
+        result
+      );
+    }
   }
 }
 

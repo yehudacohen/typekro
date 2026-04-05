@@ -66,8 +66,30 @@ export const SearxngConfigSchema = type({
     'baseUrl?': 'string',
     /** ConfigMap name for settings (default: '{name}-config'). */
     'configMapName?': 'string',
-    /** Server configuration. secret_key is injected via SEARXNG_SECRET env var, not ConfigMap. */
+    /**
+     * Server configuration. `secret_key` is NEVER written into the ConfigMap.
+     * The preferred delivery channel is `secretKeyRef` (below) which mounts
+     * an existing Secret via `valueFrom.secretKeyRef` — that keeps the key
+     * out of Deployment spec and pod descriptions. Passing a plaintext
+     * `secret_key` directly is supported for direct-mode callers who manage
+     * their own secrets, but it results in the value appearing in
+     * `Deployment.spec.template.spec.containers[].env[].value` which is
+     * visible to anyone with `kubectl get deployment -o yaml`. Prefer
+     * `secretKeyRef` in production.
+     */
     'server?': serverConfigShape,
+    /**
+     * Reference to an existing K8s Secret containing the SearXNG secret key.
+     * When set, the Deployment mounts `SEARXNG_SECRET` via
+     * `valueFrom.secretKeyRef` and any plaintext `server.secret_key` is
+     * ignored. This is the recommended production pattern — pair it with
+     * an external-secrets operator (Vault, AWS SM, etc.) or create the
+     * Secret separately.
+     */
+    'secretKeyRef?': {
+      name: 'string',
+      key: 'string',
+    },
     /** Search configuration. */
     'search?': searchConfigShape,
     /** Redis/Valkey URL for the built-in rate limiter (e.g., 'redis://valkey:6379/0'). */
@@ -125,8 +147,28 @@ export const SearxngBootstrapConfigSchema = type({
   'instanceName?': 'string',
   /** Base URL for the instance. */
   'baseUrl?': 'string',
-  /** Server configuration (secret_key injected via SEARXNG_SECRET env var). */
+  /**
+   * Server configuration. When `secret_key` is provided AND `secretKeyRef`
+   * is NOT provided, the bootstrap composition automatically creates a
+   * dedicated K8s Secret (`{name}-secret`) and mounts it via
+   * `valueFrom.secretKeyRef` on the Deployment — the plaintext value
+   * never appears in the Deployment spec.
+   */
   'server?': serverConfigShape,
+  /**
+   * Reference to a pre-existing K8s Secret containing the SearXNG secret
+   * key. Use this with external-secrets-operator, Vault, or any workflow
+   * where the Secret's lifecycle is managed outside TypeKro. When set,
+   * the bootstrap SKIPS creating its own Secret and wires the existing
+   * one through to the Deployment via `valueFrom.secretKeyRef`. In KRO
+   * mode this is resolved via `has(schema.spec.secretKeyRef)` so the
+   * user can decide per-instance whether to provide an external ref or
+   * fall back to the auto-created Secret from `server.secret_key`.
+   */
+  'secretKeyRef?': {
+    name: 'string',
+    key: 'string',
+  },
   /** Search configuration. */
   'search?': searchConfigShape,
   /** Redis/Valkey URL for the built-in rate limiter (e.g., 'redis://valkey:6379/0'). */

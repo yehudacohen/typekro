@@ -52,6 +52,13 @@ export function typeKroRuntimeBootstrap(config: TypeKroRuntimeConfig = {}) {
   // that can occur with 'latest' (e.g., 422 errors on CRD validation)
   // v2.7.5 is the latest stable version with fixes for schema validation issues
   const fluxVersion = config.fluxVersion || 'v2.7.5';
+  // KRO 0.9.0+ is REQUIRED — the TypeKro serialization pipeline emits
+  // `${has(...) ? ... : omit()}` conditionals for optional spec fields
+  // without defaults, and the `omit()` CEL function is gated behind the
+  // `CELOmitFunction` feature gate introduced in KRO 0.9.0. Running an
+  // older controller will cause RGD validation to fail at reconcile time
+  // with "unknown function omit". The feature gate is enabled in the
+  // Helm values block further down (`config.featureGates.CELOmitFunction`).
   const kroVersion = config.kroVersion || '0.9.0';
   const targetNamespace = config.namespace || DEFAULT_FLUX_NAMESPACE;
   const rbacMode: RbacMode = config.rbac || 'cluster-admin';

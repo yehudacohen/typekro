@@ -126,6 +126,7 @@ export function walkStatement(
       const newCtx: TraversalContext = {
         forEachStack: [...ctx.forEachStack, dimension],
         includeWhenStack: [...ctx.includeWhenStack],
+        optionalFieldNames: ctx.optionalFieldNames,
       };
 
       const body = forOf.body;
@@ -151,12 +152,13 @@ export function walkStatement(
       // and is NOT a compile-time literal
       if (!isCompileTimeLiteral(testNode) && referencesSpec(testNode, specParamName)) {
         const condition: IncludeWhenCondition = {
-          expression: conditionToCel(testNode, fullSource, specParamName),
+          expression: conditionToCel(testNode, fullSource, specParamName, ctx.optionalFieldNames),
         };
 
         const newCtx: TraversalContext = {
           forEachStack: [...ctx.forEachStack],
           includeWhenStack: [...ctx.includeWhenStack, condition],
+          optionalFieldNames: ctx.optionalFieldNames,
         };
 
         // Walk consequent
@@ -195,11 +197,14 @@ export function walkStatement(
         let elseCtx = ctx;
         if (!isCompileTimeLiteral(testNode) && referencesSpec(testNode, specParamName)) {
           const negatedCondition: IncludeWhenCondition = {
-            expression: negateCondition(conditionToCel(testNode, fullSource, specParamName)),
+            expression: negateCondition(
+              conditionToCel(testNode, fullSource, specParamName, ctx.optionalFieldNames)
+            ),
           };
           elseCtx = {
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, negatedCondition],
+            optionalFieldNames: ctx.optionalFieldNames,
           };
         }
 
@@ -326,6 +331,7 @@ export function walkExpression(
           const newCtx: TraversalContext = {
             forEachStack: [...ctx.forEachStack, dimension],
             includeWhenStack: [...ctx.includeWhenStack],
+            optionalFieldNames: ctx.optionalFieldNames,
           };
 
           // Walk the callback body recursively to detect nested control flow
@@ -370,7 +376,12 @@ export function walkExpression(
     const testNode = cond.test;
 
     if (!isCompileTimeLiteral(testNode) && referencesSpec(testNode, specParamName)) {
-      const condition = conditionToCel(testNode, fullSource, specParamName);
+      const condition = conditionToCel(
+        testNode,
+        fullSource,
+        specParamName,
+        ctx.optionalFieldNames
+      );
 
       // Check if consequent contains factory calls
       const consequentCalls = findFactoryCallsInSubtree(cond.consequent);
@@ -383,6 +394,7 @@ export function walkExpression(
           const newCtx: TraversalContext = {
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, { expression: condition }],
+            optionalFieldNames: ctx.optionalFieldNames,
           };
           registerResourceControlFlow(call.id, call.factoryName, newCtx, result);
         }
@@ -393,6 +405,7 @@ export function walkExpression(
           const newCtx: TraversalContext = {
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, { expression: negatedCondition }],
+            optionalFieldNames: ctx.optionalFieldNames,
           };
           registerResourceControlFlow(call.id, call.factoryName, newCtx, result);
         }
@@ -415,11 +428,17 @@ export function walkExpression(
         !isCompileTimeLiteral(logical.left) &&
         referencesSpec(logical.left, specParamName)
       ) {
-        const condition = conditionToCel(logical.left, fullSource, specParamName);
+        const condition = conditionToCel(
+          logical.left,
+          fullSource,
+          specParamName,
+          ctx.optionalFieldNames
+        );
         for (const call of rightCalls) {
           const newCtx: TraversalContext = {
             forEachStack: [...ctx.forEachStack],
             includeWhenStack: [...ctx.includeWhenStack, { expression: condition }],
+            optionalFieldNames: ctx.optionalFieldNames,
           };
           registerResourceControlFlow(call.id, call.factoryName, newCtx, result);
         }

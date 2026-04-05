@@ -96,8 +96,15 @@ function readTemplateOverrides(
  * Convert a single includeWhen value to a CEL expression string.
  *
  * Accepted input types:
- *  - KubernetesRef proxy  → `${schema.spec.field}`
- *  - CelExpression object → `${expression}`
+ *  - KubernetesRef proxy  → `${schema.spec.field}` — the field's value is
+ *    used as the boolean condition. This is the semantics of the explicit
+ *    `.withIncludeWhen(spec.boolField)` API: the caller is being deliberate
+ *    about the field they want as the test. Callers who need a presence
+ *    check on an optional field should use `Cel.has(ref)` explicitly, or
+ *    write `if (spec.optional)` in the composition body (which the AST
+ *    analyzer rewrites to `has(...)` automatically based on the schema).
+ *  - CelExpression object → `${expression}` — use Cel.has / Cel.not /
+ *    Cel.expr to build explicit conditions.
  *  - string (already CEL) → pass-through
  *  - string with __KUBERNETES_REF__ markers → convert markers to CEL
  */

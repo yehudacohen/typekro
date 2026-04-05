@@ -59,7 +59,8 @@ const logger = getComponentLogger('composition-analyzer');
  */
 export function analyzeCompositionBody(
   compositionFn: (...args: unknown[]) => unknown,
-  resourceIds: Set<string>
+  resourceIds: Set<string>,
+  optionalFieldNames?: Set<string>
 ): ASTAnalysisResult {
   const result: ASTAnalysisResult = {
     resources: new Map(),
@@ -96,10 +97,16 @@ export function analyzeCompositionBody(
     // by detecting spec.array.map(cb).method() patterns directly in the expression tree.
     // Bun's transpiler may inline variable assignments, so we can't rely on VariableDeclaration.
 
-    // Walk the function body
+    // Walk the function body. `optionalFieldNames` flows down into
+    // `conditionToCel` so that bare truthiness checks on OPTIONAL fields
+    // (`if (spec.maybeX)`) are wrapped with `has()` — matching JavaScript
+    // truthiness semantics — while bare references to REQUIRED boolean
+    // fields (`if (spec.enabled)`) pass through as value reads since
+    // `has(...)` on a required field is trivially true.
     const ctx: TraversalContext = {
       forEachStack: [],
       includeWhenStack: [],
+      optionalFieldNames: optionalFieldNames ?? new Set(),
     };
 
     walkBody(functionBody, fnSource, specParamName, ctx, result);

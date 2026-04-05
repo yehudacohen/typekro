@@ -75,10 +75,12 @@ await factory.deploy({
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `formats` | `string[]` | `['html']` | Response formats (`'html'`, `'json'`, `'csv'`, `'rss'`) |
+| `formats` | `string[]` | `['html', 'json']` | Response formats (`'html'`, `'json'`, `'csv'`, `'rss'`) |
 | `default_lang` | `string` | — | Default language |
 | `autocomplete` | `string` | — | Autocomplete provider |
 | `safe_search` | `number` | — | Safe search (0=off, 1=moderate, 2=strict) |
+
+> **Known limitation (KRO mode):** `search.formats` is a JavaScript array, and the composition serializes it by iterating the array at composition time. In **direct mode** the user-supplied value flows through correctly. In **KRO mode**, the field is a schema-proxy reference rather than a real array, so the composition can't enumerate it at composition time and falls back to the literal default `['html', 'json']`. If you need non-default formats in KRO mode, deploy via direct mode or pass a pre-built `settingsYaml` that contains the formats list you want. Array-valued CEL templating support is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) — once it lands, this limitation will be removed.
 
 ## Rate Limiter
 
@@ -93,6 +95,20 @@ await factory.deploy({
 ```
 
 The composition automatically configures `redis.url` in settings.yml when `redisUrl` is provided.
+
+### Auto-enable behavior
+
+When you pass `redisUrl` without explicitly setting `server.limiter`, the limiter is **automatically enabled**. This matches the expectation that most users who provision Redis for SearXNG want rate limiting. If you want Redis for another reason (e.g., as a shared cache backend) but don't want rate limiting, pass `server.limiter: false` explicitly:
+
+```typescript
+await factory.deploy({
+  name: 'searxng',
+  redisUrl: 'redis://valkey:6379/0',
+  server: { limiter: false }, // explicit opt-out — limiter stays off
+});
+```
+
+The override is one-way — an explicit `false` always wins over the auto-enable. `undefined` or a missing `limiter` field triggers the auto-enable.
 
 ## Using with Web App Composition
 

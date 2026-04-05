@@ -25,6 +25,7 @@ import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { Cel } from '../../../core/references/cel.js';
 import { configMap } from '../../kubernetes/config/config-map.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
+import { secret } from '../../kubernetes/config/secret.js';
 import { simple } from '../../simple/index.js';
 import { searxng } from '../resources/searxng.js';
 import {
@@ -34,6 +35,19 @@ import {
   SearxngBootstrapConfigSchema,
   SearxngBootstrapStatusSchema,
 } from '../types.js';
+
+/**
+ * Return a copy of the server config with `secret_key` removed. The field
+ * is delivered via a dedicated K8s Secret, not via the Deployment spec —
+ * this helper makes sure the plaintext (or the KubernetesRef proxy that
+ * carries it in KRO mode) does not leak into the searxng() factory's
+ * `spec.server` which would otherwise fall back to injecting it as a
+ * plaintext env var.
+ */
+function stripSecretKey<T extends { secret_key?: unknown }>(server: T): Omit<T, 'secret_key'> {
+  const { secret_key: _discarded, ...rest } = server;
+  return rest;
+}
 
 export const searxngBootstrap = kubernetesComposition(
   {
@@ -94,10 +108,12 @@ export const searxngBootstrap = kubernetesComposition(
     // (or `buildSearxngSettings`-generated) string — in KRO mode the
     // proxy isn't a string, so this branch is never taken.
     //
-    // `secret_key` is intentionally NOT written into the ConfigMap — it
-    // flows through the SEARXNG_SECRET env var on the Deployment instead
-    // so the ConfigMap can stay ReadOnly and the secret can be rotated
-    // without reconciling config.
+    // `secret_key` is intentionally NOT written into the ConfigMap — and
+    // it's also NOT injected as a plaintext env var on the Deployment
+    // (which would expose it via `kubectl get deploy -o yaml`). Instead,
+    // the secret is delivered via a dedicated K8s Secret resource that
+    // the Deployment mounts with `valueFrom.secretKeyRef`. See the
+    // Secret block below.
     const redisSection = spec.redisUrl
       ? `\nredis:\n  url: ${spec.redisUrl}`
       : '';
@@ -137,8 +153,65 @@ ${redisSection}`;
       id: 'searxngConfig',
     });
 
-    // ── Deployment ─────────────────────────────────────────────────────
+    // ── Secret (SEARXNG_SECRET delivery) ───────────────────────────────
+    //
+    // Secret delivery rules:
+    //   (1) If the user provided an external `secretKeyRef`, the Deployment
+    //       mounts that existing Secret via valueFrom — the bootstrap does
+    //       NOT create its own. This is the path for external-secrets
+    //       workflows (Vault, AWS SM, external-secrets operator).
+    //   (2) Otherwise, the bootstrap creates a dedicated `{name}-secret`
+    //       Secret from `server.secret_key`. The plaintext stops at the
+    //       Secret's stringData and never enters the Deployment env.
+    //
+    // The plain `if (!spec.secretKeyRef)` below is transformed into a KRO
+    // `includeWhen: ${!has(schema.spec.secretKeyRef)}` directive by the
+    // composition AST analyzer during serialization. In direct mode the
+    // `if` runs normally; in KRO mode the analyzer attaches the includeWhen
+    // so the Secret is only created when the user didn't provide an
+    // external ref. The Deployment's `secretKeyRef` field is computed by
+    // the JS ternary on the same condition and the analyzer emits the
+    // corresponding CEL ternary there as well.
+    //
+    // Why `simple.Secret` is NOT used here: it eagerly base64-encodes
+    // stringData values via `Buffer.from(...)` at composition time, which
+    // would encode the `__KUBERNETES_REF__` marker token in KRO mode
+    // instead of the actual user-supplied secret, baking a broken value
+    // into the RGD. The low-level `secret()` factory passes `stringData`
+    // through untouched so KRO can resolve it at reconcile time.
+    const secretName = `${spec.name}-secret`;
 
+    if (!spec.secretKeyRef) {
+      secret({
+        metadata: {
+          name: secretName,
+          namespace: resolvedNamespace,
+          labels: {
+            'app.kubernetes.io/name': 'searxng',
+            'app.kubernetes.io/instance': spec.name,
+            'app.kubernetes.io/component': 'secret',
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+        type: 'Opaque',
+        stringData: {
+          secret_key: spec.server?.secret_key as string,
+        },
+        id: 'searxngSecret',
+      });
+    }
+
+    // ── Deployment ─────────────────────────────────────────────────────
+    //
+    // The Deployment never sees the plaintext secret — it mounts a
+    // `secretKeyRef` instead, which the factory translates into
+    // `valueFrom.secretKeyRef` on the SEARXNG_SECRET env var.
+    //
+    // The two nested ternaries on `secretKeyRef.name` and `secretKeyRef.key`
+    // are detected by the composition AST analyzer and emitted as CEL
+    // conditionals in the final RGD — in KRO mode the user's CR value
+    // for `spec.secretKeyRef` selects between the external Secret and
+    // the auto-created one at reconcile time.
     const _deployment = searxng({
       name: spec.name,
       namespace: resolvedNamespace,
@@ -148,7 +221,16 @@ ${redisSection}`;
         instanceName: spec.instanceName ?? spec.name,
         baseUrl: spec.baseUrl ?? `http://${spec.name}:${port}/`,
         configMapName,
-        server: spec.server,
+        // Strip secret_key before passing server config through — the
+        // plaintext stops here and is delivered exclusively via the
+        // Secret resource above.
+        ...(spec.server && {
+          server: stripSecretKey(spec.server),
+        }),
+        secretKeyRef: {
+          name: spec.secretKeyRef ? spec.secretKeyRef.name : secretName,
+          key: spec.secretKeyRef ? spec.secretKeyRef.key : 'secret_key',
+        },
         env: spec.env,
         resources: spec.resources,
       },

@@ -45,18 +45,51 @@ export function applyTernaryConditionalsToResources(
 ): void {
   for (const { proxySection, conditionField } of conditionals) {
     replaceInResources(resources, proxySection, (matchedSection) => {
-      // Convert markers in the truthy branch to CEL references
-      const celTruthy = matchedSection.replace(
-        /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g,
-        (_m, resourceId: string, fieldPath: string) => {
-          const celPath = resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
-          return `" + string(${celPath}) + "`;
+      // Split the matched section on markers so we can separately handle
+      // LITERAL text (needs CEL string-literal escaping) and CEL REFERENCES
+      // (must NOT be escaped — they're emitted as `string(ref)` concatenation).
+      const markerRe = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+      let celTruthy = '';
+      let lastIndex = 0;
+      let m: RegExpExecArray | null = markerRe.exec(matchedSection);
+      while (m !== null) {
+        if (m.index > lastIndex) {
+          celTruthy += escapeCelStringLiteral(matchedSection.slice(lastIndex, m.index));
         }
-      );
-      const escapedTruthy = celTruthy.replace(/\n/g, '\\n');
-      return `\${has(schema.spec.${conditionField}) ? "${escapedTruthy}" : ""}`;
+        const resourceId = m[1]!;
+        const fieldPath = m[2]!;
+        const celPath =
+          resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+        celTruthy += `" + string(${celPath}) + "`;
+        lastIndex = m.index + m[0].length;
+        m = markerRe.exec(matchedSection);
+      }
+      if (lastIndex < matchedSection.length) {
+        celTruthy += escapeCelStringLiteral(matchedSection.slice(lastIndex));
+      }
+      return `\${has(schema.spec.${conditionField}) ? "${celTruthy}" : ""}`;
     });
   }
+}
+
+/**
+ * Escape a literal text chunk for inclusion inside a CEL double-quoted
+ * string. Must handle backslash, double quote, newline, carriage return,
+ * and tab — in that order, so that the backslash escape doesn't re-escape
+ * the backslashes introduced by later substitutions.
+ *
+ * Previous implementation only escaped newlines, which left literal `"` and
+ * `\` characters unescaped. That was a latent bug: any composition that
+ * emitted quoted YAML values or Windows-style paths inside a ternary branch
+ * would produce malformed CEL and the KRO reconciler would reject the RGD.
+ */
+function escapeCelStringLiteral(literal: string): string {
+  return literal
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
 }
 
 /** Recursively find and replace string sections in resource data. */

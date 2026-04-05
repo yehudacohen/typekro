@@ -6,7 +6,12 @@
  * The secret_key is injected via SEARXNG_SECRET env var (not in ConfigMap).
  */
 
-import type { Composable, Enhanced, ResourceStatus } from '../../../core/types/index.js';
+import type {
+  CelExpression,
+  Composable,
+  Enhanced,
+  ResourceStatus,
+} from '../../../core/types/index.js';
 import { createResource } from '../../shared.js';
 import {
   DEFAULT_SEARXNG_IMAGE,
@@ -14,6 +19,24 @@ import {
   type SearxngConfig,
   type SearxngStatus,
 } from '../types.js';
+
+/**
+ * Relaxed spec type for the factory. The ArkType schema constrains
+ * `secretKeyRef.name` and `secretKeyRef.key` to plain strings, but the
+ * bootstrap composition needs to pass `CelExpression<string>` values in
+ * KRO mode (where the field values are CEL ternaries that KRO evaluates
+ * at reconcile time). At runtime `createResource` handles both concrete
+ * strings and CelExpression objects uniformly, so widening the type here
+ * is purely a TypeScript ergonomics fix — no runtime behavior change.
+ */
+type SearxngFactoryConfig = Omit<SearxngConfig, 'spec'> & {
+  spec: Omit<SearxngConfig['spec'], 'secretKeyRef'> & {
+    secretKeyRef?: {
+      name: string | CelExpression<string>;
+      key: string | CelExpression<string>;
+    };
+  };
+};
 
 function searxngReadinessEvaluator(liveResource: unknown): ResourceStatus {
   try {
@@ -51,7 +74,7 @@ function searxngReadinessEvaluator(liveResource: unknown): ResourceStatus {
  * ```
  */
 function createSearxngResource(
-  config: Composable<SearxngConfig>
+  config: Composable<SearxngFactoryConfig>
 ): Enhanced<SearxngConfig['spec'], SearxngStatus> {
   const image = config.spec.image ?? DEFAULT_SEARXNG_IMAGE;
   const replicas = config.spec.replicas ?? 1;
@@ -66,8 +89,28 @@ function createSearxngResource(
   if (config.spec.baseUrl) {
     env.push({ name: 'BASE_URL', value: config.spec.baseUrl });
   }
-  // secret_key injected via SEARXNG_SECRET env var — never in ConfigMap
-  if (config.spec.server?.secret_key) {
+  // SEARXNG_SECRET delivery — secret_key is NEVER written into the ConfigMap.
+  //
+  // Precedence:
+  //   1. secretKeyRef — mount an existing K8s Secret via valueFrom.secretKeyRef.
+  //      This is the recommended production path: the secret never appears
+  //      in Deployment spec, pod env dumps, or `kubectl get deploy -o yaml`.
+  //      The bootstrap composition always uses this path.
+  //   2. server.secret_key (plaintext) — fallback for direct-mode callers who
+  //      manage their own secret injection. Insecure: appears in
+  //      Deployment.spec.template.spec.containers[].env[].value. Logged with
+  //      a deprecation warning below; prefer secretKeyRef in new code.
+  if (config.spec.secretKeyRef) {
+    env.push({
+      name: 'SEARXNG_SECRET',
+      valueFrom: {
+        secretKeyRef: {
+          name: config.spec.secretKeyRef.name,
+          key: config.spec.secretKeyRef.key,
+        },
+      },
+    });
+  } else if (config.spec.server?.secret_key) {
     env.push({ name: 'SEARXNG_SECRET', value: config.spec.server.secret_key });
   }
   if (config.spec.env) {

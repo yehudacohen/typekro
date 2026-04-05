@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SearXNG integration**: `searxngBootstrap` composition and `searxng()` factory for deploying the SearXNG metasearch engine. Supports auto-created Secret (from `server.secret_key`) or external `secretKeyRef` for Vault / external-secrets-operator workflows.
+- **JS-to-CEL: native `if`/`else` control flow**: Composition bodies can now use plain JavaScript `if (!spec.optional) { createResource(...) }` patterns to generate KRO `includeWhen` directives. The framework's differential execution captures resources from untaken branches (using a hybrid schema proxy that overrides tested optional fields with `undefined`) and field-level differences between proxy and hybrid runs are auto-converted to CEL `has(...) ? ... : ...` conditionals on the emitted resource fields.
+- **JS-to-CEL: truthiness-aware `has()` wrapping**: Bare `if (spec.optionalField)` now compiles to `has(schema.spec.optionalField)` in the emitted RGD. Required boolean fields still compile to their value read (`schema.spec.enabled`) because `has()` on a required field is trivially true.
+- **Framework: `Cel.has(ref)` and `Cel.not(ref|expr)`**: Public CEL helpers for explicit escape hatches where the auto-conversion can't reach (rare; AST analyzer covers most cases).
+- **Framework: nested-object ternary detection**: `analyzeFactoryArgTernaries` now recurses into nested object literals, so ternaries deep inside structured factory arguments produce template overrides at the correct dotted path.
+- **KRO 0.9 `omit()` emission**: Optional spec fields without defaults now emit `${has(schema.spec.X) ? schema.spec.X : omit()}` CEL conditionals inline during ref-to-CEL conversion (no post-hoc YAML rewriting). Mixed-template fields and sub-path refs are intentionally left unwrapped.
+
+### Changed
+
+- **BREAKING**: Default KRO version bumped from `0.8.5` to `0.9.0`. TypeKro's serialization pipeline now emits the KRO 0.9+ mixed-template CEL format (`literal${string(ref)}literal`) and uses the `CELOmitFunction` feature gate for `omit()` support. Existing clusters must upgrade KRO to 0.9.0+ with `--set config.featureGates.CELOmitFunction=true` (the `typekroRuntime` bootstrap sets this automatically). Running TypeKro 0.6+ against KRO 0.8.x will cause RGD validation failures at reconcile time.
+- **BREAKING**: Mixed-template CEL format — references embedded in template literals now emit as `${string(ref)}` wrapped rather than CEL string concatenation (`"literal" + ref + "literal"`). This requires KRO 0.9+.
+
+### Fixed
+
+- `applyTernaryConditionalsToResources` now properly escapes `"`, `\`, `\n`, `\r`, and `\t` in ternary truthy-branch literal text when embedding into CEL string literals. Previous versions only escaped `\n`, which was a latent bug for compositions with quoted YAML values in conditional sections.
+- Re-execution-based default extraction now warns loudly when the defaults-run produces a different number of resources than the proxy run, catching compositions with early-return or conditional `createResource` patterns that break positional comparison.
+- Differential field capture now narrows override set to only optional fields that appear in AST-detected condition tests — previously, over-eager override of all optional fields made `spec.server?.secret_key` evaluate to `undefined` in hybrid runs and leaked empty values into captured resources.
+
+### Deprecated
+
+- The SearXNG factory's plaintext `server.secret_key` env-var delivery path is retained for direct-mode callers that manage their own secret injection, but using the `searxngBootstrap` composition (which auto-creates a K8s Secret) or providing an explicit `secretKeyRef` is strongly preferred. The plaintext path exposes the secret in `kubectl get deploy -o yaml` and should not be used in production.
+
 ## [0.5.0] - 2026-03-16
 
 ### Added

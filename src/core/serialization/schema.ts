@@ -127,6 +127,22 @@ function arktypeJsonToKroFields(node: unknown): Record<string, unknown> {
  * Extract literal default values from `spec.field ?? literalValue` patterns
  * in a composition function's source code.
  *
+ * **FAST PATH — NOT AUTHORITATIVE.** This regex-based extraction runs first
+ * to catch the common case where a composition uses `spec.X ?? 'literal'`
+ * with a literal right-hand side. It is intentionally conservative:
+ *
+ * - Both `??` and the literal must be on the same source line.
+ * - The literal must be a string, number, boolean, or minified !0/!1 form.
+ * - The right-hand side cannot be a constant, variable, template literal,
+ *   function call, or expression involving other spec fields.
+ *
+ * Anything this regex misses is caught by {@link resolveDefaultsByReExecution}
+ * (Phase 2), which actually executes the composition function with optional
+ * fields set to `undefined` and observes the concrete resolved values. Phase 2
+ * is the authoritative source; this function only exists to short-circuit
+ * the common case so the heavy re-execution doesn't need to compare every
+ * field for every composition.
+ *
  * In KRO mode, `??` doesn't trigger for proxy objects (they're truthy).
  * Instead, we detect these patterns via fn.toString() and add
  * `| default=<value>` annotations to the KRO SimpleSchema so that KRO
@@ -228,15 +244,37 @@ function resolveDefaultsByReExecution(
     const defaults: Record<string, string | number | boolean> = {};
     const ternaryConditionals: ReExecutionResult['ternaryConditionals'] = [];
 
-    // Match resources by index position. Both runs execute the same composition
-    // function deterministically, so resources are created in the same order.
-    // This is robust for compositions with duplicate kinds (e.g., two Deployments).
-    const proxyList = Object.values(proxyResources) as unknown as Record<string, unknown>[];
-    const defaultsList = Object.values(tempCtx.resources) as unknown as Record<string, unknown>[];
+    // Match resources by RESOURCE ID rather than by insertion order. Compositions
+    // that use `if (!spec.optional) { createResource(...) }` produce different
+    // resource counts between runs — positional matching silently pairs
+    // unrelated resources (e.g., the defaults run's auto-Secret against the
+    // proxy run's Deployment) and corrupts both default extraction and
+    // ternary detection. Key-based matching is robust against conditional
+    // resource creation: resources present in only one run are simply skipped
+    // for comparison.
+    const proxyEntries = Object.entries(proxyResources) as unknown as [string, Record<string, unknown>][];
+    const defaultsEntries = Object.entries(tempCtx.resources) as unknown as [string, Record<string, unknown>][];
+    const defaultsMap = new Map<string, Record<string, unknown>>(defaultsEntries);
 
-    for (let i = 0; i < Math.min(proxyList.length, defaultsList.length); i++) {
-      extractDefaultsByComparison(proxyList[i]!, defaultsList[i]!, defaults);
-      extractTernaryConditionals(proxyList[i]!, defaultsList[i]!, ternaryConditionals, optionalFieldNames);
+    if (proxyEntries.length !== defaultsEntries.length) {
+      // Different resource counts between runs are expected when the
+      // composition uses conditional `createResource` patterns — the
+      // defaults run takes different branches than the proxy run.
+      // Key-based matching handles this correctly, so downgrade to debug.
+      logger.debug(
+        'Re-execution produced a different number of resources than the proxy run — matching by resource ID',
+        {
+          proxyResourceCount: proxyEntries.length,
+          defaultsResourceCount: defaultsEntries.length,
+        }
+      );
+    }
+
+    for (const [id, proxyRes] of proxyEntries) {
+      const defaultsRes = defaultsMap.get(id);
+      if (!defaultsRes) continue; // resource only in proxy run — skip
+      extractDefaultsByComparison(proxyRes, defaultsRes, defaults);
+      extractTernaryConditionals(proxyRes, defaultsRes, ternaryConditionals, optionalFieldNames);
     }
 
     const hasResults =
@@ -324,6 +362,28 @@ function extractDefaultsByComparison(
  * For each such "orphan" marker, we extract the surrounding section
  * (from the previous newline-at-start-of-key to the marker's end) as a
  * ternary-controlled conditional.
+ *
+ * KNOWN LIMITATION — tested field must equal referenced field
+ * ---------------------------------------------------------
+ * The emitted `conditionField` is taken from the `__KUBERNETES_REF__`
+ * marker inside the truthy branch — i.e., the field that the branch
+ * REFERENCES. Under the hood, this function has no direct access to the
+ * JavaScript ternary's TEST field because JS ternaries evaluate eagerly
+ * and neither branch leaves a runtime trace of "which field was
+ * tested". This works correctly for the overwhelmingly common case
+ * where the tested field and the referenced field are the same:
+ *
+ *     spec.redisUrl ? `redis:\n  url: ${spec.redisUrl}` : ''
+ *
+ * but produces semantically wrong CEL for patterns like:
+ *
+ *     spec.enableRedis ? `redis:\n  url: ${spec.connectionString}` : ''
+ *
+ * ...where we would emit `has(schema.spec.connectionString)` instead of
+ * `has(schema.spec.enableRedis)`. Compositions that need decoupled
+ * test/reference fields should use an explicit `Cel.expr()` with the
+ * correct `has()` expression until AST-based detection lands (tracked
+ * in https://github.com/yehudacohen/typekro/issues/57).
  *
  * FRAGILE: this walks line-by-line through the proxy string and backs
  * through parent YAML keys by regex-matching `^\s*\w+:\s*$` and comparing

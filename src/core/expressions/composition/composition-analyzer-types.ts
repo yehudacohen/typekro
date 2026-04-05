@@ -160,6 +160,14 @@ export interface TraversalContext {
   forEachStack: ForEachDimension[];
   /** Stack of includeWhen conditions (outermost first) */
   includeWhenStack: IncludeWhenCondition[];
+  /**
+   * Set of top-level schema spec field names that are OPTIONAL. Used by
+   * `conditionToCel` to wrap bare truthiness checks with `has()` only
+   * for optional fields — required fields pass through as value reads
+   * because `has(schema.spec.requiredField)` is trivially true and
+   * would make the emitted condition vacuous.
+   */
+  optionalFieldNames: Set<string>;
 }
 
 /** Tracked collection variable: the result of spec.array.map(cb) that produces factories */
