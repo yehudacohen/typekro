@@ -248,11 +248,12 @@ export class DirectResourceFactoryImpl<
           try {
             rollbackResult = await engine.rollback(deploymentId, opts?.scopes ? { scopes: opts.scopes } : {});
           } catch (error: unknown) {
-            const msg = ensureError(error).message;
-            // Fall through to path 2 (persisted lookup) when in-memory
-            // state is stale — the engine's Map may have been cleared
-            // by a previous rollback.
-            if (!msg.includes('not found') && !msg.includes('Cannot rollback')) {
+            // Fall through to path 2 (discovery) when in-memory state
+            // is stale — engine throws ResourceGraphFactoryError when
+            // the deployment ID isn't in its Map (cleared by a previous
+            // rollback or lost with the process). Any other error type
+            // is a real failure and should propagate.
+            if (!(error instanceof ResourceGraphFactoryError)) {
               throw error;
             }
           }

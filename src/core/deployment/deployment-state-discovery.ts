@@ -217,16 +217,19 @@ export async function discoverDeployedResourcesByInstance(
     ? opts.knownGvks
     : await discoverClusterGvks(k8sApi);
 
+  const usingHint = !!opts.knownGvks?.length;
   logger.debug('Discovering deployed resources by label', {
     factoryName: opts.factoryName,
     instanceName: opts.instanceName,
     gvkCount: gvkTargets.length,
+    source: usingHint ? 'knownGvks hint' : 'full cluster enumeration',
     labelSelector,
   });
 
   // Issue list calls with bounded parallelism. Unbounded parallelism
   // can flood the API server on large clusters; 8 concurrent lists is
   // a reasonable default.
+  const discoveryStart = Date.now();
   const matches = await listWithConcurrency(
     gvkTargets,
     8,
@@ -256,6 +259,15 @@ export async function discoverDeployedResourcesByInstance(
       }
     }
   );
+
+  const discoveryDuration = Date.now() - discoveryStart;
+  logger.info('Discovery list calls completed', {
+    factoryName: opts.factoryName,
+    instanceName: opts.instanceName,
+    gvkCount: gvkTargets.length,
+    source: usingHint ? 'knownGvks' : 'full-cluster',
+    durationMs: discoveryDuration,
+  });
 
   // Flatten, deduplicate by (kind, namespace, name), and post-filter
   // by raw annotation values. The label selector uses sanitized values
