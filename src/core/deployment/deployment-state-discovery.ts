@@ -245,7 +245,16 @@ export async function discoverDeployedResourcesByInstance(
           undefined, // fieldSelector
           labelSelector
         );
-        return result.items ?? [];
+        // K8s list responses often omit apiVersion/kind on individual
+        // items — they're inferred from the list's metadata. Stamp
+        // each item with the target's GVK so downstream code (dedup,
+        // rollback) has the correct kind for API calls.
+        const items = result.items ?? [];
+        for (const item of items) {
+          if (!item.apiVersion) (item as { apiVersion: string }).apiVersion = target.apiVersion;
+          if (!item.kind) (item as { kind: string }).kind = target.kind;
+        }
+        return items;
       } catch (err) {
         // 404 on a GVK means the API server doesn't recognise that
         // kind — expected for CRDs that were uninstalled mid-discovery.
