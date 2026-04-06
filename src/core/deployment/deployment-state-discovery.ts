@@ -70,7 +70,7 @@ const logger = getComponentLogger('deployment-state-discovery');
  * where namespace-scoped listing could reduce API server load on large
  * clusters by only querying namespaces the factory has touched.
  */
-interface GvkTarget {
+export interface GvkTarget {
   apiVersion: string;
   kind: string;
   namespaced: boolean;
@@ -86,6 +86,12 @@ interface GvkTarget {
  * NetworkPolicy) and then deletes across processes, the resource will
  * be missed by discovery. The fix is to add it here. A broader
  * solution (full /apis walk) would be a follow-up optimization.
+ *
+ * With the `knownGvks` hint from the factory (see
+ * `discoverDeployedResourcesByInstance`), this list is only used as a
+ * fallback when the composition's resource templates are unavailable.
+ *
+ * Last audited: 2026-04-06.
  */
 const BUILT_IN_GVKS: GvkTarget[] = [
   // Core API (v1)
@@ -196,10 +202,20 @@ export async function discoverDeployedResourcesByInstance(
   opts: {
     factoryName: string;
     instanceName: string;
+    /**
+     * GVK hint from the factory's resource templates. When provided,
+     * only these kinds are queried — dropping a typical delete from
+     * 100+ list calls to 5-10. Falls back to full cluster GVK
+     * enumeration when omitted (e.g., bare engine calls without a
+     * composition in hand).
+     */
+    knownGvks?: GvkTarget[];
   }
 ): Promise<DeploymentStateRecord | undefined> {
   const labelSelector = buildFactoryInstanceSelector(opts);
-  const gvkTargets = await discoverClusterGvks(k8sApi);
+  const gvkTargets = opts.knownGvks?.length
+    ? opts.knownGvks
+    : await discoverClusterGvks(k8sApi);
 
   logger.debug('Discovering deployed resources by label', {
     factoryName: opts.factoryName,
@@ -219,10 +235,10 @@ export async function discoverDeployedResourcesByInstance(
         const result = await k8sApi.list<KubernetesResource>(
           target.apiVersion,
           target.kind,
-          undefined, // namespace: cluster-wide
+          undefined, // namespace — cluster-wide scan
           undefined, // pretty
-          undefined, // exact
-          undefined, // exportt
+          undefined, // exact (deprecated)
+          undefined, // export (deprecated)
           undefined, // fieldSelector
           labelSelector
         );
@@ -302,10 +318,9 @@ function buildRecordFromResources(
       factoryNamespace = tags.factoryNamespace;
     }
 
-    const creationTimestamp = resource.metadata?.creationTimestamp;
-    if (creationTimestamp) {
-      const ts = new Date(creationTimestamp as string | number | Date);
-      if (!earliestStart || ts < earliestStart) earliestStart = ts;
+    const deployedAt = toDate(resource.metadata?.creationTimestamp);
+    if (deployedAt && (!earliestStart || deployedAt < earliestStart)) {
+      earliestStart = deployedAt;
     }
 
     const deployed: DeployedResource = {
@@ -315,9 +330,7 @@ function buildRecordFromResources(
       namespace: resource.metadata?.namespace ?? '',
       manifest: resource,
       status: 'deployed',
-      deployedAt: creationTimestamp
-        ? new Date(creationTimestamp as string | number | Date)
-        : new Date(),
+      deployedAt: deployedAt ?? new Date(),
     };
     deployedResources.push(deployed);
     idToResource.set(id, deployed);
@@ -369,6 +382,17 @@ function buildRecordFromResources(
  * Run an async function over an array with bounded parallelism. Used to
  * cap the number of simultaneous API requests during discovery.
  */
+/**
+ * Safely convert a Kubernetes `creationTimestamp` to a Date.
+ * The client-node deserializer returns a `Date` object, but defensive
+ * callers may receive strings from raw JSON or test mocks.
+ */
+function toDate(value: unknown): Date | undefined {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string' || typeof value === 'number') return new Date(value);
+  return undefined;
+}
+
 async function listWithConcurrency<T, R>(
   items: T[],
   concurrency: number,

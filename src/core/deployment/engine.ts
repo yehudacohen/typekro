@@ -1372,6 +1372,7 @@ export class DirectDeploymentEngine {
   async loadDeploymentByInstance(opts: {
     factoryName: string;
     instanceName: string;
+    knownGvks?: import('./deployment-state-discovery.js').GvkTarget[];
   }): Promise<DeploymentStateRecord | undefined> {
     return discoverDeployedResourcesByInstance(this.k8sApi, opts);
   }

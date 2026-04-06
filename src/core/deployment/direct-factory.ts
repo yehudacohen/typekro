@@ -151,13 +151,7 @@ export class DirectResourceFactoryImpl<
       strategyType: strategy.constructor.name,
     });
 
-    // Thread targetScopes through to the deployment options so the
-    // engine can scope-filter which resources actually get deployed.
-    if (opts?.targetScopes !== undefined) {
-      strategy.setTargetScopes(opts.targetScopes);
-    }
-
-    const instance = await strategy.deploy(spec);
+    const instance = await strategy.deploy(spec, opts);
 
     // Check if deployment failed and throw for user-facing error handling
     if (instance.metadata?.annotations?.['typekro.io/deployment-status'] === 'failed') {
@@ -271,9 +265,23 @@ export class DirectResourceFactoryImpl<
       // factory+instance's labels, rebuilds the graph from per-resource
       // annotations, and delegates to the same graph-based rollback.
       if (!rollbackResult) {
+        // Extract GVK hints from the factory's resource templates so
+        // discovery queries only the kinds this composition deploys
+        // (~5-10 list calls) instead of every GVK on the cluster.
+        const knownGvks = [
+          ...new Map(
+            Object.values(this.resources)
+              .filter((r) => r.apiVersion && r.kind)
+              .map((r) => [
+                `${r.apiVersion}/${r.kind}`,
+                { apiVersion: r.apiVersion!, kind: r.kind!, namespaced: true },
+              ])
+          ).values(),
+        ];
         const record = await engine.loadDeploymentByInstance({
           factoryName: this.name,
           instanceName: name,
+          ...(knownGvks.length > 0 && { knownGvks }),
         });
         if (!record) {
           throw new TypeKroError(
