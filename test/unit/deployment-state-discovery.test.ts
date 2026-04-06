@@ -294,4 +294,39 @@ describe('discoverDeployedResourcesByInstance', () => {
     expect(result).toBeDefined();
     expect(result!.resources).toHaveLength(1);
   });
+
+  it('keeps resources with same kind+name but different apiVersion', async () => {
+    const v1 = makeTaggedResource({
+      apiVersion: 'example.io/v1',
+      kind: 'Widget',
+      name: 'my-widget',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      deploymentId: 'dep-1',
+      resourceId: 'widgetV1',
+    });
+    const v2 = makeTaggedResource({
+      apiVersion: 'example.io/v2',
+      kind: 'Widget',
+      name: 'my-widget',
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      deploymentId: 'dep-1',
+      resourceId: 'widgetV2',
+    });
+
+    const api = makeFakeK8sApi([v1, v2]);
+    const result = await discoverDeployedResourcesByInstance(api, {
+      factoryName: 'my-factory',
+      instanceName: 'my-instance',
+      knownGvks: [
+        { apiVersion: 'example.io/v1', kind: 'Widget', namespaced: true },
+        { apiVersion: 'example.io/v2', kind: 'Widget', namespaced: true },
+      ],
+    });
+
+    expect(result).toBeDefined();
+    expect(result!.resources).toHaveLength(2);
+    expect(result!.resources.map((r) => r.id).sort()).toEqual(['widgetV1', 'widgetV2']);
+  });
 });

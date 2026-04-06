@@ -139,4 +139,4 @@ The new API is more expressive: you can have multiple named scopes, target speci
 
 ## KRO Mode Limitations
 
-Scope-targeted deployment and deletion are currently supported in **direct mode** only. In KRO mode, `scopes` and `targetScopes` options are accepted but ignored (a warning is logged). KRO mode uses the Kro controller's own lifecycle management for resource deletion.
+Scope-targeted deployment and deletion are currently supported in **direct mode** only. In KRO mode, passing `scopes` or `targetScopes` throws a `TypeKroError` with code `UNSUPPORTED_OPTION`. KRO mode uses the Kro controller's own lifecycle management for resource deletion.
