@@ -403,8 +403,11 @@ function buildRecordFromResources(
  * callers may receive strings from raw JSON or test mocks.
  */
 function toDate(value: unknown): Date | undefined {
-  if (value instanceof Date) return value;
-  if (typeof value === 'string' || typeof value === 'number') return new Date(value);
+  if (value instanceof Date) return isNaN(value.getTime()) ? undefined : value;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? undefined : d;
+  }
   return undefined;
 }
 

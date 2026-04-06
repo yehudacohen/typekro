@@ -329,4 +329,56 @@ describe('discoverDeployedResourcesByInstance', () => {
     expect(result!.resources).toHaveLength(2);
     expect(result!.resources.map((r) => r.id).sort()).toEqual(['widgetV1', 'widgetV2']);
   });
+
+  it('rejects resources from a different factory with a colliding sanitized label', async () => {
+    // Both "my@factory" and "my#factory" sanitize to "my-factory" in labels.
+    // The label selector returns resources from BOTH factories, but the
+    // annotation post-filter should reject the one with the wrong raw name.
+    const mine = makeTaggedResource({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      name: 'mine',
+      factoryName: 'my@factory',
+      instanceName: 'my-instance',
+      deploymentId: 'dep-1',
+      resourceId: 'mine',
+    });
+    const theirs = makeTaggedResource({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      name: 'theirs',
+      factoryName: 'my#factory', // different raw name, same sanitized label
+      instanceName: 'my-instance',
+      deploymentId: 'dep-2',
+      resourceId: 'theirs',
+    });
+
+    // Mock API returns BOTH (label selector can't distinguish them)
+    const api = {
+      list: async (
+        _apiVersion: string,
+        _kind: string,
+        _namespace?: string,
+        _pretty?: string,
+        _exact?: boolean,
+        _exportt?: boolean,
+        _fieldSelector?: string,
+        _labelSelector?: string
+      ) => {
+        if (_kind === 'ConfigMap') return { items: [mine, theirs] };
+        return { items: [] };
+      },
+    } as any;
+
+    const result = await discoverDeployedResourcesByInstance(api, {
+      factoryName: 'my@factory',
+      instanceName: 'my-instance',
+      knownGvks: [{ apiVersion: 'v1', kind: 'ConfigMap', namespaced: true }],
+    });
+
+    expect(result).toBeDefined();
+    // Only 'mine' should be included — 'theirs' has a different raw factoryName
+    expect(result!.resources).toHaveLength(1);
+    expect(result!.resources[0]!.id).toBe('mine');
+  });
 });
