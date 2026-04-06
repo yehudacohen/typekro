@@ -50,17 +50,22 @@ export class DirectDeploymentStrategy<
     super(factoryName, namespace, schemaDefinition, statusBuilder, resourceKeys, factoryOptions);
   }
 
-  protected async executeDeployment(spec: TSpec, _instanceName: string): Promise<DeploymentResult> {
+  protected async executeDeployment(spec: TSpec, instanceName: string): Promise<DeploymentResult> {
     try {
       // Create resource graph for this instance
       const resourceGraph = this.resourceResolver.createResourceGraphForInstance(spec);
 
-      // Create deployment options
-      const deploymentOptions = createDeploymentOptions(
-        this.factoryOptions,
-        this.namespace,
-        'direct'
-      );
+      // Create deployment options. Tag the options with factoryName +
+      // instanceName so the engine stamps every resource with ownership
+      // labels — this enables cross-process cleanup via
+      // `factory.deleteInstance` from a later bun process.
+      const targetScopes = this.consumeTargetScopes();
+      const deploymentOptions = {
+        ...createDeploymentOptions(this.factoryOptions, this.namespace, 'direct'),
+        factoryName: this.factoryName,
+        instanceName,
+        ...(targetScopes !== undefined && { targetScopes }),
+      };
 
       // Pass closures to deployment engine for level-based execution
       const closures = this.factoryOptions.closures || {};

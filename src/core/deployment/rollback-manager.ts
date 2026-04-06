@@ -14,7 +14,7 @@ import {
 import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getMetadataField } from '../metadata/resource-metadata.js';
+import { getEffectiveScopes } from './resource-tagging.js';
 import type {
   DeployedResource,
   DeploymentError,
@@ -310,13 +310,21 @@ export class ResourceRollbackManager {
   }
 
   /**
-   * Rollback deployed resources by deleting them in reverse order.
-   * Skips resources that failed to deploy. Used by the deployment engine
-   * for rollback-on-failure during level-based deployment.
+   * Rollback deployed resources by deleting them.
+   *
+   * When called from `engine.rollbackRecord`, the resources are ALREADY
+   * in reverse-topological deletion order and scope filtering has ALREADY
+   * been applied. Pass `preOrdered: true` to skip the reverse + scope
+   * check so we don't double-reverse or double-filter.
+   *
+   * When called from the deploy-failure rollback path, resources are in
+   * deployment order and scope filtering hasn't been applied. The default
+   * (`preOrdered: false`) reverses and filters.
    */
   async rollbackDeployedResources(
     deployedResources: DeployedResource[],
-    options: DeploymentOptions
+    options: DeploymentOptions,
+    rollbackOpts?: { preOrdered?: boolean }
   ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
     this.emitDeploymentEvent(options, {
       type: 'rollback',
@@ -327,21 +335,30 @@ export class ResourceRollbackManager {
     const rolledBackResources: string[] = [];
     const errors: DeploymentError[] = [];
 
-    // Rollback in reverse order
-    const reversedResources = [...deployedResources].reverse();
+    const preOrdered = rollbackOpts?.preOrdered === true;
+    // When resources are pre-ordered (from rollbackRecord), trust the
+    // ordering and scope selection as-is. Otherwise reverse to get
+    // reverse-deployment order and apply scope filtering.
+    const resources = preOrdered
+      ? deployedResources
+      : [...deployedResources].reverse();
 
-    for (const resource of reversedResources) {
+    for (const resource of resources) {
       // Only try to rollback resources that were actually deployed (not failed)
       if (resource.status === 'failed') {
         continue; // Skip resources that failed to deploy
       }
 
-      // Skip shared resources — they survive instance deletion (e.g., HelmRepository in flux-system)
-      if (getMetadataField(resource.manifest, 'lifecycle') === 'shared') {
-        this.logger.debug('Skipping shared resource during rollback', {
+      // Skip scoped resources when NOT pre-ordered. When pre-ordered,
+      // scope filtering was already applied by the engine's
+      // rollbackRecord — don't re-filter or we'd silently drop
+      // scoped resources the caller explicitly targeted.
+      if (!preOrdered && getEffectiveScopes(resource.manifest).length > 0) {
+        this.logger.debug('Skipping scoped resource during rollback', {
           resourceId: resource.id,
           kind: resource.kind,
           name: resource.name,
+          scopes: getEffectiveScopes(resource.manifest),
         });
         continue;
       }
@@ -379,19 +396,15 @@ export class ResourceRollbackManager {
   }
 
   /**
-   * Delete a single deployed resource from the cluster and wait for deletion to complete.
+   * Delete a single deployed resource from the cluster and wait for
+   * deletion to complete.
+   *
+   * This method does NOT perform scope filtering — the caller (typically
+   * `engine.rollbackRecord`) is responsible for deciding which resources
+   * should be deleted. Filtering at this level would silently drop
+   * resources that the caller explicitly targeted for deletion.
    */
   async deleteDeployedResource(resource: DeployedResource): Promise<void> {
-    // Skip shared resources — they survive instance deletion
-    if (getMetadataField(resource.manifest, 'lifecycle') === 'shared') {
-      this.logger.debug('Skipping shared resource deletion', {
-        resourceId: resource.id,
-        kind: resource.kind,
-        name: resource.name,
-      });
-      return;
-    }
-
     const deleteLogger = this.logger.child({
       resourceId: resource.id,
       kind: resource.kind,

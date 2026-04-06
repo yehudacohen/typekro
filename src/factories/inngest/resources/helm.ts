@@ -61,7 +61,7 @@ export function inngestHelmRepository(
   // HelmRepositories in flux-system are shared cluster-level resources.
   // They should survive instance deletion — multiple compositions can
   // reference the same repo.
-  setMetadataField(repo, 'lifecycle', 'shared');
+  setMetadataField(repo, 'scopes', ['cluster']);
 
   return repo;
 }

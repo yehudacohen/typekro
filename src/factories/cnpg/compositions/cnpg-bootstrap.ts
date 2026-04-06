@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import { cnpgHelmRelease, cnpgHelmRepository } from '../resources/helm.js';
@@ -49,6 +50,12 @@ export const cnpgBootstrap = kubernetesComposition(
   (spec: CnpgBootstrapConfig) => {
     const resolvedNamespace = spec.namespace || 'cnpg-system';
     const resolvedVersion = spec.version || '0.23.0';
+    // Default to shared-lifecycle: the operator is cluster-scoped
+    // infrastructure and should survive individual consumer instance
+    // deletions. Users can opt out by passing `shared: false` when
+    // they want a dedicated per-instance operator (isolation, version
+    // testing, multi-tenancy).
+    const isShared = spec.shared !== false;
 
     // Map config to Helm values
     const helmValues = mapCnpgConfigToHelmValues({
@@ -89,6 +96,19 @@ export const cnpgBootstrap = kubernetesComposition(
       repositoryName: 'cnpg-repo',
       id: 'cnpgHelmRelease',
     });
+
+    // Tag all resources with 'cluster' scope so factory-level
+    // deleteInstance leaves the operator install intact for other
+    // consumers. Callers can explicitly tear down shared infra with
+    // `deleteInstance(name, { scopes: ['cluster'] })`. The
+    // HelmRepository in flux-system is ALWAYS shared (per rule #23)
+    // because multiple compositions legitimately reference the same
+    // chart repo — we tag it here too for clarity.
+    if (isShared) {
+      setMetadataField(_cnpgNamespace, 'scopes', ['cluster']);
+      setMetadataField(_helmRepository, 'scopes', ['cluster']);
+      setMetadataField(_helmRelease, 'scopes', ['cluster']);
+    }
 
     // Status derived from HelmRelease conditions.
     // Flux HelmRelease v2 uses conditions with type='Ready' for readiness.

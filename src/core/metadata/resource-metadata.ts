@@ -45,8 +45,30 @@ export interface ResourceMetadata {
   templateOverrides?: Array<{ propertyPath: string; celExpression: string }>;
   /** Kubernetes scope — 'cluster' for cluster-scoped resources (Namespace, ClusterRole, etc.) */
   scope?: 'namespaced' | 'cluster';
-  /** Resource lifecycle — 'shared' resources survive instance deletion (e.g., HelmRepository in flux-system) */
+  /**
+   * Deprecated alias for `scopes`. `lifecycle: 'shared'` is equivalent to
+   * `scopes: ['shared']`. New code should use `scopes` directly.
+   */
   lifecycle?: 'managed' | 'shared';
+  /**
+   * Deletion scopes this resource belongs to. Used by `factory.deleteInstance`
+   * to limit blast radius:
+   *
+   * - Empty / undefined → resource is "instance-private" and is deleted by
+   *   default when its owning instance is torn down.
+   * - Non-empty → resource also belongs to these broader lifecycles. On
+   *   delete, it is *only* removed if the caller explicitly targets one of
+   *   its scopes (via `deleteInstance(name, { scopes: [...] })`).
+   *
+   * Scope names are free-form strings; common conventions are `'cluster'`
+   * for cluster-wide singletons (e.g., operators installed by a bootstrap),
+   * `'team:<name>'` for team-shared infra, etc.
+   *
+   * Also serialized at deploy time into the `typekro.io/scopes` annotation
+   * on the live cluster object so that cross-process deletion can recover
+   * the scopes without access to the original composition.
+   */
+  scopes?: string[];
 }
 
 /** Keys of ResourceMetadata that are valid metadata field names */

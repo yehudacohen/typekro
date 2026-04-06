@@ -135,7 +135,10 @@ export class DirectResourceFactoryImpl<
   /**
    * Deploy a new instance with the given spec
    */
-  async deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
+  async deploy(
+    spec: TSpec,
+    opts?: { targetScopes?: string[] }
+  ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
       hasStatusBuilder: !!this.statusBuilder,
@@ -147,6 +150,12 @@ export class DirectResourceFactoryImpl<
     this.logger.debug('Got deployment strategy', {
       strategyType: strategy.constructor.name,
     });
+
+    // Thread targetScopes through to the deployment options so the
+    // engine can scope-filter which resources actually get deployed.
+    if (opts?.targetScopes !== undefined) {
+      strategy.setTargetScopes(opts.targetScopes);
+    }
 
     const instance = await strategy.deploy(spec);
 
@@ -206,29 +215,81 @@ export class DirectResourceFactoryImpl<
   }
 
   /**
-   * Delete a specific instance by name
+   * Delete a specific instance by name.
+   *
+   * Lookup order:
+   *   1. In-memory `deployedInstances` Map (same-process path) — uses
+   *      the deployment-id annotation on the Enhanced instance proxy.
+   *   2. Cluster-side label discovery (cross-process path) — queries
+   *      for all resources labeled `typekro.io/factory-name=<factory>,
+   *      typekro.io/instance-name=<instance>`, reconstructs the
+   *      dependency graph from per-resource `typekro.io/depends-on`
+   *      annotations, and performs reverse-topological deletion.
+   *
+   * Both paths feed into the same graph-based reverse-topological
+   * delete via `engine.rollbackRecord`.
+   *
+   * **Scope filtering**: By default, only instance-private resources
+   * (empty scopes) are deleted. Resources with scopes (e.g., cluster-
+   * scoped operators installed by bootstrap compositions) are preserved.
+   * Pass `opts.scopes` to include broader-scope resources:
+   *
+   * ```ts
+   * await factory.deleteInstance('my-app');                     // safe default
+   * await factory.deleteInstance('my-app', { scopes: ['cluster'] }); // full teardown
+   * ```
    */
-  async deleteInstance(name: string): Promise<void> {
+  async deleteInstance(name: string, opts?: { scopes?: string[] }): Promise<void> {
+    const engine = this.getDeploymentEngine();
     const instance = this.deployedInstances.get(name);
-    if (!instance) {
-      throw new TypeKroError(`Instance not found: ${name}`, 'INSTANCE_NOT_FOUND', {
-        instanceName: name,
-        factoryName: this.name,
-      });
-    }
 
     try {
-      // Use the deployment engine to delete resources using actual deployment ID
-      const engine = this.getDeploymentEngine();
-      const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
-      if (!deploymentId) {
-        throw new TypeKroError(
-          `Instance ${name} does not have a deployment ID annotation. Cannot perform cleanup.`,
-          'MISSING_DEPLOYMENT_ID',
-          { instanceName: name, factoryName: this.name }
-        );
+      // Path 1: same-process deleteInstance — use the deployment ID
+      // annotation on the in-memory Enhanced proxy.
+      let rollbackResult: import('../types/deployment.js').RollbackResult | undefined;
+      if (instance) {
+        const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
+        if (deploymentId) {
+          try {
+            rollbackResult = await engine.rollback(deploymentId, opts?.scopes ? { scopes: opts.scopes } : {});
+          } catch (error: unknown) {
+            const msg = ensureError(error).message;
+            // Fall through to path 2 (persisted lookup) when in-memory
+            // state is stale — the engine's Map may have been cleared
+            // by a previous rollback.
+            if (!msg.includes('not found') && !msg.includes('Cannot rollback')) {
+              throw error;
+            }
+          }
+        }
       }
-      const rollbackResult = await engine.rollback(deploymentId);
+
+      // Path 2: cross-process lookup via cluster-side label discovery.
+      // Fires when the factory has no in-memory record, OR path 1
+      // couldn't find the deployment ID, OR path 1's engine state was
+      // wiped. Queries the cluster for all resources tagged with this
+      // factory+instance's labels, rebuilds the graph from per-resource
+      // annotations, and delegates to the same graph-based rollback.
+      if (!rollbackResult) {
+        const record = await engine.loadDeploymentByInstance({
+          factoryName: this.name,
+          instanceName: name,
+        });
+        if (!record) {
+          throw new TypeKroError(
+            `Instance not found: ${name} (no in-memory state and no tagged resources on the cluster). The instance may have been cleaned up already, or was deployed with a typekro version that did not tag resources.`,
+            'INSTANCE_NOT_FOUND',
+            { instanceName: name, factoryName: this.name }
+          );
+        }
+        this.logger.info('Cross-process cleanup: discovered deployment from cluster labels', {
+          instanceName: name,
+          factoryName: this.name,
+          deploymentId: record.deploymentId,
+          resourceCount: record.resources.length,
+        });
+        rollbackResult = await engine.rollbackRecord(record, opts?.scopes ? { scopes: opts.scopes } : {});
+      }
 
       // Wait for any namespaces to be fully deleted before returning.
       // Namespace deletion is asynchronous (enters "Terminating" phase) and can
@@ -280,12 +341,20 @@ export class DirectResourceFactoryImpl<
       // Remove from tracking
       this.deployedInstances.delete(name);
     } catch (error: unknown) {
-      // If the deployment isn't found in the state, it may have already been cleaned up
-      // or the deployment ID format changed. Log and remove from tracking anyway.
+      // INSTANCE_NOT_FOUND bubbles up — the caller asked us to delete
+      // an instance that has neither in-memory state nor a persisted
+      // record. That's a legitimate error (wrong name, already cleaned
+      // up) and the caller needs to see it.
+      if (error instanceof TypeKroError && error.code === 'INSTANCE_NOT_FOUND') {
+        throw error;
+      }
+      // Soft-swallow "Cannot rollback" errors from the engine —
+      // they indicate the engine's in-memory deployment state has
+      // already been cleaned up (e.g., by a previous rollback call).
+      // The instance is effectively gone, so we remove from tracking.
       const errorMessage = ensureError(error).message;
-      if (errorMessage.includes('not found') || errorMessage.includes('Cannot rollback')) {
+      if (errorMessage.includes('Cannot rollback')) {
         this.deployedInstances.delete(name);
-        // Don't throw - the instance is already gone
         return;
       }
       throw new ResourceGraphFactoryError(

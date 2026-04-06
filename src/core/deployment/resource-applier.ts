@@ -20,7 +20,11 @@ import {
 } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
 import type { TypeKroLogger } from '../logging/index.js';
-import { copyResourceMetadata, getReadinessEvaluator } from '../metadata/index.js';
+import {
+  copyResourceMetadata,
+  getMetadataField,
+  getReadinessEvaluator,
+} from '../metadata/index.js';
 import type { ReferenceResolver } from '../references/index.js';
 import type { DeploymentOptions, ResolutionContext } from '../types/deployment.js';
 import type {
@@ -39,6 +43,7 @@ import {
   isUnsupportedMediaTypeError,
   patchResourceWithCorrectContentType,
 } from './k8s-helpers.js';
+import { applyTypekroTags } from './resource-tagging.js';
 
 export class ResourceApplier {
   constructor(
@@ -150,6 +155,53 @@ export class ResourceApplier {
     copyResourceMetadata(resource, newResource);
 
     return newResource;
+  }
+
+  /**
+   * Apply typekro ownership metadata (labels + annotations) to a resource
+   * manifest right before it's serialized and sent to the cluster.
+   *
+   * No-op when the deployment isn't tagged with factoryName + instanceName
+   * — untagged deployments don't participate in cross-process discovery
+   * and would pollute their resources with partial ownership metadata.
+   *
+   * Merges WeakMap `scopes` and the legacy `lifecycle: 'shared'` alias
+   * into the effective scope annotation so that delete-time discovery
+   * can respect them.
+   */
+  applyOwnershipTags(
+    resource: KubernetesResource,
+    options: DeploymentOptions,
+    resourceId: string,
+    context: ResolutionContext
+  ): void {
+    const { factoryName, instanceName } = options;
+    if (!factoryName || !instanceName) return;
+
+    const deploymentId = context.deploymentId;
+    if (!deploymentId) return;
+
+    // Compute the effective scopes: explicit `scopes` metadata
+    // plus the `lifecycle: 'shared'` alias treated as ['shared'].
+    const scopes: string[] = [];
+    const fromMeta = getMetadataField(resource as object, 'scopes');
+    if (fromMeta) scopes.push(...fromMeta);
+    const legacy = getMetadataField(resource as object, 'lifecycle');
+    if (legacy === 'shared' && !scopes.includes('shared')) {
+      scopes.push('shared');
+    }
+
+    const dependencies = context.dependenciesForResource?.(resourceId) ?? [];
+
+    applyTypekroTags(resource, {
+      factoryName,
+      instanceName,
+      deploymentId,
+      factoryNamespace: options.namespace ?? context.namespace ?? 'default',
+      resourceId,
+      ...(scopes.length > 0 && { scopes }),
+      ...(dependencies.length > 0 && { dependencies }),
+    });
   }
 
   /**

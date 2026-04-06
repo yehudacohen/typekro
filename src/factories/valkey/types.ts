@@ -50,6 +50,16 @@ export const ValkeyBootstrapConfigSchema = type({
   'version?': 'string',
   /** Additional Helm values for user overrides. */
   'customValues?': 'Record<string, unknown>',
+  /**
+   * Whether the operator install should be treated as shared cluster
+   * infrastructure (default: `true`). When `true`, the Namespace,
+   * HelmRepository, and HelmRelease are tagged with
+   * `scopes: ['cluster']` so `factory.deleteInstance()` will NOT
+   * remove them — multiple consumers can converge on the same
+   * operator install. Set to `false` for dedicated per-instance
+   * operators.
+   */
+  'shared?': 'boolean',
 });
 
 /** Configuration for installing the Hyperspike Valkey operator via Helm. */

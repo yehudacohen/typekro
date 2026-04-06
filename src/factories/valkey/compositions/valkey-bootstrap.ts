@@ -1,5 +1,6 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
+import { setMetadataField } from '../../../core/metadata/index.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
@@ -64,6 +65,10 @@ export const valkeyBootstrap = kubernetesComposition(
     const resolvedNamespace = spec.namespace || 'valkey-operator-system';
     const resolvedVersion = spec.version || DEFAULT_VALKEY_VERSION;
     const appVersion = stripChartSuffix(resolvedVersion);
+    // Default to shared-lifecycle so multiple consumers (e.g., many
+    // `webAppWithProcessing` deployments) converge on a single operator
+    // install. Users can opt out by passing `shared: false`.
+    const isShared = spec.shared !== false;
 
     const helmValues = mapValkeyConfigToHelmValues({
       ...spec,
@@ -104,6 +109,16 @@ export const valkeyBootstrap = kubernetesComposition(
       repositoryName: DEFAULT_VALKEY_REPO_NAME,
       id: 'valkeyHelmRelease',
     });
+
+    // Tag all resources with 'cluster' scope so factory-level
+    // deleteInstance leaves the operator install intact. Callers can
+    // opt in to tearing down shared infra with
+    // `deleteInstance(name, { scopes: ['cluster'] })`.
+    if (isShared) {
+      setMetadataField(_valkeyNamespace, 'scopes', ['cluster']);
+      setMetadataField(_helmRepository, 'scopes', ['cluster']);
+      setMetadataField(_helmRelease, 'scopes', ['cluster']);
+    }
 
     // Status derived from HelmRelease conditions.
     return {

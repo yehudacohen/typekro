@@ -41,6 +41,8 @@ export abstract class BaseDeploymentStrategy<
 > implements DeploymentStrategy<TSpec, TStatus>
 {
   protected readonly logger = getComponentLogger('deployment-strategy');
+  /** Set by the factory before deploy() when the caller passes targetScopes. */
+  private _targetScopes: string[] | undefined = undefined;
 
   constructor(
     protected factoryName: string,
@@ -50,6 +52,18 @@ export abstract class BaseDeploymentStrategy<
     protected resourceKeys?: Record<string, KubernetesResource>,
     protected factoryOptions: FactoryOptions = {}
   ) {}
+
+  /** Set scope filter for the next deploy call, then auto-clears. */
+  setTargetScopes(scopes: string[]): void {
+    this._targetScopes = scopes;
+  }
+
+  /** Consume and clear the targetScopes. */
+  protected consumeTargetScopes(): string[] | undefined {
+    const scopes = this._targetScopes;
+    this._targetScopes = undefined;
+    return scopes;
+  }
 
   /**
    * Template method for deployment - defines the common flow

@@ -177,7 +177,7 @@ export class KroResourceFactoryImpl<
   /**
    * Deploy a new instance by creating a custom resource
    */
-  async deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
+  async deploy(spec: TSpec, _opts?: { targetScopes?: string[] }): Promise<Enhanced<TSpec, TStatus>> {
     // Validate spec against ArkType schema
     validateSpec(spec, this.schemaDefinition, {
       kind: this.schemaDefinition.kind,
@@ -558,7 +558,7 @@ export class KroResourceFactoryImpl<
   /**
    * Delete a specific instance by name
    */
-  async deleteInstance(name: string): Promise<void> {
+  async deleteInstance(name: string, _opts?: { scopes?: string[] }): Promise<void> {
     const kubeConfig = this.getKubeConfig();
     const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
 
