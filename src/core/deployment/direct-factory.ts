@@ -23,7 +23,7 @@ import {
 } from '../errors.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { getComponentLogger } from '../logging/index.js';
-import { copyResourceMetadata, getResourceId, setResourceId } from '../metadata/index.js';
+import { copyResourceMetadata, getMetadataField, getResourceId, setResourceId } from '../metadata/index.js';
 import type {
   DeploymentClosure,
   DeploymentError,
@@ -272,10 +272,15 @@ export class DirectResourceFactoryImpl<
           ...new Map(
             Object.values(this.resources)
               .filter((r) => r.apiVersion && r.kind)
-              .map((r) => [
-                `${r.apiVersion}/${r.kind}`,
-                { apiVersion: r.apiVersion!, kind: r.kind!, namespaced: true },
-              ])
+              .map((r) => {
+                // Pull scope from WeakMap metadata — 'cluster' means
+                // cluster-scoped (Namespace, ClusterRole, etc.).
+                const scope = getMetadataField(r as object, 'scope');
+                return [
+                  `${r.apiVersion}/${r.kind}`,
+                  { apiVersion: r.apiVersion!, kind: r.kind!, namespaced: scope !== 'cluster' },
+                ] as const;
+              })
           ).values(),
         ];
         const record = await engine.loadDeploymentByInstance({

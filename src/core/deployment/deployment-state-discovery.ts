@@ -403,6 +403,8 @@ async function listWithConcurrency<T, R>(
   const workers: Promise<void>[] = [];
   const worker = async (): Promise<void> => {
     while (true) {
+      // Safe: JS is single-threaded — workers only yield at the `await`
+      // below, so `next++` can't be interleaved between workers.
       const idx = next++;
       if (idx >= items.length) return;
       const item = items[idx];

@@ -1329,10 +1329,12 @@ export class DirectDeploymentEngine {
       const status =
         errors.length === 0 ? 'success' : rolledBackResources.length > 0 ? 'partial' : 'failed';
 
-      // Remove from in-memory state. The cluster is the authoritative
-      // backend for cross-process cleanup, so no additional teardown of
-      // a separate state store is needed.
-      this.deploymentState.delete(deploymentId);
+      // Remove from in-memory state if present. Discovered records have
+      // synthetic IDs (e.g., "discovered-<ts>") that were never in the
+      // map — the delete is a harmless no-op for those.
+      if (this.deploymentState.has(deploymentId)) {
+        this.deploymentState.delete(deploymentId);
+      }
 
       return {
         deploymentId,

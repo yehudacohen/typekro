@@ -14,7 +14,7 @@ import {
   DEFAULT_RGD_TIMEOUT,
 } from '../config/defaults.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
-import { CRDInstanceError, ensureError, ResourceGraphFactoryError } from '../errors.js';
+import { CRDInstanceError, ensureError, ResourceGraphFactoryError, TypeKroError } from '../errors.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
@@ -179,9 +179,11 @@ export class KroResourceFactoryImpl<
    */
   async deploy(spec: TSpec, opts?: { targetScopes?: string[] }): Promise<Enhanced<TSpec, TStatus>> {
     if (opts?.targetScopes !== undefined) {
-      this.logger.warn('KRO mode does not support scope-targeted deployment — targetScopes option ignored', {
-        targetScopes: opts.targetScopes,
-      });
+      throw new TypeKroError(
+        'Scope-targeted deployment is not supported in KRO mode. KRO manages resource lifecycle via its own controller. Use direct mode for scope-targeted deploys.',
+        'UNSUPPORTED_OPTION',
+        { targetScopes: opts.targetScopes, mode: 'kro' }
+      );
     }
     // Validate spec against ArkType schema
     validateSpec(spec, this.schemaDefinition, {
@@ -565,10 +567,11 @@ export class KroResourceFactoryImpl<
    */
   async deleteInstance(name: string, opts?: { scopes?: string[] }): Promise<void> {
     if (opts?.scopes?.length) {
-      this.logger.warn('KRO mode does not support scope-filtered deletion — scopes option ignored', {
-        instanceName: name,
-        scopes: opts.scopes,
-      });
+      throw new TypeKroError(
+        'Scope-filtered deletion is not supported in KRO mode. KRO manages resource lifecycle via its own controller. Use direct mode for scope-filtered deletes.',
+        'UNSUPPORTED_OPTION',
+        { scopes: opts.scopes, instanceName: name, mode: 'kro' }
+      );
     }
     const kubeConfig = this.getKubeConfig();
     const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
