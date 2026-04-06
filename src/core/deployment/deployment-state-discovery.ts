@@ -93,7 +93,7 @@ export interface GvkTarget {
  *
  * Last audited: 2026-04-06.
  */
-const BUILT_IN_GVKS: GvkTarget[] = [
+export const BUILT_IN_GVKS: GvkTarget[] = [
   // Core API (v1)
   { apiVersion: 'v1', kind: 'Namespace', namespaced: false },
   { apiVersion: 'v1', kind: 'ConfigMap', namespaced: true },
@@ -257,15 +257,22 @@ export async function discoverDeployedResourcesByInstance(
     }
   );
 
-  // Flatten and deduplicate by (kind, namespace, name). The same
-  // resource shouldn't appear twice in practice, but defensive code
-  // guards against CRDs that are served at multiple versions.
+  // Flatten, deduplicate by (kind, namespace, name), and post-filter
+  // by raw annotation values. The label selector uses sanitized values
+  // which can collide (e.g., "my@factory" and "my#factory" both
+  // sanitize to "my-factory"). The raw factory/instance name stored in
+  // annotations is the authoritative match — reject resources whose
+  // annotation doesn't match the requested factory+instance.
   const seen = new Set<string>();
   const uniqueResources: KubernetesResource[] = [];
   for (const item of matches.flat()) {
     const key = `${item.kind}/${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    // Post-filter: verify raw annotation matches requested identity
+    const tags = extractTypekroTags(item as { metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> } });
+    if (tags.factoryName && tags.factoryName !== opts.factoryName) continue;
+    if (tags.instanceName && tags.instanceName !== opts.instanceName) continue;
     uniqueResources.push(item);
   }
 
@@ -407,8 +414,7 @@ async function listWithConcurrency<T, R>(
       // below, so `next++` can't be interleaved between workers.
       const idx = next++;
       if (idx >= items.length) return;
-      const item = items[idx];
-      if (item === undefined) continue;
+      const item = items[idx]!;
       results[idx] = await fn(item);
     }
   };

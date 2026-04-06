@@ -1164,10 +1164,16 @@ export class DirectDeploymentEngine {
    */
   private async rollbackDeployedResources(
     deployedResources: DeployedResource[],
-    options: DeploymentOptions,
-    rollbackOpts?: { preOrdered?: boolean }
+    options: DeploymentOptions
   ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
-    return this.rollbackManager.rollbackDeployedResources(deployedResources, options, rollbackOpts);
+    return this.rollbackManager.rollbackDeployedResources(deployedResources, options);
+  }
+
+  private async rollbackOrderedResources(
+    deployedResources: DeployedResource[],
+    options: DeploymentOptions
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+    return this.rollbackManager.rollbackOrderedResources(deployedResources, options);
   }
 
   /**
@@ -1320,10 +1326,9 @@ export class DirectDeploymentEngine {
         orderedResources = deploymentRecord.resources.filter((r) => !skippedIds.has(r.id));
       }
 
-      const { rolledBackResources, errors } = await this.rollbackDeployedResources(
+      const { rolledBackResources, errors } = await this.rollbackOrderedResources(
         orderedResources,
-        deploymentRecord.options,
-        { preOrdered: true }
+        deploymentRecord.options
       );
 
       const status =

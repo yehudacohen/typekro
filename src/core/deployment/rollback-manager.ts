@@ -310,21 +310,51 @@ export class ResourceRollbackManager {
   }
 
   /**
-   * Rollback deployed resources by deleting them.
-   *
-   * When called from `engine.rollbackRecord`, the resources are ALREADY
-   * in reverse-topological deletion order and scope filtering has ALREADY
-   * been applied. Pass `preOrdered: true` to skip the reverse + scope
-   * check so we don't double-reverse or double-filter.
-   *
-   * When called from the deploy-failure rollback path, resources are in
-   * deployment order and scope filtering hasn't been applied. The default
-   * (`preOrdered: false`) reverses and filters.
+   * Rollback resources that are already in the correct deletion order
+   * with scope filtering already applied. Used by `engine.rollbackRecord`
+   * which computes reverse-topological order and scope exclusions.
+   */
+  async rollbackOrderedResources(
+    deployedResources: DeployedResource[],
+    options: DeploymentOptions
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+    return this.deleteResourceList(deployedResources, options);
+  }
+
+  /**
+   * Rollback resources in reverse-deployment order, skipping scoped
+   * resources. Used by the deploy-failure auto-rollback path where
+   * resources are in deployment order and scope filtering hasn't been
+   * applied.
    */
   async rollbackDeployedResources(
     deployedResources: DeployedResource[],
-    options: DeploymentOptions,
-    rollbackOpts?: { preOrdered?: boolean }
+    options: DeploymentOptions
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+    const filtered = [...deployedResources]
+      .reverse()
+      .filter((r) => {
+        if (getEffectiveScopes(r.manifest).length > 0) {
+          this.logger.debug('Skipping scoped resource during rollback', {
+            resourceId: r.id,
+            kind: r.kind,
+            name: r.name,
+            scopes: getEffectiveScopes(r.manifest),
+          });
+          return false;
+        }
+        return true;
+      });
+    return this.deleteResourceList(filtered, options);
+  }
+
+  /**
+   * Core deletion loop — iterates the resource list in order, deleting
+   * each non-failed resource. Shared by both ordered and unordered paths.
+   */
+  private async deleteResourceList(
+    resources: DeployedResource[],
+    options: DeploymentOptions
   ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
     this.emitDeploymentEvent(options, {
       type: 'rollback',
@@ -335,33 +365,8 @@ export class ResourceRollbackManager {
     const rolledBackResources: string[] = [];
     const errors: DeploymentError[] = [];
 
-    const preOrdered = rollbackOpts?.preOrdered === true;
-    // When resources are pre-ordered (from rollbackRecord), trust the
-    // ordering and scope selection as-is. Otherwise reverse to get
-    // reverse-deployment order and apply scope filtering.
-    const resources = preOrdered
-      ? deployedResources
-      : [...deployedResources].reverse();
-
     for (const resource of resources) {
-      // Only try to rollback resources that were actually deployed (not failed)
-      if (resource.status === 'failed') {
-        continue; // Skip resources that failed to deploy
-      }
-
-      // Skip scoped resources when NOT pre-ordered. When pre-ordered,
-      // scope filtering was already applied by the engine's
-      // rollbackRecord — don't re-filter or we'd silently drop
-      // scoped resources the caller explicitly targeted.
-      if (!preOrdered && getEffectiveScopes(resource.manifest).length > 0) {
-        this.logger.debug('Skipping scoped resource during rollback', {
-          resourceId: resource.id,
-          kind: resource.kind,
-          name: resource.name,
-          scopes: getEffectiveScopes(resource.manifest),
-        });
-        continue;
-      }
+      if (resource.status === 'failed') continue;
 
       try {
         await this.k8sApi.delete({
@@ -375,7 +380,6 @@ export class ResourceRollbackManager {
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
       } catch (error: unknown) {
-        // Log and collect errors for individual resource deletion failures
         this.logger.warn('Failed to delete resource during rollback', {
           error: ensureError(error),
           resourceId: resource.id,

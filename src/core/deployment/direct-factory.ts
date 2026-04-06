@@ -15,6 +15,7 @@ import {
   DEFAULT_MAX_RECURSION_DEPTH,
 } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
+import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import {
   ensureError,
   ResourceGraphFactoryError,
@@ -265,28 +266,29 @@ export class DirectResourceFactoryImpl<
       // factory+instance's labels, rebuilds the graph from per-resource
       // annotations, and delegates to the same graph-based rollback.
       if (!rollbackResult) {
-        // Extract GVK hints from the factory's resource templates so
-        // discovery queries only the kinds this composition deploys
-        // (~5-10 list calls) instead of every GVK on the cluster.
+        // Build GVK hint set: built-in baseline (Namespace, Deployment,
+        // Service, etc.) PLUS any CRD kinds from this factory's resource
+        // templates. The baseline ensures nested composition resources
+        // (e.g., HelmRelease from cnpgBootstrap) are always discoverable
+        // even though they aren't in the parent factory's `this.resources`
+        // map. The CRD hints add the factory's custom kinds on top so we
+        // don't need the expensive full-cluster CRD enumeration.
+        const crdHints = new Map<string, import('./deployment-state-discovery.js').GvkTarget>();
+        for (const r of Object.values(this.resources)) {
+          if (!r.apiVersion || !r.kind) continue;
+          const key = `${r.apiVersion}/${r.kind}`;
+          if (crdHints.has(key)) continue;
+          const scope = getMetadataField(r as object, 'scope');
+          crdHints.set(key, { apiVersion: r.apiVersion, kind: r.kind, namespaced: scope !== 'cluster' });
+        }
         const knownGvks = [
-          ...new Map(
-            Object.values(this.resources)
-              .filter((r) => r.apiVersion && r.kind)
-              .map((r) => {
-                // Pull scope from WeakMap metadata — 'cluster' means
-                // cluster-scoped (Namespace, ClusterRole, etc.).
-                const scope = getMetadataField(r as object, 'scope');
-                return [
-                  `${r.apiVersion}/${r.kind}`,
-                  { apiVersion: r.apiVersion!, kind: r.kind!, namespaced: scope !== 'cluster' },
-                ] as const;
-              })
-          ).values(),
+          ...BUILT_IN_GVKS,
+          ...crdHints.values(),
         ];
         const record = await engine.loadDeploymentByInstance({
           factoryName: this.name,
           instanceName: name,
-          ...(knownGvks.length > 0 && { knownGvks }),
+          knownGvks,
         });
         if (!record) {
           throw new TypeKroError(
