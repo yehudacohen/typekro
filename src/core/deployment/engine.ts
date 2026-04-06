@@ -1227,7 +1227,7 @@ export class DirectDeploymentEngine {
    */
   async rollback(
     deploymentId: string,
-    opts: { scopes?: string[] } = {}
+    opts: { scopes?: string[]; includeUnscopedResources?: boolean } = {}
   ): Promise<RollbackResult> {
     const deploymentRecord = this.deploymentState.get(deploymentId);
     if (!deploymentRecord) {
@@ -1264,11 +1264,12 @@ export class DirectDeploymentEngine {
    */
   async rollbackRecord(
     deploymentRecord: DeploymentStateRecord,
-    opts: { scopes?: string[] } = {}
+    opts: { scopes?: string[]; includeUnscopedResources?: boolean } = {}
   ): Promise<RollbackResult> {
     const startTime = Date.now();
     const deploymentId = deploymentRecord.deploymentId;
     const scopeFilter = opts.scopes ?? [];
+    const includeUnscoped = opts.includeUnscopedResources !== false;
     try {
       // Determine which resources the caller's scope filter allows us
       // to delete. Resources outside the filter (shared/scoped) are
@@ -1277,7 +1278,7 @@ export class DirectDeploymentEngine {
       const skippedIds = new Set<string>();
       for (const r of deploymentRecord.resources) {
         const effectiveScopes = getEffectiveScopes(r.manifest);
-        if (!scopesMatchFilter(effectiveScopes, scopeFilter)) {
+        if (!scopesMatchFilter(effectiveScopes, scopeFilter, includeUnscoped)) {
           skippedIds.add(r.id);
         }
       }

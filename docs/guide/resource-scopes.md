@@ -37,9 +37,18 @@ setMetadataField(grafanaDashboard, 'scopes', ['team:platform']);
 | `['team:platform']` | **Preserved** | **Preserved** |
 | `['cluster', 'team:platform']` | **Preserved** | **Deleted** (any match) |
 
-The rule is simple:
-- **Instance-private** resources (no scopes) are always deleted
+The rules:
+- **Unscoped** resources (no scopes / instance-private) are deleted by default
 - **Scoped** resources are deleted only when the caller explicitly targets at least one of their scopes
+- Pass `includeUnscopedResources: false` to skip unscoped resources — useful for tearing down only shared infrastructure while leaving the app running
+
+```typescript
+// Cluster-only teardown: remove operators, keep app
+await factory.deleteInstance('my-app', {
+  scopes: ['cluster'],
+  includeUnscopedResources: false,
+});
+```
 
 This means `factory.deleteInstance('my-app')` is always safe — it can never accidentally tear down shared infrastructure.
 

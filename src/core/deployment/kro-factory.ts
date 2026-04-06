@@ -565,7 +565,7 @@ export class KroResourceFactoryImpl<
   /**
    * Delete a specific instance by name
    */
-  async deleteInstance(name: string, opts?: { scopes?: string[] }): Promise<void> {
+  async deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void> {
     if (opts?.scopes?.length) {
       throw new TypeKroError(
         'Scope-filtered deletion is not supported in KRO mode. KRO manages resource lifecycle via its own controller. Use direct mode for scope-filtered deletes.',

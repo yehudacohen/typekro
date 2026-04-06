@@ -280,6 +280,15 @@ describe('scopesMatchFilter', () => {
   it('matches when any scope intersects the filter', () => {
     expect(scopesMatchFilter(['cluster', 'team:ops'], ['team:ops'])).toBe(true);
   });
+
+  it('excludes unscoped resources when includeUnscoped is false', () => {
+    expect(scopesMatchFilter([], ['cluster'], false)).toBe(false);
+    expect(scopesMatchFilter([], [], false)).toBe(false);
+  });
+
+  it('still matches scoped resources when includeUnscoped is false', () => {
+    expect(scopesMatchFilter(['cluster'], ['cluster'], false)).toBe(true);
+  });
 });
 
 // ── buildFactoryInstanceSelector ──────────────────────────────────────────

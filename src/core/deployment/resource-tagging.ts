@@ -260,30 +260,35 @@ export function getEffectiveScopes(resource: KubernetesResource): string[] {
 }
 
 /**
- * Decide whether a resource should be deleted given a scope filter.
+ * Decide whether a resource matches a scope filter.
  *
- * Semantics:
- *   - Instance-private resources (empty effective scopes) are ALWAYS
- *     deleted, regardless of the filter. They belong exclusively to
- *     the instance being torn down.
- *   - Scoped resources are deleted ONLY IF the filter explicitly
- *     includes at least one of their scopes. This protects shared
- *     infrastructure from being nuked by a default `deleteInstance`
- *     call.
+ * Used by both the deploy path (`targetScopes`) and the delete path
+ * (`deleteInstance` scopes). The semantics are additive:
  *
- * Examples:
- *   scopesMatchFilter([],            []) === true   // instance-private, always delete
- *   scopesMatchFilter([],            ['cluster']) === true   // instance-private even if filter is non-empty
- *   scopesMatchFilter(['cluster'],   []) === false  // shared, default delete skips it
- *   scopesMatchFilter(['cluster'],   ['cluster']) === true   // shared, explicit opt-in
- *   scopesMatchFilter(['cluster'],   ['team:platform']) === false  // wrong scope
- *   scopesMatchFilter(['cluster', 'team:platform'], ['cluster']) === true  // any match
+ *   - **Unscoped** resources (empty effective scopes) match when
+ *     `includeUnscoped` is `true` (the default). Set to `false` to
+ *     exclude them — useful when you want to tear down only shared
+ *     infrastructure without touching instance-private resources.
+ *   - **Scoped** resources match when ANY of their scopes appear in
+ *     the `scopeFilter`. An empty filter means "no broader scopes
+ *     targeted" — only unscoped resources pass.
+ *
+ * Examples (default includeUnscoped=true):
+ *   scopesMatchFilter([],            [])            === true   // unscoped, included by default
+ *   scopesMatchFilter([],            ['cluster'])   === true   // unscoped, still included
+ *   scopesMatchFilter(['cluster'],   [])            === false  // scoped, not targeted
+ *   scopesMatchFilter(['cluster'],   ['cluster'])   === true   // scoped, targeted
+ *
+ * With includeUnscoped=false:
+ *   scopesMatchFilter([],            ['cluster'], false) === false  // unscoped excluded
+ *   scopesMatchFilter(['cluster'],   ['cluster'], false) === true   // scoped still matches
  */
 export function scopesMatchFilter(
   resourceScopes: string[],
-  scopeFilter: string[]
+  scopeFilter: string[],
+  includeUnscoped = true
 ): boolean {
-  if (resourceScopes.length === 0) return true;
+  if (resourceScopes.length === 0) return includeUnscoped;
   return resourceScopes.some((s) => scopeFilter.includes(s));
 }
 

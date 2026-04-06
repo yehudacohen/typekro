@@ -674,7 +674,7 @@ export interface ResourceFactory<
 
   // Instance management
   getInstances(): Promise<Enhanced<TSpec, TStatus>[]>;
-  deleteInstance(name: string, opts?: { scopes?: string[] }): Promise<void>;
+  deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void>;
   getStatus(): Promise<FactoryStatus>;
 
   // Metadata

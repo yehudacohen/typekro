@@ -224,17 +224,18 @@ export class DirectResourceFactoryImpl<
    * Both paths feed into the same graph-based reverse-topological
    * delete via `engine.rollbackRecord`.
    *
-   * **Scope filtering**: By default, only instance-private resources
-   * (empty scopes) are deleted. Resources with scopes (e.g., cluster-
-   * scoped operators installed by bootstrap compositions) are preserved.
-   * Pass `opts.scopes` to include broader-scope resources:
+   * **Scope filtering**: By default, unscoped (instance-private)
+   * resources are deleted and scoped resources are preserved. Pass
+   * `opts.scopes` to include broader-scope resources additively:
    *
    * ```ts
-   * await factory.deleteInstance('my-app');                     // safe default
-   * await factory.deleteInstance('my-app', { scopes: ['cluster'] }); // full teardown
+   * await factory.deleteInstance('my-app');                                         // unscoped only (safe default)
+   * await factory.deleteInstance('my-app', { scopes: ['cluster'] });               // unscoped + cluster
+   * await factory.deleteInstance('my-app', { scopes: ['cluster'],
+   *   includeUnscopedResources: false });                                           // cluster-only (leave app running)
    * ```
    */
-  async deleteInstance(name: string, opts?: { scopes?: string[] }): Promise<void> {
+  async deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void> {
     const engine = this.getDeploymentEngine();
     const instance = this.deployedInstances.get(name);
 
@@ -246,7 +247,10 @@ export class DirectResourceFactoryImpl<
         const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
         if (deploymentId) {
           try {
-            rollbackResult = await engine.rollback(deploymentId, opts?.scopes ? { scopes: opts.scopes } : {});
+            rollbackResult = await engine.rollback(deploymentId, {
+              ...(opts?.scopes && { scopes: opts.scopes }),
+              ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+            });
           } catch (error: unknown) {
             // Fall through to path 2 (discovery) ONLY when the in-memory
             // deployment state is stale — i.e., the engine couldn't find
@@ -307,7 +311,10 @@ export class DirectResourceFactoryImpl<
           deploymentId: record.deploymentId,
           resourceCount: record.resources.length,
         });
-        rollbackResult = await engine.rollbackRecord(record, opts?.scopes ? { scopes: opts.scopes } : {});
+        rollbackResult = await engine.rollbackRecord(record, {
+              ...(opts?.scopes && { scopes: opts.scopes }),
+              ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+            });
       }
 
       // Wait for any namespaces to be fully deleted before returning.
