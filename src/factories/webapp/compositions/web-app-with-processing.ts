@@ -273,6 +273,7 @@ export const webAppWithProcessing = kubernetesComposition(
       replicas: appReplicas,
       ports: [{ containerPort: appPort }],
       env: appEnv,
+      ...(spec.app.envFrom && { envFrom: spec.app.envFrom as import('@kubernetes/client-node').V1EnvFromSource[] }),
       id: 'app',
     });
 

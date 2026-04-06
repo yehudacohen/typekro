@@ -40,6 +40,12 @@ export const WebAppWithProcessingConfigSchema = type({
     'replicas?': 'number',
     /** Additional environment variables. */
     'env?': 'Record<string, string>',
+    /**
+     * Inject all keys from Secrets or ConfigMaps as env vars via
+     * the container's `envFrom` field. Accepts the standard K8s
+     * `V1EnvFromSource[]` shape: `[{ secretRef: { name: '...' } }]`.
+     */
+    'envFrom?': 'unknown[]',
   },
   /** PostgreSQL database settings. */
   database: {
