@@ -13,6 +13,7 @@
  * @module
  */
 
+import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { isTestEnvironment } from '../../../core/config/index.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
@@ -85,8 +86,12 @@ function resolveKey(specValue: string | undefined, envVarName: string, devDefaul
     return envValue;
   }
 
-  // 3. Default credentials — only allowed in test environments
-  if (!isTestEnvironment()) {
+  // 3. Default credentials — allowed in test environments and during
+  //    composition definition (the module-level `kubernetesComposition()`
+  //    call that runs with proxy spec values for KRO graph analysis).
+  //    Only throw in production when this is an actual deploy call.
+  const isDefinitionPass = !!getCurrentCompositionContext();
+  if (!isTestEnvironment() && !isDefinitionPass) {
     throw new TypeKroError(
       `APISIX admin credentials not configured. ` +
         `Set the ${envVarName} environment variable or pass gateway.adminCredentials in the spec. ` +

@@ -207,8 +207,23 @@ function executeNestedCompositionWithSpec<
   const uniqueExecutionName = `${compositionName}-execution-${++globalCompositionCounter}`;
   const executionContext = createCompositionContext(uniqueExecutionName);
 
-  // Execute the composition with the provided spec
+  // Execute the composition with the provided spec.
+  //
+  // During re-execution (direct-mode deploy), skip the full
+  // toResourceGraph/KRO-analysis pipeline. Just run the composition
+  // function directly with real values and capture the resources it
+  // registers — no proxy, no CEL generation, no status builder context.
+  const isReExec = parentContext.isReExecution;
   const result = runWithCompositionContext(executionContext, () => {
+    if (isReExec) {
+      // Lightweight path: run composition fn directly, capture resources
+      const status = compositionFn(spec);
+      return {
+        resources: executionContext.resources,
+        status,
+        _compositionFn: compositionFn,
+      } as unknown as TypedResourceGraph<TSpec, TStatus>;
+    }
     return executeCompositionCore(
       definition,
       compositionFn,
@@ -461,11 +476,18 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
 
           const resourceBuildStart = Date.now();
 
-          // Execute the composition function in a status builder context where
-          // Enhanced resource proxies return KubernetesRef objects, enabling
-          // JavaScript-to-CEL conversion during serialization.
+          // When `actualSpec` is provided, this is a re-execution with real
+          // values (direct-mode deploy). Run the composition function WITHOUT
+          // the status builder context so ternaries and conditionals evaluate
+          // as plain JavaScript — no KubernetesRef proxies, no CEL generation.
+          //
+          // When `actualSpec` is absent, this is the initial KRO analysis
+          // pass. Run in status builder context so Enhanced resource proxies
+          // return KubernetesRef objects, enabling JS-to-CEL conversion.
           const specToUse = actualSpec || (schema.spec as TSpec);
-          capturedStatus = runInStatusBuilderContext(() => compositionFn(specToUse));
+          capturedStatus = actualSpec
+            ? compositionFn(specToUse)
+            : runInStatusBuilderContext(() => compositionFn(specToUse));
 
           // Store the original composition function for later analysis
           // This allows the serialization system to analyze the original JavaScript expressions
@@ -705,14 +727,21 @@ export function kubernetesComposition<
 
   if (parentContext) {
     // We're nested within another composition - merge our resources into the parent context
-    // and return a CallableComposition that can be called with a spec
-    const nestedResult = executeNestedComposition(
-      definition,
-      compositionFn,
-      options,
-      parentContext,
-      compositionName
-    );
+    // and return a CallableComposition that can be called with a spec.
+    //
+    // Skip the definition-time proxy pass during re-execution — it
+    // generates CEL expressions that pollute resource names in direct
+    // mode. The spec-driven pass (via the callable below) is the only
+    // one that matters during re-execution.
+    const nestedResult = parentContext.isReExecution
+      ? undefined
+      : executeNestedComposition(
+          definition,
+          compositionFn,
+          options,
+          parentContext,
+          compositionName
+        );
 
     // Create a callable composition that can be invoked with a spec
     const callableComposition = ((spec: TSpec) => {
@@ -727,20 +756,21 @@ export function kubernetesComposition<
       );
     }) as CallableComposition<TSpec, TStatus>;
 
-    // Copy properties from the TypedResourceGraph to the callable composition
-    // Preserve original property descriptors to maintain non-writable metadata properties
-    // Use getOwnPropertyNames to include non-enumerable properties like _compositionFn
-    for (const key of Object.getOwnPropertyNames(nestedResult)) {
-      const descriptor = Object.getOwnPropertyDescriptor(nestedResult, key);
-      if (descriptor) {
-        Object.defineProperty(callableComposition, key, descriptor);
+    // Copy properties from the TypedResourceGraph to the callable composition.
+    // During re-execution, nestedResult is undefined (definition pass skipped).
+    if (nestedResult) {
+      for (const key of Object.getOwnPropertyNames(nestedResult)) {
+        const descriptor = Object.getOwnPropertyDescriptor(nestedResult, key);
+        if (descriptor) {
+          Object.defineProperty(callableComposition, key, descriptor);
+        }
       }
     }
 
     // Add the status proxy for cross-composition references
     // Use forCompositionProperty=true to get KubernetesRef-based proxy
     Object.defineProperty(callableComposition, 'status', {
-      value: createStatusProxy<TStatus>(compositionName, parentContext, nestedResult, true),
+      value: createStatusProxy<TStatus>(compositionName, parentContext, nestedResult ?? {} as any, true),
       enumerable: true,
       configurable: false,
       writable: false,

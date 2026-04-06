@@ -978,6 +978,7 @@ export class DirectResourceFactoryImpl<
       // with the same id (e.g., 'regionDep') get unique keys ('regionDep', 'regionDep-1', etc.)
       const reExecutionContext = createCompositionContext('re-execution', {
         deduplicateIds: true,
+        isReExecution: true,
       });
 
       // Execute the composition function within the new context and capture both resources and status
@@ -1090,6 +1091,7 @@ export class DirectResourceFactoryImpl<
       // Phase 2: Real execution with enriched live status map
       const reExecutionContext = createCompositionContext('re-execution', {
         deduplicateIds: true,
+        isReExecution: true,
       });
       reExecutionContext.liveStatusMap = enrichedMap;
 

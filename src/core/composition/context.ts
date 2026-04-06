@@ -60,6 +60,8 @@ export interface CompositionContext {
    * without relying on string-pattern heuristics.
    */
   nestedCompositionIds?: Set<string>;
+  /** True when this context is a direct-mode re-execution. */
+  isReExecution?: boolean | undefined;
 }
 
 /**
@@ -72,6 +74,12 @@ export interface CompositionContextOptions {
    * resources with the same id (e.g., 'regionDep' → 'regionDep', 'regionDep-1', 'regionDep-2').
    */
   deduplicateIds?: boolean;
+  /**
+   * When true, this context is a direct-mode re-execution with real spec
+   * values. Nested compositions should skip their definition-time proxy
+   * pass (which generates CEL) and only run the spec-driven execution.
+   */
+  isReExecution?: boolean;
 }
 
 // =============================================================================
@@ -177,6 +185,7 @@ export function createCompositionContext(
     closureCounter: 0,
     compositionInstanceCounter: 0,
     variableMappings: {},
+    isReExecution: contextOptions?.isReExecution,
     addResource(id: string, resource: Enhanced<any, any>) {
       if (contextOptions?.deduplicateIds && id in this.resources) {
         // Append numeric suffix to make the key unique
