@@ -46,6 +46,7 @@ export default withMermaid(
               { text: 'Magic Proxy System', link: '/guide/magic-proxy' },
               { text: 'JavaScript to CEL', link: '/guide/javascript-to-cel' },
               { text: 'Deployment Modes', link: '/guide/deployment-modes' },
+              { text: 'Resource Scopes & Lifecycle', link: '/guide/resource-scopes' },
               { text: 'External References', link: '/guide/external-references' },
               { text: 'Type Safety Patterns', link: '/guide/type-safety' },
               { text: 'Troubleshooting', link: '/guide/troubleshooting' },
