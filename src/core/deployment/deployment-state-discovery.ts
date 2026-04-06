@@ -93,7 +93,7 @@ export interface GvkTarget {
  *
  * Last audited: 2026-04-06.
  */
-export const BUILT_IN_GVKS: GvkTarget[] = [
+export const BUILT_IN_GVKS: readonly GvkTarget[] = [
   // Core API (v1)
   { apiVersion: 'v1', kind: 'Namespace', namespaced: false },
   { apiVersion: 'v1', kind: 'ConfigMap', namespaced: true },
@@ -278,7 +278,7 @@ export async function discoverDeployedResourcesByInstance(
   const seen = new Set<string>();
   const uniqueResources: KubernetesResource[] = [];
   for (const item of matches.flat()) {
-    const key = `${item.kind}/${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`;
+    const key = `${item.apiVersion}/${item.kind}/${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
     // Post-filter: verify raw annotation matches requested identity

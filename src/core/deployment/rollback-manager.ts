@@ -334,12 +334,13 @@ export class ResourceRollbackManager {
     const filtered = [...deployedResources]
       .reverse()
       .filter((r) => {
-        if (getEffectiveScopes(r.manifest).length > 0) {
+        const scopes = getEffectiveScopes(r.manifest);
+        if (scopes.length > 0) {
           this.logger.debug('Skipping scoped resource during rollback', {
             resourceId: r.id,
             kind: r.kind,
             name: r.name,
-            scopes: getEffectiveScopes(r.manifest),
+            scopes,
           });
           return false;
         }
