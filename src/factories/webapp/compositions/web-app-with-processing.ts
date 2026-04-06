@@ -1,8 +1,10 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { cnpgBootstrap } from '../../cnpg/compositions/cnpg-bootstrap.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
 import { pooler } from '../../cnpg/resources/pooler.js';
 import { inngestBootstrap } from '../../inngest/compositions/inngest-bootstrap.js';
 import { simple } from '../../simple/index.js';
+import { valkeyBootstrap } from '../../valkey/compositions/valkey-bootstrap.js';
 import { valkey } from '../../valkey/resources/valkey.js';
 import {
   type WebAppWithProcessingConfig,
@@ -13,11 +15,28 @@ import {
 /**
  * Full-Stack Web Application with Background Processing
  *
- * Deploys a complete application stack:
- * 1. **PostgreSQL** (via CNPG) — cluster + PgBouncer pooler
- * 2. **Valkey** cache cluster
- * 3. **Inngest** workflow engine (with external DB/cache, not bundled)
- * 4. **Application** Deployment + Service
+ * Deploys a complete, self-contained application stack. The composition
+ * installs its own operators AND the application resources managed by
+ * those operators — callers don't need to pre-install anything other
+ * than the TypeKro runtime (Flux + KRO) on the target cluster.
+ *
+ * **Operators** (installed by nested bootstraps):
+ * 1. **CloudNativePG operator** (via `cnpgBootstrap`) — manages the
+ *    PostgreSQL cluster. Installs into `cnpg-system` by default.
+ * 2. **Hyperspike Valkey operator** (via `valkeyBootstrap`) — manages
+ *    the Valkey cache cluster. Installs into `valkey-operator-system`
+ *    by default.
+ * 3. **Inngest** (via `inngestBootstrap`) — the workflow engine itself
+ *    is installed via a Helm release alongside the app. Bundled
+ *    Postgres/Redis are disabled; Inngest uses the CNPG and Valkey
+ *    instances from this composition.
+ *
+ * **Application resources** (created in the app namespace, managed by
+ * the operators above):
+ * 1. **PostgreSQL cluster** (CNPG `Cluster`) + PgBouncer `Pooler`
+ * 2. **Valkey cache cluster** (Hyperspike `Valkey` CR) + explicit
+ *    ClusterIP Service (KRO prunes unowned Services otherwise)
+ * 3. **Application** `Deployment` + `Service`
  *
  * All connection strings are automatically wired into the app's environment:
  * - `DATABASE_URL` — points to the PgBouncer pooler
@@ -29,6 +48,12 @@ import {
  * - Inngest references `cache.metadata.name` for the redis URI → deploys after Valkey
  * - Inngest references `database.status.writeService` for the postgres URI → deploys after CNPG
  * - App references service names derived from resource names → deploys after all infra
+ *
+ * Operator install settings can be overridden per-deployment via
+ * `spec.cnpgOperator` and `spec.valkeyOperator` — e.g., to pin chart
+ * versions or change the install namespace. Both fields are optional;
+ * defaults install the latest pinned version into each operator's
+ * system namespace.
  *
  * @example
  * ```typescript
@@ -62,6 +87,9 @@ import {
  *     signingKey: 'deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567',
  *     sdkUrl: ['http://my-app:3000/api/inngest'],
  *   },
+ *   // Operators install with sensible defaults; override only if
+ *   // you need a specific chart version or custom install namespace.
+ *   cnpgOperator: { version: '0.23.0' },
  * });
  * ```
  */
@@ -79,6 +107,41 @@ export const webAppWithProcessing = kubernetesComposition(
     const inngestReplicas = spec.processing.replicas ?? 1;
     const dbName = spec.database.database ?? spec.name;
     const dbOwner = spec.database.owner ?? 'app';
+
+    // ── Operator bootstraps ────────────────────────────────────────────
+    //
+    // Install the CNPG and Valkey operators as part of the composition
+    // so consumers get a fully self-contained stack. The bootstraps run
+    // in their own system namespaces (not the app namespace) and install
+    // cluster-scoped operators; the later `cluster()`/`valkey()` calls
+    // create instances in the app namespace managed by those operators.
+    //
+    // **Shared-singleton default.** Operators are cluster-scoped
+    // infrastructure — one install per cluster serves every consumer.
+    // The nested bootstraps use fixed names (`cnpg-operator`,
+    // `valkey-operator`) in fixed system namespaces and are marked
+    // `scopes: ['cluster']`, so multiple `webAppWithProcessing`
+    // deployments on the same cluster converge on the same operator
+    // install and `factory.deleteInstance()` on any one consumer
+    // leaves the operator intact for the others.
+    //
+    // Users who need a dedicated per-instance operator (multi-tenancy,
+    // version testing, isolated failure domains) can override any
+    // combination of fields via `spec.cnpgOperator` / `spec.valkeyOperator` —
+    // e.g., `{ name: 'testapp-cnpg', namespace: 'testapp-cnpg-system', shared: false }`.
+    // The spread puts user overrides AFTER the defaults so they win.
+    const _cnpg = cnpgBootstrap({
+      name: 'cnpg-operator',
+      namespace: 'cnpg-system',
+      installCRDs: true,
+      ...spec.cnpgOperator,
+    });
+
+    const _valkeyOp = valkeyBootstrap({
+      name: 'valkey-operator',
+      namespace: 'valkey-operator-system',
+      ...spec.valkeyOperator,
+    });
 
     // ── PostgreSQL (CNPG) ──────────────────────────────────────────────
 

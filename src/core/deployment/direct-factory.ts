@@ -15,6 +15,7 @@ import {
   DEFAULT_MAX_RECURSION_DEPTH,
 } from '../config/defaults.js';
 import { DependencyResolver } from '../dependencies/index.js';
+import { BUILT_IN_GVKS } from './deployment-state-discovery.js';
 import {
   ensureError,
   ResourceGraphFactoryError,
@@ -23,7 +24,7 @@ import {
 } from '../errors.js';
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { getComponentLogger } from '../logging/index.js';
-import { copyResourceMetadata, getResourceId, setResourceId } from '../metadata/index.js';
+import { copyResourceMetadata, getMetadataField, getResourceId, setResourceId } from '../metadata/index.js';
 import type {
   DeploymentClosure,
   DeploymentError,
@@ -135,7 +136,10 @@ export class DirectResourceFactoryImpl<
   /**
    * Deploy a new instance with the given spec
    */
-  async deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
+  async deploy(
+    spec: TSpec,
+    opts?: { targetScopes?: string[] }
+  ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
       hasStatusBuilder: !!this.statusBuilder,
@@ -148,7 +152,7 @@ export class DirectResourceFactoryImpl<
       strategyType: strategy.constructor.name,
     });
 
-    const instance = await strategy.deploy(spec);
+    const instance = await strategy.deploy(spec, opts);
 
     // Check if deployment failed and throw for user-facing error handling
     if (instance.metadata?.annotations?.['typekro.io/deployment-status'] === 'failed') {
@@ -206,29 +210,112 @@ export class DirectResourceFactoryImpl<
   }
 
   /**
-   * Delete a specific instance by name
+   * Delete a specific instance by name.
+   *
+   * Lookup order:
+   *   1. In-memory `deployedInstances` Map (same-process path) — uses
+   *      the deployment-id annotation on the Enhanced instance proxy.
+   *   2. Cluster-side label discovery (cross-process path) — queries
+   *      for all resources labeled `typekro.io/factory-name=<factory>,
+   *      typekro.io/instance-name=<instance>`, reconstructs the
+   *      dependency graph from per-resource `typekro.io/depends-on`
+   *      annotations, and performs reverse-topological deletion.
+   *
+   * Both paths feed into the same graph-based reverse-topological
+   * delete via `engine.rollbackRecord`.
+   *
+   * **Scope filtering**: By default, unscoped (instance-private)
+   * resources are deleted and scoped resources are preserved. Pass
+   * `opts.scopes` to include broader-scope resources additively:
+   *
+   * ```ts
+   * await factory.deleteInstance('my-app');                                         // unscoped only (safe default)
+   * await factory.deleteInstance('my-app', { scopes: ['cluster'] });               // unscoped + cluster
+   * await factory.deleteInstance('my-app', { scopes: ['cluster'],
+   *   includeUnscopedResources: false });                                           // cluster-only (leave app running)
+   * ```
    */
-  async deleteInstance(name: string): Promise<void> {
+  async deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void> {
+    const engine = this.getDeploymentEngine();
     const instance = this.deployedInstances.get(name);
-    if (!instance) {
-      throw new TypeKroError(`Instance not found: ${name}`, 'INSTANCE_NOT_FOUND', {
-        instanceName: name,
-        factoryName: this.name,
-      });
-    }
 
     try {
-      // Use the deployment engine to delete resources using actual deployment ID
-      const engine = this.getDeploymentEngine();
-      const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
-      if (!deploymentId) {
-        throw new TypeKroError(
-          `Instance ${name} does not have a deployment ID annotation. Cannot perform cleanup.`,
-          'MISSING_DEPLOYMENT_ID',
-          { instanceName: name, factoryName: this.name }
-        );
+      // Path 1: same-process deleteInstance — use the deployment ID
+      // annotation on the in-memory Enhanced proxy.
+      let rollbackResult: import('../types/deployment.js').RollbackResult | undefined;
+      if (instance) {
+        const deploymentId = instance.metadata?.annotations?.['typekro.io/deployment-id'];
+        if (deploymentId) {
+          try {
+            rollbackResult = await engine.rollback(deploymentId, {
+              ...(opts?.scopes && { scopes: opts.scopes }),
+              ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+            });
+          } catch (error: unknown) {
+            // Fall through to path 2 (discovery) ONLY when the in-memory
+            // deployment state is stale — i.e., the engine couldn't find
+            // the deployment ID in its Map (cleared by a previous rollback
+            // or lost with the process). Any other error — including
+            // genuine API failures during rollback — should propagate.
+            const isNotFound =
+              error instanceof ResourceGraphFactoryError &&
+              error.operation === 'cleanup';
+            if (!isNotFound) {
+              throw error;
+            }
+          }
+        }
       }
-      const rollbackResult = await engine.rollback(deploymentId);
+
+      // Path 2: cross-process lookup via cluster-side label discovery.
+      // Fires when the factory has no in-memory record, OR path 1
+      // couldn't find the deployment ID, OR path 1's engine state was
+      // wiped. Queries the cluster for all resources tagged with this
+      // factory+instance's labels, rebuilds the graph from per-resource
+      // annotations, and delegates to the same graph-based rollback.
+      if (!rollbackResult) {
+        // Build GVK hint set: built-in baseline (Namespace, Deployment,
+        // Service, etc.) PLUS any CRD kinds from this factory's resource
+        // templates. The baseline ensures nested composition resources
+        // (e.g., HelmRelease from cnpgBootstrap) are always discoverable
+        // even though they aren't in the parent factory's `this.resources`
+        // map. The CRD hints add the factory's custom kinds on top so we
+        // don't need the expensive full-cluster CRD enumeration.
+        const crdHints = new Map<string, import('./deployment-state-discovery.js').GvkTarget>();
+        for (const r of Object.values(this.resources)) {
+          if (!r.apiVersion || !r.kind) continue;
+          const key = `${r.apiVersion}/${r.kind}`;
+          if (crdHints.has(key)) continue;
+          const scope = getMetadataField(r as object, 'scope');
+          crdHints.set(key, { apiVersion: r.apiVersion, kind: r.kind, namespaced: scope !== 'cluster' });
+        }
+        const knownGvks = [
+          ...BUILT_IN_GVKS,
+          ...crdHints.values(),
+        ];
+        const record = await engine.loadDeploymentByInstance({
+          factoryName: this.name,
+          instanceName: name,
+          knownGvks,
+        });
+        if (!record) {
+          throw new TypeKroError(
+            `Instance not found: ${name} (no in-memory state and no tagged resources on the cluster). The instance may have been cleaned up already, or was deployed with a typekro version that did not tag resources.`,
+            'INSTANCE_NOT_FOUND',
+            { instanceName: name, factoryName: this.name }
+          );
+        }
+        this.logger.info('Cross-process cleanup: discovered deployment from cluster labels', {
+          instanceName: name,
+          factoryName: this.name,
+          deploymentId: record.deploymentId,
+          resourceCount: record.resources.length,
+        });
+        rollbackResult = await engine.rollbackRecord(record, {
+          ...(opts?.scopes && { scopes: opts.scopes }),
+          ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+        });
+      }
 
       // Wait for any namespaces to be fully deleted before returning.
       // Namespace deletion is asynchronous (enters "Terminating" phase) and can
@@ -280,12 +367,20 @@ export class DirectResourceFactoryImpl<
       // Remove from tracking
       this.deployedInstances.delete(name);
     } catch (error: unknown) {
-      // If the deployment isn't found in the state, it may have already been cleaned up
-      // or the deployment ID format changed. Log and remove from tracking anyway.
+      // INSTANCE_NOT_FOUND bubbles up — the caller asked us to delete
+      // an instance that has neither in-memory state nor a persisted
+      // record. That's a legitimate error (wrong name, already cleaned
+      // up) and the caller needs to see it.
+      if (error instanceof TypeKroError && error.code === 'INSTANCE_NOT_FOUND') {
+        throw error;
+      }
+      // Soft-swallow "Cannot rollback" errors from the engine —
+      // they indicate the engine's in-memory deployment state has
+      // already been cleaned up (e.g., by a previous rollback call).
+      // The instance is effectively gone, so we remove from tracking.
       const errorMessage = ensureError(error).message;
-      if (errorMessage.includes('not found') || errorMessage.includes('Cannot rollback')) {
+      if (errorMessage.includes('Cannot rollback')) {
         this.deployedInstances.delete(name);
-        // Don't throw - the instance is already gone
         return;
       }
       throw new ResourceGraphFactoryError(

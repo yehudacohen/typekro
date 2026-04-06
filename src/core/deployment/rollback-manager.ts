@@ -14,7 +14,7 @@ import {
 import { DeploymentTimeoutError, ensureError, TypeKroError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getMetadataField } from '../metadata/resource-metadata.js';
+import { getEffectiveScopes } from './resource-tagging.js';
 import type {
   DeployedResource,
   DeploymentError,
@@ -310,12 +310,51 @@ export class ResourceRollbackManager {
   }
 
   /**
-   * Rollback deployed resources by deleting them in reverse order.
-   * Skips resources that failed to deploy. Used by the deployment engine
-   * for rollback-on-failure during level-based deployment.
+   * Rollback resources that are already in the correct deletion order
+   * with scope filtering already applied. Used by `engine.rollbackRecord`
+   * which computes reverse-topological order and scope exclusions.
+   */
+  async rollbackOrderedResources(
+    deployedResources: DeployedResource[],
+    options: DeploymentOptions
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+    return this.deleteResourceList(deployedResources, options);
+  }
+
+  /**
+   * Rollback resources in reverse-deployment order, skipping scoped
+   * resources. Used by the deploy-failure auto-rollback path where
+   * resources are in deployment order and scope filtering hasn't been
+   * applied.
    */
   async rollbackDeployedResources(
     deployedResources: DeployedResource[],
+    options: DeploymentOptions
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+    const filtered = [...deployedResources]
+      .reverse()
+      .filter((r) => {
+        const scopes = getEffectiveScopes(r.manifest);
+        if (scopes.length > 0) {
+          this.logger.debug('Skipping scoped resource during rollback', {
+            resourceId: r.id,
+            kind: r.kind,
+            name: r.name,
+            scopes,
+          });
+          return false;
+        }
+        return true;
+      });
+    return this.deleteResourceList(filtered, options);
+  }
+
+  /**
+   * Core deletion loop — iterates the resource list in order, deleting
+   * each non-failed resource. Shared by both ordered and unordered paths.
+   */
+  private async deleteResourceList(
+    resources: DeployedResource[],
     options: DeploymentOptions
   ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
     this.emitDeploymentEvent(options, {
@@ -327,24 +366,8 @@ export class ResourceRollbackManager {
     const rolledBackResources: string[] = [];
     const errors: DeploymentError[] = [];
 
-    // Rollback in reverse order
-    const reversedResources = [...deployedResources].reverse();
-
-    for (const resource of reversedResources) {
-      // Only try to rollback resources that were actually deployed (not failed)
-      if (resource.status === 'failed') {
-        continue; // Skip resources that failed to deploy
-      }
-
-      // Skip shared resources — they survive instance deletion (e.g., HelmRepository in flux-system)
-      if (getMetadataField(resource.manifest, 'lifecycle') === 'shared') {
-        this.logger.debug('Skipping shared resource during rollback', {
-          resourceId: resource.id,
-          kind: resource.kind,
-          name: resource.name,
-        });
-        continue;
-      }
+    for (const resource of resources) {
+      if (resource.status === 'failed') continue;
 
       try {
         await this.k8sApi.delete({
@@ -358,7 +381,6 @@ export class ResourceRollbackManager {
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
       } catch (error: unknown) {
-        // Log and collect errors for individual resource deletion failures
         this.logger.warn('Failed to delete resource during rollback', {
           error: ensureError(error),
           resourceId: resource.id,
@@ -379,19 +401,15 @@ export class ResourceRollbackManager {
   }
 
   /**
-   * Delete a single deployed resource from the cluster and wait for deletion to complete.
+   * Delete a single deployed resource from the cluster and wait for
+   * deletion to complete.
+   *
+   * This method does NOT perform scope filtering — the caller (typically
+   * `engine.rollbackRecord`) is responsible for deciding which resources
+   * should be deleted. Filtering at this level would silently drop
+   * resources that the caller explicitly targeted for deletion.
    */
   async deleteDeployedResource(resource: DeployedResource): Promise<void> {
-    // Skip shared resources — they survive instance deletion
-    if (getMetadataField(resource.manifest, 'lifecycle') === 'shared') {
-      this.logger.debug('Skipping shared resource deletion', {
-        resourceId: resource.id,
-        kind: resource.kind,
-        name: resource.name,
-      });
-      return;
-    }
-
     const deleteLogger = this.logger.child({
       resourceId: resource.id,
       kind: resource.kind,

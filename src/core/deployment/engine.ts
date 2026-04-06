@@ -15,7 +15,7 @@ import { DependencyResolver } from '../dependencies/index.js';
 import { CircularDependencyError, ensureError, ResourceGraphFactoryError } from '../errors.js';
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
-import { copyResourceMetadata, getMetadataField, getResourceId as getResourceMetadataId } from '../metadata/index.js';
+import { copyResourceMetadata, getResourceId as getResourceMetadataId } from '../metadata/index.js';
 import { ensureReadinessEvaluator } from '../readiness/index.js';
 import { DeploymentMode, ReferenceResolver } from '../references/index.js';
 import { getResourceId } from '../resources/id.js';
@@ -45,7 +45,9 @@ import type {
 import { analyzeClosureDependencies, integrateClosuresIntoPlan } from './closure-planner.js';
 import { CRDManager } from './crd-manager.js';
 import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
+import { discoverDeployedResourcesByInstance } from './deployment-state-discovery.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
+import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { ReadinessWaiter } from './readiness-waiter.js';
 import { ResourceApplier } from './resource-applier.js';
@@ -320,7 +322,8 @@ export class DirectDeploymentEngine {
         options,
         startTime,
         deployedResources,
-        deploymentLogger
+        deploymentLogger,
+        deploymentId
       );
 
       // Deploy resources and closures level by level with proper dependency handling
@@ -367,7 +370,7 @@ export class DirectDeploymentEngine {
       await this.cleanupDeployment(deploymentAbortController, timeoutId, deploymentLogger);
 
       // Store deployment state for rollback
-      this.deploymentState.set(deploymentId, {
+      const successRecord: DeploymentStateRecord = {
         deploymentId,
         resources: deployedResources,
         dependencyGraph: graph.dependencyGraph,
@@ -380,7 +383,14 @@ export class DirectDeploymentEngine {
               ? 'completed'
               : 'failed',
         options,
-      });
+      };
+      this.deploymentState.set(deploymentId, successRecord);
+
+      // Note: cross-process state is persisted via per-resource labels
+      // and annotations applied during `deploySingleResource` — no
+      // separate state backend is written here. `factory.deleteInstance`
+      // in a later process rediscovers the set via label selector
+      // (see `deployment-state-discovery.ts`).
 
       return result;
     } catch (error: unknown) {
@@ -403,7 +413,7 @@ export class DirectDeploymentEngine {
       });
 
       // Store deployment state even for failed deployments (for rollback)
-      this.deploymentState.set(deploymentId, {
+      const failureRecord: DeploymentStateRecord = {
         deploymentId,
         resources: deployedResources,
         dependencyGraph: graph.dependencyGraph,
@@ -411,7 +421,12 @@ export class DirectDeploymentEngine {
         endTime: new Date(),
         status: 'failed',
         options,
-      });
+      };
+      this.deploymentState.set(deploymentId, failureRecord);
+      // Failed-deploy resources remain tagged on the cluster (tagging
+      // happens per-resource during apply), so cross-process cleanup
+      // via `factory.deleteInstance` can still discover and clean up
+      // the partial deployment — no separate persistence step needed.
 
       return {
         deploymentId,
@@ -489,7 +504,8 @@ export class DirectDeploymentEngine {
     options: DeploymentOptions,
     startTime: number,
     deployedResources: DeployedResource[],
-    deploymentLogger: ReturnType<typeof this.logger.child>
+    deploymentLogger: ReturnType<typeof this.logger.child>,
+    deploymentId: string
   ): Promise<{
     enhancedPlan: EnhancedDeploymentPlan;
     context: ResolutionContext;
@@ -562,8 +578,15 @@ export class DirectDeploymentEngine {
       deployedResources,
       kubeClient: this.kubeClient,
       resourceKeyMapping,
+      deploymentId,
       ...(options.namespace && { namespace: options.namespace }),
       timeout: options.timeout || DEFAULT_READINESS_TIMEOUT,
+      // Closure captures the dependency graph so the tagging step in
+      // `deploySingleResource` can stamp per-resource `depends-on`
+      // annotations without the engine having to thread the graph
+      // through every call site.
+      dependenciesForResource: (resourceId: string) =>
+        graph.dependencyGraph.getDependencies(resourceId),
     };
 
     return { enhancedPlan, context, resourceKeyMapping };
@@ -695,6 +718,22 @@ export class DirectDeploymentEngine {
         kind: resource.manifest?.kind,
         name: resource.manifest?.metadata?.name,
       });
+
+      // Scope-targeted deploy: when `targetScopes` is set on the
+      // options, skip resources whose effective scopes don't match
+      // the filter. This lets callers deploy only cluster-scoped
+      // operators or only instance-private resources. When
+      // `targetScopes` is undefined (the default), everything deploys.
+      if (options.targetScopes !== undefined) {
+        const resourceScopes = getEffectiveScopes(resource.manifest);
+        if (!scopesMatchFilter(resourceScopes, options.targetScopes)) {
+          resourceLogger.debug('Skipping resource: scope does not match targetScopes', {
+            resourceScopes,
+            targetScopes: options.targetScopes,
+          });
+          return { success: true, resourceId } as LevelDeploymentResult;
+        }
+      }
 
       try {
         resourceLogger.debug('Calling deploySingleResource');
@@ -1073,6 +1112,14 @@ export class DirectDeploymentEngine {
     // and namespace application create new plain objects, losing WeakMap entries.
     copyResourceMetadata(resource, resolvedResource);
 
+    // 2.5. Apply typekro ownership metadata (labels + annotations) so the
+    //      resource can be rediscovered across process boundaries and
+    //      so cross-process delete can respect scope membership. No-op
+    //      when options.factoryName / options.instanceName aren't set.
+    if (resourceId) {
+      this.resourceApplier.applyOwnershipTags(resolvedResource, options, resourceId, context);
+    }
+
     // 3. Apply the resource to the cluster (or simulate for dry run)
     await this.resourceApplier.applyResourceToCluster(resolvedResource, options, resourceLogger);
 
@@ -1122,6 +1169,13 @@ export class DirectDeploymentEngine {
     return this.rollbackManager.rollbackDeployedResources(deployedResources, options);
   }
 
+  private async rollbackOrderedResources(
+    deployedResources: DeployedResource[],
+    options: DeploymentOptions
+  ): Promise<{ rolledBackResources: string[]; errors: DeploymentError[] }> {
+    return this.rollbackManager.rollbackOrderedResources(deployedResources, options);
+  }
+
   /**
    * Generate a unique deployment ID
    */
@@ -1164,12 +1218,18 @@ export class DirectDeploymentEngine {
   }
 
   /**
-   * Rollback a deployment by ID
+   * Rollback a deployment by ID.
+   *
+   * Looks up the deployment record by ID in the in-memory state. Throws
+   * if the ID isn't found — callers that may be operating in a new
+   * process should use {@link rollbackRecord} with a record loaded via
+   * {@link loadDeploymentByInstance} instead.
    */
-  async rollback(deploymentId: string): Promise<RollbackResult> {
-    const startTime = Date.now();
+  async rollback(
+    deploymentId: string,
+    opts: { scopes?: string[]; includeUnscopedResources?: boolean } = {}
+  ): Promise<RollbackResult> {
     const deploymentRecord = this.deploymentState.get(deploymentId);
-
     if (!deploymentRecord) {
       throw new ResourceGraphFactoryError(
         `Deployment ${deploymentId} not found. Cannot rollback.`,
@@ -1177,28 +1237,66 @@ export class DirectDeploymentEngine {
         'cleanup'
       );
     }
+    return this.rollbackRecord(deploymentRecord, opts);
+  }
 
+  /**
+   * Rollback a deployment from an externally-provided record.
+   *
+   * This is the graph-based delete core, factored out so it can be
+   * driven by either the in-memory {@link deploymentState} Map
+   * (same-process) OR a record loaded from the cluster via
+   * {@link loadDeploymentByInstance} (cross-process). Performs
+   * reverse-topological deletion with scope-aware filtering.
+   *
+   * ## Scope filtering
+   *
+   * Each resource has an effective scope set derived from WeakMap
+   * `scopes` metadata, the `typekro.io/scopes` annotation on the
+   * live manifest, and the legacy `lifecycle: 'shared'` alias.
+   *
+   * - Resources with an empty scope set are "instance-private" and
+   *   are always deleted.
+   * - Resources with a non-empty scope set are deleted ONLY when the
+   *   caller's `scopes` filter contains at least one of them. Default
+   *   filter is `[]` (empty), so shared resources are preserved by
+   *   default and require opt-in to tear down.
+   */
+  async rollbackRecord(
+    deploymentRecord: DeploymentStateRecord,
+    opts: { scopes?: string[]; includeUnscopedResources?: boolean } = {}
+  ): Promise<RollbackResult> {
+    const startTime = Date.now();
+    const deploymentId = deploymentRecord.deploymentId;
+    const scopeFilter = opts.scopes ?? [];
+    const includeUnscoped = opts.includeUnscopedResources !== false;
     try {
+      // Determine which resources the caller's scope filter allows us
+      // to delete. Resources outside the filter (shared/scoped) are
+      // skipped — passed to analyzeDeletionOrder as `sharedIds` so the
+      // topological walk treats them as pinned nodes.
+      const skippedIds = new Set<string>();
+      for (const r of deploymentRecord.resources) {
+        const effectiveScopes = getEffectiveScopes(r.manifest);
+        if (!scopesMatchFilter(effectiveScopes, scopeFilter, includeUnscoped)) {
+          skippedIds.add(r.id);
+        }
+      }
+
       // Use graph-based reverse-topological deletion when the dependency
       // graph is available. This ensures dependents are deleted before their
       // dependencies (e.g., App before Database, Database before Namespace),
       // preventing finalizer deadlocks and stuck namespace termination.
       let orderedResources = deploymentRecord.resources;
       if (deploymentRecord.dependencyGraph) {
-        const sharedIds = new Set<string>();
-        for (const r of deploymentRecord.resources) {
-          if (getMetadataField(r.manifest, 'lifecycle') === 'shared') {
-            sharedIds.add(r.id);
-          }
-        }
         try {
           const deletionPlan = this.dependencyResolver.analyzeDeletionOrder(
             deploymentRecord.dependencyGraph,
-            sharedIds.size > 0 ? sharedIds : undefined
+            skippedIds.size > 0 ? skippedIds : undefined
           );
 
           // Map graph node IDs to DeployedResource objects in deletion order
-          const resourceMap = new Map(deploymentRecord.resources.map(r => [r.id, r]));
+          const resourceMap = new Map(deploymentRecord.resources.map((r) => [r.id, r]));
           orderedResources = [];
           for (const level of deletionPlan.levels) {
             for (const id of level) {
@@ -1211,24 +1309,38 @@ export class DirectDeploymentEngine {
             deploymentId,
             levels: deletionPlan.levels.length,
             resourceCount: orderedResources.length,
-            sharedSkipped: sharedIds.size,
+            scopeFilter,
+            skipped: skippedIds.size,
           });
         } catch (graphError: unknown) {
           this.logger.warn('Graph-based deletion order failed, falling back to reverse order', {
             error: ensureError(graphError).message,
           });
-          // Fall back to flat reverse order
-          orderedResources = [...deploymentRecord.resources].reverse();
+          // Fall back to flat reverse order, still honoring the scope
+          // filter by excluding skipped resources.
+          orderedResources = [...deploymentRecord.resources]
+            .reverse()
+            .filter((r) => !skippedIds.has(r.id));
         }
+      } else if (skippedIds.size > 0) {
+        // No graph — filter out skipped resources from the flat list.
+        orderedResources = deploymentRecord.resources.filter((r) => !skippedIds.has(r.id));
       }
 
-      const { rolledBackResources, errors } = await this.rollbackDeployedResources(
+      const { rolledBackResources, errors } = await this.rollbackOrderedResources(
         orderedResources,
         deploymentRecord.options
       );
 
       const status =
         errors.length === 0 ? 'success' : rolledBackResources.length > 0 ? 'partial' : 'failed';
+
+      // Remove from in-memory state if present. Discovered records have
+      // synthetic IDs (e.g., "discovered-<ts>") that were never in the
+      // map — the delete is a harmless no-op for those.
+      if (this.deploymentState.has(deploymentId)) {
+        this.deploymentState.delete(deploymentId);
+      }
 
       return {
         deploymentId,
@@ -1254,6 +1366,23 @@ export class DirectDeploymentEngine {
         ],
       };
     }
+  }
+
+  /**
+   * Look up a deployment by factory + instance name via cluster-side
+   * label discovery. Used by the direct factory's `deleteInstance` to
+   * clean up deployments created in a previous process.
+   *
+   * Returns `undefined` when no tagged resources match — either the
+   * instance was already cleaned up, was never deployed, or was
+   * deployed by a typekro version that did not tag resources.
+   */
+  async loadDeploymentByInstance(opts: {
+    factoryName: string;
+    instanceName: string;
+    knownGvks?: import('./deployment-state-discovery.js').GvkTarget[];
+  }): Promise<DeploymentStateRecord | undefined> {
+    return discoverDeployedResourcesByInstance(this.k8sApi, opts);
   }
 
   /**

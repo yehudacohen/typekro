@@ -115,6 +115,17 @@ export const CnpgBootstrapConfigSchema = type({
   },
   /** Additional Helm values for user overrides. */
   'customValues?': 'Record<string, unknown>',
+  /**
+   * Whether the operator install should be treated as shared cluster
+   * infrastructure (default: `true`). When `true`, the Namespace,
+   * HelmRepository, and HelmRelease are tagged with
+   * `scopes: ['cluster']` so `factory.deleteInstance()` will NOT
+   * remove them — multiple consumers (e.g., many `webAppWithProcessing`
+   * deployments) can converge on the same operator install. Set to
+   * `false` for dedicated per-instance operators (e.g., isolated
+   * multi-tenancy or version testing).
+   */
+  'shared?': 'boolean',
 });
 
 /** Configuration for installing the CloudNativePG operator via Helm. */

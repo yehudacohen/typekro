@@ -20,7 +20,10 @@ import {
 } from '../config/defaults.js';
 import { ensureError } from '../errors.js';
 import type { TypeKroLogger } from '../logging/index.js';
-import { copyResourceMetadata, getReadinessEvaluator } from '../metadata/index.js';
+import {
+  copyResourceMetadata,
+  getReadinessEvaluator,
+} from '../metadata/index.js';
 import type { ReferenceResolver } from '../references/index.js';
 import type { DeploymentOptions, ResolutionContext } from '../types/deployment.js';
 import type {
@@ -39,6 +42,7 @@ import {
   isUnsupportedMediaTypeError,
   patchResourceWithCorrectContentType,
 } from './k8s-helpers.js';
+import { applyTypekroTags, getEffectiveScopes } from './resource-tagging.js';
 
 export class ResourceApplier {
   constructor(
@@ -150,6 +154,44 @@ export class ResourceApplier {
     copyResourceMetadata(resource, newResource);
 
     return newResource;
+  }
+
+  /**
+   * Apply typekro ownership metadata (labels + annotations) to a resource
+   * manifest right before it's serialized and sent to the cluster.
+   *
+   * No-op when the deployment isn't tagged with factoryName + instanceName
+   * — untagged deployments don't participate in cross-process discovery
+   * and would pollute their resources with partial ownership metadata.
+   *
+   * Uses `getEffectiveScopes` from the tagging module as the single
+   * source of truth for scope computation — avoids duplicating the
+   * WeakMap + annotation + legacy-alias merge logic.
+   */
+  applyOwnershipTags(
+    resource: KubernetesResource,
+    options: DeploymentOptions,
+    resourceId: string,
+    context: ResolutionContext
+  ): void {
+    const { factoryName, instanceName } = options;
+    if (!factoryName || !instanceName) return;
+
+    const deploymentId = context.deploymentId;
+    if (!deploymentId) return;
+
+    const scopes = getEffectiveScopes(resource);
+    const dependencies = context.dependenciesForResource?.(resourceId) ?? [];
+
+    applyTypekroTags(resource, {
+      factoryName,
+      instanceName,
+      deploymentId,
+      factoryNamespace: options.namespace ?? context.namespace ?? 'default',
+      resourceId,
+      ...(scopes.length > 0 && { scopes }),
+      ...(dependencies.length > 0 && { dependencies }),
+    });
   }
 
   /**

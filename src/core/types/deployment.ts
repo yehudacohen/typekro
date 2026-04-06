@@ -232,6 +232,57 @@ export interface DeploymentOptions extends BaseDeploymentConfig {
    * @default Uses built-in defaults for each operation type
    */
   httpTimeouts?: HttpTimeoutConfig;
+
+  /**
+   * Factory identifier used to tag deployed resources with typekro
+   * ownership metadata. When both `factoryName` and `instanceName` are
+   * set, every resource applied by this deployment is stamped with
+   * `typekro.io/factory-name` and `typekro.io/instance-name` labels
+   * (plus matching annotations + deployment-id + depends-on for graph
+   * reconstruction). This makes cross-process cleanup possible:
+   * `factory.deleteInstance(name)` from a later bun process discovers
+   * the resources by label selector and performs reverse-topological
+   * deletion without needing the in-memory deployment state.
+   *
+   * Without these fields, resources are not tagged and cross-process
+   * cleanup is unavailable — same-process cleanup via the engine's
+   * in-memory map continues to work.
+   */
+  factoryName?: string;
+
+  /** Instance identifier — see `factoryName`. */
+  instanceName?: string;
+
+  /**
+   * Scope-targeted deployment. When set, only resources whose effective
+   * scopes match this filter are deployed. Resources outside the filter
+   * are silently skipped — not an error, just not part of this deploy.
+   *
+   * Matching uses the same rule as delete-side scope filtering
+   * ({@link scopesMatchFilter}):
+   *
+   * - Instance-private resources (empty scopes) are deployed when the
+   *   filter is `[]` (empty) — meaning "target instance scope."
+   * - Scoped resources (e.g., `['cluster']`) are deployed when the
+   *   filter contains at least one of their scopes.
+   *
+   * When `targetScopes` is **undefined** (the default), ALL resources
+   * deploy regardless of scope — backwards-compatible "deploy
+   * everything" behavior.
+   *
+   * @example
+   * ```ts
+   * // Deploy only cluster-scoped resources (operators)
+   * await factory.deploy(spec, { targetScopes: ['cluster'] });
+   *
+   * // Deploy only instance-private resources (app + database)
+   * await factory.deploy(spec, { targetScopes: [] });
+   *
+   * // Deploy everything (default)
+   * await factory.deploy(spec);
+   * ```
+   */
+  targetScopes?: string[];
 }
 
 export interface AlchemyDeploymentOptions extends BaseDeploymentConfig {
@@ -619,11 +670,11 @@ export interface ResourceFactory<
   TStatus extends KroCompatibleType,
 > {
   // Core deployment - single method handles all cases
-  deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>>;
+  deploy(spec: TSpec, opts?: { targetScopes?: string[] }): Promise<Enhanced<TSpec, TStatus>>;
 
   // Instance management
   getInstances(): Promise<Enhanced<TSpec, TStatus>[]>;
-  deleteInstance(name: string): Promise<void>;
+  deleteInstance(name: string, opts?: { scopes?: string[]; includeUnscopedResources?: boolean }): Promise<void>;
   getStatus(): Promise<FactoryStatus>;
 
   // Metadata
@@ -745,4 +796,11 @@ export interface ResolutionContext {
   deploymentId?: string;
   resourceKeyMapping?: Map<string, unknown>;
   schema?: { spec?: unknown; status?: unknown };
+  /**
+   * Function returning the composition-local dependency ids for a given
+   * resource id. Populated by the engine before deploy so the tagging
+   * step can record per-resource `depends-on` annotations without
+   * reaching back into the graph.
+   */
+  dependenciesForResource?: (resourceId: string) => string[];
 }

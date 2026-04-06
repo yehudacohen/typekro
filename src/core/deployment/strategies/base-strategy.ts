@@ -25,11 +25,16 @@ import { createEnhancedMetadata, generateInstanceName, validateSpec } from '../s
 /**
  * Base deployment strategy interface
  */
+/** Options threaded from `factory.deploy(spec, opts)` to the strategy. */
+export interface DeployStrategyOptions {
+  targetScopes?: string[];
+}
+
 export interface DeploymentStrategy<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
 > {
-  deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>>;
+  deploy(spec: TSpec, opts?: DeployStrategyOptions): Promise<Enhanced<TSpec, TStatus>>;
 }
 
 /**
@@ -54,7 +59,10 @@ export abstract class BaseDeploymentStrategy<
   /**
    * Template method for deployment - defines the common flow
    */
-  async deploy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
+  async deploy(
+    spec: TSpec,
+    opts?: DeployStrategyOptions
+  ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('Base strategy deploy called', {
       factoryName: this.factoryName,
       hasStatusBuilder: !!this.statusBuilder,
@@ -73,7 +81,7 @@ export abstract class BaseDeploymentStrategy<
     });
 
     // Step 3: Execute strategy-specific deployment
-    const deploymentResult = await this.executeDeployment(spec, instanceName);
+    const deploymentResult = await this.executeDeployment(spec, instanceName, opts);
 
     // Step 4: Create Enhanced proxy (common to all strategies)
     return await this.createEnhancedProxy(spec, instanceName, deploymentResult);
@@ -84,7 +92,8 @@ export abstract class BaseDeploymentStrategy<
    */
   protected abstract executeDeployment(
     spec: TSpec,
-    instanceName: string
+    instanceName: string,
+    opts?: DeployStrategyOptions
   ): Promise<DeploymentResult>;
 
   /**

@@ -12,6 +12,8 @@
  */
 
 import { type } from 'arktype';
+import { CnpgBootstrapConfigSchema } from '../cnpg/types.js';
+import { ValkeyBootstrapConfigSchema } from '../valkey/types.js';
 
 // ============================================================================
 // Config Schemas (source of truth) + Inferred Types
@@ -74,6 +76,37 @@ export const WebAppWithProcessingConfigSchema = type({
     /** Number of Inngest server replicas (default: 1). */
     'replicas?': 'number',
   },
+  /**
+   * CloudNativePG operator install settings. The composition nests
+   * `cnpgBootstrap` so the operator installs automatically alongside
+   * the app stack.
+   *
+   * The schema embeds the full `CnpgBootstrapConfigSchema` made
+   * partial (every field optional) so every field the underlying
+   * bootstrap supports is available here without duplication:
+   * `name`, `namespace`, `version`, `installCRDs`, `replicaCount`,
+   * `monitoring`, `resources`, `customValues`, `shared`.
+   *
+   * Defaults applied by the composition when omitted:
+   *   name: 'cnpg-operator'
+   *   namespace: 'cnpg-system'
+   *   shared: true (singleton — survives instance deletion)
+   *
+   * The defaults make the operator a **shared cluster-level singleton**:
+   * multiple `webAppWithProcessing` instances (and any other composition
+   * that nests `cnpgBootstrap`) converge on the same install. Override
+   * `name`/`namespace` + set `shared: false` to deploy a dedicated
+   * per-instance operator (isolation, version testing, multi-tenancy).
+   */
+  'cnpgOperator?': CnpgBootstrapConfigSchema.partial(),
+  /**
+   * Hyperspike Valkey operator install settings. Same shared-singleton
+   * pattern as `cnpgOperator`. Defaults:
+   *   name: 'valkey-operator'
+   *   namespace: 'valkey-operator-system'
+   *   shared: true
+   */
+  'valkeyOperator?': ValkeyBootstrapConfigSchema.partial(),
 });
 
 /** Inferred config type — no separate interface needed. */
