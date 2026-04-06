@@ -312,9 +312,9 @@ export class DirectResourceFactoryImpl<
           resourceCount: record.resources.length,
         });
         rollbackResult = await engine.rollbackRecord(record, {
-              ...(opts?.scopes && { scopes: opts.scopes }),
-              ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
-            });
+          ...(opts?.scopes && { scopes: opts.scopes }),
+          ...(opts?.includeUnscopedResources === false && { includeUnscopedResources: false }),
+        });
       }
 
       // Wait for any namespaces to be fully deleted before returning.
