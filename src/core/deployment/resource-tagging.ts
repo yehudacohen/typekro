@@ -272,14 +272,14 @@ export function getEffectiveScopes(resource: KubernetesResource): string[] {
  *     call.
  *
  * Examples:
- *   shouldDeleteForScopes([],            []) === true   // instance-private, always delete
- *   shouldDeleteForScopes([],            ['cluster']) === true   // instance-private even if filter is non-empty
- *   shouldDeleteForScopes(['cluster'],   []) === false  // shared, default delete skips it
- *   shouldDeleteForScopes(['cluster'],   ['cluster']) === true   // shared, explicit opt-in
- *   shouldDeleteForScopes(['cluster'],   ['team:platform']) === false  // wrong scope
- *   shouldDeleteForScopes(['cluster', 'team:platform'], ['cluster']) === true  // any match
+ *   scopesMatchFilter([],            []) === true   // instance-private, always delete
+ *   scopesMatchFilter([],            ['cluster']) === true   // instance-private even if filter is non-empty
+ *   scopesMatchFilter(['cluster'],   []) === false  // shared, default delete skips it
+ *   scopesMatchFilter(['cluster'],   ['cluster']) === true   // shared, explicit opt-in
+ *   scopesMatchFilter(['cluster'],   ['team:platform']) === false  // wrong scope
+ *   scopesMatchFilter(['cluster', 'team:platform'], ['cluster']) === true  // any match
  */
-export function shouldDeleteForScopes(
+export function scopesMatchFilter(
   resourceScopes: string[],
   scopeFilter: string[]
 ): boolean {
@@ -336,9 +336,12 @@ function parseJsonStringArray(value: string | undefined): string[] {
  * that need collision resistance should use the annotation form.
  */
 export function sanitiseLabelValue(value: string): string {
-  return value
+  const sanitised = value
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, '-')
     .slice(0, 63)
     .replace(/^[-._]+|[-._]+$/g, '');
+  // An empty string is an invalid K8s label value. Fall back to a
+  // deterministic placeholder so selectors don't break.
+  return sanitised || 'unknown';
 }

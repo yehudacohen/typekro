@@ -47,7 +47,7 @@ import { CRDManager } from './crd-manager.js';
 import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
 import { discoverDeployedResourcesByInstance } from './deployment-state-discovery.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
-import { getEffectiveScopes, shouldDeleteForScopes } from './resource-tagging.js';
+import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { ReadinessWaiter } from './readiness-waiter.js';
 import { ResourceApplier } from './resource-applier.js';
@@ -726,7 +726,7 @@ export class DirectDeploymentEngine {
       // `targetScopes` is undefined (the default), everything deploys.
       if (options.targetScopes !== undefined) {
         const resourceScopes = getEffectiveScopes(resource.manifest);
-        if (!shouldDeleteForScopes(resourceScopes, options.targetScopes)) {
+        if (!scopesMatchFilter(resourceScopes, options.targetScopes)) {
           resourceLogger.debug('Skipping resource: scope does not match targetScopes', {
             resourceScopes,
             targetScopes: options.targetScopes,
@@ -1271,7 +1271,7 @@ export class DirectDeploymentEngine {
       const skippedIds = new Set<string>();
       for (const r of deploymentRecord.resources) {
         const effectiveScopes = getEffectiveScopes(r.manifest);
-        if (!shouldDeleteForScopes(effectiveScopes, scopeFilter)) {
+        if (!scopesMatchFilter(effectiveScopes, scopeFilter)) {
           skippedIds.add(r.id);
         }
       }

@@ -5,7 +5,7 @@
  *   - applyTypekroTags: label + annotation stamping
  *   - extractTypekroTags: round-trip extraction from a live resource
  *   - getEffectiveScopes: merges annotation, WeakMap, and legacy sources
- *   - shouldDeleteForScopes: scope-filter matching matrix
+ *   - scopesMatchFilter: scope-filter matching matrix
  *   - buildFactoryInstanceSelector: label selector construction
  *   - sanitiseLabelValue: DNS-label sanitisation
  *
@@ -35,7 +35,7 @@ import {
   RESOURCE_ID_ANNOTATION,
   sanitiseLabelValue,
   SCOPES_ANNOTATION,
-  shouldDeleteForScopes,
+  scopesMatchFilter,
   type TagContext,
 } from '../../src/core/deployment/resource-tagging.js';
 
@@ -253,32 +253,32 @@ describe('getEffectiveScopes', () => {
   });
 });
 
-// ── shouldDeleteForScopes ─────────────────────────────────────────────────
+// ── scopesMatchFilter ─────────────────────────────────────────────────
 
-describe('shouldDeleteForScopes', () => {
+describe('scopesMatchFilter', () => {
   it('always deletes instance-private resources (empty scopes)', () => {
-    expect(shouldDeleteForScopes([], [])).toBe(true);
-    expect(shouldDeleteForScopes([], ['cluster'])).toBe(true);
+    expect(scopesMatchFilter([], [])).toBe(true);
+    expect(scopesMatchFilter([], ['cluster'])).toBe(true);
   });
 
   it('skips scoped resources when filter is empty (default delete)', () => {
-    expect(shouldDeleteForScopes(['cluster'], [])).toBe(false);
-    expect(shouldDeleteForScopes(['shared'], [])).toBe(false);
+    expect(scopesMatchFilter(['cluster'], [])).toBe(false);
+    expect(scopesMatchFilter(['shared'], [])).toBe(false);
   });
 
   it('deletes scoped resources when filter matches', () => {
-    expect(shouldDeleteForScopes(['cluster'], ['cluster'])).toBe(true);
-    expect(shouldDeleteForScopes(['cluster', 'team:ops'], ['cluster'])).toBe(true);
-    expect(shouldDeleteForScopes(['team:ops'], ['team:ops'])).toBe(true);
+    expect(scopesMatchFilter(['cluster'], ['cluster'])).toBe(true);
+    expect(scopesMatchFilter(['cluster', 'team:ops'], ['cluster'])).toBe(true);
+    expect(scopesMatchFilter(['team:ops'], ['team:ops'])).toBe(true);
   });
 
   it('skips scoped resources when filter does not match', () => {
-    expect(shouldDeleteForScopes(['cluster'], ['team:ops'])).toBe(false);
-    expect(shouldDeleteForScopes(['team:frontend'], ['team:backend'])).toBe(false);
+    expect(scopesMatchFilter(['cluster'], ['team:ops'])).toBe(false);
+    expect(scopesMatchFilter(['team:frontend'], ['team:backend'])).toBe(false);
   });
 
   it('matches when any scope intersects the filter', () => {
-    expect(shouldDeleteForScopes(['cluster', 'team:ops'], ['team:ops'])).toBe(true);
+    expect(scopesMatchFilter(['cluster', 'team:ops'], ['team:ops'])).toBe(true);
   });
 });
 
@@ -321,8 +321,13 @@ describe('sanitiseLabelValue', () => {
     expect(sanitiseLabelValue('--hello--')).toBe('hello');
   });
 
-  it('handles empty string', () => {
-    expect(sanitiseLabelValue('')).toBe('');
+  it('returns "unknown" for empty string (invalid K8s label value)', () => {
+    expect(sanitiseLabelValue('')).toBe('unknown');
+  });
+
+  it('returns "unknown" for all-special-chars input', () => {
+    expect(sanitiseLabelValue('---')).toBe('unknown');
+    expect(sanitiseLabelValue('...')).toBe('unknown');
   });
 });
 

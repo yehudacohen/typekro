@@ -259,7 +259,7 @@ export interface DeploymentOptions extends BaseDeploymentConfig {
    * are silently skipped — not an error, just not part of this deploy.
    *
    * Matching uses the same rule as delete-side scope filtering
-   * ({@link shouldDeleteForScopes}):
+   * ({@link scopesMatchFilter}):
    *
    * - Instance-private resources (empty scopes) are deployed when the
    *   filter is `[]` (empty) — meaning "target instance scope."

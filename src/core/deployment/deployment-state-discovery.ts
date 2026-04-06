@@ -158,8 +158,8 @@ export async function discoverClusterGvks(
 
 /**
  * Extract GVK targets from a single CRD. A CRD may have multiple served
- * versions; we include each served+storage version as its own target
- * because older resources may still exist at the non-storage version.
+ * versions; we include each served version as its own target because
+ * older resources may still exist at a non-storage version.
  */
 function gvkTargetsFromCrd(crd: CustomResourceDefinitionItem): GvkTarget[] {
   const group = crd.spec?.group;
@@ -379,10 +379,6 @@ function buildRecordFromResources(
 }
 
 /**
- * Run an async function over an array with bounded parallelism. Used to
- * cap the number of simultaneous API requests during discovery.
- */
-/**
  * Safely convert a Kubernetes `creationTimestamp` to a Date.
  * The client-node deserializer returns a `Date` object, but defensive
  * callers may receive strings from raw JSON or test mocks.
@@ -393,6 +389,10 @@ function toDate(value: unknown): Date | undefined {
   return undefined;
 }
 
+/**
+ * Run an async function over an array with bounded parallelism. Used to
+ * cap the number of simultaneous API requests during discovery.
+ */
 async function listWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
