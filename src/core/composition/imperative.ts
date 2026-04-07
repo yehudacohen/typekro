@@ -308,12 +308,18 @@ function executeNestedCompositionWithSpec<
     }, '', innerPhaseBFallback);
   }
 
-  // Create a NestedCompositionResource to return
-  // This is what enables: const db = databaseComposition({ name: 'mydb' }); db.spec; db.status.ready
+  // Create a NestedCompositionResource to return.
+  // During re-execution (direct-mode deploy), return the REAL status
+  // values from the inner composition — not a KubernetesRef proxy.
+  // The proxy is needed for KRO analysis (to generate CEL expressions
+  // for cross-composition references), but in direct mode the outer
+  // composition needs actual strings to wire into env vars, etc.
   const nestedCompositionResource: NestedCompositionResource<TSpec, TStatus> = {
     [NESTED_COMPOSITION_BRAND]: true as const,
     spec,
-    status: createStatusProxy<TStatus>(baseId, parentContext, result),
+    status: isReExec
+      ? (result as unknown as { status?: TStatus }).status ?? ({} as TStatus)
+      : createStatusProxy<TStatus>(baseId, parentContext, result),
     __compositionId: uniqueExecutionName,
     __resources: result.resources,
   };
@@ -743,14 +749,17 @@ export function kubernetesComposition<
           compositionName
         );
 
-    // Create a callable composition that can be invoked with a spec
+    // Create a callable composition that can be invoked with a spec.
+    // Use the CURRENT composition context at call time (not the captured
+    // `parentContext` from definition time) so re-execution correctly
+    // detects `isReExecution` and returns real status values.
     const callableComposition = ((spec: TSpec) => {
-      // When called with a spec, execute the nested composition with that spec
+      const currentContext = getCurrentCompositionContext() ?? parentContext;
       return executeNestedCompositionWithSpec(
         definition,
         compositionFn,
         options,
-        parentContext,
+        currentContext,
         spec,
         compositionName
       );
