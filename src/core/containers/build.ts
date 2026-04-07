@@ -32,6 +32,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { getComponentLogger } from '../logging/index.js';
 import { ContainerBuildError } from './errors.js';
@@ -169,13 +170,25 @@ export async function computeContentHash(contextPath: string, dockerfilePath: st
     ig.add(patterns);
   }
 
-  // Collect files, excluding .dockerignore matches
-  const glob = new Bun.Glob('**/*');
+  // Collect files, excluding .dockerignore matches.
+  // Use a recursive directory walker that skips ignored DIRECTORIES
+  // upfront (e.g., node_modules/, .git/) instead of Bun.Glob which
+  // enumerates all files before filtering — critical for repos with
+  // multi-GB node_modules.
   const files: string[] = [];
-  for await (const path of glob.scan({ cwd: contextPath, onlyFiles: true })) {
-    if (ig.ignores(path)) continue;
-    files.push(path);
-  }
+  const walkDir = async (dir: string, prefix: string): Promise<void> => {
+    const entries = await readdir(join(contextPath, dir), { withFileTypes: true });
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (ig.ignores(relativePath + (entry.isDirectory() ? '/' : ''))) continue;
+      if (entry.isDirectory()) {
+        await walkDir(join(dir, entry.name), relativePath);
+      } else {
+        files.push(relativePath);
+      }
+    }
+  };
+  await walkDir('', '');
   files.sort();
 
   for (const file of files) {
