@@ -1,7 +1,7 @@
 /**
  * Regression tests for nested composition behavior in direct mode.
  *
- * These tests cover bugs found during CollectorBills dogfooding where
+ * These tests cover bugs found during real-world dogfooding where
  * nested compositions produced CEL expressions, proxy artifacts, or
  * missing kind fields instead of resolved values.
  *

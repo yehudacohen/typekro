@@ -99,20 +99,13 @@ function resolveKey(specValue: string | undefined, envVarName: string, devDefaul
     );
   }
 
-  // Warn when using defaults outside test environments — this catches
-  // production deploys where allowDefaults is true (composition definition)
-  // but credentials weren't provided via spec or env vars.
-  if (!isTestEnvironment() && allowDefaults && !devDefaultWarningEmitted) {
-    logger.warn(
-      `Using default ${envVarName} — set env var or pass gateway.adminCredentials for production`,
-      { envVar: envVarName }
-    );
-  }
-
   if (!devDefaultWarningEmitted) {
     devDefaultWarningEmitted = true;
+    const isProduction = !isTestEnvironment();
     logger.warn(
-      'Using default APISIX admin API keys for test environment. These are the well-known chart defaults and are NOT secure.',
+      isProduction
+        ? `Using default APISIX admin API keys. Set ${envVarName} or pass gateway.adminCredentials for production.`
+        : 'Using default APISIX admin API keys for test environment. These are the well-known chart defaults and are NOT secure.',
       {
         envVar: envVarName,
         hint: 'Set APISIX_ADMIN_KEY and APISIX_VIEWER_KEY environment variables, or pass gateway.adminCredentials in the spec for production deployments.',

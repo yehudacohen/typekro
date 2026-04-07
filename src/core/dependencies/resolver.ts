@@ -105,8 +105,8 @@ export class DependencyResolver {
     // or spec fields contain the metadata.name of another resource that
     // provides a network service (Service, StatefulSet, Deployment), add
     // a dependency edge. This catches patterns like:
-    //   VALKEY_HOST: "collectorbills-cache"
-    //   DATABASE_URL: "postgresql://app@collectorbills-db-pooler:5432/db"
+    //   VALKEY_HOST: "myapp-cache"
+    //   DATABASE_URL: "postgresql://app@myapp-db-pooler:5432/db"
     // where the hostname is the metadata.name of another resource in the
     // graph. Without this, resources that reference nested composition
     // status (which resolves to real strings in direct mode) would deploy

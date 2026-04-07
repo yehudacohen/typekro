@@ -1,5 +1,5 @@
 /**
- * Tests for simple.Deployment features added during CollectorBills dogfooding:
+ * Tests for simple.Deployment features:
  * - command: container entrypoint override
  * - args: container arguments
  * - envFrom: inject all keys from a Secret/ConfigMap as env vars
