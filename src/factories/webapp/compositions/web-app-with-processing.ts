@@ -294,7 +294,11 @@ export const webAppWithProcessing = kubernetesComposition(
         cache.status.ready &&
         inngest.status.ready,
       databaseUrl: `postgresql://${dbOwner}@${dbPooler.metadata.name}:5432/${dbName}`,
+      databaseHost: `${dbPooler.metadata.name}`,
+      databasePort: 5432,
       cacheUrl: `redis://${cache.metadata.name}:6379`,
+      cacheHost: `${cache.metadata.name}`,
+      cachePort: 6379,
       inngestUrl: `http://${spec.name}-inngest:8288`,
       appUrl: `http://${spec.name}:${appPort}`,
       components: {

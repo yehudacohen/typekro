@@ -125,7 +125,11 @@ export type WebAppWithProcessingConfig = typeof WebAppWithProcessingConfigSchema
 export const WebAppWithProcessingStatusSchema = type({
   ready: 'boolean',
   databaseUrl: 'string',
+  databaseHost: 'string',
+  databasePort: 'number',
   cacheUrl: 'string',
+  cacheHost: 'string',
+  cachePort: 'number',
   inngestUrl: 'string',
   appUrl: 'string',
   components: {
