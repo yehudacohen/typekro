@@ -376,4 +376,58 @@ describe('Nested Composition Direct Mode', () => {
       }).not.toThrow();
     });
   });
+
+  describe('Bug #5: resources referencing inner service names must deploy after them', () => {
+    it('worker deployment depends on inner service via implicit service-name detection', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'myapp',
+        namespace: 'test-ns',
+        innerImage: 'worker:latest',
+      });
+
+      // Find the worker deployment
+      const workerResource = graph.resources.find((r) => {
+        const name = String(r.manifest?.metadata?.name ?? '');
+        return name.includes('worker');
+      });
+      expect(workerResource).toBeDefined();
+
+      // Find the inner Service (named "myapp-inner")
+      const innerService = graph.resources.find((r) => {
+        return r.manifest?.kind === 'Service' &&
+          String(r.manifest?.metadata?.name ?? '') === 'myapp-inner';
+      });
+      expect(innerService).toBeDefined();
+
+      // The worker should depend on the inner service because its
+      // SERVICE_URL env var contains "myapp-inner" (the service name).
+      const workerDeps = graph.dependencyGraph.getDependencies(workerResource!.id);
+      const dependsOnInnerService = workerDeps.includes(innerService!.id);
+      expect(dependsOnInnerService).toBe(true);
+    });
+
+    it('resources without service-name references have no spurious dependencies', () => {
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({
+        name: 'myapp',
+        namespace: 'test-ns',
+        innerImage: 'worker:latest',
+      });
+
+      // Find the inner Deployment
+      const innerDeploy = graph.resources.find((r) => {
+        return r.manifest?.kind === 'Deployment' &&
+          String(r.manifest?.metadata?.name ?? '') === 'myapp-inner';
+      });
+      expect(innerDeploy).toBeDefined();
+
+      // The inner deployment should NOT depend on the worker (no circular dep)
+      const innerDeps = graph.dependencyGraph.getDependencies(innerDeploy!.id);
+      const workerResource = graph.resources.find((r) =>
+        String(r.manifest?.metadata?.name ?? '').includes('worker')
+      );
+      expect(innerDeps.includes(workerResource!.id)).toBe(false);
+    });
+  });
 });

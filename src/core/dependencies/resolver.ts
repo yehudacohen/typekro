@@ -101,7 +101,74 @@ export class DependencyResolver {
       }
     }
 
+    // Detect implicit service-name dependencies: if a resource's env vars
+    // or spec fields contain the metadata.name of another resource that
+    // provides a network service (Service, StatefulSet, Deployment), add
+    // a dependency edge. This catches patterns like:
+    //   VALKEY_HOST: "collectorbills-cache"
+    //   DATABASE_URL: "postgresql://app@collectorbills-db-pooler:5432/db"
+    // where the hostname is the metadata.name of another resource in the
+    // graph. Without this, resources that reference nested composition
+    // status (which resolves to real strings in direct mode) would deploy
+    // in parallel with the services they depend on.
+    const serviceNames = new Map<string, string>(); // service name → resource graph ID
+    const SERVICE_KINDS = new Set(['Service', 'StatefulSet', 'Deployment', 'Valkey', 'Cluster', 'Pooler']);
+    for (const resource of resources) {
+      if (resource.metadata?.name && SERVICE_KINDS.has(resource.kind ?? '')) {
+        const name = String(resource.metadata.name);
+        if (name && !name.includes('$')) {
+          serviceNames.set(name, resource.id);
+        }
+      }
+    }
+
+    if (serviceNames.size > 0) {
+      for (const resource of resources) {
+        // Collect all string values from env vars and spec fields
+        const stringValues = this.collectStringValues(resource);
+        for (const value of stringValues) {
+          for (const [svcName, svcResourceId] of serviceNames) {
+            if (svcResourceId !== resource.id && value.includes(svcName)) {
+              try {
+                graph.addEdge(resource.id, svcResourceId);
+                this.logger.debug('Added implicit service-name dependency', {
+                  resource: resource.id,
+                  referencedService: svcName,
+                  serviceResource: svcResourceId,
+                });
+              } catch {
+                // Edge already exists
+              }
+            }
+          }
+        }
+      }
+    }
+
     return graph;
+  }
+
+  /**
+   * Collect all string values from a resource's env vars and spec fields.
+   * Used for implicit service-name dependency detection.
+   */
+  private collectStringValues(
+    resource: DeployableK8sResource<Enhanced<unknown, unknown>>
+  ): string[] {
+    const values: string[] = [];
+    const traverse = (obj: unknown): void => {
+      if (typeof obj === 'string' && obj.length > 0 && obj.length < 500) {
+        values.push(obj);
+      } else if (Array.isArray(obj)) {
+        for (const item of obj) traverse(item);
+      } else if (obj !== null && typeof obj === 'object') {
+        for (const value of Object.values(obj)) traverse(value);
+      }
+    };
+    // Focus on spec.template.spec.containers (env vars) and metadata
+    const spec = (resource as any)?.spec;
+    if (spec) traverse(spec);
+    return values;
   }
 
   /**
