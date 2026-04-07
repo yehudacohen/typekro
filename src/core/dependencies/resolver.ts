@@ -128,7 +128,11 @@ export class DependencyResolver {
         const stringValues = this.collectStringValues(resource);
         for (const value of stringValues) {
           for (const [svcName, svcResourceId] of serviceNames) {
-            if (svcResourceId !== resource.id && value.includes(svcName)) {
+            // Use word-boundary matching to avoid false positives:
+            // "app" in "happy" or "myapp" should NOT match. The service
+            // name must appear delimited by URI separators (://@.), path
+            // separators (/), port colons, or string boundaries.
+            if (svcResourceId !== resource.id && matchesServiceName(value, svcName)) {
               try {
                 graph.addEdge(resource.id, svcResourceId);
                 this.logger.debug('Added implicit service-name dependency', {
@@ -137,7 +141,7 @@ export class DependencyResolver {
                   serviceResource: svcResourceId,
                 });
               } catch {
-                // Edge already exists
+                // Node not found in graph — resource ID mismatch
               }
             }
           }
@@ -149,8 +153,10 @@ export class DependencyResolver {
   }
 
   /**
-   * Collect all string values from a resource's env vars and spec fields.
-   * Used for implicit service-name dependency detection.
+   * Collect all string values from a resource's spec fields (env vars,
+   * container config, etc.). Used for implicit service-name dependency
+   * detection. Only traverses `spec` — not `metadata` — to avoid
+   * false positives from label values and annotation content.
    */
   private collectStringValues(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>
@@ -417,6 +423,29 @@ export interface DeploymentPlan {
   levels: string[][]; // Resources grouped by dependency level
   totalResources: number;
   maxParallelism: number;
+}
+
+/**
+ * Check if a service name appears as a hostname in a string value,
+ * using word-boundary-aware matching to avoid false positives.
+ *
+ * Matches service names delimited by URI separators (://, @, /),
+ * port colons, or string boundaries. Does NOT match substrings
+ * inside other words (e.g., "app" inside "happy" or "myapp").
+ *
+ * Examples:
+ *   matchesServiceName("redis://my-cache:6379", "my-cache")  → true
+ *   matchesServiceName("postgresql://app@db-pooler:5432", "db-pooler") → true
+ *   matchesServiceName("my-cache", "my-cache")               → true
+ *   matchesServiceName("happy", "app")                       → false
+ *   matchesServiceName("myapp:latest", "app")                → false
+ */
+function matchesServiceName(value: string, serviceName: string): boolean {
+  // Escape regex special chars in the service name
+  const escaped = serviceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Match when delimited by URI/hostname boundaries or string edges
+  const pattern = new RegExp(`(?:^|[/:@.])${escaped}(?:[/:@.]|$)`);
+  return pattern.test(value);
 }
 
 // CircularDependencyError is now imported from ../errors.js

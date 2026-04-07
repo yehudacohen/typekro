@@ -407,6 +407,53 @@ describe('Nested Composition Direct Mode', () => {
       expect(dependsOnInnerService).toBe(true);
     });
 
+    it('does not create false-positive deps from substring matches', () => {
+      // Create a composition where one Deployment is named "app" and another
+      // has an image like "myapp:latest". The "app" substring in "myapp"
+      // should NOT create a dependency edge.
+      const shortNameComp = kubernetesComposition(
+        {
+          name: 'short-name-test',
+          kind: 'ShortNameTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          simple.Deployment({
+            name: 'app',
+            image: 'nginx',
+            id: 'appDeploy',
+          });
+          simple.Deployment({
+            name: 'worker',
+            image: 'myapp:latest',
+            env: { SOME_VAR: 'happy-path' },
+            id: 'workerDeploy',
+          });
+          return { ready: true };
+        }
+      );
+
+      const factory = shortNameComp.factory('direct', { namespace: 'test-ns' });
+      const graph = factory.createResourceGraphForInstance({ name: 'test' });
+
+      const worker = graph.resources.find((r) =>
+        String(r.manifest?.metadata?.name ?? '').includes('worker')
+      );
+      expect(worker).toBeDefined();
+
+      // "worker" should NOT depend on "app" — "myapp" and "happy" are
+      // substrings, not hostname references.
+      const workerDeps = graph.dependencyGraph.getDependencies(worker!.id);
+      const appResource = graph.resources.find((r) =>
+        r.manifest?.kind === 'Deployment' &&
+        String(r.manifest?.metadata?.name ?? '') === 'app'
+      );
+      if (appResource) {
+        expect(workerDeps.includes(appResource.id)).toBe(false);
+      }
+    });
+
     it('resources without service-name references have no spurious dependencies', () => {
       const factory = outerComposition.factory('direct', { namespace: 'test-ns' });
       const graph = factory.createResourceGraphForInstance({

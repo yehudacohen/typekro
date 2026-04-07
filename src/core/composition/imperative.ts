@@ -203,9 +203,13 @@ function executeNestedCompositionWithSpec<
     `Executing nested composition with spec: ${compositionName}`
   );
 
-  // Create a unique context for this nested composition execution
+  // Create a unique context for this nested composition execution.
+  // Propagate isReExecution so deeply nested compositions (3+ levels)
+  // also skip the KRO analysis pass during direct-mode re-execution.
   const uniqueExecutionName = `${compositionName}-execution-${++globalCompositionCounter}`;
-  const executionContext = createCompositionContext(uniqueExecutionName);
+  const executionContext = createCompositionContext(uniqueExecutionName,
+    parentContext.isReExecution ? { isReExecution: true } : undefined
+  );
 
   // Execute the composition with the provided spec.
   //
