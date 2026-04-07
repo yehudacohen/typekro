@@ -220,7 +220,13 @@ function executeNestedCompositionWithSpec<
   const isReExec = parentContext.isReExecution;
   const result = runWithCompositionContext(executionContext, () => {
     if (isReExec) {
-      // Lightweight path: run composition fn directly, capture resources
+      // Lightweight path: run composition fn directly, capture resources.
+      // SAFETY: This object does NOT conform to the full TypedResourceGraph
+      // interface. It's only consumed by executeNestedCompositionWithSpec
+      // which reads .resources for merging into the parent context and
+      // .status for the NestedCompositionResource return value. No other
+      // TypedResourceGraph properties (serialization metadata, etc.) are
+      // accessed. The double cast is intentional.
       const status = compositionFn(spec);
       return {
         resources: executionContext.resources,
@@ -780,10 +786,17 @@ export function kubernetesComposition<
       }
     }
 
-    // Add the status proxy for cross-composition references
-    // Use forCompositionProperty=true to get KubernetesRef-based proxy
+    // Add the status proxy for cross-composition references.
+    // During re-execution, nestedResult is undefined (definition pass
+    // skipped). The static .status on the callable is not used in that
+    // case — callers invoke the callable which returns a
+    // NestedCompositionResource with real status values. The proxy
+    // here is only relevant for the KRO analysis pass where the
+    // callable's .status is read for graph serialization.
     Object.defineProperty(callableComposition, 'status', {
-      value: createStatusProxy<TStatus>(compositionName, parentContext, nestedResult ?? {} as any, true),
+      value: nestedResult
+        ? createStatusProxy<TStatus>(compositionName, parentContext, nestedResult, true)
+        : {},  // Re-execution: unused — status comes from the callable's return value
       enumerable: true,
       configurable: false,
       writable: false,

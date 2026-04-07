@@ -13,7 +13,6 @@
  * @module
  */
 
-import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { isTestEnvironment } from '../../../core/config/index.js';
 import { TypeKroError } from '../../../core/errors.js';
 import { getComponentLogger } from '../../../core/logging/index.js';
@@ -61,10 +60,12 @@ export interface ResolvedAdminCredentials {
  * @returns Resolved admin and viewer keys.
  */
 export function resolveAdminCredentials(
-  specCredentials?: { admin?: string; viewer?: string } | undefined
+  specCredentials?: { admin?: string; viewer?: string } | undefined,
+  options?: { allowDefaults?: boolean }
 ): ResolvedAdminCredentials {
-  const admin = resolveKey(specCredentials?.admin, 'APISIX_ADMIN_KEY', DEV_DEFAULT_ADMIN_KEY);
-  const viewer = resolveKey(specCredentials?.viewer, 'APISIX_VIEWER_KEY', DEV_DEFAULT_VIEWER_KEY);
+  const allowDefaults = options?.allowDefaults;
+  const admin = resolveKey(specCredentials?.admin, 'APISIX_ADMIN_KEY', DEV_DEFAULT_ADMIN_KEY, allowDefaults);
+  const viewer = resolveKey(specCredentials?.viewer, 'APISIX_VIEWER_KEY', DEV_DEFAULT_VIEWER_KEY, allowDefaults);
 
   return { admin, viewer };
 }
@@ -74,7 +75,7 @@ export function resolveAdminCredentials(
  *
  * @internal
  */
-function resolveKey(specValue: string | undefined, envVarName: string, devDefault: string): string {
+function resolveKey(specValue: string | undefined, envVarName: string, devDefault: string, allowDefaults?: boolean): string {
   // 1. Explicit spec value takes highest priority
   if (specValue) {
     return specValue;
@@ -86,12 +87,10 @@ function resolveKey(specValue: string | undefined, envVarName: string, devDefaul
     return envValue;
   }
 
-  // 3. Default credentials — allowed in test environments and during
-  //    composition definition (the module-level `kubernetesComposition()`
-  //    call that runs with proxy spec values for KRO graph analysis).
-  //    Only throw in production when this is an actual deploy call.
-  const isDefinitionPass = !!getCurrentCompositionContext();
-  if (!isTestEnvironment() && !isDefinitionPass) {
+  // 3. Default credentials — allowed in test environments and when the
+  //    caller explicitly opts in via allowDefaults (e.g., during
+  //    composition definition where the values are placeholders).
+  if (!isTestEnvironment() && !allowDefaults) {
     throw new TypeKroError(
       `APISIX admin credentials not configured. ` +
         `Set the ${envVarName} environment variable or pass gateway.adminCredentials in the spec. ` +

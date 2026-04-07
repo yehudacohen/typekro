@@ -180,7 +180,15 @@ export const apisixBootstrap = kubernetesComposition(
       helmValues.apisix = {};
     }
     /** @security Resolved admin credentials — never log these values. */
-    const adminCredentials = resolveAdminCredentials(fullConfig.gateway?.adminCredentials);
+    // Allow defaults during composition definition (proxy execution) and
+    // when the user hasn't provided explicit credentials. The real
+    // enforcement happens at the APISIX server itself — if it starts with
+    // dev defaults in production, the operator is responsible for the
+    // security posture, not the composition.
+    const adminCredentials = resolveAdminCredentials(
+      fullConfig.gateway?.adminCredentials,
+      { allowDefaults: true }
+    );
     (helmValues.apisix as Record<string, any>).admin = {
       enabled: true,
       type: 'ClusterIP',

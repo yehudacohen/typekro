@@ -1,3 +1,4 @@
+import type { V1EnvFromSource } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { cnpgBootstrap } from '../../cnpg/compositions/cnpg-bootstrap.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
@@ -288,9 +289,9 @@ export const webAppWithProcessing = kubernetesComposition(
     };
 
     // Merge user-provided envFrom with the inngest credentials Secret
-    const appEnvFrom: import('@kubernetes/client-node').V1EnvFromSource[] = [
+    const appEnvFrom: V1EnvFromSource[] = [
       { secretRef: { name: inngestSecretName } },
-      ...((spec.app.envFrom ?? []) as import('@kubernetes/client-node').V1EnvFromSource[]),
+      ...((spec.app.envFrom ?? []) as V1EnvFromSource[]),
     ];
 
     const app = simple.Deployment({
