@@ -1,6 +1,7 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
 import { cnpgBootstrap } from '../../cnpg/compositions/cnpg-bootstrap.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
+import { secret } from '../../kubernetes/config/secret.js';
 import { pooler } from '../../cnpg/resources/pooler.js';
 import { inngestBootstrap } from '../../inngest/compositions/inngest-bootstrap.js';
 import { simple } from '../../simple/index.js';
@@ -254,6 +255,26 @@ export const webAppWithProcessing = kubernetesComposition(
       },
     });
 
+    // ── Inngest credentials Secret ──────────────────────────────────────
+    //
+    // The Inngest event key and signing key are sensitive — store them
+    // in a K8s Secret rather than plaintext in the Deployment env.
+    // Both the app and the Inngest server need these: the app sends
+    // events with the event key and validates webhooks with the signing
+    // key; the Inngest server uses them to authenticate SDK connections.
+    const inngestSecretName = `${spec.name}-inngest-credentials`;
+    secret({
+      metadata: {
+        name: inngestSecretName,
+        namespace: ns,
+      },
+      stringData: {
+        INNGEST_EVENT_KEY: spec.processing.eventKey,
+        INNGEST_SIGNING_KEY: spec.processing.signingKey,
+      },
+      id: 'inngestCredentials',
+    });
+
     // ── Application ─────────────────────────────────────────────────────
 
     const appEnv: Record<string, string> = {
@@ -261,10 +282,16 @@ export const webAppWithProcessing = kubernetesComposition(
       VALKEY_URL: `redis://${cache.metadata.name}:6379`,
       REDIS_URL: `redis://${cache.metadata.name}:6379`,
       INNGEST_BASE_URL: `http://${spec.name}-inngest:8288`,
-      INNGEST_EVENT_KEY: spec.processing.eventKey,
-      INNGEST_SIGNING_KEY: spec.processing.signingKey,
+      // INNGEST_EVENT_KEY and INNGEST_SIGNING_KEY injected via the
+      // inngest credentials Secret (envFrom below) — not plaintext.
       ...spec.app.env,
     };
+
+    // Merge user-provided envFrom with the inngest credentials Secret
+    const appEnvFrom: import('@kubernetes/client-node').V1EnvFromSource[] = [
+      { secretRef: { name: inngestSecretName } },
+      ...((spec.app.envFrom ?? []) as import('@kubernetes/client-node').V1EnvFromSource[]),
+    ];
 
     const app = simple.Deployment({
       name: spec.name,
@@ -273,7 +300,7 @@ export const webAppWithProcessing = kubernetesComposition(
       replicas: appReplicas,
       ports: [{ containerPort: appPort }],
       env: appEnv,
-      ...(spec.app.envFrom && { envFrom: spec.app.envFrom as import('@kubernetes/client-node').V1EnvFromSource[] }),
+      envFrom: appEnvFrom,
       id: 'app',
     });
 
