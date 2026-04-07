@@ -176,6 +176,9 @@ export async function computeContentHash(contextPath: string, dockerfilePath: st
   // enumerates all files before filtering — critical for repos with
   // multi-GB node_modules.
   const files: string[] = [];
+  // `dir` is relative to contextPath; `prefix` is the slash-joined
+  // path used for ignore matching and file collection. readdir always
+  // receives an absolute path via join(contextPath, dir).
   const walkDir = async (dir: string, prefix: string): Promise<void> => {
     const entries = await readdir(join(contextPath, dir), { withFileTypes: true });
     for (const entry of entries) {
@@ -201,8 +204,13 @@ export async function computeContentHash(contextPath: string, dockerfilePath: st
       for await (const chunk of stream) {
         hasher.update(chunk);
       }
-    } catch {
-      // Skip unreadable files (broken symlinks, permission errors)
+    } catch (err) {
+      // Skip unreadable files (broken symlinks, permission errors).
+      // Log at debug so build hash inconsistencies can be diagnosed.
+      logger.debug('Skipping unreadable file during content hash', {
+        file,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

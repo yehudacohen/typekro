@@ -99,6 +99,16 @@ function resolveKey(specValue: string | undefined, envVarName: string, devDefaul
     );
   }
 
+  // Warn when using defaults outside test environments — this catches
+  // production deploys where allowDefaults is true (composition definition)
+  // but credentials weren't provided via spec or env vars.
+  if (!isTestEnvironment() && allowDefaults && !devDefaultWarningEmitted) {
+    logger.warn(
+      `Using default ${envVarName} — set env var or pass gateway.adminCredentials for production`,
+      { envVar: envVarName }
+    );
+  }
+
   if (!devDefaultWarningEmitted) {
     devDefaultWarningEmitted = true;
     logger.warn(

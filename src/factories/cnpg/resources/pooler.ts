@@ -107,7 +107,7 @@ function createPoolerResource(
       spec: fullConfig.spec,
       ...(fullConfig.id && { id: fullConfig.id }),
     },
-    { scope: 'namespaced' }
+    { scope: 'namespaced', dnsAddressable: true }
   ).withReadinessEvaluator(poolerReadinessEvaluator) as Enhanced<
     PoolerConfig['spec'],
     PoolerStatus

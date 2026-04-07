@@ -131,7 +131,7 @@ function createValkeyResource(
       spec: crdSpec as typeof spec,
       ...(config.id && { id: config.id }),
     },
-    { scope: 'namespaced' }
+    { scope: 'namespaced', dnsAddressable: true }
   ).withReadinessEvaluator(valkeyReadinessEvaluator) as Enhanced<
     ValkeyConfig['spec'],
     ValkeyStatus

@@ -136,7 +136,7 @@ function createClusterResource(
       spec: fullConfig.spec,
       ...(fullConfig.id && { id: fullConfig.id }),
     },
-    { scope: 'namespaced' }
+    { scope: 'namespaced', dnsAddressable: true }
   ).withReadinessEvaluator(clusterReadinessEvaluator) as Enhanced<
     ClusterConfig['spec'],
     ClusterStatus

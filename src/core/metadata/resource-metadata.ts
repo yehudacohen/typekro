@@ -46,6 +46,17 @@ export interface ResourceMetadata {
   /** Kubernetes scope — 'cluster' for cluster-scoped resources (Namespace, ClusterRole, etc.) */
   scope?: 'namespaced' | 'cluster';
   /**
+   * Whether this resource creates a DNS-addressable service in the
+   * cluster. When `true`, the dependency resolver will detect implicit
+   * dependencies from other resources whose env vars or spec fields
+   * reference this resource's `metadata.name` as a hostname.
+   *
+   * Set automatically by factory functions that create DNS names:
+   * `service()`, `deployment()`, `statefulSet()`, and CRD factories
+   * like `valkey()`, `cluster()`, `pooler()`.
+   */
+  dnsAddressable?: boolean;
+  /**
    * Deprecated alias for `scopes`. `lifecycle: 'shared'` is equivalent to
    * `scopes: ['shared']`. New code should use `scopes` directly.
    */

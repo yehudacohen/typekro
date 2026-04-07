@@ -9,7 +9,7 @@ import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { KUBERNETES_REF_BRAND, KUBERNETES_REF_MARKER_PATTERN } from '../constants/brands.js';
 import { CircularDependencyError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
-import { getResourceId } from '../metadata/index.js';
+import { getMetadataField, getResourceId } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
 import type { DeployableK8sResource, Enhanced } from '../types/kubernetes.js';
 import { DependencyGraph } from './graph.js';
@@ -111,28 +111,32 @@ export class DependencyResolver {
     // graph. Without this, resources that reference nested composition
     // status (which resolves to real strings in direct mode) would deploy
     // in parallel with the services they depend on.
-    const serviceNames = new Map<string, string>(); // service name → resource graph ID
-    const SERVICE_KINDS = new Set(['Service', 'StatefulSet', 'Deployment', 'Valkey', 'Cluster', 'Pooler']);
+    // Detect DNS-addressable resources: resources marked with
+    // `dnsAddressable: true` in their metadata (set by factory functions
+    // like service(), deployment(), valkey(), cluster(), etc.).
+    // Precompile regex patterns once per service name to avoid creating
+    // a new RegExp on every (resource × stringValue × serviceName) pair.
+    const servicePatterns = new Map<string, { id: string; pattern: RegExp }>();
     for (const resource of resources) {
-      if (resource.metadata?.name && SERVICE_KINDS.has(resource.kind ?? '')) {
+      const isDnsAddressable = getMetadataField(resource, 'dnsAddressable');
+      if (isDnsAddressable && resource.metadata?.name) {
         const name = String(resource.metadata.name);
         if (name && !name.includes('$')) {
-          serviceNames.set(name, resource.id);
+          const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          servicePatterns.set(name, {
+            id: resource.id,
+            pattern: new RegExp(`(?:^|[/:@.])${escaped}(?:[/:@.]|$)`),
+          });
         }
       }
     }
 
-    if (serviceNames.size > 0) {
+    if (servicePatterns.size > 0) {
       for (const resource of resources) {
-        // Collect all string values from env vars and spec fields
         const stringValues = this.collectStringValues(resource);
         for (const value of stringValues) {
-          for (const [svcName, svcResourceId] of serviceNames) {
-            // Use word-boundary matching to avoid false positives:
-            // "app" in "happy" or "myapp" should NOT match. The service
-            // name must appear delimited by URI separators (://@.), path
-            // separators (/), port colons, or string boundaries.
-            if (svcResourceId !== resource.id && matchesServiceName(value, svcName)) {
+          for (const [svcName, { id: svcResourceId, pattern }] of servicePatterns) {
+            if (svcResourceId !== resource.id && pattern.test(value)) {
               try {
                 graph.addEdge(resource.id, svcResourceId);
                 this.logger.debug('Added implicit service-name dependency', {
@@ -158,6 +162,8 @@ export class DependencyResolver {
    * detection. Only traverses `spec` — not `metadata` — to avoid
    * false positives from label values and annotation content.
    */
+  // TODO: consider adding a depth limit for deeply nested specs (e.g.,
+  // large Helm values blobs) to bound traversal time.
   private collectStringValues(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>
   ): string[] {
@@ -423,29 +429,6 @@ export interface DeploymentPlan {
   levels: string[][]; // Resources grouped by dependency level
   totalResources: number;
   maxParallelism: number;
-}
-
-/**
- * Check if a service name appears as a hostname in a string value,
- * using word-boundary-aware matching to avoid false positives.
- *
- * Matches service names delimited by URI separators (://, @, /),
- * port colons, or string boundaries. Does NOT match substrings
- * inside other words (e.g., "app" inside "happy" or "myapp").
- *
- * Examples:
- *   matchesServiceName("redis://my-cache:6379", "my-cache")  → true
- *   matchesServiceName("postgresql://app@db-pooler:5432", "db-pooler") → true
- *   matchesServiceName("my-cache", "my-cache")               → true
- *   matchesServiceName("happy", "app")                       → false
- *   matchesServiceName("myapp:latest", "app")                → false
- */
-function matchesServiceName(value: string, serviceName: string): boolean {
-  // Escape regex special chars in the service name
-  const escaped = serviceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Match when delimited by URI/hostname boundaries or string edges
-  const pattern = new RegExp(`(?:^|[/:@.])${escaped}(?:[/:@.]|$)`);
-  return pattern.test(value);
 }
 
 // CircularDependencyError is now imported from ../errors.js

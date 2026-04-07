@@ -410,6 +410,15 @@ export interface CreateResourceOptions {
    * - 'cluster': Resource is cluster-scoped and cannot have a namespace
    */
   scope?: 'namespaced' | 'cluster';
+  /**
+   * Whether this resource creates a DNS-addressable service in the
+   * cluster (e.g., a Service, StatefulSet headless service, or a CRD
+   * that creates Services during reconciliation). When `true`, the
+   * dependency resolver detects implicit dependencies from other
+   * resources whose env vars reference this resource's `metadata.name`
+   * as a hostname.
+   */
+  dnsAddressable?: boolean;
 }
 
 /**
@@ -511,6 +520,12 @@ export function createResource<TSpec extends object, TStatus extends object>(
   // Store resource scope for readiness polling (cluster-scoped resources skip namespace)
   if (options?.scope) {
     setMetadataField(enhanced, 'scope', options.scope);
+  }
+
+  // Mark DNS-addressable resources so the dependency resolver can detect
+  // implicit service-name dependencies from env vars and connection strings.
+  if (options?.dnsAddressable) {
+    setMetadataField(enhanced, 'dnsAddressable', true);
   }
 
   // Auto-register with composition context if active (but not for external references)

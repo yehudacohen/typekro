@@ -41,7 +41,7 @@ export function deployment(
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: resource.metadata ?? { name: 'unnamed-deployment' },
-  }).withReadinessEvaluator((liveResource: V1Deployment): ResourceStatus => {
+  }, { dnsAddressable: true }).withReadinessEvaluator((liveResource: V1Deployment): ResourceStatus => {
     try {
       const status = liveResource.status;
 
