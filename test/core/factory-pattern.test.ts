@@ -294,6 +294,10 @@ describe('Factory Pattern Types', () => {
         toYaml(_spec) {
           return 'mock deployment yaml';
         },
+
+        createResourceGraphForInstance(_spec) {
+          return { name: 'test', resources: [], dependencyGraph: {} } as any;
+        },
       };
 
       expect(mockDirectFactory.mode).toBe('direct');
@@ -517,6 +521,10 @@ describe('Factory Pattern Types', () => {
 
         toYaml(_spec) {
           return 'yaml';
+        },
+
+        createResourceGraphForInstance(_spec) {
+          return { name: 'test', resources: [], dependencyGraph: {} } as any;
         },
       };
 

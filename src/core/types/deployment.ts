@@ -694,7 +694,9 @@ export interface DirectResourceFactory<
   // Direct-specific features
   rollback(): Promise<RollbackResult>;
   toDryRun(spec: TSpec): Promise<DeploymentResult>;
-  toYaml(spec: TSpec): string; // Generate instance deployment YAML
+  toYaml(spec: TSpec): string;
+  /** Build the resolved resource graph for an instance spec. */
+  createResourceGraphForInstance(spec: TSpec): DeploymentResourceGraph;
 }
 
 export interface KroResourceFactory<
