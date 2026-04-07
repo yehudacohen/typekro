@@ -162,19 +162,19 @@ export class DependencyResolver {
    * detection. Only traverses `spec` — not `metadata` — to avoid
    * false positives from label values and annotation content.
    */
-  // TODO: consider adding a depth limit for deeply nested specs (e.g.,
-  // large Helm values blobs) to bound traversal time.
   private collectStringValues(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>
   ): string[] {
+    const MAX_DEPTH = 20;
     const values: string[] = [];
-    const traverse = (obj: unknown): void => {
+    const traverse = (obj: unknown, depth = 0): void => {
+      if (depth > MAX_DEPTH) return;
       if (typeof obj === 'string' && obj.length > 0 && obj.length < 500) {
         values.push(obj);
       } else if (Array.isArray(obj)) {
-        for (const item of obj) traverse(item);
+        for (const item of obj) traverse(item, depth + 1);
       } else if (obj !== null && typeof obj === 'object') {
-        for (const value of Object.values(obj)) traverse(value);
+        for (const value of Object.values(obj)) traverse(value, depth + 1);
       }
     };
     // Focus on spec.template.spec.containers (env vars) and metadata

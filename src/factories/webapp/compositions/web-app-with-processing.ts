@@ -288,7 +288,11 @@ export const webAppWithProcessing = kubernetesComposition(
       ...spec.app.env,
     };
 
-    // Merge user-provided envFrom with the inngest credentials Secret
+    // Merge user-provided envFrom with the inngest credentials Secret.
+    // The inngest Secret is listed FIRST so user-provided sources can
+    // override INNGEST_EVENT_KEY / INNGEST_SIGNING_KEY if they provide
+    // their own Secret containing those keys (last-write-wins in K8s
+    // envFrom ordering).
     const appEnvFrom: V1EnvFromSource[] = [
       { secretRef: { name: inngestSecretName } },
       ...((spec.app.envFrom ?? []) as V1EnvFromSource[]),

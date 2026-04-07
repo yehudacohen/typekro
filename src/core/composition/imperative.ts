@@ -187,6 +187,18 @@ function generateUniqueClosureId(
 /**
  * Execute a nested composition with a specific spec (when called as a function)
  */
+
+/**
+ * Narrow result type for the re-execution lightweight path. Only the
+ * fields that executeNestedCompositionWithSpec actually consumes are
+ * required — this ensures compile-time failures if new required fields
+ * are added to TypedResourceGraph that we'd silently miss.
+ */
+interface ReExecutionResult<TSpec, TStatus> {
+  resources: Record<string, Enhanced<unknown, unknown>>;
+  status: MagicAssignableShape<TStatus> | undefined;
+}
+
 function executeNestedCompositionWithSpec<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
@@ -221,18 +233,14 @@ function executeNestedCompositionWithSpec<
   const result = runWithCompositionContext(executionContext, () => {
     if (isReExec) {
       // Lightweight path: run composition fn directly, capture resources.
-      // SAFETY: This object does NOT conform to the full TypedResourceGraph
-      // interface. It's only consumed by executeNestedCompositionWithSpec
-      // which reads .resources for merging into the parent context and
-      // .status for the NestedCompositionResource return value. No other
-      // TypedResourceGraph properties (serialization metadata, etc.) are
-      // accessed. The double cast is intentional.
+      // Returns a ReExecutionResult — a narrow type with only the fields
+      // that executeNestedCompositionWithSpec actually reads (.resources
+      // for merging, .status for the NestedCompositionResource return).
       const status = compositionFn(spec);
       return {
         resources: executionContext.resources,
         status,
-        _compositionFn: compositionFn,
-      } as unknown as TypedResourceGraph<TSpec, TStatus>;
+      } as ReExecutionResult<TSpec, TStatus> as unknown as TypedResourceGraph<TSpec, TStatus>;
     }
     return executeCompositionCore(
       definition,
