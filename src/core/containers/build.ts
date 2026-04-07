@@ -180,10 +180,13 @@ export async function computeContentHash(contextPath: string, dockerfilePath: st
     const entries = await readdir(join(contextPath, dir), { withFileTypes: true });
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      // Check ignore BEFORE descending — this is the perf optimization
+      // that avoids traversing node_modules/ entirely.
       if (ig.ignores(relativePath + (entry.isDirectory() ? '/' : ''))) continue;
       if (entry.isDirectory()) {
         await walkDir(join(dir, entry.name), relativePath);
-      } else {
+      } else if (entry.isFile()) {
+        // Only include regular files — skip symlinks, sockets, etc.
         files.push(relativePath);
       }
     }
@@ -192,12 +195,14 @@ export async function computeContentHash(contextPath: string, dockerfilePath: st
   files.sort();
 
   for (const file of files) {
-    // Hash the file path (so renames change the hash)
     hasher.update(file);
-    // Stream file contents through the hasher (binary-safe, memory-efficient)
-    const stream = Bun.file(join(contextPath, file)).stream();
-    for await (const chunk of stream) {
-      hasher.update(chunk);
+    try {
+      const stream = Bun.file(join(contextPath, file)).stream();
+      for await (const chunk of stream) {
+        hasher.update(chunk);
+      }
+    } catch {
+      // Skip unreadable files (broken symlinks, permission errors)
     }
   }
 

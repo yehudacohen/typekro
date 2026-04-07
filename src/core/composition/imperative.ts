@@ -776,7 +776,15 @@ export function kubernetesComposition<
     }) as CallableComposition<TSpec, TStatus>;
 
     // Copy properties from the TypedResourceGraph to the callable composition.
-    // During re-execution, nestedResult is undefined (definition pass skipped).
+    //
+    // INVARIANT: During re-execution, nestedResult is undefined (definition
+    // pass skipped) and the callable has no graph properties (.resources,
+    // ._compositionFn, etc.). This is safe because during re-execution
+    // the callable is always INVOKED (not just read) — the outer
+    // composition function calls webAppWithProcessing({...}) which
+    // executes the callable and returns a NestedCompositionResource with
+    // real status values. No code path reads graph properties off the
+    // callable itself during re-execution.
     if (nestedResult) {
       for (const key of Object.getOwnPropertyNames(nestedResult)) {
         const descriptor = Object.getOwnPropertyDescriptor(nestedResult, key);
