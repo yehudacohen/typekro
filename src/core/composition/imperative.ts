@@ -194,7 +194,7 @@ function generateUniqueClosureId(
  * required — this ensures compile-time failures if new required fields
  * are added to TypedResourceGraph that we'd silently miss.
  */
-interface ReExecutionResult<TSpec, TStatus> {
+interface ReExecutionResult<TStatus> {
   resources: Record<string, Enhanced<unknown, unknown>>;
   status: MagicAssignableShape<TStatus> | undefined;
 }
@@ -240,7 +240,7 @@ function executeNestedCompositionWithSpec<
       return {
         resources: executionContext.resources,
         status,
-      } as ReExecutionResult<TSpec, TStatus> as unknown as TypedResourceGraph<TSpec, TStatus>;
+      } as ReExecutionResult<TStatus> as unknown as TypedResourceGraph<TSpec, TStatus>;
     }
     return executeCompositionCore(
       definition,
