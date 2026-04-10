@@ -1311,11 +1311,14 @@ function createTypedResourceGraph<
       // Collect nested composition status CEL mappings from the composition context.
       // These enable inlining the inner composition's real CEL expressions instead
       // of referencing virtual nested composition IDs.
-      // Extract nested composition status CEL mappings attached by executeCompositionCore.
-      // These are on the raw statusMappings (capturedStatus from the composition function),
-      // not on the optimizedStatusMappings (which is a processed copy).
+      // Extract nested composition status CEL mappings attached by
+      // executeCompositionCore via Reflect.set. Must use
+      // Object.getOwnPropertyDescriptor to bypass the Enhanced proxy's
+      // get handler which would return a KubernetesRef instead of the
+      // actual Record<string, string>.
+      const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
       const nestedStatusCel: Record<string, string> =
-        (statusMappings as Record<string, unknown>).__nestedStatusCel as Record<string, string> ?? {};
+        (nestedStatusDescriptor?.value as Record<string, string>) ?? {};
 
       serializationLogger.debug('Nested status CEL extraction', {
         hasNestedStatusCel: Object.keys(nestedStatusCel).length > 0,
