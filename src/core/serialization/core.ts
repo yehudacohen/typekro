@@ -867,8 +867,16 @@ function celValueRepr(value: unknown): string {
     if (value.includes('__KUBERNETES_REF_')) {
       return markerStringToCelExpr(value);
     }
-    // Plain string literal — escape for CEL embedding
-    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    // Plain string literal — escape for CEL embedding.
+    // Must handle backslash, double-quote, newline, carriage return, and
+    // tab — same escapes as escapeCelStringLiteral in kro-post-processing.
+    return `"${value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t')
+    }"`;
   }
   return '""';
 }

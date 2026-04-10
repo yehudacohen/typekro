@@ -587,7 +587,12 @@ function applyNullishDefaults(
     const existingType = current[fieldName];
     if (typeof existingType !== 'string') continue;
 
-    const defaultStr = typeof value === 'string' ? `"${value}"` : String(value);
+    // Escape special characters in string defaults so they survive
+    // the KRO SimpleSchema default= annotation format. Without this,
+    // multiline strings (e.g., YAML config blobs) break the parser.
+    const defaultStr = typeof value === 'string'
+      ? `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}"`
+      : String(value);
     const hasDefault = existingType.includes('default=');
     if (!hasDefault) {
       current[fieldName] = `${existingType} | default=${defaultStr}`;
