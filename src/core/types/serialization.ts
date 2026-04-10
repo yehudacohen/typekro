@@ -77,6 +77,8 @@ export interface TernaryConditional {
 export interface KroSimpleSchemaWithMetadata extends KroSimpleSchema {
   readonly __ternaryConditionals?: TernaryConditional[];
   readonly __omitFields?: string[];
+  /** Nested composition status CEL mappings for virtual ID resolution. */
+  readonly __nestedStatusCel?: Record<string, string>;
 }
 
 export interface KroFieldDefinition {
@@ -317,6 +319,14 @@ export interface SerializationContext {
    * is required.
    */
   omitFields?: ReadonlySet<string>;
+  /**
+   * Nested composition status CEL mappings. When a resource template
+   * references a virtual nested composition ID (e.g.,
+   * `innerService1.status.serviceUrl`), this map provides the real
+   * CEL expression to inline. Keys are
+   * `__nestedStatus:<compositionId>:<field>`, values are CEL strings.
+   */
+  nestedStatusCel?: Record<string, string>;
 }
 
 export interface ResourceDependency {

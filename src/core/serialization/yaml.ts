@@ -575,11 +575,13 @@ export function serializeResourceGraphToYaml(
     : undefined;
 
   // Create serialization context
+  const nestedStatusCel = schemaWithMeta?.__nestedStatusCel;
   const context: SerializationContext = {
     celPrefix: 'resources', // Default Kro prefix, but now configurable
     ...(options?.namespace && { namespace: options.namespace }),
     resourceIdStrategy: 'deterministic',
     ...(omitFields && { omitFields }),
+    ...(nestedStatusCel && { nestedStatusCel }),
   };
 
   // 1. Use embedded resource IDs and build dependency graph

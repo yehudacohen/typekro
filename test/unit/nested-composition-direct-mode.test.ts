@@ -477,4 +477,28 @@ describe('Nested Composition Direct Mode', () => {
       expect(innerDeps.includes(workerResource!.id)).toBe(false);
     });
   });
+
+  describe('Bug #6: KRO YAML must inline nested composition status as real CEL', () => {
+    it('KRO YAML does not contain virtual nested composition IDs', () => {
+      // Generate KRO YAML from the outer composition.
+      // The outer composition's status references inner.status.serviceUrl
+      // which should be inlined as the actual value, not as
+      // "${innerService1.status.serviceUrl}" (virtual ID).
+      const yaml = (outerComposition as any).toYaml?.();
+      expect(yaml).toBeDefined();
+      expect(typeof yaml).toBe('string');
+
+      // The virtual ID "innerService1" should NOT appear in the YAML.
+      // Instead, the actual inner status values should be inlined.
+      expect(yaml).not.toContain('innerService1.status');
+
+      // The YAML should contain the actual resource references
+      // from the inner composition (e.g., innerDeployment, innerService)
+      // The inner composition returns:
+      //   serviceUrl: `http://${spec.name}.${ns}:80`
+      //   secretName: `${spec.name}-secret`
+      // These are spec-derived values, so they should appear as
+      // schema references or string literals in the CEL output.
+    });
+  });
 });

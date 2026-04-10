@@ -67,11 +67,36 @@ function maybeWrapWithOmit(
 
 /**
  * Wrap a {@link KubernetesRef} in `${…}` for Kro YAML output.
+ *
+ * When the ref points to a nested composition's virtual status ID
+ * (e.g., `innerService1.status.serviceUrl`), resolves it to the
+ * actual inner CEL expression using `context.nestedStatusCel`.
  */
 function generateCelExpression(
   ref: KubernetesRef<unknown>,
   context?: SerializationContext
 ): string {
+  // Check if this is a nested composition status reference that should
+  // be inlined. Virtual IDs like "webAppWithProcessing1" don't exist
+  // as resources in the KRO RGD — the real CEL must be substituted.
+  if (context?.nestedStatusCel && (ref as { __nestedComposition?: boolean }).__nestedComposition) {
+    const fieldName = ref.fieldPath.replace(/^status\./, '');
+    const exactKey = `__nestedStatus:${ref.resourceId}:${fieldName}`;
+    if (context.nestedStatusCel[exactKey]) {
+      return `\${${context.nestedStatusCel[exactKey]}}`;
+    }
+    // Try base-name match (strip trailing digits)
+    const refBase = ref.resourceId.replace(/\d+$/, '');
+    for (const [key, cel] of Object.entries(context.nestedStatusCel)) {
+      const parts = key.split(':');
+      if (parts.length !== 3 || parts[2] !== fieldName) continue;
+      const keyBase = parts[1]!.replace(/\d+$/, '');
+      if (refBase === keyBase) {
+        return `\${${cel}}`;
+      }
+    }
+  }
+
   const expression = getInnerCelPath(ref);
   const body = maybeWrapWithOmit(expression, false, context?.omitFields);
   return `\${${body}}`;

@@ -1338,6 +1338,13 @@ function createTypedResourceGraph<
         kroSchema.group = definition.group;
       }
 
+      // Attach nested status CEL mappings to the schema so the YAML
+      // serializer can inline them when resolving virtual composition
+      // IDs in resource templates (not just in the status section).
+      if (Object.keys(nestedStatusCel).length > 0) {
+        (kroSchema as any).__nestedStatusCel = nestedStatusCel;
+      }
+
       // Inject status overrides into schema status section.
       // Convert "..." to '...' in CEL string literals for YAML compatibility.
       const statusOverrides = compositionAnalysis?.statusOverrides ?? [];
