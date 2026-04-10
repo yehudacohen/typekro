@@ -346,6 +346,20 @@ export function serializeStatusMappingsToCel(
               return `(${cel})`;
             }
           }
+          // Last resort: the variable name (e.g., "stack") has no structural
+          // relationship to the composition baseId (e.g., "webAppWithProcessing1").
+          // Try matching by field name alone — if exactly one nested composition
+          // provides this field, use it.
+          const fieldMatches = Object.entries(nestedStatusCel).filter(([k]) => {
+            const p = k.split(':');
+            return p.length === 3 && p[2] === field;
+          });
+          if (fieldMatches.length === 1) {
+            logger.debug('Nested status CEL resolved by field-name-only match', {
+              compId, field, matchedKey: fieldMatches[0]![0],
+            });
+            return `(${fieldMatches[0]![1]})`;
+          }
           return `${compId}.status.${field}`;
         });
       }
@@ -403,6 +417,9 @@ export function serializeStatusMappingsToCel(
   }
 
   for (const [fieldName, fieldValue] of Object.entries(statusMappings)) {
+    // Skip internal metadata fields — these are consumed during
+    // serialization, not emitted as status fields.
+    if (fieldName.startsWith('__')) continue;
     celExpressions[fieldName] = serializeValue(fieldValue);
   }
 
