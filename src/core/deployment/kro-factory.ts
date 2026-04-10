@@ -865,6 +865,16 @@ ${Object.entries(spec as Record<string, any>)
       this.getNestedStatusCel()
     );
 
+    // Attach nested status CEL mappings as non-enumerable property so
+    // serializeResourceGraphToYaml can inline virtual composition IDs.
+    const nestedCel = this.getNestedStatusCel();
+    if (nestedCel && Object.keys(nestedCel).length > 0) {
+      Object.defineProperty(kroSchema, '__nestedStatusCel', {
+        value: nestedCel,
+        enumerable: false,
+      });
+    }
+
     // Apply ternary conditionals to this.resources BEFORE serialization.
     // Mutates in place (JSON.clone is NOT safe here because it strips
     // proxy-valued fields like `metadata.namespace` that are KubernetesRef
