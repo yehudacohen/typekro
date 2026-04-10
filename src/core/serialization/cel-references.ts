@@ -348,17 +348,17 @@ export function serializeStatusMappingsToCel(
           }
           // Last resort: the variable name (e.g., "stack") has no structural
           // relationship to the composition baseId (e.g., "webAppWithProcessing1").
-          // Try matching by field name alone — if exactly one nested composition
-          // provides this field, use it.
-          const fieldMatches = Object.entries(nestedStatusCel).filter(([k]) => {
-            const p = k.split(':');
-            return p.length === 3 && p[2] === field;
-          });
-          if (fieldMatches.length === 1) {
-            logger.debug('Nested status CEL resolved by field-name-only match', {
-              compId, field, matchedKey: fieldMatches[0]![0],
-            });
-            return `(${fieldMatches[0]![1]})`;
+          // Try matching by field name — use the first nested composition that
+          // provides this field. This handles the common case where the variable
+          // name is arbitrary and can't be inferred from the composition name.
+          for (const [key, cel] of Object.entries(nestedStatusCel)) {
+            const p = key.split(':');
+            if (p.length === 3 && p[2] === field) {
+              logger.debug('Nested status CEL resolved by field-name match', {
+                compId, field, matchedKey: key,
+              });
+              return `(${cel})`;
+            }
           }
           return `${compId}.status.${field}`;
         });

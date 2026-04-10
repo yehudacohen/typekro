@@ -1344,11 +1344,16 @@ function createTypedResourceGraph<
         kroSchema.group = definition.group;
       }
 
-      // Attach nested status CEL mappings to the schema so the YAML
-      // serializer can inline them when resolving virtual composition
-      // IDs in resource templates (not just in the status section).
+      // Attach nested status CEL mappings to the schema as a non-enumerable
+      // property (same pattern as __ternaryConditionals, __omitFields).
+      // Non-enumerable so it doesn't appear in the YAML output, but
+      // accessible via KroSimpleSchemaWithMetadata for the YAML serializer
+      // to resolve virtual composition IDs in resource templates.
       if (Object.keys(nestedStatusCel).length > 0) {
-        (kroSchema as any).__nestedStatusCel = nestedStatusCel;
+        Object.defineProperty(kroSchema, '__nestedStatusCel', {
+          value: nestedStatusCel,
+          enumerable: false,
+        });
       }
 
       // Inject status overrides into schema status section.
