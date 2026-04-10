@@ -180,11 +180,12 @@ export const apisixBootstrap = kubernetesComposition(
       helmValues.apisix = {};
     }
     /** @security Resolved admin credentials — never log these values. */
-    // Allow defaults during composition definition (proxy execution) and
-    // when the user hasn't provided explicit credentials. The real
-    // enforcement happens at the APISIX server itself — if it starts with
-    // dev defaults in production, the operator is responsible for the
-    // security posture, not the composition.
+    // allowDefaults: true permits dev-default credentials when neither the
+    // spec nor env vars provide real keys. This is necessary because the
+    // composition function runs during the definition pass (with proxy
+    // values, no real credentials available). A warning is emitted outside
+    // test environments to flag the security risk. For production hardening,
+    // set APISIX_ADMIN_KEY env var or pass gateway.adminCredentials in spec.
     const adminCredentials = resolveAdminCredentials(
       fullConfig.gateway?.adminCredentials,
       { allowDefaults: true }

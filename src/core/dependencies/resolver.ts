@@ -144,8 +144,12 @@ export class DependencyResolver {
                   referencedService: svcName,
                   serviceResource: svcResourceId,
                 });
-              } catch {
-                // Node not found in graph — resource ID mismatch
+              } catch (err) {
+                this.logger.debug('Failed to add service-name dependency edge', {
+                  resource: resource.id,
+                  target: svcResourceId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
               }
             }
           }
@@ -157,29 +161,66 @@ export class DependencyResolver {
   }
 
   /**
-   * Collect all string values from a resource's spec fields (env vars,
-   * container config, etc.). Used for implicit service-name dependency
-   * detection. Only traverses `spec` — not `metadata` — to avoid
-   * false positives from label values and annotation content.
+   * Collect string values from a resource's container env vars and
+   * connection-string-like fields. Focused extraction avoids false
+   * positives from labels, resource limits ("500m"), annotation
+   * content, and other spec fields that happen to contain short
+   * substrings matching service names.
    */
   private collectStringValues(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>
   ): string[] {
-    const MAX_DEPTH = 20;
     const values: string[] = [];
-    const traverse = (obj: unknown, depth = 0): void => {
-      if (depth > MAX_DEPTH) return;
-      if (typeof obj === 'string' && obj.length > 0 && obj.length < 500) {
-        values.push(obj);
-      } else if (Array.isArray(obj)) {
-        for (const item of obj) traverse(item, depth + 1);
-      } else if (obj !== null && typeof obj === 'object') {
-        for (const value of Object.values(obj)) traverse(value, depth + 1);
+    const addString = (v: unknown): void => {
+      if (typeof v === 'string' && v.length > 0 && v.length < 500) {
+        values.push(v);
       }
     };
-    // Focus on spec.template.spec.containers (env vars) and metadata
-    const spec = (resource as any)?.spec;
-    if (spec) traverse(spec);
+
+    // Extract env var values from all containers
+    const containers = (resource as any)?.spec?.template?.spec?.containers;
+    if (Array.isArray(containers)) {
+      for (const container of containers) {
+        if (Array.isArray(container?.env)) {
+          for (const envVar of container.env) {
+            addString(envVar?.value);
+          }
+        }
+        // Also check envFrom secretRef/configMapRef names
+        if (Array.isArray(container?.envFrom)) {
+          for (const source of container.envFrom) {
+            addString(source?.secretRef?.name);
+            addString(source?.configMapRef?.name);
+          }
+        }
+        // Check command and args (may reference service hostnames)
+        if (Array.isArray(container?.command)) {
+          for (const arg of container.command) addString(arg);
+        }
+        if (Array.isArray(container?.args)) {
+          for (const arg of container.args) addString(arg);
+        }
+      }
+    }
+
+    // For non-Deployment resources (e.g., HelmRelease values, CRD specs),
+    // fall back to shallow traversal of spec.* string fields (depth 1-2).
+    if (!containers) {
+      const MAX_DEPTH = 3;
+      const traverse = (obj: unknown, depth = 0): void => {
+        if (depth > MAX_DEPTH) return;
+        if (typeof obj === 'string' && obj.length > 0 && obj.length < 500) {
+          values.push(obj);
+        } else if (Array.isArray(obj)) {
+          for (const item of obj) traverse(item, depth + 1);
+        } else if (obj !== null && typeof obj === 'object') {
+          for (const value of Object.values(obj)) traverse(value, depth + 1);
+        }
+      };
+      const spec = (resource as any)?.spec;
+      if (spec) traverse(spec);
+    }
+
     return values;
   }
 
