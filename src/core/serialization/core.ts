@@ -5,7 +5,7 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { createCompositionContext, getCurrentCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
@@ -453,7 +453,21 @@ function processCompositionBodyAnalysis(
       // (so we set them to a sentinel that prevents the composition from
       // dereferencing undefined). Both runs use the same composition
       // function, so resource IDs and factory calls are deterministic.
+      //
+      // SKIP when this composition is being executed as a nested call
+      // (`context.isNestedCall === true`). The inner composition's own
+      // definition-time pass already captured its hybrid-branch analysis
+      // with the INNER schema proxy. Re-running that hybrid capture here —
+      // against the fresh inner schema proxy that `captureHybridRunResources`
+      // creates — would emit differential CEL conditionals that reference
+      // inner-schema fields (e.g., `has(schema.spec.secretKeyRef)`) which
+      // don't exist in the outer RGD. The outer composition is the
+      // authority on branch conditions for its own calls; the inner's
+      // branch shape is driven by what the outer passed in.
+      const currentCtx = getCurrentCompositionContext();
+      const skipHybridCapture = currentCtx?.isNestedCall === true;
       if (
+        !skipHybridCapture &&
         schemaDefinition &&
         (compositionAnalysis.unregisteredFactories.length > 0 ||
           collectOverridableOptionalFields(schemaDefinition, compositionAnalysis).size > 0)

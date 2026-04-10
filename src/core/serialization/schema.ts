@@ -726,7 +726,9 @@ export function arktypeToKroSchema(
   // Separate static and dynamic status fields.
   // Dynamic = references non-schema resource fields (status, metadata, spec) → KRO CEL
   // Static = references only schema.spec.* or literal values → TypeKro runtime hydration
-  const { dynamicFields } = separateStatusFields(userStatusMappings);
+  // Classification is transitive through nestedStatusCel: a nested composition
+  // reference whose inner analyzed value is schema-only/literal is treated as static.
+  const { dynamicFields } = separateStatusFields(userStatusMappings, nestedStatusCel);
 
   // Only serialize dynamic fields that need Kro resolution
   // Build the set of known resource IDs for schema.spec → resource.spec mapping

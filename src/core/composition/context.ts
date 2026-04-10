@@ -62,6 +62,17 @@ export interface CompositionContext {
   nestedCompositionIds?: Set<string>;
   /** True when this context is a direct-mode re-execution. */
   isReExecution?: boolean | undefined;
+  /**
+   * True when this context was created to execute a composition AS A NESTED
+   * CALL with a concrete spec from the caller (as opposed to the composition's
+   * own definition-time pass with a schema proxy). Used by
+   * `processCompositionBodyAnalysis` to skip hybrid-branch re-capture — the
+   * outer composition is the authority on branch conditions, and re-running
+   * the inner composition with a fresh inner schema proxy would produce
+   * differential conditionals referencing inner-schema fields that don't
+   * exist in the outer RGD.
+   */
+  isNestedCall?: boolean | undefined;
 }
 
 /**
@@ -80,6 +91,13 @@ export interface CompositionContextOptions {
    * pass (which generates CEL) and only run the spec-driven execution.
    */
   isReExecution?: boolean;
+  /**
+   * When true, this context was created to execute a composition as a
+   * nested call with a concrete spec from the caller. Signals to
+   * `processCompositionBodyAnalysis` that hybrid-branch re-capture should
+   * be skipped — see {@link CompositionContext.isNestedCall}.
+   */
+  isNestedCall?: boolean;
 }
 
 // =============================================================================
@@ -186,6 +204,7 @@ export function createCompositionContext(
     compositionInstanceCounter: 0,
     variableMappings: {},
     isReExecution: contextOptions?.isReExecution,
+    isNestedCall: contextOptions?.isNestedCall,
     addResource(id: string, resource: Enhanced<any, any>) {
       if (contextOptions?.deduplicateIds && id in this.resources) {
         // Append numeric suffix to make the key unique

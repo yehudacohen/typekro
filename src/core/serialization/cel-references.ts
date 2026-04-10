@@ -69,31 +69,25 @@ function maybeWrapWithOmit(
  * Wrap a {@link KubernetesRef} in `${…}` for Kro YAML output.
  *
  * When the ref points to a nested composition's virtual status ID
- * (e.g., `innerService1.status.serviceUrl`), resolves it to the
- * actual inner CEL expression using `context.nestedStatusCel`.
+ * (e.g., `innerService1.status.serviceUrl`), resolve it via the
+ * transitive resolver — substituting the inner composition's analyzed
+ * expression and producing valid KRO CEL (no raw markers, no virtual
+ * IDs).
+ *
+ * The nested-composition lookup delegates to {@link lookupNestedExpression}
+ * — the single source of truth for the match strategy. See that function
+ * for the full priority order.
  */
 function generateCelExpression(
   ref: KubernetesRef<unknown>,
   context?: SerializationContext
 ): string {
-  // Check if this is a nested composition status reference that should
-  // be inlined. Virtual IDs like "webAppWithProcessing1" don't exist
-  // as resources in the KRO RGD — the real CEL must be substituted.
-  if (context?.nestedStatusCel && (ref as { __nestedComposition?: boolean }).__nestedComposition) {
+  const isNestedComp = (ref as { __nestedComposition?: boolean }).__nestedComposition === true;
+  if (isNestedComp && context?.nestedStatusCel) {
     const fieldName = ref.fieldPath.replace(/^status\./, '');
-    const exactKey = `__nestedStatus:${ref.resourceId}:${fieldName}`;
-    if (context.nestedStatusCel[exactKey]) {
-      return `\${${context.nestedStatusCel[exactKey]}}`;
-    }
-    // Try base-name match (strip trailing digits)
-    const refBase = ref.resourceId.replace(/\d+$/, '');
-    for (const [key, cel] of Object.entries(context.nestedStatusCel)) {
-      const parts = key.split(':');
-      if (parts.length !== 3 || parts[2] !== fieldName) continue;
-      const keyBase = parts[1]!.replace(/\d+$/, '');
-      if (refBase === keyBase) {
-        return `\${${cel}}`;
-      }
+    const innerExpr = lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
+    if (innerExpr !== undefined) {
+      return finalizeCelForKro(innerExpr, context.nestedStatusCel, context);
     }
   }
 
@@ -103,12 +97,431 @@ function generateCelExpression(
 }
 
 // ---------------------------------------------------------------------------
-// __KUBERNETES_REF__ marker conversion
+// __KUBERNETES_REF__ marker primitives
+// ---------------------------------------------------------------------------
+
+/**
+ * Single source of truth for __KUBERNETES_REF__ marker detection.
+ *
+ * Marker shape:
+ *   - Resource ref:  `__KUBERNETES_REF_<resourceId>_<fieldPath>__`
+ *   - Schema ref:    `__KUBERNETES_REF___schema___<fieldPath>__`
+ *
+ * `resourceId` is `__schema__` for schema refs, or a single underscore-free
+ * identifier for resource refs. `fieldPath` is a dot-separated identifier
+ * sequence like "spec.name" or "status.workers.$item.name".
+ *
+ * Two flavors are needed:
+ *  - `MARKER_PATTERN_G` matches anywhere in a string (for substitution and
+ *    iteration via `String.matchAll`).
+ *  - `MARKER_PATTERN_FULL` matches when the entire string is exactly one
+ *    marker (for the single-ref fast path in
+ *    {@link convertKubernetesRefMarkersTocel}).
+ */
+const MARKER_PATTERN_G = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+const MARKER_PATTERN_FULL = /^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/;
+
+/**
+ * Convert a marker substring captured from {@link MARKER_PATTERN_G} (or
+ * {@link MARKER_PATTERN_FULL}) to its bare CEL path. Handles the
+ * `__schema__` sentinel by emitting `schema.<fieldPath>`; otherwise
+ * emits `<resourceId>.<fieldPath>`.
+ */
+function markerToCelPath(resourceId: string, fieldPath: string): string {
+  return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+}
+
+/**
+ * Normalize any `__KUBERNETES_REF__` markers in `str` to their bare CEL paths
+ * in-place — without wrapping them in `${…}`. Used by the static/dynamic
+ * classifier and the transitive resolver when we need to scan for non-
+ * schema references inside a marker-laden string.
+ *
+ * Unlike {@link convertKubernetesRefMarkersTocel}, this does NOT produce a
+ * KRO mixed-template string. It produces a raw CEL-path blend where
+ * markers have been replaced by their dotted CEL paths.
+ *
+ * Example:
+ *   "http://__KUBERNETES_REF___schema___spec.name__:__KUBERNETES_REF___schema___spec.port__"
+ *   →
+ *   "http://schema.spec.name:schema.spec.port"
+ *
+ * The result isn't valid CEL on its own — it's literal text interleaved
+ * with CEL paths, suitable for pattern matching only.
+ */
+function normalizeMarkerString(str: string): string {
+  return str.replace(MARKER_PATTERN_G, (_match, id: string, path: string) =>
+    markerToCelPath(id, path)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CEL lambda variable handling
+// ---------------------------------------------------------------------------
+
+/**
+ * Pattern to extract lambda variable names from CEL macro calls.
+ *
+ * CEL macros (`.all`, `.exists`, `.exists_one`, `.map`, `.filter`)
+ * introduce a local variable in their first argument that should NOT
+ * be treated as a resource identifier when scanning for `<id>.status.X`
+ * patterns. The classification regex is shared with `cel-validator.ts`
+ * — keep them in sync if you change one.
+ *
+ * Note: `each` is also a special identifier — it's the implicit element
+ * variable used by KRO `forEach`/`readyWhen` callback bodies.
+ */
+const CEL_LAMBDA_MACRO_PATTERN =
+  /\.(?:all|exists|exists_one|map|filter)\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*,/g;
+
+/**
+ * Build the set of identifiers that should be treated as lambda-bound
+ * variables when scanning `expr` for resource references. Always includes
+ * `each` as a sentinel for `forEach.readyWhen` bodies.
+ */
+function collectLambdaVars(expr: string): Set<string> {
+  const vars = new Set<string>(['each']);
+  for (const m of expr.matchAll(CEL_LAMBDA_MACRO_PATTERN)) {
+    if (m[1]) vars.add(m[1]);
+  }
+  return vars;
+}
+
+// ---------------------------------------------------------------------------
+// Static / dynamic classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether an already-resolved CEL-path string contains any
+ * non-schema resource references. "Non-schema resource reference" means
+ * any `<identifier>.(status|metadata|spec).<path>` where `<identifier>`
+ * is neither `schema` nor a CEL macro lambda variable.
+ *
+ * Lambda variables (the `c` in `.exists(c, c.status == "True")`) are
+ * detected via {@link collectLambdaVars} and excluded — otherwise a
+ * legitimate macro body would falsely classify the parent expression
+ * as dynamic for the wrong reason.
+ */
+function containsNoNonSchemaRefs(expr: string): boolean {
+  const lambdaVars = collectLambdaVars(expr);
+  const pattern = /\b([a-zA-Z_$][\w$]*)\.(status|metadata|spec)\./g;
+  for (const m of expr.matchAll(pattern)) {
+    const id = m[1];
+    if (id === 'schema') continue;
+    if (id && lambdaVars.has(id)) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Classify an expression as static (iff, after resolving all nested-
+ * composition references and schema markers, it contains no references
+ * to real-resource `status`/`metadata`/`spec` fields) or dynamic.
+ *
+ * This is the authoritative depth-agnostic static/dynamic classifier.
+ * It supersedes the local syntactic check in `validation/cel-validator.ts`
+ * for nested-composition references.
+ *
+ * Input shapes accepted:
+ *  - CEL expression strings (e.g., `"app.status.readyReplicas >= 1"`)
+ *  - Marker strings (e.g., `"http://__KUBERNETES_REF___schema___spec.name__"`)
+ *  - Mixed: CEL paths + marker tokens + literals
+ *
+ * Returns `true` iff the fully-resolved expression is purely
+ * schema-and-literal.
+ */
+export function isStaticExpression(
+  expr: string,
+  nestedStatusCel: Record<string, string> | undefined
+): boolean {
+  const afterNesting = resolveNestedCompositionRefs(expr, nestedStatusCel);
+  const afterMarkers = normalizeMarkerString(afterNesting);
+  return containsNoNonSchemaRefs(afterMarkers);
+}
+
+// ---------------------------------------------------------------------------
+// Nested composition reference resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum number of substitution passes when resolving nested composition
+ * references in {@link resolveNestedCompositionRefs}. The fixed-point loop
+ * normally converges in one or two passes (one per level of nesting), so
+ * 16 is a comfortable cap that handles pathologically deep compositions
+ * without giving runaway substitution loops a chance to wedge serialization.
+ *
+ * Hitting this limit indicates a real bug in the resolution table — most
+ * likely a cycle introduced by a faulty alias entry — not a legitimate
+ * composition shape.
+ */
+const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
+
+/**
+ * Look up a nested composition's analyzed expression by `(resourceId, fieldName)`.
+ *
+ * **Single source of truth** for the nested-status match strategy. Used by
+ * every code path that needs to find an inner expression from a
+ * `nestedStatusCel` table — both the structured-ref paths
+ * (`generateCelExpression`, `serializeStatusMappingsToCel`) and the
+ * string-resolver path (`substituteNestedRefsOnce`,
+ * `resolveNestedRefMarkers`).
+ *
+ * Returns `undefined` when no match is found, leaving the caller to
+ * decide how to handle missing entries (typically: leave the reference
+ * in place and let downstream validation flag it).
+ *
+ * Match priority:
+ *  1. **Exact baseId match.** The reference uses the virtual nested
+ *     composition baseId verbatim (e.g., from a template literal on a
+ *     nested status proxy where `toString()` embeds the baseId).
+ *  2. **Base-name match (instance digits stripped).** Both the requested
+ *     id and the candidate baseIds have their trailing instance digits
+ *     stripped, then compared for equality. Handles the case where the
+ *     reference uses `webAppWithProcessing2` but the table has
+ *     `webAppWithProcessing1`.
+ *  3. **Unambiguous camelCase / case-insensitive prefix.** The
+ *     reference uses a name that structurally relates to one (and only
+ *     one) baseId stem (e.g., `inngest` matching `inngestBootstrap`).
+ *  4. **Field-name uniqueness.** When exactly one nested composition in
+ *     the table provides the requested field, use it. Handles the case
+ *     of arbitrary local variable names (e.g.,
+ *     `const stack = webAppWithProcessing(...); stack.status.databaseUrl`).
+ *
+ * Ambiguous matches (multiple candidates from the prefix or field-name
+ * strategies) emit a warning log and return `undefined` so the caller
+ * can fall through to its own error handling.
+ */
+function lookupNestedExpression(
+  resourceId: string,
+  fieldName: string,
+  nestedStatusCel: Record<string, string>
+): string | undefined {
+  // Strategy 1: exact match.
+  const exactKey = `__nestedStatus:${resourceId}:${fieldName}`;
+  if (Object.hasOwn(nestedStatusCel, exactKey)) {
+    return nestedStatusCel[exactKey];
+  }
+
+  // Gather all entries for the requested field name once — strategies
+  // 2-4 all need this list.
+  const fieldSuffix = `:${fieldName}`;
+  const fieldMatches: Array<{ key: string; baseId: string }> = [];
+  for (const key of Object.keys(nestedStatusCel)) {
+    if (!key.endsWith(fieldSuffix)) continue;
+    const parts = key.split(':');
+    if (parts.length === 3 && parts[1]) {
+      fieldMatches.push({ key, baseId: parts[1] });
+    }
+  }
+  if (fieldMatches.length === 0) return undefined;
+
+  // Strategy 2: base-name match (instance digits stripped).
+  const refBase = resourceId.replace(/\d+$/, '');
+  const baseNameMatches = fieldMatches.filter(
+    (m) => m.baseId.replace(/\d+$/, '') === refBase
+  );
+  if (baseNameMatches.length === 1) {
+    return nestedStatusCel[baseNameMatches[0]!.key];
+  }
+
+  // Strategy 3: unambiguous camelCase / case-insensitive prefix.
+  const prefixMatches = fieldMatches.filter((m) => {
+    const baseStem = m.baseId.replace(/\d+$/, '');
+    return (
+      isCamelCasePrefix(resourceId, baseStem) ||
+      isCamelCasePrefix(baseStem, resourceId) ||
+      baseStem.toLowerCase() === resourceId.toLowerCase()
+    );
+  });
+  if (prefixMatches.length === 1) {
+    return nestedStatusCel[prefixMatches[0]!.key];
+  }
+  if (prefixMatches.length > 1) {
+    logger.warn('Ambiguous nested composition prefix match', {
+      resourceId,
+      fieldName,
+      candidates: prefixMatches.map((m) => m.baseId),
+    });
+    return undefined;
+  }
+
+  // Strategy 4: field-name uniqueness.
+  if (fieldMatches.length === 1) {
+    return nestedStatusCel[fieldMatches[0]!.key];
+  }
+  logger.warn('Ambiguous nested composition field-name match', {
+    resourceId,
+    fieldName,
+    candidates: fieldMatches.map((m) => m.baseId),
+  });
+  return undefined;
+}
+
+/**
+ * Transitively substitute nested-composition references inline from a
+ * lookup table.
+ *
+ * Searches `expr` for `<id>.status.<fieldPath>` patterns and, when `<id>`
+ * resolves to a nested composition entry via {@link lookupNestedExpression},
+ * replaces the match with the inner composition's analyzed expression
+ * wrapped in parentheses (to preserve operator precedence in compound
+ * expressions).
+ *
+ * **Does NOT touch `__KUBERNETES_REF__` markers.** Callers that need to
+ * emit final KRO CEL should run {@link convertKubernetesRefMarkersTocel}
+ * on the result. Callers that need to classify the result as
+ * static/dynamic should run {@link normalizeMarkerString} then
+ * {@link containsNoNonSchemaRefs} (or just call
+ * {@link isStaticExpression} which composes both steps).
+ *
+ * Iterates to a fixed point up to {@link NESTED_REF_RESOLUTION_DEPTH_LIMIT}
+ * — substituted expressions may themselves contain nested references that
+ * become resolvable once the outer reference is inlined (the three-level
+ * nesting case: L1 → L2 → L3).
+ *
+ * **Lambda variables are skipped.** When the resolved `<id>` is a CEL
+ * macro lambda variable like the `c` in `.exists(c, c.status == "Ready")`,
+ * the substitution does NOT fire — the variable refers to the macro's
+ * iteration element, not a nested composition.
+ */
+function resolveNestedCompositionRefs(
+  expr: string,
+  nestedStatusCel: Record<string, string> | undefined
+): string {
+  if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
+    return expr;
+  }
+
+  let current = expr;
+  for (let i = 0; i < NESTED_REF_RESOLUTION_DEPTH_LIMIT; i++) {
+    const next = substituteNestedRefsOnce(current, nestedStatusCel);
+    if (next === current) return current;
+    current = next;
+  }
+  logger.warn('Nested composition resolution depth limit exceeded', {
+    depthLimit: NESTED_REF_RESOLUTION_DEPTH_LIMIT,
+    expressionPreview: expr.slice(0, 200),
+  });
+  return current;
+}
+
+/**
+ * One pass of nested-reference substitution. See
+ * {@link resolveNestedCompositionRefs} for the full contract.
+ */
+function substituteNestedRefsOnce(
+  expr: string,
+  nestedStatusCel: Record<string, string>
+): string {
+  const lambdaVars = collectLambdaVars(expr);
+  // Match `<id>.status.<fieldPath>`. The fieldPath capture is greedy on
+  // dots so paths like `components.app` are captured whole — that's the
+  // form `nestedStatusCel` keys use after recursive extraction.
+  const pattern = /\b([a-zA-Z_$][\w$]*)\.status\.([a-zA-Z_$][\w$.]*)/g;
+  return expr.replace(pattern, (match, id: string, field: string) => {
+    if (id === 'schema') return match;
+    if (lambdaVars.has(id)) return match;
+    const innerExpr = lookupNestedExpression(id, field, nestedStatusCel);
+    if (innerExpr === undefined) return match;
+    return `(${innerExpr})`;
+  });
+}
+
+/**
+ * Resolve `__KUBERNETES_REF__` markers whose resourceId is a virtual
+ * nested composition baseId (rather than a real resource). Each such
+ * marker is replaced inline with the inner composition's analyzed
+ * expression from `nestedStatusCel`.
+ *
+ * The substitution rewrites the marker into a KRO-formatted segment via
+ * {@link innerExprToYamlSegment}. Markers whose resourceId IS a real
+ * resource ID (or `__schema__`) are left in place — they're handled by
+ * downstream {@link convertKubernetesRefMarkersTocel}.
+ *
+ * Lookup uses the shared {@link lookupNestedExpression} so the match
+ * strategy stays consistent with the rest of the resolver.
+ */
+function resolveNestedRefMarkers(
+  str: string,
+  nestedStatusCel: Record<string, string> | undefined
+): string {
+  if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
+    return str;
+  }
+  return str.replace(MARKER_PATTERN_G, (match, id: string, path: string) => {
+    if (id === '__schema__') return match;
+    // Strip leading "status." since nestedStatusCel keys use the bare field path.
+    const fieldPath = path.replace(/^status\./, '');
+    const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
+    if (innerExpr === undefined) return match;
+    return innerExprToYamlSegment(innerExpr, nestedStatusCel);
+  });
+}
+
+/**
+ * Convert an inner composition's analyzed expression into a YAML-embeddable
+ * segment. Recursively resolves nested references within the inner expression
+ * and produces the appropriate KRO format.
+ */
+function innerExprToYamlSegment(
+  innerExpr: string,
+  nestedStatusCel: Record<string, string>
+): string {
+  // Recursively resolve any further nested refs the inner expression itself
+  // contains (multi-level nesting).
+  const resolved = resolveNestedCompositionRefs(innerExpr, nestedStatusCel);
+  if (resolved.includes('__KUBERNETES_REF_')) {
+    // Marker-laden — convert to mixed-template form.
+    return convertKubernetesRefMarkersTocel(resolved);
+  }
+  if (resolved.includes('${')) {
+    // Already a KRO template (from Cel.template) — pass through.
+    return resolved;
+  }
+  // Plain CEL — wrap in ${...}.
+  return `\${${resolved}}`;
+}
+
+/**
+ * Produce the final KRO CEL form for a nested-composition value, with all
+ * nested references substituted in and all schema markers converted to
+ * mixed-template form.
+ *
+ * The return value is always a valid KRO expression string ready to be
+ * embedded directly into a YAML value position (resource template field,
+ * status CEL expression). Three cases are handled:
+ *
+ *  - Marker-laden input (from a template literal) → converted to KRO
+ *    mixed-template form via {@link convertKubernetesRefMarkersTocel}.
+ *  - Input that already contains `${…}` segments (from a `Cel.template()`
+ *    call, for example) → returned as-is; assumed to be in KRO form.
+ *  - Plain-CEL input (raw CEL with no markers or `${…}`) → wrapped in
+ *    `${…}` so KRO recognizes it as an expression to evaluate.
+ */
+function finalizeCelForKro(
+  expr: string,
+  nestedStatusCel: Record<string, string> | undefined,
+  context?: SerializationContext
+): string {
+  const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel);
+  if (resolved.includes('__KUBERNETES_REF_')) {
+    return convertKubernetesRefMarkersTocel(resolved, context);
+  }
+  if (resolved.includes('${')) {
+    // Already contains KRO template placeholders — pass through.
+    return resolved;
+  }
+  return `\${${resolved}}`;
+}
+
+// ---------------------------------------------------------------------------
+// __KUBERNETES_REF__ marker → KRO CEL conversion
 // ---------------------------------------------------------------------------
 
 /**
  * Convert `__KUBERNETES_REF__` markers embedded in a string to CEL
- * expressions.
+ * expressions in KRO mixed-template form.
  *
  * These markers are created when schema proxy values are used in
  * template literals, e.g.:
@@ -116,21 +529,18 @@ function generateCelExpression(
  * - `__KUBERNETES_REF___schema___spec.name__-policy`
  *   → `${string(schema.spec.name)}-policy`
  *
- * Pattern: `__KUBERNETES_REF_{resourceId}_{fieldPath}__`
- * For schema: `__KUBERNETES_REF___schema___{fieldPath}__`
+ * Single-reference inputs use a fast path that avoids the `string(…)`
+ * wrapper and supports `has()/omit()` for optional schema fields. Mixed
+ * inputs always wrap each reference in `${string(…)}` so KRO accepts
+ * non-string types in string contexts (ConfigMap data values, env var
+ * values).
  */
 function convertKubernetesRefMarkersTocel(str: string, context?: SerializationContext): string {
-  // Pattern handles both regular resource IDs and __schema__ (which has underscores)
-  // The field path is matched with [a-zA-Z0-9.$]+ which captures dot-separated identifiers
-  // like "spec.name", "status.readyReplicas", or "spec.workers.$item.name"
-  const refPattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
-
-  // Fast-path: entire string is a single reference
-  const singleRefMatch = str.match(/^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/);
+  // Fast-path: entire string is a single reference.
+  const singleRefMatch = MARKER_PATTERN_FULL.exec(str);
   if (singleRefMatch) {
     const [, resourceId, fieldPath] = singleRefMatch;
-    const celPath =
-      resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+    const celPath = markerToCelPath(resourceId!, fieldPath!);
     // Single-ref: safe to wrap with has()/omit() for optional schema fields.
     const body = maybeWrapWithOmit(celPath, false, context?.omitFields);
     return `\${${body}}`;
@@ -146,22 +556,18 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
   // and mixing it into a concatenation would be a type error.
   let result = '';
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
 
-  refPattern.lastIndex = 0;
-  match = refPattern.exec(str);
-  while (match !== null) {
-    if (match.index > lastIndex) {
-      result += str.slice(lastIndex, match.index);
+  // Reset lastIndex defensively — MARKER_PATTERN_G is a module-level
+  // stateful global regex.
+  MARKER_PATTERN_G.lastIndex = 0;
+  for (const match of str.matchAll(MARKER_PATTERN_G)) {
+    const idx = match.index ?? 0;
+    if (idx > lastIndex) {
+      result += str.slice(lastIndex, idx);
     }
-
     const [, resourceId, fieldPath] = match;
-    const celPath =
-      resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
-    result += `\${string(${celPath})}`;
-
-    lastIndex = match.index + match[0].length;
-    match = refPattern.exec(str);
+    result += `\${string(${markerToCelPath(resourceId!, fieldPath!)})}`;
+    lastIndex = idx + match[0].length;
   }
 
   if (lastIndex < str.length) {
@@ -210,9 +616,20 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
     return `\${${expr}}`;
   }
 
-  // Strings containing __KUBERNETES_REF__ markers from template literals
+  // Strings containing __KUBERNETES_REF__ markers from template literals.
+  // First resolve any nested-composition references — markers produced by
+  // `createKubernetesRefProxy` use a virtual baseId as the resourceId,
+  // and that baseId only resolves via `nestedStatusCel`. After that, any
+  // remaining markers (schema refs and direct resource refs) are converted
+  // to KRO mixed-template form.
   if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_')) {
-    return convertKubernetesRefMarkersTocel(obj, context);
+    const resolved = resolveNestedRefMarkers(obj, context?.nestedStatusCel);
+    if (resolved.includes('__KUBERNETES_REF_')) {
+      return convertKubernetesRefMarkersTocel(resolved, context);
+    }
+    // All markers were resolved through nestedStatusCel — the result is
+    // pure literal text or KRO-formatted CEL. Pass it through.
+    return resolved;
   }
 
   if (Array.isArray(obj)) {
@@ -259,51 +676,68 @@ export function serializeStatusMappingsToCel(
   });
   const celExpressions: Record<string, string | Record<string, unknown>> = {};
 
+  /**
+   * Rewrite `schema.spec.*` references inside a resolved CEL expression so
+   * the result is valid KRO status CEL. KRO does not accept `schema.spec.*`
+   * in status CEL, so we apply two rewrites:
+   *
+   *  - `schema.spec.X.Y.orValue(Z)` → `Z` (substitute the default)
+   *  - `schema.spec.X.Y` → `X.spec.Y` iff `X` is a known resource ID
+   *    (routes the reference to the deployed resource's spec field)
+   *
+   * Unknown schema references are left intact; the KRO factory's deploy-
+   * time hydration handles them.
+   */
+  function rewriteSchemaRefsForKroStatus(expr: string): string {
+    let out = expr.replace(
+      /schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
+      '$1'
+    );
+    out = out.replace(
+      /schema\.spec\.([a-zA-Z0-9]+)\.([a-zA-Z0-9.]+)/g,
+      (_match, firstSegment, rest) => {
+        if (resourceIds?.has(firstSegment)) {
+          return `${firstSegment}.spec.${rest}`;
+        }
+        return _match;
+      }
+    );
+    return out;
+  }
+
+  /**
+   * Compose the inner-expression resolution + KRO-status finalization
+   * pipeline used by both the KubernetesRef and CelExpression branches.
+   * Centralized here so the two branches don't drift on what "produce
+   * KRO status CEL from a resolved expression" means.
+   */
+  function statusFieldFromExpression(expr: string): string {
+    const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel);
+    if (resolved.includes('__KUBERNETES_REF_')) {
+      // Marker-laden — use mixed-template form.
+      return convertKubernetesRefMarkersTocel(resolved);
+    }
+    return `\${${rewriteSchemaRefsForKroStatus(resolved)}}`;
+  }
+
   function serializeValue(value: unknown): string | Record<string, unknown> {
     if (isKubernetesRef(value)) {
       const ref = value as KubernetesRef<unknown> & { __nestedComposition?: boolean };
 
-      // For nested composition status references, inline the inner composition's
-      // actual CEL expression instead of referencing the virtual composition ID.
+      // For nested composition status references, look up the inner
+      // composition's analyzed CEL via the shared resolver and finalize
+      // it for KRO status emission.
       if (ref.__nestedComposition && nestedStatusCel) {
         const fieldName = ref.fieldPath.replace(/^status\./, '');
-        // Try exact match
-        const exactKey = `__nestedStatus:${ref.resourceId}:${fieldName}`;
-        logger.debug('Resolving nested composition KubernetesRef', {
-          resourceId: ref.resourceId,
-          fieldPath: ref.fieldPath,
-          fieldName,
-          exactKey,
-          hasExactMatch: !!nestedStatusCel[exactKey],
-        });
-        if (nestedStatusCel[exactKey]) {
-          return `\${${nestedStatusCel[exactKey]}}`;
-        }
-        // Try base-name match: strip trailing digits and compare.
-        // The expression may use 'nestedService2' while the key has 'nestedService1'.
-        // Also try prefix match for variable name → composition baseId mapping.
-        const refBase = ref.resourceId.replace(/\d+$/, '');
-        for (const [key, cel] of Object.entries(nestedStatusCel)) {
-          const parts = key.split(':');
-          if (parts.length !== 3 || parts[2] !== fieldName) continue;
-          const keyBase = parts[1]!.replace(/\d+$/, '');
-          if (refBase === keyBase) {
-            return `\${${cel}}`;
-          }
-          if (isCamelCasePrefix(refBase, keyBase) || isCamelCasePrefix(keyBase, refBase)) {
-            logger.warn('Nested status CEL resolved via prefix match (not exact)', {
-              refResourceId: ref.resourceId, matchedKey: key, fieldName,
-            });
-            return `\${${cel}}`;
-          }
+        const innerExpr = lookupNestedExpression(ref.resourceId, fieldName, nestedStatusCel);
+        if (innerExpr !== undefined) {
+          return statusFieldFromExpression(innerExpr);
         }
       }
 
-      // Nested composition ref that couldn't be inlined — the virtual ID
-      // doesn't exist in the KRO RGD. Emit as-is; the validator will warn.
-      // When nestedStatusCel IS available but didn't match, this is a real
-      // missing mapping. When it's unavailable (simple compositions without
-      // inner status CEL), the ref passes through for backward compatibility.
+      // Unresolved nested composition ref — emit as-is for backward
+      // compatibility. Downstream validation will flag it if the virtual
+      // id doesn't correspond to a real resource.
       return `\${${ref.resourceId}.${ref.fieldPath}}`;
     }
 
@@ -311,84 +745,7 @@ export function serializeStatusMappingsToCel(
       if (value.__isTemplate) {
         return value.expression;
       }
-
-      // Replace nested composition status references with the inner composition's
-      // actual CEL expression. Handles both standalone refs and refs embedded in
-      // larger expressions (e.g., `... && inngest.status.ready`).
-      //
-      // The fn.toString analysis uses variable names (e.g., `inngest`) but the
-      // nested status CEL keys use baseIds with instance numbers (e.g.,
-      // `inngestBootstrap1`). We try the exact match first, then scan for keys
-      // that start with the variable name.
-      let expr = value.expression;
-      if (nestedStatusCel) {
-        expr = expr.replace(/(\w+)\.status\.([\w.]+)/g, (_match, compId, field) => {
-          // Try exact match first
-          const exactKey = `__nestedStatus:${compId}:${field}`;
-          if (nestedStatusCel[exactKey]) {
-            return `(${nestedStatusCel[exactKey]})`;
-          }
-          // Try base-name match: strip trailing digits and compare.
-          // Also try prefix match: the fn.toString variable name (e.g., `inngest`)
-          // may be a prefix of the nested composition's baseId (e.g., `inngestBootstrap`).
-          const compIdBase = compId.replace(/\d+$/, '');
-          for (const [key, cel] of Object.entries(nestedStatusCel)) {
-            const parts = key.split(':');
-            if (parts.length !== 3 || parts[2] !== field) continue;
-            const keyBase = parts[1]!.replace(/\d+$/, '');
-            if (compIdBase === keyBase) {
-              return `(${cel})`;
-            }
-            if (isCamelCasePrefix(compIdBase, keyBase) || isCamelCasePrefix(keyBase, compIdBase)) {
-              logger.warn('Nested status CEL expression resolved via prefix match', {
-                compId, matchedKey: key, field,
-              });
-              return `(${cel})`;
-            }
-          }
-          // Last resort: the variable name (e.g., "stack") has no structural
-          // relationship to the composition baseId (e.g., "webAppWithProcessing1").
-          // Try matching by field name — use the first nested composition that
-          // provides this field. This handles the common case where the variable
-          // name is arbitrary and can't be inferred from the composition name.
-          for (const [key, cel] of Object.entries(nestedStatusCel)) {
-            const p = key.split(':');
-            if (p.length === 3 && p[2] === field) {
-              logger.debug('Nested status CEL resolved by field-name match', {
-                compId, field, matchedKey: key,
-              });
-              return `(${cel})`;
-            }
-          }
-          return `${compId}.status.${field}`;
-        });
-      }
-
-      // KRO status CEL cannot reference `schema.spec.*` — only resource IDs.
-      // Replace schema references with their .orValue() defaults, or with the
-      // resource's own spec field if a mapping is available.
-      // Pattern: `schema.spec.X.Y.orValue(Z)` → `Z` (use the default)
-      expr = expr.replace(
-        /schema\.spec\.[a-zA-Z0-9_.]+\.orValue\(([^)]+)\)/g,
-        '$1'
-      );
-      // For bare `schema.spec.X.Y` (no orValue): map to the resource's spec
-      // field ONLY if X is a known resource ID. E.g., `schema.spec.database.instances`
-      // → `database.spec.instances` when `database` is a resource in the RGD.
-      // Unknown segments are left as-is (they'll be resolved at deploy time).
-      expr = expr.replace(
-        /schema\.spec\.([a-zA-Z0-9]+)\.([a-zA-Z0-9.]+)/g,
-        (_match, firstSegment, rest) => {
-          if (resourceIds?.has(firstSegment)) {
-            return `${firstSegment}.spec.${rest}`;
-          }
-          // Not a known resource ID — keep the original schema ref.
-          // This will be resolved by the KRO factory at deploy time.
-          return _match;
-        }
-      );
-
-      return `\${${expr}}`;
+      return statusFieldFromExpression(value.expression);
     }
 
     if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -400,9 +757,11 @@ export function serializeStatusMappingsToCel(
     }
 
     if (typeof value === 'string') {
-      // Convert embedded __KUBERNETES_REF__ markers to CEL expressions
       if (value.includes('__KUBERNETES_REF_')) {
-        return convertKubernetesRefMarkersTocel(value);
+        // Resolve nested refs first (substitution is a no-op on pure marker
+        // strings but handles mixed forms), then convert markers to KRO CEL.
+        const resolved = resolveNestedCompositionRefs(value, nestedStatusCel);
+        return convertKubernetesRefMarkersTocel(resolved);
       }
       return `\${"${value}"}`;
     }
