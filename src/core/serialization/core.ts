@@ -855,6 +855,20 @@ function pickConditionField(
  *   result is valid CEL, not just a raw string)
  * - Numbers and booleans are emitted verbatim
  */
+/**
+ * Escape a string literal for safe embedding inside a CEL string.
+ * Handles backslash, double-quote, newline, carriage return, and tab.
+ * Must be used everywhere we embed literal text in CEL output.
+ */
+function escapeCelLiteral(literal: string): string {
+  return literal
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
 function celValueRepr(value: unknown): string {
   if (value === null || value === undefined) return '""';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -867,16 +881,8 @@ function celValueRepr(value: unknown): string {
     if (value.includes('__KUBERNETES_REF_')) {
       return markerStringToCelExpr(value);
     }
-    // Plain string literal — escape for CEL embedding.
-    // Must handle backslash, double-quote, newline, carriage return, and
-    // tab — same escapes as escapeCelStringLiteral in kro-post-processing.
-    return `"${value
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"')
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '\\r')
-      .replace(/\t/g, '\\t')
-    }"`;
+    // Plain string literal — escape for CEL embedding
+    return `"${escapeCelLiteral(value)}"`;
   }
   return '""';
 }
@@ -913,7 +919,7 @@ function markerStringToCelExpr(str: string): string {
   while (m !== null) {
     if (m.index > lastIndex) {
       const literal = str.slice(lastIndex, m.index);
-      parts.push(`"${literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+      parts.push(`"${escapeCelLiteral(literal)}"`);
     }
     const resourceId = m[1]!;
     const fieldPath = m[2]!;
@@ -925,7 +931,7 @@ function markerStringToCelExpr(str: string): string {
   }
   if (lastIndex < str.length) {
     const literal = str.slice(lastIndex);
-    parts.push(`"${literal.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
+    parts.push(`"${escapeCelLiteral(literal)}"`);
   }
   return parts.length === 1 ? parts[0]! : parts.join(' + ');
 }
