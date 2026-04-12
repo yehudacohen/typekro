@@ -167,12 +167,22 @@ export class DependencyResolver {
    * content, and other spec fields that happen to contain short
    * substrings matching service names.
    */
+  /**
+   * Fields whose string values should be excluded from hostname detection.
+   * Container `image` fields use `:` as a tag separator (e.g., `myapp:latest`)
+   * which the hostname regex treats as a port delimiter — creating false
+   * dependency edges when a Service shares a name with its image base name.
+   */
+  private static readonly EXCLUDED_KEYS = new Set(['image', 'imagePullPolicy']);
+
   private collectStringValues(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>
   ): string[] {
     const values: string[] = [];
-    const addString = (v: unknown): void => {
+    const addString = (v: unknown, key?: string): void => {
       if (typeof v === 'string' && v.length > 0 && v.length < 500) {
+        // Skip fields that produce false positives in hostname matching.
+        if (key && DependencyResolver.EXCLUDED_KEYS.has(key)) return;
         values.push(v);
       }
     };
@@ -183,14 +193,14 @@ export class DependencyResolver {
       for (const container of containers) {
         if (Array.isArray(container?.env)) {
           for (const envVar of container.env) {
-            addString(envVar?.value);
+            addString(envVar?.value, envVar?.name);
           }
         }
         // Also check envFrom secretRef/configMapRef names
         if (Array.isArray(container?.envFrom)) {
           for (const source of container.envFrom) {
-            addString(source?.secretRef?.name);
-            addString(source?.configMapRef?.name);
+            addString(source?.secretRef?.name, 'secretRef.name');
+            addString(source?.configMapRef?.name, 'configMapRef.name');
           }
         }
         // Check command and args (may reference service hostnames)
@@ -207,14 +217,15 @@ export class DependencyResolver {
     // fall back to shallow traversal of spec.* string fields (depth 1-2).
     if (!containers) {
       const MAX_DEPTH = 3;
-      const traverse = (obj: unknown, depth = 0): void => {
+      const traverse = (obj: unknown, depth = 0, key?: string): void => {
         if (depth > MAX_DEPTH) return;
         if (typeof obj === 'string' && obj.length > 0 && obj.length < 500) {
+          if (key && DependencyResolver.EXCLUDED_KEYS.has(key)) return;
           values.push(obj);
         } else if (Array.isArray(obj)) {
           for (const item of obj) traverse(item, depth + 1);
         } else if (obj !== null && typeof obj === 'object') {
-          for (const value of Object.values(obj)) traverse(value, depth + 1);
+          for (const [k, value] of Object.entries(obj)) traverse(value, depth + 1, k);
         }
       };
       const spec = (resource as any)?.spec;

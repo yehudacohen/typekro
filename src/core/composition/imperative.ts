@@ -706,8 +706,13 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
             ? compositionFn(specToUse)
             : runInStatusBuilderContext(() => compositionFn(specToUse));
 
-          // Store the original composition function for later analysis
-          // This allows the serialization system to analyze the original JavaScript expressions
+          // Store the original composition function for later analysis.
+          // These are used by the serialization system to analyze the
+          // original JavaScript expressions for CEL conversion. They're
+          // always set because nested compositions run through
+          // executeCompositionCore with actualSpec even during the
+          // definition pass (the parent passes proxy-traced spec values).
+          // During re-execution they're inert but harmless.
           Reflect.set(capturedStatus, '__originalCompositionFn', compositionFn);
           Reflect.set(capturedStatus, '__originalSchema', schema.spec);
 

@@ -535,4 +535,67 @@ describe('Implicit dependency detection', () => {
       expect(getMetadataField(deploy, 'dnsAddressable')).toBeUndefined();
     });
   });
+
+  describe('Container image false positive prevention', () => {
+    it('does not create dependency when Service name matches container image base name', () => {
+      // This is the most common false positive: naming your Service the
+      // same as your image (e.g., Service "myapp" + image "myapp:latest").
+      // The `:` tag separator matches the hostname regex's port delimiter.
+      const svc = mockResource({ id: 'svc', kind: 'Service', name: 'myapp' });
+      markDnsAddressable(svc);
+
+      const deploy = mockResource({
+        id: 'app',
+        kind: 'Deployment',
+        name: 'myapp-deploy',
+        spec: {
+          template: {
+            spec: {
+              containers: [
+                { name: 'myapp', image: 'myapp:latest', env: [] },
+              ],
+            },
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, deploy]);
+      const deps = graph.getDependencies('app');
+
+      // Should NOT have a dependency from deploy → svc due to image field
+      expect(deps).not.toContain('svc');
+    });
+
+    it('still detects real hostname in env var alongside image match', () => {
+      // Even when the image has the same base name, a real hostname in
+      // an env var should still create a dependency.
+      const svc = mockResource({ id: 'svc', kind: 'Service', name: 'myapp' });
+      markDnsAddressable(svc);
+
+      const deploy = mockResource({
+        id: 'consumer',
+        kind: 'Deployment',
+        name: 'consumer',
+        spec: {
+          template: {
+            spec: {
+              containers: [
+                {
+                  name: 'consumer',
+                  image: 'myapp:latest',
+                  env: [{ name: 'API_URL', value: 'http://myapp:8080/api' }],
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, deploy]);
+      const deps = graph.getDependencies('consumer');
+
+      // The env var reference SHOULD create a dependency
+      expect(deps).toContain('svc');
+    });
+  });
 });

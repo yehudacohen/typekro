@@ -42,8 +42,16 @@ export const WebAppWithProcessingConfigSchema = type({
     'env?': 'Record<string, string>',
     /**
      * Inject all keys from Secrets or ConfigMaps as env vars via
-     * the container's `envFrom` field. Each entry should have either
-     * `secretRef` or `configMapRef` with a `name` field.
+     * the container's `envFrom` field.
+     *
+     * **Each entry must have exactly one of** `secretRef` or `configMapRef`
+     * (not both, not neither). Kubernetes silently ignores empty entries
+     * and has implementation-defined behavior for dual-ref entries.
+     *
+     * Note: the composition prepends an inngest credentials Secret to
+     * this array. If you provide your own Secret containing
+     * `INNGEST_EVENT_KEY` or `INNGEST_SIGNING_KEY`, it will take
+     * precedence (last-write-wins in K8s envFrom ordering).
      */
     'envFrom?': type({ 'secretRef?': { name: 'string' }, 'configMapRef?': { name: 'string' } }).array(),
   },
