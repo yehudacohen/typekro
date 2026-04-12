@@ -1,3 +1,4 @@
+import { escapeCelString } from '../../utils/cel-escape.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { CEL_EXPRESSION_BRAND } from '../constants/brands.js';
 import { TypeKroError } from '../errors.js';
@@ -6,19 +7,6 @@ import { getInnerCelPath } from '../serialization/cel-references.js';
 import type { CelExpression, RefOrValue } from '../types.js';
 
 const logger = getComponentLogger('cel');
-
-/**
- * Escape a string for safe embedding in a CEL string literal.
- * Prevents CEL injection by escaping backslashes first, then double quotes.
- *
- * TODO: consolidate with escapeCelLiteral in core.ts (which also handles
- * \n, \r, \t) and CelEvaluator.escapeCelString in cel-evaluator.ts.
- * All four copies implement the same core logic — extract to a shared
- * utils/cel-escape.ts module.
- */
-function escapeCelString(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
 
 /** Patterns that indicate raw JavaScript operators were used instead of CEL operators.
  * Note: && and || are valid CEL operators, so only === and !== are flagged. */

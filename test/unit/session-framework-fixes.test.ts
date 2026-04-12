@@ -891,3 +891,276 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     expect(yamlStr).not.toContain('$item');
   });
 });
+
+// =============================================================================
+// Fix #35 additional coverage — nullish default propagation
+// =============================================================================
+//
+// When a composition body uses `spec.field ?? literal` for a field with a
+// default, the schema must include `field: type | default="literal"` so KRO
+// resolves the reference correctly. `extractNullishDefaults` detects these
+// `??` patterns and `addMissingDefaultFields` injects them into the schema.
+
+describe('Fix #35 additional coverage — nullish default propagation', () => {
+  /** Parse the RGD YAML and extract the spec portion of the schema block. */
+  function extractSchemaSpec(yamlStr: string): Record<string, unknown> {
+    const parsed = jsYaml.load(yamlStr) as {
+      spec: { schema: { spec: Record<string, unknown> } };
+    };
+    return parsed.spec.schema.spec;
+  }
+
+  it('creates a leaf field with default for spec.field ?? literal', () => {
+    // The composition body uses `spec.database ?? "app"` but the arktype
+    // spec only declares `name` and `image`. The generated schema should
+    // auto-declare `database: string | default="app"`.
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+    const comp = kubernetesComposition(
+      { name: 'leaf-default', kind: 'LeafDefault', spec: Spec, status: Status },
+      (spec) => {
+        const dbName = spec.database ?? 'app';
+        Deployment({
+          name: spec.name,
+          image: spec.image,
+          env: { DB_NAME: String(dbName) },
+          id: 'app',
+        });
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = comp.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+
+    // database should appear with its default
+    expect(schemaSpec.database).toBe('string | default="app"');
+  });
+
+  it('adds default annotation even to existing fields when ?? is used', () => {
+    // Both the arktype spec and the function body reference `database`.
+    // The ?? pattern adds a KRO default annotation regardless — this makes
+    // the field optional from KRO's perspective even though arktype
+    // declares it as required. This is intentional: the composition author
+    // is explicitly providing a fallback.
+    const Spec = type({ name: 'string', database: 'string' });
+    const Status = type({ ready: 'boolean' });
+    const comp = kubernetesComposition(
+      { name: 'existing-default', kind: 'ExistingDefault', spec: Spec, status: Status },
+      (spec) => {
+        const dbName = spec.database ?? 'app';
+        ConfigMap({
+          name: spec.name,
+          data: { db: String(dbName) },
+          id: 'cfg',
+        });
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = comp.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+
+    // default annotation is added — the ?? makes it optional with fallback
+    expect(schemaSpec.database).toBe('string | default="app"');
+  });
+
+  it('handles numeric defaults', () => {
+    const Spec = type({ name: 'string' });
+    const Status = type({ ready: 'boolean' });
+    const comp = kubernetesComposition(
+      { name: 'num-default', kind: 'NumDefault', spec: Spec, status: Status },
+      (spec) => {
+        const replicas = spec.replicas ?? 1;
+        Deployment({
+          name: spec.name,
+          image: 'nginx',
+          replicas: Number(replicas),
+          id: 'app',
+        });
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = comp.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+
+    // replicas should appear with integer default
+    expect(schemaSpec.replicas).toBe('integer | default=1');
+  });
+
+  it('webapp composition has database defaults in schema', async () => {
+    // End-to-end: the real webapp composition uses database.database ?? "app"
+    // and database.owner ?? "app" — verify they appear in the schema.
+    const { webAppWithProcessing } = await import(
+      '../../src/factories/webapp/compositions/web-app-with-processing.js'
+    );
+
+    const yamlStr = webAppWithProcessing.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+    const database = schemaSpec.database as Record<string, unknown>;
+
+    expect(database.database).toBe('string | default="app"');
+    expect(database.owner).toBe('string | default="app"');
+  });
+});
+
+// =============================================================================
+// Fix #35 additional coverage — addMissingDefaultFields
+// =============================================================================
+//
+// `addMissingDefaultFields` injects schema fields for `??` defaults that
+// the arktype spec does not declare. These tests exercise the function
+// through the full composition pipeline: create a `kubernetesComposition`
+// whose body uses `??` defaults on undeclared fields, call `.toYaml()`,
+// and verify the schema section contains the expected defaults.
+
+describe('Fix #35 additional coverage — addMissingDefaultFields', () => {
+  function extractSchemaSpec(yamlStr: string): Record<string, unknown> {
+    const parsed = jsYaml.load(yamlStr) as {
+      spec: { schema: { spec: Record<string, unknown> } };
+    };
+    return parsed.spec.schema.spec;
+  }
+
+  it('creates a missing leaf field with default from spec.field ?? literal', () => {
+    // The composition reads `spec.database ?? "app"` but the arktype spec
+    // only declares `name` and `image`. addMissingDefaultFields should
+    // auto-create `database: string | default="app"` in the schema.
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+    const comp = kubernetesComposition(
+      {
+        name: 'leaf-creation',
+        kind: 'LeafCreation',
+        spec: Spec,
+        status: Status,
+      },
+      (spec) => {
+        const db = spec.database ?? 'app';
+        Deployment({
+          name: spec.name,
+          image: spec.image,
+          env: { DB_NAME: String(db) },
+          id: 'app',
+        });
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = comp.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+
+    // The schema should contain `database` with the default.
+    expect(schemaSpec.database).toBe('string | default="app"');
+  });
+
+  it('creates intermediate object nodes for nested default paths', () => {
+    // The composition reads `spec.config?.mode ?? "auto"` where the
+    // arktype spec does not declare `config` at all. addMissingDefaultFields
+    // should create the intermediate `config` object node and the
+    // `mode` leaf with default="auto".
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+    const comp = kubernetesComposition(
+      {
+        name: 'intermediate-obj-test',
+        kind: 'IntermediateObjTest',
+        spec: Spec,
+        status: Status,
+      },
+      (spec) => {
+        const mode = spec.config?.mode ?? 'auto';
+        Deployment({
+          name: spec.name,
+          image: spec.image,
+          env: { MODE: String(mode) },
+          id: 'app',
+        });
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = comp.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+
+    // `config` should be an auto-created object containing `mode`.
+    expect(typeof schemaSpec.config).toBe('object');
+    const config = schemaSpec.config as Record<string, unknown>;
+    expect(config.mode).toBe('string | default="auto"');
+  });
+
+  it('does not overwrite an existing field declared by the arktype spec', () => {
+    // The arktype spec declares `database` as a nested object with `host`.
+    // The composition body reads `spec.database ?? "app"`. The `??`
+    // default would produce a scalar type (`string | default="app"`), but
+    // `addMissingDefaultFields` should skip the field because it already
+    // exists as an object — preserving the declared structure.
+    const Spec = type({
+      name: 'string',
+      database: { host: 'string' },
+    });
+    const Status = type({ ready: 'boolean' });
+    const comp = kubernetesComposition(
+      {
+        name: 'no-overwrite-test',
+        kind: 'NoOverwriteTest',
+        spec: Spec,
+        status: Status,
+      },
+      (spec) => {
+        const db = spec.database ?? 'app';
+        ConfigMap({
+          name: spec.name,
+          data: { db: String(db) },
+          id: 'cfg',
+        });
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = comp.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+
+    // `database` was explicitly declared as an object with `host`.
+    // addMissingDefaultFields must NOT overwrite it with a scalar.
+    expect(typeof schemaSpec.database).toBe('object');
+    const database = schemaSpec.database as Record<string, unknown>;
+    expect(database.host).toBe('string');
+  });
+
+  it('bails gracefully when path traversal hits a scalar type', () => {
+    // The composition reads `spec.tag?.sub ?? "fallback"` but the spec
+    // declares `tag` as a plain string (scalar). Creating `tag.sub`
+    // would require `tag` to be an object, which conflicts with the
+    // existing scalar type. addMissingDefaultFields should bail and
+    // leave `tag` as a string.
+    const Spec = type({ name: 'string', tag: 'string' });
+    const Status = type({ ready: 'boolean' });
+    const comp = kubernetesComposition(
+      {
+        name: 'scalar-bail-test',
+        kind: 'ScalarBailTest',
+        spec: Spec,
+        status: Status,
+      },
+      (spec) => {
+        const sub = spec.tag?.sub ?? 'fallback';
+        Deployment({
+          name: spec.name,
+          image: 'nginx',
+          env: { SUB: String(sub) },
+          id: 'app',
+        });
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = comp.toYaml();
+    const schemaSpec = extractSchemaSpec(yamlStr);
+
+    // `tag` should remain a plain string. No sub-object forced onto it.
+    expect(schemaSpec.tag).toBe('string');
+  });
+});
+

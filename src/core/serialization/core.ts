@@ -900,6 +900,17 @@ function walkAndConditionalizeResourceStatus(
     const iv = invertedRes[key];
     if (pv === undefined || iv === undefined) continue;
 
+    // Treat CelExpression objects as atomic leaves — don't recurse into
+    // their internal properties (expression, __isTemplate, etc.).
+    if (isCelExpressionLike(pv) || isCelExpressionLike(iv)) {
+      if (!leafEquals(pv, iv)) {
+        const proxyRepr = celValueRepr(pv);
+        const invertedRepr = celValueRepr(iv);
+        proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
+      }
+      continue;
+    }
+
     if (isPlainObject(pv) && isPlainObject(iv)) {
       walkAndConditionalizeResourceStatus(pv, iv, conditionCel);
     } else if (Array.isArray(pv) && Array.isArray(iv) && pv.length === iv.length) {
@@ -912,6 +923,13 @@ function walkAndConditionalizeResourceStatus(
           );
         }
       }
+    } else if (Array.isArray(pv) && Array.isArray(iv) && pv.length !== iv.length) {
+      // Different-length arrays: the ternary's consequent and alternate
+      // produce arrays of different sizes. We can't element-wise diff
+      // these — treat the whole array as a leaf and emit a conditional.
+      const proxyRepr = celValueRepr(pv);
+      const invertedRepr = celValueRepr(iv);
+      proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
     } else if (!leafEquals(pv, iv)) {
       const proxyRepr = celValueRepr(pv);
       const invertedRepr = celValueRepr(iv);
@@ -929,7 +947,16 @@ function leafEquals(a: unknown, b: unknown): boolean {
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && !isCelExpressionLike(v);
+}
+
+/** Duck-type check for CelExpression objects — avoids importing from cel.ts (cycle risk). */
+function isCelExpressionLike(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null) return false;
+  // CelExpression objects have a Symbol brand and an `expression` string property.
+  // Check for `expression` + `__isTemplate` as the identifying shape.
+  return 'expression' in v && typeof (v as Record<string, unknown>).expression === 'string'
+    && '__isTemplate' in v;
 }
 
 /**
@@ -1002,23 +1029,17 @@ function pickConditionField(
  *   result is valid CEL, not just a raw string)
  * - Numbers and booleans are emitted verbatim
  */
-/**
- * Escape a string literal for safe embedding inside a CEL string.
- * Handles backslash, double-quote, newline, carriage return, and tab.
- * Must be used everywhere we embed literal text in CEL output.
- */
-function escapeCelLiteral(literal: string): string {
-  return literal
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
-}
+// Re-export from shared utility for local use. This was previously an
+// inline copy; the canonical implementation lives in utils/cel-escape.ts.
+import { escapeCelString as escapeCelLiteral } from '../../utils/cel-escape.js';
 
 function celValueRepr(value: unknown): string {
   if (value === null || value === undefined) return '""';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // CelExpression object — use the expression string directly.
+  if (isCelExpressionLike(value)) {
+    return (value as { expression: string }).expression;
+  }
   if (typeof value === 'function') {
     // KubernetesRef proxy — toString yields the marker token which we
     // convert to a bare CEL path via the marker → CEL rules.

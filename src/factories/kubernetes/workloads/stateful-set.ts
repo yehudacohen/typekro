@@ -38,7 +38,7 @@ export function statefulSet(
     apiVersion: 'apps/v1',
     kind: 'StatefulSet',
     metadata: resource.metadata ?? { name: 'unnamed-statefulset' },
-  }, { dnsAddressable: true }).withReadinessEvaluator((liveResource: V1StatefulSet) => {
+  }).withReadinessEvaluator((liveResource: V1StatefulSet) => {
     try {
       const status = liveResource.status;
 

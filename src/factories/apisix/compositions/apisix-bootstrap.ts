@@ -1,4 +1,5 @@
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { getCurrentCompositionContext } from '../../../core/composition/context.js';
 import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { createAlwaysReadyEvaluator } from '../../../core/readiness/index.js';
 import { Cel } from '../../../core/references/cel.js';
@@ -180,15 +181,15 @@ export const apisixBootstrap = kubernetesComposition(
       helmValues.apisix = {};
     }
     /** @security Resolved admin credentials — never log these values. */
-    // allowDefaults: true permits dev-default credentials when neither the
-    // spec nor env vars provide real keys. This is necessary because the
-    // composition function runs during the definition pass (with proxy
-    // values, no real credentials available). A warning is emitted outside
-    // test environments to flag the security risk. For production hardening,
-    // set APISIX_ADMIN_KEY env var or pass gateway.adminCredentials in spec.
+    // Allow defaults ONLY during the definition pass (schema proxy tracing),
+    // not during re-execution (actual deploy). During definition, credentials
+    // are placeholders for YAML generation; during re-execution, real
+    // credentials are required and missing ones should throw.
+    const ctx = getCurrentCompositionContext();
+    const allowDefaults = !ctx?.isReExecution;
     const adminCredentials = resolveAdminCredentials(
       fullConfig.gateway?.adminCredentials,
-      { allowDefaults: true }
+      { allowDefaults }
     );
     (helmValues.apisix as Record<string, any>).admin = {
       enabled: true,

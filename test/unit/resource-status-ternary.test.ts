@@ -354,11 +354,11 @@ describe('Phase 2: ResourceStatusTernary detection', () => {
 
     expect(result.resourceStatusTernaries).toBeDefined();
     expect(Array.isArray(result.resourceStatusTernaries)).toBe(true);
-    // The analyzer should have found at least one resource-status ternary
-    expect(result.resourceStatusTernaries.length).toBeGreaterThanOrEqual(1);
-    // It should reference cache.status.ready
-    const ternary = result.resourceStatusTernaries[0];
-    expect(ternary?.statusField).toBe('ready');
+    // Exactly one resource-status ternary (cache.status.ready ? ... : ...)
+    expect(result.resourceStatusTernaries.length).toBe(1);
+    const ternary = result.resourceStatusTernaries[0]!;
+    expect(ternary.variableName).toBe('cache');
+    expect(ternary.statusField).toBe('ready');
   });
 });
 

@@ -140,13 +140,19 @@ function generateCelExpression(
  * sequence like "spec.name" or "status.workers.$item.name".
  *
  * Two flavors are needed:
- *  - `MARKER_PATTERN_G` matches anywhere in a string (for substitution and
- *    iteration via `String.matchAll`).
+ *  - `MARKER_PATTERN_SOURCE` is the non-global base pattern. Create a fresh
+ *    `new RegExp(MARKER_PATTERN_SOURCE, 'g')` wherever global matching is
+ *    needed — avoids the stateful-lastIndex footgun.
  *  - `MARKER_PATTERN_FULL` matches when the entire string is exactly one
  *    marker (for the single-ref fast path in
  *    {@link convertKubernetesRefMarkersTocel}).
  */
-const MARKER_PATTERN_G = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+/**
+ * Non-global base pattern for __KUBERNETES_REF__ markers. Create a fresh
+ * `RegExp(MARKER_PATTERN_SOURCE, 'g')` wherever global matching is needed —
+ * avoids the stateful-lastIndex footgun of a module-level `/g` regex.
+ */
+const MARKER_PATTERN_SOURCE = '__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__';
 const MARKER_PATTERN_FULL = /^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__$/;
 
 /**
@@ -178,7 +184,7 @@ function markerToCelPath(resourceId: string, fieldPath: string): string {
  * with CEL paths, suitable for pattern matching only.
  */
 function normalizeMarkerString(str: string): string {
-  return str.replace(MARKER_PATTERN_G, (_match, id: string, path: string) =>
+  return str.replace(new RegExp(MARKER_PATTERN_SOURCE, 'g'), (_match, id: string, path: string) =>
     markerToCelPath(id, path)
   );
 }
@@ -477,7 +483,7 @@ function resolveNestedRefMarkers(
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
     return str;
   }
-  return str.replace(MARKER_PATTERN_G, (match, id: string, path: string) => {
+  return str.replace(new RegExp(MARKER_PATTERN_SOURCE, 'g'), (match, id: string, path: string) => {
     if (id === '__schema__') return match;
     // Strip leading "status." since nestedStatusCel keys use the bare field path.
     const fieldPath = path.replace(/^status\./, '');
@@ -615,10 +621,8 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
   let result = '';
   let lastIndex = 0;
 
-  // Reset lastIndex defensively — MARKER_PATTERN_G is a module-level
-  // stateful global regex.
-  MARKER_PATTERN_G.lastIndex = 0;
-  for (const match of str.matchAll(MARKER_PATTERN_G)) {
+  // Fresh global instance per call — no shared lastIndex state.
+  for (const match of str.matchAll(new RegExp(MARKER_PATTERN_SOURCE, 'g'))) {
     const idx = match.index ?? 0;
     if (idx > lastIndex) {
       result += str.slice(lastIndex, idx);

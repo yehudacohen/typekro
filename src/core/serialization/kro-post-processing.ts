@@ -1,3 +1,5 @@
+import { escapeCelString as escapeCelStringLiteral } from '../../utils/cel-escape.js';
+
 /**
  * KRO YAML Post-Processing Utilities
  *
@@ -73,24 +75,9 @@ export function applyTernaryConditionalsToResources(
 }
 
 /**
- * Escape a literal text chunk for inclusion inside a CEL double-quoted
- * string. Must handle backslash, double quote, newline, carriage return,
- * and tab — in that order, so that the backslash escape doesn't re-escape
- * the backslashes introduced by later substitutions.
- *
- * Previous implementation only escaped newlines, which left literal `"` and
- * `\` characters unescaped. That was a latent bug: any composition that
- * emitted quoted YAML values or Windows-style paths inside a ternary branch
- * would produce malformed CEL and the KRO reconciler would reject the RGD.
+ * escapeCelStringLiteral is imported from utils/cel-escape.ts (aliased
+ * at the import site to preserve the local name used by callsites).
  */
-function escapeCelStringLiteral(literal: string): string {
-  return literal
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
-}
 
 /** Recursively find and replace string sections in resource data. */
 function replaceInResources(
