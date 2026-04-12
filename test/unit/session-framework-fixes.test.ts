@@ -16,6 +16,8 @@
  *         resolves ancestor optional fields for sub-path refs
  *   #53 — createSchemaProxy with arktype JSON is shape-aware:
  *         spread and Object.keys enumerate declared fields
+ *   #56 — stripOrphanedItemSentinels: $item sentinel stripped from non-forEach
+ *         resources so KRO receives valid CEL (no `$item` identifier)
  *
  * Fixes #35, #48, and #50 are covered by other test suites
  * (nested-composition-kro-serialization, integration tests, and the
@@ -24,6 +26,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
+import * as jsYaml from 'js-yaml';
 import {
   createSchemaProxy,
   isSchemaReference,
@@ -34,6 +37,9 @@ import {
 import { shouldPreserveRgd } from '../../src/core/deployment/kro-factory.js';
 import { isKubernetesRef } from '../../src/utils/type-guards.js';
 import type { KubernetesRef } from '../../src/core/types/common.js';
+import { kubernetesComposition } from '../../src/core/composition/imperative.js';
+import { Deployment, ConfigMap } from '../../src/factories/simple/index.js';
+import { Cel } from '../../src/core/references/cel.js';
 
 // =============================================================================
 // Fix #36 — BARE_LITERAL_PATTERN: literal nested refs in template context
@@ -670,5 +676,218 @@ describe('#55 shouldPreserveRgd decision', () => {
     // Target filtered out, one other entry remains (the nameless one)
     // which doesn't match our name → counted as a remaining instance.
     expect(result).toBe(true);
+  });
+});
+
+// =============================================================================
+// Fix #56 — stripOrphanedItemSentinels: $item not leaked into KRO CEL
+// =============================================================================
+//
+// When a schema array proxy is spread (`...spec.envFrom`) into a literal
+// array, the proxy iterator yields elements with `$item` in their ref path.
+// For forEach resources, `substituteForEachSentinels` resolves these. For
+// non-forEach resources (like a Deployment whose envFrom mixes a literal
+// with a schema array spread), the $item must be stripped so KRO receives
+// valid CEL. `$` is not a valid CEL identifier character.
+//
+// Before the fix, KRO rejected the RGD with:
+//   parse error: token recognition error at: '$'
+//   | has(schema.spec.app.envFrom) ? schema.spec.app.envFrom.$item : omit()
+
+/** Parse RGD YAML and return typed object */
+function parseRgd(yamlStr: string) {
+  return jsYaml.load(yamlStr) as {
+    spec: {
+      // biome-ignore lint/suspicious/noExplicitAny: parsed YAML template shape varies
+      resources: Array<{ id: string; template: any; forEach?: any }>;
+      // biome-ignore lint/suspicious/noExplicitAny: parsed YAML schema shape
+      schema: any;
+    };
+  };
+}
+
+describe('Fix #56 — orphaned $item sentinel stripping', () => {
+  it('array spread of optional schema array produces valid CEL (no $item)', () => {
+    // Simulates the webapp composition pattern:
+    //   const envFrom = [
+    //     { secretRef: { name: inngestSecret } },
+    //     ...((spec.app.envFrom ?? []) as EnvFromSource[]),
+    //   ];
+    const AppSpec = type({
+      name: 'string',
+      image: 'string',
+      'envFrom?': type({ name: 'string' }).array(),
+    });
+
+    const graph = kubernetesComposition(
+      {
+        name: 'item-sentinel-test',
+        kind: 'ItemSentinelTest',
+        spec: AppSpec,
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        // Build envFrom by spreading an optional array (the pattern that triggers $item)
+        const envFrom = [
+          { secretRef: { name: 'static-secret' } },
+          ...((spec.envFrom ?? []) as Array<{ name: string }>),
+        ];
+
+        const app = Deployment({
+          name: spec.name,
+          image: spec.image,
+          envFrom: envFrom as never[],
+          id: 'app',
+        });
+
+        return { ready: app.status.readyReplicas >= 1 };
+      }
+    );
+
+    const yamlStr = graph.toYaml();
+
+    // The YAML must not contain $item anywhere — it's not valid CEL
+    expect(yamlStr).not.toContain('$item');
+
+    // The optional envFrom should be guarded with has()/omit()
+    expect(yamlStr).toContain('has(schema.spec.envFrom)');
+    expect(yamlStr).toContain('omit()');
+
+    // The static secret should still be present
+    expect(yamlStr).toContain('static-secret');
+  });
+
+  it('forEach resources preserve $item for later substitution', () => {
+    // forEach resources SHOULD have $item resolved by substituteForEachSentinels,
+    // not by stripOrphanedItemSentinels. Verify the final output has the
+    // forEach variable name (not $item and not the raw schema path).
+    const WorkerSpec = type({
+      name: 'string',
+      workers: type({ label: 'string' }).array(),
+    });
+
+    const graph = kubernetesComposition(
+      {
+        name: 'foreach-item-test',
+        kind: 'ForEachItemTest',
+        spec: WorkerSpec,
+        status: type({ count: 'number' }),
+      },
+      (spec) => {
+        for (const worker of spec.workers) {
+          ConfigMap({
+            name: `${spec.name}-${worker.label}`,
+            data: { label: String(worker.label) },
+            id: 'workerCfg',
+          });
+        }
+        return { count: Cel.expr<number>('size(workerCfg)') };
+      }
+    );
+
+    const yamlStr = graph.toYaml();
+    const parsed = parseRgd(yamlStr);
+    const resource = parsed.spec.resources.find(r => r.id === 'workerCfg');
+
+    // $item must NOT appear — substituteForEachSentinels should have resolved it
+    expect(yamlStr).not.toContain('$item');
+
+    // forEach dimension should reference workers
+    expect(resource?.forEach).toBeDefined();
+
+    // Template should use the forEach variable, not raw schema paths
+    const templateName = resource?.template?.metadata?.name;
+    expect(templateName).toContain('worker.label');
+  });
+
+  it('mixed literal + spread array does not nest arrays', () => {
+    // When the $item is stripped, the reference becomes the whole array.
+    // The YAML should have the static element AND the schema ref element.
+    const Spec = type({
+      name: 'string',
+      'tags?': 'string[]',
+    });
+
+    const graph = kubernetesComposition(
+      {
+        name: 'mixed-array-test',
+        kind: 'MixedArrayTest',
+        spec: Spec,
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const allTags = ['built-in', ...((spec.tags ?? []) as string[])];
+
+        ConfigMap({
+          name: spec.name,
+          data: { tags: allTags.join(',') },
+          id: 'cfg',
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = graph.toYaml();
+
+    // No $item should leak through
+    expect(yamlStr).not.toContain('$item');
+  });
+
+  it('webapp composition envFrom produces no $item in YAML', async () => {
+    // End-to-end regression: the actual webapp composition that triggered the bug
+    const { webAppWithProcessing } = await import(
+      '../../src/factories/webapp/compositions/web-app-with-processing.js'
+    );
+
+    const yamlStr = webAppWithProcessing.toYaml();
+
+    // No $item anywhere in the output
+    expect(yamlStr).not.toContain('$item');
+
+    // The envFrom CEL should be clean
+    expect(yamlStr).toContain('has(schema.spec.app.envFrom)');
+    expect(yamlStr).not.toContain('envFrom.$item');
+
+    // The inngest credentials secret should still be wired
+    expect(yamlStr).toContain('inngest-credentials');
+  });
+
+  it('non-forEach resource with nested $item field access collapses to parent', () => {
+    // When $item.field.subfield appears, the entire $item.field.subfield
+    // should be stripped, leaving just the parent array path.
+    const Spec = type({
+      name: 'string',
+      'sources?': type({ url: 'string', priority: 'number' }).array(),
+    });
+
+    const graph = kubernetesComposition(
+      {
+        name: 'nested-item-test',
+        kind: 'NestedItemTest',
+        spec: Spec,
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        // Spread an array of objects — each element's fields have $item markers
+        const allSources = [
+          { url: 'https://default.example.com', priority: 0 },
+          ...((spec.sources ?? []) as Array<{ url: string; priority: number }>),
+        ];
+
+        ConfigMap({
+          name: spec.name,
+          data: { firstUrl: allSources[0]?.url ?? 'none' },
+          id: 'cfg',
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yamlStr = graph.toYaml();
+
+    // No $item should survive
+    expect(yamlStr).not.toContain('$item');
   });
 });
