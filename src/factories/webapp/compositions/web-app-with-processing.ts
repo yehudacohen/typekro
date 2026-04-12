@@ -107,7 +107,13 @@ export const webAppWithProcessing = kubernetesComposition(
     const appPort = spec.app.port ?? 3000;
     const appReplicas = spec.app.replicas ?? 1;
     const inngestReplicas = spec.processing.replicas ?? 1;
-    const dbName = spec.database.database ?? spec.name;
+    // Defaults for optional DB fields. These literals are picked up by
+    // `extractNullishDefaults` and propagated to the outer KRO schema as
+    // `| default="..."` annotations (see schema.ts). Using schema-ref
+    // fallbacks (e.g., `spec.name`) does NOT work in KRO mode because
+    // the schema proxy is truthy and `??` never fires — KRO also has
+    // no way to express a cross-field schema default statically.
+    const dbName = spec.database.database ?? 'app';
     const dbOwner = spec.database.owner ?? 'app';
 
     // ── Operator bootstraps ────────────────────────────────────────────
@@ -194,9 +200,24 @@ export const webAppWithProcessing = kubernetesComposition(
       id: 'cache',
     });
 
-    // The Valkey operator creates a client Service for each Valkey CR, but KRO's
-    // applyset pruning deletes Services it doesn't manage. Declare the cache
-    // Service explicitly so KRO includes it in its applyset and doesn't prune it.
+    // KRO applyset pruning workaround (upstream: kubernetes-sigs/kro#1153).
+    //
+    // The Hyperspike Valkey operator copies ALL parent labels to child
+    // resources. KRO stamps applyset labels on the Valkey CR, so the
+    // operator propagates them to children (ConfigMap, headless Service,
+    // etc.). KRO's pruner then treats those children as applyset members
+    // and deletes any whose GK is already in `contains-group-kinds` but
+    // whose UID isn't in `keepUIDs` — creating an infinite create/delete
+    // loop. KRO closed this as "expected behavior"; the fix belongs on
+    // the operator side, but Hyperspike has no label-propagation opt-out.
+    //
+    // Workaround: pre-declare the operator-created resources as typekro
+    // graph nodes so KRO claims them with their own `kro.run/node-id`
+    // label. The operator's upsert then patches the existing resource
+    // instead of creating a new one with inherited applyset labels.
+    //
+    // TODO: remove when migrating to valkey-io/valkey-operator, which
+    // is unlikely to have this label-copying behavior.
     simple.Service({
       name: `${spec.name}-cache`,
       namespace: ns,
@@ -206,6 +227,12 @@ export const webAppWithProcessing = kubernetesComposition(
       },
       ports: [{ port: 6379, targetPort: 6379 }],
       id: 'cacheService',
+    });
+    simple.ConfigMap({
+      name: `${spec.name}-cache`,
+      namespace: ns,
+      data: {},
+      id: 'cacheConfigMap',
     });
 
     // ── Database credentials ──────────────────────────────────────────────
@@ -230,6 +257,11 @@ export const webAppWithProcessing = kubernetesComposition(
         eventKey: spec.processing.eventKey,
         signingKey: spec.processing.signingKey,
         postgres: { uri: `postgresql://${dbOwner}@${database.status.writeService}:5432/${dbName}` },
+        // TODO: cache.metadata.name is deterministic and gets inlined to a
+        // schema ref, so KRO sees no dependency on the cache resource.
+        // Inngest may restart once while waiting for cache to become ready.
+        // Fix: extend the ternary analyzer to handle resource-status-ref
+        // conditions and emit CEL conditionals across composition boundaries.
         redis: { uri: `redis://${cache.metadata.name}:6379` },
         sdkUrl: spec.processing.sdkUrl,
       },

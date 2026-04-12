@@ -40,16 +40,31 @@ export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
 // ---------------------------------------------------------------------------
 
 /**
- * If `celPath` is exactly `schema.spec.<field>` for a top-level optional
- * field listed in the context's omit set, wrap it with KRO 0.9+
- * `has(...) ? ... : omit()`. Otherwise return it unchanged.
+ * If `celPath` is a `schema.spec.<dotted.path>` reference whose path
+ * — or any of its ancestor prefixes — is listed in the context's omit
+ * set, wrap it with KRO 0.9+ `has(...) ? ... : omit()`. Otherwise
+ * return it unchanged.
  *
- * The wrapper is only applied to single-ref expressions — never to mixed
- * templates like `${string(schema.spec.name)}-suffix` because those
- * produce string values, not fields, and omit() operates at the field
- * level. Sub-path refs (`schema.spec.env.FOO`) are also not wrapped;
- * omit() removes the containing field, so the wrapper must target the
- * top-level optional field (`schema.spec.env`) and not its children.
+ * The wrapper is only applied to single-ref expressions — never to
+ * mixed templates like `${string(schema.spec.name)}-suffix` because
+ * those produce string values, not fields, and `omit()` operates at
+ * the field level.
+ *
+ * **Ancestor-prefix lookup:** `omitFields` may contain either leaf
+ * paths (`database.storageClass`) or parent paths (`env`, `cache`).
+ * The walk goes leaf-to-root and guards with `has()` on the *deepest*
+ * ancestor that's in the set. This covers three cases in one pass:
+ *
+ *   1. Exact leaf match — `database.storageClass?` → guard
+ *      `has(schema.spec.database.storageClass)`.
+ *   2. Whole-object optional — `env?: {...}` → any child ref
+ *      `schema.spec.env.FOO` is guarded by `has(schema.spec.env)`
+ *      because leaf access throws when the parent is absent.
+ *   3. Mixed — both `cache?` (parent) and `cache.replicas?` (child)
+ *      in the set → a ref to `schema.spec.cache.replicas` prefers
+ *      the *deeper* `cache.replicas` guard so a partially-populated
+ *      `cache: { shards: 1 }` (parent present, child absent) still
+ *      omits correctly.
  */
 function maybeWrapWithOmit(
   celPath: string,
@@ -58,11 +73,24 @@ function maybeWrapWithOmit(
 ): string {
   const value = stringWrap ? `string(${celPath})` : celPath;
   if (!omitFields || omitFields.size === 0) return value;
-  // Top-level schema.spec.<field> with no dotted subpath
-  const match = /^schema\.spec\.([A-Za-z_$][\w$]*)$/.exec(celPath);
-  const field = match?.[1];
-  if (!field || !omitFields.has(field)) return value;
-  return `has(${celPath}) ? ${value} : omit()`;
+
+  // Only handle refs rooted at `schema.spec.`.
+  const refMatch = /^schema\.spec\.([A-Za-z_$][\w$.]*)$/.exec(celPath);
+  const refPath = refMatch?.[1];
+  if (!refPath) return value;
+
+  // Walk from leaf to root: find the deepest ancestor that's in the
+  // omit set. That ancestor is the one we guard via has(), because
+  // its absence implies the absence of every descendant.
+  const segments = refPath.split('.');
+  for (let i = segments.length; i >= 1; i--) {
+    const prefix = segments.slice(0, i).join('.');
+    if (omitFields.has(prefix)) {
+      const guardPath = `schema.spec.${prefix}`;
+      return `has(${guardPath}) ? ${value} : omit()`;
+    }
+  }
+  return value;
 }
 
 /**
@@ -460,9 +488,31 @@ function resolveNestedRefMarkers(
 }
 
 /**
+ * Matches a bare CEL literal — an integer, float, boolean, or null.
+ * Used by {@link innerExprToYamlSegment} to detect when a resolved
+ * nested-composition value should be wrapped in `string(...)` so
+ * template-literal-originated references produce string values instead
+ * of the literal's natural CEL type.
+ */
+const BARE_LITERAL_PATTERN = /^\s*(-?\d+(?:\.\d+)?|true|false|null)\s*$/;
+
+/**
  * Convert an inner composition's analyzed expression into a YAML-embeddable
  * segment. Recursively resolves nested references within the inner expression
  * and produces the appropriate KRO format.
+ *
+ * **Called from the marker-substitution path** (`resolveNestedRefMarkers`),
+ * which runs when the user wrote a template literal that coerced a nested
+ * composition proxy into a marker string (e.g., `` `${stack.status.cachePort}` ``).
+ * The template literal is the user's explicit signal that they want a
+ * STRING value — so when the resolved expression is a bare literal
+ * (number, boolean, null), we wrap it with `string(...)` so KRO's CEL
+ * evaluation produces a string matching the user's intent.
+ *
+ * The direct-ref path ({@link generateCelExpression} → {@link finalizeCelForKro})
+ * deliberately does NOT apply this wrapping — a direct assignment like
+ * `replicas: stack.status.someCount` should preserve the natural numeric
+ * type because the destination field expects a number.
  */
 function innerExprToYamlSegment(
   innerExpr: string,
@@ -478,6 +528,14 @@ function innerExprToYamlSegment(
   if (resolved.includes('${')) {
     // Already a KRO template (from Cel.template) — pass through.
     return resolved;
+  }
+  // Bare literal reached via a template-literal coercion — wrap with
+  // `string(...)` so KRO evaluates it to a string value. This matches
+  // direct-mode JS semantics (`${6379}` stringifies to `"6379"`) and
+  // prevents type-mismatch errors when the literal is used in a
+  // string-typed context like env var values.
+  if (BARE_LITERAL_PATTERN.test(resolved)) {
+    return `\${string(${resolved.trim()})}`;
   }
   // Plain CEL — wrap in ${...}.
   return `\${${resolved}}`;

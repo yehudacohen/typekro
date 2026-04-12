@@ -167,27 +167,54 @@ export function conditionToCel(
   source = source.replace(/===/g, '==');
   source = source.replace(/!==/g, '!=');
 
+  // JS `Object.keys(X).length` → CEL `size(X)`. The `.length` on a map
+  // enumeration is equivalent to the map's size in CEL. We convert the
+  // whole `Object.keys(X).length` expression in one pass so the result
+  // composes cleanly with any surrounding comparison operators
+  // (`> 0`, `>= N`, etc.).
+  source = source.replace(
+    /Object\.keys\((schema\.spec\.[a-zA-Z0-9_.]+)\)\.length/g,
+    'size($1)'
+  );
+
+  // JS `X.length` on a schema reference where X is known to be an array
+  // or map-like also maps to `size(X)` in CEL. This handles the common
+  // pattern `if (spec.items.length > 0)` without requiring Object.keys.
+  source = source.replace(
+    /(schema\.spec\.[a-zA-Z0-9_.]+)\.length\b/g,
+    'size($1)'
+  );
+
   // Truthiness → has() for OPTIONAL fields only. JavaScript's
   // `if (spec.x)` means "the field is set" when x is optional, but
   // "the value is truthy" when x is a required boolean. We pick the
   // right interpretation based on whether the tested field is declared
-  // as optional in the schema.
+  // as optional in the schema. KRO CEL's `has(schema.spec.X)` is the
+  // canonical presence check; a bare `schema.spec.X` used as a boolean
+  // throws when X is absent.
   //
-  // We handle three shapes, all of which must resolve to a bare
-  // `schema.spec.<path>` expression with nothing else around them:
-  //   (a) `schema.spec.x`        → `has(schema.spec.x)` (if x optional)
-  //   (b) `!schema.spec.x`       → `!has(schema.spec.x)` (if x optional)
-  //   (c) `schema.spec.x.y.z`    → `has(schema.spec.x.y.z)` (if x optional)
+  // Two passes:
   //
-  // Compound conditions (`&&`, `||`, `==`, `!=`) are left alone — the user
-  // is expressing a value-based test and the authored CEL is already
-  // correct after the operator conversions above.
+  //   1. **Standalone bare ref** — the *entire* condition is a single
+  //      `schema.spec.<path>` (or its negation). Rewrite to `has(...)`.
+  //      Handles `if (spec.x)`, `if (!spec.x)`, `if (spec.a.b.c)`.
+  //
+  //   2. **Bare ref in a compound** — the condition has `&&` or `||`,
+  //      and one side is a bare optional ref (e.g. the left operand
+  //      of `spec.secrets && size(spec.secrets) > 0`). Wrap just that
+  //      operand with `has()` so the compound evaluates safely.
+  //
+  // In both passes, the check fires only when the top-level segment
+  // of the referenced path is a declared optional field — required
+  // fields keep their JS semantics (value-based truthiness).
   //
   // Note: We do NOT convert quotes here. Bun's transpiler normalizes JS strings
   // to double quotes in fn.toString(), so the source text already uses double quotes.
   // For template values (inside resource templates), double quotes work fine because
   // they're nested in the YAML structure. For status values, the caller is responsible
   // for converting double quotes to single quotes if needed to avoid YAML escaping.
+
+  // Pass 1: standalone bare ref.
   const bareRefPattern = /^(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)\s*$/;
   const bareMatch = bareRefPattern.exec(source);
   if (bareMatch) {
@@ -197,6 +224,21 @@ export function conditionToCel(
     if (topLevelField && optionalFieldNames?.has(topLevelField)) {
       source = `${negation}has(${path})`;
     }
+  }
+
+  // Pass 2: bare ref as an operand of `&&` / `||`. Handles the common
+  // pattern `spec.secrets && size(spec.secrets) > 0` where the LHS
+  // needs has() to avoid throwing on absent optional fields.
+  if (optionalFieldNames && optionalFieldNames.size > 0) {
+    source = source.replace(
+      /(^|[\s(])(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\|))/g,
+      (match, leading, negation, path, topLevelField) => {
+        if (optionalFieldNames.has(topLevelField)) {
+          return `${leading}${negation}has(${path})`;
+        }
+        return match;
+      }
+    );
   }
 
   return `\${${source}}`;

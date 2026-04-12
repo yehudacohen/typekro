@@ -1430,4 +1430,25 @@ export class DirectDeploymentEngine {
   ): Promise<void> {
     await this.crdManager.waitForCRDReady(crdName, this.deploymentMode, timeout, abortSignal);
   }
+
+  /**
+   * Wait for a CRD discovered by (kind, group) rather than a pre-guessed name.
+   * Used by the KRO factory after applying an RGD — KRO's server-side
+   * pluralization is authoritative, and the client cannot always derive the
+   * same plural form (e.g., already-plural kinds like "CollectorBills").
+   */
+  async waitForCRDByKindAndGroup(
+    kind: string,
+    group: string,
+    timeout: number = DEFAULT_CRD_READY_TIMEOUT,
+    abortSignal?: AbortSignal
+  ): Promise<{ crdName: string; plural: string }> {
+    return await this.crdManager.waitForCRDByKindAndGroup(
+      kind,
+      group,
+      this.deploymentMode,
+      timeout,
+      abortSignal
+    );
+  }
 }

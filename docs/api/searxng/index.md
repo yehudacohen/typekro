@@ -9,8 +9,8 @@ Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch 
 
 ## Requirements
 
-- **KRO 0.9.0+** with the `CELOmitFunction` feature gate enabled. The composition uses `omit()` in its CEL expressions to drop optional fields that the user leaves unset — KRO 0.8.x will reject the resulting RGD at reconciliation time.
-- TypeKro's bundled `typekro-runtime` already pins KRO 0.9.0 and enables the feature gate, so no manual configuration is needed if you bootstrap your cluster via `typekroRuntime.factory(...)`. If you install KRO yourself, add this to your Helm values:
+- **KRO 0.9.1+** with the `CELOmitFunction` feature gate enabled. The composition uses `omit()` in its CEL expressions to drop optional fields that the user leaves unset — KRO 0.8.x will reject the resulting RGD at reconciliation time.
+- TypeKro's bundled `typekro-runtime` already pins KRO 0.9.1 and enables the feature gate, so no manual configuration is needed if you bootstrap your cluster via `typekroRuntime.factory(...)`. If you install KRO yourself, add this to your Helm values:
   ```yaml
   config:
     featureGates:
@@ -20,7 +20,7 @@ Deploy [SearXNG](https://docs.searxng.org/) — a privacy-respecting metasearch 
 ## Known Limitations
 
 - **`search.formats` is direct-mode only.** In KRO mode the user-supplied `formats` array is currently ignored and the composition falls back to the literal default `['html', 'json']`. This is because KRO's CEL mixed templates don't yet support iterating a schema array into a YAML list. If you need a custom `formats` list in KRO mode, deploy via direct mode, or provide a pre-built `settingsYaml` string with your desired formats. Array-valued CEL templating is tracked in [yehudacohen/typekro#57](https://github.com/yehudacohen/typekro/issues/57) and this limitation will be removed once it lands.
-- **KRO 0.9.0+ required.** See [Requirements](#requirements) above.
+- **KRO 0.9.1+ required.** See [Requirements](#requirements) above.
 
 ## Quick Start
 

@@ -681,7 +681,12 @@ export class DeploymentTimeoutError extends TypeKroError {
     public readonly resourceKind: string,
     public readonly resourceName: string,
     public readonly timeoutMs: number,
-    public readonly operation: 'readiness' | 'deletion' | 'crd-establishment' | 'instance-readiness'
+    public readonly operation:
+      | 'readiness'
+      | 'deletion'
+      | 'crd-establishment'
+      | 'crd-discovery'
+      | 'instance-readiness'
   ) {
     super(message, 'DEPLOYMENT_TIMEOUT', {
       resourceKind,

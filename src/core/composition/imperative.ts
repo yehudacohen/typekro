@@ -297,6 +297,19 @@ function executeNestedCompositionWithSpec<
   }
   parentContext.nestedCompositionIds.add(baseId);
 
+  // Register the inner composition's compositionFn so the outer's schema
+  // generation can source-parse it for `?? <literal>` defaults and
+  // auto-mirror them into the outer schema. This unblocks the common
+  // pattern where an inner reads `spec.X?.Y ?? default` and the outer
+  // doesn't explicitly expose Y in its schema — in KRO mode the proxy is
+  // truthy so `??` never fires, leaving a CEL ref to a field the outer
+  // schema doesn't declare. With the inner's default mirrored into the
+  // outer schema, KRO resolves the ref via the default at apply time.
+  if (!parentContext.nestedCompositionFns) {
+    parentContext.nestedCompositionFns = new Map();
+  }
+  parentContext.nestedCompositionFns.set(baseId, compositionFn);
+
   // Determine if this composition has a single resource
   const resourceCount = Object.keys(executionContext.resources).length;
 
@@ -364,6 +377,18 @@ function executeNestedCompositionWithSpec<
     if (key.startsWith('__nestedStatus:')) {
       if (!(key in parentContext.variableMappings)) {
         parentContext.addVariableMapping(key, value);
+      }
+    }
+  }
+
+  // Propagate the inner composition's own nested-composition fn map upward.
+  // This enables the outermost `arktypeToKroSchema` call to source-parse
+  // every composition in the tree (not just immediate children) for
+  // `?? <literal>` defaults and auto-mirror them into the top-level schema.
+  if (executionContext.nestedCompositionFns) {
+    for (const [innerBaseId, innerFn] of executionContext.nestedCompositionFns) {
+      if (!parentContext.nestedCompositionFns!.has(innerBaseId)) {
+        parentContext.nestedCompositionFns!.set(innerBaseId, innerFn);
       }
     }
   }
@@ -654,6 +679,15 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
               context.addVariableMapping(aliasKey, aliasValue);
             }
             Reflect.set(capturedStatus, '__nestedStatusCel', nestedStatusMappings);
+          }
+
+          // Attach the nested-composition-fn map so `arktypeToKroSchema` can
+          // source-parse every nested composition in the tree for
+          // `?? <literal>` defaults and auto-mirror them into this outer
+          // schema. See CompositionContext.nestedCompositionFns for the
+          // full rationale.
+          if (context.nestedCompositionFns && context.nestedCompositionFns.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionFns', context.nestedCompositionFns);
           }
 
           const resourceBuildEnd = Date.now();

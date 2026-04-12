@@ -60,6 +60,24 @@ export interface CompositionContext {
    * without relying on string-pattern heuristics.
    */
   nestedCompositionIds?: Set<string>;
+  /**
+   * Map of nested composition baseId → its `compositionFn` reference.
+   *
+   * Populated alongside `nestedCompositionIds` whenever a nested composition
+   * is registered. Used by `arktypeToKroSchema` to source-parse each inner
+   * composition for `?? <literal>` defaults via `extractNullishDefaults`,
+   * and merge those defaults into the outer schema's specFields. Without
+   * this, the outer schema would emit `${schema.spec.X.Y}` references for
+   * fields that the inner declares with a JS default but the outer never
+   * exposes — and KRO would reject the RGD because the field isn't in
+   * the outer schema.
+   *
+   * Entries propagate up across nesting levels: an inner composition's
+   * own nested fns are copied into its parent's map at merge time so
+   * default-extraction at the outermost level can see all nesting depths.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: composition fns have arbitrary spec/status types
+  nestedCompositionFns?: Map<string, (...args: any[]) => unknown>;
   /** True when this context is a direct-mode re-execution. */
   isReExecution?: boolean | undefined;
   /**

@@ -12,10 +12,68 @@ import type { KroCompatibleType, KubernetesRef, SchemaMagicProxy, SchemaProxy } 
 type ArrayIterationCallback = (element: unknown, index: number, array: unknown[]) => unknown;
 
 /**
- * Creates a KubernetesRef object specifically for schema references
- * These are distinguished from external references by using a special resource ID prefix
+ * Extract the declared child-field shape from an Arktype JSON node.
+ *
+ * Returns one of:
+ *   - `{ kind: 'object', children: Map<fieldName, childNode> }` for an
+ *     object type with `required`/`optional` declarations
+ *   - `{ kind: 'map' }` for a `Record<string, V>` style index type
+ *     (no enumerable keys known at analysis time — callers use a
+ *     sentinel key to satisfy presence checks)
+ *   - `undefined` for scalar leaves or unknown/absent schema info
+ *
+ * **Why this matters:** plain `ownKeys`/`getOwnPropertyDescriptor`
+ * enumeration on a schema proxy is otherwise opaque — the proxy
+ * target is an empty function, so `{ ...spec.processing }` silently
+ * drops every field. Shape-awareness lets spread enumerate the real
+ * arktype-declared fields and create lazy sub-proxies for each one.
  */
-function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
+interface ObjectShape {
+  kind: 'object';
+  children: Map<string, unknown>;
+}
+interface MapShape {
+  kind: 'map';
+}
+type SchemaShape = ObjectShape | MapShape | undefined;
+
+function analyzeSchemaShape(schemaNode: unknown): SchemaShape {
+  if (!schemaNode || typeof schemaNode !== 'object') return undefined;
+  const node = schemaNode as {
+    required?: { key: string; value: unknown }[];
+    optional?: { key: string; value: unknown }[];
+    index?: { signature?: unknown; value?: unknown }[];
+    domain?: unknown;
+  };
+  // Map / Record type — `{ domain: 'object', index: [{ signature: 'string', value: V }] }`.
+  // No statically-knowable keys; callers fall back to the sentinel.
+  if (node.domain === 'object' && Array.isArray(node.index) && !node.required && !node.optional) {
+    return { kind: 'map' };
+  }
+  const required = Array.isArray(node.required) ? node.required : [];
+  const optional = Array.isArray(node.optional) ? node.optional : [];
+  if (required.length === 0 && optional.length === 0) return undefined;
+  const children = new Map<string, unknown>();
+  for (const entry of [...required, ...optional]) {
+    if (entry && typeof entry.key === 'string') {
+      children.set(entry.key, entry.value);
+    }
+  }
+  return { kind: 'object', children };
+}
+
+/**
+ * Creates a KubernetesRef object specifically for schema references
+ * These are distinguished from external references by using a special resource ID prefix.
+ *
+ * The optional `schemaNode` is the Arktype JSON subtree for this field. When
+ * provided, the proxy reports its declared child fields via `ownKeys` /
+ * `getOwnPropertyDescriptor`, making spread (`...spec.processing`) and
+ * `Object.keys(spec.processing)` enumerate the real schema fields instead of
+ * dropping them. Fields accessed via `get` still work identically — the schema
+ * node is threaded through so nested access carries the correct sub-schema.
+ */
+function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unknown): T {
   const proxyTarget = () => {
     // Empty function used as proxy target
   };
@@ -33,6 +91,10 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
   // underscores in `__element__` would break the delimiter detection.
   // `$item` uses `$` which is included in [a-zA-Z0-9.$] after we update the regex.
   const createElement = (): unknown => createSchemaRefFactory(`${fieldPath}.$item`);
+
+  // Analyze the arktype JSON shape once so ownKeys/getOwnPropertyDescriptor
+  // can report real declared fields and produce matching sub-proxies.
+  const shape = analyzeSchemaShape(schemaNode);
 
   return new Proxy(proxyTarget, {
     get(target, prop) {
@@ -105,8 +167,85 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string): T {
         return target[prop as keyof typeof target];
       }
 
-      // For any other property, create a new nested reference
-      return createSchemaRefFactory(`${fieldPath}.${String(prop)}`);
+      // For any other property, create a new nested reference. Thread the
+      // child's arktype JSON node through so nested access carries its
+      // own shape — `spec.processing.eventKey` gets the `string` schema
+      // and will be a scalar leaf; `spec.processing` gets the object
+      // schema with `required`/`optional` children.
+      const childNode =
+        shape?.kind === 'object' ? shape.children.get(String(prop)) : undefined;
+      return createSchemaRefFactory(`${fieldPath}.${String(prop)}`, childNode);
+    },
+
+    // `ownKeys` determines what spread (`{ ...spec.X }`) and
+    // `Object.keys(spec.X)` see. Three cases:
+    //
+    //   1. Object shape — return the declared field names from the
+    //      arktype JSON. Spread now preserves the real fields instead
+    //      of producing an empty object.
+    //   2. Map shape (`Record<string, V>`) — return a sentinel key so
+    //      `Object.keys(spec.secrets).length > 0` evaluates to `true`
+    //      during schema-proxy analysis. Without this, a conditional
+    //      `if (hasItems)` branch gets skipped and produces an
+    //      incomplete stub resource in the RGD.
+    //   3. Unknown shape (no schemaNode threaded through, or a scalar
+    //      leaf) — fall back to the sentinel for backward compat with
+    //      code paths that haven't been updated to pass schema info.
+    //
+    // In all cases we must also return the non-configurable own
+    // properties defined on the target (`resourceId`, `fieldPath`,
+    // and the brand symbol), otherwise the Proxy invariant that
+    // `ownKeys` must include all non-configurable target keys is
+    // violated and Node throws a TypeError.
+    ownKeys(target) {
+      // The proxy target is a function, so `Reflect.ownKeys` returns its
+      // built-in own keys (`length`, `name`, `prototype`) plus our
+      // `defineProperty`'d brand/resourceId/fieldPath. We MUST include
+      // every non-configurable target key to satisfy the Proxy
+      // invariant, but we also MUST NOT report any duplicates —
+      // the Proxy spec throws a TypeError otherwise.
+      //
+      // Dedupe by building a Set: start with the target keys, then add
+      // the schema-declared child field names (or the sentinel for
+      // map/unknown shapes). Schema fields that collide with built-in
+      // function keys like `name` are silently dropped from the
+      // enumeration — accessing them still works via the `get` trap
+      // because the target's own `name` (the function's built-in)
+      // wins in `get` lookups only when the property exists on the
+      // target AND the proxy's `get` trap doesn't intercept it, but
+      // our `get` trap intercepts every string key and returns a
+      // schema ref. So the invariant-driven dedup is safe.
+      const keys = new Set<string | symbol>(Reflect.ownKeys(target));
+      if (shape?.kind === 'object') {
+        for (const childKey of shape.children.keys()) keys.add(childKey);
+      } else {
+        keys.add('__typekroSchemaKey');
+      }
+      return [...keys];
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      if (shape?.kind === 'object' && typeof prop === 'string' && shape.children.has(prop)) {
+        return {
+          value: createSchemaRefFactory(
+            `${fieldPath}.${prop}`,
+            shape.children.get(prop)
+          ),
+          writable: false,
+          enumerable: true,
+          configurable: true,
+        };
+      }
+      if (prop === '__typekroSchemaKey') {
+        return {
+          value: createSchemaRefFactory(`${fieldPath}.__typekroSchemaKey`),
+          writable: false,
+          enumerable: true,
+          configurable: true,
+        };
+      }
+      // Fall through to the target for everything else so the
+      // `ownKeys` invariant for non-configurable properties holds.
+      return Reflect.getOwnPropertyDescriptor(target, prop);
     },
   }) as unknown as T;
 }
@@ -154,11 +293,21 @@ function createSchemaArrayProxy(
 
 /**
  * Creates a MagicProxy for a specific schema section (spec or status)
- * that returns KubernetesRef objects for any accessed property
+ * that returns KubernetesRef objects for any accessed property.
+ *
+ * The optional `schemaNode` is the top-level Arktype JSON node for this
+ * section. When provided, it enables shape-aware enumeration — spread
+ * (`{ ...schema.spec }`) and `Object.keys(schema.spec)` return the
+ * declared field names instead of an empty object.
  */
-function createSchemaMagicProxy<T extends object>(basePath: string): SchemaMagicProxy<T> {
+function createSchemaMagicProxy<T extends object>(
+  basePath: string,
+  schemaNode?: unknown
+): SchemaMagicProxy<T> {
   // Create an empty target object that will serve as the proxy base
   const target = {} as T;
+
+  const shape = analyzeSchemaShape(schemaNode);
 
   return new Proxy(target, {
     get: (obj, prop) => {
@@ -166,25 +315,64 @@ function createSchemaMagicProxy<T extends object>(basePath: string): SchemaMagic
         return obj[prop as keyof T];
       }
 
-      // Always return a schema reference for any string property access
-      return createSchemaRefFactory(`${basePath}.${prop}`);
+      // Always return a schema reference for any string property access.
+      // Thread the child's JSON node through when the shape is known so
+      // nested access carries the right sub-schema all the way down.
+      const childNode =
+        shape?.kind === 'object' ? shape.children.get(prop) : undefined;
+      return createSchemaRefFactory(`${basePath}.${prop}`, childNode);
+    },
+    ownKeys() {
+      if (shape?.kind === 'object') {
+        return [...shape.children.keys()];
+      }
+      // Unknown or map-typed root — leave the proxy opaque. The root
+      // is never spread in practice (`...schema.spec` is nonsensical),
+      // so returning an empty list is the safe default.
+      return [];
+    },
+    getOwnPropertyDescriptor(_obj, prop) {
+      if (
+        shape?.kind === 'object' &&
+        typeof prop === 'string' &&
+        shape.children.has(prop)
+      ) {
+        return {
+          value: createSchemaRefFactory(
+            `${basePath}.${prop}`,
+            shape.children.get(prop)
+          ),
+          writable: false,
+          enumerable: true,
+          configurable: true,
+        };
+      }
+      return undefined;
     },
   }) as SchemaMagicProxy<T>;
 }
 
 /**
- * Creates a schema proxy that provides type-safe access to spec and status fields
+ * Creates a schema proxy that provides type-safe access to spec and status fields.
  *
- * @returns SchemaProxy with spec and status MagicProxy objects
+ * The optional `specJson` / `statusJson` parameters are the Arktype JSON
+ * representations of the spec and status schemas. When passed, the
+ * returned proxy is **shape-aware**: spread (`{ ...schema.spec }`)
+ * enumerates the declared fields, `Object.keys` returns them, and
+ * `getOwnPropertyDescriptor` yields lazy sub-proxies for each. Without
+ * the JSON the proxy still works for plain property access but spread
+ * produces an empty object — matching the old opaque behavior for
+ * backward compat with callers that don't yet thread the schema.
+ *
+ * @param specJson - Optional Arktype JSON node for the spec schema
+ * @param statusJson - Optional Arktype JSON node for the status schema
  *
  * @example
  * ```typescript
- * interface MySpec { name: string; replicas: number; }
- * interface MyStatus { ready: boolean; url: string; }
- *
- * const schema = createSchemaProxy<MySpec, MyStatus>();
- *
- * // These return KubernetesRef objects with schema marking
+ * const schema = createSchemaProxy<MySpec, MyStatus>(
+ *   mySpecType.json,
+ *   myStatusType.json
+ * );
  * const nameRef = schema.spec.name; // KubernetesRef with fieldPath: "spec.name"
  * const readyRef = schema.status.ready; // KubernetesRef with fieldPath: "status.ready"
  * ```
@@ -192,10 +380,10 @@ function createSchemaMagicProxy<T extends object>(basePath: string): SchemaMagic
 export function createSchemaProxy<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
->(): SchemaProxy<TSpec, TStatus> {
+>(specJson?: unknown, statusJson?: unknown): SchemaProxy<TSpec, TStatus> {
   return {
-    spec: createSchemaMagicProxy<TSpec>('spec'),
-    status: createSchemaMagicProxy<TStatus>('status'),
+    spec: createSchemaMagicProxy<TSpec>('spec', specJson),
+    status: createSchemaMagicProxy<TStatus>('status', statusJson),
   };
 }
 

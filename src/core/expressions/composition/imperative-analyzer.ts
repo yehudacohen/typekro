@@ -575,6 +575,9 @@ function evaluateStaticExpression(node: any): any {
  *
  * Only handles patterns that appear in status builder return statements:
  * - `spec.X` → `schema.spec.X` (bare schema references)
+ * - `X?.Y` → `X.Y` (optional chaining stripped — the trailing `??` fallback
+ *   or the `has()` wrapper handles nullability; bare optional access without
+ *   a fallback is fragile in KRO CEL regardless)
  * - `ref || literal` → `ref.orValue(literal)` (fallback/default patterns)
  * - `ref ?? literal` → `ref.orValue(literal)` (nullish coalescing)
  *
@@ -587,6 +590,13 @@ function applyJsToCelConversions(source: string): string {
   // Prefix bare `spec.` references with `schema.` for KRO CEL
   // Only match standalone `spec.` (not `schema.spec.` or `X.spec.`)
   result = result.replace(/(?<![.\w])spec\./g, 'schema.spec.');
+
+  // Strip optional chaining (`X?.Y` → `X.Y`). KRO CEL has no optional-chain
+  // operator, but the downstream `??`/`||` fallback converters produce
+  // `.orValue()` wrappers that tolerate missing fields, so the optional-ness
+  // is preserved at the outer level. This must run BEFORE the `??`/`||`
+  // regexes so they can see a contiguous `schema.spec.X.Y.Z` path.
+  result = result.replace(/\?\./g, '.');
 
   // Convert `ref || fallback` to `ref.orValue(fallback)` when ref is a schema path.
   // Fallback can be a literal ("string", number) or another schema reference.

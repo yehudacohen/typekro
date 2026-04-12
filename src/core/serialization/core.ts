@@ -631,7 +631,7 @@ function collectOverridableOptionalFields(
  */
 function captureHybridRunResources(
   compositionFn: (...args: unknown[]) => unknown,
-  schemaDefinition: { spec: { json?: unknown } },
+  schemaDefinition: { spec: { json?: unknown }; status?: { json?: unknown } },
   analysis: ASTAnalysisResult
 ): {
   captured: Record<string, Enhanced<any, any>>;
@@ -648,7 +648,10 @@ function captureHybridRunResources(
     // will throw — but that's exactly the code path the override is
     // meant to skip, so the thrown access lives inside the `else`
     // branch that this run intentionally does not execute.
-    const realSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>();
+    const realSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
+      (schemaDefinition.spec as { json?: unknown } | undefined)?.json,
+      (schemaDefinition.status as { json?: unknown } | undefined)?.json
+    );
     const hybridSpec = new Proxy(realSchema.spec as object, {
       get(target, prop: string | symbol, receiver) {
         if (typeof prop === 'string' && overriddenFields.has(prop)) {
@@ -1179,7 +1182,13 @@ function createTypedResourceGraph<
     status: definition.status,
   };
 
-  const schema = createSchemaProxy<TSpec, TStatus>();
+  // Pass the Arktype JSON so the proxy is shape-aware — spread
+  // (`{ ...spec.X }`) and `Object.keys(spec.X)` enumerate declared
+  // fields instead of returning an opaque empty object.
+  const schema = createSchemaProxy<TSpec, TStatus>(
+    (definition.spec as { json?: unknown } | undefined)?.json,
+    (definition.status as { json?: unknown } | undefined)?.json
+  );
   const builderResult = resourceBuilder(schema);
   const { resources: resourcesWithKeys, closures } = separateResourcesAndClosures(builderResult);
 

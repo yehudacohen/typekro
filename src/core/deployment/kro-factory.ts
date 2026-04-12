@@ -59,6 +59,44 @@ import {
 } from './shared-utilities.js';
 
 /**
+ * Decide whether the RGD/CRD should be preserved after a `deleteInstance`
+ * call, i.e., whether other instances still depend on it.
+ *
+ * **Exported for testing.** This is the pure decision core extracted
+ * from {@link KroResourceFactoryImpl.deleteInstance}:
+ *
+ *   - `instanceDeleted === true` — the poll loop confirmed the CR
+ *     returned 404. Filter the target name out of the live instance
+ *     list to handle list-cache lag (the CR is gone from GETs but may
+ *     still appear in LISTs briefly). If any *other* instances remain,
+ *     preserve the RGD so they keep working.
+ *
+ *   - `instanceDeleted === false` — the poll loop timed out while KRO
+ *     was still processing `kro.run/finalizer`. Do NOT filter the
+ *     target name out: the stuck instance counts as remaining so the
+ *     RGD stays up for KRO to complete finalizer processing in the
+ *     background. Deleting the RGD mid-finalizer orphans the finalizer
+ *     and permanently blocks cleanup — a regression that surfaced
+ *     during real-world KRO dogfooding.
+ *
+ * Returns `true` when the RGD should be preserved (i.e., remaining
+ * instances exist or the target is stuck), `false` when it's safe
+ * to tear the RGD/CRD down.
+ */
+export function shouldPreserveRgd(
+  // Loose typing — the callers pass Enhanced<TSpec, TStatus>[] at runtime
+  // but this decision only reads `metadata.name` and tolerates undefined.
+  instances: ReadonlyArray<{ metadata?: { name?: unknown } }>,
+  targetName: string,
+  instanceDeleted: boolean
+): boolean {
+  const others = instanceDeleted
+    ? instances.filter((i) => i.metadata?.name !== targetName)
+    : instances;
+  return others.length > 0;
+}
+
+/**
  * KroResourceFactory implementation
  *
  * Handles deployment via Kro ResourceGraphDefinitions. The RGD is deployed once,
@@ -93,6 +131,20 @@ export class KroResourceFactoryImpl<
    */
   private ternaryAndOmitApplied = false;
 
+  /**
+   * Cached plural form of the schema kind, discovered from the actual CRD
+   * created by KRO after RGD deployment. Populated by
+   * {@link waitForCRDReadyWithEngine}. Used by {@link getInstances} (and
+   * any other method that needs to list/read the custom resource) instead
+   * of guessing the plural from client-side heuristics.
+   *
+   * KRO's server-side pluralization is authoritative and not always
+   * derivable from client code — for example, `kind: CollectorBills`
+   * stays as `collectorbills` because "Bills" is already plural, not
+   * `collectorbillses`.
+   */
+  private discoveredPlural: string | undefined;
+
   // Dependency-inversion providers (Phase 3.5) — injected via FactoryOptions
   // instead of dynamic import() from factories/ and alchemy/ layers.
   private readonly kroCustomResourceProvider: KroCustomResourceProvider | undefined;
@@ -117,7 +169,14 @@ export class KroResourceFactoryImpl<
     this.statusMappings = statusMappings as Record<string, unknown>;
     this.factoryOptions = options;
     this.clientManager = new KubernetesClientManager(options);
-    this.schema = createSchemaProxy<TSpec, TStatus>();
+    // Pass the Arktype JSON so the proxy is shape-aware: spread
+    // (`{ ...schema.spec.X }`) enumerates declared fields and
+    // `Object.keys(schema.spec.X)` returns them. See the docstring on
+    // `createSchemaProxy` for why this matters for nested compositions.
+    this.schema = createSchemaProxy<TSpec, TStatus>(
+      (schemaDefinition.spec as { json?: unknown } | undefined)?.json,
+      (schemaDefinition.status as { json?: unknown } | undefined)?.json
+    );
 
     // Injected providers — fall back to dynamic import() for backward compatibility
     this.kroCustomResourceProvider = options.kroCustomResourceProvider;
@@ -133,6 +192,109 @@ export class KroResourceFactoryImpl<
     return (this.statusMappings as Record<string, unknown>)?.__nestedStatusCel as
       | Record<string, string>
       | undefined;
+  }
+
+  /**
+   * Idempotently create the factory's target namespace if it doesn't
+   * exist. KRO does not auto-create the CR's containing namespace, and
+   * users specify `{ namespace }` in factory options expecting it to
+   * "just work" without having to `kubectl create ns` first.
+   *
+   * Uses the Kubernetes Object API's create path with a 409-conflict
+   * tolerance — ignored if the namespace already exists so concurrent
+   * callers don't collide.
+   */
+  private async ensureTargetNamespace(): Promise<void> {
+    try {
+      const { createBunCompatibleKubernetesObjectApi } = await import(
+        '../kubernetes/bun-api-client.js'
+      );
+      const k8sApi = createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
+      try {
+        await k8sApi.read({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: this.namespace },
+        });
+        // Already exists — nothing to do.
+        return;
+      } catch (readError: unknown) {
+        const k8sErr = readError as { statusCode?: number; body?: { code?: number } };
+        const code = k8sErr.statusCode ?? k8sErr.body?.code;
+        if (code !== 404) {
+          // Non-404 read failure — propagate with context.
+          throw readError;
+        }
+      }
+      // Namespace is missing — create it.
+      this.logger.info('Creating target namespace for Kro deployment', {
+        namespace: this.namespace,
+      });
+      try {
+        await k8sApi.create({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: {
+            name: this.namespace,
+            labels: {
+              'app.kubernetes.io/managed-by': 'typekro',
+            },
+          },
+        } as k8s.KubernetesObject);
+      } catch (createError: unknown) {
+        const k8sErr = createError as { statusCode?: number; body?: { code?: number } };
+        const code = k8sErr.statusCode ?? k8sErr.body?.code;
+        // 409 = race with another caller — namespace now exists, treat as success.
+        if (code !== 409) throw createError;
+      }
+    } catch (error: unknown) {
+      throw new ResourceGraphFactoryError(
+        `Failed to ensure target namespace "${this.namespace}" exists: ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
+    }
+  }
+
+  /**
+   * One-shot lookup of the CRD plural from the live cluster for this
+   * factory's (kind, kro.run). Does NOT wait for establishment — expects
+   * the CRD to already exist. Returns `undefined` if the CRD is missing
+   * or the lookup fails, so callers can fall back to a heuristic.
+   *
+   * Used by paths like `getInstances` when invoked on a fresh factory
+   * instance (e.g., `--delete` from the CLI) where the wait-for-CRD
+   * step hasn't populated {@link discoveredPlural}.
+   */
+  private async lookupCRDPlural(): Promise<string | undefined> {
+    try {
+      const { createBunCompatibleKubernetesObjectApi } = await import(
+        '../kubernetes/bun-api-client.js'
+      );
+      const k8sApi = createBunCompatibleKubernetesObjectApi(this.getKubeConfig());
+      const crds = (await k8sApi.list(
+        'apiextensions.k8s.io/v1',
+        'CustomResourceDefinition'
+      )) as unknown as {
+        items?: Array<{
+          metadata?: { name?: string };
+          spec?: { group?: string; names?: { kind?: string; plural?: string } };
+        }>;
+      };
+      const match = crds?.items?.find(
+        (crd) =>
+          crd.spec?.group === 'kro.run' &&
+          crd.spec?.names?.kind === this.schemaDefinition.kind
+      );
+      return match?.spec?.names?.plural;
+    } catch (error: unknown) {
+      this.logger.debug('CRD plural lookup failed — falling back to heuristic', {
+        kind: this.schemaDefinition.kind,
+        error: ensureError(error).message,
+      });
+      return undefined;
+    }
   }
 
   /**
@@ -327,6 +489,13 @@ export class KroResourceFactoryImpl<
     // Ensure RGD is deployed first
     await this.ensureRGDDeployed();
 
+    // Ensure the target namespace exists before posting the CR. KRO
+    // reconciles resources from the RGD into their own namespaces, but
+    // the CR instance itself must live in a namespace the user can
+    // write to. Without this, the first deploy after `kubectl delete ns`
+    // fails with a 404 on the CR POST.
+    await this.ensureTargetNamespace();
+
     // Create DirectDeploymentEngine with KRO mode for CEL string conversion
     const deploymentEngine = new DirectDeploymentEngine(
       this.getKubeConfig(),
@@ -508,12 +677,25 @@ export class KroResourceFactoryImpl<
         ? this.schemaDefinition.apiVersion.split('/')[1] || this.schemaDefinition.apiVersion
         : this.schemaDefinition.apiVersion;
 
+      // Prefer the server-discovered plural (populated after the CRD is
+      // created by KRO) over any client-side heuristic. For first-call
+      // paths like delete-on-fresh-factory, discover the plural lazily
+      // from the live CRD so already-plural kinds work correctly. Fall
+      // back to `pluralizeKind` only if the CRD list query failed (e.g.,
+      // missing RBAC) — in which case the list call below may also fail
+      // and surface a clearer error.
+      if (!this.discoveredPlural) {
+        this.discoveredPlural = await this.lookupCRDPlural();
+      }
+      const plural =
+        this.discoveredPlural ?? pluralizeKind(this.schemaDefinition.kind);
+
       // In the new API, methods take request objects and return objects directly
       const listResponse = await customApi.listNamespacedCustomObject({
         group: 'kro.run',
         version,
         namespace: this.namespace,
-        plural: `${this.schemaDefinition.kind.toLowerCase()}s`, // Pluralize the kind
+        plural,
       });
 
       // Custom object list response structure
@@ -580,6 +762,11 @@ export class KroResourceFactoryImpl<
       ? this.schemaDefinition.apiVersion
       : `kro.run/${this.schemaDefinition.apiVersion}`;
 
+    // Tracks whether the CR was confirmed 404 by the poll loop. Used
+    // later to decide whether to tear down the RGD/CRD or preserve
+    // them for KRO to continue finalizer processing in the background.
+    let instanceDeleted = false;
+
     try {
       // Delete the instance. KRO's controller processes kro.run/finalizer,
       // which does graph-based deletion of all child resources.
@@ -600,7 +787,6 @@ export class KroResourceFactoryImpl<
       const MAX_DELETION_WAIT = 300000;
       const timeout = Math.min(this.factoryOptions.timeout ?? 120000, MAX_DELETION_WAIT);
       const startTime = Date.now();
-      let deleted = false;
       while (Date.now() - startTime < timeout) {
         try {
           await k8sApi.read({
@@ -614,7 +800,7 @@ export class KroResourceFactoryImpl<
           const pollK8sError = pollError as { statusCode?: number; code?: number; body?: { code?: number } };
           const errorCode = pollK8sError.statusCode ?? pollK8sError.code ?? pollK8sError.body?.code;
           if (errorCode === 404) {
-            deleted = true;
+            instanceDeleted = true;
             break;
           }
           // Non-404 error (permissions, server error) — log and retry
@@ -625,11 +811,14 @@ export class KroResourceFactoryImpl<
           await new Promise(r => setTimeout(r, 2000));
         }
       }
-      if (!deleted) {
+      if (!instanceDeleted) {
         // KRO is still processing the finalizer. Don't throw — the deletion
-        // IS in progress. The hasRemainingInstances guard below will see the
-        // instance (still DELETING) and skip RGD/CRD deletion, preserving
-        // them so KRO can complete cleanup in the background.
+        // IS in progress. The `instanceDeleted` flag feeds into the
+        // `hasRemainingInstances` check below: when the poll timed out,
+        // we treat the stuck instance as still existing and preserve the
+        // RGD so KRO can keep processing the finalizer in the background.
+        // Deleting the RGD while KRO is mid-finalizer would orphan the
+        // kro.run/finalizer on the CR, permanently blocking cleanup.
         this.logger.warn('Instance deletion still in progress after timeout', {
           name,
           timeout,
@@ -654,13 +843,12 @@ export class KroResourceFactoryImpl<
 
     // Only delete the RGD and CRD if no other instances remain. Multiple
     // instances can share one RGD — deleting it would break the others.
+    // The decision is a pure function of (listed instances, target name,
+    // instanceDeleted flag) — see {@link shouldPreserveRgd} for the rules.
     let hasRemainingInstances = false;
     try {
       const instances = await this.getInstances();
-      // Filter out the just-deleted instance — it may still appear in the list
-      // if the API server's list cache hasn't caught up with the 404 on GET.
-      const others = instances.filter(i => i.metadata?.name !== name);
-      hasRemainingInstances = others.length > 0;
+      hasRemainingInstances = shouldPreserveRgd(instances, name, instanceDeleted);
     } catch (listError: unknown) {
       // Can't list instances — could be CRD gone (safe) or transient error
       // (unsafe to delete RGD). Default to preserving the RGD to avoid
@@ -691,8 +879,11 @@ export class KroResourceFactoryImpl<
 
       // Delete the CRD that KRO created from the RGD. KRO's default config
       // has allowCRDDeletion=false, so it won't clean up the CRD when the
-      // RGD is deleted.
-      const crdName = `${this.schemaDefinition.kind.toLowerCase()}s.kro.run`;
+      // RGD is deleted. Prefer the server-discovered plural over the
+      // heuristic fallback so already-plural kinds clean up correctly.
+      const crdPlural =
+        this.discoveredPlural ?? pluralizeKind(this.schemaDefinition.kind);
+      const crdName = `${crdPlural}.kro.run`;
       try {
         await k8sApi.delete({
           apiVersion: 'apiextensions.k8s.io/v1',
@@ -1003,26 +1194,28 @@ ${Object.entries(spec as Record<string, any>)
   }
 
   /**
-   * Wait for the CRD to be created by Kro using DirectDeploymentEngine
+   * Wait for the CRD to be created by Kro using DirectDeploymentEngine.
+   *
+   * Discovers the CRD by (kind, group=kro.run) via the CRD list API
+   * rather than pre-computing a plural form. KRO's server-side pluralization
+   * is authoritative, and client-side heuristics cannot handle all cases
+   * (e.g., already-plural kinds like "CollectorBills" → "collectorbills").
    */
   private async waitForCRDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
-    const crdName = `${pluralizeKind(this.schemaDefinition.kind)}.kro.run`;
-
-    // Debug: Check if the method exists
-    if (typeof deploymentEngine.waitForCRDReady !== 'function') {
+    if (typeof deploymentEngine.waitForCRDByKindAndGroup !== 'function') {
       throw new ResourceGraphFactoryError(
-        `deploymentEngine.waitForCRDReady is not a function. Available methods: ${Object.getOwnPropertyNames(Object.getPrototypeOf(deploymentEngine)).join(', ')}`,
+        `deploymentEngine.waitForCRDByKindAndGroup is not a function. Available methods: ${Object.getOwnPropertyNames(Object.getPrototypeOf(deploymentEngine)).join(', ')}`,
         this.name,
         'deployment'
       );
     }
 
-    // Use the deployment engine's built-in CRD readiness checking
-    // This will wait for the CRD to be created by Kro and become ready
-    await deploymentEngine.waitForCRDReady(
-      crdName,
+    const { plural } = await deploymentEngine.waitForCRDByKindAndGroup(
+      this.schemaDefinition.kind,
+      'kro.run',
       this.factoryOptions.timeout || DEFAULT_RGD_TIMEOUT
     );
+    this.discoveredPlural = plural;
   }
 
   /**

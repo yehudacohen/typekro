@@ -145,14 +145,15 @@ describe('Schema Nullish Defaults', () => {
       );
     });
 
-    it('does not wrap sub-path refs (only top-level optional fields are omittable)', () => {
-      // omit() removes the CONTAINING field, so wrapping schema.spec.env.FOO
-      // would try to omit a sub-key of env rather than env itself — that's
-      // the wrong semantics. Only top-level matches are wrapped.
+    it('wraps sub-path refs under an optional ancestor with has(parent) guard', () => {
+      // When the parent (`env`) is optional, accessing `env.FOO` throws
+      // in CEL if env is absent. The wrapper guards with has() on the
+      // deepest optional ancestor and omits the leaf otherwise.
       const marker = '__KUBERNETES_REF___schema___spec.env.FOO__';
       const result = processResourceReferences(marker, ctx(['env']));
-      expect(result).toBe('${schema.spec.env.FOO}');
-      expect(String(result)).not.toContain('omit()');
+      expect(result).toBe(
+        '${has(schema.spec.env) ? schema.spec.env.FOO : omit()}'
+      );
     });
 
     it('wraps CelExpression objects that are a single schema.spec.<field>', async () => {

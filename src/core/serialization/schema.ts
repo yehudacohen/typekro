@@ -41,6 +41,19 @@ function getKroTypeFromJson(node: unknown): string {
     if (nodeObj.domain === 'number' && nodeObj.divisor === 1) {
       return 'integer';
     }
+    // Map / Record types — arktype represents `Record<string, V>` as
+    // `{ domain: "object", index: [{ signature: "string", value: V }] }`.
+    // KRO SimpleSchema uses `map[string]<value-type>` notation for these.
+    if (
+      nodeObj.domain === 'object' &&
+      Array.isArray(nodeObj.index) &&
+      nodeObj.index.length === 1
+    ) {
+      const indexEntry = nodeObj.index[0] as { signature?: unknown; value?: unknown };
+      if (indexEntry.signature === 'string') {
+        return `map[string]${getKroTypeFromJson(indexEntry.value)}`;
+      }
+    }
   }
 
   // Case 2: Array → union of literals
@@ -608,34 +621,158 @@ function applyNullishDefaults(
 }
 
 /**
+ * Infer the KRO SimpleSchema type string for a literal default value.
+ */
+function kroTypeForLiteral(value: string | number | boolean): string {
+  if (typeof value === 'string') {
+    const escaped = value
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t');
+    return `string | default="${escaped}"`;
+  }
+  if (typeof value === 'number') {
+    return Number.isInteger(value)
+      ? `integer | default=${value}`
+      : `number | default=${value}`;
+  }
+  if (typeof value === 'boolean') {
+    return `boolean | default=${value}`;
+  }
+  return 'string';
+}
+
+/**
+ * For each default whose path doesn't exist in `specFields`, CREATE the
+ * missing leaf (and any intermediate object nodes along the way) with
+ * an appropriate KRO type string + default annotation.
+ *
+ * This is the complement to {@link applyNullishDefaults}, which only
+ * annotates fields that already exist. Adding missing fields enables the
+ * "propagate inner composition `?? defaults` to the outer schema"
+ * mechanism: when an inner composition reads `spec.X?.Y ?? <literal>`
+ * and the outer schema doesn't declare Y, we auto-declare it with the
+ * inner's default so KRO can resolve the reference at apply time.
+ *
+ * **Scope rules:**
+ *  - We only auto-create a missing field if EITHER the full path's parent
+ *    already exists as an object in `specFields` (we're filling in a
+ *    single missing leaf under a known object), OR the top-level parent
+ *    (the first segment) doesn't exist at all (we're adding a whole new
+ *    optional field). We do NOT create intermediate objects where the
+ *    outer has explicitly declared a non-object type.
+ *  - Existing fields are never modified — use `applyNullishDefaults`
+ *    for that.
+ */
+function addMissingDefaultFields(
+  specFields: Record<string, unknown>,
+  defaults: Record<string, string | number | boolean>
+): void {
+  for (const [path, value] of Object.entries(defaults)) {
+    const parts = path.split('.');
+    if (parts.length === 0) continue;
+
+    // Walk existing intermediate objects.
+    let current: Record<string, unknown> = specFields;
+    let i = 0;
+    for (; i < parts.length - 1; i++) {
+      const part = parts[i]!;
+      const next = current[part];
+      if (next && typeof next === 'object' && !Array.isArray(next)) {
+        current = next as Record<string, unknown>;
+      } else if (next === undefined) {
+        // Create missing intermediate object node.
+        const obj: Record<string, unknown> = {};
+        current[part] = obj;
+        current = obj;
+      } else {
+        // Intermediate path conflicts with an existing scalar — bail.
+        current = undefined as unknown as Record<string, unknown>;
+        break;
+      }
+    }
+    if (!current) continue;
+
+    const leafName = parts[parts.length - 1]!;
+    if (leafName in current) continue; // existing — skip
+    current[leafName] = kroTypeForLiteral(value);
+  }
+}
+
+/**
  * Collect optional spec fields that don't have | default= annotations.
  * These fields need omit() wrapping in resource templates (KRO 0.9+)
  * so they're removed from the K8s resource when not provided, rather
  * than failing with an invalid zero value.
  *
- * Returns field paths (e.g., ['baseUrl', 'resources', 'env']).
+ * Recurses into ALL object types so that both top-level optionals
+ * (`env?`, `resources?`) and nested optionals (`database.storageClass?`,
+ * `cache.replicas?`) are collected. Returns dotted field paths
+ * (e.g., `['baseUrl', 'env', 'database.storageClass', 'cache', 'cache.replicas']`).
+ *
+ * **Both parent and children are tracked** when a whole object is
+ * optional: if the user provides `cache: { shards: 1 }` (present but
+ * with `replicas` absent), `has(cache)` is true and we must still
+ * guard `cache.replicas` with its own omit. The ancestor resolution
+ * in `maybeWrapWithOmit` prefers the deepest matching prefix, so a
+ * ref to `cache.replicas` gets `has(cache.replicas) ? ... : omit()`
+ * while a ref to `cache.shards` (required scalar with no default,
+ * not in the set) falls back to the ancestor `cache` guard.
  */
 function collectOmitFields(
   specFields: Record<string, unknown>,
   specType: Type
 ): string[] {
-  const specJson = specType.json as { optional?: { key: string }[] } | undefined;
-  const optionalKeys = (specJson?.optional ?? []).map((p: { key: string }) => p.key);
   const omitFields: string[] = [];
+  walk(specFields, specType.json, '');
+  return omitFields;
 
-  for (const fieldName of optionalKeys) {
-    const existingType = specFields[fieldName];
-    // Scalar without default → needs omit()
-    if (typeof existingType === 'string' && !existingType.includes('default=')) {
-      omitFields.push(fieldName);
-    }
-    // Object without defaults on children → needs omit()
-    if (typeof existingType === 'object' && existingType !== null) {
-      omitFields.push(fieldName);
+  function walk(fields: Record<string, unknown>, node: unknown, pathPrefix: string): void {
+    if (!node || typeof node !== 'object') return;
+    const nodeObj = node as {
+      optional?: { key: string; value: unknown }[];
+      required?: { key: string; value: unknown }[];
+    };
+    const optionalKeys = new Set((nodeObj.optional ?? []).map((p) => p.key));
+    const allEntries = [...(nodeObj.required ?? []), ...(nodeObj.optional ?? [])];
+
+    for (const entry of allEntries) {
+      const fieldName = entry.key;
+      const fullPath = pathPrefix ? `${pathPrefix}.${fieldName}` : fieldName;
+      const existingType = fields[fieldName];
+      const isOptional = optionalKeys.has(fieldName);
+
+      // Scalar optional without default → needs its own omit() guard.
+      if (
+        isOptional &&
+        typeof existingType === 'string' &&
+        !existingType.includes('default=')
+      ) {
+        omitFields.push(fullPath);
+        continue;
+      }
+
+      // Object (optional or required) → record the path if optional,
+      // AND recurse to catch nested optional leaves. Even when the
+      // object is required, its children may have their own optional
+      // markers. Even when the object is optional, its children still
+      // need their own guards because a present-but-sparse object
+      // (e.g., `cache: { shards: 1 }` with `replicas` absent) must
+      // not fail on ref-time `cache.replicas` access.
+      if (typeof existingType === 'object' && existingType !== null) {
+        if (isOptional) {
+          omitFields.push(fullPath);
+        }
+        walk(
+          existingType as Record<string, unknown>,
+          entry.value,
+          fullPath
+        );
+      }
     }
   }
-
-  return omitFields;
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +809,9 @@ export function arktypeToKroSchema(
   // Extract ?? defaults and add | default= annotations to the schema.
   // KRO uses these when a field isn't provided in the CR instance.
   //
-  // Phase 1: fn.toString() regex — extracts literal ?? fallbacks quickly.
+  // Phase 1: fn.toString() regex — extracts literal ?? fallbacks quickly,
+  //   for BOTH the outer composition AND every nested composition in the
+  //   tree. See the nested-composition branch below for why.
   // Phase 2: Defaults resolution run — calls the composition function with
   //   undefined for optional fields, triggering ?? and resolving imported
   //   constants from the closure. Compares resolved resources with the
@@ -680,10 +819,54 @@ export function arktypeToKroSchema(
   const statusMeta = statusMappings as Record<string, unknown> | undefined;
   const compositionFn = statusMeta?.__originalCompositionFn;
 
-  // Phase 1: regex extraction for literals
+  // Phase 1a: regex extraction for the outer composition's own defaults.
   if (typeof compositionFn === 'function') {
     const regexDefaults = extractNullishDefaults(compositionFn.toString());
     applyNullishDefaults(specFields, regexDefaults);
+    // Missing-field variant: also ADD any default path whose first
+    // segment exists in specFields but whose full path doesn't. Handles
+    // cases where the outer's own spec has `cache: { ... }` and reads
+    // `spec.cache?.foo ?? bar` — the user expects `cache.foo` to be
+    // optional with a default, but they forgot to declare it. We auto-
+    // declare it for them.
+    addMissingDefaultFields(specFields, regexDefaults);
+  }
+
+  // Phase 1b: regex extraction for every nested composition in the tree.
+  //
+  // When an inner composition uses `spec.X?.Y ?? <literal>` and the outer
+  // passes its own `spec.X` proxy through (i.e., `innerComp({ X: spec.X, ... })`),
+  // the inner's KRO-mode emission produces `${schema.spec.X.Y}` in the
+  // flattened resource templates. The OUTER schema typically doesn't
+  // declare Y — KRO rejects the RGD with "undefined field".
+  //
+  // We scan every nested composition's fn source for these `??` defaults
+  // and ADD the missing fields to the outer specFields with the literal
+  // as a KRO default. KRO then resolves the field using the default at
+  // apply time, matching what direct-mode JS does via the `??` operator.
+  //
+  // This is the framework-side counterpart to the user workaround of
+  // explicitly mirroring inner fields in the outer schema. It preserves
+  // the "composition looks like native TypeScript" design goal — users
+  // shouldn't have to repeat every inner schema detail.
+  // `__nestedCompositionFns` was stored via Reflect.set. Read it via
+  // getOwnPropertyDescriptor to bypass the Enhanced proxy's get-trap
+  // (same pattern as `__nestedStatusCel`). The descriptor's value is
+  // the real Map, not a proxy.
+  const nestedFnsRaw = statusMappings
+    ? Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionFns')?.value
+    : undefined;
+  if (nestedFnsRaw instanceof Map) {
+    for (const fn of nestedFnsRaw.values()) {
+      if (typeof fn !== 'function') continue;
+      const innerDefaults = extractNullishDefaults(fn.toString());
+      // Non-destructive: don't overwrite existing outer defaults.
+      applyNullishDefaults(specFields, innerDefaults, false);
+      // Also add any fields the outer doesn't declare — the inner's
+      // `?? <literal>` is the only signal we have that the field should
+      // exist with a default.
+      addMissingDefaultFields(specFields, innerDefaults);
+    }
   }
 
   // Phase 2: resolve imported constants + detect ternary conditionals.
