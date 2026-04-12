@@ -404,6 +404,53 @@ describe('Implicit dependency detection', () => {
 
       expect(deps).not.toContain('serviceCache');
     });
+
+    it('short service name "db" does not false-positive on "database-api-token"', () => {
+      const svc = mockResource({ id: 'svc', kind: 'Service', name: 'db' });
+      markDnsAddressable(svc);
+
+      const app = mockDeploymentWithEnv({
+        id: 'app',
+        name: 'consumer',
+        env: { TOKEN_SOURCE: 'database-api-token' },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, app]);
+      expect(graph.getDependencies('app')).not.toContain('svc');
+    });
+
+    it('short service name "api" does not false-positive on "webapp-api-config"', () => {
+      const svc = mockResource({ id: 'svc', kind: 'Service', name: 'api' });
+      markDnsAddressable(svc);
+
+      const app = mockDeploymentWithEnv({
+        id: 'app',
+        name: 'consumer',
+        env: { CONFIG: 'webapp-api-config' },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, app]);
+      expect(graph.getDependencies('app')).not.toContain('svc');
+    });
+
+    it('overlapping service name prefixes do not cross-contaminate', () => {
+      const svc1 = mockResource({ id: 'svc1', kind: 'Service', name: 'cache' });
+      markDnsAddressable(svc1);
+      const svc2 = mockResource({ id: 'svc2', kind: 'Service', name: 'cache-replica' });
+      markDnsAddressable(svc2);
+
+      const app = mockDeploymentWithEnv({
+        id: 'app',
+        name: 'consumer',
+        env: { HOST: 'redis://cache:6379' },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc1, svc2, app]);
+      const deps = graph.getDependencies('app');
+      // Should match "cache" but NOT "cache-replica" (no delimiter after "cache" in "cache:")
+      expect(deps).toContain('svc1');
+      expect(deps).not.toContain('svc2');
+    });
   });
 
   // -----------------------------------------------------------------------

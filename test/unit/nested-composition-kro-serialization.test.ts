@@ -1252,3 +1252,47 @@ describe('T12 — CEL macro lambda variables are not treated as resource refs (I
     expect(nonLambdaDangling).toEqual([]);
   });
 });
+
+// =============================================================================
+// Cycle detection in resolveNestedCompositionRefs
+// =============================================================================
+
+describe('resolveNestedCompositionRefs — cycle detection', () => {
+  it('converges in bounded iterations even with circular references', async () => {
+    // Import the function directly to test the fixed-point loop
+    const { finalizeCelForKro } = await import(
+      '../../src/core/serialization/cel-references.js'
+    );
+
+    // Build a nestedStatusCel table with a cycle: a → b.status.x → a.status.y
+    const cyclicTable: Record<string, string> = {
+      '__nestedStatus:a:x': 'b.status.y',
+      '__nestedStatus:b:y': 'a.status.x',
+    };
+
+    // This should NOT hang — the depth limit should catch the cycle
+    // and return whatever partial resolution was achieved.
+    const result = finalizeCelForKro('a.status.x', cyclicTable);
+
+    // The result should be a string (not throw, not hang)
+    expect(typeof result).toBe('string');
+    // After 16 iterations of A→B→A→B..., the expression will still
+    // contain unresolved refs, but the function must return.
+  });
+
+  it('normal 2-level nesting converges in 2 passes', async () => {
+    const { finalizeCelForKro } = await import(
+      '../../src/core/serialization/cel-references.js'
+    );
+
+    // Level 1: outer references inner.status.ready
+    // Level 2: inner.status.ready → deployment.status.readyReplicas >= 1
+    const table: Record<string, string> = {
+      '__nestedStatus:inner:ready': 'innerDeploy.status.readyReplicas >= 1',
+    };
+
+    const result = finalizeCelForKro('inner.status.ready', table);
+    expect(result).toContain('innerDeploy.status.readyReplicas');
+    expect(result).not.toContain('inner.status');
+  });
+});

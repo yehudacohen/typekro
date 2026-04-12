@@ -219,6 +219,9 @@ function createSchemaRefFactory<T = unknown>(fieldPath: string, schemaNode?: unk
       if (shape?.kind === 'object') {
         for (const childKey of shape.children.keys()) keys.add(childKey);
       } else {
+        // Sentinel key for map/unknown shapes so `Object.keys(spec.X).length > 0`
+        // evaluates to true. This is a **reserved property name** — user specs
+        // must not declare a field literally named `__typekroSchemaKey`.
         keys.add('__typekroSchemaKey');
       }
       return [...keys];

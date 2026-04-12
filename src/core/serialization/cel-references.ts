@@ -563,7 +563,7 @@ function innerExprToYamlSegment(
  *  - Plain-CEL input (raw CEL with no markers or `${…}`) → wrapped in
  *    `${…}` so KRO recognizes it as an expression to evaluate.
  */
-function finalizeCelForKro(
+export function finalizeCelForKro(
   expr: string,
   nestedStatusCel: Record<string, string> | undefined,
   context?: SerializationContext

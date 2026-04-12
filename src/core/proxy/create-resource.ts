@@ -418,6 +418,12 @@ export interface CreateResourceOptions {
    * dependency resolver detects implicit dependencies from other
    * resources whose env vars reference this resource's `metadata.name`
    * as a hostname.
+   *
+   * **Currently set by:** `service()`, `cluster()` (CNPG), `pooler()`,
+   * `valkey()`. **Not set by:** `deployment()`, `statefulSet()` (these
+   * don't create DNS names — only the Service fronting them does).
+   * New factory functions that create DNS-addressable resources must
+   * set this flag or implicit dependency detection will miss them.
    */
   dnsAddressable?: boolean;
 }
@@ -570,9 +576,20 @@ export function createResource<TSpec extends object, TStatus extends object>(
       let depId: string | undefined;
       // Enhanced resource — read ID from metadata
       depId = getMetadataResourceId(dependency as Record<string, unknown>);
-      // NestedCompositionResource — read __compositionId
+      // NestedCompositionResource — read __compositionId.
+      // NOTE: __compositionId is the execution name (e.g., "inngest-execution-3"),
+      // NOT a KRO graph resource ID. When used as a dependsOn target, the
+      // readyWhen CEL expression will reference this ID which may not match
+      // any resource in the KRO graph. For nested compositions, use
+      // nestedCompositionResource.dependsOn() instead — it resolves to the
+      // actual leaf merged resource ID in the parent context.
       if (!depId && typeof dependency === 'object' && dependency !== null) {
         depId = (dependency as Record<string, unknown>).__compositionId as string | undefined;
+        if (depId) {
+          debugLogger.warn('dependsOn: resolved via __compositionId — this may not match a KRO graph resource. Prefer calling dependsOn on the nested composition resource directly.', {
+            compositionId: depId,
+          });
+        }
       }
       if (!depId) {
         debugLogger.warn('dependsOn: could not resolve resource ID from dependency', {

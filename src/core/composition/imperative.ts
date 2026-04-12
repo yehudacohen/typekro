@@ -985,6 +985,11 @@ export function kubernetesComposition<
     // generates CEL expressions that pollute resource names in direct
     // mode. The spec-driven pass (via the callable below) is the only
     // one that matters during re-execution.
+    // INVARIANT: `nestedResult` is `undefined` during re-execution.
+    // All downstream reads MUST guard against this. If you add code that
+    // accesses `nestedResult.status`, `nestedResult.resources`, etc.,
+    // wrap it in `if (nestedResult)` or it will crash only in
+    // direct-mode deploys (which are harder to test than serialization).
     const nestedResult = parentContext.isReExecution
       ? undefined
       : executeNestedComposition(

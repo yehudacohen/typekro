@@ -7,6 +7,7 @@
  */
 
 import type { Type } from 'arktype';
+import { escapeCelString } from '../../utils/cel-escape.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { getComponentLogger } from '../logging/index.js';
 import { pascalCase } from '../../utils/string.js';
@@ -604,7 +605,7 @@ function applyNullishDefaults(
     // the KRO SimpleSchema default= annotation format. Without this,
     // multiline strings (e.g., YAML config blobs) break the parser.
     const defaultStr = typeof value === 'string'
-      ? `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}"`
+      ? `"${escapeCelString(value)}"`
       : String(value);
     const hasDefault = existingType.includes('default=');
     if (!hasDefault) {
@@ -625,13 +626,7 @@ function applyNullishDefaults(
  */
 function kroTypeForLiteral(value: string | number | boolean): string {
   if (typeof value === 'string') {
-    const escaped = value
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"')
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '\\r')
-      .replace(/\t/g, '\\t');
-    return `string | default="${escaped}"`;
+    return `string | default="${escapeCelString(value)}"`;
   }
   if (typeof value === 'number') {
     return Number.isInteger(value)
