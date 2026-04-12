@@ -6,7 +6,7 @@ import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
-import type { KubernetesRef } from './common.js';
+import type { CelExpression, KubernetesRef } from './common.js';
 import type { Composable } from './composable.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
 import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './schema.js';
@@ -488,7 +488,7 @@ export interface NestedCompositionResource<TSpec, TStatus> {
   readonly __resources: KubernetesResource[];
   /** Declare that this composition's resources depend on another resource being ready.
    * Added at runtime via Object.defineProperty in executeNestedCompositionWithSpec. */
-  readonly dependsOn: (dependency: unknown, condition?: string) => this;
+  readonly dependsOn: (dependency: unknown, condition?: string | CelExpression) => this;
 }
 
 /**

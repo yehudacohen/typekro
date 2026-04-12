@@ -887,6 +887,13 @@ function walkAndConditionalizeResourceStatus(
   invertedRes: Record<string, unknown>,
   conditionCel: string
 ): void {
+  // NOTE: We iterate proxyRes keys only. Keys present in invertedRes but
+  // absent in proxyRes (e.g., a ternary consequent that adds a key via
+  // spread: `cache.status.ready ? { extra: 'yes' } : {}`) are not
+  // handled — the proxy-run template is the "base" and the inverted run
+  // can only override existing leaves, not add new ones. This is an
+  // acceptable limitation: the proxy run represents the "happy path"
+  // (status=true) which should always produce the superset of keys.
   for (const key of Object.keys(proxyRes)) {
     if (key === '__resourceId' || key === 'id' || key.startsWith('__')) continue;
     const pv = proxyRes[key];

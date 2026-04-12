@@ -323,6 +323,15 @@ export function referencesSpec(node: ASTNode, specParamName: string): boolean {
  *
  * Returns the `{ variableName, statusField }` if found, or `undefined`.
  * Used by the ternary detector to widen its gate beyond spec-only conditions.
+ *
+ * **Limitation — compound conditions**: Returns on the first match
+ * (`VisitorOption.Break`). For compound expressions like
+ * `cache.status.ready && db.status.instances >= 1`, only the first
+ * status ref (`cache.status.ready`) is captured. The inverted run
+ * then flips only that field, which may not fully invert the ternary
+ * if the second condition also contributes. This is acceptable for
+ * now: compound resource-status ternaries are rare, and `dependsOn`
+ * + `Cel.cond` can handle them explicitly.
  */
 export function extractResourceStatusRef(
   node: ASTNode,

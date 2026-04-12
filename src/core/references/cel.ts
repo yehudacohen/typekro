@@ -10,6 +10,11 @@ const logger = getComponentLogger('cel');
 /**
  * Escape a string for safe embedding in a CEL string literal.
  * Prevents CEL injection by escaping backslashes first, then double quotes.
+ *
+ * TODO: consolidate with escapeCelLiteral in core.ts (which also handles
+ * \n, \r, \t) and CelEvaluator.escapeCelString in cel-evaluator.ts.
+ * All four copies implement the same core logic — extract to a shared
+ * utils/cel-escape.ts module.
  */
 function escapeCelString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -358,6 +363,9 @@ function cond<T = unknown>(
     condCel = condition.expression;
   } else if (typeof condition === 'boolean') {
     condCel = String(condition);
+    logger.warn('Cel.cond called with a static boolean condition — the ternary is statically evaluable and KRO will always take one branch. This usually means a ref was expected instead of a literal.', {
+      condition,
+    });
   } else {
     condCel = String(condition);
   }

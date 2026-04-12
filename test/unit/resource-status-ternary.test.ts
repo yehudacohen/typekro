@@ -330,23 +330,35 @@ describe('Phase 2: ResourceStatusTernary detection', () => {
     const { analyzeCompositionBody } = await import(
       '../../src/core/expressions/composition/composition-analyzer.js'
     );
+    const { simple } = await import('../../src/factories/simple/index.js');
 
-    // Simulate a composition function that uses cache.status.ready in a ternary
+    // The analyzer parses fn.toString() and scans factory call arguments
+    // for ConditionalExpression nodes. The ternary must be inside an
+    // object literal argument to a factory call (e.g., simple.Deployment).
     const fn = (spec: { name: string; image: string }) => {
-      // This simulates: simple.Deployment({ env: { MODE: cache.status.ready ? 'redis' : 'memory' }, id: 'app' })
+      // biome-ignore lint/correctness/noUnusedVariables: needed in fn body for analyzer source parsing
+      const cache = { status: { ready: true } };
+      simple.ConfigMap({
+        name: spec.name,
+        data: { mode: cache.status.ready ? 'redis' : 'memory' },
+        id: 'cfg',
+      });
       return { ready: true };
     };
 
     const result = analyzeCompositionBody(
       fn as (...args: unknown[]) => unknown,
-      new Set(['cache', 'app']),
+      new Set(['cache', 'cfg']),
       new Set()
     );
 
-    // The analyzer should detect resource-status ternaries
-    // (This specific test may need adjustment based on how the fn.toString() looks)
     expect(result.resourceStatusTernaries).toBeDefined();
     expect(Array.isArray(result.resourceStatusTernaries)).toBe(true);
+    // The analyzer should have found at least one resource-status ternary
+    expect(result.resourceStatusTernaries.length).toBeGreaterThanOrEqual(1);
+    // It should reference cache.status.ready
+    const ternary = result.resourceStatusTernaries[0];
+    expect(ternary?.statusField).toBe('ready');
   });
 });
 
@@ -966,3 +978,63 @@ function findResourceSection(lines: string[], resourceId: string): string {
   }
   return captured.join('\n');
 }
+
+// =============================================================================
+// Review feedback: additional edge case coverage
+// =============================================================================
+
+describe('Review feedback: dependsOn accepts CelExpression condition', () => {
+  it('dependsOn with Cel.expr condition extracts expression string', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+    const { Cel } = await import('../../src/core/references/cel.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'depends-cel-expr', kind: 'DependsCelExpr', spec: Spec, status: Status },
+      (spec) => {
+        const db = simple.Deployment({
+          name: `${spec.name}-db`,
+          image: spec.image,
+          id: 'db',
+        });
+
+        const app = simple.Deployment({
+          name: spec.name,
+          image: spec.image,
+          id: 'app',
+        });
+
+        // Use Cel.expr as the condition instead of a plain string
+        app.dependsOn(db, Cel.expr<string>('db.status.readyReplicas >= 1'));
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    // The readyWhen should contain the CEL expression string, not [object Object]
+    expect(yaml).toContain('db.status.readyReplicas >= 1');
+    expect(yaml).not.toContain('[object Object]');
+  });
+});
+
+describe('Review feedback: computeMergedId is a shared utility', () => {
+  it('computeMergedId returns baseId for single-resource compositions', async () => {
+    const { computeMergedId } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    expect(computeMergedId('myComp', 'innerRes', 1)).toBe('myComp');
+  });
+
+  it('computeMergedId returns baseId-innerResourceId for multi-resource compositions', async () => {
+    const { computeMergedId } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    expect(computeMergedId('myComp', 'helmRelease', 3)).toBe('myComp-helmRelease');
+  });
+});

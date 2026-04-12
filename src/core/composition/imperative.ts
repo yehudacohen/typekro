@@ -39,7 +39,8 @@ import type {
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
-import type { Enhanced } from '../types.js';
+import type { CelExpression, Enhanced } from '../types.js';
+import { isCelExpression } from '../../utils/type-guards.js';
 import type { CompositionContext } from './context.js';
 import {
   createCompositionContext,
@@ -53,6 +54,18 @@ import {
  * This will log detailed information about resource registration, status building, and performance
  */
 const logger = getComponentLogger('imperative-composition');
+
+/**
+ * Compute the merged resource ID for an inner composition's resource in
+ * the parent context. Single-resource compositions use baseId directly;
+ * multi-resource compositions use `baseId-innerResourceId`.
+ *
+ * This is the **single source of truth** for the naming convention — used
+ * by both the merge loop and the dependsOn leaf-resource lookup.
+ */
+export function computeMergedId(baseId: string, innerResourceId: string, resourceCount: number): string {
+  return resourceCount === 1 ? baseId : `${baseId}-${innerResourceId}`;
+}
 
 export function enableCompositionDebugging(): void {
   CompositionDebugger.enableDebugMode();
@@ -320,9 +333,7 @@ function executeNestedCompositionWithSpec<
 
   // Merge the executed composition's resources into the parent context
   for (const [resourceId, resource] of Object.entries(executionContext.resources)) {
-    // For single-resource compositions, use baseId as the resource ID
-    // For multi-resource compositions, use baseId-resourceId
-    const uniqueId = resourceCount === 1 ? baseId : `${baseId}-${resourceId}`;
+    const uniqueId = computeMergedId(baseId, resourceId, resourceCount);
     parentContext.addResource(uniqueId, resource);
   }
 
@@ -421,17 +432,16 @@ function executeNestedCompositionWithSpec<
   // by this inner composition (the "leaf" that gates overall readiness),
   // not all merged resources.
   Object.defineProperty(nestedCompositionResource, 'dependsOn', {
-    value: function (dependency: unknown, condition?: string) {
+    value: function (dependency: unknown, condition?: string | CelExpression) {
       // Find the last resource registered by this inner composition
       const innerResourceIds = Object.keys(executionContext.resources);
       const lastInnerResourceId = innerResourceIds[innerResourceIds.length - 1];
       if (!lastInnerResourceId) return nestedCompositionResource;
 
-      // The merged ID in the parent context
-      const resourceCount = innerResourceIds.length;
-      const mergedId = resourceCount === 1 ? baseId : `${baseId}-${lastInnerResourceId}`;
-
-      // Find the merged resource in the parent context
+      // Look up the merged resource by computing the same ID used during
+      // the merge loop. Uses the shared computeMergedId utility so the
+      // naming convention is defined in one place.
+      const mergedId = computeMergedId(baseId, lastInnerResourceId, innerResourceIds.length);
       const mergedResource = parentContext.resources[mergedId];
       if (!mergedResource) return nestedCompositionResource;
 
@@ -443,12 +453,16 @@ function executeNestedCompositionWithSpec<
       }
       if (!depId) return nestedCompositionResource;
 
+      // Normalize condition: accept CelExpression or plain string
+      const condStr = condition !== undefined && typeof condition === 'object' &&
+        isCelExpression(condition) ? condition.expression : condition as string | undefined;
+
       // Attach dependsOn to the leaf resource
       const existing = getMetadataField(mergedResource, 'dependsOn') as
         | Array<{ resourceId: string; condition?: string }>
         | undefined;
       const deps = existing ?? [];
-      deps.push({ resourceId: depId, ...(condition !== undefined && { condition }) });
+      deps.push({ resourceId: depId, ...(condStr !== undefined && { condition: condStr }) });
       setMetadataField(mergedResource, 'dependsOn', deps);
 
       return nestedCompositionResource;

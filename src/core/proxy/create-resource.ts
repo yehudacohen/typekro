@@ -560,8 +560,12 @@ export function createResource<TSpec extends object, TStatus extends object>(
   Object.defineProperty(enhanced, 'dependsOn', {
     value: function (
       dependency: unknown,
-      condition?: string
+      condition?: string | { expression: string }
     ): Enhanced<TSpec, TStatus> {
+      // Normalize condition: accept CelExpression or plain string
+      const condStr = condition !== undefined && typeof condition === 'object' &&
+        'expression' in condition ? condition.expression : condition as string | undefined;
+
       // Extract resource ID from the dependency
       let depId: string | undefined;
       // Enhanced resource — read ID from metadata
@@ -582,7 +586,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
         | Array<{ resourceId: string; condition?: string }>
         | undefined;
       const deps = existing ?? [];
-      deps.push({ resourceId: depId, ...(condition !== undefined && { condition }) });
+      deps.push({ resourceId: depId, ...(condStr !== undefined && { condition: condStr }) });
       setMetadataField(this, 'dependsOn', deps);
 
       return this as Enhanced<TSpec, TStatus>;
