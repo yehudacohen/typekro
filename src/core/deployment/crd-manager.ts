@@ -317,14 +317,14 @@ export class CRDManager {
    *
    * This is the correct path for KRO RGDs because KRO's server-side
    * pluralization may not match any client-side heuristic. For example,
-   * `kind: CollectorBills` becomes `plural: collectorbills` (not
-   * `collectorbillses`) because KRO recognizes "Bills" as already plural.
+   * already-plural kind names don't get an extra "s" suffix — only
+   * the CRD's `spec.names.plural` is authoritative.
    *
    * The method polls the full CRD list looking for one whose
    * `spec.group` and `spec.names.kind` match, then delegates to
    * {@link waitForCRDEstablishment} with the discovered name.
    *
-   * @param kind - The resource kind (e.g., "CollectorBills")
+   * @param kind - The resource kind (e.g., "WebAppWithProcessing")
    * @param group - The CRD group (e.g., "kro.run")
    * @param deploymentMode - The deployment mode for logging
    * @param timeout - Max milliseconds to wait for the CRD to exist AND be established

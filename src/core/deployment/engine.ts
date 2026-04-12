@@ -1435,7 +1435,7 @@ export class DirectDeploymentEngine {
    * Wait for a CRD discovered by (kind, group) rather than a pre-guessed name.
    * Used by the KRO factory after applying an RGD — KRO's server-side
    * pluralization is authoritative, and the client cannot always derive the
-   * same plural form (e.g., already-plural kinds like "CollectorBills").
+   * same plural form (e.g., already-plural kind names).
    */
   async waitForCRDByKindAndGroup(
     kind: string,

@@ -781,11 +781,11 @@ describe('T7 — strict virtual ID cross-reference (I6)', () => {
 });
 
 // =============================================================================
-// T8 — collectorbills-shaped regression (minimized)
+// T8 — full-stack webapp-shaped regression (minimized)
 // =============================================================================
 
-describe('T8 — collectorbills-shaped regression (I1–I6)', () => {
-  // Mirrors the essential shape of the real collectorbills composition:
+describe('T8 — full-stack webapp regression (I1–I6)', () => {
+  // Mirrors the essential shape of a full-stack webapp composition:
   // a nested composition providing both static URL fields and dynamic
   // ready fields, plus a consumer Deployment in the outer that reads
   // those status values into env vars.
@@ -847,7 +847,7 @@ describe('T8 — collectorbills-shaped regression (I1–I6)', () => {
         dbName: spec.databaseName,
       });
       // Supervisor consumes the nested composition's status values
-      // as environment variables — the real pattern from collectorbills.
+      // as environment variables — a common full-stack webapp pattern.
       Deployment({
         name: `${spec.name}-supervisor`,
         image: 'nginx',

@@ -1,6 +1,6 @@
 /**
  * Regression tests for the framework fixes implemented during the
- * collectorbills dogfooding session. Each `describe` block corresponds
+ * KRO dogfooding session. Each `describe` block corresponds
  * to one specific bug and pins the behavior that unblocked the real
  * KRO deploy — so any regression would fail these tests first, before
  * the full end-to-end deploy loop.

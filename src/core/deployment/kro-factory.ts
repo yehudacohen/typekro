@@ -139,9 +139,8 @@ export class KroResourceFactoryImpl<
    * of guessing the plural from client-side heuristics.
    *
    * KRO's server-side pluralization is authoritative and not always
-   * derivable from client code — for example, `kind: CollectorBills`
-   * stays as `collectorbills` because "Bills" is already plural, not
-   * `collectorbillses`.
+   * derivable from client code — for example, already-plural kind
+   * names don't get an extra "s" suffix.
    */
   private discoveredPlural: string | undefined;
 
@@ -1199,7 +1198,7 @@ ${Object.entries(spec as Record<string, any>)
    * Discovers the CRD by (kind, group=kro.run) via the CRD list API
    * rather than pre-computing a plural form. KRO's server-side pluralization
    * is authoritative, and client-side heuristics cannot handle all cases
-   * (e.g., already-plural kinds like "CollectorBills" → "collectorbills").
+   * (e.g., already-plural kind names that shouldn't get an extra "s").
    */
   private async waitForCRDReadyWithEngine(deploymentEngine: DirectDeploymentEngine): Promise<void> {
     if (typeof deploymentEngine.waitForCRDByKindAndGroup !== 'function') {
