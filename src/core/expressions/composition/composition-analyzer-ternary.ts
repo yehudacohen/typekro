@@ -10,6 +10,7 @@
 import { getComponentLogger } from '../../logging/index.js';
 import {
   expressionToCel,
+  extractResourceStatusRef,
   factoryArgKeyToTemplatePath,
   findFactoryCallsInSubtree,
   getSource,
@@ -26,6 +27,7 @@ import type {
   Literal,
   MemberExpression,
   Property,
+  ResourceStatusTernary,
 } from './composition-analyzer-types.js';
 
 const logger = getComponentLogger('composition-analyzer');
@@ -96,8 +98,59 @@ function walkObjectForTernaries(
     // Ternary value → emit template override at the full dotted path
     if (prop.value.type === 'ConditionalExpression') {
       const ternary = prop.value as ConditionalExpression;
-      if (!referencesSpec(ternary.test, specParamName)) continue;
       if (isCompileTimeLiteral(ternary.test)) continue;
+
+      // Check for resource-status ternary (e.g., cache.status.ready ? X : Y).
+      // For direct factory calls, we record the full ternary info (property
+      // path, alternate value) so processCompositionBodyAnalysis can construct
+      // a targeted template override without re-execution. For non-factory
+      // calls (nested compositions), we record just the detection info for
+      // the scoped re-execution approach (Phase 4).
+      const statusRef = extractResourceStatusRef(ternary.test, specParamName);
+      if (statusRef) {
+        // Build the property path for the override target
+        const topLevelPath = parentPath === '' ? factoryArgKeyToTemplatePath(keyName) : null;
+        const fullPath = parentPath === '' ? topLevelPath : `${parentPath}.${keyName}`;
+
+        // Extract the alternate value as a CEL literal (for simple literals)
+        let alternateCel: string | undefined;
+        const alt = ternary.alternate;
+        if (alt.type === 'Literal') {
+          const litVal = (alt as unknown as { value: unknown }).value;
+          if (typeof litVal === 'string') {
+            alternateCel = `"${litVal.replace(/"/g, '\\"')}"`;
+          } else if (typeof litVal === 'number' || typeof litVal === 'boolean') {
+            alternateCel = String(litVal);
+          } else if (litVal === null) {
+            alternateCel = '""';
+          }
+        }
+
+        const entry: ResourceStatusTernary = {
+          ...statusRef,
+        };
+        // Only set callSiteResourceId for direct factory calls
+        if (resourceId !== '__non_factory_call__') {
+          entry.callSiteResourceId = resourceId;
+        }
+        if (fullPath) {
+          entry.propertyPath = fullPath;
+        }
+        if (alternateCel) {
+          entry.alternateCel = alternateCel;
+        }
+        result.resourceStatusTernaries.push(entry);
+        logger.debug('Detected resource-status ternary in factory argument', {
+          resourceId,
+          variableName: statusRef.variableName,
+          statusField: statusRef.statusField,
+          propertyPath: fullPath,
+          alternateCel,
+        });
+        continue;
+      }
+
+      if (!referencesSpec(ternary.test, specParamName)) continue;
 
       // Build the full property path. The top-level caller passes an empty
       // parentPath; nested calls pass the dotted path built so far.

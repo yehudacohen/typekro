@@ -9,6 +9,11 @@
 
 import { toCamelCase } from '../../utils/string.js';
 import {
+  getMetadataField,
+  getResourceId,
+  setMetadataField,
+} from '../metadata/index.js';
+import {
   buildNestedCompositionAliases,
   extractNestedStatusCel as extractNestedStatusCelFn,
 } from './nested-status-cel.js';
@@ -399,7 +404,9 @@ function executeNestedCompositionWithSpec<
   // The proxy is needed for KRO analysis (to generate CEL expressions
   // for cross-composition references), but in direct mode the outer
   // composition needs actual strings to wire into env vars, etc.
-  const nestedCompositionResource: NestedCompositionResource<TSpec, TStatus> = {
+  // dependsOn is added via Object.defineProperty below — use Omit + cast
+  // to satisfy TypeScript while preserving the runtime defineProperty pattern.
+  const nestedCompositionResource = {
     [NESTED_COMPOSITION_BRAND]: true as const,
     spec,
     status: isReExec
@@ -407,7 +414,49 @@ function executeNestedCompositionWithSpec<
       : createStatusProxy<TStatus>(baseId, parentContext, result),
     __compositionId: uniqueExecutionName,
     __resources: result.resources,
-  };
+  } as NestedCompositionResource<TSpec, TStatus>;
+
+  // Add dependsOn method so compositions can express ordering dependencies.
+  // When called, it attaches the dependency to the LAST resource registered
+  // by this inner composition (the "leaf" that gates overall readiness),
+  // not all merged resources.
+  Object.defineProperty(nestedCompositionResource, 'dependsOn', {
+    value: function (dependency: unknown, condition?: string) {
+      // Find the last resource registered by this inner composition
+      const innerResourceIds = Object.keys(executionContext.resources);
+      const lastInnerResourceId = innerResourceIds[innerResourceIds.length - 1];
+      if (!lastInnerResourceId) return nestedCompositionResource;
+
+      // The merged ID in the parent context
+      const resourceCount = innerResourceIds.length;
+      const mergedId = resourceCount === 1 ? baseId : `${baseId}-${lastInnerResourceId}`;
+
+      // Find the merged resource in the parent context
+      const mergedResource = parentContext.resources[mergedId];
+      if (!mergedResource) return nestedCompositionResource;
+
+      // Extract dependency resource ID
+      let depId: string | undefined;
+      depId = getResourceId(dependency as Record<string, unknown>);
+      if (!depId && typeof dependency === 'object' && dependency !== null) {
+        depId = (dependency as Record<string, unknown>).__compositionId as string | undefined;
+      }
+      if (!depId) return nestedCompositionResource;
+
+      // Attach dependsOn to the leaf resource
+      const existing = getMetadataField(mergedResource, 'dependsOn') as
+        | Array<{ resourceId: string; condition?: string }>
+        | undefined;
+      const deps = existing ?? [];
+      deps.push({ resourceId: depId, ...(condition !== undefined && { condition }) });
+      setMetadataField(mergedResource, 'dependsOn', deps);
+
+      return nestedCompositionResource;
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
 
   return nestedCompositionResource;
 }
@@ -1059,7 +1108,7 @@ export function kubernetesComposition<
       status: createStatusProxy<TStatus>(compositionName, null, callResult),
       __compositionId: callCompositionName,
       __resources: callResult.resources,
-    } satisfies NestedCompositionResource<TSpec, TStatus>;
+    } as NestedCompositionResource<TSpec, TStatus>;
   }) as unknown as CallableComposition<TSpec, TStatus>; // Double cast needed: function shape doesn't overlap with CallableComposition
 
   // Create a set to track explicitly deleted properties

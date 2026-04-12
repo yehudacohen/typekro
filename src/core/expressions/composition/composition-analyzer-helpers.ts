@@ -316,6 +316,62 @@ export function referencesSpec(node: ASTNode, specParamName: string): boolean {
   return found;
 }
 
+/**
+ * Check if an expression references a resource's status field — i.e.,
+ * contains a `<identifier>.status.<field>` MemberExpression where the
+ * root identifier is NOT the spec parameter and NOT a known JS global.
+ *
+ * Returns the `{ variableName, statusField }` if found, or `undefined`.
+ * Used by the ternary detector to widen its gate beyond spec-only conditions.
+ */
+export function extractResourceStatusRef(
+  node: ASTNode,
+  specParamName: string
+): { variableName: string; statusField: string } | undefined {
+  const GLOBALS = new Set([
+    'this', 'globalThis', 'window', 'console', 'process', 'Math', 'JSON',
+    'Object', 'Array', 'String', 'Number', 'Boolean', 'Promise', 'Date',
+    'Map', 'Set', 'WeakMap', 'WeakSet', 'RegExp', 'Error', 'Symbol',
+    'Proxy', 'Reflect', 'Buffer', 'undefined', 'NaN', 'Infinity',
+    'setTimeout', 'setInterval', 'queueMicrotask', 'Intl',
+    'module', 'exports', 'require', 'schema',
+  ]);
+
+  let result: { variableName: string; statusField: string } | undefined;
+  // biome-ignore lint/suspicious/noExplicitAny: estraverse types are loose
+  estraverse.traverse(node as any, {
+    enter(n) {
+      // Match: X.status.Y where X is an Identifier
+      if (
+        n.type === 'MemberExpression' &&
+        !n.computed &&
+        n.property?.type === 'Identifier'
+      ) {
+        const obj = n.object;
+        if (
+          obj?.type === 'MemberExpression' &&
+          !obj.computed &&
+          obj.property?.type === 'Identifier' &&
+          getIdentifierName(obj.property) === 'status' &&
+          obj.object?.type === 'Identifier'
+        ) {
+          const varName = getIdentifierName(obj.object);
+          if (varName && varName !== specParamName && !GLOBALS.has(varName)) {
+            result = {
+              variableName: varName,
+              statusField: getIdentifierName(n.property) ?? '',
+            };
+            return estraverse.VisitorOption.Break;
+          }
+        }
+      }
+      return undefined;
+    },
+    fallback: 'iteration',
+  });
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Factory call search
 // ---------------------------------------------------------------------------

@@ -486,6 +486,9 @@ export interface NestedCompositionResource<TSpec, TStatus> {
   readonly status: StatusProxy<TStatus>;
   readonly __compositionId: string;
   readonly __resources: KubernetesResource[];
+  /** Declare that this composition's resources depend on another resource being ready.
+   * Added at runtime via Object.defineProperty in executeNestedCompositionWithSpec. */
+  readonly dependsOn: (dependency: unknown, condition?: string) => this;
 }
 
 /**

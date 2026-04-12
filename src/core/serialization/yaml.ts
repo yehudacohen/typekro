@@ -6,6 +6,7 @@
  */
 
 import * as yaml from 'js-yaml';
+import { getMetadataField } from '../metadata/resource-metadata.js';
 import { escapeRegExp } from '../../utils/helpers.js';
 import {
   extractResourceReferences,
@@ -539,6 +540,21 @@ function buildResourceEntry(
   const readyWhen = resolveReadyWhen(rawReadyWhen, id, hasForEach);
   if (readyWhen) {
     entry.readyWhen = readyWhen;
+  }
+
+  // dependsOn — explicit dependency ordering via readyWhen injection.
+  // Reads the dependsOn metadata set by Enhanced.dependsOn() and emits
+  // additional readyWhen entries so KRO creates dependency edges.
+  const dependsOnDeps = getMetadataField(resource, 'dependsOn') as
+    | Array<{ resourceId: string; condition?: string }>
+    | undefined;
+  if (dependsOnDeps && dependsOnDeps.length > 0) {
+    if (!entry.readyWhen) entry.readyWhen = [];
+    for (const dep of dependsOnDeps) {
+      const celCondition = dep.condition ?? `\${${dep.resourceId}.status.ready == true}`;
+      const formatted = celCondition.startsWith('${') ? celCondition : `\${${celCondition}}`;
+      entry.readyWhen.push(formatted);
+    }
   }
 
   return entry;

@@ -5,7 +5,12 @@
  * TypeScript resource definitions to Kro ResourceGraphDefinition YAML manifests.
  */
 
-import { createCompositionContext, getCurrentCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import {
+  createCompositionContext,
+  getCurrentCompositionContext,
+  runInStatusBuilderContext,
+  runWithCompositionContext,
+} from '../composition/context.js';
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
@@ -464,6 +469,89 @@ function processCompositionBodyAnalysis(
       // don't exist in the outer RGD. The outer composition is the
       // authority on branch conditions for its own calls; the inner's
       // branch shape is driven by what the outer passed in.
+      // ── Resource-status ternary compilation (Phases 3+4) ────────────
+      //
+      // When the AST detects ternaries conditioned on resource status
+      // fields (e.g., `cache.status.ready ? 'redis' : 'memory'`), the
+      // proxy run takes the truthy branch because KubernetesRef proxies
+      // are always truthy in JS. To emit the CEL conditional, we
+      // re-execute the composition with `liveStatusMap` injecting falsy
+      // values for the targeted resources. The diff between the proxy
+      // run and the inverted run reveals which template fields changed.
+      //
+      // To avoid false positives (other fields changing due to the
+      // status flip), we only diff the SPECIFIC resources identified
+      // by `callSiteResourceId` (for direct factory calls) or all
+      // inner resources (for cross-composition calls).
+      // Only process direct-factory ternaries (where callSiteResourceId
+      // is known). Cross-composition ternaries (callSiteResourceId
+      // undefined) can't be scoped to a single resource, and the full
+      // re-execution produces false positives because the flipped status
+      // value changes the entire composition's behavior. Use dependsOn
+      // + Cel.cond for cross-composition ordering instead.
+      const directTernaries = compositionAnalysis.resourceStatusTernaries.filter(
+        (t) => t.callSiteResourceId && t.callSiteResourceId !== '__non_factory_call__'
+      );
+
+      // Deduplicate by (variableName, statusField)
+      const seenConditions = new Set<string>();
+      const uniqueTernaries = directTernaries.filter((t) => {
+        const key = `${t.variableName}.${t.statusField}`;
+        if (seenConditions.has(key)) return false;
+        seenConditions.add(key);
+        return true;
+      });
+
+      // Process EACH resource-status ternary independently to avoid
+      // cross-contamination: flip ONE condition → run → diff → apply.
+      // Multiple ternaries on the same resource get independent conditionals.
+      for (const ternary of uniqueTernaries) {
+        const resId =
+          compositionAnalysis.variableToResourceId.get(ternary.variableName) ??
+          ternary.variableName;
+        if (!resourceIds.has(resId)) continue;
+
+        const conditionCel = `${resId}.status.${ternary.statusField}`;
+
+        // Build a targeted liveStatusMap flipping ONLY this one condition
+        const invertedStatusMap = new Map<string, Record<string, unknown>>();
+        invertedStatusMap.set(resId, { [ternary.statusField]: false });
+
+        const invertedCtx = createCompositionContext('resource-status-inverted');
+        invertedCtx.liveStatusMap = invertedStatusMap;
+
+        const invertedSchema = createSchemaProxy<KroCompatibleType, KroCompatibleType>(
+          (schemaDefinition?.spec as { json?: unknown } | undefined)?.json,
+          (schemaDefinition as { status?: { json?: unknown } } | undefined)?.status?.json
+        );
+
+        runWithCompositionContext(invertedCtx, () => {
+          runInStatusBuilderContext(() => {
+            originalCompositionFnForAnalysis(invertedSchema.spec);
+          });
+        });
+
+        // Diff ONLY the targeted resource(s)
+        const targetIds = ternary.callSiteResourceId
+          ? [ternary.callSiteResourceId]
+          : Object.keys(invertedCtx.resources);
+
+        for (const id of targetIds) {
+          const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
+          const invertedRes = invertedCtx.resources[id] as unknown as
+            | Record<string, unknown>
+            | undefined;
+          if (proxyRes && invertedRes) {
+            walkAndConditionalizeResourceStatus(proxyRes, invertedRes, conditionCel);
+          }
+        }
+
+        serializationLogger.debug('Resource-status inverted run applied', {
+          conditionCel,
+          targetIds,
+        });
+      }
+
       const currentCtx = getCurrentCompositionContext();
       const skipHybridCapture = currentCtx?.isNestedCall === true;
       if (
@@ -788,6 +876,41 @@ function isLeafValue(v: unknown): boolean {
     // KubernetesRef proxies register as functions (typeof fn is 'function')
     typeof v === 'function'
   );
+}
+
+/**
+ * Walk two resource trees in parallel (proxy-run vs resource-status-inverted
+ * run) and replace differing leaves with a CEL conditional.
+ */
+function walkAndConditionalizeResourceStatus(
+  proxyRes: Record<string, unknown>,
+  invertedRes: Record<string, unknown>,
+  conditionCel: string
+): void {
+  for (const key of Object.keys(proxyRes)) {
+    if (key === '__resourceId' || key === 'id' || key.startsWith('__')) continue;
+    const pv = proxyRes[key];
+    const iv = invertedRes[key];
+    if (pv === undefined || iv === undefined) continue;
+
+    if (isPlainObject(pv) && isPlainObject(iv)) {
+      walkAndConditionalizeResourceStatus(pv, iv, conditionCel);
+    } else if (Array.isArray(pv) && Array.isArray(iv) && pv.length === iv.length) {
+      for (let i = 0; i < pv.length; i++) {
+        if (isPlainObject(pv[i]) && isPlainObject(iv[i])) {
+          walkAndConditionalizeResourceStatus(
+            pv[i] as Record<string, unknown>,
+            iv[i] as Record<string, unknown>,
+            conditionCel
+          );
+        }
+      }
+    } else if (!leafEquals(pv, iv)) {
+      const proxyRepr = celValueRepr(pv);
+      const invertedRepr = celValueRepr(iv);
+      proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
+    }
+  }
 }
 
 function leafEquals(a: unknown, b: unknown): boolean {

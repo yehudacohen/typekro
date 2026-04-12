@@ -257,11 +257,6 @@ export const webAppWithProcessing = kubernetesComposition(
         eventKey: spec.processing.eventKey,
         signingKey: spec.processing.signingKey,
         postgres: { uri: `postgresql://${dbOwner}@${database.status.writeService}:5432/${dbName}` },
-        // TODO: cache.metadata.name is deterministic and gets inlined to a
-        // schema ref, so KRO sees no dependency on the cache resource.
-        // Inngest may restart once while waiting for cache to become ready.
-        // Fix: extend the ternary analyzer to handle resource-status-ref
-        // conditions and emit CEL conditionals across composition boundaries.
         redis: { uri: `redis://${cache.metadata.name}:6379` },
         sdkUrl: spec.processing.sdkUrl,
       },
@@ -287,6 +282,12 @@ export const webAppWithProcessing = kubernetesComposition(
         },
       },
     });
+
+    // Inngest needs cache to be ready before it can connect to Redis.
+    // cache.metadata.name is deterministic and gets inlined to a schema
+    // ref, so KRO sees no implicit dependency. dependsOn creates an
+    // explicit readyWhen on inngest's leaf resource.
+    inngest.dependsOn(cache);
 
     // ── Inngest credentials Secret ──────────────────────────────────────
     //

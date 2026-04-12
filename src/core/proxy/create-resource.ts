@@ -22,6 +22,7 @@ import { TypeKroError } from '../errors.js';
 import { conditionalExpressionIntegrator } from '../expressions/conditional/conditional-integration.js';
 import { getComponentLogger } from '../logging/index.js';
 import {
+  getMetadataField,
   getResourceId as getMetadataResourceId,
   getReadinessEvaluator,
   setMetadataField,
@@ -547,6 +548,42 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
       // Attach to individual resource instance via WeakMap
       setReadinessEvaluator(this, evaluator);
+
+      return this as Enhanced<TSpec, TStatus>;
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+
+  // Add dependsOn method for explicit KRO dependency ordering
+  Object.defineProperty(enhanced, 'dependsOn', {
+    value: function (
+      dependency: unknown,
+      condition?: string
+    ): Enhanced<TSpec, TStatus> {
+      // Extract resource ID from the dependency
+      let depId: string | undefined;
+      // Enhanced resource — read ID from metadata
+      depId = getMetadataResourceId(dependency as Record<string, unknown>);
+      // NestedCompositionResource — read __compositionId
+      if (!depId && typeof dependency === 'object' && dependency !== null) {
+        depId = (dependency as Record<string, unknown>).__compositionId as string | undefined;
+      }
+      if (!depId) {
+        debugLogger.warn('dependsOn: could not resolve resource ID from dependency', {
+          dependencyType: typeof dependency,
+        });
+        return this as Enhanced<TSpec, TStatus>;
+      }
+
+      // Accumulate dependencies
+      const existing = getMetadataField(this, 'dependsOn') as
+        | Array<{ resourceId: string; condition?: string }>
+        | undefined;
+      const deps = existing ?? [];
+      deps.push({ resourceId: depId, ...(condition !== undefined && { condition }) });
+      setMetadataField(this, 'dependsOn', deps);
 
       return this as Enhanced<TSpec, TStatus>;
     },

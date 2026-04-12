@@ -80,6 +80,13 @@ export interface ResourceMetadata {
    * the scopes without access to the original composition.
    */
   scopes?: string[];
+  /**
+   * Explicit dependencies for KRO deployment ordering.
+   * Each entry declares that this resource should wait for another
+   * resource to be ready before KRO creates it. Emitted as `readyWhen`
+   * entries in the RGD YAML.
+   */
+  dependsOn?: Array<{ resourceId: string; condition?: string }>;
 }
 
 /** Keys of ResourceMetadata that are valid metadata field names */

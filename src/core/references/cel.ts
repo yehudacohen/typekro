@@ -279,6 +279,111 @@ function math<T = unknown>(
 }
 
 /**
+ * Convert a value to its CEL representation for use inside a ternary.
+ * Unlike `expr()` which concatenates raw strings, this function
+ * properly quotes string literals and converts marker strings
+ * (containing `__KUBERNETES_REF__` tokens) to CEL concatenation.
+ */
+function celValueForTernary(value: RefOrValue<CelValue>): string {
+  if (isKubernetesRef(value)) {
+    return getInnerCelPath(value);
+  }
+  if (isCelExpression(value)) {
+    return value.expression;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return '""';
+  }
+  const str = String(value);
+  // Check for __KUBERNETES_REF__ markers from template literal coercion.
+  // Convert markers to CEL concatenation: "literal" + string(ref) + "literal"
+  if (str.includes('__KUBERNETES_REF_')) {
+    const parts: string[] = [];
+    let lastIndex = 0;
+    const pattern = /__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]+)__/g;
+    let m: RegExpExecArray | null = pattern.exec(str);
+    while (m !== null) {
+      if (m.index > lastIndex) {
+        parts.push(`"${escapeCelString(str.slice(lastIndex, m.index))}"`);
+      }
+      const resourceId = m[1]!;
+      const fieldPath = m[2]!;
+      const celPath =
+        resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+      parts.push(`string(${celPath})`);
+      lastIndex = m.index + m[0].length;
+      m = pattern.exec(str);
+    }
+    if (lastIndex < str.length) {
+      parts.push(`"${escapeCelString(str.slice(lastIndex))}"`);
+    }
+    return parts.length === 1 ? parts[0]! : parts.join(' + ');
+  }
+  // Plain string → quote as CEL string literal
+  return `"${escapeCelString(str)}"`;
+}
+
+/**
+ * Creates a conditional CEL expression with smart value conversion.
+ *
+ * Unlike `Cel.conditional` (which concatenates raw strings), `Cel.cond`
+ * properly quotes string literals, converts marker strings from template
+ * literal coercion, and handles KubernetesRef values — producing valid
+ * CEL ternary expressions without manual escaping.
+ *
+ * @example Resource status condition with string values
+ * ```typescript
+ * env: { CACHE_MODE: Cel.cond(cache.status.ready, 'redis', 'memory') }
+ * // → ${cache.status.ready ? "redis" : "memory"}
+ * ```
+ *
+ * @example Marker strings from template literals
+ * ```typescript
+ * env: { URL: Cel.cond(cache.status.ready, `http://${cache.metadata.name}:6379`, '') }
+ * // → ${cache.status.ready ? "http://" + string(cache.metadata.name) + ":6379" : ""}
+ * ```
+ */
+function cond<T = unknown>(
+  condition: RefOrValue<unknown>,
+  trueValue: RefOrValue<CelValue>,
+  falseValue: RefOrValue<CelValue>
+): CelExpression<T> & T {
+  let condCel: string;
+  if (isKubernetesRef(condition)) {
+    condCel = getInnerCelPath(condition);
+  } else if (isCelExpression(condition)) {
+    condCel = condition.expression;
+  } else if (typeof condition === 'boolean') {
+    condCel = String(condition);
+  } else {
+    condCel = String(condition);
+  }
+
+  const trueCel = celValueForTernary(trueValue);
+  const falseCel = celValueForTernary(falseValue);
+
+  const expression = `${condCel} ? ${trueCel} : ${falseCel}`;
+
+  const result = {
+    [CEL_EXPRESSION_BRAND]: true,
+    expression,
+    // Mark as a mixed template so processResourceReferences passes it
+    // through as-is (does not re-wrap in ${...}).
+    __isTemplate: true,
+    // toString/Symbol.toPrimitive enable template literal composition:
+    //   `redis://${Cel.cond(ref, 'a', 'b')}:6379`
+    // produces a valid KRO mixed-template string.
+    toString: () => `\${${expression}}`,
+    [Symbol.toPrimitive]: () => `\${${expression}}`,
+  };
+
+  return result as unknown as CelExpression<T> & T;
+}
+
+/**
  * Creates a mixed string template that combines literal strings with CEL expressions
  *
  * This function creates YAML strings with embedded CEL expressions.
@@ -449,6 +554,7 @@ export const Cel = {
   expr,
   join,
   conditional,
+  cond,
   math,
   template,
   concat,

@@ -120,6 +120,37 @@ export interface ExpressionOverride {
   celExpression: string;
 }
 
+/**
+ * A ternary whose test condition references a resource's status field
+ * (e.g., `cache.status.ready ? X : Y`). Detected by the AST analyzer
+ * and used by the resource-status inverted run to flip the condition
+ * and capture the alternate-branch resource templates.
+ */
+export interface ResourceStatusTernary {
+  /** JS variable name from the source (e.g., `cache`) */
+  variableName: string;
+  /** Status field path (e.g., `ready`, `instances`) */
+  statusField: string;
+  /**
+   * Resource ID of the factory call containing this ternary.
+   * For direct factory calls (e.g., `simple.Deployment({...})`), this
+   * is the resource's `id`. For nested composition calls, this is
+   * `undefined` (Phase 4 handles those via scoped re-execution).
+   */
+  callSiteResourceId?: string;
+  /**
+   * Dotted property path within the resource template where the
+   * ternary value should be placed (e.g., `spec.env.CACHE_MODE`).
+   */
+  propertyPath?: string;
+  /**
+   * The ternary's alternate value as a CEL literal string.
+   * Extracted from the AST's ConditionalExpression alternate node.
+   * For simple literals: `""`, `"memory"`, `0`, `false`.
+   */
+  alternateCel?: string;
+}
+
 /** Full analysis result */
 export interface ASTAnalysisResult {
   resources: Map<string, ResourceControlFlow>;
@@ -139,6 +170,21 @@ export interface ASTAnalysisResult {
    * evaluated to a literal at runtime but should be CEL conditionals.
    */
   statusOverrides: ExpressionOverride[];
+  /**
+   * Resource-status ternaries detected in factory/composition call arguments.
+   * Each entry records the JS variable name and the status field that was
+   * tested. The resource-status inverted run uses this to inject falsy values
+   * into `liveStatusMap` for the targeted resources, causing the ternary
+   * to take the alternate branch and revealing the diff for CEL emission.
+   */
+  resourceStatusTernaries: ResourceStatusTernary[];
+  /**
+   * Map of JS variable names to resource IDs, built from
+   * `VariableDeclaration` → factory/composition call analysis.
+   * Used to resolve AST identifiers (e.g., `cache`) to KRO resource
+   * IDs (e.g., `cache` or `appCache`) for CEL expression emission.
+   */
+  variableToResourceId: Map<string, string>;
   errors: string[];
 }
 

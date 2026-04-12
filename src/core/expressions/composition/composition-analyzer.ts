@@ -68,6 +68,8 @@ export function analyzeCompositionBody(
     templateOverrides: new Map(),
     _collectionVariables: new Map(),
     statusOverrides: [],
+    resourceStatusTernaries: [],
+    variableToResourceId: new Map(),
     errors: [],
   };
 

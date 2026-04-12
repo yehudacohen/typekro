@@ -100,6 +100,18 @@ export function walkStatement(
               logger.debug('Tracked collection variable', { varName, resourceId });
             }
           }
+
+          // Track variable-to-resource-ID mapping for any call expression
+          // with an explicit `id` in its argument object. This enables the
+          // resource-status ternary compiler to resolve AST identifiers
+          // (e.g., `cache`) to KRO resource IDs.
+          if (decl.id.type === 'Identifier' && decl.init.type === 'CallExpression') {
+            const varName = (decl.id as Identifier).name;
+            const resId = extractFactoryId(decl.init as CallExpression);
+            if (resId) {
+              result.variableToResourceId.set(varName, resId);
+            }
+          }
         }
       }
       break;
@@ -290,6 +302,22 @@ export function walkExpression(
       analyzeFactoryArgTernaries(call, id, fullSource, specParamName, result);
     }
     return;
+  }
+
+  // Non-factory call expressions (member expressions like simple.Deployment,
+  // nested composition calls like inngestBootstrap, etc.): scan arguments
+  // for resource-status ternaries. These can't be handled via
+  // expressionToCel (template path is opaque across transformations), but
+  // the scoped re-execution in processCompositionBodyAnalysis captures
+  // them by flipping liveStatusMap. We just need to DETECT them here.
+  if (node.type === 'CallExpression' && !isFactoryCall(node)) {
+    const call = node as CallExpression;
+    // Extract id from the call arg if present (for member expression factories)
+    const callId = extractFactoryId(call) ?? '__non_factory_call__';
+    const firstArg = call.arguments[0];
+    if (firstArg?.type === 'ObjectExpression') {
+      analyzeFactoryArgTernaries(call, callId, fullSource, specParamName, result);
+    }
   }
 
   // Array method chaining: spec.regions.map(region => Factory({...}))
