@@ -383,6 +383,39 @@ function substituteForEachSentinels<T>(template: T, basePath: string, varName: s
   return template;
 }
 
+/**
+ * Strip orphaned `$item` sentinel references from a template.
+ *
+ * After forEach substitution, any remaining `$item` paths are from non-forEach
+ * contexts — typically when `...spec.array` is spread into a literal array.
+ * These are not valid CEL identifiers and must be collapsed to the parent
+ * array reference.
+ *
+ * Handles both wrapped CEL (`${path.$item.field}`) and raw paths.
+ * Strips `.$item` and any trailing field access, keeping just the parent path.
+ */
+function stripOrphanedItemSentinels<T>(template: T): T {
+  if (typeof template === 'string') {
+    if (!template.includes('$item')) return template;
+    // Match any path segment ending with .$item optionally followed by .field
+    return template.replace(/(\w[\w.]*)\.\$item(?:\.[a-zA-Z0-9_.]+)?/g, '$1') as T;
+  }
+
+  if (Array.isArray(template)) {
+    return template.map((item) => stripOrphanedItemSentinels(item)) as T;
+  }
+
+  if (template !== null && typeof template === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(template)) {
+      result[key] = stripOrphanedItemSentinels(value);
+    }
+    return result as T;
+  }
+
+  return template;
+}
+
 // ---------------------------------------------------------------------------
 // Template override application
 // ---------------------------------------------------------------------------
@@ -519,6 +552,16 @@ function buildResourceEntry(
         }
       }
     }
+  }
+
+  // Orphaned $item sentinels — strip remaining $item references from non-forEach
+  // resources. When a schema array proxy is spread (`...spec.envFrom`) into a
+  // literal array, the proxy iterator yields $item-marked refs that never get
+  // matched by a forEach dimension. Collapse `path.$item.field` → `path` so
+  // the CEL expression references the whole array (valid CEL), rather than
+  // leaving `$item` which is not a valid CEL identifier.
+  if (entry.template && !hasForEach) {
+    entry.template = stripOrphanedItemSentinels(entry.template);
   }
 
   // Template overrides — ternary expressions in factory args that evaluated to
