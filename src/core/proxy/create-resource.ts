@@ -241,8 +241,31 @@ function createPropertyProxy<T extends object>(
         }
       }
 
+      // 4. Ref-dependent value auto-promotion: if a stored value contains
+      // KubernetesRef markers (from template literals like `${spec.name}-cache`),
+      // promote the access to a resource-level KubernetesRef. This ensures
+      // KRO sees a dependency edge (e.g., `${cache.metadata.name}`) instead
+      // of an inlined schema ref (`${string(schema.spec.name)}-cache`) which
+      // creates no dependency. Static values (no markers) pass through as-is.
+      //
+      // This is the general principle: when one resource reads another
+      // resource's property, and that property depends on external refs,
+      // the consumer should get a resource-level reference — not the
+      // inlined resolved value. The `$` prefix is the explicit opt-in
+      // for static values where the user still wants a resource ref.
+      //
+      // Guard: only during status builder context (composition function
+      // execution). During serialization (processResourceReferences walking
+      // a resource's own template), SBC is inactive and stored values pass
+      // through — the resource's own template should contain the original
+      // computed values, not self-referencing KubernetesRefs.
       if (prop in obj) {
-        return obj[prop as keyof T];
+        const stored = obj[prop as keyof T];
+        if (isInStatusBuilderContext() &&
+            typeof stored === 'string' && stored.includes('__KUBERNETES_REF_')) {
+          return createRefFactory(resourceId, `${basePath}.${prop}`);
+        }
+        return stored;
       } else {
         // Check if there's live status data available from post-deployment re-execution.
         // This allows status comparisons (e.g., `readyInstances >= 1`) to evaluate
