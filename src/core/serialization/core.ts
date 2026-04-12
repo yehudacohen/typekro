@@ -666,30 +666,20 @@ function processCompositionBodyAnalysis(
  */
 function collectOverridableOptionalFields(
   schemaDefinition: { spec: { json?: unknown } },
-  analysis: ASTAnalysisResult
+  _analysis: ASTAnalysisResult
 ): Set<string> {
   const specJson = schemaDefinition.spec.json as
     | { optional?: { key: string }[] }
     | undefined;
   if (!specJson) return new Set();
-  const optionalFields = new Set((specJson.optional ?? []).map((p) => p.key));
 
-  const testedFields = new Set<string>();
-  // Pull field names from every includeWhen condition the AST analyzer
-  // attached to a resource (including resources that were never
-  // runtime-registered because their branch wasn't taken).
-  for (const entry of analysis.resources.values()) {
-    for (const cond of entry.includeWhen) {
-      const matches = cond.expression.matchAll(/schema\.spec\.([A-Za-z_$][\w$]*)/g);
-      for (const m of matches) {
-        const field = m[1];
-        if (field && optionalFields.has(field)) {
-          testedFields.add(field);
-        }
-      }
-    }
-  }
-  return testedFields;
+  // Return ALL optional top-level spec fields, not just those tested in
+  // includeWhen conditions. Optional fields used in spread patterns like
+  // `{ name: 'default', ...spec.optional }` also need the hybrid run to
+  // capture literal defaults — otherwise `maybeWrapWithOmit` emits
+  // `omit()` on required fields (e.g., metadata.name) where the literal
+  // default should be the fallback.
+  return new Set((specJson.optional ?? []).map((p) => p.key));
 }
 
 /**

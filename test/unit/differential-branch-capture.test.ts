@@ -152,14 +152,12 @@ describe('Differential Branch Capture', () => {
   });
 
   describe('ternary-as-default promotion', () => {
-    it('promotes `spec.x ? spec.x : literal` to a schema `| default=` annotation', () => {
+    it('emits has() guard with literal fallback for optional field ternary', () => {
       // When the ternary branches are "the proxy ref itself" on truthy
-      // and "a literal" on falsy, the framework recognises this as
-      // equivalent to `spec.x ?? literal` and promotes the fallback
-      // to a schema default annotation. This is cleaner than a CEL
-      // conditional because KRO applies the default at reconcile time
-      // BEFORE CEL evaluation, so the emitted template just reads
-      // `${schema.spec.x}` and always resolves.
+      // and "a literal" on falsy, the hybrid run detects the difference
+      // and emits a CEL conditional with the literal as the fallback.
+      // This is more general than schema-default promotion — it works
+      // even for fields used inside spread patterns or nested objects.
       const composition = kubernetesComposition(
         {
           name: 'field-diff',
@@ -185,11 +183,9 @@ describe('Differential Branch Capture', () => {
 
       const yaml = composition.toYaml();
 
-      // Schema should carry the promoted default annotation.
-      expect(yaml).toContain('overrideMode: string | default="default-mode"');
-      // The ConfigMap emits a plain reference — the default applies
-      // at reconcile time so no CEL conditional is needed.
-      expect(yaml).toContain('mode: ${schema.spec.overrideMode}');
+      // The template should emit a has() guard with the literal default
+      expect(yaml).toContain('has(schema.spec.overrideMode)');
+      expect(yaml).toContain('default-mode');
     });
 
     it('emits a CEL ternary when the truthy branch is NOT the ref itself', () => {

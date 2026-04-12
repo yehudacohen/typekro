@@ -138,17 +138,23 @@ export const webAppWithProcessing = kubernetesComposition(
     // combination of fields via `spec.cnpgOperator` / `spec.valkeyOperator` —
     // e.g., `{ name: 'testapp-cnpg', namespace: 'testapp-cnpg-system', shared: false }`.
     // The spread puts user overrides AFTER the defaults so they win.
+    // Operator bootstrap config: merge user overrides AFTER defaults.
+    // Use explicit ?? fallbacks for name/namespace instead of relying on
+    // object-literal-before-spread ordering — the spread of an optional
+    // spec field produces schema refs that get wrapped with omit(), but
+    // metadata.name is required and cannot be omitted. The ?? ensures
+    // the default is expressed as a KRO orValue/default, not omit().
     const _cnpg = cnpgBootstrap({
-      name: 'cnpg-operator',
-      namespace: 'cnpg-system',
-      installCRDs: true,
       ...spec.cnpgOperator,
+      name: spec.cnpgOperator?.name ?? 'cnpg-operator',
+      namespace: spec.cnpgOperator?.namespace ?? 'cnpg-system',
+      installCRDs: true,
     });
 
     const _valkeyOp = valkeyBootstrap({
-      name: 'valkey-operator',
-      namespace: 'valkey-operator-system',
       ...spec.valkeyOperator,
+      name: spec.valkeyOperator?.name ?? 'valkey-operator',
+      namespace: spec.valkeyOperator?.namespace ?? 'valkey-operator-system',
     });
 
     // ── PostgreSQL (CNPG) ──────────────────────────────────────────────
