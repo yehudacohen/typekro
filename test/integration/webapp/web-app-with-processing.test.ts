@@ -152,10 +152,14 @@ describe('WebAppWithProcessing Direct Mode', () => {
   });
 
   afterAll(async () => {
-    // Use the factory's graph-based deletion
+    // Use the factory's graph-based deletion with cluster scope to also
+    // clean shared operator resources. Without this, operator HelmReleases,
+    // HelmRepositories, and Namespaces retain ApplySet labels from the
+    // direct mode deploy, causing conflicts when KRO mode tries to adopt
+    // them with a different ApplySet.
     if (directFactory) {
       try {
-        await directFactory.deleteInstance('testapp');
+        await directFactory.deleteInstance('testapp', { scopes: ['cluster'] });
       } catch (e) {
         console.error('⚠️ Direct deleteInstance failed:', (e as Error).message);
       }
@@ -240,26 +244,8 @@ describe('WebAppWithProcessing KRO Mode', () => {
     // creates a new instance with a different applyset and KRO refuses
     // to adopt resources from the previous one.
     const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-    const sharedResources = [
-      { kind: 'HelmRepository', name: 'inngest-repo', namespace: 'flux-system' },
-      { kind: 'HelmRepository', name: 'cnpg-repo', namespace: 'flux-system' },
-      { kind: 'HelmRepository', name: 'valkey-operator-repo', namespace: 'flux-system' },
-    ];
-    for (const res of sharedResources) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'source.toolkit.fluxcd.io/v1',
-          kind: res.kind,
-          metadata: { name: res.name, namespace: res.namespace },
-        } as any);
-      } catch { /* may not exist */ }
-    }
-    // NOTE: Do NOT delete operator namespaces (cnpg-system,
-    // valkey-operator-system). They contain webhook services — deleting
-    // them would break CRD validation webhooks while the CRDs still exist.
-    // Only HelmRepositories (in flux-system) cause ApplySet conflicts.
-    // Wait briefly for HelmRepository deletions to propagate.
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // The direct mode afterAll cleans up with scopes: ['cluster'], which
+    // removes shared operator resources. No additional cleanup needed here.
 
     await ensureNamespaceExists(kroNamespace, kubeConfig);
   });
