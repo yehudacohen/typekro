@@ -50,12 +50,12 @@ describe('Phase 1: dependsOn API', () => {
     );
 
     const yaml = comp.toYaml();
-    // The app resource should have a readyWhen referencing database
-    expect(yaml).toContain('readyWhen');
-    expect(yaml).toContain('database.status');
+    // The app resource should have a depends-on annotation referencing database
+    expect(yaml).toContain('typekro.dev/depends-on-database');
+    expect(yaml).toContain('database.metadata.name');
   });
 
-  it('dependsOn on a NestedCompositionResource emits readyWhen on inner resources', async () => {
+  it('dependsOn on a NestedCompositionResource emits annotation on inner resources', async () => {
     const { kubernetesComposition } = await import(
       '../../src/core/composition/imperative.js'
     );
@@ -94,8 +94,8 @@ describe('Phase 1: dependsOn API', () => {
     );
 
     const yaml = outerComp.toYaml();
-    expect(yaml).toContain('readyWhen');
-    expect(yaml).toContain('cache.status');
+    expect(yaml).toContain('typekro.dev/depends-on-cache');
+    expect(yaml).toContain('cache.metadata.name');
   });
 
   it('multiple dependsOn calls accumulate', async () => {
@@ -122,8 +122,8 @@ describe('Phase 1: dependsOn API', () => {
     );
 
     const yaml = comp.toYaml();
-    expect(yaml).toContain('database.status');
-    expect(yaml).toContain('cache.status');
+    expect(yaml).toContain('typekro.dev/depends-on-database');
+    expect(yaml).toContain('typekro.dev/depends-on-cache');
   });
 
   it('dependsOn does not apply readyWhen to ALL merged inner resources', async () => {
@@ -168,11 +168,11 @@ describe('Phase 1: dependsOn API', () => {
     );
 
     const yaml = outerComp.toYaml();
-    // The namespace resource should NOT have readyWhen
+    // The namespace resource should NOT have depends-on annotation
     // (it doesn't need to wait for cache)
     const lines = yaml.split('\n');
     const nsSection = findResourceSection(lines, 'innerNs');
-    expect(nsSection).not.toContain('readyWhen');
+    expect(nsSection).not.toContain('typekro.dev/depends-on');
   });
 });
 
@@ -551,9 +551,9 @@ describe('Phase 4: Cross-composition dependency ordering', () => {
     );
 
     const yaml = outerComp.toYaml();
-    // The inner composition should have readyWhen from dependsOn
-    expect(yaml).toContain('readyWhen');
-    expect(yaml).toContain('cache.status.ready');
+    // The inner composition should have depends-on annotation from dependsOn
+    expect(yaml).toContain('typekro.dev/depends-on-cache');
+    expect(yaml).toContain('cache.metadata.name');
   });
 
   it('outer resources are NOT affected by inner composition ternary', async () => {
@@ -636,8 +636,8 @@ describe('Phase 1: dependsOn edge cases', () => {
     );
 
     const yaml = comp.toYaml();
-    expect(yaml).toContain('readyWhen');
-    expect(yaml).toContain('database.status.conditions.exists');
+    expect(yaml).toContain('typekro.dev/depends-on-database');
+    expect(yaml).toContain('database.metadata.name');
   });
 });
 
@@ -897,9 +897,9 @@ describe('Phase 4: Cross-composition edge cases', () => {
     );
 
     const yaml = outerComp.toYaml();
-    // Should have readyWhen from dependsOn
-    expect(yaml).toContain('readyWhen');
-    expect(yaml).toContain('cache.status.ready');
+    // Should have depends-on annotation from dependsOn
+    expect(yaml).toContain('typekro.dev/depends-on-cache');
+    expect(yaml).toContain('cache.metadata.name');
     // Cel.cond value should contain the URL
     expect(yaml).toContain(':6379');
   });
@@ -945,10 +945,10 @@ describe('Regression guards', () => {
     );
 
     const yaml = webAppWithProcessing.toYaml();
-    // The inngest resources should have a readyWhen referencing cache
+    // The inngest resources should have a depends-on annotation referencing cache
     // from the dependsOn(cache) call in the composition
-    expect(yaml).toContain('readyWhen');
-    expect(yaml).toContain('cache.status.ready');
+    expect(yaml).toContain('typekro.dev/depends-on-cache');
+    expect(yaml).toContain('cache.metadata.name');
   });
 });
 
@@ -1017,8 +1017,9 @@ describe('Review feedback: dependsOn accepts CelExpression condition', () => {
     );
 
     const yaml = comp.toYaml();
-    // The readyWhen should contain the CEL expression string, not [object Object]
-    expect(yaml).toContain('db.status.readyReplicas >= 1');
+    // dependsOn should inject an annotation with the dependency ref
+    expect(yaml).toContain('typekro.dev/depends-on-db');
+    expect(yaml).toContain('db.metadata.name');
     expect(yaml).not.toContain('[object Object]');
   });
 });

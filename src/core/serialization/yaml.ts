@@ -585,24 +585,22 @@ function buildResourceEntry(
     entry.readyWhen = readyWhen;
   }
 
-  // dependsOn — explicit dependency ordering via readyWhen + annotation injection.
+  // dependsOn — explicit dependency ordering via template annotation injection.
   //
-  // KRO builds its dependency graph from template expression references only.
-  // readyWhen can only reference identifiers that KRO already recognizes as
-  // dependencies from template refs. To establish the dependency edge, we
-  // inject an unconditional annotation referencing the dependency's
-  // metadata.name — KRO parses this and creates the DAG edge. The readyWhen
-  // then gates on the dependency's readiness.
+  // KRO builds its dependency graph ONLY from template expression references.
+  // readyWhen only supports self-references (e.g., self.status.readyReplicas)
+  // — it CANNOT reference other resources. To establish a dependency edge
+  // between resources, we inject an annotation into the dependent resource's
+  // template that references the dependency's metadata.name. KRO scans ALL
+  // template fields for expressions and creates DAG edges from them.
+  //
+  // Once KRO sees the edge, it automatically waits for the dependency to be
+  // ready (all its own readyWhen conditions satisfied) before creating the
+  // dependent resource. No cross-resource readyWhen is needed.
   const dependsOnDeps = getMetadataField(resource, 'dependsOn') as
     | Array<{ resourceId: string; condition?: string }>
     | undefined;
   if (dependsOnDeps && dependsOnDeps.length > 0) {
-    if (!entry.readyWhen) entry.readyWhen = [];
-
-    // Inject dependency-edge annotations into the resource template.
-    // Each annotation references the dependency's metadata.name, creating
-    // an unconditional template reference that KRO's dependency extractor
-    // can see (even if other refs are buried inside CEL ternaries).
     const template = entry.template as Record<string, unknown> | undefined;
     if (template) {
       const metadata = (template.metadata ?? {}) as Record<string, unknown>;
@@ -612,12 +610,6 @@ function buildResourceEntry(
       }
       metadata.annotations = annotations;
       template.metadata = metadata;
-    }
-
-    for (const dep of dependsOnDeps) {
-      const celCondition = dep.condition ?? `\${${dep.resourceId}.status.ready == true}`;
-      const formatted = celCondition.startsWith('${') ? celCondition : `\${${celCondition}}`;
-      entry.readyWhen.push(formatted);
     }
   }
 
