@@ -145,14 +145,14 @@ describe('Schema Nullish Defaults', () => {
       );
     });
 
-    it('wraps sub-path refs under an optional ancestor with has(parent) guard', () => {
-      // When the parent (`env`) is optional, accessing `env.FOO` throws
-      // in CEL if env is absent. The wrapper guards with has() on the
-      // deepest optional ancestor and omits the leaf otherwise.
+    it('wraps sub-path refs under an optional ancestor with chained has() guards', () => {
+      // When the parent (`env`) is optional, accessing `env.FOO` requires
+      // both the parent AND the leaf to exist. Single has() on the ancestor
+      // is insufficient — the user may provide `env: {}` without FOO.
       const marker = '__KUBERNETES_REF___schema___spec.env.FOO__';
       const result = processResourceReferences(marker, ctx(['env']));
       expect(result).toBe(
-        '${has(schema.spec.env) ? schema.spec.env.FOO : omit()}'
+        '${has(schema.spec.env) && has(schema.spec.env.FOO) ? schema.spec.env.FOO : omit()}'
       );
     });
 

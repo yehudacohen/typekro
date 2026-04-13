@@ -82,12 +82,25 @@ function maybeWrapWithOmit(
   // Walk from leaf to root: find the deepest ancestor that's in the
   // omit set. That ancestor is the one we guard via has(), because
   // its absence implies the absence of every descendant.
+  //
+  // When the guard is an ANCESTOR (not the leaf itself), we must also
+  // guard the leaf path. KRO's has() on an ancestor like cnpgOperator
+  // returns true if the object exists in the schema — but sub-fields
+  // like cnpgOperator.version may still be absent if the user provides
+  // an incomplete object. Chain has() checks to cover both levels.
   const segments = refPath.split('.');
   for (let i = segments.length; i >= 1; i--) {
     const prefix = segments.slice(0, i).join('.');
     if (omitFields.has(prefix)) {
       const guardPath = `schema.spec.${prefix}`;
-      return `has(${guardPath}) ? ${value} : omit()`;
+      // If the guard is the field itself (i === segments.length), a single has() suffices.
+      // If the guard is an ancestor, also guard the full leaf path to
+      // prevent "no such key" errors on sub-fields of optional parents.
+      if (i === segments.length) {
+        return `has(${guardPath}) ? ${value} : omit()`;
+      }
+      const leafGuard = `schema.spec.${refPath}`;
+      return `has(${guardPath}) && has(${leafGuard}) ? ${value} : omit()`;
     }
   }
   return value;

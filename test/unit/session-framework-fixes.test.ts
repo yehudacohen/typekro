@@ -414,9 +414,9 @@ describe('#52 nested optional omit() wrapping', () => {
     const result = processResourceReferences(marker, {
       omitFields: new Set(['cache']),
     });
-    // Deepest prefix match is `cache`, so has() guards that ancestor.
+    // Deepest prefix match is `cache`, and the leaf is deeper — chain has() guards.
     expect(result).toBe(
-      '${has(schema.spec.cache) ? schema.spec.cache.nested.leaf : omit()}'
+      '${has(schema.spec.cache) && has(schema.spec.cache.nested.leaf) ? schema.spec.cache.nested.leaf : omit()}'
     );
   });
 
@@ -433,6 +433,38 @@ describe('#52 nested optional omit() wrapping', () => {
     });
     expect(result).toBe(
       '${has(schema.spec.cache.replicas) ? schema.spec.cache.replicas : omit()}'
+    );
+  });
+
+  it('chains has() guards when ancestor is optional but leaf is a sub-field', async () => {
+    // This is the cnpgOperator.version pattern: cnpgOperator is optional,
+    // version is a required sub-field. If cnpgOperator exists but version
+    // doesn't (user provides an incomplete object), a single has() on
+    // cnpgOperator would pass but version access would fail with
+    // "no such key". Chain both guards.
+    const { processResourceReferences } = await import(
+      '../../src/core/serialization/cel-references.js'
+    );
+    const marker = '__KUBERNETES_REF___schema___spec.cnpgOperator.version__';
+    const result = processResourceReferences(marker, {
+      omitFields: new Set(['cnpgOperator']),
+    });
+    expect(result).toBe(
+      '${has(schema.spec.cnpgOperator) && has(schema.spec.cnpgOperator.version) ? schema.spec.cnpgOperator.version : omit()}'
+    );
+  });
+
+  it('does NOT chain has() when guard IS the leaf field (same depth)', async () => {
+    // When the omit field matches the leaf exactly, no chaining needed.
+    const { processResourceReferences } = await import(
+      '../../src/core/serialization/cel-references.js'
+    );
+    const marker = '__KUBERNETES_REF___schema___spec.namespace__';
+    const result = processResourceReferences(marker, {
+      omitFields: new Set(['namespace']),
+    });
+    expect(result).toBe(
+      '${has(schema.spec.namespace) ? schema.spec.namespace : omit()}'
     );
   });
 });
