@@ -233,16 +233,40 @@ describe('WebAppWithProcessing KRO Mode', () => {
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
 
-    // Delete shared HelmRepository left by direct mode — KRO's applyset
-    // rejects resources that belong to a different applyset.
-    try {
-      const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-      await k8sApi.delete({
-        apiVersion: 'source.toolkit.fluxcd.io/v1',
-        kind: 'HelmRepository',
-        metadata: { name: 'inngest-repo', namespace: 'flux-system' },
-      } as any);
-    } catch { /* may not exist */ }
+    // Delete shared resources left by direct mode — KRO's applyset
+    // rejects resources that belong to a different applyset. The direct
+    // mode test creates shared operator resources (HelmRepositories,
+    // namespaces) that get owned by its applyset. The KRO mode test
+    // creates a new instance with a different applyset and KRO refuses
+    // to adopt resources from the previous one.
+    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
+    const sharedResources = [
+      { kind: 'HelmRepository', name: 'inngest-repo', namespace: 'flux-system' },
+      { kind: 'HelmRepository', name: 'cnpg-repo', namespace: 'flux-system' },
+      { kind: 'HelmRepository', name: 'valkey-operator-repo', namespace: 'flux-system' },
+    ];
+    for (const res of sharedResources) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'source.toolkit.fluxcd.io/v1',
+          kind: res.kind,
+          metadata: { name: res.name, namespace: res.namespace },
+        } as any);
+      } catch { /* may not exist */ }
+    }
+    // Delete shared operator namespaces (will be recreated by KRO)
+    const sharedNamespaces = ['cnpg-system', 'valkey-operator-system'];
+    for (const ns of sharedNamespaces) {
+      try {
+        await k8sApi.delete({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: ns },
+        } as any);
+      } catch { /* may not exist */ }
+    }
+    // Wait briefly for deletions to propagate
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     await ensureNamespaceExists(kroNamespace, kubeConfig);
   });
