@@ -585,14 +585,35 @@ function buildResourceEntry(
     entry.readyWhen = readyWhen;
   }
 
-  // dependsOn — explicit dependency ordering via readyWhen injection.
-  // Reads the dependsOn metadata set by Enhanced.dependsOn() and emits
-  // additional readyWhen entries so KRO creates dependency edges.
+  // dependsOn — explicit dependency ordering via readyWhen + annotation injection.
+  //
+  // KRO builds its dependency graph from template expression references only.
+  // readyWhen can only reference identifiers that KRO already recognizes as
+  // dependencies from template refs. To establish the dependency edge, we
+  // inject an unconditional annotation referencing the dependency's
+  // metadata.name — KRO parses this and creates the DAG edge. The readyWhen
+  // then gates on the dependency's readiness.
   const dependsOnDeps = getMetadataField(resource, 'dependsOn') as
     | Array<{ resourceId: string; condition?: string }>
     | undefined;
   if (dependsOnDeps && dependsOnDeps.length > 0) {
     if (!entry.readyWhen) entry.readyWhen = [];
+
+    // Inject dependency-edge annotations into the resource template.
+    // Each annotation references the dependency's metadata.name, creating
+    // an unconditional template reference that KRO's dependency extractor
+    // can see (even if other refs are buried inside CEL ternaries).
+    const template = entry.template as Record<string, unknown> | undefined;
+    if (template) {
+      const metadata = (template.metadata ?? {}) as Record<string, unknown>;
+      const annotations = (metadata.annotations ?? {}) as Record<string, string>;
+      for (const dep of dependsOnDeps) {
+        annotations[`typekro.dev/depends-on-${dep.resourceId}`] = `\${${dep.resourceId}.metadata.name}`;
+      }
+      metadata.annotations = annotations;
+      template.metadata = metadata;
+    }
+
     for (const dep of dependsOnDeps) {
       const celCondition = dep.condition ?? `\${${dep.resourceId}.status.ready == true}`;
       const formatted = celCondition.startsWith('${') ? celCondition : `\${${celCondition}}`;
