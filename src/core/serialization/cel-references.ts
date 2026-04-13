@@ -94,13 +94,20 @@ function maybeWrapWithOmit(
     if (omitFields.has(prefix)) {
       const guardPath = `schema.spec.${prefix}`;
       // If the guard is the field itself (i === segments.length), a single has() suffices.
-      // If the guard is an ancestor, also guard the full leaf path to
-      // prevent "no such key" errors on sub-fields of optional parents.
+      // If the guard is an ancestor, chain has() checks for ALL intermediate
+      // levels between the guard and the leaf. For `cnpgOperator.monitoring.enabled`
+      // guarded by `cnpgOperator`, we need:
+      //   has(cnpgOperator) && has(cnpgOperator.monitoring) && has(cnpgOperator.monitoring.enabled)
+      // A single has(ancestor) + has(leaf) misses intermediates like `monitoring`.
       if (i === segments.length) {
         return `has(${guardPath}) ? ${value} : omit()`;
       }
-      const leafGuard = `schema.spec.${refPath}`;
-      return `has(${guardPath}) && has(${leafGuard}) ? ${value} : omit()`;
+      const guards = [`has(${guardPath})`];
+      for (let j = i + 1; j <= segments.length; j++) {
+        const intermediatePath = `schema.spec.${segments.slice(0, j).join('.')}`;
+        guards.push(`has(${intermediatePath})`);
+      }
+      return `${guards.join(' && ')} ? ${value} : omit()`;
     }
   }
   return value;

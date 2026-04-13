@@ -977,11 +977,22 @@ function buildCelConditional(
   // Extract the full schema path from the proxy repr to check depth.
   // proxyRepr may be a bare path like `schema.spec.cnpgOperator.version`
   // or wrapped in string() like `string(schema.spec.cnpgOperator.version)`.
+  // Chain has() guards for ALL intermediate levels between the controlling
+  // field and the leaf. For `cnpgOperator.monitoring.enabled`, we need:
+  //   has(cnpgOperator) && has(cnpgOperator.monitoring) && has(cnpgOperator.monitoring.enabled)
   const schemaPathMatch = proxyRepr.match(/schema\.spec\.([a-zA-Z0-9_.]+)/);
   if (schemaPathMatch) {
-    const fullPath = `schema.spec.${schemaPathMatch[1]}`;
+    const fullRefPath = schemaPathMatch[1]!;
+    const fullPath = `schema.spec.${fullRefPath}`;
     if (fullPath !== guardField && fullPath.startsWith(guardField + '.')) {
-      guard = `has(${guardField}) && has(${fullPath})`;
+      const guardSegments = field.split('.').length;
+      const leafSegments = fullRefPath.split('.');
+      const guards = [`has(${guardField})`];
+      for (let j = guardSegments + 1; j <= leafSegments.length; j++) {
+        const intermediatePath = `schema.spec.${leafSegments.slice(0, j).join('.')}`;
+        guards.push(`has(${intermediatePath})`);
+      }
+      guard = guards.join(' && ');
     }
   }
 

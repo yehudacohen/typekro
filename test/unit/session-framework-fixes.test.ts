@@ -416,7 +416,7 @@ describe('#52 nested optional omit() wrapping', () => {
     });
     // Deepest prefix match is `cache`, and the leaf is deeper — chain has() guards.
     expect(result).toBe(
-      '${has(schema.spec.cache) && has(schema.spec.cache.nested.leaf) ? schema.spec.cache.nested.leaf : omit()}'
+      '${has(schema.spec.cache) && has(schema.spec.cache.nested) && has(schema.spec.cache.nested.leaf) ? schema.spec.cache.nested.leaf : omit()}'
     );
   });
 
@@ -465,6 +465,22 @@ describe('#52 nested optional omit() wrapping', () => {
     });
     expect(result).toBe(
       '${has(schema.spec.namespace) ? schema.spec.namespace : omit()}'
+    );
+  });
+
+  it('chains ALL intermediate has() guards for 3+ level depth', async () => {
+    // cnpgOperator.monitoring.enabled: cnpgOperator is optional,
+    // monitoring is an intermediate object, enabled is the leaf.
+    // All three levels need has() guards.
+    const { processResourceReferences } = await import(
+      '../../src/core/serialization/cel-references.js'
+    );
+    const marker = '__KUBERNETES_REF___schema___spec.cnpgOperator.monitoring.enabled__';
+    const result = processResourceReferences(marker, {
+      omitFields: new Set(['cnpgOperator']),
+    });
+    expect(result).toBe(
+      '${has(schema.spec.cnpgOperator) && has(schema.spec.cnpgOperator.monitoring) && has(schema.spec.cnpgOperator.monitoring.enabled) ? schema.spec.cnpgOperator.monitoring.enabled : omit()}'
     );
   });
 });
