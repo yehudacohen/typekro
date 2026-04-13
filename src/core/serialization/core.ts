@@ -966,7 +966,26 @@ function buildCelConditional(
   const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
   const proxyRepr = celValueRepr(proxyValue);
   const hybridRepr = celValueRepr(hybridValue);
-  return `\${has(schema.spec.${field}) ? ${proxyRepr} : ${hybridRepr}}`;
+
+  // Chain has() guards when the proxy value references a sub-field deeper
+  // than the controlling optional field. A single has(schema.spec.X) is
+  // insufficient when the value accesses X.Y — the user may provide X: {}
+  // without Y, and KRO would fail with "no such key: Y".
+  const guardField = `schema.spec.${field}`;
+  let guard = `has(${guardField})`;
+
+  // Extract the full schema path from the proxy repr to check depth.
+  // proxyRepr may be a bare path like `schema.spec.cnpgOperator.version`
+  // or wrapped in string() like `string(schema.spec.cnpgOperator.version)`.
+  const schemaPathMatch = proxyRepr.match(/schema\.spec\.([a-zA-Z0-9_.]+)/);
+  if (schemaPathMatch) {
+    const fullPath = `schema.spec.${schemaPathMatch[1]}`;
+    if (fullPath !== guardField && fullPath.startsWith(guardField + '.')) {
+      guard = `has(${guardField}) && has(${fullPath})`;
+    }
+  }
+
+  return `\${${guard} ? ${proxyRepr} : ${hybridRepr}}`;
 }
 
 /**
