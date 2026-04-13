@@ -254,18 +254,11 @@ describe('WebAppWithProcessing KRO Mode', () => {
         } as any);
       } catch { /* may not exist */ }
     }
-    // Delete shared operator namespaces (will be recreated by KRO)
-    const sharedNamespaces = ['cnpg-system', 'valkey-operator-system'];
-    for (const ns of sharedNamespaces) {
-      try {
-        await k8sApi.delete({
-          apiVersion: 'v1',
-          kind: 'Namespace',
-          metadata: { name: ns },
-        } as any);
-      } catch { /* may not exist */ }
-    }
-    // Wait briefly for deletions to propagate
+    // NOTE: Do NOT delete operator namespaces (cnpg-system,
+    // valkey-operator-system). They contain webhook services — deleting
+    // them would break CRD validation webhooks while the CRDs still exist.
+    // Only HelmRepositories (in flux-system) cause ApplySet conflicts.
+    // Wait briefly for HelmRepository deletions to propagate.
     await new Promise(resolve => setTimeout(resolve, 5000));
 
     await ensureNamespaceExists(kroNamespace, kubeConfig);
