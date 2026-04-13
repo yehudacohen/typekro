@@ -152,14 +152,12 @@ describe('WebAppWithProcessing Direct Mode', () => {
   });
 
   afterAll(async () => {
-    // Use the factory's graph-based deletion with cluster scope to also
-    // clean shared operator resources. Without this, operator HelmReleases,
-    // HelmRepositories, and Namespaces retain ApplySet labels from the
-    // direct mode deploy, causing conflicts when KRO mode tries to adopt
-    // them with a different ApplySet.
+    // Delete instance-scoped resources only. Shared operator resources
+    // (cnpg-system, valkey-operator-system) must persist for the KRO mode
+    // test — it needs the operator CRDs and webhook services.
     if (directFactory) {
       try {
-        await directFactory.deleteInstance('testapp', { scopes: ['cluster'] });
+        await directFactory.deleteInstance('testapp');
       } catch (e) {
         console.error('⚠️ Direct deleteInstance failed:', (e as Error).message);
       }
@@ -237,15 +235,40 @@ describe('WebAppWithProcessing KRO Mode', () => {
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
 
-    // Delete shared resources left by direct mode — KRO's applyset
-    // rejects resources that belong to a different applyset. The direct
-    // mode test creates shared operator resources (HelmRepositories,
-    // namespaces) that get owned by its applyset. The KRO mode test
-    // creates a new instance with a different applyset and KRO refuses
-    // to adopt resources from the previous one.
+    // Strip ApplySet labels from shared operator resources left by
+    // previous KRO test runs. KRO's ApplySet pruning rejects resources
+    // that belong to a different ApplySet. The direct mode deploy doesn't
+    // use ApplySets, but a previous failed KRO test run may have stamped
+    // these labels and not cleaned up properly.
     const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-    // The direct mode afterAll cleans up with scopes: ['cluster'], which
-    // removes shared operator resources. No additional cleanup needed here.
+    const sharedResources = [
+      { apiVersion: 'source.toolkit.fluxcd.io/v1', kind: 'HelmRepository', name: 'inngest-repo', namespace: 'flux-system' },
+      { apiVersion: 'source.toolkit.fluxcd.io/v1', kind: 'HelmRepository', name: 'cnpg-repo', namespace: 'flux-system' },
+      { apiVersion: 'source.toolkit.fluxcd.io/v1', kind: 'HelmRepository', name: 'valkey-operator-repo', namespace: 'flux-system' },
+      { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease', name: 'cnpg-operator', namespace: 'cnpg-system' },
+      { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease', name: 'valkey-operator', namespace: 'valkey-operator-system' },
+      { apiVersion: 'v1', kind: 'Namespace', name: 'cnpg-system', namespace: undefined },
+      { apiVersion: 'v1', kind: 'Namespace', name: 'valkey-operator-system', namespace: undefined },
+    ];
+    for (const res of sharedResources) {
+      try {
+        const body = [
+          { op: 'remove', path: '/metadata/labels/applyset.kubernetes.io~1part-of' },
+        ];
+        const meta = res.namespace
+          ? { name: res.name, namespace: res.namespace }
+          : { name: res.name };
+        await k8sApi.patch(
+          { apiVersion: res.apiVersion, kind: res.kind, metadata: meta } as any,
+          body,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { headers: { 'Content-Type': 'application/json-patch+json' } }
+        );
+      } catch { /* may not exist or label may not exist */ }
+    }
 
     await ensureNamespaceExists(kroNamespace, kubeConfig);
   });
@@ -255,7 +278,7 @@ describe('WebAppWithProcessing KRO Mode', () => {
     // instance → wait for KRO finalizer → RGD → child namespaces
     if (kroFactory) {
       try {
-        await kroFactory.deleteInstance('testapp');
+        await kroFactory.deleteInstance('testapp', { scopes: ['cluster'] });
       } catch (e) {
         console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
       }
