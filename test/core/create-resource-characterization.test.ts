@@ -701,140 +701,16 @@ describe('createResource — public API', () => {
 });
 
 // ===========================================================================
-// 6. Ref-dependent value auto-promotion
+// 6. $ prefix forces resource ref (existing behavior)
 // ===========================================================================
 //
-// When a stored property value contains __KUBERNETES_REF__ markers (from
-// template literals like `${spec.name}-cache`), accessing it during the
-// status builder context (composition execution) returns a resource-level
-// KubernetesRef instead of the stored marker string. This creates KRO
-// dependency edges when one resource reads another's metadata.
+// The `$` prefix on property access forces a KubernetesRef regardless of
+// whether the stored value is static or contains markers. This is the
+// explicit opt-in for creating resource-level references.
 //
-// Outside SBC (serialization), stored values pass through unchanged to
-// avoid self-referencing.
-
-describe('Ref-dependent value auto-promotion', () => {
-  it('stored value with ref markers is promoted to KubernetesRef during SBC', () => {
-    // Simulate a resource whose metadata.name was set from a template literal.
-    // Must provide explicit id since dynamic names can't generate deterministic IDs.
-    const r = createResource(makeResource({
-      metadata: { name: '__KUBERNETES_REF___schema___spec.name__-cache' },
-      id: 'cache',
-    }));
-
-    let metaName: unknown;
-    const ctx = createCompositionContext('test-sbc');
-    runWithCompositionContext(ctx, () => {
-      runInStatusBuilderContext(() => {
-        metaName = r.metadata.name;
-      });
-    });
-
-    // During SBC, the stored marker string is promoted to a KubernetesRef
-    expect(isKubernetesRef(metaName)).toBe(true);
-    expect(asKubernetesRef(metaName!).resourceId).toBe('cache');
-    expect(asKubernetesRef(metaName!).fieldPath).toBe('metadata.name');
-  });
-
-  it('static stored value is NOT promoted during SBC', () => {
-    const r = createResource(makeResource({
-      metadata: { name: 'static-name' },
-    }));
-
-    let metaName: unknown;
-    const ctx = createCompositionContext('test-sbc-static');
-    runWithCompositionContext(ctx, () => {
-      runInStatusBuilderContext(() => {
-        metaName = r.metadata.name;
-      });
-    });
-
-    // Static value passes through — no promotion
-    expect(metaName).toBe('static-name');
-  });
-
-  it('stored value with ref markers is NOT promoted outside SBC (serialization)', () => {
-    const r = createResource(makeResource({
-      metadata: { name: '__KUBERNETES_REF___schema___spec.name__-cache' },
-      id: 'cache',
-    }));
-
-    // Outside SBC — simulates the serialization phase
-    const metaName = r.metadata.name;
-
-    // Stored marker string passes through unchanged
-    expect(typeof metaName).toBe('string');
-    expect(metaName).toContain('__KUBERNETES_REF_');
-  });
-
-  it('$ prefix forces KubernetesRef even for static values', () => {
-    const r = createResource(makeResource({
-      metadata: { name: 'static-name' },
-    }));
-
-    // $metadata.name always forces a ref regardless of stored value
-    const ref = (r as Record<string, unknown>).$metadata;
-    expect(isKubernetesRef(ref)).toBe(true);
-  });
-
-  it('auto-promotion works on non-metadata properties too', () => {
-    const r = createResource(makeResource({
-      spec: { image: 'nginx' },
-      // biome-ignore lint/suspicious/noExplicitAny: test override
-    } as any));
-    // Set a data field with a marker value
-    (r as Record<string, unknown>).data = { key: '__KUBERNETES_REF___schema___spec.name__-val' };
-
-    let dataKey: unknown;
-    const ctx = createCompositionContext('test-sbc-data');
-    runWithCompositionContext(ctx, () => {
-      runInStatusBuilderContext(() => {
-        dataKey = (r as Record<string, unknown> & { data: Record<string, unknown> }).data.key;
-      });
-    });
-
-    // The data.key value contains a marker → promoted during SBC
-    expect(isKubernetesRef(dataKey)).toBe(true);
-  });
-
-  it('end-to-end: cross-resource metadata ref in template literal produces resource-level CEL', async () => {
-    const { kubernetesComposition } = await import(
-      '../../src/core/composition/imperative.js'
-    );
-    const { type } = await import('arktype');
-    const { ConfigMap, Deployment } = await import(
-      '../../src/factories/simple/index.js'
-    );
-
-    const Spec = type({ name: 'string', image: 'string' });
-    const Status = type({ ready: 'boolean' });
-
-    const comp = kubernetesComposition(
-      { name: 'cross-ref-test', kind: 'CrossRefTest', spec: Spec, status: Status },
-      (spec) => {
-        const db = ConfigMap({
-          name: `${spec.name}-db`,
-          data: { key: 'value' },
-          id: 'db',
-        });
-
-        Deployment({
-          name: spec.name,
-          image: spec.image,
-          env: { DB_HOST: `${db.metadata.name}` },
-          id: 'app',
-        });
-
-        return { ready: true };
-      }
-    );
-
-    const yaml = comp.toYaml();
-
-    // The Deployment's env should reference db.metadata.name as a resource ref,
-    // not inline the schema ref (schema.spec.name + "-db")
-    expect(yaml).toContain('db.metadata.name');
-    // The db ConfigMap's own metadata.name should still be inlined (not self-referencing)
-    expect(yaml).not.toContain('name: ${db.metadata.name}');
-  });
-});
+// NOTE: Automatic promotion of ref-dependent stored values (detecting
+// __KUBERNETES_REF__ markers and auto-promoting to resource refs) is
+// deferred to a future PR. It requires interaction with the status
+// static/dynamic classifier to avoid promoting status fields from
+// static (TypeKro-hydrated) to dynamic (KRO CEL), which changes KRO
+// behavior and can break mixed schema+resource ref status expressions.
