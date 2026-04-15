@@ -10,6 +10,7 @@
  */
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
+import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata } from '../metadata/index.js';
 import type { KubernetesRef } from '../types/common.js';
@@ -789,6 +790,11 @@ export function serializeStatusMappingsToCel(
     nestedStatusCelKeys: nestedStatusCel ? Object.keys(nestedStatusCel) : [],
   });
   const celExpressions: Record<string, string | Record<string, unknown>> = {};
+  const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
+
+  function normalizeLocalResourceExpr(expr: string): string {
+    return localResourceIds.length > 0 ? remapVariableNames(expr, localResourceIds) : expr;
+  }
 
   /**
    * Rewrite `schema.spec.*` references inside a resolved CEL expression so
@@ -826,7 +832,7 @@ export function serializeStatusMappingsToCel(
    * KRO status CEL from a resolved expression" means.
    */
   function statusFieldFromExpression(expr: string): string {
-    const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel, resourceIds);
+    const resolved = resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds);
     if (resolved.includes('__KUBERNETES_REF_')) {
       // Marker-laden — use mixed-template form.
       return convertKubernetesRefMarkersTocel(resolved);
@@ -857,7 +863,7 @@ export function serializeStatusMappingsToCel(
 
     if (isCelExpression(value)) {
       if (value.__isTemplate) {
-        return value.expression;
+        return normalizeLocalResourceExpr(value.expression);
       }
       return statusFieldFromExpression(value.expression);
     }
@@ -874,7 +880,7 @@ export function serializeStatusMappingsToCel(
       if (value.includes('__KUBERNETES_REF_')) {
         // Resolve nested refs first (substitution is a no-op on pure marker
         // strings but handles mixed forms), then convert markers to KRO CEL.
-        const resolved = resolveNestedCompositionRefs(value, nestedStatusCel, resourceIds);
+        const resolved = resolveNestedCompositionRefs(normalizeLocalResourceExpr(value), nestedStatusCel, resourceIds);
         return convertKubernetesRefMarkersTocel(resolved);
       }
       return `\${"${value}"}`;

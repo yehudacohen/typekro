@@ -9,6 +9,7 @@
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { getComponentLogger } from '../logging/index.js';
+import { remapVariableNames } from '../composition/nested-status-cel.js';
 import { lookupNestedExpression } from '../serialization/cel-references.js';
 import { isStaticExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
@@ -92,6 +93,8 @@ function requiresKroResolution(
   nestedStatusCel?: Record<string, string>,
   resourceIds?: ReadonlySet<string>
 ): boolean {
+  const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
+
   if (isKubernetesRef(value)) {
     // Schema refs — always static.
     if (value.resourceId === '__schema__') {
@@ -142,7 +145,10 @@ function requiresKroResolution(
   if (isCelExpression(value)) {
     // Transitive check: resolve any nested refs inside the expression and
     // ask whether the result contains non-schema refs.
-    return !isStaticExpression(value.expression, nestedStatusCel);
+    const normalizedExpression = localResourceIds.length > 0
+      ? remapVariableNames(value.expression, localResourceIds)
+      : value.expression;
+    return !isStaticExpression(normalizedExpression, nestedStatusCel);
   }
 
   // Strings potentially containing __KUBERNETES_REF__ markers from
@@ -151,7 +157,10 @@ function requiresKroResolution(
   // contains markers.
   if (typeof value === 'string') {
     if (!value.includes('__KUBERNETES_REF_')) return false;
-    return !isStaticExpression(value, nestedStatusCel);
+    const normalizedValue = localResourceIds.length > 0
+      ? remapVariableNames(value, localResourceIds)
+      : value;
+    return !isStaticExpression(normalizedValue, nestedStatusCel);
   }
 
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -298,7 +307,10 @@ export function validateStatusCelExpressions(
   // Only validate dynamic fields that will be sent to Kro
   function validateExpression(fieldName: string, value: any): void {
     if (isCelExpression(value)) {
-      const expression = value.expression;
+      const expression = remapVariableNames(
+        value.expression,
+        Array.from(resourceIds).filter((id): id is string => typeof id === 'string')
+      );
 
       // Check for direct resource references (resourceId.status.field, resourceId.spec.field, resourceId.metadata.field)
       // This is the most important validation - ensuring referenced resources actually exist
