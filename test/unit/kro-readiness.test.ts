@@ -154,6 +154,32 @@ describe('waitForKroInstanceReady', () => {
         )
       ).resolves.toBeUndefined();
     });
+
+    it('resolves when custom status.ready is true even if Kro Ready condition is stale false', async () => {
+      mockCustomObjectsApi.getClusterCustomObject.mockResolvedValue({
+        spec: { schema: { status: { ready: { type: 'boolean' }, supervisorReady: { type: 'boolean' } } } },
+      });
+
+      mockK8sApi.read.mockResolvedValue(
+        kroInstance({
+          state: 'ACTIVE',
+          conditions: [{
+            type: 'Ready',
+            status: 'False',
+            reason: 'NotReady',
+            message: 'resource reconciliation failed: cluster mutated',
+          }],
+          ready: true,
+          supervisorReady: true,
+        })
+      );
+
+      await expect(
+        waitForKroInstanceReady(
+          defaultOptions({ k8sApi: mockK8sApi, customObjectsApi: mockCustomObjectsApi })
+        )
+      ).resolves.toBeUndefined();
+    });
   });
 
   // ---------------------------------------------------------------------------

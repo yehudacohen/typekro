@@ -19,6 +19,7 @@ import type { KubernetesClientProvider } from '../kubernetes/client-provider.js'
 import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
+import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
@@ -39,6 +40,7 @@ import type {
   KroResourceFactory,
   ResourceGraphDefinitionProvider,
   RGDStatus,
+  SingletonDefinitionRecord,
 } from '../types/deployment.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from '../types/kubernetes.js';
 import type {
@@ -119,6 +121,7 @@ export class KroResourceFactoryImpl<
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
   private readonly statusMappings: Record<string, unknown>;
   private readonly alchemyScope: Scope | undefined;
+  private readonly singletonDefinitions: SingletonDefinitionRecord[];
   private readonly logger = getComponentLogger('kro-factory');
   private readonly factoryOptions: FactoryOptions;
   private readonly clientManager: KubernetesClientManager;
@@ -166,6 +169,7 @@ export class KroResourceFactoryImpl<
     this.closures = options.closures || {};
     this.schemaDefinition = schemaDefinition;
     this.statusMappings = statusMappings as Record<string, unknown>;
+    this.singletonDefinitions = options.singletonDefinitions ?? [];
     this.factoryOptions = options;
     this.clientManager = new KubernetesClientManager(options);
     // Pass the Arktype JSON so the proxy is shape-aware: spread
@@ -203,7 +207,7 @@ export class KroResourceFactoryImpl<
    * tolerance — ignored if the namespace already exists so concurrent
    * callers don't collide.
    */
-  private async ensureTargetNamespace(): Promise<void> {
+  private async ensureTargetNamespace(namespace = this.namespace): Promise<void> {
     try {
       const { createBunCompatibleKubernetesObjectApi } = await import(
         '../kubernetes/bun-api-client.js'
@@ -213,7 +217,7 @@ export class KroResourceFactoryImpl<
         await k8sApi.read({
           apiVersion: 'v1',
           kind: 'Namespace',
-          metadata: { name: this.namespace },
+          metadata: { name: namespace },
         });
         // Already exists — nothing to do.
         return;
@@ -227,14 +231,14 @@ export class KroResourceFactoryImpl<
       }
       // Namespace is missing — create it.
       this.logger.info('Creating target namespace for Kro deployment', {
-        namespace: this.namespace,
+        namespace,
       });
       try {
         await k8sApi.create({
           apiVersion: 'v1',
           kind: 'Namespace',
           metadata: {
-            name: this.namespace,
+            name: namespace,
             labels: {
               'app.kubernetes.io/managed-by': 'typekro',
             },
@@ -354,11 +358,107 @@ export class KroResourceFactoryImpl<
 
     // Execute closures before RGD creation (Kro mode requirement)
     await this.executeClosuresBeforeRGD(spec);
+    await this.ensureSingletonOwners(spec);
 
     if (this.isAlchemyManaged) {
       return this.deployWithAlchemy(spec);
     } else {
       return this.deployDirect(spec);
+    }
+  }
+
+  private async ensureSingletonOwners(spec: TSpec): Promise<void> {
+    const discoveredSingletons = new Map<string, SingletonDefinitionRecord>();
+
+    if (this.factoryOptions.compositionFn) {
+      const singletonContext = createCompositionContext('singleton-owner-discovery');
+      runWithCompositionContext(singletonContext, () => {
+        this.factoryOptions.compositionFn?.(spec);
+      });
+
+      for (const [key, definition] of singletonContext.singletonDefinitions ?? []) {
+        discoveredSingletons.set(key, definition);
+      }
+    }
+
+    for (const definition of this.singletonDefinitions) {
+      if (!discoveredSingletons.has(definition.key)) {
+        discoveredSingletons.set(definition.key, definition);
+      }
+    }
+
+    if (discoveredSingletons.size === 0) return;
+
+    const singletonRecords = new Map<string, SingletonDefinitionRecord>();
+    for (const definition of discoveredSingletons.values()) {
+      if (!singletonRecords.has(definition.key)) {
+        singletonRecords.set(definition.key, definition);
+      }
+    }
+
+    for (const definition of singletonRecords.values()) {
+      await this.stripSingletonApplySetLabels(definition);
+      await this.ensureTargetNamespace(definition.registryNamespace);
+
+      const singletonFactory = definition.composition.factory('kro', {
+        namespace: definition.registryNamespace,
+        waitForReady: true,
+        ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
+        ...(this.factoryOptions.kubeConfig !== undefined ? { kubeConfig: this.factoryOptions.kubeConfig } : {}),
+        ...(this.factoryOptions.skipTLSVerify !== undefined ? { skipTLSVerify: this.factoryOptions.skipTLSVerify } : {}),
+      }) as KroResourceFactory<any, any>;
+
+      const singletonInstanceName = generateInstanceName(definition.spec, definition.id);
+      try {
+        const existingInstances = await singletonFactory.getInstances();
+        if (existingInstances.some((instance: Enhanced<any, any>) => instance.metadata?.name === singletonInstanceName)) {
+          this.logger.info('Reusing existing singleton owner boundary', {
+            singletonId: definition.id,
+            singletonKey: definition.key,
+            registryNamespace: definition.registryNamespace,
+          });
+          continue;
+        }
+      } catch {
+        // Singleton CRD may not exist yet — deployment below will create it.
+      }
+
+      this.logger.info('Ensuring singleton owner boundary', {
+        singletonId: definition.id,
+        singletonKey: definition.key,
+        registryNamespace: definition.registryNamespace,
+      });
+
+      await singletonFactory.deploy(definition.spec as TSpec);
+    }
+  }
+
+  private async stripSingletonApplySetLabels(definition: SingletonDefinitionRecord): Promise<void> {
+    const singletonKind = (definition.composition as { _definition?: { kind?: string } })._definition?.kind;
+    const sharedResources = singletonKind === 'CnpgBootstrap'
+      ? [
+          ['namespace', 'cnpg-system', ''],
+          ['helmrepository', 'cnpg-repo', 'flux-system'],
+          ['helmrelease', 'cnpg-operator', 'cnpg-system'],
+        ]
+      : singletonKind === 'ValkeyBootstrap'
+        ? [
+            ['namespace', 'valkey-operator-system', ''],
+            ['helmrepository', 'valkey-operator-repo', 'flux-system'],
+            ['helmrelease', 'valkey-operator', 'valkey-operator-system'],
+          ]
+        : [];
+
+    if (sharedResources.length === 0) return;
+
+    const patch = '[{"op":"remove","path":"/metadata/labels/applyset.kubernetes.io~1part-of"}]';
+    for (const [resourceType, resourceName, resourceNamespace] of sharedResources) {
+      const args = resourceNamespace
+        ? ['kubectl', 'patch', resourceType, resourceName, '-n', resourceNamespace, '--type=json', '-p', patch]
+        : ['kubectl', 'patch', resourceType, resourceName, '--type=json', '-p', patch];
+
+      const proc = Bun.spawn(args as string[], { stdout: 'pipe', stderr: 'pipe' });
+      await proc.exited;
     }
   }
 

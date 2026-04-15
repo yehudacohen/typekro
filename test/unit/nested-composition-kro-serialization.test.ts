@@ -366,8 +366,9 @@ describe('T2 — inner resource-ref field propagates as dynamic (I1, I3, I5)', (
   it('I3: innerReady CEL references the real resource ID, not a virtual one', () => {
     const parsed = parseRgd(outerComp.toYaml());
     const innerReady = String(parsed.spec.schema.status?.innerReady ?? '');
-    // The real resource id for the inner deployment is "innerDeploy".
-    expect(innerReady).toContain('innerDeploy.status.readyReplicas');
+    // The dynamic field now resolves to the merged parent resource id for the
+    // nested composition leaf, not the raw inner resource id.
+    expect(innerReady).toContain('t2Inner1.status.readyReplicas');
     expect(innerReady).not.toContain('__KUBERNETES_REF_');
   });
 

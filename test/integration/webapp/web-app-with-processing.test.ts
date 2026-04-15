@@ -278,7 +278,7 @@ describe('WebAppWithProcessing KRO Mode', () => {
     // instance → wait for KRO finalizer → RGD → child namespaces
     if (kroFactory) {
       try {
-        await kroFactory.deleteInstance('testapp', { scopes: ['cluster'] });
+        await kroFactory.deleteInstance('testapp');
       } catch (e) {
         console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
       }

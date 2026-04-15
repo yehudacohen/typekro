@@ -73,4 +73,15 @@ describe('WebAppWithProcessing Composition', () => {
     expect(yaml).toContain('HelmRelease');
     expect(yaml).toContain('HelmRepository');
   });
+
+  it('should consume shared operator bootstraps via singleton external refs', () => {
+    const yaml = webAppWithProcessing.toYaml();
+
+    expect(yaml).toContain('kind: CnpgBootstrap');
+    expect(yaml).toContain('kind: ValkeyBootstrap');
+    expect(yaml).toContain('externalRef:');
+    expect(yaml).toContain('name: cnpg-operator');
+    expect(yaml).toContain('name: valkey-operator');
+    expect(yaml).not.toContain('podMonitorEnabled:');
+  });
 });

@@ -59,6 +59,7 @@ export const inngestBootstrap = kubernetesComposition(
   (spec: InngestBootstrapConfig) => {
     const resolvedNamespace = spec.namespace || 'inngest';
     const resolvedVersion = spec.version || DEFAULT_INNGEST_VERSION;
+    const repositoryName = `${spec.name}-inngest-repo`;
 
     // Build the config for the mapper. Cannot spread the magic proxy directly —
     // nested proxy objects don't survive Object.assign. Access fields explicitly
@@ -93,7 +94,7 @@ export const inngestBootstrap = kubernetesComposition(
     });
 
     const _helmRepository = inngestHelmRepository({
-      name: DEFAULT_INNGEST_REPO_NAME,
+      name: repositoryName,
       namespace: DEFAULT_FLUX_NAMESPACE,
       id: 'inngestHelmRepository',
     });
@@ -103,7 +104,7 @@ export const inngestBootstrap = kubernetesComposition(
       namespace: resolvedNamespace,
       version: resolvedVersion,
       values: helmValues,
-      repositoryName: DEFAULT_INNGEST_REPO_NAME,
+      repositoryName: repositoryName,
       id: 'inngestHelmRelease',
     });
 

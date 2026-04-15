@@ -154,6 +154,34 @@ export function applyAnalysisToResources(
   analysis: ASTAnalysisResult
 ): void {
   for (const [resourceId, controlFlow] of analysis.resources) {
+    if (resourceId.startsWith('__call__:')) {
+      const callStem = resourceId.slice('__call__:'.length);
+      for (const [actualId, resource] of Object.entries(resources)) {
+        if (!actualId.startsWith(callStem) || !resource || typeof resource !== 'object') continue;
+
+        if (controlFlow.forEach.length > 0) {
+          const forEachDimensions = controlFlow.forEach.map((dim) => ({
+            [dim.variableName]: dim.source,
+          }));
+          const existing = getForEach(resource);
+          const merged = existing
+            ? [...(Array.isArray(existing) ? existing : [existing]), ...forEachDimensions]
+            : forEachDimensions;
+          setForEach(resource, merged);
+        }
+
+        if (controlFlow.includeWhen.length > 0) {
+          const celStrings = controlFlow.includeWhen.map((c) => c.expression);
+          const existing = getIncludeWhen(resource);
+          const merged = existing
+            ? [...(Array.isArray(existing) ? existing : [existing]), ...celStrings]
+            : celStrings;
+          setIncludeWhen(resource, merged);
+        }
+      }
+      continue;
+    }
+
     const resource = resources[resourceId];
     if (!resource || typeof resource !== 'object') continue;
 

@@ -310,6 +310,8 @@ export interface SerializationContext {
   celPrefix: string;
   namespace?: string;
   resourceIdStrategy: 'deterministic' | 'random';
+  /** Known real resource IDs in the current graph. Nested-ref resolution should not rewrite these. */
+  resourceIds?: ReadonlySet<string>;
   /**
    * Top-level optional spec field names (without `schema.spec.` prefix) that
    * should be wrapped with KRO 0.9+ `has(...) ? ... : omit()` when referenced

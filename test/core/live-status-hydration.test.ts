@@ -359,6 +359,33 @@ describe('Live Status Hydration', () => {
       expect(status.components.cache).toBe(true);
       expect(status.components.inner).toBe(false);
     });
+
+    it('normalizes top-level ready from fully resolved component booleans', () => {
+      const ctx = createCompositionContext('component-normalization-test', { deduplicateIds: true });
+      ctx.liveStatusMap = new Map([
+        ['app', { readyReplicas: 1 }],
+        ['database', { ready: true }],
+      ]);
+
+      const status = runWithCompositionContext(ctx, () => {
+        const app = simple.Deployment({ name: 'myapp', image: 'nginx', id: 'app' });
+        const database = testCrdResource({ name: 'myapp-db', id: 'database' });
+
+        return {
+          // Simulate a composition-level false that can appear before the
+          // final merged component booleans are normalized.
+          ready: false,
+          components: {
+            app: app.status.readyReplicas >= 1,
+            database: database.status.ready === true,
+          },
+        };
+      });
+
+      expect(status.ready).toBe(false);
+      expect(status.components.app).toBe(true);
+      expect(status.components.database).toBe(true);
+    });
   });
 
   describe('KRO YAML generation (unaffected by live status)', () => {

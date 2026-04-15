@@ -24,6 +24,8 @@ export interface NestedStatusCelContext {
   baseId: string;
   /** Resource IDs from the inner composition's execution context */
   innerResourceIds: string[];
+  /** Local variable names that are known nested composition handles and must not be remapped as concrete resources. */
+  preserveVariables?: ReadonlySet<string>;
   /** Callback to register a CEL mapping on the parent context */
   registerMapping: (key: string, value: string) => void;
 }
@@ -74,7 +76,7 @@ export function extractNestedStatusCel(
     if (!exprStr) continue;
 
     // Re-map variable names to resource IDs
-    exprStr = remapVariableNames(exprStr, ctx.innerResourceIds);
+    exprStr = remapVariableNames(exprStr, ctx.innerResourceIds, ctx.preserveVariables);
 
     // Recover from garbled fn.toString output
     exprStr = recoverGarbledExpression(exprStr, ctx.innerResourceIds);
@@ -176,10 +178,12 @@ function phaseBHasExpression(
  */
 export function remapVariableNames(
   exprStr: string,
-  innerResourceIds: string[]
+  innerResourceIds: string[],
+  preserveVariables?: ReadonlySet<string>
 ): string {
   return exprStr.replace(/\b(\w+)\.(metadata|status|spec)\./g, (match, id, section) => {
     if (innerResourceIds.includes(id) || id === 'schema') return match;
+    if (preserveVariables?.has(id)) return match;
 
     const lower = id.toLowerCase();
 
@@ -187,8 +191,12 @@ export function remapVariableNames(
     const exactLower = innerResourceIds.find(r => r.toLowerCase() === lower);
     if (exactLower) return `${exactLower}.${section}.`;
 
-    // 2. Single resource — unambiguous
-    if (innerResourceIds.length === 1) return `${innerResourceIds[0]}.${section}.`;
+    // 2. Single resource — only treat minified/local shorthand names as
+    // unambiguous. Named variables like `inner` or `inngest` may refer to
+    // nested composition handles rather than the sole concrete resource.
+    if (innerResourceIds.length === 1) {
+      return `${innerResourceIds[0]}.${section}.`;
+    }
 
     // 3. Prefix match at camelCase boundary — must be unambiguous
     const prefixMatches = innerResourceIds.filter(r =>
@@ -244,14 +252,13 @@ export function remapVariableNames(
  *  - No nested compositions have been registered yet
  *  - No variable assignments match a known factoryName
  */
-export function buildNestedCompositionAliases(
+export function buildNestedCompositionAliasTargets(
   compositionFnSource: string,
   nestedCompositionIds: Set<string> | undefined,
-  existingMappings: Record<string, string>
 ): Record<string, string> {
-  const aliases: Record<string, string> = {};
+  const aliasTargets: Record<string, string> = {};
   if (!nestedCompositionIds || nestedCompositionIds.size === 0) {
-    return aliases;
+    return aliasTargets;
   }
 
   // Build index: factoryStem → baseIds[]
@@ -262,6 +269,16 @@ export function buildNestedCompositionAliases(
     arr.push(baseId);
     stemToBaseIds.set(stem, arr);
   }
+  for (const [stem, baseIds] of stemToBaseIds) {
+    baseIds.sort((a, b) => {
+      const aNum = Number(a.match(/(\d+)$/)?.[1] ?? '0');
+      const bNum = Number(b.match(/(\d+)$/)?.[1] ?? '0');
+      return aNum - bNum;
+    });
+    stemToBaseIds.set(stem, baseIds);
+  }
+
+  const factoryMatchIndex = new Map<string, number>();
 
   // Find variable assignments. Match three forms:
   //  1. `const|let|var <varName> = <factoryName>(`
@@ -275,9 +292,9 @@ export function buildNestedCompositionAliases(
   // identifier with no preceding `.` or `?.`.
   const assignPattern = /(?:(?:^|[;{(]|\bconst\b|\blet\b|\bvar\b|,)\s*)([a-zA-Z_$][\w$]*)\s*=\s*([a-zA-Z_$][\w$]*)\s*\(/g;
   for (const m of compositionFnSource.matchAll(assignPattern)) {
-    const varName = m[1];
-    const factoryName = m[2];
-    if (!varName || !factoryName) continue;
+      const varName = m[1];
+      const factoryName = m[2];
+      if (!varName || !factoryName) continue;
     // Defensive: skip if the LHS is preceded by a `.` (would mean it's
     // a property assignment like `obj.field = factory()`). The regex
     // above doesn't allow this directly, but the boundary character
@@ -291,20 +308,37 @@ export function buildNestedCompositionAliases(
     if (nestedCompositionIds.has(varName)) continue;
 
     const matchingBaseIds = stemToBaseIds.get(factoryName);
-    if (!matchingBaseIds || matchingBaseIds.length !== 1) continue;
-    const baseId = matchingBaseIds[0];
+    if (!matchingBaseIds || matchingBaseIds.length === 0) continue;
+
+    const nextIndex = factoryMatchIndex.get(factoryName) ?? 0;
+    const baseId = matchingBaseIds[nextIndex] ?? matchingBaseIds.at(-1);
     if (!baseId) continue;
 
-    // Copy every existing __nestedStatus entry for this baseId under the
-    // varName key.
+    factoryMatchIndex.set(factoryName, nextIndex + 1);
+
+    aliasTargets[varName] = baseId;
+  }
+
+  return aliasTargets;
+}
+
+export function buildNestedCompositionAliases(
+  compositionFnSource: string,
+  nestedCompositionIds: Set<string> | undefined,
+  existingMappings: Record<string, string>
+): Record<string, string> {
+  const aliases: Record<string, string> = {};
+  const aliasTargets = buildNestedCompositionAliasTargets(
+    compositionFnSource,
+    nestedCompositionIds,
+  );
+
+  for (const [varName, baseId] of Object.entries(aliasTargets)) {
     const baseKeyPrefix = `__nestedStatus:${baseId}:`;
     for (const [key, value] of Object.entries(existingMappings)) {
       if (!key.startsWith(baseKeyPrefix)) continue;
       const fieldPath = key.slice(baseKeyPrefix.length);
       const aliasKey = `__nestedStatus:${varName}:${fieldPath}`;
-      // Don't overwrite an existing real entry (defensive — varName
-      // should never collide with another baseId here because of the
-      // skip-if-baseId guard above, but cheap to check).
       if (!Object.hasOwn(existingMappings, aliasKey) && !Object.hasOwn(aliases, aliasKey)) {
         aliases[aliasKey] = value;
       }
@@ -329,7 +363,7 @@ export function buildNestedCompositionAliases(
     logger.debug(
       'buildNestedCompositionAliases produced no aliases — relying on field-name-uniqueness fallback for nested ref resolution',
       {
-        nestedCompositionIds: Array.from(nestedCompositionIds),
+        nestedCompositionIds: nestedCompositionIds ? Array.from(nestedCompositionIds) : [],
         sourcePreview: compositionFnSource.slice(0, 200),
       }
     );

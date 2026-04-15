@@ -339,11 +339,11 @@ describe('Nested Compositions Fix', () => {
         expect(yaml).not.toContain('fieldPath:');
         expect(yaml).not.toContain('__nestedComposition:');
 
-        // Nested composition status should be inlined — virtual IDs replaced
-        // with the inner composition's actual values/CEL.
+        // Nested composition status should resolve to a real merged resource id
+        // in the parent graph rather than leaking raw proxy metadata.
         expect(yaml).toContain('${');
-        // Virtual nested IDs should NOT appear in KRO YAML
-        expect(yaml).not.toMatch(/nested\d+\.status\./);
+        expect(yaml).toContain('nested1.status.readyReplicas');
+        expect(yaml).not.toContain('resourceId:');
       }).not.toThrow();
     });
   });

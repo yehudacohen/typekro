@@ -13,6 +13,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { DeploymentClosure } from '../types/deployment.js';
+import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import type { Enhanced } from '../types.js';
 
 // =============================================================================
@@ -78,6 +79,8 @@ export interface CompositionContext {
    */
   // biome-ignore lint/suspicious/noExplicitAny: composition fns have arbitrary spec/status types
   nestedCompositionFns?: Map<string, (...args: any[]) => unknown>;
+  /** Singleton definitions collected while executing the composition. */
+  singletonDefinitions?: Map<string, SingletonDefinitionRecord>;
   /** True when this context is a direct-mode re-execution. */
   isReExecution?: boolean | undefined;
   /**
@@ -221,6 +224,7 @@ export function createCompositionContext(
     closureCounter: 0,
     compositionInstanceCounter: 0,
     variableMappings: {},
+    singletonDefinitions: new Map(),
     isReExecution: contextOptions?.isReExecution,
     isNestedCall: contextOptions?.isNestedCall,
     addResource(id: string, resource: Enhanced<any, any>) {

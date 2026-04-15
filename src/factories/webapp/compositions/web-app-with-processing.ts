@@ -1,5 +1,6 @@
 import type { V1EnvFromSource } from '@kubernetes/client-node';
 import { kubernetesComposition } from '../../../core/composition/imperative.js';
+import { singleton } from '../../../core/singleton/singleton.js';
 import { cnpgBootstrap } from '../../cnpg/compositions/cnpg-bootstrap.js';
 import { cluster } from '../../cnpg/resources/cluster.js';
 import { secret } from '../../kubernetes/config/secret.js';
@@ -124,14 +125,10 @@ export const webAppWithProcessing = kubernetesComposition(
     // cluster-scoped operators; the later `cluster()`/`valkey()` calls
     // create instances in the app namespace managed by those operators.
     //
-    // **Shared-singleton default.** Operators are cluster-scoped
-    // infrastructure — one install per cluster serves every consumer.
-    // The nested bootstraps use fixed names (`cnpg-operator`,
-    // `valkey-operator`) in fixed system namespaces and are marked
-    // `scopes: ['cluster']`, so multiple `webAppWithProcessing`
-    // deployments on the same cluster converge on the same operator
-    // install and `factory.deleteInstance()` on any one consumer
-    // leaves the operator intact for the others.
+    // Operators are cluster-scoped infrastructure — one install per
+    // cluster serves every consumer. Use singleton(...) so KRO-mode
+    // consumers reference the shared operator boundary instead of
+    // inlining the operator bootstrap resources into every app graph.
     //
     // Users who need a dedicated per-instance operator (multi-tenancy,
     // version testing, isolated failure domains) can override any
@@ -144,17 +141,23 @@ export const webAppWithProcessing = kubernetesComposition(
     // spec field produces schema refs that get wrapped with omit(), but
     // metadata.name is required and cannot be omitted. The ?? ensures
     // the default is expressed as a KRO orValue/default, not omit().
-    const _cnpg = cnpgBootstrap({
-      ...spec.cnpgOperator,
-      name: spec.cnpgOperator?.name ?? 'cnpg-operator',
-      namespace: spec.cnpgOperator?.namespace ?? 'cnpg-system',
-      installCRDs: true,
+    const _cnpg = singleton(cnpgBootstrap, {
+      id: 'cnpg-operator',
+      spec: {
+        ...spec.cnpgOperator,
+        name: spec.cnpgOperator?.name ?? 'cnpg-operator',
+        namespace: spec.cnpgOperator?.namespace ?? 'cnpg-system',
+        installCRDs: true,
+      },
     });
 
-    const _valkeyOp = valkeyBootstrap({
-      ...spec.valkeyOperator,
-      name: spec.valkeyOperator?.name ?? 'valkey-operator',
-      namespace: spec.valkeyOperator?.namespace ?? 'valkey-operator-system',
+    const _valkeyOp = singleton(valkeyBootstrap, {
+      id: 'valkey-operator',
+      spec: {
+        ...spec.valkeyOperator,
+        name: spec.valkeyOperator?.name ?? 'valkey-operator',
+        namespace: spec.valkeyOperator?.namespace ?? 'valkey-operator-system',
+      },
     });
 
     // ── PostgreSQL (CNPG) ──────────────────────────────────────────────

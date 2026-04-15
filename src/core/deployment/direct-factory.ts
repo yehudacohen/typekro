@@ -9,6 +9,7 @@ import * as yaml from 'js-yaml';
 import { toCamelCase } from '../../utils/string.js';
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { buildNestedCompositionAliasTargets } from '../composition/nested-status-cel.js';
 import {
   DEFAULT_DELETE_TIMEOUT,
   DEFAULT_FAST_POLL_INTERVAL,
@@ -1087,6 +1088,22 @@ export class DirectResourceFactoryImpl<
         this.logger,
         probeContext.nestedCompositionIds
       );
+
+      // Framework invariant: direct-mode re-execution must preserve the same
+      // cross-composition semantics as KRO-mode serialization. If a user writes
+      // `const stack = nestedComp(...); return { ready: stack.status.ready && ... }`,
+      // TypeKro must resolve that alias in the framework rather than pushing
+      // CEL-specific workarounds into composition code.
+      const aliasTargets = buildNestedCompositionAliasTargets(
+        this.factoryOptions.compositionFn.toString(),
+        probeContext.nestedCompositionIds,
+      );
+      for (const [aliasName, baseId] of Object.entries(aliasTargets)) {
+        const synthesizedStatus = enrichedMap.get(baseId);
+        if (synthesizedStatus && !enrichedMap.has(aliasName)) {
+          enrichedMap.set(aliasName, synthesizedStatus);
+        }
+      }
 
       // Phase 2: Real execution with enriched live status map
       const reExecutionContext = createCompositionContext('re-execution', {

@@ -307,10 +307,10 @@ describe('buildNestedCompositionAliases', () => {
     expect(varAliases['__nestedStatus:stack:url']).toBe('http://example');
   });
 
-  it('skips ambiguous matches when the same factory is called twice', () => {
-    // Two instances of the same composition produce two baseIds with
-    // the same stem. The function can't disambiguate from source alone,
-    // so it skips both var assignments and produces no aliases.
+  it('maps repeated factory calls deterministically by call order', () => {
+    // Repeated calls to the same nested composition are assigned in source
+    // order to the corresponding baseIds, which are also tracked in creation
+    // order.
     const source = `(spec) => { const a = wap({}); const b = wap({}); return { x: a.status.url, y: b.status.url }; }`;
     const entries: Record<string, string> = {
       '__nestedStatus:wap1:url': 'http://a',
@@ -321,7 +321,8 @@ describe('buildNestedCompositionAliases', () => {
       new Set(['wap1', 'wap2']),
       entries
     );
-    expect(Object.keys(aliases)).toHaveLength(0);
+    expect(aliases['__nestedStatus:a:url']).toBe('http://a');
+    expect(aliases['__nestedStatus:b:url']).toBe('http://b');
   });
 
   it('skips when the variable name is already a known baseId', () => {

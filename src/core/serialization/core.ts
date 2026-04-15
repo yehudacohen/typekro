@@ -1465,6 +1465,11 @@ function createTypedResourceGraph<
             statusMappings: directStatusMappings,
             compositionFn: declarativeCompositionFn,
             compositionDefinition: definition,
+            ...((this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions
+              ? {
+                  singletonDefinitions: (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions,
+                }
+              : {}),
           }
         );
       } else if (mode === 'kro') {
@@ -1478,6 +1483,11 @@ function createTypedResourceGraph<
             closures,
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,
+            ...((this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions
+              ? {
+                  singletonDefinitions: (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions,
+                }
+              : {}),
           }
         );
       } else {

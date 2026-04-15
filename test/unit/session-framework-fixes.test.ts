@@ -420,19 +420,20 @@ describe('#52 nested optional omit() wrapping', () => {
     );
   });
 
-  it('prefers the deepest matching ancestor over a shorter prefix', async () => {
+  it('chains from the shallowest optional ancestor when parent and leaf are both optional', async () => {
     const { processResourceReferences } = await import(
       '../../src/core/serialization/cel-references.js'
     );
     // Both `cache` and `cache.replicas` are in the omit set.
-    // Ref: spec.cache.replicas → should pick the deeper `cache.replicas`
-    // match, not the shallower `cache` match.
+    // Ref: spec.cache.replicas → both levels need guarding because the
+    // parent object may be absent and the leaf may also be absent when the
+    // parent object is present-but-sparse.
     const marker = '__KUBERNETES_REF___schema___spec.cache.replicas__';
     const result = processResourceReferences(marker, {
       omitFields: new Set(['cache', 'cache.replicas']),
     });
     expect(result).toBe(
-      '${has(schema.spec.cache.replicas) ? schema.spec.cache.replicas : omit()}'
+      '${has(schema.spec.cache) && has(schema.spec.cache.replicas) ? schema.spec.cache.replicas : omit()}'
     );
   });
 
@@ -478,6 +479,27 @@ describe('#52 nested optional omit() wrapping', () => {
     const marker = '__KUBERNETES_REF___schema___spec.cnpgOperator.monitoring.enabled__';
     const result = processResourceReferences(marker, {
       omitFields: new Set(['cnpgOperator']),
+    });
+    expect(result).toBe(
+      '${has(schema.spec.cnpgOperator) && has(schema.spec.cnpgOperator.monitoring) && has(schema.spec.cnpgOperator.monitoring.enabled) ? schema.spec.cnpgOperator.monitoring.enabled : omit()}'
+    );
+  });
+
+  it('does not collapse back to a single leaf has() when parent and leaf are both optional', async () => {
+    const { processResourceReferences } = await import(
+      '../../src/core/serialization/cel-references.js'
+    );
+    // This mirrors the real webAppWithProcessing omit set where
+    // cnpgOperator, cnpgOperator.monitoring, and the leaf field are all
+    // optional. We still need the full chain because KRO evaluates the leaf
+    // access through its optional ancestors.
+    const marker = '__KUBERNETES_REF___schema___spec.cnpgOperator.monitoring.enabled__';
+    const result = processResourceReferences(marker, {
+      omitFields: new Set([
+        'cnpgOperator',
+        'cnpgOperator.monitoring',
+        'cnpgOperator.monitoring.enabled',
+      ]),
     });
     expect(result).toBe(
       '${has(schema.spec.cnpgOperator) && has(schema.spec.cnpgOperator.monitoring) && has(schema.spec.cnpgOperator.monitoring.enabled) ? schema.spec.cnpgOperator.monitoring.enabled : omit()}'
@@ -1211,4 +1233,3 @@ describe('Fix #35 additional coverage — addMissingDefaultFields', () => {
     expect(schemaSpec.tag).toBe('string');
   });
 });
-

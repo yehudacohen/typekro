@@ -36,6 +36,11 @@ export const NESTED_COMPOSITION_BRAND = Symbol.for('TypeKro.NestedComposition');
 export const CALLABLE_COMPOSITION_BRAND = Symbol.for('TypeKro.CallableComposition');
 
 /**
+ * Brand symbol for singleton handles.
+ */
+export const SINGLETON_HANDLE_BRAND = Symbol.for('TypeKro.SingletonHandle');
+
+/**
  * Regex pattern for matching __KUBERNETES_REF__ marker strings in values.
  *
  * Format: __KUBERNETES_REF_{resourceId}_{fieldPath}__

@@ -139,6 +139,8 @@ export const SearxngBootstrapConfigSchema = type({
   name: 'string',
   /** Target namespace (default: 'searxng'). */
   'namespace?': 'string',
+  /** Whether to create SearXNG resources (default: true). */
+  'enabled?': 'boolean',
   /** Container image (default: 'searxng/searxng:2026.3.29-7ac4ff39f'). */
   'image?': 'string',
   /** Number of replicas (default: 1). */

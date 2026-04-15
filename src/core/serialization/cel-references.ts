@@ -79,37 +79,36 @@ function maybeWrapWithOmit(
   const refPath = refMatch?.[1];
   if (!refPath) return value;
 
-  // Walk from leaf to root: find the deepest ancestor that's in the
-  // omit set. That ancestor is the one we guard via has(), because
-  // its absence implies the absence of every descendant.
+  // Walk the full path and collect every optional prefix that applies.
+  // We chain from the SHALLOWEST optional ancestor through the leaf.
   //
-  // When the guard is an ANCESTOR (not the leaf itself), we must also
-  // guard the leaf path. KRO's has() on an ancestor like cnpgOperator
-  // returns true if the object exists in the schema — but sub-fields
-  // like cnpgOperator.version may still be absent if the user provides
-  // an incomplete object. Chain has() checks to cover both levels.
+  // Why shallowest? If both a parent object and a leaf field are optional
+  // (e.g. `cnpgOperator?` and `cnpgOperator.monitoring.enabled?`), guarding
+  // only the deepest leaf with `has(schema.spec.cnpgOperator.monitoring.enabled)`
+  // is not sufficient when the parent object is absent. KRO still evaluates
+  // the full path through its optional ancestors. Chaining every level from
+  // the first optional ancestor keeps both cases safe:
+  //   - ancestor optional, leaf required
+  //   - ancestor optional, leaf optional
+  //   - multiple optional intermediates
   const segments = refPath.split('.');
-  for (let i = segments.length; i >= 1; i--) {
+  let shallowestOptionalIndex: number | null = null;
+  for (let i = 1; i <= segments.length; i++) {
     const prefix = segments.slice(0, i).join('.');
     if (omitFields.has(prefix)) {
-      const guardPath = `schema.spec.${prefix}`;
-      // If the guard is the field itself (i === segments.length), a single has() suffices.
-      // If the guard is an ancestor, chain has() checks for ALL intermediate
-      // levels between the guard and the leaf. For `cnpgOperator.monitoring.enabled`
-      // guarded by `cnpgOperator`, we need:
-      //   has(cnpgOperator) && has(cnpgOperator.monitoring) && has(cnpgOperator.monitoring.enabled)
-      // A single has(ancestor) + has(leaf) misses intermediates like `monitoring`.
-      if (i === segments.length) {
-        return `has(${guardPath}) ? ${value} : omit()`;
-      }
-      const guards = [`has(${guardPath})`];
-      for (let j = i + 1; j <= segments.length; j++) {
-        const intermediatePath = `schema.spec.${segments.slice(0, j).join('.')}`;
-        guards.push(`has(${intermediatePath})`);
-      }
-      return `${guards.join(' && ')} ? ${value} : omit()`;
+      shallowestOptionalIndex ??= i;
     }
   }
+
+  if (shallowestOptionalIndex !== null) {
+    const guards: string[] = [];
+    for (let i = shallowestOptionalIndex; i <= segments.length; i++) {
+      const guardPath = `schema.spec.${segments.slice(0, i).join('.')}`;
+      guards.push(`has(${guardPath})`);
+    }
+    return `${guards.join(' && ')} ? ${value} : omit()`;
+  }
+
   return value;
 }
 
@@ -441,7 +440,8 @@ function lookupNestedExpression(
  */
 function resolveNestedCompositionRefs(
   expr: string,
-  nestedStatusCel: Record<string, string> | undefined
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds?: ReadonlySet<string>
 ): string {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
     return expr;
@@ -449,7 +449,7 @@ function resolveNestedCompositionRefs(
 
   let current = expr;
   for (let i = 0; i < NESTED_REF_RESOLUTION_DEPTH_LIMIT; i++) {
-    const next = substituteNestedRefsOnce(current, nestedStatusCel);
+    const next = substituteNestedRefsOnce(current, nestedStatusCel, resourceIds);
     if (next === current) return current;
     current = next;
   }
@@ -466,7 +466,8 @@ function resolveNestedCompositionRefs(
  */
 function substituteNestedRefsOnce(
   expr: string,
-  nestedStatusCel: Record<string, string>
+  nestedStatusCel: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): string {
   const lambdaVars = collectLambdaVars(expr);
   // Match `<id>.status.<fieldPath>`. The fieldPath capture is greedy on
@@ -477,8 +478,9 @@ function substituteNestedRefsOnce(
     if (id === 'schema') return match;
     if (lambdaVars.has(id)) return match;
     const innerExpr = lookupNestedExpression(id, field, nestedStatusCel);
-    if (innerExpr === undefined) return match;
-    return `(${innerExpr})`;
+    if (innerExpr !== undefined) return `(${innerExpr})`;
+    if (resourceIds?.has(id)) return match;
+    return match;
   });
 }
 
@@ -498,7 +500,8 @@ function substituteNestedRefsOnce(
  */
 function resolveNestedRefMarkers(
   str: string,
-  nestedStatusCel: Record<string, string> | undefined
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds?: ReadonlySet<string>
 ): string {
   if (!nestedStatusCel || Object.keys(nestedStatusCel).length === 0) {
     return str;
@@ -508,8 +511,9 @@ function resolveNestedRefMarkers(
     // Strip leading "status." since nestedStatusCel keys use the bare field path.
     const fieldPath = path.replace(/^status\./, '');
     const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
-    if (innerExpr === undefined) return match;
-    return innerExprToYamlSegment(innerExpr, nestedStatusCel);
+    if (innerExpr !== undefined) return innerExprToYamlSegment(innerExpr, nestedStatusCel);
+    if (resourceIds?.has(id)) return match;
+    return match;
   });
 }
 
@@ -588,7 +592,7 @@ export function finalizeCelForKro(
   nestedStatusCel: Record<string, string> | undefined,
   context?: SerializationContext
 ): string {
-  const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel);
+  const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel, context?.resourceIds);
   if (resolved.includes('__KUBERNETES_REF_')) {
     return convertKubernetesRefMarkersTocel(resolved, context);
   }
@@ -705,7 +709,7 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
   // remaining markers (schema refs and direct resource refs) are converted
   // to KRO mixed-template form.
   if (typeof obj === 'string' && obj.includes('__KUBERNETES_REF_')) {
-    const resolved = resolveNestedRefMarkers(obj, context?.nestedStatusCel);
+    const resolved = resolveNestedRefMarkers(obj, context?.nestedStatusCel, context?.resourceIds);
     if (resolved.includes('__KUBERNETES_REF_')) {
       return convertKubernetesRefMarkersTocel(resolved, context);
     }
@@ -794,7 +798,7 @@ export function serializeStatusMappingsToCel(
    * KRO status CEL from a resolved expression" means.
    */
   function statusFieldFromExpression(expr: string): string {
-    const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel);
+    const resolved = resolveNestedCompositionRefs(expr, nestedStatusCel, resourceIds);
     if (resolved.includes('__KUBERNETES_REF_')) {
       // Marker-laden — use mixed-template form.
       return convertKubernetesRefMarkersTocel(resolved);
@@ -842,7 +846,7 @@ export function serializeStatusMappingsToCel(
       if (value.includes('__KUBERNETES_REF_')) {
         // Resolve nested refs first (substitution is a no-op on pure marker
         // strings but handles mixed forms), then convert markers to KRO CEL.
-        const resolved = resolveNestedCompositionRefs(value, nestedStatusCel);
+        const resolved = resolveNestedCompositionRefs(value, nestedStatusCel, resourceIds);
         return convertKubernetesRefMarkersTocel(resolved);
       }
       return `\${"${value}"}`;

@@ -137,11 +137,10 @@ describe('Cilium Bootstrap Status Expressions', () => {
       );
 
       // Verify Gateway API configuration is included in Helm values
-      // gatewayAPI.enabled is an optional scalar — the deepest optional
-      // prefix on the ref path gets the has() guard. YAML serializer
-      // quotes the value because the `?` and `:` are special characters.
+      // gatewayAPI is an optional object with an optional enabled field, so
+      // both levels must be guarded.
       expect(yaml).toContain(
-        'enabled: "${has(schema.spec.gatewayAPI.enabled) ? schema.spec.gatewayAPI.enabled : omit()}"'
+        'enabled: "${has(schema.spec.gatewayAPI) && has(schema.spec.gatewayAPI.enabled) ? schema.spec.gatewayAPI.enabled : omit()}"'
       );
     });
   });
@@ -160,14 +159,14 @@ describe('Cilium Bootstrap Status Expressions', () => {
 
       // Verify observability configuration is included in Helm values
       expect(yaml).toContain('hubble:');
-      // observability.hubbleEnabled is an optional scalar — the deepest
-      // optional prefix on the ref path gets the has() guard.
+      // observability is an optional object with optional subfields, so both
+      // levels must be guarded.
       expect(yaml).toContain(
-        'enabled: "${has(schema.spec.observability.hubbleEnabled) ? schema.spec.observability.hubbleEnabled : omit()}"'
+        'enabled: "${has(schema.spec.observability) && has(schema.spec.observability.hubbleEnabled) ? schema.spec.observability.hubbleEnabled : omit()}"'
       );
       expect(yaml).toContain('prometheus:');
       expect(yaml).toContain(
-        'enabled: "${has(schema.spec.observability.prometheusEnabled) ? schema.spec.observability.prometheusEnabled : omit()}"'
+        'enabled: "${has(schema.spec.observability) && has(schema.spec.observability.prometheusEnabled) ? schema.spec.observability.prometheusEnabled : omit()}"'
       );
     });
   });

@@ -18,6 +18,8 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
+import { Cel } from '../../src/core/references/cel.js';
+import { singleton } from '../../src/core/singleton/singleton.js';
 import {
   createCompositionContext,
   runWithCompositionContext,
@@ -160,6 +162,142 @@ const outerComposition = kubernetesComposition(
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('Nested Composition Direct Mode', () => {
+  describe('singleton direct mode', () => {
+    it('reExecuteWithLiveStatus evaluates singleton-backed nested status as real values', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; endpoint: string } | null;
+      }
+
+      const singletonBootstrap = kubernetesComposition(
+        {
+          name: 'singleton-bootstrap',
+          kind: 'SingletonBootstrap',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const deployment = simple.Deployment({
+            name: spec.name,
+            image: 'nginx',
+            id: 'singletonDeployment',
+          });
+
+          return {
+            ready: deployment.status.readyReplicas >= 1,
+            endpoint: `http://${spec.name}:80`,
+          };
+        },
+      );
+
+      const singletonConsumer = kubernetesComposition(
+        {
+          name: 'singleton-consumer',
+          kind: 'SingletonConsumer',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const shared = singleton(singletonBootstrap, {
+            id: 'platform-bootstrap',
+            spec: { name: `${spec.name}-shared` },
+          });
+          const worker = simple.Deployment({
+            name: `${spec.name}-worker`,
+            image: 'nginx',
+            id: 'worker',
+          });
+
+          return {
+            ready: shared.status.ready && worker.status.readyReplicas >= 1,
+            endpoint: shared.status.endpoint,
+          };
+        },
+      );
+
+      const factory = singletonConsumer.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp' },
+        new Map([
+          ['singletonDeployment', { readyReplicas: 1 }],
+          ['singletonBootstrap1', { ready: true, endpoint: 'http://myapp-shared:80' }],
+          ['singletonBootstrap2', { ready: true, endpoint: 'http://myapp-shared:80' }],
+          ['worker', { readyReplicas: 1 }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+      expect(status?.endpoint).toBe('http://myapp-shared:80');
+    });
+  });
+
+  describe('Bug #0: framework must preserve nested status alias semantics in direct mode', () => {
+    it('reExecuteWithLiveStatus resolves aliased nested composition status in compound booleans', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean } | null;
+      }
+
+      const innerBootstrap = kubernetesComposition(
+        {
+          name: 'inner-bootstrap',
+          kind: 'InnerBootstrap',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const deployment = simple.Deployment({
+            name: `${spec.name}-inner`,
+            image: 'nginx',
+            id: 'innerDeployment',
+          });
+          return {
+            ready: Cel.expr<boolean>(deployment.status.readyReplicas, ' >= 1'),
+          };
+        },
+      );
+
+      const outerAliasComp = kubernetesComposition(
+        {
+          name: 'outer-alias-test',
+          kind: 'OuterAliasTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const inner = innerBootstrap({ name: spec.name });
+          const worker = simple.Deployment({
+            name: `${spec.name}-worker`,
+            image: 'nginx',
+            id: 'worker',
+          });
+          return {
+            ready: inner.status.ready && worker.status.readyReplicas >= 1,
+          };
+        },
+      );
+
+      const factory = outerAliasComp.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const spec = { name: 'myapp' };
+
+      const status = factory.reExecuteWithLiveStatus(
+        spec,
+        new Map([
+          ['innerDeployment', { readyReplicas: 1 }],
+          ['worker', { readyReplicas: 1 }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.ready).toBe(true);
+    });
+  });
+
   describe('Bug #1: CEL expressions must not leak into resource names', () => {
     it('produces real string names, not CEL has() expressions', () => {
       const factory = outerComposition.factory('direct', { namespace: 'test-ns' });

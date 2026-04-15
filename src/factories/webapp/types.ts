@@ -91,9 +91,10 @@ export const WebAppWithProcessingConfigSchema = type({
     'replicas?': 'number',
   },
   /**
-   * CloudNativePG operator install settings. The composition nests
-   * `cnpgBootstrap` so the operator installs automatically alongside
-   * the app stack.
+   * CloudNativePG operator install settings. The composition uses
+   * `singleton(cnpgBootstrap, ...)` so app stacks consume a shared
+   * operator boundary instead of inlining operator bootstrap resources
+   * into every KRO graph.
    *
    * The schema embeds the full `CnpgBootstrapConfigSchema` made
    * partial (every field optional) so every field the underlying
@@ -106,15 +107,13 @@ export const WebAppWithProcessingConfigSchema = type({
    *   namespace: 'cnpg-system'
    *   shared: true (singleton — survives instance deletion)
    *
-   * The defaults make the operator a **shared cluster-level singleton**:
-   * multiple `webAppWithProcessing` instances (and any other composition
-   * that nests `cnpgBootstrap`) converge on the same install. Override
-   * `name`/`namespace` + set `shared: false` to deploy a dedicated
-   * per-instance operator (isolation, version testing, multi-tenancy).
+   * The defaults make the operator a shared cluster-level singleton:
+   * multiple `webAppWithProcessing` instances converge on the same install.
+   * Override `name`/`namespace` when you need a distinct singleton identity.
    */
   'cnpgOperator?': CnpgBootstrapConfigSchema.partial(),
   /**
-   * Hyperspike Valkey operator install settings. Same shared-singleton
+   * Hyperspike Valkey operator install settings. Same singleton-consumption
    * pattern as `cnpgOperator`. Defaults:
    *   name: 'valkey-operator'
    *   namespace: 'valkey-operator-system'

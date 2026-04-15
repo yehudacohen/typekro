@@ -171,20 +171,20 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
         statusKeys,
       });
 
-      // Resource is ready when it's active, synced, and either:
-      // 1. Has the expected custom status fields populated, OR
-      // 2. No custom status fields are expected (empty status schema in RGD)
-      //
-      // Additionally, if the status schema defines a `ready` boolean field,
-      // wait for it to be `true` — ACTIVE means all resources are created,
-      // but `ready` reflects live resource health (e.g., readyReplicas >= 1).
+      // Resource is ready when it's active and the custom status schema has
+      // been populated as expected. We normally also require Kro's synced/ready
+      // condition to be true, but some real-world controller states leave that
+      // condition stale (`Ready=False`, message `cluster mutated`) even after the
+      // custom status has converged. In those cases, trust an explicit
+      // user-defined `status.ready === true` as the stronger health signal.
       const statusReadyField = status.ready;
       const hasReadyField = typeof statusReadyField === 'boolean';
+      const hasExpectedCustomStatus = hasCustomStatusFields || !expectedCustomStatusFields;
+      const hasPositiveCustomReady = hasReadyField && statusReadyField === true;
       const isReady =
         isActive &&
-        isSynced &&
-        (hasCustomStatusFields || !expectedCustomStatusFields) &&
-        (!hasReadyField || statusReadyField === true);
+        hasExpectedCustomStatus &&
+        ((isSynced && (!hasReadyField || statusReadyField === true)) || hasPositiveCustomReady);
 
       if (isReady) {
         readinessLogger.info('Kro instance is ready', {

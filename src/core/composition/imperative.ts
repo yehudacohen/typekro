@@ -9,11 +9,14 @@
 
 import { toCamelCase } from '../../utils/string.js';
 import {
+  copyResourceMetadata,
   getMetadataField,
   getResourceId,
   setMetadataField,
+  setResourceId,
 } from '../metadata/index.js';
 import {
+  buildNestedCompositionAliasTargets,
   buildNestedCompositionAliases,
   extractNestedStatusCel as extractNestedStatusCelFn,
 } from './nested-status-cel.js';
@@ -40,7 +43,12 @@ import type {
   SerializationOptions,
 } from '../types/serialization.js';
 import type { CelExpression, Enhanced } from '../types.js';
-import { isCelExpression } from '../../utils/type-guards.js';
+import {
+  containsCelExpressions,
+  containsKubernetesRefs,
+  isCelExpression,
+  isKubernetesRef,
+} from '../../utils/type-guards.js';
 import type { CompositionContext } from './context.js';
 import {
   createCompositionContext,
@@ -63,8 +71,16 @@ const logger = getComponentLogger('imperative-composition');
  * This is the **single source of truth** for the naming convention — used
  * by both the merge loop and the dependsOn leaf-resource lookup.
  */
-export function computeMergedId(baseId: string, innerResourceId: string, resourceCount: number): string {
-  return resourceCount === 1 ? baseId : `${baseId}-${innerResourceId}`;
+export function computeMergedId(
+  baseId: string,
+  innerResourceId: string,
+  resourceCount: number,
+  preserveSingleResourceId: boolean = false,
+): string {
+  if (resourceCount === 1) {
+    return preserveSingleResourceId ? innerResourceId : baseId;
+  }
+  return `${baseId}-${innerResourceId}`;
 }
 
 export function enableCompositionDebugging(): void {
@@ -330,11 +346,17 @@ function executeNestedCompositionWithSpec<
 
   // Determine if this composition has a single resource
   const resourceCount = Object.keys(executionContext.resources).length;
+  const nestedResourceIds = executionContext.nestedCompositionIds ?? new Set<string>();
 
   // Merge the executed composition's resources into the parent context
+  const mergedInnerResourceIds: string[] = [];
   for (const [resourceId, resource] of Object.entries(executionContext.resources)) {
-    const uniqueId = computeMergedId(baseId, resourceId, resourceCount);
-    parentContext.addResource(uniqueId, resource);
+    const uniqueId = computeMergedId(baseId, resourceId, resourceCount, nestedResourceIds.has(resourceId));
+    const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<any, any>;
+    copyResourceMetadata(resource, mergedResource);
+    setResourceId(mergedResource, uniqueId);
+    parentContext.addResource(uniqueId, mergedResource);
+    mergedInnerResourceIds.push(uniqueId);
   }
 
   for (const [closureId, closure] of Object.entries(executionContext.closures)) {
@@ -366,10 +388,22 @@ function executeNestedCompositionWithSpec<
 
   const innerStatusSource = innerAnalysis?.analyzedStatusMappings;
   const innerPhaseBFallback = innerAnalysis?.phaseBStatusMappings;
+  const preserveVariables = new Set(
+    Object.keys(
+      buildNestedCompositionAliasTargets(
+        compositionFn.toString(),
+        executionContext.nestedCompositionIds,
+      )
+    )
+  );
+  for (const nestedId of executionContext.nestedCompositionIds ?? []) {
+    preserveVariables.add(nestedId);
+  }
   if (innerStatusSource) {
     extractNestedStatusCelFn(innerStatusSource, {
       baseId,
-      innerResourceIds: Object.keys(executionContext.resources),
+      innerResourceIds: mergedInnerResourceIds,
+      preserveVariables,
       registerMapping: (key, value) => parentContext.addVariableMapping(key, value),
     }, '', innerPhaseBFallback);
   }
@@ -421,7 +455,10 @@ function executeNestedCompositionWithSpec<
     [NESTED_COMPOSITION_BRAND]: true as const,
     spec,
     status: isReExec
-      ? (result as unknown as { status?: TStatus }).status ?? ({} as TStatus)
+      ? (mergeNestedReExecutionStatus(
+          (result as unknown as { status?: TStatus }).status ?? ({} as TStatus),
+          parentContext.liveStatusMap?.get(baseId),
+        ) as TStatus)
       : createStatusProxy<TStatus>(baseId, parentContext, result),
     __compositionId: uniqueExecutionName,
     __resources: result.resources,
@@ -441,7 +478,12 @@ function executeNestedCompositionWithSpec<
       // Look up the merged resource by computing the same ID used during
       // the merge loop. Uses the shared computeMergedId utility so the
       // naming convention is defined in one place.
-      const mergedId = computeMergedId(baseId, lastInnerResourceId, innerResourceIds.length);
+      const mergedId = computeMergedId(
+        baseId,
+        lastInnerResourceId,
+        innerResourceIds.length,
+        nestedResourceIds.has(lastInnerResourceId),
+      );
       const mergedResource = parentContext.resources[mergedId];
       if (!mergedResource) return nestedCompositionResource;
 
@@ -515,6 +557,52 @@ interface NestedRefProxyTarget {
   fieldPath: string;
   __nestedComposition: true;
   [key: string]: unknown;
+}
+
+function mergeNestedReExecutionStatus(rawValue: unknown, liveValue: unknown): unknown {
+  if (isKubernetesRef(rawValue) || isCelExpression(rawValue)) {
+    return liveValue ?? rawValue;
+  }
+
+  if (
+    rawValue === null
+    || typeof rawValue !== 'object'
+    || liveValue === null
+    || typeof liveValue !== 'object'
+  ) {
+    return liveValue ?? rawValue;
+  }
+
+  if (!Array.isArray(rawValue)) {
+    if (!containsKubernetesRefs(rawValue) && !containsCelExpressions(rawValue)) {
+      return liveValue ?? rawValue;
+    }
+
+    const rawObj = rawValue as Record<string, unknown>;
+    const liveObj =
+      liveValue !== null && typeof liveValue === 'object' && !Array.isArray(liveValue)
+        ? (liveValue as Record<string, unknown>)
+        : {};
+    const merged: Record<string, unknown> = {};
+
+    for (const key of new Set([...Object.keys(rawObj), ...Object.keys(liveObj)])) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      merged[key] = mergeNestedReExecutionStatus(rawObj[key], liveObj[key]);
+    }
+
+    return merged;
+  }
+
+  if (Array.isArray(rawValue)) {
+    if (!containsKubernetesRefs(rawValue) && !containsCelExpressions(rawValue)) {
+      return liveValue ?? rawValue;
+    }
+
+    const liveArr = Array.isArray(liveValue) ? liveValue : [];
+    return rawValue.map((item, index) => mergeNestedReExecutionStatus(item, liveArr[index]));
+  }
+
+  return rawValue;
 }
 
 /**
@@ -887,6 +975,12 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
       });
       Object.defineProperty(result, '_context', {
         value: context,
+        writable: false,
+        enumerable: false,
+        configurable: true,
+      });
+      Object.defineProperty(result, '_singletonDefinitions', {
+        value: context.singletonDefinitions ? Array.from(context.singletonDefinitions.values()) : [],
         writable: false,
         enumerable: false,
         configurable: true,

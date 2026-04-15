@@ -6,6 +6,7 @@
  */
 
 import { isCelExpression, isKubernetesRef, containsKubernetesRefs, containsCelExpressions } from '../../../utils/type-guards.js';
+import { RESOURCE_ID_ANNOTATION } from '../resource-tagging.js';
 import { getMetadataField, getResourceId } from '../../metadata/index.js';
 import type {
   DeployedResource,
@@ -151,7 +152,9 @@ export class DirectDeploymentStrategy<
 
           // Deep merge: recursively walk the status tree, replacing proxy artifacts
           // (KubernetesRef, CelExpression) with base values while keeping resolved values.
-          const mergedStatus = deepMergeLiveStatus(liveStatus, baseProxy.status ?? {});
+          const mergedStatus = normalizeReadyFromComponents(
+            deepMergeLiveStatus(liveStatus, baseProxy.status ?? {})
+          );
 
           return {
             ...baseProxy,
@@ -222,7 +225,10 @@ export class DirectDeploymentStrategy<
 
         const status = (liveResource as Record<string, unknown>).status;
         if (status && typeof status === 'object') {
-          const originalId = getResourceId(resource.manifest) || resource.id;
+          const annotationId =
+            (resource.manifest.metadata as { annotations?: Record<string, string> } | undefined)
+              ?.annotations?.[RESOURCE_ID_ANNOTATION];
+          const originalId = annotationId || getResourceId(resource.manifest) || resource.id;
           return { originalId, deployedId: resource.id, kind: resource.kind, status: status as Record<string, unknown> };
         }
         return null;
@@ -334,4 +340,35 @@ function deepMergeLiveStatus(
 
   // Primitives (string, number, boolean, null, undefined) — correctly resolved
   return liveValue;
+}
+
+function normalizeReadyFromComponents<T>(status: T): T {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) {
+    return status;
+  }
+
+  const statusRecord = status as Record<string, unknown>;
+  if (typeof statusRecord.ready !== 'boolean') {
+    return status;
+  }
+
+  const components = statusRecord.components;
+  if (!components || typeof components !== 'object' || Array.isArray(components)) {
+    return status;
+  }
+
+  const componentValues = Object.values(components as Record<string, unknown>);
+  if (componentValues.length === 0 || componentValues.some((value) => typeof value !== 'boolean')) {
+    return status;
+  }
+
+  const normalizedReady = componentValues.every((value) => value === true);
+  if (normalizedReady === statusRecord.ready) {
+    return status;
+  }
+
+  return {
+    ...statusRecord,
+    ready: normalizedReady,
+  } as T;
 }

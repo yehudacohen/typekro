@@ -8,6 +8,7 @@
  */
 
 import { getComponentLogger } from '../../logging/index.js';
+import { toCamelCase } from '../../../utils/string.js';
 import {
   conditionToCel,
   extractFactoryId,
@@ -314,6 +315,10 @@ export function walkExpression(
     const call = node as CallExpression;
     // Extract id from the call arg if present (for member expression factories)
     const callId = extractFactoryId(call) ?? '__non_factory_call__';
+    if (ctx.includeWhenStack.length > 0 && call.callee.type === 'Identifier') {
+      const calleeName = (call.callee as Identifier).name;
+      registerResourceControlFlow(`__call__:${toCamelCase(calleeName)}`, calleeName, ctx, result);
+    }
     const firstArg = call.arguments[0];
     if (firstArg?.type === 'ObjectExpression') {
       analyzeFactoryArgTernaries(call, callId, fullSource, specParamName, result);

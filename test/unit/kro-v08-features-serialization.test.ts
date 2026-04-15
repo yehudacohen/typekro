@@ -24,7 +24,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
 import { ConfigMap, Deployment, Ingress, Service } from '../../src/factories/simple/index.js';
-import { Cel, externalRef, kubernetesComposition } from '../../src/index.js';
+import { Cel, externalRef, kubernetesComposition, singleton } from '../../src/index.js';
 
 // =============================================================================
 // Helpers
@@ -743,6 +743,79 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
         expect(resource.includeWhen).toBeDefined();
         expect(resource.includeWhen![0]).toContain('!schema.spec.disabled');
+      });
+
+      it('if (spec.optional?.enabled !== false) lowers to includeWhen without optional chaining', () => {
+        const graph = kubernetesComposition(
+          {
+            name: 'include-optional-enabled',
+            apiVersion: 'v1alpha1',
+            kind: 'IncludeOptionalEnabled',
+            spec: type({
+              name: 'string',
+              'searxng?': {
+                'enabled?': 'boolean',
+              },
+            }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            if (spec.searxng?.enabled !== false) {
+              Deployment({ name: `${spec.name}-search`, image: 'nginx', id: 'search' });
+            }
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const resource = parsed.spec.resources.find((r) => r.id === 'search');
+
+        expect(resource).toBeDefined();
+        expect(resource!.includeWhen).toBeDefined();
+        expect(resource!.includeWhen![0]).toContain('schema.spec.searxng.enabled != false');
+        expect(resource!.includeWhen![0]).not.toContain('?.');
+      });
+
+      it('if guard around nested composition call applies includeWhen to nested resources', () => {
+        const searchBootstrap = kubernetesComposition(
+          {
+            name: 'search-bootstrap',
+            apiVersion: 'v1alpha1',
+            kind: 'SearchBootstrap',
+            spec: type({ name: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            Deployment({ name: spec.name, image: 'nginx', id: 'searchDeployment' });
+            return { ready: true };
+          }
+        );
+
+        const graph = kubernetesComposition(
+          {
+            name: 'nested-include-when',
+            apiVersion: 'v1alpha1',
+            kind: 'NestedIncludeWhen',
+            spec: type({
+              name: 'string',
+              'search?': { 'enabled?': 'boolean' },
+            }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            if (spec.search?.enabled !== false) {
+              searchBootstrap({ name: `${spec.name}-search` });
+            }
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const nestedDeployment = parsed.spec.resources.find((r) => r.id === 'searchBootstrap1');
+
+        expect(nestedDeployment).toBeDefined();
+        expect(nestedDeployment!.includeWhen).toBeDefined();
+        expect(nestedDeployment!.includeWhen![0]).toContain('schema.spec.search.enabled != false');
       });
 
       it('compound && produces single includeWhen with AND', () => {
@@ -1549,6 +1622,101 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         );
         graph.toYaml();
       }).toThrow();
+    });
+  });
+
+  describe('singleton — Shared Infra Consumption', () => {
+    it('singleton.use() serializes as externalRef-backed consumption', () => {
+      const sharedBootstrap = kubernetesComposition(
+        {
+          name: 'shared-bootstrap',
+          apiVersion: 'platform.typekro.test/v1alpha1',
+          kind: 'SharedBootstrap',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          Deployment({ name: spec.name, image: 'nginx', id: 'bootstrapApp' });
+          return {
+            ready: true,
+            endpoint: `http://${spec.name}:80`,
+          };
+        },
+      );
+
+      const graph = kubernetesComposition(
+        {
+          name: 'singleton-use-test',
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonUseTest',
+          spec: type({ name: 'string', image: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const shared = singleton.use(sharedBootstrap, 'platform-bootstrap');
+
+          Deployment({ name: spec.name, image: spec.image, id: 'app' });
+          return {
+            ready: shared.status.ready,
+            endpoint: shared.status.endpoint,
+          };
+        },
+      );
+
+      const parsed = parseRgdYaml(graph.toYaml());
+      const extRefResource = parsed.spec.resources.find((r) => r.externalRef !== undefined);
+
+      expect(extRefResource).toBeDefined();
+      expect(extRefResource!.template).toBeUndefined();
+      expect(extRefResource!.externalRef.kind).toBe('SharedBootstrap');
+      expect(extRefResource!.externalRef.metadata.name).toBe('platform-bootstrap');
+    });
+
+    it('singleton(...) does not inline nested shared resources into app RGD', () => {
+      const sharedBootstrap = kubernetesComposition(
+        {
+          name: 'shared-bootstrap-inline-check',
+          apiVersion: 'platform.typekro.test/v1alpha1',
+          kind: 'SharedBootstrapInlineCheck',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          Deployment({ name: spec.name, image: 'nginx', id: 'bootstrapApp' });
+          return {
+            ready: true,
+            endpoint: `http://${spec.name}:80`,
+          };
+        },
+      );
+
+      const graph = kubernetesComposition(
+        {
+          name: 'singleton-inline-check',
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonInlineCheck',
+          spec: type({ name: 'string', image: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const shared = singleton(sharedBootstrap, {
+            id: 'platform-bootstrap',
+            spec: { name: `${spec.name}-shared` },
+          });
+
+          Deployment({ name: spec.name, image: spec.image, id: 'app' });
+          return {
+            ready: shared.status.ready,
+            endpoint: shared.status.endpoint,
+          };
+        },
+      );
+
+      const parsed = parseRgdYaml(graph.toYaml());
+      const resourceIds = parsed.spec.resources.map((resource) => resource.id);
+
+      expect(resourceIds).not.toContain('bootstrapApp');
+      expect(parsed.spec.resources.some((resource) => resource.externalRef !== undefined)).toBe(true);
     });
   });
 

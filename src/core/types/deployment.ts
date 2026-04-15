@@ -3,7 +3,7 @@
  */
 
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
-import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND } from '../constants/brands.js';
+import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND, SINGLETON_HANDLE_BRAND } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { CelExpression, KubernetesRef } from './common.js';
@@ -510,6 +510,25 @@ export type CallableComposition<
 } & TypedResourceGraph<TSpec, TStatus>;
 
 /**
+ * Handle returned by singleton definition/use helpers.
+ * Behaves like a nested composition resource while carrying stable singleton identity.
+ */
+export interface SingletonHandle<TSpec, TStatus> extends NestedCompositionResource<TSpec, TStatus> {
+  readonly [SINGLETON_HANDLE_BRAND]: true;
+  readonly __singletonId: string;
+  readonly __singletonKey: string;
+}
+
+export interface SingletonDefinitionRecord {
+  readonly id: string;
+  readonly key: string;
+  readonly specFingerprint: string;
+  readonly registryNamespace: string;
+  readonly composition: CallableComposition<any, any>;
+  readonly spec: KroCompatibleType;
+}
+
+/**
  * Options passed to `deploy()` on a `TypedResourceGraph`.
  *
  * Extends {@link BaseDeploymentConfig} with factory-specific settings for
@@ -646,6 +665,8 @@ export interface InternalFactoryOptions {
   rgdProvider?: ResourceGraphDefinitionProvider;
   /** Alchemy integration bridge (only needed when alchemyScope is set) */
   alchemyBridge?: AlchemyBridge;
+  /** Collected singleton definitions used by this graph (internal use) */
+  singletonDefinitions?: SingletonDefinitionRecord[];
 }
 
 /**

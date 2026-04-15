@@ -166,6 +166,14 @@ export function conditionToCel(
   // JS → CEL operator conversions
   source = source.replace(/===/g, '==');
   source = source.replace(/!==/g, '!=');
+  // Kro CEL has no optional chaining syntax. Presence checks are handled
+  // separately via has(...) wrapping for optional fields.
+  source = source.replace(/\?\./g, '.');
+  // Bun/esbuild may minify booleans inside function source: `false` → `!1`,
+  // `true` → `!0`. Normalize them back to plain CEL booleans for readability
+  // and stable test output.
+  source = source.replace(/(^|[^\w])!1(?=$|[^\w])/g, '$1false');
+  source = source.replace(/(^|[^\w])!0(?=$|[^\w])/g, '$1true');
 
   // JS `Object.keys(X).length` → CEL `size(X)`. The `.length` on a map
   // enumeration is equivalent to the map's size in CEL. We convert the
