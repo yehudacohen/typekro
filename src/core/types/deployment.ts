@@ -822,6 +822,7 @@ export interface ResolutionContext {
   deploymentId?: string;
   resourceKeyMapping?: Map<string, unknown>;
   schema?: { spec?: unknown; status?: unknown };
+  nestedStatusCel?: Record<string, string>;
   /**
    * Function returning the composition-local dependency ids for a given
    * resource id. Populated by the engine before deploy so the tagging

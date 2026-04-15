@@ -9,6 +9,7 @@
 
 import { isCelExpression, isKubernetesRef } from '../../utils/type-guards.js';
 import { getComponentLogger } from '../logging/index.js';
+import { lookupNestedExpression } from '../serialization/cel-references.js';
 import { isStaticExpression } from '../serialization/cel-references.js';
 import type { KubernetesResource } from '../types.js';
 
@@ -88,7 +89,8 @@ export function validateResourceId(id: string): { isValid: boolean; error?: stri
  */
 function requiresKroResolution(
   value: unknown,
-  nestedStatusCel?: Record<string, string>
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): boolean {
   if (isKubernetesRef(value)) {
     // Schema refs — always static.
@@ -104,20 +106,9 @@ function requiresKroResolution(
     const isNestedComp = (value as { __nestedComposition?: boolean }).__nestedComposition === true;
     if (isNestedComp && nestedStatusCel) {
       const fieldName = value.fieldPath.replace(/^status\./, '');
-      const exactKey = `__nestedStatus:${value.resourceId}:${fieldName}`;
-      let innerExpr: string | undefined = nestedStatusCel[exactKey];
-      if (innerExpr === undefined) {
-        const refBase = value.resourceId.replace(/\d+$/, '');
-        for (const [key, cel] of Object.entries(nestedStatusCel)) {
-          const parts = key.split(':');
-          if (parts.length !== 3 || parts[2] !== fieldName) continue;
-          const keyBase = parts[1]?.replace(/\d+$/, '');
-          if (keyBase === refBase) {
-            innerExpr = cel;
-            break;
-          }
-        }
-      }
+      const innerExpr = resourceIds?.has(value.resourceId)
+        ? lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel, false)
+        : lookupNestedExpression(value.resourceId, fieldName, nestedStatusCel);
       if (innerExpr !== undefined) {
         return !isStaticExpression(innerExpr, nestedStatusCel);
       }
@@ -165,7 +156,7 @@ function requiresKroResolution(
 
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     return Object.values(value as Record<string, unknown>).some((v) =>
-      requiresKroResolution(v, nestedStatusCel)
+      requiresKroResolution(v, nestedStatusCel, resourceIds)
     );
   }
 
@@ -180,7 +171,8 @@ function requiresKroResolution(
  */
 function separateNestedObject(
   obj: Record<string, unknown>,
-  nestedStatusCel?: Record<string, string>
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): {
   staticPart: Record<string, unknown>;
   dynamicPart: Record<string, unknown>;
@@ -191,7 +183,7 @@ function separateNestedObject(
   const dynamicPart: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(obj)) {
-    if (requiresKroResolution(value, nestedStatusCel)) {
+    if (requiresKroResolution(value, nestedStatusCel, resourceIds)) {
       dynamicPart[key] = value;
     } else {
       staticPart[key] = value;
@@ -224,7 +216,8 @@ function separateNestedObject(
  */
 export function separateStatusFields(
   statusMappings: Record<string, unknown>,
-  nestedStatusCel?: Record<string, string>
+  nestedStatusCel?: Record<string, string>,
+  resourceIds?: ReadonlySet<string>
 ): {
   staticFields: Record<string, unknown>;
   dynamicFields: Record<string, unknown>;
@@ -261,7 +254,8 @@ export function separateStatusFields(
       // Handle nested objects that might have mixed static/dynamic fields
       const { staticPart, dynamicPart, hasStatic, hasDynamic } = separateNestedObject(
         fieldValue as Record<string, unknown>,
-        nestedStatusCel
+        nestedStatusCel,
+        resourceIds
       );
 
       if (hasStatic) {
@@ -270,7 +264,7 @@ export function separateStatusFields(
       if (hasDynamic) {
         dynamicFields[fieldName] = dynamicPart;
       }
-    } else if (requiresKroResolution(fieldValue, nestedStatusCel)) {
+    } else if (requiresKroResolution(fieldValue, nestedStatusCel, resourceIds)) {
       dynamicFields[fieldName] = fieldValue;
     } else {
       staticFields[fieldName] = fieldValue;

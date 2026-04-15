@@ -7,7 +7,6 @@
  * as the existing toResourceGraph API.
  */
 
-import { toCamelCase } from '../../utils/string.js';
 import {
   copyResourceMetadata,
   getMetadataField,
@@ -49,6 +48,7 @@ import {
   isCelExpression,
   isKubernetesRef,
 } from '../../utils/type-guards.js';
+import { toCamelCase } from '../../utils/string.js';
 import type { CompositionContext } from './context.js';
 import {
   createCompositionContext,
@@ -80,7 +80,7 @@ export function computeMergedId(
   if (resourceCount === 1) {
     return preserveSingleResourceId ? innerResourceId : baseId;
   }
-  return `${baseId}-${innerResourceId}`;
+  return `${baseId}${innerResourceId.charAt(0).toUpperCase()}${innerResourceId.slice(1)}`;
 }
 
 export function enableCompositionDebugging(): void {

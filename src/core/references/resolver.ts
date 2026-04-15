@@ -24,6 +24,7 @@ import type {
   KubernetesResource,
 } from '../types.js';
 import { CelEvaluator } from './cel-evaluator.js';
+import { inlineNestedStatusRefs } from '../serialization/cel-references.js';
 
 // =============================================================================
 // TYPE DEFINITIONS FOR IMPROVED TYPE SAFETY
@@ -660,6 +661,10 @@ export class ReferenceResolver {
         resourcesMapKeys: Array.from(resourcesMap.keys()),
       });
 
+      const resolvedExpression = context.nestedStatusCel
+        ? inlineNestedStatusRefs(expr.expression, context.nestedStatusCel, new Set(resourcesMap.keys()))
+        : expr.expression;
+
       // Create CEL evaluation context
       const celContext: CelEvaluationContext = {
         resources: resourcesMap,
@@ -669,9 +674,15 @@ export class ReferenceResolver {
       };
 
       // Use the proper CEL evaluator
-      const result = await this.celEvaluator.evaluate(expr, celContext);
+      const result = await this.celEvaluator.evaluate(
+        {
+          ...expr,
+          expression: resolvedExpression,
+        } as CelExpression<T>,
+        celContext,
+      );
       this.logger.debug('CEL expression evaluated successfully', {
-        expression: expr.expression,
+        expression: resolvedExpression,
         result,
         resultType: typeof result,
       });

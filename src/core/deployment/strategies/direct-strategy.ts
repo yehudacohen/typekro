@@ -152,8 +152,17 @@ export class DirectDeploymentStrategy<
 
           // Deep merge: recursively walk the status tree, replacing proxy artifacts
           // (KubernetesRef, CelExpression) with base values while keeping resolved values.
-          const mergedStatus = normalizeReadyFromComponents(
-            deepMergeLiveStatus(liveStatus, baseProxy.status ?? {})
+          let mergedStatus = deepMergeLiveStatus(liveStatus, baseProxy.status ?? {});
+
+          const reExecutedStatus = this.resourceResolver.getReExecutedStatus?.();
+          if (reExecutedStatus) {
+            mergedStatus = mergeResolvedStatusArtifacts(mergedStatus, reExecutedStatus);
+          }
+
+          mergedStatus = repairReadyFromResolvedComponents(
+            mergedStatus,
+            baseProxy.status,
+            reExecutedStatus,
           );
 
           return {
@@ -342,14 +351,83 @@ function deepMergeLiveStatus(
   return liveValue;
 }
 
-function normalizeReadyFromComponents<T>(status: T): T {
-  if (!status || typeof status !== 'object' || Array.isArray(status)) {
+function mergeResolvedStatusArtifacts(currentValue: unknown, reExecutedValue: unknown): unknown {
+  const looksLikeExpressionObject =
+    currentValue !== null
+    && typeof currentValue === 'object'
+    && !Array.isArray(currentValue)
+    && 'expression' in (currentValue as Record<string, unknown>)
+    && typeof (currentValue as { expression?: unknown }).expression === 'string';
+
+  if (
+    isCelExpression(currentValue)
+    || isKubernetesRef(currentValue)
+    || containsKubernetesRefs(currentValue)
+    || looksLikeExpressionObject
+  ) {
+    return reExecutedValue ?? currentValue;
+  }
+
+  if (currentValue !== null && typeof currentValue === 'object' && !Array.isArray(currentValue)) {
+    if (reExecutedValue === null || typeof reExecutedValue !== 'object' || Array.isArray(reExecutedValue)) {
+      return currentValue;
+    }
+
+    const currentObj = currentValue as Record<string, unknown>;
+    const reExecutedObj = reExecutedValue as Record<string, unknown>;
+    const merged: Record<string, unknown> = {};
+    for (const key of new Set([...Object.keys(currentObj), ...Object.keys(reExecutedObj)])) {
+      merged[key] = mergeResolvedStatusArtifacts(currentObj[key], reExecutedObj[key]);
+    }
+    return merged;
+  }
+
+  if (Array.isArray(currentValue)) {
+    if (!Array.isArray(reExecutedValue)) {
+      return currentValue;
+    }
+    return currentValue.map((item, index) => mergeResolvedStatusArtifacts(item, reExecutedValue[index]));
+  }
+
+  return currentValue;
+}
+
+function repairReadyFromResolvedComponents<T>(
+  status: T,
+  baseStatus: unknown,
+  reExecutedStatus: unknown,
+): T {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) return status;
+
+  const statusRecord = status as Record<string, unknown>;
+  const baseRecord = baseStatus && typeof baseStatus === 'object' && !Array.isArray(baseStatus)
+    ? (baseStatus as Record<string, unknown>)
+    : null;
+  const reExecutedRecord = reExecutedStatus && typeof reExecutedStatus === 'object' && !Array.isArray(reExecutedStatus)
+    ? (reExecutedStatus as Record<string, unknown>)
+    : null;
+
+  const baseReady = baseRecord?.ready;
+  const baseReadyLooksUnresolved =
+    isCelExpression(baseReady)
+    || isKubernetesRef(baseReady)
+    || containsKubernetesRefs(baseReady)
+    || (
+      baseReady !== null
+      && typeof baseReady === 'object'
+      && 'expression' in (baseReady as Record<string, unknown>)
+      && typeof (baseReady as { expression?: unknown }).expression === 'string'
+    );
+
+  if (typeof statusRecord.ready !== 'boolean') {
     return status;
   }
 
-  const statusRecord = status as Record<string, unknown>;
-  if (typeof statusRecord.ready !== 'boolean') {
-    return status;
+  if (typeof reExecutedRecord?.ready === 'boolean' && reExecutedRecord.ready === true) {
+    return {
+      ...statusRecord,
+      ready: reExecutedRecord.ready,
+    } as T;
   }
 
   const components = statusRecord.components;
@@ -362,13 +440,12 @@ function normalizeReadyFromComponents<T>(status: T): T {
     return status;
   }
 
-  const normalizedReady = componentValues.every((value) => value === true);
-  if (normalizedReady === statusRecord.ready) {
+  if (!baseReadyLooksUnresolved && statusRecord.ready === true) {
     return status;
   }
 
   return {
     ...statusRecord,
-    ready: normalizedReady,
+    ready: componentValues.every((value) => value === true),
   } as T;
 }

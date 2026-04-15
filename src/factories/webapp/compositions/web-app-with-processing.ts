@@ -259,7 +259,7 @@ export const webAppWithProcessing = kubernetesComposition(
     // the dependency resolver detects the reference and adds a DAG edge,
     // ensuring the database is ready BEFORE Inngest deploys. The actual
     // postgres credentials are injected via the CNPG Secret (secretKeyRef below).
-    const inngest = inngestBootstrap({
+    const _inngest = inngestBootstrap({
       name: `${spec.name}-inngest`,
       namespace: ns,
       inngest: {
@@ -296,7 +296,7 @@ export const webAppWithProcessing = kubernetesComposition(
     // cache.metadata.name is deterministic and gets inlined to a schema
     // ref, so KRO sees no implicit dependency. dependsOn creates an
     // explicit readyWhen on inngest's leaf resource.
-    inngest.dependsOn(cache);
+    _inngest.dependsOn(cache);
 
     // ── Inngest credentials Secret ──────────────────────────────────────
     //
@@ -366,7 +366,7 @@ export const webAppWithProcessing = kubernetesComposition(
         app.status.readyReplicas >= appReplicas &&
         database.status.readyInstances >= (spec.database.instances ?? 1) &&
         cache.status.ready &&
-        inngest.status.ready,
+        _inngest.status.ready,
       databaseUrl: `postgresql://${dbOwner}@${dbPooler.metadata.name}:5432/${dbName}`,
       databaseHost: `${dbPooler.metadata.name}`,
       databasePort: 5432,
@@ -379,7 +379,7 @@ export const webAppWithProcessing = kubernetesComposition(
         app: app.status.readyReplicas >= appReplicas,
         database: database.status.readyInstances >= (spec.database.instances ?? 1),
         cache: cache.status.ready,
-        inngest: inngest.status.ready,
+        inngest: _inngest.status.ready,
       },
     };
   }

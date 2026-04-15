@@ -21,8 +21,19 @@ interface SingletonCompositionMetadata {
   };
 }
 
-const singletonDefinitions = new Map<string, SingletonDefinitionRecord>();
+const singletonDefinitionsByComposition = new WeakMap<CallableComposition<any, any>, Map<string, SingletonDefinitionRecord>>();
 export const DEFAULT_SINGLETON_NAMESPACE = 'typekro-singletons';
+
+function getSingletonRegistryForComposition<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
+  composition: CallableComposition<TSpec, TStatus>,
+): Map<string, SingletonDefinitionRecord> {
+  let registry = singletonDefinitionsByComposition.get(composition);
+  if (!registry) {
+    registry = new Map<string, SingletonDefinitionRecord>();
+    singletonDefinitionsByComposition.set(composition, registry);
+  }
+  return registry;
+}
 
 function stableSerialize(value: unknown): string {
   if (Array.isArray(value)) {
@@ -119,6 +130,7 @@ function defineSingleton<TSpec extends KroCompatibleType, TStatus extends KroCom
     return useSingleton(composition, input.id, DEFAULT_SINGLETON_NAMESPACE);
   }
 
+  const singletonDefinitions = getSingletonRegistryForComposition(composition);
   const existing = singletonDefinitions.get(key);
   if (existing && existing.specFingerprint !== specFingerprint) {
     throw new Error(

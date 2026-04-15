@@ -397,7 +397,6 @@ export class KroResourceFactoryImpl<
     }
 
     for (const definition of singletonRecords.values()) {
-      await this.stripSingletonApplySetLabels(definition);
       await this.ensureTargetNamespace(definition.registryNamespace);
 
       const singletonFactory = definition.composition.factory('kro', {
@@ -430,35 +429,6 @@ export class KroResourceFactoryImpl<
       });
 
       await singletonFactory.deploy(definition.spec as TSpec);
-    }
-  }
-
-  private async stripSingletonApplySetLabels(definition: SingletonDefinitionRecord): Promise<void> {
-    const singletonKind = (definition.composition as { _definition?: { kind?: string } })._definition?.kind;
-    const sharedResources = singletonKind === 'CnpgBootstrap'
-      ? [
-          ['namespace', 'cnpg-system', ''],
-          ['helmrepository', 'cnpg-repo', 'flux-system'],
-          ['helmrelease', 'cnpg-operator', 'cnpg-system'],
-        ]
-      : singletonKind === 'ValkeyBootstrap'
-        ? [
-            ['namespace', 'valkey-operator-system', ''],
-            ['helmrepository', 'valkey-operator-repo', 'flux-system'],
-            ['helmrelease', 'valkey-operator', 'valkey-operator-system'],
-          ]
-        : [];
-
-    if (sharedResources.length === 0) return;
-
-    const patch = '[{"op":"remove","path":"/metadata/labels/applyset.kubernetes.io~1part-of"}]';
-    for (const [resourceType, resourceName, resourceNamespace] of sharedResources) {
-      const args = resourceNamespace
-        ? ['kubectl', 'patch', resourceType, resourceName, '-n', resourceNamespace, '--type=json', '-p', patch]
-        : ['kubectl', 'patch', resourceType, resourceName, '--type=json', '-p', patch];
-
-      const proc = Bun.spawn(args as string[], { stdout: 'pipe', stderr: 'pipe' });
-      await proc.exited;
     }
   }
 

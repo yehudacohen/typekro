@@ -183,12 +183,15 @@ export function remapVariableNames(
 ): string {
   return exprStr.replace(/\b(\w+)\.(metadata|status|spec)\./g, (match, id, section) => {
     if (innerResourceIds.includes(id) || id === 'schema') return match;
-    if (preserveVariables?.has(id)) return match;
 
     const lower = id.toLowerCase();
+    const normalizedLower = lower.replace(/^_+/, '');
 
     // 1. Exact match after lowercasing
-    const exactLower = innerResourceIds.find(r => r.toLowerCase() === lower);
+    const exactLower = innerResourceIds.find((r) => {
+      const candidate = r.toLowerCase();
+      return candidate === lower || candidate === normalizedLower;
+    });
     if (exactLower) return `${exactLower}.${section}.`;
 
     // 2. Single resource — only treat minified/local shorthand names as
@@ -200,16 +203,32 @@ export function remapVariableNames(
 
     // 3. Prefix match at camelCase boundary — must be unambiguous
     const prefixMatches = innerResourceIds.filter(r =>
-      r.toLowerCase().startsWith(lower) &&
-      (lower.length === r.length || /[A-Z_-]/.test(r[lower.length]!))
+      (r.toLowerCase().startsWith(lower) || r.toLowerCase().startsWith(normalizedLower)) &&
+      (
+        normalizedLower.length === r.length ||
+        /[A-Z_-]/.test(r[normalizedLower.length] ?? r[lower.length] ?? '')
+      )
     );
     if (prefixMatches.length === 1) return `${prefixMatches[0]}.${section}.`;
 
+    // 4. Suffix match at camelCase boundary — useful after nested resources
+    // are merged into parent ids like `inngestBootstrap1InngestHelmRelease`.
+    const suffixMatches = innerResourceIds.filter((r) => {
+      const lowerResource = r.toLowerCase();
+      if (!lowerResource.endsWith(lower) && !lowerResource.endsWith(normalizedLower)) return false;
+      const matchedLength = lowerResource.endsWith(normalizedLower) ? normalizedLower.length : id.length;
+      const boundaryIndex = r.length - matchedLength;
+      return boundaryIndex <= 0 || /[A-Z_-]/.test(r[boundaryIndex]!);
+    });
+    if (suffixMatches.length === 1) return `${suffixMatches[0]}.${section}.`;
+
+    if (preserveVariables?.has(id)) return match;
+
     // No match or ambiguous
-    if (prefixMatches.length > 1) {
+    if (prefixMatches.length > 1 || suffixMatches.length > 1) {
       logger.warn('Ambiguous variable name in nested status CEL', {
         variable: id,
-        candidates: prefixMatches,
+        candidates: [...prefixMatches, ...suffixMatches],
         expression: exprStr.slice(0, 80),
       });
     } else {

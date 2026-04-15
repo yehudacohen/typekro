@@ -20,7 +20,6 @@ setDefaultTimeout(600000);
 import type * as k8s from '@kubernetes/client-node';
 import type { Enhanced } from '../../../src/core/types/index.js';
 import type { ResourceFactory } from '../../../src/core/types/deployment.js';
-import { createBunCompatibleKubernetesObjectApi } from '../../../src/core/kubernetes/index.js';
 import { getKubeConfig } from '../../../src/core/kubernetes/client-provider.js';
 import type {
   WebAppWithProcessingConfig,
@@ -234,41 +233,6 @@ describe('WebAppWithProcessing KRO Mode', () => {
 
   beforeAll(async () => {
     kubeConfig = getKubeConfig({ skipTLSVerify: true });
-
-    // Strip ApplySet labels from shared operator resources left by
-    // previous KRO test runs. KRO's ApplySet pruning rejects resources
-    // that belong to a different ApplySet. The direct mode deploy doesn't
-    // use ApplySets, but a previous failed KRO test run may have stamped
-    // these labels and not cleaned up properly.
-    const k8sApi = createBunCompatibleKubernetesObjectApi(kubeConfig);
-    const sharedResources = [
-      { apiVersion: 'source.toolkit.fluxcd.io/v1', kind: 'HelmRepository', name: 'inngest-repo', namespace: 'flux-system' },
-      { apiVersion: 'source.toolkit.fluxcd.io/v1', kind: 'HelmRepository', name: 'cnpg-repo', namespace: 'flux-system' },
-      { apiVersion: 'source.toolkit.fluxcd.io/v1', kind: 'HelmRepository', name: 'valkey-operator-repo', namespace: 'flux-system' },
-      { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease', name: 'cnpg-operator', namespace: 'cnpg-system' },
-      { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease', name: 'valkey-operator', namespace: 'valkey-operator-system' },
-      { apiVersion: 'v1', kind: 'Namespace', name: 'cnpg-system', namespace: undefined },
-      { apiVersion: 'v1', kind: 'Namespace', name: 'valkey-operator-system', namespace: undefined },
-    ];
-    for (const res of sharedResources) {
-      try {
-        const body = [
-          { op: 'remove', path: '/metadata/labels/applyset.kubernetes.io~1part-of' },
-        ];
-        const meta = res.namespace
-          ? { name: res.name, namespace: res.namespace }
-          : { name: res.name };
-        await k8sApi.patch(
-          { apiVersion: res.apiVersion, kind: res.kind, metadata: meta } as any,
-          body,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          { headers: { 'Content-Type': 'application/json-patch+json' } }
-        );
-      } catch { /* may not exist or label may not exist */ }
-    }
 
     await ensureNamespaceExists(kroNamespace, kubeConfig);
   });

@@ -656,16 +656,7 @@ export function serializeResourceGraphToYaml(
     ...(nestedStatusCel && { nestedStatusCel }),
   };
 
-  const knownResourceIds = new Set<string>();
-  for (const resource of Object.values(resources)) {
-    const resourceId =
-      getResourceId(resource) ||
-      generateDeterministicResourceId(
-        resource.kind || 'Resource',
-        resource.metadata?.name || 'unnamed'
-      );
-    knownResourceIds.add(resourceId);
-  }
+  const knownResourceIds = new Set<string>(Object.keys(resources));
   context.resourceIds = knownResourceIds;
 
   // 1. Use embedded resource IDs and build dependency graph

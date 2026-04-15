@@ -1032,10 +1032,10 @@ describe('Review feedback: computeMergedId is a shared utility', () => {
     expect(computeMergedId('myComp', 'innerRes', 1)).toBe('myComp');
   });
 
-  it('computeMergedId returns baseId-innerResourceId for multi-resource compositions', async () => {
+  it('computeMergedId returns a KRO-safe merged camelCase id for multi-resource compositions', async () => {
     const { computeMergedId } = await import(
       '../../src/core/composition/imperative.js'
     );
-    expect(computeMergedId('myComp', 'helmRelease', 3)).toBe('myComp-helmRelease');
+    expect(computeMergedId('myComp', 'helmRelease', 3)).toBe('myCompHelmRelease');
   });
 });

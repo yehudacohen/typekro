@@ -132,7 +132,9 @@ function generateCelExpression(
   const isNestedComp = (ref as { __nestedComposition?: boolean }).__nestedComposition === true;
   if (isNestedComp && context?.nestedStatusCel) {
     const fieldName = ref.fieldPath.replace(/^status\./, '');
-    const innerExpr = lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
+    const innerExpr = context.resourceIds?.has(ref.resourceId)
+      ? lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel, false)
+      : lookupNestedExpression(ref.resourceId, fieldName, context.nestedStatusCel);
     if (innerExpr !== undefined) {
       return finalizeCelForKro(innerExpr, context.nestedStatusCel, context);
     }
@@ -345,10 +347,11 @@ const NESTED_REF_RESOLUTION_DEPTH_LIMIT = 16;
  * strategies) emit a warning log and return `undefined` so the caller
  * can fall through to its own error handling.
  */
-function lookupNestedExpression(
+export function lookupNestedExpression(
   resourceId: string,
   fieldName: string,
-  nestedStatusCel: Record<string, string>
+  nestedStatusCel: Record<string, string>,
+  allowFieldFallback: boolean = true,
 ): string | undefined {
   // Strategy 1: exact match.
   const exactKey = `__nestedStatus:${resourceId}:${fieldName}`;
@@ -381,6 +384,15 @@ function lookupNestedExpression(
   // Strategy 3: unambiguous camelCase / case-insensitive prefix.
   const prefixMatches = fieldMatches.filter((m) => {
     const baseStem = m.baseId.replace(/\d+$/, '');
+    const resourceLooksLikeMergedChild =
+      (resourceId.startsWith(baseStem) &&
+        resourceId.length > baseStem.length &&
+        /[A-Z_-]/.test(resourceId[baseStem.length]!)) ||
+      new RegExp(`^${baseStem}\\d+[A-Z_-]`).test(resourceId);
+    if (resourceLooksLikeMergedChild) {
+      return false;
+    }
+
     return (
       isCamelCasePrefix(resourceId, baseStem) ||
       isCamelCasePrefix(baseStem, resourceId) ||
@@ -400,14 +412,14 @@ function lookupNestedExpression(
   }
 
   // Strategy 4: field-name uniqueness.
+  if (!allowFieldFallback) return undefined;
   if (fieldMatches.length === 1) {
     return nestedStatusCel[fieldMatches[0]!.key];
   }
-  logger.warn('Ambiguous nested composition field-name match', {
-    resourceId,
-    fieldName,
-    candidates: fieldMatches.map((m) => m.baseId),
-  });
+  // Field-only fallback is intentionally best-effort and fully silent on
+  // ambiguity. Prefix/base-name ambiguity still logs above, but this final
+  // branch should never emit low-signal warnings for common status fields
+  // like `ready` that appear across many unrelated nested compositions.
   return undefined;
 }
 
@@ -460,6 +472,14 @@ function resolveNestedCompositionRefs(
   return current;
 }
 
+export function inlineNestedStatusRefs(
+  expr: string,
+  nestedStatusCel: Record<string, string> | undefined,
+  resourceIds?: ReadonlySet<string>
+): string {
+  return resolveNestedCompositionRefs(expr, nestedStatusCel, resourceIds);
+}
+
 /**
  * One pass of nested-reference substitution. See
  * {@link resolveNestedCompositionRefs} for the full contract.
@@ -477,9 +497,13 @@ function substituteNestedRefsOnce(
   return expr.replace(pattern, (match, id: string, field: string) => {
     if (id === 'schema') return match;
     if (lambdaVars.has(id)) return match;
+    if (resourceIds?.has(id)) {
+      const strictInnerExpr = lookupNestedExpression(id, field, nestedStatusCel, false);
+      if (strictInnerExpr !== undefined) return `(${strictInnerExpr})`;
+      return match;
+    }
     const innerExpr = lookupNestedExpression(id, field, nestedStatusCel);
     if (innerExpr !== undefined) return `(${innerExpr})`;
-    if (resourceIds?.has(id)) return match;
     return match;
   });
 }
@@ -510,9 +534,13 @@ function resolveNestedRefMarkers(
     if (id === '__schema__') return match;
     // Strip leading "status." since nestedStatusCel keys use the bare field path.
     const fieldPath = path.replace(/^status\./, '');
+    if (resourceIds?.has(id)) {
+      const strictInnerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel, false);
+      if (strictInnerExpr !== undefined) return innerExprToYamlSegment(strictInnerExpr, nestedStatusCel);
+      return match;
+    }
     const innerExpr = lookupNestedExpression(id, fieldPath, nestedStatusCel);
     if (innerExpr !== undefined) return innerExprToYamlSegment(innerExpr, nestedStatusCel);
-    if (resourceIds?.has(id)) return match;
     return match;
   });
 }

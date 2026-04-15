@@ -906,11 +906,9 @@ export function arktypeToKroSchema(
   // Static = references only schema.spec.* or literal values → TypeKro runtime hydration
   // Classification is transitive through nestedStatusCel: a nested composition
   // reference whose inner analyzed value is schema-only/literal is treated as static.
-  const { dynamicFields } = separateStatusFields(userStatusMappings, nestedStatusCel);
-
-  // Only serialize dynamic fields that need Kro resolution
-  // Build the set of known resource IDs for schema.spec → resource.spec mapping
   const resourceIds = resources ? new Set(Object.keys(resources)) : undefined;
+
+  const { dynamicFields } = separateStatusFields(userStatusMappings, nestedStatusCel, resourceIds);
 
   const statusCelExpressions =
     Object.keys(dynamicFields).length > 0
