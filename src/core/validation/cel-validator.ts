@@ -94,6 +94,16 @@ function requiresKroResolution(
   resourceIds?: ReadonlySet<string>
 ): boolean {
   const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
+  const preserveVariables = new Set<string>();
+  if (nestedStatusCel) {
+    for (const key of Object.keys(nestedStatusCel)) {
+      const match = key.match(/^__nestedStatus:([^:]+):/);
+      const id = match?.[1];
+      if (id && !resourceIds?.has(id)) {
+        preserveVariables.add(id);
+      }
+    }
+  }
 
   if (isKubernetesRef(value)) {
     // Schema refs — always static.
@@ -146,7 +156,7 @@ function requiresKroResolution(
     // Transitive check: resolve any nested refs inside the expression and
     // ask whether the result contains non-schema refs.
     const normalizedExpression = localResourceIds.length > 0
-      ? remapVariableNames(value.expression, localResourceIds)
+      ? remapVariableNames(value.expression, localResourceIds, preserveVariables)
       : value.expression;
     return !isStaticExpression(normalizedExpression, nestedStatusCel);
   }
@@ -158,7 +168,7 @@ function requiresKroResolution(
   if (typeof value === 'string') {
     if (!value.includes('__KUBERNETES_REF_')) return false;
     const normalizedValue = localResourceIds.length > 0
-      ? remapVariableNames(value, localResourceIds)
+      ? remapVariableNames(value, localResourceIds, preserveVariables)
       : value;
     return !isStaticExpression(normalizedValue, nestedStatusCel);
   }
@@ -300,6 +310,20 @@ export function validateStatusCelExpressions(
       .map((r) => r.id)
       .filter(Boolean), // Resource IDs
   ]);
+  const preserveVariables = new Set<string>();
+  const nestedDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
+  const nestedStatusCelForValidation = nestedDescriptor?.value && typeof nestedDescriptor.value === 'object'
+    ? nestedDescriptor.value as Record<string, string>
+    : undefined;
+  if (nestedStatusCelForValidation) {
+    for (const key of Object.keys(nestedStatusCelForValidation)) {
+      const match = key.match(/^__nestedStatus:([^:]+):/);
+      const id = match?.[1];
+      if (id && !resourceIds.has(id)) {
+        preserveVariables.add(id);
+      }
+    }
+  }
 
   // Separate static and dynamic fields
   const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
@@ -309,7 +333,8 @@ export function validateStatusCelExpressions(
     if (isCelExpression(value)) {
       const expression = remapVariableNames(
         value.expression,
-        Array.from(resourceIds).filter((id): id is string => typeof id === 'string')
+        Array.from(resourceIds).filter((id): id is string => typeof id === 'string'),
+        preserveVariables,
       );
 
       // Check for direct resource references (resourceId.status.field, resourceId.spec.field, resourceId.metadata.field)

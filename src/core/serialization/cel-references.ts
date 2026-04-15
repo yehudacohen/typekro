@@ -791,9 +791,19 @@ export function serializeStatusMappingsToCel(
   });
   const celExpressions: Record<string, string | Record<string, unknown>> = {};
   const localResourceIds = resourceIds ? Array.from(resourceIds) : [];
+  const preserveVariables = new Set<string>();
+  if (nestedStatusCel) {
+    for (const key of Object.keys(nestedStatusCel)) {
+      const match = key.match(/^__nestedStatus:([^:]+):/);
+      const id = match?.[1];
+      if (id && !resourceIds?.has(id)) {
+        preserveVariables.add(id);
+      }
+    }
+  }
 
   function normalizeLocalResourceExpr(expr: string): string {
-    return localResourceIds.length > 0 ? remapVariableNames(expr, localResourceIds) : expr;
+    return localResourceIds.length > 0 ? remapVariableNames(expr, localResourceIds, preserveVariables) : expr;
   }
 
   /**
