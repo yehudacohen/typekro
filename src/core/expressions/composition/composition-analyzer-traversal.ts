@@ -44,6 +44,28 @@ import type {
 
 const logger = getComponentLogger('composition-analyzer');
 
+function extractConditionalCallName(node: ASTNode): string | undefined {
+  switch (node.type) {
+    case 'Identifier':
+      return (node as Identifier).name;
+    case 'MemberExpression': {
+      const member = node as MemberExpression;
+      return member.property.type === 'Identifier' ? (member.property as Identifier).name : undefined;
+    }
+    case 'ChainExpression': {
+      const expression = (node as ASTNode & { expression?: ASTNode }).expression;
+      return expression ? extractConditionalCallName(expression) : undefined;
+    }
+    case 'SequenceExpression': {
+      const expressions = (node as ASTNode & { expressions?: ASTNode[] }).expressions;
+      const last = expressions?.[expressions.length - 1];
+      return last ? extractConditionalCallName(last) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // AST traversal
 // ---------------------------------------------------------------------------
@@ -315,9 +337,11 @@ export function walkExpression(
     const call = node as CallExpression;
     // Extract id from the call arg if present (for member expression factories)
     const callId = extractFactoryId(call) ?? '__non_factory_call__';
-    if (ctx.includeWhenStack.length > 0 && call.callee.type === 'Identifier') {
-      const calleeName = (call.callee as Identifier).name;
-      registerResourceControlFlow(`__call__:${toCamelCase(calleeName)}`, calleeName, ctx, result);
+    if (ctx.includeWhenStack.length > 0) {
+      const calleeName = extractConditionalCallName(call.callee);
+      if (calleeName) {
+        registerResourceControlFlow(`__call__:${toCamelCase(calleeName)}`, calleeName, ctx, result);
+      }
     }
     const firstArg = call.arguments[0];
     if (firstArg?.type === 'ObjectExpression') {

@@ -59,7 +59,7 @@ describe('Phase 1: dependsOn API', () => {
     const { kubernetesComposition } = await import(
       '../../src/core/composition/imperative.js'
     );
-    const { simple } = await import('../../src/factories/simple/index.js');
+    const { createResource, simple } = await import('../../src/index.js');
 
     const InnerSpec = type({ name: 'string', image: 'string' });
     const InnerStatus = type({ ready: 'boolean' });
@@ -98,11 +98,59 @@ describe('Phase 1: dependsOn API', () => {
     expect(yaml).toContain('cache.metadata.name');
   });
 
+  it('remaps inner sibling dependsOn targets after nested composition merge', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/index.js');
+
+    const InnerSpec = type({ name: 'string', image: 'string' });
+    const InnerStatus = type({ ready: 'boolean' });
+
+    const innerComp = kubernetesComposition(
+      { name: 'inner-app', kind: 'InnerApp', spec: InnerSpec, status: InnerStatus },
+      (spec) => {
+        const cache = simple.Deployment({
+          name: `${spec.name}-cache`,
+          image: 'valkey:latest',
+          id: 'cache',
+        });
+
+        const app = simple.Deployment({
+          name: spec.name,
+          image: spec.image,
+          id: 'app',
+        });
+
+        app.dependsOn(cache);
+
+        return { ready: app.status.readyReplicas >= 1 };
+      }
+    );
+
+    const OuterSpec = type({ name: 'string', image: 'string' });
+    const OuterStatus = type({ ready: 'boolean' });
+
+    const outerComp = kubernetesComposition(
+      { name: 'outer-app', kind: 'OuterApp', spec: OuterSpec, status: OuterStatus },
+      (spec) => {
+        innerComp({ name: spec.name, image: spec.image });
+        return { ready: true };
+      }
+    );
+
+    const yaml = outerComp.toYaml();
+    expect(yaml).toContain('typekro.dev/depends-on-innerApp1Cache');
+    expect(yaml).toContain('${innerApp1Cache.metadata.name}');
+    expect(yaml).not.toContain('typekro.dev/depends-on-cache');
+    expect(yaml).not.toContain('${cache.metadata.name}');
+  });
+
   it('multiple dependsOn calls accumulate', async () => {
     const { kubernetesComposition } = await import(
       '../../src/core/composition/imperative.js'
     );
-    const { simple } = await import('../../src/factories/simple/index.js');
+    const { createResource, simple } = await import('../../src/index.js');
 
     const Spec = type({ name: 'string', image: 'string' });
     const Status = type({ ready: 'boolean' });
@@ -130,7 +178,7 @@ describe('Phase 1: dependsOn API', () => {
     const { kubernetesComposition } = await import(
       '../../src/core/composition/imperative.js'
     );
-    const { simple } = await import('../../src/factories/simple/index.js');
+    const { createResource, simple } = await import('../../src/index.js');
     const { namespace } = await import(
       '../../src/factories/kubernetes/core/namespace.js'
     );
@@ -841,6 +889,40 @@ describe('Phase 3: Direct factory ternary edge cases', () => {
 
     const yaml = comp.toYaml();
     expect(yaml).toMatch(/DEEP_VALUE.*cache\.status/s);
+  });
+
+  it('preserves keys that only exist in the false branch', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { createResource, simple } = await import('../../src/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'false-branch-only-key', kind: 'FalseBranchOnlyKey', spec: Spec, status: Status },
+      (spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+
+        simple.ConfigMap({
+          name: 'app-config',
+          id: 'appConfig',
+          data: cache.status.readyReplicas
+            ? {}
+            : {
+                CACHE_MODE: 'memory',
+              },
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    expect(yaml).toContain('CACHE_MODE');
+    expect(yaml).toMatch(/cache\.status\.readyReplicas.*\?/s);
+    expect(yaml).toContain('memory');
   });
 });
 

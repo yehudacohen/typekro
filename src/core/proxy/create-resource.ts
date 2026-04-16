@@ -574,6 +574,18 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
       // Extract resource ID from the dependency
       let depId: string | undefined;
+      if (
+        typeof dependency === 'object' &&
+        dependency !== null &&
+        (dependency as { kind?: unknown }).kind === 'singleton-reference'
+      ) {
+        throw new TypeKroError(
+          'Enhanced.dependsOn() does not accept singleton reference handles. ' +
+            'Depend on a real resource or the owning singleton definition instead.',
+          'INVALID_DEPENDENCY_TARGET',
+          { dependencyType: 'singleton-reference' }
+        );
+      }
       // Enhanced resource — read ID from metadata
       depId = getMetadataResourceId(dependency as Record<string, unknown>);
       // NestedCompositionResource — read __compositionId.

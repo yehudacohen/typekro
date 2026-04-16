@@ -312,6 +312,8 @@ export interface SerializationContext {
   resourceIdStrategy: 'deterministic' | 'random';
   /** Known real resource IDs in the current graph. Nested-ref resolution should not rewrite these. */
   resourceIds?: ReadonlySet<string>;
+  /** Maps inner/local resource IDs to the final emitted graph IDs. */
+  resourceAliases?: ReadonlyMap<string, string>;
   /**
    * Top-level optional spec field names (without `schema.spec.` prefix) that
    * should be wrapped with KRO 0.9+ `has(...) ? ... : omit()` when referenced

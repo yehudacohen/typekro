@@ -18,6 +18,10 @@ import type { SerializationContext } from '../types/serialization.js';
 
 const logger = getComponentLogger('cel-references');
 
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // ---------------------------------------------------------------------------
 // Primitive helpers
 // ---------------------------------------------------------------------------
@@ -34,6 +38,14 @@ const logger = getComponentLogger('cel-references');
 export function getInnerCelPath(ref: KubernetesRef<unknown>): string {
   const resourceId = ref.resourceId === '__schema__' ? 'schema' : ref.resourceId;
   return `${resourceId}.${ref.fieldPath}`;
+}
+
+function resolveResourceIdAlias(resourceId: string, context?: SerializationContext): string {
+  if (resourceId === '__schema__') {
+    return 'schema';
+  }
+
+  return context?.resourceAliases?.get(resourceId) ?? resourceId;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +153,7 @@ function generateCelExpression(
     }
   }
 
-  const expression = getInnerCelPath(ref);
+  const expression = `${resolveResourceIdAlias(ref.resourceId, context)}.${ref.fieldPath}`;
   const body = maybeWrapWithOmit(expression, false, context?.omitFields);
   return `\${${body}}`;
 }
@@ -183,8 +195,8 @@ const MARKER_PATTERN_FULL = /^__KUBERNETES_REF_(__schema__|[^_]+)_([a-zA-Z0-9.$]
  * `__schema__` sentinel by emitting `schema.<fieldPath>`; otherwise
  * emits `<resourceId>.<fieldPath>`.
  */
-function markerToCelPath(resourceId: string, fieldPath: string): string {
-  return resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
+function markerToCelPath(resourceId: string, fieldPath: string, context?: SerializationContext): string {
+  return `${resolveResourceIdAlias(resourceId, context)}.${fieldPath}`;
 }
 
 /**
@@ -205,9 +217,9 @@ function markerToCelPath(resourceId: string, fieldPath: string): string {
  * The result isn't valid CEL on its own — it's literal text interleaved
  * with CEL paths, suitable for pattern matching only.
  */
-function normalizeMarkerString(str: string): string {
+function normalizeMarkerString(str: string, context?: SerializationContext): string {
   return str.replace(new RegExp(MARKER_PATTERN_SOURCE, 'g'), (_match, id: string, path: string) =>
-    markerToCelPath(id, path)
+    markerToCelPath(id, path, context)
   );
 }
 
@@ -657,7 +669,7 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
   const singleRefMatch = MARKER_PATTERN_FULL.exec(str);
   if (singleRefMatch) {
     const [, resourceId, fieldPath] = singleRefMatch;
-    const celPath = markerToCelPath(resourceId!, fieldPath!);
+    const celPath = markerToCelPath(resourceId!, fieldPath!, context);
     // Single-ref: safe to wrap with has()/omit() for optional schema fields.
     const body = maybeWrapWithOmit(celPath, false, context?.omitFields);
     return `\${${body}}`;
@@ -681,7 +693,7 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
       result += str.slice(lastIndex, idx);
     }
     const [, resourceId, fieldPath] = match;
-    result += `\${string(${markerToCelPath(resourceId!, fieldPath!)})}`;
+    result += `\${string(${markerToCelPath(resourceId!, fieldPath!, context)})}`;
     lastIndex = idx + match[0].length;
   }
 
@@ -782,7 +794,8 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
 export function serializeStatusMappingsToCel(
   statusMappings: Record<string, unknown>,
   nestedStatusCel?: Record<string, string>,
-  resourceIds?: Set<string>
+  resourceIds?: Set<string>,
+  resourceAliases?: ReadonlyMap<string, string>
 ): Record<string, string | Record<string, unknown>> {
   logger.debug('Serializing status mappings to CEL', {
     fieldCount: Object.keys(statusMappings).length,
@@ -803,7 +816,29 @@ export function serializeStatusMappingsToCel(
   }
 
   function normalizeLocalResourceExpr(expr: string): string {
-    return localResourceIds.length > 0 ? remapVariableNames(expr, localResourceIds, preserveVariables) : expr;
+    let normalized = expr;
+
+    if (resourceAliases && resourceAliases.size > 0) {
+      const aliasEntries = Array.from(resourceAliases.entries())
+        .filter(([alias, resolvedId]) => alias !== resolvedId)
+        .sort((left, right) => right[0].length - left[0].length);
+
+      for (const [alias, resolvedId] of aliasEntries) {
+        normalized = normalized
+          .replace(
+            new RegExp(`\\b${escapeRegExpLiteral(alias)}(?=\\.(?:status|spec|metadata)\\.)`, 'g'),
+            resolvedId,
+          )
+          .replace(
+            new RegExp(`__KUBERNETES_REF_${escapeRegExpLiteral(alias)}_`, 'g'),
+            `__KUBERNETES_REF_${resolvedId}_`,
+          );
+      }
+    }
+
+    return localResourceIds.length > 0
+      ? remapVariableNames(normalized, localResourceIds, preserveVariables)
+      : normalized;
   }
 
   /**
@@ -842,7 +877,9 @@ export function serializeStatusMappingsToCel(
    * KRO status CEL from a resolved expression" means.
    */
   function statusFieldFromExpression(expr: string): string {
-    const resolved = resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds);
+    const resolved = normalizeLocalResourceExpr(
+      resolveNestedCompositionRefs(normalizeLocalResourceExpr(expr), nestedStatusCel, resourceIds)
+    );
     if (resolved.includes('__KUBERNETES_REF_')) {
       // Marker-laden — use mixed-template form.
       return convertKubernetesRefMarkersTocel(resolved);

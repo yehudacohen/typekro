@@ -95,6 +95,11 @@
 // Imperative composition (define compositions with native TypeScript)
 export { kubernetesComposition } from './core/composition/imperative.js';
 export { singleton } from './core/singleton/singleton.js';
+export type {
+  SingletonHandle,
+  SingletonOwnedHandle,
+  SingletonReferenceHandle,
+} from './core/types/deployment.js';
 // Resource factory (used inside resource builders)
 export { createResource } from './core/proxy/create-resource.js';
 // CEL expression helpers (used in status builders)

@@ -560,7 +560,7 @@ function processCompositionBodyAnalysis(
         (compositionAnalysis.unregisteredFactories.length > 0 ||
           collectOverridableOptionalFields(schemaDefinition, compositionAnalysis).size > 0)
       ) {
-        const { captured, overriddenFields } = captureHybridRunResources(
+        const { captured, overriddenFields, overrideConditions } = captureHybridRunResources(
           originalCompositionFnForAnalysis,
           schemaDefinition,
           compositionAnalysis
@@ -599,11 +599,34 @@ function processCompositionBodyAnalysis(
         // so multiple `toYaml()` calls on the resulting TypedResourceGraph
         // all see a consistent final state.
         if (overriddenFields.size > 0) {
-          for (const id of Object.keys(resourcesWithKeys)) {
-            const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
-            const hybridRes = captured[id] as unknown as Record<string, unknown> | undefined;
-            if (proxyRes && hybridRes) {
-              applyDifferentialFieldConditionals(proxyRes, hybridRes, overriddenFields);
+          const differentialFields = collectDifferentialOptionalFields(compositionAnalysis);
+          const fieldsToDiff = Array.from(differentialFields).filter((field) => overriddenFields.has(field));
+
+          for (const field of fieldsToDiff) {
+            const singleFieldSet = new Set([field]);
+            const { captured: fieldCaptured } = captureHybridRunResources(
+              originalCompositionFnForAnalysis,
+              schemaDefinition,
+              compositionAnalysis,
+              singleFieldSet
+            );
+            const fieldConditions = new Map<string, string>();
+            const explicitCondition = overrideConditions.get(field);
+            if (explicitCondition) {
+              fieldConditions.set(field, explicitCondition);
+            }
+
+            for (const id of Object.keys(resourcesWithKeys)) {
+              const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
+              const hybridRes = fieldCaptured[id] as unknown as Record<string, unknown> | undefined;
+              if (proxyRes && hybridRes) {
+                applyDifferentialFieldConditionals(
+                  proxyRes,
+                  hybridRes,
+                  singleFieldSet,
+                  fieldConditions
+                );
+              }
             }
           }
         }
@@ -682,6 +705,67 @@ function collectOverridableOptionalFields(
   return new Set((specJson.optional ?? []).map((p) => p.key));
 }
 
+function collectDifferentialOptionalFields(analysis: ASTAnalysisResult): Set<string> {
+  const fields = new Set<string>(analysis.hybridOverrideConditions.keys());
+
+  for (const field of analysis.differentialConditionFields) {
+    fields.add(field);
+  }
+
+  for (const controlFlow of analysis.resources.values()) {
+    for (const condition of controlFlow.includeWhen) {
+      const expression = condition.expression;
+      const matches = expression.matchAll(/schema\.spec\.([a-zA-Z0-9_]+)/g);
+      for (const match of matches) {
+        const field = match[1];
+        if (field) {
+          fields.add(field);
+        }
+      }
+    }
+  }
+
+  return fields;
+}
+
+function setNestedOverrideValue(
+  target: Record<string, unknown>,
+  path: string,
+  value: unknown
+): void {
+  const segments = path.split('.');
+  let current = target;
+  for (let index = 0; index < segments.length - 1; index++) {
+    const segment = segments[index]!;
+    const existing = current[segment];
+    if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
+      current[segment] = {};
+    }
+    current = current[segment] as Record<string, unknown>;
+  }
+  current[segments[segments.length - 1]!] = value;
+}
+
+function collectHybridOverrideValues(analysis: ASTAnalysisResult): Map<string, unknown> {
+  const overrideValues = new Map<string, unknown>();
+
+  for (const [field, expression] of analysis.hybridOverrideConditions.entries()) {
+    const match = expression.match(/^schema\.spec\.[a-zA-Z0-9_]+\.([a-zA-Z0-9_.]+)\s*!=\s*false$/);
+    const nestedPath = match?.[1];
+    if (!nestedPath || overrideValues.has(field)) continue;
+
+    const overrideObject: Record<string, unknown> = {};
+    setNestedOverrideValue(overrideObject, nestedPath, false);
+    overrideValues.set(field, overrideObject);
+  }
+
+  return overrideValues;
+}
+
+function collectHybridOverrideConditions(analysis: ASTAnalysisResult): Map<string, string> {
+  return new Map(analysis.hybridOverrideConditions);
+}
+
 /**
  * Re-execute the composition function in an isolated composition context
  * with a HYBRID schema spec — the original schema proxy for most fields
@@ -710,14 +794,27 @@ function collectOverridableOptionalFields(
 function captureHybridRunResources(
   compositionFn: (...args: unknown[]) => unknown,
   schemaDefinition: { spec: { json?: unknown }; status?: { json?: unknown } },
-  analysis: ASTAnalysisResult
+  analysis: ASTAnalysisResult,
+  fieldsToOverride?: Set<string>
 ): {
   captured: Record<string, Enhanced<any, any>>;
   overriddenFields: Set<string>;
+  overrideConditions: Map<string, string>;
 } {
   try {
-    const overriddenFields = collectOverridableOptionalFields(schemaDefinition, analysis);
-    if (overriddenFields.size === 0) return { captured: {}, overriddenFields };
+    const allOverriddenFields = collectOverridableOptionalFields(schemaDefinition, analysis);
+    const overriddenFields = fieldsToOverride
+      ? new Set(Array.from(allOverriddenFields).filter((field) => fieldsToOverride.has(field)))
+      : allOverriddenFields;
+    if (overriddenFields.size === 0) {
+      return { captured: {}, overriddenFields, overrideConditions: new Map() };
+    }
+    const overrideValues = new Map(
+      Array.from(collectHybridOverrideValues(analysis)).filter(([field]) => overriddenFields.has(field))
+    );
+    const overrideConditions = new Map(
+      Array.from(collectHybridOverrideConditions(analysis)).filter(([field]) => overriddenFields.has(field))
+    );
 
     // Build the hybrid spec: the real schema proxy (so all other field
     // accesses produce KubernetesRef values) wrapped in a Proxy that
@@ -733,13 +830,13 @@ function captureHybridRunResources(
     const hybridSpec = new Proxy(realSchema.spec as object, {
       get(target, prop: string | symbol, receiver) {
         if (typeof prop === 'string' && overriddenFields.has(prop)) {
-          return undefined;
+          return overrideValues.get(prop);
         }
         return Reflect.get(target, prop, receiver);
       },
       has(target, prop: string | symbol) {
         if (typeof prop === 'string' && overriddenFields.has(prop)) {
-          return false;
+          return overrideValues.has(prop);
         }
         return Reflect.has(target, prop);
       },
@@ -752,12 +849,13 @@ function captureHybridRunResources(
     return {
       captured: tempCtx.resources as Record<string, Enhanced<any, any>>,
       overriddenFields,
+      overrideConditions,
     };
   } catch {
     // Best-effort: compositions that throw when running with a hybrid spec
     // degrade gracefully — stub resources still cover the missing factories
     // and the proxy-run resources are used as-is.
-    return { captured: {}, overriddenFields: new Set() };
+    return { captured: {}, overriddenFields: new Set(), overrideConditions: new Map() };
   }
 }
 
@@ -791,17 +889,23 @@ function captureHybridRunResources(
 function applyDifferentialFieldConditionals(
   proxyRes: Record<string, unknown>,
   hybridRes: Record<string, unknown>,
-  overriddenFields: Set<string>
+  overriddenFields: Set<string>,
+  overrideConditions: Map<string, string>
 ): void {
-  walkAndConditionalize(proxyRes, hybridRes, overriddenFields);
+  walkAndConditionalize(proxyRes, hybridRes, overriddenFields, overrideConditions);
 }
 
 function walkAndConditionalize(
   proxy: unknown,
   hybrid: unknown,
-  overriddenFields: Set<string>
+  overriddenFields: Set<string>,
+  overrideConditions: Map<string, string>
 ): unknown {
   if (Array.isArray(proxy) && Array.isArray(hybrid)) {
+    if (proxy.length !== hybrid.length) {
+      return buildCelConditional(proxy, hybrid, overriddenFields, overrideConditions);
+    }
+
     const maxLen = Math.max(proxy.length, hybrid.length);
     for (let i = 0; i < maxLen; i++) {
       const p = proxy[i];
@@ -817,16 +921,16 @@ function walkAndConditionalize(
       }
       if (isLeafValue(p) && isLeafValue(h)) {
         if (!leafEquals(p, h)) {
-          proxy[i] = buildCelConditional(p, h, overriddenFields);
+          proxy[i] = buildCelConditional(p, h, overriddenFields, overrideConditions);
         }
       } else {
-        walkAndConditionalize(p, h, overriddenFields);
+        walkAndConditionalize(p, h, overriddenFields, overrideConditions);
       }
     }
     return proxy;
   }
 
-  if (isPlainObject(proxy) && isPlainObject(hybrid)) {
+  if (isWalkableRecord(proxy) && isWalkableRecord(hybrid)) {
     const keys = new Set([...Object.keys(proxy), ...Object.keys(hybrid)]);
     for (const key of keys) {
       const p = (proxy as Record<string, unknown>)[key];
@@ -843,11 +947,15 @@ function walkAndConditionalize(
           (proxy as Record<string, unknown>)[key] = buildCelConditional(
             p,
             h,
-            overriddenFields
+            overriddenFields,
+            overrideConditions
           );
         }
       } else {
-        walkAndConditionalize(p, h, overriddenFields);
+        const conditionalized = walkAndConditionalize(p, h, overriddenFields, overrideConditions);
+        if (conditionalized !== p) {
+          (proxy as Record<string, unknown>)[key] = conditionalized;
+        }
       }
     }
     return proxy;
@@ -877,17 +985,23 @@ function walkAndConditionalizeResourceStatus(
   invertedRes: Record<string, unknown>,
   conditionCel: string
 ): void {
-  // NOTE: We iterate proxyRes keys only. Keys present in invertedRes but
-  // absent in proxyRes (e.g., a ternary consequent that adds a key via
-  // spread: `cache.status.ready ? { extra: 'yes' } : {}`) are not
-  // handled — the proxy-run template is the "base" and the inverted run
-  // can only override existing leaves, not add new ones. This is an
-  // acceptable limitation: the proxy run represents the "happy path"
-  // (status=true) which should always produce the superset of keys.
-  for (const key of Object.keys(proxyRes)) {
+  for (const key of new Set([...Object.keys(proxyRes), ...Object.keys(invertedRes)])) {
     if (key === '__resourceId' || key === 'id' || key.startsWith('__')) continue;
     const pv = proxyRes[key];
     const iv = invertedRes[key];
+
+    if (pv === undefined && iv !== undefined) {
+      const invertedRepr = celValueRepr(iv);
+      proxyRes[key] = `\${${conditionCel} ? omit() : ${invertedRepr}}`;
+      continue;
+    }
+
+    if (iv === undefined && pv !== undefined) {
+      const proxyRepr = celValueRepr(pv);
+      proxyRes[key] = `\${${conditionCel} ? ${proxyRepr} : omit()}`;
+      continue;
+    }
+
     if (pv === undefined || iv === undefined) continue;
 
     // Treat CelExpression objects as atomic leaves — don't recurse into
@@ -940,6 +1054,14 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v) && !isCelExpressionLike(v);
 }
 
+function isWalkableRecord(v: unknown): v is Record<string, unknown> {
+  if (isPlainObject(v)) {
+    return true;
+  }
+
+  return typeof v === 'function' && Object.keys(v as object).length > 0;
+}
+
 /** Duck-type check for CelExpression objects — avoids importing from cel.ts (cycle risk). */
 function isCelExpressionLike(v: unknown): boolean {
   if (typeof v !== 'object' || v === null) return false;
@@ -961,11 +1083,17 @@ function isCelExpressionLike(v: unknown): boolean {
 function buildCelConditional(
   proxyValue: unknown,
   hybridValue: unknown,
-  overriddenFields: Set<string>
+  overriddenFields: Set<string>,
+  overrideConditions: Map<string, string>
 ): string {
   const field = pickConditionField(proxyValue, hybridValue, overriddenFields);
   const proxyRepr = celValueRepr(proxyValue);
   const hybridRepr = celValueRepr(hybridValue);
+
+  const explicitCondition = overrideConditions.get(field);
+  if (explicitCondition) {
+    return `\${${explicitCondition} ? ${proxyRepr} : ${hybridRepr}}`;
+  }
 
   // Chain has() guards when the proxy value references a sub-field deeper
   // than the controlling optional field. A single has(schema.spec.X) is
@@ -982,7 +1110,7 @@ function buildCelConditional(
   //   has(cnpgOperator) && has(cnpgOperator.monitoring) && has(cnpgOperator.monitoring.enabled)
   const schemaPathMatch = proxyRepr.match(/schema\.spec\.([a-zA-Z0-9_.]+)/);
   if (schemaPathMatch) {
-    const fullRefPath = schemaPathMatch[1]!;
+    const fullRefPath = schemaPathMatch[1]!.replace(/\.+$/, '');
     const fullPath = `schema.spec.${fullRefPath}`;
     if (fullPath !== guardField && fullPath.startsWith(guardField + '.')) {
       const guardSegments = field.split('.').length;
@@ -1071,6 +1199,14 @@ function celValueRepr(value: unknown): string {
     }
     // Plain string literal — escape for CEL embedding
     return `"${escapeCelLiteral(value)}"`;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => celValueRepr(item)).join(', ')}]`;
+  }
+  if (isPlainObject(value)) {
+    return `{${Object.entries(value)
+      .map(([key, entryValue]) => `"${escapeCelLiteral(key)}": ${celValueRepr(entryValue)}`)
+      .join(', ')}}`;
   }
   return '""';
 }
@@ -1483,6 +1619,7 @@ function createTypedResourceGraph<
             closures,
             factoryType: 'kro',
             compositionFn: declarativeCompositionFn,
+            compositionAnalysis,
             ...((this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions
               ? {
                   singletonDefinitions: (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })._singletonDefinitions,

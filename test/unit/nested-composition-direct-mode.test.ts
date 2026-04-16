@@ -102,7 +102,7 @@ const innerComposition = kubernetesComposition(
 
     return {
       ready: deployment.status.readyReplicas >= 1,
-      serviceUrl: `http://${spec.name}.${ns}:80`,
+      serviceUrl: `http://${spec.name}.${ns}.svc:80`,
       secretName: autoSecretName,
     };
   }
@@ -373,7 +373,7 @@ describe('Nested Composition Direct Mode', () => {
       expect(secretNameEnv).toBeDefined();
 
       // Must be real strings, not proxy artifacts
-      expect(serviceUrlEnv!.value).toBe('http://myapp-inner.test-ns:80');
+      expect(serviceUrlEnv!.value).toBe('http://myapp-inner.test-ns.svc:80');
       expect(secretNameEnv!.value).toBe('myapp-inner-secret');
 
       // Must NOT contain proxy markers
@@ -404,7 +404,7 @@ describe('Nested Composition Direct Mode', () => {
 
       // innerUrl should be a real string
       expect(typeof status.innerUrl).toBe('string');
-      expect(status.innerUrl).toBe('http://myapp-inner.test-ns:80');
+      expect(status.innerUrl).toBe('http://myapp-inner.test-ns.svc:80');
 
       // Should NOT be a KubernetesRef proxy object
       expect(typeof status.innerUrl).not.toBe('object');

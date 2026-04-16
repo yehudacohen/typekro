@@ -818,6 +818,50 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         expect(nestedDeployment!.includeWhen![0]).toContain('schema.spec.search.enabled != false');
       });
 
+      it('if guard around member-expression nested composition call applies includeWhen to nested resources', () => {
+        const searchBootstrap = kubernetesComposition(
+          {
+            name: 'search-bootstrap-member',
+            apiVersion: 'v1alpha1',
+            kind: 'SearchBootstrapMember',
+            spec: type({ name: 'string' }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            Deployment({ name: spec.name, image: 'nginx', id: 'searchDeployment' });
+            return { ready: true };
+          }
+        );
+
+        const nested = { searchBootstrap };
+
+        const graph = kubernetesComposition(
+          {
+            name: 'nested-member-include-when',
+            apiVersion: 'v1alpha1',
+            kind: 'NestedMemberIncludeWhen',
+            spec: type({
+              name: 'string',
+              'search?': { 'enabled?': 'boolean' },
+            }),
+            status: type({ ready: 'boolean' }),
+          },
+          (spec) => {
+            if (spec.search?.enabled !== false) {
+              nested.searchBootstrap({ name: `${spec.name}-search` });
+            }
+            return { ready: true };
+          }
+        );
+
+        const parsed = parseRgdYaml(graph.toYaml());
+        const nestedDeployment = parsed.spec.resources.find((r) => r.id.startsWith('searchBootstrapMember'));
+
+        expect(nestedDeployment).toBeDefined();
+        expect(nestedDeployment!.includeWhen).toBeDefined();
+        expect(nestedDeployment!.includeWhen![0]).toContain('schema.spec.search.enabled != false');
+      });
+
       it('compound && produces single includeWhen with AND', () => {
         const graph = kubernetesComposition(
           {

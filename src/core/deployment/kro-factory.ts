@@ -20,6 +20,7 @@ import { createBunCompatibleKubernetesObjectApi } from '../kubernetes/index.js';
 import { getComponentLogger } from '../logging/index.js';
 import { createSchemaProxy, DeploymentMode } from '../references/index.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
+import { applyAnalysisToResources } from '../expressions/composition/composition-analyzer.js';
 // Dependency inversion: kroCustomResource, resourceGraphDefinition, and
 // alchemy bridge are injected via FactoryOptions providers (Phase 3.5)
 // instead of dynamic import() from higher layers.
@@ -133,6 +134,7 @@ export class KroResourceFactoryImpl<
    * refactors. Applies across both `toYaml()` and `ensureRGDDeployed()` paths.
    */
   private ternaryAndOmitApplied = false;
+  private compositionAnalysisApplied = false;
 
   /**
    * Cached plural form of the schema kind, discovered from the actual CRD
@@ -1117,6 +1119,11 @@ ${Object.entries(spec as Record<string, any>)
    * populates from `kroSchema.__omitFields` automatically.
    */
   private buildRgdYaml(): string {
+    if (this.factoryOptions.compositionAnalysis && !this.compositionAnalysisApplied) {
+      this.compositionAnalysisApplied = true;
+      applyAnalysisToResources(this.resources as Record<string, unknown>, this.factoryOptions.compositionAnalysis);
+    }
+
     const kroSchema = generateKroSchemaFromArktype(
       this.name,
       this.schemaDefinition,
@@ -1618,6 +1625,14 @@ ${Object.entries(spec as Record<string, any>)
         if (liveStatus) {
           for (const [key, value] of Object.entries(liveStatus)) {
             if (key.startsWith('__')) continue;
+            // Live re-execution uses the actual deploy spec plus cluster state, so it is the
+            // most accurate source for non-dynamic fields. Dynamic fields remain owned by the
+            // live Kro instance status and should not be replaced here.
+            if (!(key in dynamicFields)) {
+              (enhancedProxy.status as Record<string, unknown>)[key] = value;
+              continue;
+            }
+
             const current = (enhancedProxy.status as Record<string, unknown>)[key];
             if (current === undefined || current === null || current === '') {
               (enhancedProxy.status as Record<string, unknown>)[key] = value;

@@ -5,6 +5,7 @@
 import type { KubeConfig, KubernetesObjectApi } from '@kubernetes/client-node';
 import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND, SINGLETON_HANDLE_BRAND } from '../constants/brands.js';
 import type { DependencyGraph } from '../dependencies/index.js';
+import type { ASTAnalysisResult } from '../expressions/composition/composition-analyzer-types.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
 import type { CelExpression, KubernetesRef } from './common.js';
 import type { Composable } from './composable.js';
@@ -491,6 +492,20 @@ export interface NestedCompositionResource<TSpec, TStatus> {
   readonly dependsOn: (dependency: unknown, condition?: string | CelExpression) => this;
 }
 
+export interface SingletonHandleBase<TStatus> {
+  readonly [SINGLETON_HANDLE_BRAND]: true;
+  readonly __singletonId: string;
+  readonly __singletonKey: string;
+  readonly status: StatusProxy<TStatus>;
+}
+
+export interface SingletonOwnedHandle<TSpec, TStatus>
+  extends NestedCompositionResource<TSpec, TStatus>, SingletonHandleBase<TStatus> {}
+
+export interface SingletonReferenceHandle<TStatus> extends SingletonHandleBase<TStatus> {
+  readonly kind: 'singleton-reference';
+}
+
 /**
  * A composition that can be both:
  * 1. Called as a function with a spec to create nested composition instances
@@ -511,13 +526,12 @@ export type CallableComposition<
 
 /**
  * Handle returned by singleton definition/use helpers.
- * Behaves like a nested composition resource while carrying stable singleton identity.
+ * A singleton definition may execute as a real nested composition (owned handle)
+ * or as a shared reference handle depending on execution mode/context.
  */
-export interface SingletonHandle<TSpec, TStatus> extends NestedCompositionResource<TSpec, TStatus> {
-  readonly [SINGLETON_HANDLE_BRAND]: true;
-  readonly __singletonId: string;
-  readonly __singletonKey: string;
-}
+export type SingletonHandle<TSpec, TStatus> =
+  | SingletonOwnedHandle<TSpec, TStatus>
+  | SingletonReferenceHandle<TStatus>;
 
 export interface SingletonDefinitionRecord {
   readonly id: string;
@@ -648,6 +662,8 @@ export interface AlchemyBridge {
 export interface InternalFactoryOptions {
   /** Re-execution function for the composition (internal use) */
   compositionFn?: (spec: any) => any;
+  /** AST control-flow analysis for includeWhen/forEach propagation (internal use) */
+  compositionAnalysis?: ASTAnalysisResult | null;
   /** Original composition definition (internal use) */
   compositionDefinition?: any;
   /** Original composition options (internal use) */

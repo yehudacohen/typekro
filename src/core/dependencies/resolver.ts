@@ -116,17 +116,13 @@ export class DependencyResolver {
     // like service(), deployment(), valkey(), cluster(), etc.).
     // Precompile regex patterns once per service name to avoid creating
     // a new RegExp on every (resource × stringValue × serviceName) pair.
-    const servicePatterns = new Map<string, { id: string; pattern: RegExp }>();
+    const servicePatterns = new Map<string, { id: string }>();
     for (const resource of resources) {
       const isDnsAddressable = getMetadataField(resource, 'dnsAddressable');
       if (isDnsAddressable && resource.metadata?.name) {
         const name = String(resource.metadata.name);
         if (name && !name.includes('$')) {
-          const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          servicePatterns.set(name, {
-            id: resource.id,
-            pattern: new RegExp(`(?:^|[/:@.])${escaped}(?:[/:@.]|$)`),
-          });
+          servicePatterns.set(name, { id: resource.id });
         }
       }
     }
@@ -135,8 +131,8 @@ export class DependencyResolver {
       for (const resource of resources) {
         const stringValues = this.collectStringValues(resource);
         for (const value of stringValues) {
-          for (const [svcName, { id: svcResourceId, pattern }] of servicePatterns) {
-            if (svcResourceId !== resource.id && pattern.test(value)) {
+          for (const [svcName, { id: svcResourceId }] of servicePatterns) {
+            if (svcResourceId !== resource.id && this.containsClusterServiceReference(value, svcName)) {
               try {
                 graph.addEdge(resource.id, svcResourceId);
                 this.logger.debug('Added implicit service-name dependency', {
@@ -174,6 +170,47 @@ export class DependencyResolver {
    * dependency edges when a Service shares a name with its image base name.
    */
   private static readonly EXCLUDED_KEYS = new Set(['image', 'imagePullPolicy']);
+
+  private containsClusterServiceReference(value: string, serviceName: string): boolean {
+    for (const host of this.extractHostCandidates(value)) {
+      if (host === serviceName) return true;
+      if (host === `${serviceName}.cluster.local`) return true;
+      if (host === `${serviceName}.svc`) return true;
+      if (host === `${serviceName}.svc.cluster.local`) return true;
+      if (new RegExp(`^${serviceName}\.[a-z0-9-]+\.svc(?:\.cluster\.local)?$`, 'i').test(host)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private extractHostCandidates(value: string): string[] {
+    const hosts = new Set<string>();
+
+    const authorityMatches = value.matchAll(/[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/\s]+)/g);
+    for (const match of authorityMatches) {
+      const authority = match[1];
+      if (!authority) continue;
+      const hostPort = authority.includes('@') ? authority.split('@').at(-1) : authority;
+      const host = hostPort?.split(':')[0];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    const userHostMatches = value.matchAll(/(^|[^\w.-])[^\s@/:]+@([a-z0-9.-]+)(?::\d+)?(?=$|[/?\s])/gi);
+    for (const match of userHostMatches) {
+      const host = match[2];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    const bareHostMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)*)(?::\d+)?(?=$|[/?\s])/gi);
+    for (const match of bareHostMatches) {
+      const host = match[2];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    return Array.from(hosts);
+  }
 
   private collectStringValues(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>

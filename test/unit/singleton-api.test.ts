@@ -1,22 +1,22 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition, simple } from '../../src/index.js';
-import type { CallableComposition, NestedCompositionResource } from '../../src/core/types/deployment.js';
-
-interface SingletonHandleLike<TSpec, TStatus> extends NestedCompositionResource<TSpec, TStatus> {
-  readonly __singletonId: string;
-  readonly __singletonKey: string;
-}
+import type {
+  CallableComposition,
+  SingletonHandle,
+  SingletonOwnedHandle,
+  SingletonReferenceHandle,
+} from '../../src/core/types/deployment.js';
 
 interface SingletonApi {
   <TSpec, TStatus>(
     composition: CallableComposition<TSpec, TStatus>,
     input: { id: string; spec: TSpec },
-  ): SingletonHandleLike<TSpec, TStatus>;
+  ): SingletonHandle<TSpec, TStatus>;
   use<TSpec, TStatus>(
     composition: CallableComposition<TSpec, TStatus>,
     id: string,
-  ): SingletonHandleLike<TSpec, TStatus>;
+  ): SingletonReferenceHandle<TStatus>;
 }
 
 function createOperatorComposition() {
@@ -61,7 +61,7 @@ describe('singleton API', () => {
     const result = singleton(operator, {
       id: 'platform-operator',
       spec: { name: 'cnpg-operator', namespace: 'cnpg-system' },
-    });
+    }) as SingletonOwnedHandle<{ name: string; namespace: string }, { ready: boolean; serviceName: string }>;
 
     expect(result.__singletonId).toBe('platform-operator');
     expect(result.__singletonKey).toContain('platform-operator');
@@ -78,8 +78,56 @@ describe('singleton API', () => {
 
     expect(result.__singletonId).toBe('platform-operator');
     expect(result.__singletonKey).toContain('platform-operator');
+    expect(result.kind).toBe('singleton-reference');
     expect(result.status.ready).toBeDefined();
     expect(result.status.serviceName).toBeDefined();
+  });
+
+  it('singleton.use() does not pretend to expose a real spec surface', async () => {
+    const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
+    const operator = createOperatorComposition();
+
+    const result = singleton.use(operator, 'platform-operator') as Record<string, unknown>;
+
+    expect('spec' in result).toBe(false);
+  });
+
+  it('singleton references do not expose dependsOn()', async () => {
+    const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
+    const operator = createOperatorComposition();
+
+    const result = singleton.use(operator, 'platform-operator') as Record<string, unknown>;
+
+    expect('dependsOn' in result).toBe(false);
+  });
+
+  it('Enhanced.dependsOn() rejects singleton reference handles loudly', async () => {
+    const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
+    const operator = createOperatorComposition();
+    const app = simple.Deployment({
+      name: 'app',
+      image: 'nginx',
+      id: 'app',
+    });
+
+    const shared = singleton.use(operator, 'platform-operator');
+
+    expect(() => {
+      app.dependsOn(shared as unknown as object);
+    }).toThrow(/singleton reference/i);
+  });
+
+  it('owned singleton handles still behave like nested composition resources in direct execution', async () => {
+    const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
+    const operator = createOperatorComposition();
+
+    const result = singleton(operator, {
+      id: 'platform-operator',
+      spec: { name: 'cnpg-operator', namespace: 'cnpg-system' },
+    });
+
+    expect('spec' in result).toBe(true);
+    expect('dependsOn' in result).toBe(false);
   });
 
   it('uses factory type plus id as singleton identity', async () => {
@@ -134,5 +182,36 @@ describe('singleton API', () => {
         spec: { name: 'cnpg-operator-v2', namespace: 'cnpg-system' },
       });
     }).toThrow(/singleton/i);
+  });
+
+  it('allows the same singleton to be referenced from multiple nested callers without drift', async () => {
+    const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
+    const operator = createOperatorComposition();
+
+    const outer = kubernetesComposition(
+      {
+        name: 'singleton-dedupe',
+        apiVersion: 'platform.typekro.test/v1alpha1',
+        kind: 'SingletonDedupe',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const sharedA = singleton(operator, {
+          id: 'platform-operator',
+          spec: { name: 'cnpg-operator', namespace: 'cnpg-system' },
+        });
+        const sharedB = singleton(operator, {
+          id: 'platform-operator',
+          spec: { name: 'cnpg-operator', namespace: 'cnpg-system' },
+        });
+
+        return {
+          ready: sharedA.status.ready && sharedB.status.ready && spec.name.length > 0,
+        };
+      }
+    );
+
+    expect(() => outer.toYaml()).not.toThrow();
   });
 });

@@ -318,6 +318,46 @@ describe('Implicit dependency detection', () => {
       expect(deps).not.toContain('serviceDb');
     });
 
+    it('does not infer a dependency from an external https hostname that merely contains the service name', () => {
+      const svc = mockResource({
+        id: 'serviceApi',
+        kind: 'Service',
+        name: 'api',
+      });
+      markDnsAddressable(svc);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        env: { API_URL: 'https://api.example.com/v1' },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, app]);
+      const deps = graph.getDependencies('deploymentApp');
+
+      expect(deps).not.toContain('serviceApi');
+    });
+
+    it('does not infer a dependency from an external db.example.net hostname', () => {
+      const svc = mockResource({
+        id: 'serviceDb',
+        kind: 'Service',
+        name: 'db',
+      });
+      markDnsAddressable(svc);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        env: { DATABASE_HOST: 'db.example.net' },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, app]);
+      const deps = graph.getDependencies('deploymentApp');
+
+      expect(deps).not.toContain('serviceDb');
+    });
+
     it('CEL expression strings containing service names are not matched (name has $ which is excluded)', () => {
       // The resolver skips resources whose metadata.name contains '$'
       // because CEL-generated names cannot be statically matched.
@@ -457,9 +497,7 @@ describe('Implicit dependency detection', () => {
   // Word-boundary regex behavior
   // -----------------------------------------------------------------------
 
-  describe('word-boundary regex (?:^|[/:@.])name(?:[/:@.]|$)', () => {
-    // The regex matches service names delimited by: start/end of string,
-    // or one of the characters: / : @ .
+  describe('cluster-style hostname matching', () => {
 
     it('matches name at start of string followed by :', () => {
       const svc = mockResource({ id: 'svc', kind: 'Service', name: 'redis' });
@@ -500,8 +538,8 @@ describe('Implicit dependency detection', () => {
       expect(graph.getDependencies('app')).toContain('svc');
     });
 
-    it('matches name preceded by . and followed by end of string', () => {
-      const svc = mockResource({ id: 'svc', kind: 'Service', name: 'local' });
+    it('matches service name in svc.cluster.local form from the start of the hostname', () => {
+      const svc = mockResource({ id: 'svc', kind: 'Service', name: 'svc' });
       markDnsAddressable(svc);
       const app = mockDeploymentWithEnv({
         id: 'app',

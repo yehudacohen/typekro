@@ -18,6 +18,7 @@ import {
   buildNestedCompositionAliasTargets,
   buildNestedCompositionAliases,
   extractNestedStatusCel as extractNestedStatusCelFn,
+  remapVariableNames,
 } from './nested-status-cel.js';
 import { CompositionDebugger } from '../composition-debugger.js';
 import {
@@ -354,6 +355,37 @@ function executeNestedCompositionWithSpec<
     const uniqueId = computeMergedId(baseId, resourceId, resourceCount, nestedResourceIds.has(resourceId));
     const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<any, any>;
     copyResourceMetadata(resource, mergedResource);
+
+    const existingAliases = getMetadataField(mergedResource, 'resourceAliases') as string[] | undefined;
+    const aliases = new Set(existingAliases ?? []);
+    aliases.add(resourceId);
+    setMetadataField(mergedResource, 'resourceAliases', Array.from(aliases));
+
+    const existingDependsOn = getMetadataField(mergedResource, 'dependsOn') as
+      | Array<{ resourceId: string; condition?: string }>
+      | undefined;
+    if (existingDependsOn && existingDependsOn.length > 0) {
+      setMetadataField(
+        mergedResource,
+        'dependsOn',
+        existingDependsOn.map((dependency) => {
+          if (!Object.hasOwn(executionContext.resources, dependency.resourceId)) {
+            return dependency;
+          }
+
+          return {
+            ...dependency,
+            resourceId: computeMergedId(
+              baseId,
+              dependency.resourceId,
+              resourceCount,
+              nestedResourceIds.has(dependency.resourceId),
+            ),
+          };
+        }),
+      );
+    }
+
     setResourceId(mergedResource, uniqueId);
     parentContext.addResource(uniqueId, mergedResource);
     mergedInnerResourceIds.push(uniqueId);
@@ -426,7 +458,8 @@ function executeNestedCompositionWithSpec<
   for (const [key, value] of Object.entries(executionContext.variableMappings)) {
     if (key.startsWith('__nestedStatus:')) {
       if (!(key in parentContext.variableMappings)) {
-        parentContext.addVariableMapping(key, value);
+        const remappedValue = remapVariableNames(value, mergedInnerResourceIds, preserveVariables);
+        parentContext.addVariableMapping(key, remappedValue);
       }
     }
   }
@@ -494,6 +527,20 @@ function executeNestedCompositionWithSpec<
         depId = (dependency as Record<string, unknown>).__compositionId as string | undefined;
       }
       if (!depId) return nestedCompositionResource;
+
+      // Dependencies declared inside this nested composition use the inner
+      // local resource IDs (for example `cache`). Once we merge the inner
+      // resources into the parent context, those IDs are prefixed
+      // (`webAppWithProcessing1Cache`). Remap same-composition dependencies
+      // here so the stored edge matches the merged graph.
+      if (Object.hasOwn(executionContext.resources, depId)) {
+        depId = computeMergedId(
+          baseId,
+          depId,
+          innerResourceIds.length,
+          nestedResourceIds.has(depId),
+        );
+      }
 
       // Normalize condition: accept CelExpression or plain string
       const condStr = condition !== undefined && typeof condition === 'object' &&

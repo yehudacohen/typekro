@@ -797,3 +797,62 @@ describe('KroResourceFactory: factory creation smoke tests', () => {
     expect(typeof factory.getRGDStatus).toBe('function');
   });
 });
+
+describe('KroResourceFactory: mixed status hydration', () => {
+  it('overrides stale static fields with live re-execution results while preserving dynamic fields', async () => {
+    interface HydrationSpec {
+      name: string;
+      enabled: boolean;
+    }
+
+    interface HydrationStatus {
+      ready: boolean;
+      searxngUrl: string;
+    }
+
+    const schema: SchemaDefinition<HydrationSpec, HydrationStatus> = {
+      apiVersion: 'v1alpha1',
+      kind: 'HydrationTest',
+      spec: type({ name: 'string', enabled: 'boolean' }),
+      status: type({ ready: 'boolean', searxngUrl: 'string' }),
+    };
+
+    const factory = createKroResourceFactory<HydrationSpec, HydrationStatus>(
+      'hydration-test',
+      {},
+      schema,
+      {
+        ready: makeCelExpr('app.status.ready'),
+        searxngUrl: 'http://__KUBERNETES_REF___schema___spec.name__-searxng:8080',
+      },
+      { namespace: 'default', compositionFn: () => null }
+    );
+
+    const factoryRecord = factory as unknown as Record<string, unknown>;
+    factoryRecord.separateStatusFields = async () => ({
+      staticFields: { searxngUrl: 'http://__KUBERNETES_REF___schema___spec.name__-searxng:8080' },
+      dynamicFields: { ready: makeCelExpr('app.status.ready') },
+    });
+    factoryRecord.evaluateStaticFields = async () => ({
+      searxngUrl: 'http://demo-searxng:8080',
+    });
+    factoryRecord.hydrateDynamicStatusFields = async () => ({ ready: true });
+    factoryRecord.reExecuteWithLiveStatus = async () => ({
+      ready: false,
+      searxngUrl: '',
+    });
+
+    const createEnhancedProxyWithMixedHydration = getPrivateMethod(
+      factory as unknown as KroResourceFactory<TestSpec, TestStatus>,
+      'createEnhancedProxyWithMixedHydration'
+    ) as (spec: HydrationSpec, instanceName: string) => Promise<{ status: HydrationStatus }>;
+
+    const instance = await createEnhancedProxyWithMixedHydration(
+      { name: 'demo', enabled: false },
+      'demo'
+    );
+
+    expect(instance.status.ready).toBe(true);
+    expect(instance.status.searxngUrl).toBe('');
+  });
+});

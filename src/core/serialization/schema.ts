@@ -10,6 +10,7 @@ import type { Type } from 'arktype';
 import { escapeCelString } from '../../utils/cel-escape.js';
 import { createCompositionContext, runWithCompositionContext } from '../composition/context.js';
 import { getComponentLogger } from '../logging/index.js';
+import { getMetadataField } from '../metadata/index.js';
 import { pascalCase } from '../../utils/string.js';
 import type {
   KroSimpleSchemaWithMetadata,
@@ -21,6 +22,17 @@ import { separateStatusFields } from '../validation/cel-validator.js';
 import { serializeStatusMappingsToCel } from './cel-references.js';
 
 const logger = getComponentLogger('schema-defaults');
+
+function deriveResourceIdAliases(resourceId: string): string[] {
+  const aliases: string[] = [];
+  for (const match of resourceId.matchAll(/\d+/g)) {
+    const suffix = resourceId.slice((match.index ?? 0) + match[0].length);
+    if (suffix && /^[A-Z]/.test(suffix)) {
+      aliases.push(suffix.charAt(0).toLowerCase() + suffix.slice(1));
+    }
+  }
+  return aliases;
+}
 
 // ---------------------------------------------------------------------------
 // Arktype JSON AST → Kro type helpers (private)
@@ -907,12 +919,31 @@ export function arktypeToKroSchema(
   // Classification is transitive through nestedStatusCel: a nested composition
   // reference whose inner analyzed value is schema-only/literal is treated as static.
   const resourceIds = resources ? new Set(Object.keys(resources)) : undefined;
+  const resourceAliases = resources ? new Map<string, string>() : undefined;
+
+  if (resources && resourceAliases) {
+    for (const [resourceId, resource] of Object.entries(resources)) {
+      resourceAliases.set(resourceId, resourceId);
+      for (const alias of deriveResourceIdAliases(resourceId)) {
+        if (!resourceAliases.has(alias)) {
+          resourceAliases.set(alias, resourceId);
+        }
+      }
+
+      const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
+      if (aliases) {
+        for (const alias of aliases) {
+          resourceAliases.set(alias, resourceId);
+        }
+      }
+    }
+  }
 
   const { dynamicFields } = separateStatusFields(userStatusMappings, nestedStatusCel, resourceIds);
 
   const statusCelExpressions =
     Object.keys(dynamicFields).length > 0
-      ? serializeStatusMappingsToCel(dynamicFields, nestedStatusCel, resourceIds)
+      ? serializeStatusMappingsToCel(dynamicFields, nestedStatusCel, resourceIds, resourceAliases)
       : {};
 
   // Extract just the version part for the schema (Kro expects v1alpha1, not kro.run/v1alpha1)

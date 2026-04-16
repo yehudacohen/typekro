@@ -819,9 +819,9 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     // The YAML must not contain $item anywhere — it's not valid CEL
     expect(yamlStr).not.toContain('$item');
 
-    // The optional envFrom should be guarded with has()/omit()
+    // The optional envFrom should still be guarded and remain valid CEL.
     expect(yamlStr).toContain('has(schema.spec.envFrom)');
-    expect(yamlStr).toContain('omit()');
+    expect(yamlStr).not.toContain('has(schema.spec.envFrom.)');
 
     // The static secret should still be present
     expect(yamlStr).toContain('static-secret');

@@ -360,7 +360,8 @@ export function validateStatusCelExpressions(
         if (
           referencedId !== 'schema' &&
           !resourceIds.has(referencedId) &&
-          !lambdaVars.has(referencedId)
+          !lambdaVars.has(referencedId) &&
+          !preserveVariables.has(referencedId)
         ) {
           // Check if this specific reference is a cross-composition status access.
           // Cross-composition references (e.g., `otherComposition.status.ready`) are valid

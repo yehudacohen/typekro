@@ -1,4 +1,4 @@
-import { NESTED_COMPOSITION_BRAND, SINGLETON_HANDLE_BRAND } from '../constants/brands.js';
+import { SINGLETON_HANDLE_BRAND } from '../constants/brands.js';
 import { getCurrentCompositionContext } from '../composition/context.js';
 import { externalRef } from '../references/external-refs.js';
 import type {
@@ -6,6 +6,8 @@ import type {
   NestedCompositionResource,
   SingletonDefinitionRecord,
   SingletonHandle,
+  SingletonOwnedHandle,
+  SingletonReferenceHandle,
 } from '../types/deployment.js';
 import type { KroCompatibleType } from '../types/serialization.js';
 import { toCamelCase } from '../../utils/string.js';
@@ -73,7 +75,7 @@ function getSingletonResourceId(key: string): string {
 }
 
 function attachSingletonIdentity<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
-  base: NestedCompositionResource<TSpec, TStatus>,
+  base: NestedCompositionResource<TSpec, TStatus> | SingletonReferenceHandle<TStatus>,
   id: string,
   key: string,
 ): SingletonHandle<TSpec, TStatus> {
@@ -141,14 +143,14 @@ function defineSingleton<TSpec extends KroCompatibleType, TStatus extends KroCom
 
   singletonDefinitions.set(key, definitionRecord);
 
-  return attachSingletonIdentity(composition(input.spec), input.id, key);
+  return attachSingletonIdentity(composition(input.spec) as SingletonOwnedHandle<TSpec, TStatus>, input.id, key);
 }
 
 function useSingleton<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   composition: CallableComposition<TSpec, TStatus>,
   id: string,
   registryNamespace = DEFAULT_SINGLETON_NAMESPACE,
-): SingletonHandle<TSpec, TStatus> {
+): SingletonReferenceHandle<TStatus> {
   const key = getSingletonKey(composition, id);
   const compositionRecord = composition as unknown as SingletonCompositionMetadata;
   const rawApiVersion = String(compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1');
@@ -162,18 +164,12 @@ function useSingleton<TSpec extends KroCompatibleType, TStatus extends KroCompat
   });
 
   const handle = {
-    [NESTED_COMPOSITION_BRAND]: true as const,
-    spec: {} as TSpec,
+    [SINGLETON_HANDLE_BRAND]: true as const,
+    kind: 'singleton-reference' as const,
     status: statusRef.status,
-    __compositionId: `singleton:${key}`,
-    __resources: [],
-    dependsOn(dependency: unknown, _condition?: string) {
-      void dependency;
-      return this;
-    },
-  } as NestedCompositionResource<TSpec, TStatus>;
+  } as SingletonReferenceHandle<TStatus>;
 
-  return attachSingletonIdentity(handle, id, key);
+  return attachSingletonIdentity(handle, id, key) as SingletonReferenceHandle<TStatus>;
 }
 
 type SingletonApi = typeof defineSingleton & {

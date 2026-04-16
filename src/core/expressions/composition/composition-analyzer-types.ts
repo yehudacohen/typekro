@@ -154,6 +154,10 @@ export interface ResourceStatusTernary {
 /** Full analysis result */
 export interface ASTAnalysisResult {
   resources: Map<string, ResourceControlFlow>;
+  /** Optional-field conditions that need explicit non-undefined hybrid overrides. */
+  hybridOverrideConditions: Map<string, string>;
+  /** Top-level optional fields referenced by conditional expressions. */
+  differentialConditionFields: Set<string>;
   /** Factory calls found in AST that weren't registered at runtime */
   unregisteredFactories: UnregisteredFactory[];
   /**

@@ -474,6 +474,11 @@ export function factoryArgKeyToTemplatePath(key: string): string | undefined {
   if (key === 'namespace') return 'metadata.namespace';
   if (key === 'labels') return 'metadata.labels';
   if (key === 'annotations') return 'metadata.annotations';
+  if (key === 'data') return 'data';
+  if (key === 'stringData') return 'stringData';
+  if (key === 'binaryData') return 'binaryData';
+  if (key === 'immutable') return 'immutable';
+  if (key === 'type') return 'type';
   return `spec.${key}`;
 }
 

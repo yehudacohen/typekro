@@ -456,10 +456,61 @@ function applyTemplateOverrides(
     if (!target) continue;
 
     const lastKey = parts[parts.length - 1];
-    if (lastKey && lastKey in target) {
+    if (lastKey) {
       target[lastKey] = celExpression;
     }
   }
+}
+
+function toIdSuffix(resourceId: string): string {
+  return resourceId.charAt(0).toUpperCase() + resourceId.slice(1);
+}
+
+function commonPrefixLength(left: string, right: string): number {
+  const max = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < max && left[index] === right[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+function deriveResourceIdAliases(resourceId: string): string[] {
+  const aliases: string[] = [];
+  for (const match of resourceId.matchAll(/\d+/g)) {
+    const suffix = resourceId.slice((match.index ?? 0) + match[0].length);
+    if (suffix && /^[A-Z]/.test(suffix)) {
+      aliases.push(suffix.charAt(0).toLowerCase() + suffix.slice(1));
+    }
+  }
+  return aliases;
+}
+
+function resolveDependsOnResourceId(
+  dependencyId: string,
+  currentResourceId: string,
+  knownResourceIds?: ReadonlySet<string>
+): string {
+  if (!knownResourceIds || knownResourceIds.has(dependencyId)) {
+    return dependencyId;
+  }
+
+  const suffix = toIdSuffix(dependencyId);
+  const candidates = Array.from(knownResourceIds).filter((resourceId) =>
+    resourceId.endsWith(suffix)
+  );
+
+  if (candidates.length === 0) {
+    return dependencyId;
+  }
+
+  if (candidates.length === 1) {
+    return candidates[0] ?? dependencyId;
+  }
+
+  return candidates.sort(
+    (left, right) => commonPrefixLength(right, currentResourceId) - commonPrefixLength(left, currentResourceId)
+  )[0] ?? dependencyId;
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +657,8 @@ function buildResourceEntry(
       const metadata = (template.metadata ?? {}) as Record<string, unknown>;
       const annotations = (metadata.annotations ?? {}) as Record<string, string>;
       for (const dep of dependsOnDeps) {
-        annotations[`typekro.dev/depends-on-${dep.resourceId}`] = `\${${dep.resourceId}.metadata.name}`;
+        const resolvedDependencyId = resolveDependsOnResourceId(dep.resourceId, id, context.resourceIds);
+        annotations[`typekro.dev/depends-on-${resolvedDependencyId}`] = `\${${resolvedDependencyId}.metadata.name}`;
       }
       metadata.annotations = annotations;
       template.metadata = metadata;
@@ -656,12 +708,10 @@ export function serializeResourceGraphToYaml(
     ...(nestedStatusCel && { nestedStatusCel }),
   };
 
-  const knownResourceIds = new Set<string>(Object.keys(resources));
-  context.resourceIds = knownResourceIds;
-
   // 1. Use embedded resource IDs and build dependency graph
   const resourceMap = new Map<string, { id: string; resource: KubernetesResource }>();
   const dependencies: ResourceDependency[] = [];
+  const resourceAliases = new Map<string, string>();
 
   // 2. Process each resource and extract references
   for (const [resourceName, resource] of Object.entries(resources)) {
@@ -674,6 +724,19 @@ export function serializeResourceGraphToYaml(
         resource.metadata?.namespace || options?.namespace
       );
     resourceMap.set(resourceName, { id: resourceId, resource });
+    resourceAliases.set(resourceName, resourceId);
+    for (const alias of deriveResourceIdAliases(resourceId)) {
+      if (!resourceAliases.has(alias)) {
+        resourceAliases.set(alias, resourceId);
+      }
+    }
+
+    const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
+    if (aliases) {
+      for (const alias of aliases) {
+        resourceAliases.set(alias, resourceId);
+      }
+    }
 
     // Extract all ResourceReference objects from the resource
     const refs = extractResourceReferences(resource);
@@ -686,6 +749,10 @@ export function serializeResourceGraphToYaml(
       });
     }
   }
+
+  const knownResourceIds = new Set<string>(Array.from(resourceMap.values(), ({ id }) => id));
+  context.resourceIds = knownResourceIds;
+  context.resourceAliases = resourceAliases;
 
   // 3. Build metadata with optional annotations
   const metadata: KroResourceGraphDefinition['metadata'] = {

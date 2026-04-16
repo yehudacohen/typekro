@@ -33,6 +33,8 @@ import type { ResourceStatus } from '../types/kubernetes.js';
 export interface ResourceMetadata {
   /** Original resource identifier for cross-resource references */
   resourceId?: string;
+  /** Local resource IDs that should resolve to this emitted resource ID. */
+  resourceAliases?: string[];
   /** Factory-provided function that evaluates whether a deployed resource is ready */
   readinessEvaluator?: (resource: unknown) => ResourceStatus;
   /** Conditional resource creation CEL expression array */
