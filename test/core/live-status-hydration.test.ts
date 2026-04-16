@@ -20,6 +20,7 @@ import {
   createCompositionContext,
   runWithCompositionContext,
 } from '../../src/core/composition/context.js';
+import { synthesizeNestedCompositionStatus } from '../../src/core/deployment/nested-composition-status.js';
 import { simple } from '../../src/factories/simple/index.js';
 import { createResource } from '../../src/core/proxy/create-resource.js';
 
@@ -46,6 +47,7 @@ function testCrdResource(config: { name: string; namespace?: string; id?: string
 const InnerStatusSchema = type({
   ready: 'boolean',
   phase: '"Ready" | "Installing"',
+  appUrl: 'string',
 });
 
 const InnerSpecSchema = type({
@@ -68,9 +70,17 @@ const innerComposition = kubernetesComposition(
       id: 'innerDeploy',
     });
 
+    simple.Service({
+      name: spec.name,
+      selector: { app: spec.name },
+      ports: [{ port: 80, targetPort: 80 }],
+      id: 'innerService',
+    });
+
     return {
       ready: true, // static for testing — in real use this would be a status comparison
       phase: 'Ready' as const,
+      appUrl: `http://${spec.name}:80`,
     };
   }
 );
@@ -227,6 +237,111 @@ describe('Live Status Hydration', () => {
   });
 
   describe('Composition function body with live status (simulating reExecuteWithLiveStatus)', () => {
+    it('synthesizes nested static status fields while preserving live readiness fields', () => {
+      const outerFn = (spec: { name: string }) => {
+        const inner = innerComposition({ name: `${spec.name}-inner`, key: 'test' });
+        return { ready: inner.status.ready };
+      };
+
+      kubernetesComposition(
+        {
+          name: 'outer-nested-snapshot-test',
+          kind: 'OuterNestedSnapshotTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        outerFn
+      );
+
+      const probeCtx = createCompositionContext('nested-snapshot-probe', { deduplicateIds: true });
+      runWithCompositionContext(probeCtx, () => {
+        outerFn({ name: 'myapp' });
+      });
+
+      const enrichedMap = synthesizeNestedCompositionStatus(
+        probeCtx.resources,
+        new Map([['inner1InnerDeploy', { readyReplicas: 1 }]]),
+        { debug() {} } as never,
+        probeCtx.nestedCompositionIds,
+        probeCtx.nestedStatusSnapshots
+      );
+
+      expect(enrichedMap.get('inner1')).toEqual({
+        appUrl: 'http://myapp-inner:80',
+        ready: true,
+        phase: 'Ready',
+        failed: false,
+      });
+    });
+
+    it('filters unresolved nested status snapshot markers during synthesis', () => {
+      const enrichedMap = synthesizeNestedCompositionStatus(
+        {
+          inner1InnerDeploy: testCrdResource({ name: 'x', id: 'innerDeploy' }),
+        },
+        new Map([['inner1InnerDeploy', { readyReplicas: 1 }]]),
+        { debug() {} } as never,
+        new Set(['inner1']),
+        new Map([
+          ['inner1', {
+            appUrl: '__KUBERNETES_REF_inner1_status.appUrl__',
+            components: { app: true },
+          }],
+        ])
+      );
+
+      expect(enrichedMap.get('inner1')).toEqual({
+        components: { app: true },
+        ready: true,
+        phase: 'Ready',
+        failed: false,
+      });
+    });
+
+    it('resolves nested static status fields during live re-execution', () => {
+      const outerFn = (spec: { name: string }) => {
+        const inner = innerComposition({ name: `${spec.name}-inner`, key: 'test' });
+        return {
+          ready: inner.status.ready,
+          innerUrl: inner.status.appUrl,
+        };
+      };
+
+      kubernetesComposition(
+        {
+          name: 'outer-nested-static-test',
+          kind: 'OuterNestedStaticTest',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', innerUrl: 'string' }),
+        },
+        outerFn
+      );
+
+      const probeCtx = createCompositionContext('nested-static-probe', { deduplicateIds: true });
+      runWithCompositionContext(probeCtx, () => {
+        outerFn({ name: 'myapp' });
+      });
+
+      const enrichedMap = synthesizeNestedCompositionStatus(
+        probeCtx.resources,
+        new Map([['inner1InnerDeploy', { readyReplicas: 1 }]]),
+        { debug() {} } as never,
+        probeCtx.nestedCompositionIds,
+        probeCtx.nestedStatusSnapshots
+      );
+
+      const ctx = createCompositionContext('nested-static-reexecution', { deduplicateIds: true });
+      ctx.liveStatusMap = enrichedMap;
+
+      const status = runWithCompositionContext(ctx, () => {
+        return outerFn({ name: 'myapp' });
+      });
+
+      expect(status.ready).toBe(true);
+      expect(status.innerUrl).toBe('http://myapp-inner:80');
+      expect(status.innerUrl).not.toContain('__KUBERNETES_REF_');
+    });
+
     it('should resolve both spec-derived and status-derived fields with live data', () => {
       // Simulate what reExecuteWithLiveStatus does: create a context with liveStatusMap
       // and run the composition function body directly

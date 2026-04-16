@@ -1712,7 +1712,8 @@ ${Object.entries(spec as Record<string, any>)
       probeContext.resources,
       liveStatusMap,
       this.logger,
-      probeContext.nestedCompositionIds
+      probeContext.nestedCompositionIds,
+      probeContext.nestedStatusSnapshots
     );
 
     // Real execution with live status

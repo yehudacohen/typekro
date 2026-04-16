@@ -24,24 +24,24 @@ function mockResources(keys: string[]): Record<string, Enhanced<unknown, unknown
 describe('synthesizeNestedCompositionStatus', () => {
   it('should synthesize ready status for nested composition when all children are in liveStatusMap', () => {
     const probeResources = mockResources([
-      'outer1-inngestBootstrap1-inngestHelmRelease',
-      'outer1-inngestBootstrap1-inngestHelmRepository',
-      'outer1-inngestBootstrap1-inngestNamespace',
-      'outer1-database',
-      'outer1-cache',
-      'outer1-app',
+      'inngestBootstrap1HelmRelease',
+      'inngestBootstrap1HelmRepository',
+      'inngestBootstrap1Namespace',
+      'database',
+      'cache',
+      'app',
     ]);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
-      ['inngestHelmRelease', { conditions: [{ type: 'Ready', status: 'True' }] }],
-      ['inngestHelmRepository', {}],
-      ['inngestNamespace', { phase: 'Active' }],
+      ['inngestBootstrap1HelmRelease', { conditions: [{ type: 'Ready', status: 'True' }] }],
+      ['inngestBootstrap1HelmRepository', {}],
+      ['inngestBootstrap1Namespace', { phase: 'Active' }],
       ['database', { readyInstances: 1 }],
       ['cache', { ready: true }],
       ['app', { readyReplicas: 1 }],
     ]);
 
-    const knownNestedIds = new Set(['outer1', 'inngestBootstrap1']);
+    const knownNestedIds = new Set(['inngestBootstrap1']);
 
     const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
@@ -51,39 +51,35 @@ describe('synthesizeNestedCompositionStatus', () => {
     expect(enriched.get('inngestBootstrap1')?.phase).toBe('Ready');
   });
 
-  it('should also add shorter suffix keys for the nested composition', () => {
+  it('should synthesize the nested parent id directly from merged child ids', () => {
     const probeResources = mockResources([
-      'webAppWithProcessing1-inngestBootstrap1-inngestHelmRelease',
+      'inngestBootstrap1HelmRelease',
     ]);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
-      ['inngestHelmRelease', {}],
+      ['inngestBootstrap1HelmRelease', {}],
     ]);
 
-    const knownNestedIds = new Set(['webAppWithProcessing1', 'inngestBootstrap1']);
+    const knownNestedIds = new Set(['inngestBootstrap1']);
 
     const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
-    // Full path
-    expect(enriched.has('webAppWithProcessing1-inngestBootstrap1')).toBe(true);
-    // Short suffix (used by the proxy)
     expect(enriched.has('inngestBootstrap1')).toBe(true);
-    // Both should be ready
     expect(enriched.get('inngestBootstrap1')?.ready).toBe(true);
   });
 
   it('should only count children present in liveStatusMap (missing children are ignored)', () => {
     const probeResources = mockResources([
-      'outer1-inner1-childA',
-      'outer1-inner1-childB',
+      'inner1ChildA',
+      'inner1ChildB',
     ]);
 
     // Only childA is deployed, childB is missing
     const liveStatusMap = new Map<string, Record<string, unknown>>([
-      ['childA', {}],
+      ['inner1ChildA', {}],
     ]);
 
-    const knownNestedIds = new Set(['outer1', 'inner1']);
+    const knownNestedIds = new Set(['inner1']);
 
     const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
@@ -94,16 +90,15 @@ describe('synthesizeNestedCompositionStatus', () => {
 
   it('should use knownNestedIds for precise identification (no digit heuristic)', () => {
     const probeResources = mockResources([
-      'outer1-database',
-      'outer1-cache',
+      'outer1Database',
+      'outer1Cache',
     ]);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
-      ['database', {}],
-      ['cache', {}],
+      ['outer1Database', {}],
+      ['outer1Cache', {}],
     ]);
 
-    // outer1 IS a known nested ID
     const knownNestedIds = new Set(['outer1']);
 
     const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
@@ -131,29 +126,23 @@ describe('synthesizeNestedCompositionStatus', () => {
 
   it('should not misidentify user resource names ending in digits', () => {
     const probeResources = mockResources([
-      'app1-workerV2-config',
+      'app1WorkerV2Config',
     ]);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
-      ['config', {}],
+      ['app1WorkerV2Config', {}],
     ]);
 
-    // Only app1 is a known nested ID, workerV2 is NOT
     const knownNestedIds = new Set(['app1']);
 
     const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 
-    // app1 should NOT be synthesized because 'workerV2-config' is not in liveStatusMap
-    // (workerV2 is not a known nested ID, so it's not split further)
     expect(enriched.has('workerV2')).toBe(false);
-    // app1 IS synthesized because the child suffix 'workerV2-config' is not in liveStatusMap...
-    // Actually, 'workerV2' is not a known nested ID, so the only candidate parent is 'app1'
-    // with child suffix 'workerV2-config' which is NOT in liveStatusMap → no synthesis
-    expect(enriched.has('app1')).toBe(false);
+    expect(enriched.has('app1')).toBe(true);
   });
 
   it('should preserve all original liveStatusMap entries', () => {
-    const probeResources = mockResources(['outer1-child']);
+    const probeResources = mockResources(['outer1Child']);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
       ['child', { custom: 'data' }],
@@ -170,20 +159,20 @@ describe('synthesizeNestedCompositionStatus', () => {
 
   it('should handle multiple nested compositions', () => {
     const probeResources = mockResources([
-      'outer1-inngest1-helmRelease',
-      'outer1-inngest1-namespace',
-      'outer1-valkey1-valkeyResource',
-      'outer1-database',
+      'inngest1HelmRelease',
+      'inngest1Namespace',
+      'valkey1ValkeyResource',
+      'database',
     ]);
 
     const liveStatusMap = new Map<string, Record<string, unknown>>([
-      ['helmRelease', {}],
-      ['namespace', {}],
-      ['valkeyResource', {}],
+      ['inngest1HelmRelease', {}],
+      ['inngest1Namespace', {}],
+      ['valkey1ValkeyResource', {}],
       ['database', {}],
     ]);
 
-    const knownNestedIds = new Set(['outer1', 'inngest1', 'valkey1']);
+    const knownNestedIds = new Set(['inngest1', 'valkey1']);
 
     const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
 

@@ -13,7 +13,78 @@
  */
 
 import type { TypeKroLogger } from '../logging/index.js';
+import { getMetadataField } from '../metadata/index.js';
 import type { Enhanced } from '../types/index.js';
+
+const SYNTHESIZED_READINESS_KEYS = new Set(['ready', 'phase', 'failed']);
+
+function isMarkerString(value: string): boolean {
+  return value.includes('__KUBERNETES_REF_');
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function filterConcreteNestedStatusFields(value: unknown): unknown {
+  if (
+    value === null ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return isMarkerString(value) ? undefined : value;
+  }
+
+  if (typeof value === 'function' || value === undefined) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const filtered = value
+      .map((item) => filterConcreteNestedStatusFields(item))
+      .filter((item) => item !== undefined);
+    return filtered.length === value.length ? filtered : undefined;
+  }
+
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  const filteredEntries = Object.entries(value)
+    .filter(([key]) => !key.startsWith('__') && !SYNTHESIZED_READINESS_KEYS.has(key))
+    .map(([key, entryValue]) => [key, filterConcreteNestedStatusFields(entryValue)] as const)
+    .filter(([, entryValue]) => entryValue !== undefined);
+
+  return filteredEntries.length > 0 ? Object.fromEntries(filteredEntries) : undefined;
+}
+
+function resolveNestedSnapshot(
+  parentId: string,
+  nestedStatusSnapshots?: Map<string, Record<string, unknown>>
+): Record<string, unknown> | undefined {
+  if (!nestedStatusSnapshots || nestedStatusSnapshots.size === 0) {
+    return undefined;
+  }
+
+  return nestedStatusSnapshots.get(parentId);
+}
+
+function isChildOfNestedId(
+  resourceKey: string,
+  resource: Enhanced<unknown, unknown>,
+  nestedId: string
+): boolean {
+  if (resourceKey.startsWith(nestedId) && resourceKey !== nestedId) {
+    return true;
+  }
+
+  const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
+  return aliases?.some((alias) => alias.startsWith(nestedId) && alias !== nestedId) ?? false;
+}
 
 /**
  * Synthesize status entries for nested compositions and return an enriched
@@ -35,7 +106,8 @@ export function synthesizeNestedCompositionStatus(
   probeResources: Record<string, Enhanced<unknown, unknown>>,
   liveStatusMap: Map<string, Record<string, unknown>>,
   logger: TypeKroLogger,
-  knownNestedIds?: Set<string>
+  knownNestedIds?: Set<string>,
+  nestedStatusSnapshots?: Map<string, Record<string, unknown>>
 ): Map<string, Record<string, unknown>> {
   const enrichedMap = new Map(liveStatusMap);
 
@@ -45,50 +117,22 @@ export function synthesizeNestedCompositionStatus(
     return enrichedMap;
   }
 
-  const deployedChildIds = new Set(liveStatusMap.keys());
+  for (const parentId of knownNestedIds) {
+    const childCount = Object.entries(probeResources).filter(([resourceKey, resource]) =>
+      isChildOfNestedId(resourceKey, resource, parentId) && liveStatusMap.has(resourceKey)
+    ).length;
 
-  // Scan probe resource keys for nested composition parents.
-  // Full keys follow the pattern: "{outer}-{parent}-{child}" where segments
-  // are hyphen-delimited and {parent} is a known nested composition ID.
-  //
-  // NAMING CONVENTION ASSUMPTION: composition IDs are camelCase (no hyphens)
-  // because toCamelCase() is applied in executeNestedCompositionWithSpec.
-  // Resource IDs are also camelCase (enforced by validateResourceId). This
-  // means hyphens only appear as segment delimiters, never inside IDs.
-  // If this convention changes, this parsing logic must be updated.
-  const nestedParents = new Map<string, { childCount: number }>();
+    const snapshot = resolveNestedSnapshot(parentId, nestedStatusSnapshots);
+    const filteredSnapshot = filterConcreteNestedStatusFields(snapshot);
 
-  for (const fullKey of Object.keys(probeResources)) {
-    const segments = fullKey.split('-');
-
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i]!;
-
-      if (!knownNestedIds.has(segment)) continue;
-
-      const candidateParent = segments.slice(0, i + 1).join('-');
-      // Skip if this is the entire key (no children)
-      if (candidateParent === fullKey) continue;
-      // Skip if already a real deployed resource
-      if (deployedChildIds.has(candidateParent)) continue;
-
-      const childSuffix = segments.slice(i + 1).join('-');
-      if (!childSuffix) continue;
-
-      // Check if this child was deployed (exists in liveStatusMap)
-      if (deployedChildIds.has(childSuffix)) {
-        if (!nestedParents.has(candidateParent)) {
-          nestedParents.set(candidateParent, { childCount: 0 });
-        }
-        nestedParents.get(candidateParent)!.childCount++;
-      }
+    if (childCount === 0 && !isPlainObject(filteredSnapshot)) {
+      continue;
     }
-  }
 
-  for (const [parentId, { childCount }] of nestedParents) {
     // All resources in liveStatusMap passed waitForReady, so if we found
     // children, the parent is ready.
     const synthesizedStatus: Record<string, unknown> = {
+      ...(isPlainObject(filteredSnapshot) ? filteredSnapshot : {}),
       ready: childCount > 0,
       phase: childCount > 0 ? 'Ready' : 'Installing',
       failed: false,
@@ -96,17 +140,6 @@ export function synthesizeNestedCompositionStatus(
 
     // Add under the full parent ID
     enrichedMap.set(parentId, synthesizedStatus);
-
-    // Also add under shorter suffixes of the parent ID.
-    // The inner composition's proxy uses a baseId like "inngestBootstrap1"
-    // but the full context key may be "webAppWithProcessing1-inngestBootstrap1".
-    const parentSegments = parentId.split('-');
-    for (let j = 1; j < parentSegments.length; j++) {
-      const suffix = parentSegments.slice(j).join('-');
-      if (knownNestedIds.has(suffix) && !enrichedMap.has(suffix)) {
-        enrichedMap.set(suffix, synthesizedStatus);
-      }
-    }
 
     logger.debug('Synthesized nested composition status', {
       parentId,

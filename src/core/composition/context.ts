@@ -79,6 +79,8 @@ export interface CompositionContext {
    */
   // biome-ignore lint/suspicious/noExplicitAny: composition fns have arbitrary spec/status types
   nestedCompositionFns?: Map<string, (...args: any[]) => unknown>;
+  /** Map of nested composition baseId -> returned status snapshot. */
+  nestedStatusSnapshots?: Map<string, Record<string, unknown>>;
   /** Singleton definitions collected while executing the composition. */
   singletonDefinitions?: Map<string, SingletonDefinitionRecord>;
   /** True when this context is a direct-mode re-execution. */
@@ -224,6 +226,7 @@ export function createCompositionContext(
     closureCounter: 0,
     compositionInstanceCounter: 0,
     variableMappings: {},
+    nestedStatusSnapshots: new Map(),
     singletonDefinitions: new Map(),
     isReExecution: contextOptions?.isReExecution,
     isNestedCall: contextOptions?.isNestedCall,

@@ -345,6 +345,14 @@ function executeNestedCompositionWithSpec<
   }
   parentContext.nestedCompositionFns.set(baseId, compositionFn);
 
+  if (!parentContext.nestedStatusSnapshots) {
+    parentContext.nestedStatusSnapshots = new Map();
+  }
+  const currentStatusSnapshot = (result as unknown as { status?: unknown }).status;
+  if (currentStatusSnapshot && typeof currentStatusSnapshot === 'object' && !Array.isArray(currentStatusSnapshot)) {
+    parentContext.nestedStatusSnapshots.set(baseId, currentStatusSnapshot as Record<string, unknown>);
+  }
+
   // Determine if this composition has a single resource
   const resourceCount = Object.keys(executionContext.resources).length;
   const nestedResourceIds = executionContext.nestedCompositionIds ?? new Set<string>();
@@ -472,6 +480,20 @@ function executeNestedCompositionWithSpec<
     for (const [innerBaseId, innerFn] of executionContext.nestedCompositionFns) {
       if (!parentContext.nestedCompositionFns!.has(innerBaseId)) {
         parentContext.nestedCompositionFns!.set(innerBaseId, innerFn);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionIds) {
+    for (const innerBaseId of executionContext.nestedCompositionIds) {
+      parentContext.nestedCompositionIds!.add(innerBaseId);
+    }
+  }
+
+  if (executionContext.nestedStatusSnapshots) {
+    for (const [innerBaseId, innerStatus] of executionContext.nestedStatusSnapshots) {
+      if (!parentContext.nestedStatusSnapshots!.has(innerBaseId)) {
+        parentContext.nestedStatusSnapshots!.set(innerBaseId, innerStatus);
       }
     }
   }
