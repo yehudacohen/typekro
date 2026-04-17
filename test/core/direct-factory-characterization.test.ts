@@ -232,6 +232,8 @@ describe('DirectFactory: singleton owner boundaries', () => {
       spec: { name: string }
     ) => Promise<void>;
 
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+
     await ensureSingletonOwners({ name: 'consumer' });
 
     expect(deployCalls).toHaveLength(1);
