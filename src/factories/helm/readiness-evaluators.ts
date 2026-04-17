@@ -213,6 +213,9 @@ export function createHelmTestReadinessEvaluator(
       // Check for test conditions
       const live = liveResource as HelmReleaseLike;
       const status = live.status;
+      if (!status) {
+        return baseStatus;
+      }
       if (status.conditions && Array.isArray(status.conditions)) {
         const testCondition = status.conditions.find(
           (c: KubernetesCondition) => c.type === 'TestSuccess'
