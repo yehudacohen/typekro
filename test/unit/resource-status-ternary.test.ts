@@ -676,16 +676,15 @@ describe('Phase 1: dependsOn edge cases', () => {
         const db = simple.Deployment({ name: 'db', image: 'postgres', id: 'database' });
         const app = simple.Deployment({ name: 'app', image: spec.image, id: 'app' });
 
-        // Custom condition — not just "ready", but a specific phase check
-        app.dependsOn(db, 'database.status.conditions.exists(c, c.type == "Ready" && c.status == "True")');
+        expect(() => {
+          app.dependsOn(db, 'database.status.conditions.exists(c, c.type == "Ready" && c.status == "True")');
+        }).toThrow(/conditional dependson\(\) is not supported/i);
 
         return { ready: app.status.readyReplicas >= 1 };
       }
     );
 
-    const yaml = comp.toYaml();
-    expect(yaml).toContain('typekro.dev/depends-on-database');
-    expect(yaml).toContain('database.metadata.name');
+    expect(() => comp.toYaml()).not.toThrow();
   });
 });
 
@@ -1065,8 +1064,30 @@ function findResourceSection(lines: string[], resourceId: string): string {
 // Review feedback: additional edge case coverage
 // =============================================================================
 
-describe('Review feedback: dependsOn accepts CelExpression condition', () => {
-  it('dependsOn with Cel.expr condition extracts expression string', async () => {
+describe('Review feedback: conditional dependsOn is unsupported', () => {
+  it('dependsOn rejects plain-string conditions', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/factories/simple/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'depends-string-cond', kind: 'DependsStringCond', spec: Spec, status: Status },
+      (spec) => {
+        const db = simple.Deployment({ name: 'db', image: 'postgres', id: 'database' });
+        const app = simple.Deployment({ name: 'app', image: spec.image, id: 'app' });
+        expect(() => app.dependsOn(db, 'database.status.ready')).toThrow(/conditional dependson\(\) is not supported/i);
+        return { ready: true };
+      }
+    );
+
+    expect(() => comp.toYaml()).not.toThrow();
+  });
+
+  it('dependsOn rejects Cel.expr conditions', async () => {
     const { kubernetesComposition } = await import(
       '../../src/core/composition/imperative.js'
     );
@@ -1091,18 +1112,14 @@ describe('Review feedback: dependsOn accepts CelExpression condition', () => {
           id: 'app',
         });
 
-        // Use Cel.expr as the condition instead of a plain string
-        app.dependsOn(db, Cel.expr<string>('db.status.readyReplicas >= 1'));
+        expect(() => app.dependsOn(db, Cel.expr<string>('db.status.readyReplicas >= 1')))
+          .toThrow(/conditional dependson\(\) is not supported/i);
 
         return { ready: true };
       }
     );
 
-    const yaml = comp.toYaml();
-    // dependsOn should inject an annotation with the dependency ref
-    expect(yaml).toContain('typekro.dev/depends-on-db');
-    expect(yaml).toContain('db.metadata.name');
-    expect(yaml).not.toContain('[object Object]');
+    expect(() => comp.toYaml()).not.toThrow();
   });
 });
 

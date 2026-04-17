@@ -649,7 +649,7 @@ function buildResourceEntry(
   // ready (all its own readyWhen conditions satisfied) before creating the
   // dependent resource. No cross-resource readyWhen is needed.
   const dependsOnDeps = getMetadataField(resource, 'dependsOn') as
-    | Array<{ resourceId: string; condition?: string }>
+    | Array<{ resourceId: string }>
     | undefined;
   if (dependsOnDeps && dependsOnDeps.length > 0) {
     const template = entry.template as Record<string, unknown> | undefined;

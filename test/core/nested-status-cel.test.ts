@@ -48,6 +48,15 @@ describe('remapVariableNames', () => {
     expect(result).toBe('inngestHelmRelease.status.ready');
   });
 
+  it('preserves named variables before the single-resource fast path', () => {
+    const result = remapVariableNames(
+      'inner.status.ready && d.status.ready',
+      ['inngestHelmRelease'],
+      new Set(['inner'])
+    );
+    expect(result).toBe('inner.status.ready && inngestHelmRelease.status.ready');
+  });
+
   it('should match unambiguous camelCase prefix', () => {
     const result = remapVariableNames(
       'inngest.status.ready',

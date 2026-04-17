@@ -194,6 +194,8 @@ export function remapVariableNames(
     });
     if (exactLower) return `${exactLower}.${section}.`;
 
+    if (preserveVariables?.has(id)) return match;
+
     // 2. Single resource — only treat minified/local shorthand names as
     // unambiguous. Named variables like `inner` or `inngest` may refer to
     // nested composition handles rather than the sole concrete resource.
@@ -221,8 +223,6 @@ export function remapVariableNames(
       return boundaryIndex <= 0 || /[A-Z_-]/.test(r[boundaryIndex]!);
     });
     if (suffixMatches.length === 1) return `${suffixMatches[0]}.${section}.`;
-
-    if (preserveVariables?.has(id)) return match;
 
     // No match or ambiguous
     if (prefixMatches.length > 1 || suffixMatches.length > 1) {

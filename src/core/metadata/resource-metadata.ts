@@ -85,10 +85,11 @@ export interface ResourceMetadata {
   /**
    * Explicit dependencies for KRO deployment ordering.
    * Each entry declares that this resource should wait for another
-   * resource to be ready before KRO creates it. Emitted as `readyWhen`
-   * entries in the RGD YAML.
+   * resource to be ready before KRO creates it. Emitted as template
+   * annotations so KRO discovers the dependency edge while building
+   * the resource DAG.
    */
-  dependsOn?: Array<{ resourceId: string; condition?: string }>;
+  dependsOn?: Array<{ resourceId: string }>;
 }
 
 /** Keys of ResourceMetadata that are valid metadata field names */

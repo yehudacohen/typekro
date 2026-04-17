@@ -568,9 +568,13 @@ export function createResource<TSpec extends object, TStatus extends object>(
       dependency: unknown,
       condition?: string | { expression: string }
     ): Enhanced<TSpec, TStatus> {
-      // Normalize condition: accept CelExpression or plain string
-      const condStr = condition !== undefined && typeof condition === 'object' &&
-        'expression' in condition ? condition.expression : condition as string | undefined;
+      if (condition !== undefined) {
+        throw new TypeKroError(
+          'Conditional dependsOn() is not supported. TypeKro can only serialize unconditional dependency edges.',
+          'UNSUPPORTED_DEPENDENCY_CONDITION',
+          { dependencyType: typeof dependency }
+        );
+      }
 
       // Extract resource ID from the dependency
       let depId: string | undefined;
@@ -612,10 +616,10 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
       // Accumulate dependencies
       const existing = getMetadataField(this, 'dependsOn') as
-        | Array<{ resourceId: string; condition?: string }>
+        | Array<{ resourceId: string }>
         | undefined;
       const deps = existing ?? [];
-      deps.push({ resourceId: depId, ...(condStr !== undefined && { condition: condStr }) });
+      deps.push({ resourceId: depId });
       setMetadataField(this, 'dependsOn', deps);
 
       return this as Enhanced<TSpec, TStatus>;

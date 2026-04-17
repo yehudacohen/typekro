@@ -78,12 +78,23 @@ function isChildOfNestedId(
   resource: Enhanced<unknown, unknown>,
   nestedId: string
 ): boolean {
-  if (resourceKey.startsWith(nestedId) && resourceKey !== nestedId) {
+  if (resourceKey === nestedId) {
+    return true;
+  }
+
+  const nextChar = resourceKey[nestedId.length];
+  if (resourceKey.startsWith(nestedId) && nextChar !== undefined && /[A-Z_-]/.test(nextChar)) {
     return true;
   }
 
   const aliases = getMetadataField(resource, 'resourceAliases') as string[] | undefined;
-  return aliases?.some((alias) => alias.startsWith(nestedId) && alias !== nestedId) ?? false;
+  return aliases?.some((alias) => {
+    if (alias === nestedId) {
+      return true;
+    }
+    const boundaryChar = alias[nestedId.length];
+    return alias.startsWith(nestedId) && boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar);
+  }) ?? false;
 }
 
 /**

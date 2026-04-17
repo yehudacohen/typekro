@@ -1086,7 +1086,8 @@ export class DirectResourceFactoryImpl<
         probeContext.resources,
         liveStatusMap,
         this.logger,
-        probeContext.nestedCompositionIds
+        probeContext.nestedCompositionIds,
+        probeContext.nestedStatusSnapshots
       );
 
       // Framework invariant: direct-mode re-execution must preserve the same

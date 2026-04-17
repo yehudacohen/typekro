@@ -26,7 +26,7 @@ import {
   KUBERNETES_REF_BRAND,
   NESTED_COMPOSITION_BRAND,
 } from '../constants/brands.js';
-import { CompositionExecutionError, ensureError } from '../errors.js';
+import { CompositionExecutionError, ensureError, TypeKroError } from '../errors.js';
 import { getComponentLogger } from '../logging/index.js';
 import { toResourceGraph } from '../serialization/core.js';
 import type {
@@ -525,6 +525,14 @@ function executeNestedCompositionWithSpec<
   // not all merged resources.
   Object.defineProperty(nestedCompositionResource, 'dependsOn', {
     value: function (dependency: unknown, condition?: string | CelExpression) {
+      if (condition !== undefined) {
+        throw new TypeKroError(
+          'Conditional dependsOn() is not supported. TypeKro can only serialize unconditional dependency edges.',
+          'UNSUPPORTED_DEPENDENCY_CONDITION',
+          { dependencyType: typeof dependency }
+        );
+      }
+
       // Find the last resource registered by this inner composition
       const innerResourceIds = Object.keys(executionContext.resources);
       const lastInnerResourceId = innerResourceIds[innerResourceIds.length - 1];
@@ -564,16 +572,12 @@ function executeNestedCompositionWithSpec<
         );
       }
 
-      // Normalize condition: accept CelExpression or plain string
-      const condStr = condition !== undefined && typeof condition === 'object' &&
-        isCelExpression(condition) ? condition.expression : condition as string | undefined;
-
       // Attach dependsOn to the leaf resource
       const existing = getMetadataField(mergedResource, 'dependsOn') as
-        | Array<{ resourceId: string; condition?: string }>
+        | Array<{ resourceId: string }>
         | undefined;
       const deps = existing ?? [];
-      deps.push({ resourceId: depId, ...(condStr !== undefined && { condition: condStr }) });
+      deps.push({ resourceId: depId });
       setMetadataField(mergedResource, 'dependsOn', deps);
 
       return nestedCompositionResource;

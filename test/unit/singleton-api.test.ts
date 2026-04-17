@@ -130,6 +130,27 @@ describe('singleton API', () => {
     expect('dependsOn' in result).toBe(false);
   });
 
+  it('nested composition handles expose dependsOn only when called inside a parent composition', () => {
+    const operator = createOperatorComposition();
+
+    const outer = kubernetesComposition(
+      {
+        name: 'outer-singleton-consumer',
+        apiVersion: 'platform.typekro.test/v1alpha1',
+        kind: 'OuterSingletonConsumer',
+        spec: type({ name: 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const nested = operator({ name: `${spec.name}-op`, namespace: 'system' }) as Record<string, unknown>;
+        expect('dependsOn' in nested).toBe(true);
+        return { ready: nested.status !== undefined } as { ready: boolean };
+      },
+    );
+
+    expect(() => outer.toYaml()).not.toThrow();
+  });
+
   it('uses factory type plus id as singleton identity', async () => {
     const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
     const operatorA = createOperatorComposition();

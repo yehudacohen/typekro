@@ -1254,6 +1254,62 @@ describe('T12 — CEL macro lambda variables are not treated as resource refs (I
   });
 });
 
+describe('T13 — nested CelExpression resource refs resolve through nested-id remapping', () => {
+  const innerComp = kubernetesComposition(
+    {
+      name: 't13-inner',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T13Inner',
+      spec: type({ name: 'string' }),
+      status: type({ appUrl: 'string' }),
+    },
+    (spec) => {
+      Deployment({ name: spec.name, image: 'nginx', id: 't13Deploy' });
+      ConfigMap({ name: `${spec.name}-cfg`, data: { mode: 'on' }, id: 't13Config' });
+      return { appUrl: `http://${spec.name}:80` };
+    }
+  );
+
+  const outerComp = kubernetesComposition(
+    {
+      name: 't13-outer',
+      apiVersion: 'test.example.com/v1alpha1',
+      kind: 'T13Outer',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    },
+    (spec) => {
+      const inner = innerComp({ name: spec.name });
+      ConfigMap({
+        name: `${spec.name}-consumer`,
+        data: {
+          direct: Cel.expr<string>('inner.status.appUrl'),
+          templated: Cel.template('prefix-%s', Cel.expr<string>('inner.status.appUrl')),
+        },
+        id: 't13Consumer',
+      });
+      return { ready: true };
+    }
+  );
+
+  it('does not leak virtual nested ids in bare Cel.expr resource fields', () => {
+    const yamlStr = outerComp.toYaml();
+    expect(yamlStr).not.toContain('inner.status.appUrl');
+    expect(yamlStr).not.toContain('__KUBERNETES_REF_inner');
+  });
+
+  it('does not leak virtual nested ids in Cel.template resource fields', () => {
+    const parsed = parseRgd(outerComp.toYaml());
+    const consumer = parsed.spec.resources.find((resource) => resource.id === 't13Consumer');
+    const data = consumer?.template?.data as Record<string, string> | undefined;
+
+    expect(data?.direct).not.toContain('inner.status.appUrl');
+    expect(data?.direct).toContain('schema.spec.name');
+    expect(data?.templated).toContain('prefix-');
+    expect(data?.templated).not.toContain('inner.status.appUrl');
+  });
+});
+
 // =============================================================================
 // Cycle detection in resolveNestedCompositionRefs
 // =============================================================================

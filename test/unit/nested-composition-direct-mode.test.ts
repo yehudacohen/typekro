@@ -409,6 +409,28 @@ describe('Nested Composition Direct Mode', () => {
       // Should NOT be a KubernetesRef proxy object
       expect(typeof status.innerUrl).not.toBe('object');
     });
+
+    it('direct factory reExecuteWithLiveStatus preserves nested static status snapshots', () => {
+      interface DirectFactoryWithReExecution {
+        reExecuteWithLiveStatus(
+          spec: { name: string; namespace?: string; innerImage: string },
+          liveStatusMap: Map<string, Record<string, unknown>>,
+        ): { ready: boolean; innerUrl: string; workerDbUrl: string } | null;
+      }
+
+      const factory = outerComposition.factory('direct', { namespace: 'test-ns' }) as unknown as DirectFactoryWithReExecution;
+      const status = factory.reExecuteWithLiveStatus(
+        { name: 'myapp', namespace: 'test-ns', innerImage: 'worker:latest' },
+        new Map([
+          ['inner1InnerDeployment', { readyReplicas: 1 }],
+          ['worker', { readyReplicas: 1 }],
+        ]),
+      );
+
+      expect(status).not.toBeNull();
+      expect(status?.innerUrl).toBe('http://myapp-inner.test-ns.svc:80');
+      expect(status?.innerUrl).not.toContain('__KUBERNETES_REF_');
+    });
   });
 
   describe('Bug #3: discovery stamps kind/apiVersion on list items', () => {

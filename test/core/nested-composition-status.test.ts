@@ -141,6 +141,24 @@ describe('synthesizeNestedCompositionStatus', () => {
     expect(enriched.has('app1')).toBe(true);
   });
 
+  it('does not treat app10 resources as children of app1', () => {
+    const probeResources = mockResources([
+      'app10Service',
+    ]);
+
+    const liveStatusMap = new Map<string, Record<string, unknown>>([
+      ['app10Service', {}],
+    ]);
+
+    const knownNestedIds = new Set(['app1', 'app10']);
+
+    const enriched = synthesizeNestedCompositionStatus(probeResources, liveStatusMap, logger, knownNestedIds);
+
+    expect(enriched.has('app1')).toBe(false);
+    expect(enriched.has('app10')).toBe(true);
+    expect(enriched.get('app10')?.ready).toBe(true);
+  });
+
   it('should preserve all original liveStatusMap entries', () => {
     const probeResources = mockResources(['outer1Child']);
 

@@ -721,16 +721,15 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
 
   if (isCelExpression(obj)) {
     if (obj.__isTemplate) {
-      // Template expressions from Cel.template() are already in Kro's mixed-template
-      // format (e.g. "http://${schema.spec.name}.${service.metadata.namespace}").
-      // Pass them through as-is — do NOT convert to CEL concat or re-wrap.
-      return obj.expression;
+      return obj.expression.replace(/\$\{([^}]+)\}/g, (_match, innerExpr: string) =>
+        finalizeCelForKro(innerExpr, context?.nestedStatusCel, context)
+      );
     }
     // Bare CelExpression — may be a single schema.spec.X reference (possibly
     // wrapped in `string(...)`). Apply omit() wrapping only when the whole
     // expression is exactly one schema.spec.<field> (or string() of one),
     // and <field> is a top-level optional field.
-    const expr = obj.expression;
+    const expr = resolveNestedCompositionRefs(obj.expression, context?.nestedStatusCel, context?.resourceIds);
     const bareField = /^schema\.spec\.([A-Za-z_$][\w$]*)$/.exec(expr)?.[1];
     if (bareField && context?.omitFields?.has(bareField)) {
       return `\${${maybeWrapWithOmit(expr, false, context.omitFields)}}`;
@@ -740,7 +739,7 @@ export function processResourceReferences(obj: unknown, context?: SerializationC
       const innerPath = `schema.spec.${stringField}`;
       return `\${${maybeWrapWithOmit(innerPath, true, context.omitFields)}}`;
     }
-    return `\${${expr}}`;
+    return finalizeCelForKro(expr, context?.nestedStatusCel, context);
   }
 
   // Strings containing __KUBERNETES_REF__ markers from template literals.

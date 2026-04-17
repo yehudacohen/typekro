@@ -296,7 +296,7 @@ export const webAppWithProcessing = kubernetesComposition(
     // cache.metadata.name is deterministic and gets inlined to a schema
     // ref, so KRO sees no implicit dependency. dependsOn creates an
     // explicit readyWhen on inngest's leaf resource.
-    inngestBootstrapApp.dependsOn(cache);
+    inngestBootstrapApp.dependsOn?.(cache);
 
     // ── Inngest credentials Secret ──────────────────────────────────────
     //

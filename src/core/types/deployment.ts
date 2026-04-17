@@ -489,7 +489,7 @@ export interface NestedCompositionResource<TSpec, TStatus> {
   readonly __resources: KubernetesResource[];
   /** Declare that this composition's resources depend on another resource being ready.
    * Added at runtime via Object.defineProperty in executeNestedCompositionWithSpec. */
-  readonly dependsOn: (dependency: unknown, condition?: string | CelExpression) => this;
+  readonly dependsOn?: (dependency: unknown) => this;
 }
 
 export interface SingletonHandleBase<TStatus> {
