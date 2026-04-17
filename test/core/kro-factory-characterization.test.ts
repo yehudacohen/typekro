@@ -899,6 +899,8 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
       spec: TestSpec
     ) => Promise<void>;
 
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+
     await ensureSingletonOwners({ name: 'consumer', replicas: 1 });
 
     expect(deployCalls).toHaveLength(1);

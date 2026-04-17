@@ -996,8 +996,7 @@ describe('Fix #35 additional coverage — nullish default propagation', () => {
     const comp = kubernetesComposition(
       { name: 'leaf-default', kind: 'LeafDefault', spec: Spec, status: Status },
       (spec) => {
-        const specWithDefaults = spec as typeof spec & { database?: string };
-        const dbName = specWithDefaults.database ?? 'app';
+        const dbName = (spec as typeof spec & { database?: string }).database ?? 'app';
         Deployment({
           name: spec.name,
           image: spec.image,
@@ -1049,8 +1048,7 @@ describe('Fix #35 additional coverage — nullish default propagation', () => {
     const comp = kubernetesComposition(
       { name: 'num-default', kind: 'NumDefault', spec: Spec, status: Status },
       (spec) => {
-        const specWithDefaults = spec as typeof spec & { replicas?: number };
-        const replicas = specWithDefaults.replicas ?? 1;
+        const replicas = (spec as typeof spec & { replicas?: number }).replicas ?? 1;
         Deployment({
           name: spec.name,
           image: 'nginx',
@@ -1116,8 +1114,7 @@ describe('Fix #35 additional coverage — addMissingDefaultFields', () => {
         status: Status,
       },
       (spec) => {
-        const specWithDefaults = spec as typeof spec & { database?: string };
-        const db = specWithDefaults.database ?? 'app';
+        const db = (spec as typeof spec & { database?: string }).database ?? 'app';
         Deployment({
           name: spec.name,
           image: spec.image,
@@ -1150,8 +1147,7 @@ describe('Fix #35 additional coverage — addMissingDefaultFields', () => {
         status: Status,
       },
       (spec) => {
-        const specWithDefaults = spec as typeof spec & { config?: { mode?: string } };
-        const mode = specWithDefaults.config?.mode ?? 'auto';
+        const mode = (spec as typeof spec & { config?: { mode?: string } }).config?.mode ?? 'auto';
         Deployment({
           name: spec.name,
           image: spec.image,
