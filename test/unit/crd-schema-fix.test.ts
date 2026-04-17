@@ -20,7 +20,6 @@ import {
  * The CRD fix functions return KubernetesResource (generic), but tests need to
  * inspect version-specific schema fields like openAPIV3Schema.properties.
  */
-// biome-ignore lint/suspicious/noExplicitAny: test-only type for accessing deeply nested CRD YAML structures
 type CrdTestResult = Record<string, any>;
 
 describe('CRD Schema Fix Utilities', () => {

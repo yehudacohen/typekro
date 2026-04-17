@@ -14,7 +14,7 @@ export interface HelmReleaseSpec {
     };
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Helm values are arbitrary user-defined objects
-  values?: Record<string, any>;
+  values?: Record<string, unknown>;
   targetNamespace?: string;
   install?: {
     createNamespace?: boolean;

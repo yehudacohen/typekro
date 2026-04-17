@@ -23,6 +23,11 @@ import { type } from 'arktype';
 import { typeKroRuntimeBootstrap } from '../src/compositions/typekro-runtime/index.js';
 import { certManager, externalDns, kubernetesComposition, simple } from '../src/index.js';
 
+interface ConditionLike {
+  type?: string;
+  status?: string;
+}
+
 // Configuration - Update these for your environment
 const CONFIG = {
   // Your domain (must have Route53 hosted zone)
@@ -154,12 +159,12 @@ const webappComposition = kubernetesComposition(
       ingressReady: (ingress.status.loadBalancer?.ingress?.length ?? 0) > 0,
       certificateReady:
         certificate.status?.conditions?.some(
-          (c: any) => c.type === 'Ready' && c.status === 'True'
+          (c: ConditionLike) => c.type === 'Ready' && c.status === 'True'
         ) || false,
       ready:
         deployment.status.readyReplicas >= spec.replicas &&
         (certificate.status?.conditions?.some(
-          (c: any) => c.type === 'Ready' && c.status === 'True'
+          (c: ConditionLike) => c.type === 'Ready' && c.status === 'True'
         ) ||
           false),
       url: `https://${spec.domain}`,

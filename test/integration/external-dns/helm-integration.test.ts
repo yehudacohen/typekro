@@ -216,9 +216,14 @@ describeOrSkip('External-DNS Helm Integration', () => {
       });
 
       // Validate AWS configuration
-      expect(awsRelease.spec.values?.provider).toBe('aws');
-      expect(awsRelease.spec.values?.aws?.region).toBe('us-east-1');
-      expect(awsRelease.spec.values?.domainFilters).toEqual(['example.com']);
+      const awsValues = awsRelease.spec.values as {
+        provider?: string;
+        aws?: { region?: string };
+        domainFilters?: string[];
+      } | undefined;
+      expect(awsValues?.provider).toBe('aws');
+      expect(awsValues?.aws?.region).toBe('us-east-1');
+      expect(awsValues?.domainFilters).toEqual(['example.com']);
 
       const cloudflareRelease = externalDnsHelmRelease({
         name: 'external-dns-cloudflare',
@@ -236,9 +241,14 @@ describeOrSkip('External-DNS Helm Integration', () => {
       });
 
       // Validate Cloudflare configuration
-      expect(cloudflareRelease.spec.values?.provider).toBe('cloudflare');
-      expect(cloudflareRelease.spec.values?.cloudflare?.proxied).toBe(true);
-      expect(cloudflareRelease.spec.values?.domainFilters).toEqual(['example.org']);
+      const cloudflareValues = cloudflareRelease.spec.values as {
+        provider?: string;
+        cloudflare?: { proxied?: boolean };
+        domainFilters?: string[];
+      } | undefined;
+      expect(cloudflareValues?.provider).toBe('cloudflare');
+      expect(cloudflareValues?.cloudflare?.proxied).toBe(true);
+      expect(cloudflareValues?.domainFilters).toEqual(['example.org']);
     });
 
     it('should use correct chart configuration', async () => {
@@ -340,13 +350,19 @@ describeOrSkip('External-DNS Helm Integration', () => {
         customValue: 'test', // Custom values should be preserved
       };
 
-      const mappedValues = mapExternalDnsConfigToHelmValues(config);
+      const mappedValues = mapExternalDnsConfigToHelmValues(config) as {
+        provider?: string;
+        aws?: { region?: string; zoneType?: string };
+        domainFilters?: string[];
+        policy?: string;
+        customValue?: string;
+      };
 
       expect(mappedValues.provider).toBe('aws');
       expect(mappedValues.domainFilters).toEqual(['example.com', 'example.org']);
       expect(mappedValues.policy).toBe('sync');
-      expect(mappedValues.aws.region).toBe('us-west-2');
-      expect(mappedValues.aws.zoneType).toBe('private');
+      expect(mappedValues.aws?.region).toBe('us-west-2');
+      expect(mappedValues.aws?.zoneType).toBe('private');
       expect(mappedValues.customValue).toBe('test');
     });
   });
@@ -374,9 +390,12 @@ describeOrSkip('External-DNS Helm Integration', () => {
       });
 
       // Validate that credentials are referenced via secrets
-      expect(release.spec.values?.aws?.credentials?.secretName).toBe('aws-credentials');
-      expect(release.spec.values?.aws?.credentials?.accessKeyIdKey).toBe('access-key-id');
-      expect(release.spec.values?.aws?.credentials?.secretAccessKeyKey).toBe('secret-access-key');
+      const values = release.spec.values as {
+        aws?: { credentials?: { secretName?: string; accessKeyIdKey?: string; secretAccessKeyKey?: string } };
+      } | undefined;
+      expect(values?.aws?.credentials?.secretName).toBe('aws-credentials');
+      expect(values?.aws?.credentials?.accessKeyIdKey).toBe('access-key-id');
+      expect(values?.aws?.credentials?.secretAccessKeyKey).toBe('secret-access-key');
     });
   });
 });

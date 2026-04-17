@@ -12,9 +12,9 @@ import type { ChallengeConfig, OrderConfig, ChallengeStatus, OrderStatus } from 
  * @param liveResource - The entire Challenge resource from Kubernetes
  * @returns ResourceStatus indicating if the challenge is ready
  */
-function challengeReadinessEvaluator(liveResource: any): { ready: boolean; message: string; reason?: string } {
+function challengeReadinessEvaluator(liveResource: unknown): { ready: boolean; message: string; reason?: string } {
   // Extract status from the live resource
-  const status = liveResource?.status as ChallengeStatus | undefined;
+  const status = (liveResource as { status?: ChallengeStatus } | null | undefined)?.status;
 
   // Check if status exists
   if (!status) {
@@ -176,9 +176,9 @@ export function challenge(config: ChallengeConfig): Enhanced<ChallengeConfig['sp
  * @param liveResource - The entire Order resource from Kubernetes
  * @returns ResourceStatus indicating if the order is ready
  */
-function orderReadinessEvaluator(liveResource: any): { ready: boolean; message: string; reason?: string } {
+function orderReadinessEvaluator(liveResource: unknown): { ready: boolean; message: string; reason?: string } {
   // Extract status from the live resource
-  const status = liveResource?.status as OrderStatus | undefined;
+  const status = (liveResource as { status?: OrderStatus } | null | undefined)?.status;
 
   // Check if status exists
   if (!status) {

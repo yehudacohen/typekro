@@ -16,11 +16,13 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import { kubernetesComposition } from '../../src/core/composition/imperative.js';
+import { Cel } from '../../src/index.js';
 import {
   createCompositionContext,
   runWithCompositionContext,
 } from '../../src/core/composition/context.js';
 import { synthesizeNestedCompositionStatus } from '../../src/core/deployment/nested-composition-status.js';
+import { serializeStatusMappingsToCel } from '../../src/core/serialization/cel-references.js';
 import { simple } from '../../src/factories/simple/index.js';
 import { createResource } from '../../src/core/proxy/create-resource.js';
 
@@ -39,7 +41,7 @@ function testCrdResource(config: { name: string; namespace?: string; id?: string
       ...(config.id && { id: config.id }),
     },
     { scope: 'namespaced' }
-  );
+  ) as any;
 }
 
 // ─── Schemas ─────────────────────────────────────────────────────────────
@@ -591,6 +593,22 @@ describe('Live Status Hydration', () => {
       expect(yaml).toContain('writeService');
       expect(yaml).toContain('cache');
       expect(yaml).toContain('hostname');
+    });
+
+    it('should resolve nested refs inside status Cel.template expressions', () => {
+      const serialized = serializeStatusMappingsToCel(
+        {
+          prefixedUrl: Cel.template('prefix-%s', Cel.expr<string>('nested.status.appUrl')),
+        },
+        {
+          '__nestedStatus:nested:appUrl': '"http://" + string(schema.spec.name) + ":80"',
+        },
+      );
+
+      expect(String(serialized.prefixedUrl)).toContain('prefix-${');
+      expect(String(serialized.prefixedUrl)).toContain('string(schema.spec.name)');
+      expect(String(serialized.prefixedUrl)).not.toContain('nested.status.appUrl');
+      expect(String(serialized.prefixedUrl)).not.toContain('__KUBERNETES_REF_nested');
     });
   });
 

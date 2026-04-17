@@ -11,9 +11,9 @@ import type { ConfigMapConfig } from '../types.js';
 
 // ConfigMaps don't have a spec field in Kubernetes - data is at the root level
 // We use an empty spec type to match the base factory
-type ConfigMapSpec = {};
+type ConfigMapSpec = Record<string, never>;
 
-type ConfigMapStatus = {};
+type ConfigMapStatus = Record<string, never>;
 
 /**
  * Creates a simple ConfigMap with sensible defaults

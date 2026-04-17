@@ -37,7 +37,7 @@ export interface ResourceGraph<
    */
   resources: Array<{
     id: string;
-    manifest: Enhanced<any, any>;
+    manifest: Enhanced<unknown, unknown>;
   }>;
 
   /**

@@ -856,3 +856,53 @@ describe('KroResourceFactory: mixed status hydration', () => {
     expect(instance.status.searxngUrl).toBe('');
   });
 });
+
+describe('KroResourceFactory: singleton owner boundaries', () => {
+  it('ensures singleton owners using the singleton id as instance name', async () => {
+    interface OwnerSpec {
+      name: string;
+    }
+
+    const deployCalls: Array<{ spec: OwnerSpec; opts?: Record<string, unknown> | undefined }> = [];
+    const fakeComposition = {
+      factory(mode: 'direct' | 'kro', options?: Record<string, unknown>) {
+        expect(mode).toBe('kro');
+        expect(options?.namespace).toBe('shared-system');
+
+        return {
+          async getInstances() {
+            return [];
+          },
+          async deploy(spec: OwnerSpec, opts?: Record<string, unknown>) {
+            deployCalls.push({ spec, ...(opts ? { opts } : {}) });
+            return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+          },
+        };
+      },
+    };
+
+    const factory = makeFactory('singleton-kro', {
+      namespace: 'default',
+      singletonDefinitions: [
+        {
+          id: 'stable-singleton-id',
+          key: 'SingletonBootstrap:stable-singleton-id',
+          specFingerprint: 'fp',
+          registryNamespace: 'shared-system',
+          composition: fakeComposition,
+          spec: { name: 'user-facing-name' },
+        },
+      ],
+    });
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: TestSpec
+    ) => Promise<void>;
+
+    await ensureSingletonOwners({ name: 'consumer', replicas: 1 });
+
+    expect(deployCalls).toHaveLength(1);
+    expect(deployCalls[0]?.spec).toEqual({ name: 'user-facing-name' });
+    expect(deployCalls[0]?.opts?.instanceNameOverride).toBe('stable-singleton-id');
+  });
+});

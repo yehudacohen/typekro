@@ -159,7 +159,7 @@ export function pebbleHelmRelease(
         },
       },
       interval: config.interval || '5m',
-      ...(config.values && { values: config.values }),
+      ...(config.values && { values: config.values as Record<string, unknown> }),
     },
   }).withReadinessEvaluator(pebbleHelmReleaseReadinessEvaluator);
 }

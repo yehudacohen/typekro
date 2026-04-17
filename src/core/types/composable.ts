@@ -60,12 +60,12 @@
 export type Composable<T> = {
   [K in keyof T]: undefined extends T[K]
     ? Exclude<T[K], undefined> extends object
-      ? Exclude<T[K], undefined> extends unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | Function
+      ? Exclude<T[K], undefined> extends unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | ((...args: never[]) => unknown)
         ? T[K] | undefined
         : Composable<Exclude<T[K], undefined>> | undefined
       : T[K] | undefined
     : T[K] extends object
-      ? T[K] extends unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | Function
+      ? T[K] extends unknown[] | Date | RegExp | Map<unknown, unknown> | Set<unknown> | ((...args: never[]) => unknown)
         ? T[K]
         : Composable<T[K]>
       : T[K];

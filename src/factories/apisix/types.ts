@@ -126,7 +126,7 @@ export interface APISixBootstrapConfig {
     containerSecurityContext?: SecurityContext;
     extraArgs?: string[];
     env?: EnvVar[];
-    config?: Record<string, any>;
+    config?: Record<string, unknown>;
   };
 
   // Dashboard configuration
@@ -138,7 +138,7 @@ export interface APISixBootstrapConfig {
       pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
     };
     resources?: ResourceRequirements;
-    config?: Record<string, any>;
+    config?: Record<string, unknown>;
   };
 
   // etcd configuration
@@ -181,7 +181,7 @@ export interface APISixBootstrapConfig {
   };
 
   // Custom values override (for any additional Helm values)
-  customValues?: Record<string, any>;
+  customValues?: Record<string, unknown>;
 }
 
 /**
@@ -417,7 +417,7 @@ export interface APISixHelmValues {
     containerSecurityContext?: SecurityContext;
     extraArgs?: string[];
     env?: EnvVar[];
-    config?: Record<string, any>;
+    config?: Record<string, unknown>;
     // Admin service configuration (for ingress controller chart)
     // This configures the init container to wait for the correct APISIX admin service
     adminService?: {
@@ -436,7 +436,7 @@ export interface APISixHelmValues {
       pullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
     };
     resources?: ResourceRequirements;
-    config?: Record<string, any>;
+    config?: Record<string, unknown>;
   };
 
   // etcd configuration

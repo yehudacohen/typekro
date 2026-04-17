@@ -361,7 +361,7 @@ function executeNestedCompositionWithSpec<
   const mergedInnerResourceIds: string[] = [];
   for (const [resourceId, resource] of Object.entries(executionContext.resources)) {
     const uniqueId = computeMergedId(baseId, resourceId, resourceCount, nestedResourceIds.has(resourceId));
-    const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<any, any>;
+    const mergedResource = { ...(resource as Record<string, unknown>) } as Enhanced<unknown, unknown>;
     copyResourceMetadata(resource, mergedResource);
 
     const existingAliases = getMetadataField(mergedResource, 'resourceAliases') as string[] | undefined;
@@ -478,22 +478,22 @@ function executeNestedCompositionWithSpec<
   // `?? <literal>` defaults and auto-mirror them into the top-level schema.
   if (executionContext.nestedCompositionFns) {
     for (const [innerBaseId, innerFn] of executionContext.nestedCompositionFns) {
-      if (!parentContext.nestedCompositionFns!.has(innerBaseId)) {
-        parentContext.nestedCompositionFns!.set(innerBaseId, innerFn);
+      if (!parentContext.nestedCompositionFns?.has(innerBaseId)) {
+        parentContext.nestedCompositionFns?.set(innerBaseId, innerFn);
       }
     }
   }
 
   if (executionContext.nestedCompositionIds) {
     for (const innerBaseId of executionContext.nestedCompositionIds) {
-      parentContext.nestedCompositionIds!.add(innerBaseId);
+      parentContext.nestedCompositionIds?.add(innerBaseId);
     }
   }
 
   if (executionContext.nestedStatusSnapshots) {
     for (const [innerBaseId, innerStatus] of executionContext.nestedStatusSnapshots) {
-      if (!parentContext.nestedStatusSnapshots!.has(innerBaseId)) {
-        parentContext.nestedStatusSnapshots!.set(innerBaseId, innerStatus);
+      if (!parentContext.nestedStatusSnapshots?.has(innerBaseId)) {
+        parentContext.nestedStatusSnapshots?.set(innerBaseId, innerStatus);
       }
     }
   }
@@ -524,7 +524,7 @@ function executeNestedCompositionWithSpec<
   // by this inner composition (the "leaf" that gates overall readiness),
   // not all merged resources.
   Object.defineProperty(nestedCompositionResource, 'dependsOn', {
-    value: function (dependency: unknown, condition?: string | CelExpression) {
+    value: (dependency: unknown, condition?: string | CelExpression) => {
       if (condition !== undefined) {
         throw new TypeKroError(
           'Conditional dependsOn() is not supported. TypeKro can only serialize unconditional dependency edges.',

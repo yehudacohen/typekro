@@ -96,7 +96,7 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
     const items = ((repos as Record<string, unknown>).items as Record<string, unknown>[]) || [];
     for (const item of items) {
       const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
-      if (name && name.includes('apisix')) {
+      if (name?.includes('apisix')) {
         try {
           await customObjectsApi.deleteNamespacedCustomObject({
             group: 'source.toolkit.fluxcd.io',
@@ -132,7 +132,7 @@ async function cleanOrphanedApisixResources(kc: k8s.KubeConfig): Promise<void> {
     const items = ((releases as Record<string, unknown>).items as Record<string, unknown>[]) || [];
     for (const item of items) {
       const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
-      if (name && name.includes('apisix')) {
+      if (name?.includes('apisix')) {
         try {
           await customObjectsApi.deleteNamespacedCustomObject({
             group: 'helm.toolkit.fluxcd.io',
@@ -205,7 +205,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
         ((releases as Record<string, unknown>).items as Record<string, unknown>[]) || [];
       for (const item of items) {
         const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
-        if (name && name.includes('apisix')) {
+        if (name?.includes('apisix')) {
           try {
             await customObjectsApi.deleteNamespacedCustomObject({
               group: 'helm.toolkit.fluxcd.io',
@@ -238,7 +238,7 @@ describeOrSkip('APISIX Bootstrap Composition Integration Tests', () => {
       const items = ((repos as Record<string, unknown>).items as Record<string, unknown>[]) || [];
       for (const item of items) {
         const name = (item.metadata as Record<string, unknown>)?.name as string | undefined;
-        if (name && name.includes('apisix')) {
+        if (name?.includes('apisix')) {
           try {
             await customObjectsApi.deleteNamespacedCustomObject({
               group: 'source.toolkit.fluxcd.io',

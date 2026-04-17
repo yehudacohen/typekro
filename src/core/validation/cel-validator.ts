@@ -329,7 +329,7 @@ export function validateStatusCelExpressions(
   const { staticFields, dynamicFields } = separateStatusFields(statusMappings);
 
   // Only validate dynamic fields that will be sent to Kro
-  function validateExpression(fieldName: string, value: any): void {
+  function validateExpression(fieldName: string, value: unknown): void {
     if (isCelExpression(value)) {
       const expression = remapVariableNames(
         value.expression,
@@ -435,7 +435,7 @@ export function validateResourceIds(
         errors.push({
           field: `resources.${key}.id`,
           expression: resource.id,
-          error: validation.error!,
+          error: validation.error ?? 'Unknown CEL validation error',
         });
       }
     }

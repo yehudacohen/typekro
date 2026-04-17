@@ -50,11 +50,11 @@ import { serializeResourceGraphToYaml } from './yaml.js';
  * Separate Enhanced<> resources from deployment closures in the builder result
  */
 function separateResourcesAndClosures<
-  T extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  T extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   builderResult: T
-): { resources: Record<string, Enhanced<any, any>>; closures: Record<string, DeploymentClosure> } {
-  const resources: Record<string, Enhanced<any, any>> = {};
+): { resources: Record<string, Enhanced<unknown, unknown>>; closures: Record<string, DeploymentClosure> } {
+  const resources: Record<string, Enhanced<unknown, unknown>> = {};
   const closures: Record<string, DeploymentClosure> = {};
 
   for (const [key, value] of Object.entries(builderResult)) {
@@ -63,10 +63,10 @@ function separateResourcesAndClosures<
       closures[key] = value as DeploymentClosure;
     } else if (value && typeof value === 'object' && 'kind' in value && 'apiVersion' in value) {
       // This is an Enhanced<> resource
-      resources[key] = value as Enhanced<any, any>;
+      resources[key] = value as Enhanced<unknown, unknown>;
     } else {
       // Unknown type, treat as resource for backward compatibility
-      resources[key] = value as Enhanced<any, any>;
+      resources[key] = value as Enhanced<unknown, unknown>;
     }
   }
 
@@ -220,7 +220,7 @@ function validateResourceGraphName(name: string | undefined | null): string {
  */
 function findResourceByKey(
   key: string | symbol,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   logger?: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): KubernetesResource | undefined {
   if (typeof key !== 'string') return undefined;
@@ -358,7 +358,7 @@ interface StatusAnalysisResult {
 function analyzeAndConvertStatusMappings<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   statusBuilder: (
@@ -366,7 +366,7 @@ function analyzeAndConvertStatusMappings<
     resources: TResources
   ) => MagicAssignableShape<TStatus>,
   schema: SchemaProxy<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): StatusAnalysisResult {
   // Delegate to the decomposed pipeline (Phase 2.9).
@@ -413,7 +413,7 @@ interface CompositionBodyAnalysisResult {
  */
 function processCompositionBodyAnalysis(
   statusMappings: Record<string, unknown> | MagicAssignableShape<KroCompatibleType>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   analyzedStatusMappings: Record<string, unknown>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>,
   schemaDefinition?: { spec: { json?: unknown } }
@@ -735,14 +735,18 @@ function setNestedOverrideValue(
   const segments = path.split('.');
   let current = target;
   for (let index = 0; index < segments.length - 1; index++) {
-    const segment = segments[index]!;
+    const segment = segments[index];
+    if (!segment) continue;
     const existing = current[segment];
     if (typeof existing !== 'object' || existing === null || Array.isArray(existing)) {
       current[segment] = {};
     }
     current = current[segment] as Record<string, unknown>;
   }
-  current[segments[segments.length - 1]!] = value;
+  const leafSegment = segments[segments.length - 1];
+  if (leafSegment) {
+    current[leafSegment] = value;
+  }
 }
 
 function collectHybridOverrideValues(analysis: ASTAnalysisResult): Map<string, unknown> {
@@ -796,7 +800,7 @@ function captureHybridRunResources(
   analysis: ASTAnalysisResult,
   fieldsToOverride?: Set<string>
 ): {
-  captured: Record<string, Enhanced<any, any>>;
+  captured: Record<string, Enhanced<unknown, unknown>>;
   overriddenFields: Set<string>;
   overrideConditions: Map<string, string>;
 } {
@@ -846,7 +850,7 @@ function captureHybridRunResources(
       compositionFn(hybridSpec);
     });
     return {
-      captured: tempCtx.resources as Record<string, Enhanced<any, any>>,
+      captured: tempCtx.resources as Record<string, Enhanced<unknown, unknown>>,
       overriddenFields,
       overrideConditions,
     };
@@ -1109,9 +1113,10 @@ function buildCelConditional(
   //   has(cnpgOperator) && has(cnpgOperator.monitoring) && has(cnpgOperator.monitoring.enabled)
   const schemaPathMatch = proxyRepr.match(/schema\.spec\.([a-zA-Z0-9_.]+)/);
   if (schemaPathMatch) {
-    const fullRefPath = schemaPathMatch[1]!.replace(/\.+$/, '');
+    const fullRefPath = schemaPathMatch[1]?.replace(/\.+$/, '');
+    if (!fullRefPath) return `\${has(${guardField}) ? ${proxyRepr} : ${hybridRepr}}`;
     const fullPath = `schema.spec.${fullRefPath}`;
-    if (fullPath !== guardField && fullPath.startsWith(guardField + '.')) {
+    if (fullPath !== guardField && fullPath.startsWith(`${guardField}.`)) {
       const guardSegments = field.split('.').length;
       const leafSegments = fullRefPath.split('.');
       const guards = [`has(${guardField})`];
@@ -1244,8 +1249,12 @@ function markerStringToCelExpr(str: string): string {
       const literal = str.slice(lastIndex, m.index);
       parts.push(`"${escapeCelLiteral(literal)}"`);
     }
-    const resourceId = m[1]!;
-    const fieldPath = m[2]!;
+    const resourceId = m[1];
+    const fieldPath = m[2];
+    if (!resourceId || !fieldPath) {
+      m = pattern.exec(str);
+      continue;
+    }
     const celPath =
       resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
     parts.push(`string(${celPath})`);
@@ -1256,7 +1265,8 @@ function markerStringToCelExpr(str: string): string {
     const literal = str.slice(lastIndex);
     parts.push(`"${escapeCelLiteral(literal)}"`);
   }
-  return parts.length === 1 ? parts[0]! : parts.join(' + ');
+  const [firstPart] = parts;
+  return parts.length === 1 && firstPart !== undefined ? firstPart : parts.join(' + ');
 }
 
 // =============================================================================
@@ -1280,7 +1290,7 @@ function reanalyzeStatusForDirectFactory<
     statusMappings: MagicAssignableShape<KroCompatibleType>;
   },
   analyzedStatusMappings: Record<string, unknown>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   schema: SchemaProxy<TSpec, TStatus>,
   serializationLogger: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): Record<string, unknown> {
@@ -1341,7 +1351,7 @@ function wrapWithResourceGraphProxy<
   TStatus extends KroCompatibleType,
 >(
   baseResourceGraph: TypedResourceGraph<TSpec, TStatus>,
-  resourcesWithKeys: Record<string, Enhanced<any, any>>,
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
   logger?: ReturnType<ReturnType<typeof getComponentLogger>['child']>
 ): TypedResourceGraph<TSpec, TStatus> {
   return new Proxy(baseResourceGraph, {
@@ -1432,7 +1442,7 @@ export function toResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
   // This new generic captures the exact shape of your resources - can be Enhanced<> resources or DeploymentClosures
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   // The resourceBuilder is now defined as returning that specific shape
@@ -1463,7 +1473,7 @@ export function toResourceGraph<
 function createTypedResourceGraph<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any> | DeploymentClosure>,
+  TResources extends Record<string, Enhanced<unknown, unknown> | DeploymentClosure>,
 >(
   definition: ResourceGraphDefinition<TSpec, TStatus>,
   resourceBuilder: (schema: SchemaProxy<TSpec, TStatus>) => TResources,

@@ -40,7 +40,7 @@ export interface ContextDetectionResult {
   hasKubernetesRefs: boolean;
 
   /** Detected KubernetesRef objects */
-  kubernetesRefs: KubernetesRef<any>[];
+  kubernetesRefs: KubernetesRef<unknown>[];
 
   /** Suggested CEL generation strategy */
   celStrategy: CelGenerationStrategy;
@@ -88,10 +88,10 @@ export interface ContextMetadata {
  */
 export interface ContextDetectionConfig {
   /** Available resources for context analysis */
-  availableResources?: Record<string, Enhanced<any, any>>;
+  availableResources?: Record<string, Enhanced<unknown, unknown>>;
 
   /** Schema proxy for schema field analysis */
-  schemaProxy?: SchemaProxy<any, any>;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>;
 
   /** Factory type being used */
   factoryType?: 'direct' | 'kro';
@@ -248,7 +248,7 @@ export class ExpressionContextDetector {
    */
   private analyzeExpressionContent(
     expression: unknown,
-    kubernetesRefs: KubernetesRef<any>[]
+    kubernetesRefs: KubernetesRef<unknown>[]
   ): ContentAnalysis {
     const analysis: ContentAnalysis = {
       referencesSchema: false,
@@ -546,7 +546,7 @@ export class ExpressionContextDetector {
   private buildContextMetadata(
     context: ExpressionContext,
     config: ContextDetectionConfig,
-    kubernetesRefs: KubernetesRef<any>[]
+    kubernetesRefs: KubernetesRef<unknown>[]
   ): ContextMetadata {
     const metadata: ContextMetadata = {
       ...(config.factoryType ? { factoryType: config.factoryType } : {}),

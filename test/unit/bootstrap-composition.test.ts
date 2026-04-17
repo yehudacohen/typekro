@@ -75,7 +75,6 @@ describe('TypeKro Runtime Bootstrap Composition', () => {
       (r: KubernetesResource<unknown, unknown>) => r.kind === 'HelmRelease'
     );
     expect(helmReleases.length).toBe(1);
-    // biome-ignore lint/suspicious/noExplicitAny: deeply nested helm release spec structure needs flexible access
     const kroHelmRelease = helmReleases[0] as unknown as Record<string, any>;
     expect(kroHelmRelease).toBeDefined();
     expect(kroHelmRelease.spec?.chart?.spec?.chart).toBe('kro');

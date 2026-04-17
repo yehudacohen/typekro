@@ -42,10 +42,10 @@ const logger = getComponentLogger('status-builder-analyzer');
 export function analyzeReturnObjectField(
   fieldName: string,
   fieldValue: unknown,
-  resources: Record<string, Enhanced<any, any>>,
+  resources: Record<string, Enhanced<unknown, unknown>>,
   optionalityHandler: EnhancedTypeOptionalityHandler,
   options: Required<StatusBuilderAnalysisOptions>,
-  schemaProxy?: SchemaProxy<any, any>
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
 ): {
   celExpression: CelExpression | null;
   dependencies: KubernetesRef<unknown>[];
@@ -125,12 +125,12 @@ export function analyzeReturnObjectField(
  */
 export function analyzeStatusField(
   property: PropertyAnalysis,
-  resources: Record<string, Enhanced<any, any>>,
+  resources: Record<string, Enhanced<unknown, unknown>>,
   originalSource: string,
   expressionAnalyzer: JavaScriptToCelAnalyzer,
   optionalityHandler: EnhancedTypeOptionalityHandler,
   options: Required<StatusBuilderAnalysisOptions>,
-  schemaProxy?: SchemaProxy<any, any>
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
 ): StatusFieldAnalysisResult {
   const fieldName = property.name;
   const originalExpression = property.valueSource;
@@ -356,11 +356,11 @@ export function analyzeStatusField(
  */
 export function analyzeMixedObjectExpression(
   objectNode: ESTreeNode,
-  resources: Record<string, Enhanced<any, any>>,
+  resources: Record<string, Enhanced<unknown, unknown>>,
   originalSource: string,
   expressionAnalyzer: JavaScriptToCelAnalyzer,
   options: Required<StatusBuilderAnalysisOptions>,
-  schemaProxy?: SchemaProxy<any, any>
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
 ): {
   valid: boolean;
   processedObject: Record<string, unknown> | null;

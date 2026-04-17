@@ -58,8 +58,9 @@ export function applyTernaryConditionalsToResources(
         if (m.index > lastIndex) {
           celTruthy += escapeCelStringLiteral(matchedSection.slice(lastIndex, m.index));
         }
-        const resourceId = m[1]!;
-        const fieldPath = m[2]!;
+        const resourceId = m[1];
+        const fieldPath = m[2];
+        if (!resourceId || !fieldPath) continue;
         const celPath =
           resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
         celTruthy += `" + string(${celPath}) + "`;

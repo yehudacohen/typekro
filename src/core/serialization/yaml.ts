@@ -443,7 +443,8 @@ function applyTemplateOverrides(
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
       if (!part) continue;
-      const next = target![part];
+      if (!target) break;
+      const next = target[part];
       if (next && typeof next === 'object' && !Array.isArray(next)) {
         target = next as Record<string, unknown>;
       } else {

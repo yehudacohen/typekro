@@ -49,8 +49,9 @@ import { DirectDeploymentEngine } from './engine.js';
 import { synthesizeNestedCompositionStatus } from './nested-composition-status.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
-import { generateInstanceName } from './shared-utilities.js';
+import { generateInstanceName, getSingletonInstanceName } from './shared-utilities.js';
 import { AlchemyDeploymentStrategy, DirectDeploymentStrategy } from './strategies/index.js';
+import type { SingletonDefinitionRecord } from '../types/deployment.js';
 
 /**
  * DirectResourceFactory implementation
@@ -71,10 +72,12 @@ export class DirectResourceFactoryImpl<
   private readonly resources: Record<string, KubernetesResource>;
   private readonly closures: Record<string, DeploymentClosure>;
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
+  // biome-ignore lint/suspicious/noExplicitAny: status builders accept composition-specific resource maps that cannot be expressed more tightly here.
   private readonly statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined;
   private deploymentEngine?: DirectDeploymentEngine;
   private readonly alchemyScope: Scope | undefined;
   private readonly factoryOptions: FactoryOptions;
+  private readonly singletonDefinitions: SingletonDefinitionRecord[];
   private readonly deployedInstances: Map<string, Enhanced<TSpec, TStatus>> = new Map();
   private readonly logger = getComponentLogger('direct-factory');
   private readonly clientManager: KubernetesClientManager;
@@ -83,6 +86,7 @@ export class DirectResourceFactoryImpl<
     name: string,
     resources: Record<string, KubernetesResource>,
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    // biome-ignore lint/suspicious/noExplicitAny: constructor must preserve the generic status-builder resource map contract.
     statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
     options: FactoryOptions = {}
   ) {
@@ -95,6 +99,7 @@ export class DirectResourceFactoryImpl<
     this.schemaDefinition = schemaDefinition;
     this.statusBuilder = statusBuilder;
     this.factoryOptions = options;
+    this.singletonDefinitions = options.singletonDefinitions ?? [];
     this.clientManager = new KubernetesClientManager(options);
   }
 
@@ -139,7 +144,7 @@ export class DirectResourceFactoryImpl<
    */
   async deploy(
     spec: TSpec,
-    opts?: { targetScopes?: string[] }
+    opts?: { targetScopes?: string[]; instanceNameOverride?: string }
   ): Promise<Enhanced<TSpec, TStatus>> {
     this.logger.debug('DirectResourceFactory deploy called', {
       factoryName: this.name,
@@ -152,6 +157,8 @@ export class DirectResourceFactoryImpl<
     this.logger.debug('Got deployment strategy', {
       strategyType: strategy.constructor.name,
     });
+
+    await this.ensureSingletonOwners(spec);
 
     const instance = await strategy.deploy(spec, opts);
 
@@ -323,7 +330,8 @@ export class DirectResourceFactoryImpl<
       // cause race conditions if the caller immediately re-creates resources.
       const deletedNamespaces = rollbackResult.rolledBackResources
         .filter((r) => r.startsWith('Namespace/'))
-        .map((r) => r.split('/')[1]!);
+        .map((r) => r.split('/')[1])
+        .filter((namespace): namespace is string => namespace !== undefined);
 
       if (deletedNamespaces.length > 0) {
         // Delete PVCs in namespaces before waiting — StatefulSet PVCs have
@@ -1011,7 +1019,7 @@ export class DirectResourceFactoryImpl<
 
         // Extract the underlying Kubernetes resource from the Enhanced proxy
         const kubernetesResource = this.extractKubernetesResourceFromEnhanced(
-          enhanced as Enhanced<any, any>
+          enhanced as Enhanced<unknown, unknown>
         );
         kubernetesResources[id] = kubernetesResource;
       }
@@ -1198,7 +1206,7 @@ export class DirectResourceFactoryImpl<
    * string representations, which is critical for HelmRelease values that may contain
    * schema proxy references.
    */
-  private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<any, any>): KubernetesResource {
+  private extractKubernetesResourceFromEnhanced(enhanced: Enhanced<unknown, unknown>): KubernetesResource {
     // Start with required Kubernetes resource structure
     const resource: KubernetesResource = {
       apiVersion: enhanced.apiVersion,
@@ -1410,6 +1418,56 @@ export class DirectResourceFactoryImpl<
     // Use the imported shared utility
     return generateInstanceName(spec);
   }
+
+  private async ensureSingletonOwners(spec: TSpec): Promise<void> {
+    const discoveredSingletons = new Map<string, SingletonDefinitionRecord>();
+
+    if (this.factoryOptions.compositionFn) {
+      const singletonContext = createCompositionContext('singleton-owner-discovery');
+      runWithCompositionContext(singletonContext, () => {
+        this.factoryOptions.compositionFn?.(spec);
+      });
+
+      for (const [key, definition] of singletonContext.singletonDefinitions ?? []) {
+        discoveredSingletons.set(key, definition);
+      }
+    }
+
+    for (const definition of this.singletonDefinitions) {
+      if (!discoveredSingletons.has(definition.key)) {
+        discoveredSingletons.set(definition.key, definition);
+      }
+    }
+
+    if (discoveredSingletons.size === 0) return;
+
+    for (const definition of discoveredSingletons.values()) {
+      const singletonFactory = definition.composition.factory('direct', {
+        namespace: definition.registryNamespace,
+        waitForReady: true,
+        ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
+        ...(this.factoryOptions.kubeConfig !== undefined ? { kubeConfig: this.factoryOptions.kubeConfig } : {}),
+        ...(this.factoryOptions.skipTLSVerify !== undefined ? { skipTLSVerify: this.factoryOptions.skipTLSVerify } : {}),
+      }) as DirectResourceFactory<KroCompatibleType, KroCompatibleType>;
+
+      const singletonInstanceName = getSingletonInstanceName(definition.id);
+      try {
+        const existingInstances = await singletonFactory.getInstances();
+        if (existingInstances.some((instance) => instance.metadata?.name === singletonInstanceName)) {
+          continue;
+        }
+      } catch {
+        // Best-effort reuse only; deploy below will create the owner if needed.
+      }
+
+      await (singletonFactory as unknown as {
+        deploy(
+          singletonSpec: KroCompatibleType,
+          opts?: { instanceNameOverride?: string }
+        ): Promise<Enhanced<KroCompatibleType, KroCompatibleType>>;
+      }).deploy(definition.spec, { instanceNameOverride: singletonInstanceName });
+    }
+  }
 }
 
 /** Describes an unresolved reference found during direct-mode toYaml() validation. */
@@ -1492,6 +1550,7 @@ export function createDirectResourceFactory<
   name: string,
   resources: Record<string, KubernetesResource>,
   schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+  // biome-ignore lint/suspicious/noExplicitAny: factory creation must accept status builders with composition-specific resource maps.
   statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
   options: FactoryOptions = {}
 ): DirectResourceFactory<TSpec, TStatus> {

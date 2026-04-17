@@ -391,7 +391,8 @@ export function lookupNestedExpression(
     (m) => m.baseId.replace(/\d+$/, '') === refBase
   );
   if (baseNameMatches.length === 1) {
-    return nestedStatusCel[baseNameMatches[0]!.key];
+    const match = baseNameMatches[0];
+    return match ? nestedStatusCel[match.key] : undefined;
   }
 
   // Strategy 3: unambiguous camelCase / case-insensitive prefix.
@@ -400,7 +401,10 @@ export function lookupNestedExpression(
     const resourceLooksLikeMergedChild =
       (resourceId.startsWith(baseStem) &&
         resourceId.length > baseStem.length &&
-        /[A-Z_-]/.test(resourceId[baseStem.length]!)) ||
+        (() => {
+          const boundaryChar = resourceId[baseStem.length];
+          return boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar);
+        })()) ||
       new RegExp(`^${baseStem}\\d+[A-Z_-]`).test(resourceId);
     if (resourceLooksLikeMergedChild) {
       return false;
@@ -413,7 +417,8 @@ export function lookupNestedExpression(
     );
   });
   if (prefixMatches.length === 1) {
-    return nestedStatusCel[prefixMatches[0]!.key];
+    const match = prefixMatches[0];
+    return match ? nestedStatusCel[match.key] : undefined;
   }
   if (prefixMatches.length > 1) {
     logger.warn('Ambiguous nested composition prefix match', {
@@ -427,7 +432,8 @@ export function lookupNestedExpression(
   // Strategy 4: field-name uniqueness.
   if (!allowFieldFallback) return undefined;
   if (fieldMatches.length === 1) {
-    return nestedStatusCel[fieldMatches[0]!.key];
+    const match = fieldMatches[0];
+    return match ? nestedStatusCel[match.key] : undefined;
   }
   // Field-only fallback is intentionally best-effort and fully silent on
   // ambiguity. Prefix/base-name ambiguity still logs above, but this final
@@ -669,7 +675,10 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
   const singleRefMatch = MARKER_PATTERN_FULL.exec(str);
   if (singleRefMatch) {
     const [, resourceId, fieldPath] = singleRefMatch;
-    const celPath = markerToCelPath(resourceId!, fieldPath!, context);
+    if (!resourceId || !fieldPath) {
+      return str;
+    }
+    const celPath = markerToCelPath(resourceId, fieldPath, context);
     // Single-ref: safe to wrap with has()/omit() for optional schema fields.
     const body = maybeWrapWithOmit(celPath, false, context?.omitFields);
     return `\${${body}}`;
@@ -693,7 +702,12 @@ function convertKubernetesRefMarkersTocel(str: string, context?: SerializationCo
       result += str.slice(lastIndex, idx);
     }
     const [, resourceId, fieldPath] = match;
-    result += `\${string(${markerToCelPath(resourceId!, fieldPath!, context)})}`;
+    if (!resourceId || !fieldPath) {
+      result += match[0];
+      lastIndex = idx + match[0].length;
+      continue;
+    }
+    result += `\${string(${markerToCelPath(resourceId, fieldPath, context)})}`;
     lastIndex = idx + match[0].length;
   }
 
@@ -909,7 +923,9 @@ export function serializeStatusMappingsToCel(
 
     if (isCelExpression(value)) {
       if (value.__isTemplate) {
-        return normalizeLocalResourceExpr(value.expression);
+        return value.expression.replace(/\$\{([^}]+)\}/g, (_match, innerExpr: string) =>
+          statusFieldFromExpression(innerExpr)
+        );
       }
       return statusFieldFromExpression(value.expression);
     }
@@ -967,5 +983,6 @@ function isCamelCasePrefix(prefix: string, target: string): boolean {
   if (!target.startsWith(prefix)) return false;
   if (prefix.length === target.length) return true;
   // Character after the prefix must be uppercase (camelCase word boundary)
-  return /[A-Z]/.test(target[prefix.length]!);
+  const boundaryChar = target[prefix.length];
+  return boundaryChar !== undefined && /[A-Z]/.test(boundaryChar);
 }

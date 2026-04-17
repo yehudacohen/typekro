@@ -39,14 +39,11 @@ import { Cel, externalRef, kubernetesComposition, singleton } from '../../src/in
  */
 interface ParsedRgdResource {
   id: string;
-  // biome-ignore lint/suspicious/noExplicitAny: parsed YAML template structure varies per K8s kind
   template: Record<string, any>;
-  // biome-ignore lint/suspicious/noExplicitAny: forEach shape varies (array of key-value maps or string)
   forEach?: any;
   includeWhen?: string[];
   readyWhen?: string[];
   /** externalRef can be true (boolean) or an object with apiVersion/kind/metadata */
-  // biome-ignore lint/suspicious/noExplicitAny: externalRef shape varies between boolean and object
   externalRef?: any;
 }
 

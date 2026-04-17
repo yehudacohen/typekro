@@ -28,6 +28,7 @@ import { createEnhancedMetadata, generateInstanceName, validateSpec } from '../s
 /** Options threaded from `factory.deploy(spec, opts)` to the strategy. */
 export interface DeployStrategyOptions {
   targetScopes?: string[];
+  instanceNameOverride?: string;
 }
 
 export interface DeploymentStrategy<
@@ -51,6 +52,7 @@ export abstract class BaseDeploymentStrategy<
     protected factoryName: string,
     protected namespace: string,
     protected schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    // biome-ignore lint/suspicious/noExplicitAny: deployment strategies must preserve the generic status-builder resource map contract.
     protected statusBuilder?: StatusBuilder<TSpec, TStatus, any>,
     protected resourceKeys?: Record<string, KubernetesResource>,
     protected factoryOptions: FactoryOptions = {}
@@ -73,7 +75,7 @@ export abstract class BaseDeploymentStrategy<
     validateSpec(spec, this.schemaDefinition);
 
     // Step 2: Generate instance name (common to all strategies)
-    const instanceName = generateInstanceName(spec);
+    const instanceName = opts?.instanceNameOverride ?? generateInstanceName(spec);
 
     this.logger.debug('Starting deployment execution', {
       instanceName,

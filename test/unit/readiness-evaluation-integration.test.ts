@@ -87,7 +87,7 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation directly
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as unknown as Record<string, Function>).waitForResourceReady!(
+    await (engine as any).waitForResourceReady(
       deployedResource,
       options
     );
@@ -153,7 +153,7 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation directly
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as unknown as Record<string, Function>).waitForResourceReady!(
+    await (engine as any).waitForResourceReady(
       deployedResource,
       options
     );
@@ -227,7 +227,7 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation directly
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as unknown as Record<string, Function>).waitForResourceReady!(
+    await (engine as any).waitForResourceReady(
       deployedResource,
       options
     );
@@ -292,7 +292,7 @@ describe('Readiness Evaluation Integration', () => {
     // Test the readiness evaluation - should use default evaluator
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
-    await (engine as unknown as Record<string, Function>).waitForResourceReady!(
+    await (engine as any).waitForResourceReady(
       deployedResource,
       options
     );
@@ -349,7 +349,7 @@ describe('Readiness Evaluation Integration', () => {
     // Note: waitForResourceReady signature is (deployedResource, options, abortSignal?)
     // The progressCallback in options is used for event emission
     await expect(
-      (engine as unknown as Record<string, Function>).waitForResourceReady!(
+      (engine as any).waitForResourceReady(
         deployedResource,
         options
       )

@@ -76,7 +76,7 @@ describe('deepCloneValue (via toJSON)', () => {
         spec: { a: null, b: undefined, c: 'ok' },
       })
     );
-    const json = r.spec.toJSON();
+    const json = (r.spec as unknown as { toJSON: () => { a: null; c: string } }).toJSON();
     // null is preserved, undefined is stripped by JSON.stringify convention
     expect(json.a).toBeNull();
     expect(json.c).toBe('ok');
@@ -89,7 +89,7 @@ describe('deepCloneValue (via toJSON)', () => {
         spec: { created: date },
       })
     );
-    const json = r.spec.toJSON();
+    const json = (r.spec as unknown as { toJSON: () => { created: Date } }).toJSON();
     expect(json.created).toBeInstanceOf(Date);
     expect(json.created.getTime()).toBe(date.getTime());
     // Must be a different object (clone, not reference)
@@ -102,7 +102,7 @@ describe('deepCloneValue (via toJSON)', () => {
         spec: { ports: [{ port: 80 }, { port: 443 }] },
       })
     );
-    const json = r.spec.toJSON();
+    const json = (r.spec as unknown as { toJSON: () => { ports: Array<{ port: number }> } }).toJSON();
     expect(json.ports).toEqual([{ port: 80 }, { port: 443 }]);
   });
 
@@ -113,7 +113,7 @@ describe('deepCloneValue (via toJSON)', () => {
         spec: { nested: inner },
       })
     );
-    const json = r.spec.toJSON();
+    const json = (r.spec as unknown as { toJSON: () => { nested: { level2: { level3: string } } } }).toJSON();
     expect(json.nested).toEqual({ level2: { level3: 'deep' } });
     expect(json.nested).not.toBe(inner);
   });
@@ -124,7 +124,7 @@ describe('deepCloneValue (via toJSON)', () => {
         spec: { pattern: /abc/gi },
       })
     );
-    const json = r.spec.toJSON();
+    const json = (r.spec as unknown as { toJSON: () => { pattern: RegExp } }).toJSON();
     expect(json.pattern).toBeInstanceOf(RegExp);
     expect(json.pattern.source).toBe('abc');
     expect(json.pattern.flags).toBe('gi');
@@ -267,7 +267,7 @@ describe('createPropertyProxy (via spec/status access)', () => {
         spec: { replicas: 3, name: 'test' },
       })
     );
-    const json = r.spec.toJSON();
+    const json = (r.spec as unknown as { toJSON: () => { replicas: number; name: string } }).toJSON();
     expect(json).toEqual({ replicas: 3, name: 'test' });
   });
 
@@ -308,7 +308,6 @@ describe('createPropertyProxy (via spec/status access)', () => {
 
   it('creates empty proxy when spec is undefined', () => {
     const r = createResource(
-      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined spec edge case with exactOptionalPropertyTypes
       makeResource({ spec: undefined } as any)
     );
     // Accessing any property on an empty spec should return a ref
@@ -318,7 +317,6 @@ describe('createPropertyProxy (via spec/status access)', () => {
 
   it('creates empty proxy when status is undefined', () => {
     const r = createResource(
-      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined status edge case with exactOptionalPropertyTypes
       makeResource({ status: undefined } as any)
     );
     const ref = r.status.anyProp;
@@ -392,7 +390,6 @@ describe('createGenericProxyResource (via Enhanced proxy)', () => {
 
   it('provisioner returns ref when value is undefined but field is on resource', () => {
     const r = createResource(
-      // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined provisioner edge case with exactOptionalPropertyTypes
       makeResource({ provisioner: undefined } as any)
     );
     const ref = (r as unknown as Record<string, unknown>).provisioner;
@@ -683,7 +680,6 @@ describe('createResource — public API', () => {
           apiVersion: 'v1',
           kind: 'ConfigMap',
           metadata: { name: 'my-config', namespace: 'default' },
-          // biome-ignore lint/suspicious/noExplicitAny: intentionally testing undefined spec with exactOptionalPropertyTypes
           spec: undefined as any,
           data: { key: 'value' },
         })

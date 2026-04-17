@@ -33,10 +33,10 @@ export interface AnalysisContext {
   type: 'status' | 'resource' | 'condition' | 'readiness';
 
   /** Available resource references from magic proxy system */
-  availableReferences: Record<string, Enhanced<any, any>>;
+  availableReferences: Record<string, Enhanced<unknown, unknown>>;
 
   /** Schema proxy for schema field references */
-  schemaProxy?: SchemaProxy<any, any>;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>;
 
   /** Factory pattern being used (affects CEL generation strategy) */
   factoryType: 'direct' | 'kro';

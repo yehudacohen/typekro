@@ -75,6 +75,7 @@ export class AlchemyDeploymentStrategy<
     factoryName: string,
     namespace: string,
     schemaDefinition: SchemaDefinition<TSpec, TStatus>,
+    // biome-ignore lint/suspicious/noExplicitAny: alchemy strategy must preserve the generic status-builder resource map contract.
     statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined,
     resourceKeys: Record<string, KubernetesResource> | undefined,
     factoryOptions: FactoryOptions,

@@ -83,6 +83,15 @@ export function generateInstanceName<TSpec>(spec: TSpec, fallbackPrefix = 'insta
 }
 
 /**
+ * Singleton owner boundaries must use the stable singleton id as the CR name.
+ * This keeps owner creation and singleton.use() references aligned even when
+ * the singleton spec contains a user-facing `name` field with a different value.
+ */
+export function getSingletonInstanceName(id: string): string {
+  return id;
+}
+
+/**
  * Create Enhanced proxy metadata
  */
 export function createEnhancedMetadata(

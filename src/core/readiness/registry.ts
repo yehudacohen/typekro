@@ -8,7 +8,7 @@
 import type { ReadinessEvaluator } from '../types/index.js';
 
 interface ReadinessEvaluatorEntry {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- registry stores evaluators for heterogeneous K8s types
+  // biome-ignore lint/suspicious/noExplicitAny: registry stores evaluators for heterogeneous runtime resource shapes.
   evaluator: ReadinessEvaluator<any>;
   factoryName?: string | undefined;
   resourceKind: string;
@@ -33,7 +33,7 @@ export class ReadinessEvaluatorRegistry {
   /**
    * Register evaluator by resource kind when withReadinessEvaluator is called
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
+  // biome-ignore lint/suspicious/noExplicitAny: registry accepts evaluators for heterogeneous runtime resource shapes.
   registerForKind(kind: string, evaluator: ReadinessEvaluator<any>, factoryName?: string): void {
     const entry: ReadinessEvaluatorEntry = {
       evaluator,
@@ -48,7 +48,7 @@ export class ReadinessEvaluatorRegistry {
   /**
    * Lookup evaluator by resource kind
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- returns evaluators for heterogeneous K8s types
+  // biome-ignore lint/suspicious/noExplicitAny: lookup returns evaluators for heterogeneous runtime resource shapes.
   getEvaluatorForKind(kind: string): ReadinessEvaluator<any> | null {
     const entry = this.kindToEvaluator.get(kind);
     return entry?.evaluator || null;

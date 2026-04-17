@@ -558,26 +558,27 @@ export function convertCollectionCallToCel(
 
   if (!resourceId && !chainedPrefix) return undefined;
   const base = chainedPrefix || resourceId;
+  if (!base) return undefined;
 
   switch (methodName) {
     case 'every': {
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.all(${lambda.lambdaVar}, ${lambda.body})`;
     }
     case 'some': {
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.exists(${lambda.lambdaVar}, ${lambda.body})`;
     }
     case 'filter': {
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.filter(${lambda.lambdaVar}, ${lambda.body})`;
     }
@@ -587,7 +588,7 @@ export function convertCollectionCallToCel(
       // If it's the factory-producing map, findFactoryMapCall would have returned the resourceId.
       const cb = call.arguments[0];
       if (!cb) return undefined;
-      const lambda = callbackToCelLambda(cb, fullSource, base!);
+      const lambda = callbackToCelLambda(cb, fullSource, base);
       if (!lambda) return undefined;
       return `${base}.map(${lambda.lambdaVar}, ${lambda.body})`;
     }

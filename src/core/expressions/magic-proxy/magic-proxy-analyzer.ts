@@ -55,7 +55,7 @@ export class MagicProxyAnalyzer {
         typeof expression === 'object' &&
         (expression as Record<string, unknown>).__brand === 'KubernetesRef'
       ) {
-        return this.analyzeKubernetesRefDirectly(expression as KubernetesRef<any>, context);
+        return this.analyzeKubernetesRefDirectly(expression as KubernetesRef<unknown>, context);
       }
 
       // Handle string expressions with AST parsing
@@ -79,7 +79,7 @@ export class MagicProxyAnalyzer {
    * Analyze a KubernetesRef object directly
    */
   private analyzeKubernetesRefDirectly(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: MagicProxyAnalysisContext
   ): MagicProxyAnalysisResult {
     const { schemaRefs, resourceRefs, schemaReferences, resourceReferences } =
@@ -196,15 +196,17 @@ export class MagicProxyAnalyzer {
     value: unknown,
     maxDepth: number = DEFAULT_MAX_ANALYSIS_DEPTH,
     currentDepth: number = 0
-  ): KubernetesRef<any>[] {
-    const refs: KubernetesRef<any>[] = [];
+  ): KubernetesRef<unknown>[] {
+    const refs: KubernetesRef<unknown>[] = [];
     const visited = new WeakSet();
 
     // Use a queue for breadth-first traversal
     const queue: Array<{ value: unknown; depth: number }> = [{ value, depth: currentDepth }];
 
     while (queue.length > 0) {
-      const { value: currentValue, depth } = queue.shift()!;
+      const currentEntry = queue.shift();
+      if (!currentEntry) break;
+      const { value: currentValue, depth } = currentEntry;
 
       // Skip if we've already visited this object (prevents infinite loops)
       if (currentValue && typeof currentValue === 'object' && visited.has(currentValue)) {
@@ -275,14 +277,14 @@ export class MagicProxyAnalyzer {
   /**
    * Analyze KubernetesRef objects and categorize them by type
    */
-  analyzeKubernetesRefs(refs: KubernetesRef<any>[]): {
-    schemaRefs: KubernetesRef<any>[];
-    resourceRefs: KubernetesRef<any>[];
+  analyzeKubernetesRefs(refs: KubernetesRef<unknown>[]): {
+    schemaRefs: KubernetesRef<unknown>[];
+    resourceRefs: KubernetesRef<unknown>[];
     schemaReferences: string[];
     resourceReferences: string[];
   } {
-    const schemaRefs: KubernetesRef<any>[] = [];
-    const resourceRefs: KubernetesRef<any>[] = [];
+    const schemaRefs: KubernetesRef<unknown>[] = [];
+    const resourceRefs: KubernetesRef<unknown>[] = [];
     const schemaReferences: string[] = [];
     const resourceReferences: string[] = [];
 
@@ -308,7 +310,7 @@ export class MagicProxyAnalyzer {
    * Convert KubernetesRef objects to CEL expressions with magic proxy context
    */
   convertKubernetesRefsToCel(
-    refs: KubernetesRef<any>[],
+    refs: KubernetesRef<unknown>[],
     context: MagicProxyAnalysisContext
   ): CelExpression[] {
     const celExpressions: CelExpression[] = [];
@@ -334,14 +336,14 @@ export class MagicProxyAnalyzer {
    * Validate KubernetesRef objects against available proxies
    */
   validateKubernetesRefs(
-    refs: KubernetesRef<any>[],
+    refs: KubernetesRef<unknown>[],
     context: MagicProxyAnalysisContext
   ): {
-    valid: KubernetesRef<any>[];
-    invalid: Array<{ ref: KubernetesRef<any>; reason: string }>;
+    valid: KubernetesRef<unknown>[];
+    invalid: Array<{ ref: KubernetesRef<unknown>; reason: string }>;
   } {
-    const valid: KubernetesRef<any>[] = [];
-    const invalid: Array<{ ref: KubernetesRef<any>; reason: string }> = [];
+    const valid: KubernetesRef<unknown>[] = [];
+    const invalid: Array<{ ref: KubernetesRef<unknown>; reason: string }> = [];
 
     for (const ref of refs) {
       const validationResult = this.validateSingleKubernetesRef(ref, context);
@@ -375,7 +377,7 @@ export class MagicProxyAnalyzer {
    */
   private convertToMagicProxyResult(
     analysisResult: {
-      refs: KubernetesRef<any>[];
+      refs: KubernetesRef<unknown>[];
       analysisDepth: number;
       hasProxyObjects: boolean;
     },
@@ -501,7 +503,7 @@ export class MagicProxyAnalyzer {
    * Convert a single KubernetesRef to CEL expression
    */
   private convertSingleKubernetesRefToCel(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: MagicProxyAnalysisContext
   ): CelExpression {
     // Generate CEL expression based on factory type
@@ -543,7 +545,7 @@ export class MagicProxyAnalyzer {
    * Validate a single KubernetesRef object
    */
   private validateSingleKubernetesRef(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     context: MagicProxyAnalysisContext
   ): { isValid: boolean; reason: string } {
     // Check basic structure
@@ -571,6 +573,7 @@ export class MagicProxyAnalyzer {
 /**
  * Utility functions for magic proxy integration
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: This module intentionally exposes a static utility namespace.
 export class MagicProxyUtils {
   /**
    * Check if a value contains any KubernetesRef objects
@@ -584,7 +587,7 @@ export class MagicProxyUtils {
   /**
    * Extract all KubernetesRef objects from a value
    */
-  static extractKubernetesRefs(value: unknown): KubernetesRef<any>[] {
+  static extractKubernetesRefs(value: unknown): KubernetesRef<unknown>[] {
     const analyzer = new MagicProxyAnalyzer();
     return analyzer.detectKubernetesRefs(value);
   }
@@ -614,7 +617,7 @@ export class MagicProxyUtils {
   /**
    * Get the CEL expression for a KubernetesRef
    */
-  static getCelExpression(ref: KubernetesRef<any>): string {
+  static getCelExpression(ref: KubernetesRef<unknown>): string {
     if (ref.resourceId === '__schema__') {
       return `schema.${ref.fieldPath}`;
     } else {

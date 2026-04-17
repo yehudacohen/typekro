@@ -412,10 +412,10 @@ function buildRecordFromResources(
  * callers may receive strings from raw JSON or test mocks.
  */
 function toDate(value: unknown): Date | undefined {
-  if (value instanceof Date) return isNaN(value.getTime()) ? undefined : value;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? undefined : value;
   if (typeof value === 'string' || typeof value === 'number') {
     const d = new Date(value);
-    return isNaN(d.getTime()) ? undefined : d;
+    return Number.isNaN(d.getTime()) ? undefined : d;
   }
   return undefined;
 }
@@ -438,7 +438,8 @@ async function listWithConcurrency<T, R>(
       // below, so `next++` can't be interleaved between workers.
       const idx = next++;
       if (idx >= items.length) return;
-      const item = items[idx]!;
+      const item = items[idx];
+      if (item === undefined) return;
       results[idx] = await fn(item);
     }
   };

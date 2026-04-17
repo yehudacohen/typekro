@@ -110,7 +110,7 @@ export type KroCompatibleType<Depth extends number = 10> = Depth extends 0
  * TSpec and TStatus should be compatible with Kro's Simple Schema format.
  * We use a looser constraint to preserve specific field types from ArkType schemas.
  */
-export type SchemaProxy<TSpec extends Record<string, any>, TStatus extends Record<string, any>> = {
+export type SchemaProxy<TSpec extends object, TStatus extends object> = {
   spec: SchemaMagicProxy<TSpec>;
   status: SchemaMagicProxy<TStatus>;
 };

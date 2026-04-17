@@ -16,10 +16,10 @@ export type V1ConfigMapData = NonNullable<V1ConfigMap['data']>;
 
 // ConfigMap spec type - ConfigMaps don't have a traditional spec, they have data
 // We use an empty spec type since ConfigMaps don't have a spec field in Kubernetes
-type ConfigMapSpec = {};
+type ConfigMapSpec = Record<string, never>;
 
 // ConfigMap status type - ConfigMaps don't have status
-type ConfigMapStatus = {};
+type ConfigMapStatus = Record<string, never>;
 
 /**
  * Creates a Kubernetes ConfigMap resource that is considered ready immediately upon creation.

@@ -288,7 +288,7 @@ describe('Nested Composition Direct Mode', () => {
       const status = factory.reExecuteWithLiveStatus(
         spec,
         new Map([
-          ['innerDeployment', { readyReplicas: 1 }],
+          ['innerBootstrap1', { readyReplicas: 1 }],
           ['worker', { readyReplicas: 1 }],
         ]),
       );
@@ -578,7 +578,7 @@ describe('Nested Composition Direct Mode', () => {
           spec: type({ name: 'string' }),
           status: type({ ready: 'boolean' }),
         },
-        (spec) => {
+        (_spec) => {
           simple.Deployment({
             name: 'app',
             image: 'nginx',

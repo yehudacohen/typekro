@@ -404,24 +404,29 @@ export function isSchemaReference(ref: KubernetesRef<unknown>): boolean {
  * Create a magic proxy for resources in StatusBuilder
  * This allows accessing resource.status.field as KubernetesRef objects while preserving types
  */
-export function createResourcesProxy<TResources extends Record<string, any>>(
+export function createResourcesProxy<TResources extends Record<string, unknown>>(
   resources: TResources
 ): TResources {
-  const proxiedResources: any = {};
+  const proxiedResources: Record<string, unknown> = {};
 
   for (const [resourceKey, resource] of Object.entries(resources)) {
+    const resourceRecord = resource as {
+      metadata?: unknown;
+      kind?: unknown;
+      apiVersion?: unknown;
+    } & Record<string, unknown>;
     // Create a proxy that preserves the Enhanced resource structure
     // but converts field access to resource references instead of schema references
-    proxiedResources[resourceKey] = new Proxy(resource, {
+    proxiedResources[resourceKey] = new Proxy(resourceRecord, {
       get(target, prop: string) {
         if (prop === 'metadata') {
-          return resource.metadata;
+          return resourceRecord.metadata;
         }
         if (prop === 'kind') {
-          return resource.kind;
+          return resourceRecord.kind;
         }
         if (prop === 'apiVersion') {
-          return resource.apiVersion;
+          return resourceRecord.apiVersion;
         }
         if (prop === 'spec' || prop === 'status') {
           // Return a proxy that converts the MagicProxy field access to resource references

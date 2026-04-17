@@ -56,7 +56,8 @@ describe('CNPG Helm Resources', () => {
 
     it('should include CRD creation in default values', () => {
       const release = cnpgHelmRelease({ name: 'cnpg' });
-      expect(release.spec.values?.crds?.create).toBe(true);
+      const values = release.spec.values as { crds?: { create?: boolean } } | undefined;
+      expect(values?.crds?.create).toBe(true);
     });
 
     it('should sanitize proxy objects from values', () => {
@@ -69,8 +70,12 @@ describe('CNPG Helm Resources', () => {
         },
       });
 
-      expect(release.spec.values?.replicaCount).toBe(2);
-      expect(release.spec.values?.crds?.create).toBe(true);
+      const values = release.spec.values as {
+        replicaCount?: number;
+        crds?: { create?: boolean };
+      } | undefined;
+      expect(values?.replicaCount).toBe(2);
+      expect(values?.crds?.create).toBe(true);
     });
 
     it('should have a readiness evaluator', () => {

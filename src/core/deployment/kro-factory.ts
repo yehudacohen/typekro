@@ -57,6 +57,7 @@ import { waitForKroInstanceReady as waitForKroInstanceReadyShared } from './kro-
 import {
   convertToKubernetesName,
   generateInstanceName,
+  getSingletonInstanceName,
   pluralizeKind,
   validateSpec,
 } from './shared-utilities.js';
@@ -344,7 +345,10 @@ export class KroResourceFactoryImpl<
   /**
    * Deploy a new instance by creating a custom resource
    */
-  async deploy(spec: TSpec, opts?: { targetScopes?: string[] }): Promise<Enhanced<TSpec, TStatus>> {
+  async deploy(
+    spec: TSpec,
+    opts?: { targetScopes?: string[]; instanceNameOverride?: string }
+  ): Promise<Enhanced<TSpec, TStatus>> {
     if (opts?.targetScopes !== undefined) {
       throw new TypeKroError(
         'Scope-targeted deployment is not supported in KRO mode. KRO manages resource lifecycle via its own controller. Use direct mode for scope-targeted deploys.',
@@ -363,9 +367,9 @@ export class KroResourceFactoryImpl<
     await this.ensureSingletonOwners(spec);
 
     if (this.isAlchemyManaged) {
-      return this.deployWithAlchemy(spec);
+      return this.deployWithAlchemy(spec, opts?.instanceNameOverride);
     } else {
-      return this.deployDirect(spec);
+      return this.deployDirect(spec, opts?.instanceNameOverride);
     }
   }
 
@@ -407,12 +411,12 @@ export class KroResourceFactoryImpl<
         ...(this.factoryOptions.timeout !== undefined ? { timeout: this.factoryOptions.timeout } : {}),
         ...(this.factoryOptions.kubeConfig !== undefined ? { kubeConfig: this.factoryOptions.kubeConfig } : {}),
         ...(this.factoryOptions.skipTLSVerify !== undefined ? { skipTLSVerify: this.factoryOptions.skipTLSVerify } : {}),
-      }) as KroResourceFactory<any, any>;
+      }) as KroResourceFactory<KroCompatibleType, KroCompatibleType>;
 
-      const singletonInstanceName = generateInstanceName(definition.spec, definition.id);
+      const singletonInstanceName = getSingletonInstanceName(definition.id);
       try {
         const existingInstances = await singletonFactory.getInstances();
-        if (existingInstances.some((instance: Enhanced<any, any>) => instance.metadata?.name === singletonInstanceName)) {
+        if (existingInstances.some((instance: Enhanced<unknown, unknown>) => instance.metadata?.name === singletonInstanceName)) {
           this.logger.info('Reusing existing singleton owner boundary', {
             singletonId: definition.id,
             singletonKey: definition.key,
@@ -430,7 +434,12 @@ export class KroResourceFactoryImpl<
         registryNamespace: definition.registryNamespace,
       });
 
-      await singletonFactory.deploy(definition.spec as TSpec);
+      await (singletonFactory as unknown as {
+        deploy(
+          singletonSpec: TSpec,
+          opts?: { instanceNameOverride?: string }
+        ): Promise<Enhanced<TSpec, TStatus>>;
+      }).deploy(definition.spec as TSpec, { instanceNameOverride: singletonInstanceName });
     }
   }
 
@@ -556,7 +565,7 @@ export class KroResourceFactoryImpl<
   /**
    * Deploy directly to Kubernetes using DirectDeploymentEngine
    */
-  private async deployDirect(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
+  private async deployDirect(spec: TSpec, instanceNameOverride?: string): Promise<Enhanced<TSpec, TStatus>> {
     // Ensure RGD is deployed first
     await this.ensureRGDDeployed();
 
@@ -576,7 +585,7 @@ export class KroResourceFactoryImpl<
     );
 
     // Create custom resource instance
-    const instanceName = generateInstanceName(spec, this.name);
+    const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
     const customResourceData = this.createCustomResourceInstance(instanceName, spec);
 
     // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
@@ -642,7 +651,7 @@ export class KroResourceFactoryImpl<
    *
    * In alchemy mode, the RGD gets one typed alchemy Resource and each instance gets another
    */
-  private async deployWithAlchemy(spec: TSpec): Promise<Enhanced<TSpec, TStatus>> {
+  private async deployWithAlchemy(spec: TSpec, instanceNameOverride?: string): Promise<Enhanced<TSpec, TStatus>> {
     if (!this.alchemyScope) {
       throw new ResourceGraphFactoryError(
         'Alchemy scope is required for alchemy deployment',
@@ -708,7 +717,7 @@ export class KroResourceFactoryImpl<
     });
 
     // 2. Create instance via alchemy (once per deploy call)
-    const instanceName = generateInstanceName(spec, this.name);
+    const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
     const crdInstanceManifest = this.createCustomResourceInstance(instanceName, spec);
 
     // Register CRD instance type dynamically
@@ -1098,7 +1107,7 @@ metadata:
   name: ${customResource.metadata.name}
   namespace: ${customResource.metadata.namespace}
 spec:
-${Object.entries(spec as Record<string, any>)
+${Object.entries(spec as Record<string, unknown>)
   .map(([key, value]) => `  ${key}: ${typeof value === 'string' ? `"${value}"` : value}`)
   .join('\n')}`;
     } else {

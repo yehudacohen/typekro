@@ -300,7 +300,7 @@ describe('DirectDeploymentEngine.deployWithClosures', () => {
 
       // Track when resource deployment happens via the create mock
       mockK8sApi.read.mockRejectedValue({ statusCode: 404 });
-      mockK8sApi.create.mockImplementation((...args: unknown[]) => {
+      mockK8sApi.create.mockImplementation((..._args: unknown[]) => {
         executionOrder.push('resource:create');
         return Promise.resolve({
           metadata: { name: 'simple-resource', namespace: 'test-namespace' },

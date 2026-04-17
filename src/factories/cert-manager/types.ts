@@ -370,7 +370,7 @@ export interface CertManagerBootstrapConfig {
   };
 
   // Custom Helm values override
-  customValues?: Record<string, any>;
+  customValues?: Record<string, unknown>;
 
   // TypeKro specific
   id?: string;
@@ -645,7 +645,7 @@ export interface ClusterIssuerConfig {
           webhook?: {
             groupName: string;
             solverName: string;
-            config?: Record<string, any>;
+            config?: Record<string, unknown>;
           };
         };
       }[];
@@ -824,7 +824,7 @@ export interface ChallengeConfig {
         webhook?: {
           groupName: string;
           solverName: string;
-          config?: Record<string, any>;
+          config?: Record<string, unknown>;
         };
       };
     };

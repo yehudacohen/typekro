@@ -20,8 +20,11 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import type { DirectResourceFactoryImpl } from '../../src/core/deployment/direct-factory.js';
+import { createDirectResourceFactory } from '../../src/core/deployment/direct-factory.js';
 import { getResourceId } from '../../src/core/metadata/index.js';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
+import type { SchemaDefinition, KroCompatibleType } from '../../src/core/types/serialization.js';
+import type { SingletonDefinitionRecord } from '../../src/core/types/deployment.js';
 
 // ---------------------------------------------------------------------------
 // Schema definitions used across tests
@@ -92,6 +95,17 @@ async function createTestFactory(
   })) as unknown as DirectResourceFactoryImpl<TestSpec, TestStatus>;
 }
 
+function getPrivateMethod<TInstance extends object>(
+  instance: TInstance,
+  methodName: string
+): (...args: unknown[]) => unknown {
+  const method = (instance as unknown as Record<string, (...args: unknown[]) => unknown>)[methodName];
+  if (!method) {
+    throw new Error(`Private method '${methodName}' not found`);
+  }
+  return method.bind(instance);
+}
+
 // ===========================================================================
 // 1. createResourceGraphForInstance — __resourceId preservation
 // ===========================================================================
@@ -160,6 +174,69 @@ describe('DirectFactory: __resourceId preservation', () => {
       expect(typeof rid).toBe('string');
       expect((rid as string).length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('DirectFactory: singleton owner boundaries', () => {
+  it('ensures singleton owners in direct mode using the singleton id as instance name', async () => {
+    type OwnerSpec = KroCompatibleType & {
+      name: string;
+    };
+
+    const deployCalls: Array<{ spec: OwnerSpec; opts?: Record<string, unknown> | undefined }> = [];
+    const fakeComposition = {
+      factory(mode: 'direct' | 'kro', options?: Record<string, unknown>) {
+        expect(mode).toBe('direct');
+        expect(options?.namespace).toBe('shared-system');
+
+        return {
+          async getInstances() {
+            return [];
+          },
+          async deploy(spec: OwnerSpec, opts?: Record<string, unknown>) {
+            deployCalls.push({ spec, ...(opts ? { opts } : {}) });
+            return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+          },
+        };
+      },
+    };
+
+    const schema: SchemaDefinition<{ name: string }, { ready: boolean }> = {
+      apiVersion: 'v1alpha1',
+      kind: 'SingletonConsumer',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    };
+
+    const factory = createDirectResourceFactory(
+      'singleton-consumer',
+      {},
+      schema,
+      undefined,
+      {
+        namespace: 'default',
+        singletonDefinitions: [
+          {
+            id: 'stable-singleton-id',
+            key: 'SingletonBootstrap:stable-singleton-id',
+            specFingerprint: 'fp',
+            registryNamespace: 'shared-system',
+            composition: fakeComposition as never,
+            spec: { name: 'user-facing-name' },
+          } satisfies SingletonDefinitionRecord,
+        ],
+      }
+    ) as unknown as DirectResourceFactoryImpl<{ name: string }, { ready: boolean }>;
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+
+    await ensureSingletonOwners({ name: 'consumer' });
+
+    expect(deployCalls).toHaveLength(1);
+    expect(deployCalls[0]?.spec).toEqual({ name: 'user-facing-name' });
+    expect(deployCalls[0]?.opts?.instanceNameOverride).toBe('stable-singleton-id');
   });
 });
 

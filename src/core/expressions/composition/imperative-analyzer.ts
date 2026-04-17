@@ -11,6 +11,7 @@ import { ensureError } from '../../errors.js';
 import { getComponentLogger } from '../../logging/index.js';
 import { Cel } from '../../references/cel.js';
 import type { Enhanced } from '../../types/index.js';
+import type { ASTNode } from './composition-analyzer-types.js';
 
 const logger = getComponentLogger('imperative-analyzer');
 
@@ -30,7 +31,7 @@ export interface ImperativeAnalysisResult {
  */
 export function analyzeImperativeComposition(
   compositionFn: (...args: unknown[]) => unknown,
-  resources: Record<string, Enhanced<any, any>>,
+  resources: Record<string, Enhanced<unknown, unknown>>,
   options: ImperativeAnalysisOptions
 ): ImperativeAnalysisResult {
   logger.debug('Analyzing imperative composition function', {
@@ -93,15 +94,17 @@ export function analyzeImperativeComposition(
     let hasJavaScriptExpressions = false;
 
     // Process properties recursively to handle nested objects
-    function processProperties(properties: any[], parentPath: string = ''): void {
+    function processProperties(properties: ASTNode[], parentPath = ''): void {
       for (const property of properties) {
-        if (property.type === 'Property' && property.key.type === 'Identifier') {
-          const fieldName = property.key.name;
+        // biome-ignore lint/suspicious/noExplicitAny: parser-produced property nodes are intentionally handled dynamically.
+        const propertyNode = property as any;
+        if (propertyNode.type === 'Property' && propertyNode.key.type === 'Identifier') {
+          const fieldName = propertyNode.key.name;
           const fullFieldName = parentPath ? `${parentPath}.${fieldName}` : fieldName;
 
           try {
             // Check if this is a nested object
-            if (property.value.type === 'ObjectExpression') {
+            if (propertyNode.value.type === 'ObjectExpression') {
               logger.debug('Found nested object property', { fieldName, fullFieldName });
 
               // Create nested object in statusMappings
@@ -119,13 +122,13 @@ export function analyzeImperativeComposition(
               }
 
               // Recursively process nested properties
-              processProperties(property.value.properties, fullFieldName);
+              processProperties(propertyNode.value.properties, fullFieldName);
               continue;
             }
 
             // Convert the property value to source code, then inline local
             // variables so KRO CEL can resolve them (e.g., `appReplicas` → `spec.app.replicas || 1`)
-            const rawSource = getNodeSource(property.value, functionSource);
+            const rawSource = getNodeSource(propertyNode.value, functionSource);
             const propertySource = inlineVariables(rawSource, variableScope);
 
             logger.debug('Analyzing property', {
@@ -240,7 +243,8 @@ export function analyzeImperativeComposition(
     }
 
     // Start processing from the top-level properties
-    processProperties(returnStatement.argument.properties);
+    // biome-ignore lint/suspicious/noExplicitAny: parser-produced return object shape is intentionally handled dynamically.
+    processProperties((returnStatement.argument as any).properties);
 
     logger.debug('Imperative composition analysis complete', {
       statusFieldCount: Object.keys(statusMappings).length,
@@ -268,8 +272,10 @@ export function analyzeImperativeComposition(
 /**
  * Find the return statement in an AST
  */
+// biome-ignore lint/suspicious/noExplicitAny: AST traversal over parser-produced ESTree nodes is intentionally dynamic.
 function findReturnStatement(ast: any): any {
-  let returnStatement = null;
+  // biome-ignore lint/suspicious/noExplicitAny: parser-produced traversal state is intentionally dynamic.
+  let returnStatement: any = null;
 
   estraverse.traverse(ast, {
     enter: (node) => {
@@ -288,6 +294,7 @@ function findReturnStatement(ast: any): any {
 /**
  * Extract source code for a specific AST node
  */
+// biome-ignore lint/suspicious/noExplicitAny: AST node shape varies widely across ESTree variants used in tests/examples.
 function getNodeSource(node: any, fullSource: string): string {
   if (node.range) {
     return fullSource.substring(node.range[0], node.range[1]);
@@ -314,11 +321,16 @@ function getNodeSource(node: any, fullSource: string): string {
     }
     case 'ObjectExpression': {
       const properties = node.properties
+        // biome-ignore lint/suspicious/noExplicitAny: parser-produced object properties are intentionally handled dynamically.
         .map((prop: any) => {
+          if (prop.type !== 'Property') {
+            return '';
+          }
           const key = prop.key.name || prop.key.value;
           const value = getNodeSource(prop.value, fullSource);
           return `${key}: ${value}`;
         })
+        .filter((part: string) => part.length > 0)
         .join(', ');
       return `{ ${properties} }`;
     }
@@ -360,7 +372,7 @@ function containsResourceReferences(source: string): boolean {
  */
 function convertResourceReferencesToCel(
   source: string,
-  resources: Record<string, Enhanced<any, any>>
+  resources: Record<string, Enhanced<unknown, unknown>>
 ): string {
   // Check if this is a template literal
   if (source.startsWith('`') && source.endsWith('`')) {
@@ -383,7 +395,7 @@ function convertResourceReferencesToCel(
  */
 function convertTemplateLiteralToCel(
   templateLiteral: string,
-  _resources: Record<string, Enhanced<any, any>>
+  _resources: Record<string, Enhanced<unknown, unknown>>
 ): string {
   // Remove the backticks
   let content = templateLiteral.slice(1, -1);
@@ -532,6 +544,7 @@ function convertStringWithKubernetesRefs(source: string): string {
 /**
  * Evaluate a static expression (no resource references)
  */
+// biome-ignore lint/suspicious/noExplicitAny: Static-expression evaluator works over parser-produced dynamic AST nodes.
 function evaluateStaticExpression(node: any): any {
   switch (node.type) {
     case 'Literal':
@@ -626,9 +639,11 @@ function applyJsToCelConversions(source: string): string {
  * Only captures simple initializers that reference `spec.*` (schema proxy
  * accesses) or literal values — not complex expressions or factory calls.
  */
+// biome-ignore lint/suspicious/noExplicitAny: Scope builder intentionally uses dynamic AST shapes.
 function buildVariableScope(ast: any, source: string): Record<string, string> {
   const scope: Record<string, string> = {};
 
+  // biome-ignore lint/suspicious/noExplicitAny: variable-scope traversal operates on arbitrary AST nodes.
   function visit(node: any): void {
     if (!node || typeof node !== 'object') return;
 

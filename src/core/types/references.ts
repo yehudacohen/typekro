@@ -50,10 +50,10 @@ type ExcludeNullish<T> = T extends null | undefined ? never : T;
  * 5. Return T['name'] → string ✅
  */
 type SafePropertyAccess<T, K extends PropertyKey> = ExcludeNullish<T> extends infer NonNullT
-  ? NonNullT extends any
+  ? NonNullT extends unknown
     ? NonNullT extends KubernetesRef<infer U>
       ? // Pure KubernetesRef: unwrap and check inner type
-        U extends any
+        U extends unknown
         ? U extends object
           ? K extends keyof U
             ? U[K]
@@ -121,6 +121,7 @@ export type MagicProxy<T> = T & {
    * - `MagicAssignable<unknown>`: produces unclear errors and breaks assignments
    * - `never`: is a bottom type assignable to everything, provides no safety
    */
+  // biome-ignore lint/suspicious/noExplicitAny: catch-all proxy access remains intentionally permissive for cross-composition status fields.
   [key: string]: MagicAssignable<any>;
 };
 

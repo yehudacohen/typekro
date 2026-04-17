@@ -305,7 +305,10 @@ export class KubernetesClientProvider {
    */
   getKubeConfig(): k8s.KubeConfig {
     this.ensureInitialized();
-    return this.kubeConfig!;
+    if (!this.kubeConfig) {
+      throw new Error('KubeConfig not initialized');
+    }
+    return this.kubeConfig;
   }
 
   /**
@@ -314,7 +317,10 @@ export class KubernetesClientProvider {
    */
   getKubernetesApi(): k8s.KubernetesObjectApi {
     this.ensureInitialized();
-    return this.k8sApi!;
+    if (!this.k8sApi) {
+      throw new Error('Kubernetes API not initialized');
+    }
+    return this.k8sApi;
   }
 
   /**
@@ -416,7 +422,10 @@ export class KubernetesClientProvider {
    */
   injectKubernetesApi(consumer: KubernetesApiConsumer): void {
     this.ensureInitialized();
-    consumer.setKubernetesApi(this.k8sApi!);
+    if (!this.k8sApi) {
+      throw new Error('Kubernetes API not initialized');
+    }
+    consumer.setKubernetesApi(this.k8sApi);
     this.logger.debug('Injected Kubernetes API client into consumer', {
       consumerType: consumer.constructor.name,
     });
@@ -427,7 +436,10 @@ export class KubernetesClientProvider {
    */
   injectKubeConfig(consumer: KubeConfigConsumer): void {
     this.ensureInitialized();
-    consumer.setKubeConfig(this.kubeConfig!);
+    if (!this.kubeConfig) {
+      throw new Error('KubeConfig not initialized');
+    }
+    consumer.setKubeConfig(this.kubeConfig);
     this.logger.debug('Injected KubeConfig into consumer', {
       consumerType: consumer.constructor.name,
     });

@@ -82,8 +82,13 @@ export function gitRepository(config: GitRepositoryConfig) {
       interval: config.interval,
       secretRef: config.secretRef,
     },
-  }).withReadinessEvaluator((liveResource: any): ResourceStatus => {
-    const status = liveResource.status;
+  }).withReadinessEvaluator((liveResource: unknown): ResourceStatus => {
+    const status = (liveResource as {
+      status?: {
+        conditions?: KubernetesCondition[];
+        artifact?: { revision?: string };
+      };
+    } | null | undefined)?.status;
     if (!status) {
       return {
         ready: false,

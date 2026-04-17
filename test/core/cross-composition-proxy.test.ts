@@ -30,7 +30,6 @@ interface DatabaseStatus {
  * Access a dynamic resource key on a composition proxy.
  * Replaces `(composition as any).key` with a typed helper.
  */
-// biome-ignore lint/suspicious/noExplicitAny: test helper for dynamic proxy access
 function compositionResource(composition: unknown, key: string): any {
   return (composition as Record<string, unknown>)[key];
 }
@@ -237,7 +236,7 @@ describe('Cross-composition magic proxy', () => {
             DatabaseStatus
           >;
           const dbServiceRef = compositionResource(databaseComposition, 'service') as Enhanced<
-            Record<string, unknown>,
+            { clusterIP: string },
             Record<string, unknown>
           >;
 
@@ -253,7 +252,7 @@ describe('Cross-composition magic proxy', () => {
             }),
             // Status using cross-composition references
             ready: Cel.expr<boolean>`true`,
-            databaseHost: dbServiceRef.spec.clusterIP,
+            databaseHost: dbServiceRef.spec.clusterIP as string,
             databaseReady: dbRef.status.ready,
           };
         }

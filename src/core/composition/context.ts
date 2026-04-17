@@ -26,7 +26,7 @@ import type { Enhanced } from '../types.js';
  */
 export interface CompositionContext {
   /** Map of resource ID to Enhanced resource */
-  resources: Record<string, Enhanced<any, any>>;
+  resources: Record<string, Enhanced<unknown, unknown>>;
   /** Map of closure ID to deployment closure */
   closures: Record<string, DeploymentClosure>;
   /** Counter for generating unique resource IDs */
@@ -38,7 +38,7 @@ export interface CompositionContext {
   /** Map of variable names to resource IDs for CEL expression generation */
   variableMappings: Record<string, string>;
   /** Add a resource to the context */
-  addResource(id: string, resource: Enhanced<any, any>): void;
+  addResource(id: string, resource: Enhanced<unknown, unknown>): void;
   /** Add a deployment closure to the context */
   addClosure(id: string, closure: DeploymentClosure): void;
   /** Add a variable to resource ID mapping */
@@ -230,7 +230,7 @@ export function createCompositionContext(
     singletonDefinitions: new Map(),
     isReExecution: contextOptions?.isReExecution,
     isNestedCall: contextOptions?.isNestedCall,
-    addResource(id: string, resource: Enhanced<any, any>) {
+    addResource(id: string, resource: Enhanced<unknown, unknown>) {
       if (contextOptions?.deduplicateIds && id in this.resources) {
         // Append numeric suffix to make the key unique
         idCounts[id] = (idCounts[id] ?? 0) + 1;

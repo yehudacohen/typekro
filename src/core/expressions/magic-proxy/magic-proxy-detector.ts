@@ -17,7 +17,7 @@ const logger = getComponentLogger('magic-proxy-detector');
  */
 export interface MagicProxyRefInfo {
   /** The KubernetesRef object */
-  ref: KubernetesRef<any>;
+  ref: KubernetesRef<unknown>;
   /** Path where the reference was found */
   path: string;
   /** Source of the reference (schema or resource) */
@@ -154,8 +154,8 @@ export class MagicProxyDetector {
   extractKubernetesRefs(
     value: unknown,
     maxDepth = DEFAULT_MAX_ANALYSIS_DEPTH
-  ): KubernetesRef<any>[] {
-    const refs: KubernetesRef<any>[] = [];
+  ): KubernetesRef<unknown>[] {
+    const refs: KubernetesRef<unknown>[] = [];
     this.extractRefs(value, refs, 0, maxDepth);
     return refs;
   }
@@ -166,7 +166,7 @@ export class MagicProxyDetector {
    * @param ref - KubernetesRef to analyze
    * @returns Source analysis
    */
-  analyzeReferenceSource(ref: KubernetesRef<any>): {
+  analyzeReferenceSource(ref: KubernetesRef<unknown>): {
     source: 'schema' | 'resource' | 'unknown';
     isSchemaRef: boolean;
     isResourceRef: boolean;
@@ -305,7 +305,7 @@ export class MagicProxyDetector {
 
   private extractRefs(
     value: unknown,
-    refs: KubernetesRef<any>[],
+    refs: KubernetesRef<unknown>[],
     depth: number,
     maxDepth: number
   ): void {
@@ -365,7 +365,7 @@ export function containsMagicProxyRefs(value: unknown, maxDepth?: number): boole
  * @param maxDepth - Maximum depth to extract
  * @returns Array of KubernetesRef objects
  */
-export function extractMagicProxyRefs(value: unknown, maxDepth?: number): KubernetesRef<any>[] {
+export function extractMagicProxyRefs(value: unknown, maxDepth?: number): KubernetesRef<unknown>[] {
   return magicProxyDetector.extractKubernetesRefs(value, maxDepth);
 }
 
@@ -375,6 +375,6 @@ export function extractMagicProxyRefs(value: unknown, maxDepth?: number): Kubern
  * @param ref - KubernetesRef to analyze
  * @returns Source analysis
  */
-export function analyzeMagicProxyRefSource(ref: KubernetesRef<any>) {
+export function analyzeMagicProxyRefSource(ref: KubernetesRef<unknown>) {
   return magicProxyDetector.analyzeReferenceSource(ref);
 }

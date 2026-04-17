@@ -20,7 +20,6 @@ import type { Enhanced } from '../../types/kubernetes.js';
 import type { SchemaProxy } from '../../types/serialization.js';
 import { JavaScriptToCelAnalyzer } from '../analysis/analyzer.js';
 import type { SourceMapEntry } from '../analysis/source-map.js';
-import { MagicProxyAnalyzer } from '../magic-proxy/magic-proxy-analyzer.js';
 import {
   EnhancedTypeOptionalityHandler,
   type OptionalityContext,
@@ -82,7 +81,6 @@ const DEFAULT_ANALYSIS_OPTIONS: Required<StatusBuilderAnalysisOptions> = {
  */
 export class StatusBuilderAnalyzer {
   private expressionAnalyzer: JavaScriptToCelAnalyzer;
-  private magicProxyAnalyzer: MagicProxyAnalyzer;
   private optionalityHandler: EnhancedTypeOptionalityHandler;
   private options: Required<StatusBuilderAnalysisOptions>;
   private logger = getComponentLogger('status-builder-analyzer');
@@ -92,7 +90,6 @@ export class StatusBuilderAnalyzer {
     options?: StatusBuilderAnalysisOptions
   ) {
     this.expressionAnalyzer = expressionAnalyzer || new JavaScriptToCelAnalyzer();
-    this.magicProxyAnalyzer = new MagicProxyAnalyzer();
     this.optionalityHandler = new EnhancedTypeOptionalityHandler();
     this.options = { ...DEFAULT_ANALYSIS_OPTIONS, ...options };
   }
@@ -102,10 +99,10 @@ export class StatusBuilderAnalyzer {
   /**
    * Analyze status builder function for toResourceGraph integration
    */
-  analyzeStatusBuilder<TSpec extends Record<string, any>, TStatus>(
+  analyzeStatusBuilder<TSpec extends object, TStatus>(
     statusBuilder: StatusBuilderFunction<TSpec, TStatus>,
-    resources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<TSpec, any>
+    resources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<TSpec, Record<string, unknown>>
   ): StatusBuilderAnalysisResult {
     try {
       this.logger.debug('Analyzing status builder function', {
@@ -273,8 +270,8 @@ export class StatusBuilderAnalyzer {
    */
   analyzeReturnObjectWithMagicProxy(
     returnObject: unknown,
-    resources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>
+    resources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>
   ): {
     statusMappings: Record<string, CelExpression>;
     dependencies: KubernetesRef<unknown>[];
@@ -329,8 +326,8 @@ export class StatusBuilderAnalyzer {
    */
   analyzeNestedReturnObjectStructure(
     returnObject: unknown,
-    resources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>,
+    resources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     depth: number = 0
   ): {
     flattenedMappings: Record<string, CelExpression>;
@@ -385,8 +382,8 @@ export class StatusBuilderAnalyzer {
     flattenedMappings: Record<string, CelExpression>,
     nestedDependencies: Map<string, KubernetesRef<unknown>[]>,
     errors: ConversionError[],
-    resources: Record<string, Enhanced<any, any>>,
-    schemaProxy?: SchemaProxy<any, any>,
+    resources: Record<string, Enhanced<unknown, unknown>>,
+    schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
     depth: number = 0
   ): void {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
@@ -472,10 +469,10 @@ export class StatusBuilderAnalyzer {
 /**
  * Analyze status builder function for toResourceGraph integration with KubernetesRef detection
  */
-export function analyzeStatusBuilderForToResourceGraph<TSpec extends Record<string, any>, TStatus>(
+export function analyzeStatusBuilderForToResourceGraph<TSpec extends object, TStatus>(
   statusBuilder: StatusBuilderFunction<TSpec, TStatus>,
-  resources: Record<string, Enhanced<any, any>>,
-  schemaProxy?: SchemaProxy<TSpec, any>,
+  resources: Record<string, Enhanced<unknown, unknown>>,
+  schemaProxy?: SchemaProxy<TSpec, Record<string, unknown>>,
   factoryType: 'direct' | 'kro' = 'kro'
 ): {
   statusMappings: Record<string, unknown>;
@@ -584,10 +581,10 @@ function calculateStatusFieldHydrationOrder(
 /**
  * Convenience function to analyze status builder functions
  */
-export function analyzeStatusBuilder<TSpec extends Record<string, any>, TStatus>(
+export function analyzeStatusBuilder<TSpec extends object, TStatus>(
   statusBuilder: StatusBuilderFunction<TSpec, TStatus>,
-  resources: Record<string, Enhanced<any, any>>,
-  schemaProxy?: SchemaProxy<TSpec, any>,
+  resources: Record<string, Enhanced<unknown, unknown>>,
+  schemaProxy?: SchemaProxy<TSpec, Record<string, unknown>>,
   options?: StatusBuilderAnalysisOptions
 ): StatusBuilderAnalysisResult {
   const analyzer = new StatusBuilderAnalyzer(undefined, options);
@@ -599,8 +596,8 @@ export function analyzeStatusBuilder<TSpec extends Record<string, any>, TStatus>
  */
 export function analyzeReturnObjectWithMagicProxy(
   returnObject: unknown,
-  resources: Record<string, Enhanced<any, any>>,
-  schemaProxy?: SchemaProxy<any, any>,
+  resources: Record<string, Enhanced<unknown, unknown>>,
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>,
   options?: StatusBuilderAnalysisOptions
 ): {
   statusMappings: Record<string, CelExpression>;

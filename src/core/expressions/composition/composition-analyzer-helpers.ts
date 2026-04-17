@@ -311,6 +311,7 @@ export function isCompileTimeLiteral(node: ASTNode): boolean {
 export function referencesSpec(node: ASTNode, specParamName: string): boolean {
   let found = false;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estraverse types are loose
+  // biome-ignore lint/suspicious/noExplicitAny: estraverse expects broad ESTree node shapes.
   estraverse.traverse(node as any, {
     enter(n) {
       if (n.type === 'Identifier' && getIdentifierName(n) === specParamName) {
@@ -355,7 +356,7 @@ export function extractResourceStatusRef(
   ]);
 
   let result: { variableName: string; statusField: string } | undefined;
-  // biome-ignore lint/suspicious/noExplicitAny: estraverse types are loose
+  // biome-ignore lint/suspicious/noExplicitAny: estraverse expects broad ESTree node shapes.
   estraverse.traverse(node as any, {
     enter(n) {
       // Match: X.status.Y where X is an Identifier
@@ -398,7 +399,7 @@ export function extractResourceStatusRef(
  */
 export function findFactoryCallsInSubtree(node: ASTNode): FactoryCallInfo[] {
   const calls: FactoryCallInfo[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- estraverse types are loose
+  // biome-ignore lint/suspicious/noExplicitAny: estraverse expects broad ESTree node shapes.
   estraverse.traverse(node as any, {
     enter(n) {
       const astNode = n as unknown as ASTNode;

@@ -25,7 +25,7 @@ interface CacheEntry {
  * AST cache entry for parsed expressions
  */
 interface ASTCacheEntry {
-  ast: any;
+  ast: unknown;
   timestamp: number;
   accessCount: number;
   lastAccessed: number;
@@ -184,7 +184,7 @@ export class ExpressionCache {
   /**
    * Get cached AST
    */
-  getAST(expression: string): any | null {
+  getAST(expression: string): unknown | null {
     if (!this.options.enableASTCache) {
       return null;
     }
@@ -215,7 +215,7 @@ export class ExpressionCache {
   /**
    * Store AST in cache
    */
-  setAST(expression: string, ast: any): void {
+  setAST(expression: string, ast: unknown): void {
     if (!this.options.enableASTCache) {
       return;
     }
@@ -361,7 +361,7 @@ export class ExpressionCache {
   /**
    * Estimate memory size of AST
    */
-  private estimateASTSize(ast: any): number {
+  private estimateASTSize(ast: unknown): number {
     // Very rough estimation - could be improved with recursive traversal
     return JSON.stringify(ast).length * 2;
   }

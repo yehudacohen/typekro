@@ -364,7 +364,7 @@ describe('Differential Branch Capture', () => {
         (spec) => {
           // If the hybrid run broadly overrides ALL optionals to undefined,
           // this access throws before the feature-driven branch can be captured.
-          const secretName = spec.secretRef.name;
+          const secretName = spec.secretRef!.name;
 
           if (!spec.feature) {
             ConfigMap({

@@ -111,6 +111,39 @@ function mockDeploymentWithArgs(opts: {
   } as unknown as TestResource;
 }
 
+function mockDeploymentWithInitContainerArgs(opts: {
+  id: string;
+  name: string;
+  args: string[];
+}): TestResource {
+  return {
+    id: opts.id,
+    kind: 'Deployment',
+    apiVersion: 'apps/v1',
+    metadata: { name: opts.name },
+    spec: {
+      template: {
+        spec: {
+          containers: [
+            {
+              name: opts.name,
+              image: 'test:latest',
+            },
+          ],
+          initContainers: [
+            {
+              name: `${opts.name}-init`,
+              image: 'test:latest',
+              args: opts.args,
+            },
+          ],
+        },
+      },
+    },
+    status: {},
+  } as unknown as TestResource;
+}
+
 describe('Implicit dependency detection', () => {
   const resolver = new DependencyResolver();
 
@@ -191,6 +224,26 @@ describe('Implicit dependency detection', () => {
         id: 'deploymentWorker',
         name: 'worker',
         args: ['--upstream', 'http://backend-api:8080/api'],
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, app]);
+      const deps = graph.getDependencies('deploymentWorker');
+
+      expect(deps).toContain('serviceBackend');
+    });
+
+    it('service name in initContainer args creates dependency', () => {
+      const svc = mockResource({
+        id: 'serviceBackend',
+        kind: 'Service',
+        name: 'backend-api',
+      });
+      markDnsAddressable(svc);
+
+      const app = mockDeploymentWithInitContainerArgs({
+        id: 'deploymentWorker',
+        name: 'worker',
+        args: ['--migrate', 'http://backend-api:8080/health'],
       });
 
       const graph = resolver.buildDependencyGraph([svc, app]);

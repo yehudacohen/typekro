@@ -359,21 +359,35 @@ describeOrSkip('External-DNS Integration Tests', () => {
     });
 
     // Validate AWS configuration
-    expect(awsRelease.spec.values?.provider).toBe('aws');
-    expect(awsRelease.spec.values?.aws?.region).toBe('us-east-1');
-    expect(awsRelease.spec.values?.aws?.zoneType).toBe('public');
-    expect(awsRelease.spec.values?.domainFilters).toEqual(['aws.example.com']);
-    expect(awsRelease.spec.values?.policy).toBe('sync');
+    const awsValues = awsRelease.spec.values as {
+      provider?: string;
+      aws?: { region?: string; zoneType?: string; credentials?: Record<string, string> };
+      domainFilters?: string[];
+      policy?: string;
+      dryRun?: boolean;
+    } | undefined;
+    expect(awsValues?.provider).toBe('aws');
+    expect(awsValues?.aws?.region).toBe('us-east-1');
+    expect(awsValues?.aws?.zoneType).toBe('public');
+    expect(awsValues?.domainFilters).toEqual(['aws.example.com']);
+    expect(awsValues?.policy).toBe('sync');
 
     // Validate Cloudflare configuration
-    expect(cloudflareRelease.spec.values?.provider).toBe('cloudflare');
-    expect(cloudflareRelease.spec.values?.cloudflare?.proxied).toBe(true);
-    expect(cloudflareRelease.spec.values?.domainFilters).toEqual(['cloudflare.example.com']);
-    expect(cloudflareRelease.spec.values?.policy).toBe('upsert-only');
+    const cloudflareValues = cloudflareRelease.spec.values as {
+      provider?: string;
+      cloudflare?: { proxied?: boolean };
+      domainFilters?: string[];
+      policy?: string;
+      dryRun?: boolean;
+    } | undefined;
+    expect(cloudflareValues?.provider).toBe('cloudflare');
+    expect(cloudflareValues?.cloudflare?.proxied).toBe(true);
+    expect(cloudflareValues?.domainFilters).toEqual(['cloudflare.example.com']);
+    expect(cloudflareValues?.policy).toBe('upsert-only');
 
     // Both should have dry-run enabled for testing
-    expect(awsRelease.spec.values?.dryRun).toBe(true);
-    expect(cloudflareRelease.spec.values?.dryRun).toBe(true);
+    expect(awsValues?.dryRun).toBe(true);
+    expect(cloudflareValues?.dryRun).toBe(true);
   });
 
   it('should handle security and credentials properly', async () => {
@@ -400,11 +414,14 @@ describeOrSkip('External-DNS Integration Tests', () => {
     });
 
     // Validate credential configuration
-    expect(secureRelease.spec.values?.aws?.credentials?.secretName).toBe(
+    const secureValues = secureRelease.spec.values as {
+      aws?: { credentials?: { secretName?: string; accessKeyIdKey?: string; secretAccessKeyKey?: string } };
+    } | undefined;
+    expect(secureValues?.aws?.credentials?.secretName).toBe(
       'aws-external-dns-credentials'
     );
-    expect(secureRelease.spec.values?.aws?.credentials?.accessKeyIdKey).toBe('access-key-id');
-    expect(secureRelease.spec.values?.aws?.credentials?.secretAccessKeyKey).toBe(
+    expect(secureValues?.aws?.credentials?.accessKeyIdKey).toBe('access-key-id');
+    expect(secureValues?.aws?.credentials?.secretAccessKeyKey).toBe(
       'secret-access-key'
     );
 

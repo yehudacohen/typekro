@@ -302,8 +302,9 @@ function celValueForTernary(value: RefOrValue<CelValue>): string {
       if (m.index > lastIndex) {
         parts.push(`"${escapeCelString(str.slice(lastIndex, m.index))}"`);
       }
-      const resourceId = m[1]!;
-      const fieldPath = m[2]!;
+      const resourceId = m[1];
+      const fieldPath = m[2];
+      if (!resourceId || !fieldPath) continue;
       const celPath =
         resourceId === '__schema__' ? `schema.${fieldPath}` : `${resourceId}.${fieldPath}`;
       parts.push(`string(${celPath})`);
@@ -313,7 +314,8 @@ function celValueForTernary(value: RefOrValue<CelValue>): string {
     if (lastIndex < str.length) {
       parts.push(`"${escapeCelString(str.slice(lastIndex))}"`);
     }
-    return parts.length === 1 ? parts[0]! : parts.join(' + ');
+    const [firstPart] = parts;
+    return parts.length === 1 && firstPart !== undefined ? firstPart : parts.join(' + ');
   }
   // Plain string → quote as CEL string literal
   return `"${escapeCelString(str)}"`;

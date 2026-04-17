@@ -190,9 +190,13 @@ export function extractNullishDefaults(fnSource: string): Record<string, string 
   const pattern =
     /spec\.([\w]+(?:\??\.\w+)*)\s*\?\?\s*(?:(['"])([^'"]*)\2|(-?\d+(?:\.\d+)?)|true|false|!0|!1)(?=\s*[;,)}\n])/g;
 
-  let match: RegExpExecArray | null = pattern.exec(fnSource);
-  while (match !== null) {
-    const fieldPath = match[1]!.replace(/\?\./g, '.');
+    let match: RegExpExecArray | null = pattern.exec(fnSource);
+    while (match !== null) {
+      const fieldPath = match[1]?.replace(/\?\./g, '.');
+      if (!fieldPath) {
+        match = pattern.exec(fnSource);
+        continue;
+      }
     const stringValue = match[3];
     const numericValue = match[4];
 
@@ -388,7 +392,10 @@ function extractDefaultsByComparison(
       // (template-literal propagation), NaN (arithmetic-coercion
       // propagation), and the sentinel itself.
       if (isSentinelDerivedValue(defaultsVal)) return;
-      result[exactMarkerMatch[1]!] = defaultsVal;
+      const fieldKey = exactMarkerMatch[1];
+      if (fieldKey) {
+        result[fieldKey] = defaultsVal;
+      }
     }
     return;
   }
@@ -480,14 +487,22 @@ function extractTernaryConditionals(
     let match: RegExpExecArray | null = markerPattern.exec(proxyStr);
 
     while (match !== null) {
-      const field = match[1]!;
+      const field = match[1];
+      if (!field) {
+        match = markerPattern.exec(proxyStr);
+        continue;
+      }
       const marker = match[0];
 
       // Only optional fields can be ternary-controlled. Required fields always
       // have a value (the sentinel in the defaults run), so their markers are
       // always "absent" from the defaults string but they're substitutions,
       // not conditionals.
-      const topLevelField = field.split('.')[0]!;
+      const topLevelField = field.split('.')[0];
+      if (!topLevelField) {
+        match = markerPattern.exec(proxyStr);
+        continue;
+      }
       if (!optionalFieldNames.has(topLevelField)) {
         match = markerPattern.exec(proxyStr);
         continue;
@@ -525,7 +540,8 @@ function extractTernaryConditionals(
         const defaultsLines = new Set(defaultsStr.split('\n'));
         const allLines = proxyStr.slice(0, sectionStart).split('\n');
         while (allLines.length > 0) {
-          const prevLine = allLines[allLines.length - 1]!;
+          const prevLine = allLines[allLines.length - 1];
+          if (prevLine === undefined) break;
           const isKeyOnlyLine = /^\s*\w+:\s*$/.test(prevLine);
           const lineExistsInDefaults = defaultsLines.has(prevLine);
           if (isKeyOnlyLine && !lineExistsInDefaults) {
@@ -598,7 +614,8 @@ function applyNullishDefaults(
     let current: Record<string, unknown> = specFields;
 
     for (let i = 0; i < parts.length - 1; i++) {
-      const part = parts[i]!;
+      const part = parts[i];
+      if (!part) continue;
       if (current[part] && typeof current[part] === 'object') {
         current = current[part] as Record<string, unknown>;
       } else {
@@ -609,7 +626,8 @@ function applyNullishDefaults(
 
     if (!current) continue;
 
-    const fieldName = parts[parts.length - 1]!;
+    const fieldName = parts[parts.length - 1];
+    if (!fieldName) continue;
     const existingType = current[fieldName];
     if (typeof existingType !== 'string') continue;
 
@@ -685,7 +703,8 @@ function addMissingDefaultFields(
     let current: Record<string, unknown> = specFields;
     let i = 0;
     for (; i < parts.length - 1; i++) {
-      const part = parts[i]!;
+      const part = parts[i];
+      if (!part) continue;
       const next = current[part];
       if (next && typeof next === 'object' && !Array.isArray(next)) {
         current = next as Record<string, unknown>;
@@ -702,7 +721,8 @@ function addMissingDefaultFields(
     }
     if (!current) continue;
 
-    const leafName = parts[parts.length - 1]!;
+    const leafName = parts[parts.length - 1];
+    if (!leafName) continue;
     if (leafName in current) continue; // existing — skip
     current[leafName] = kroTypeForLiteral(value);
   }

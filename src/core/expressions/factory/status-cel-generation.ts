@@ -144,7 +144,7 @@ export function generateStatusContextCelWithAdvancedFeatures(
  */
 export function analyzeStatusFieldHandlingRequirements(
   kubernetesRef: KubernetesRef<unknown>,
-  context: OptionalityContext
+  _context: OptionalityContext
 ): StatusFieldHandlingInfo {
   const fieldPath = kubernetesRef.fieldPath || '';
   const isSchemaRef = kubernetesRef.resourceId === '__schema__';

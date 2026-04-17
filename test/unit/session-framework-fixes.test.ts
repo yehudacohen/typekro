@@ -268,7 +268,6 @@ describe('#51 conditionToCel with Object.keys and optional has() wrapping', () =
     const source = '(spec) => Object.keys(spec.items).length > 0';
     const ast = Parser.parse(source, { ecmaVersion: 2022, ranges: true });
     // Navigate to the BinaryExpression inside the arrow body
-    // biome-ignore lint/suspicious/noExplicitAny: AST traversal for test
     const body = (ast as any).body[0].expression.body;
 
     const cel = conditionToCel(body, source, 'spec', new Set());
@@ -288,7 +287,6 @@ describe('#51 conditionToCel with Object.keys and optional has() wrapping', () =
     const source =
       '(spec) => spec.secrets && Object.keys(spec.secrets).length > 0';
     const ast = Parser.parse(source, { ecmaVersion: 2022, ranges: true });
-    // biome-ignore lint/suspicious/noExplicitAny: AST traversal for test
     const body = (ast as any).body[0].expression.body;
 
     // Tell the helper that `secrets` is a declared optional field
@@ -307,7 +305,6 @@ describe('#51 conditionToCel with Object.keys and optional has() wrapping', () =
 
     const source = '(spec) => spec.enabled && spec.count > 0';
     const ast = Parser.parse(source, { ecmaVersion: 2022, ranges: true });
-    // biome-ignore lint/suspicious/noExplicitAny: AST traversal for test
     const body = (ast as any).body[0].expression.body;
 
     // `enabled` and `count` are NOT in the optionalFieldNames set, so
@@ -398,6 +395,8 @@ describe('#52 nested optional omit() wrapping', () => {
     const marker = '__KUBERNETES_REF___schema___spec.database.storageClass__';
     // omitFields set contains only the leaf path (`database.storageClass`)
     const result = processResourceReferences(marker, {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
       omitFields: new Set(['database.storageClass']),
     });
     expect(result).toBe(
@@ -412,6 +411,8 @@ describe('#52 nested optional omit() wrapping', () => {
     // ref: spec.cache.someDescendant.leaf — omit set has only `cache`
     const marker = '__KUBERNETES_REF___schema___spec.cache.nested.leaf__';
     const result = processResourceReferences(marker, {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
       omitFields: new Set(['cache']),
     });
     // Deepest prefix match is `cache`, and the leaf is deeper — chain has() guards.
@@ -430,6 +431,8 @@ describe('#52 nested optional omit() wrapping', () => {
     // parent object is present-but-sparse.
     const marker = '__KUBERNETES_REF___schema___spec.cache.replicas__';
     const result = processResourceReferences(marker, {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
       omitFields: new Set(['cache', 'cache.replicas']),
     });
     expect(result).toBe(
@@ -448,6 +451,8 @@ describe('#52 nested optional omit() wrapping', () => {
     );
     const marker = '__KUBERNETES_REF___schema___spec.cnpgOperator.version__';
     const result = processResourceReferences(marker, {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
       omitFields: new Set(['cnpgOperator']),
     });
     expect(result).toBe(
@@ -462,6 +467,8 @@ describe('#52 nested optional omit() wrapping', () => {
     );
     const marker = '__KUBERNETES_REF___schema___spec.namespace__';
     const result = processResourceReferences(marker, {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
       omitFields: new Set(['namespace']),
     });
     expect(result).toBe(
@@ -478,6 +485,8 @@ describe('#52 nested optional omit() wrapping', () => {
     );
     const marker = '__KUBERNETES_REF___schema___spec.cnpgOperator.monitoring.enabled__';
     const result = processResourceReferences(marker, {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
       omitFields: new Set(['cnpgOperator']),
     });
     expect(result).toBe(
@@ -495,6 +504,8 @@ describe('#52 nested optional omit() wrapping', () => {
     // access through its optional ancestors.
     const marker = '__KUBERNETES_REF___schema___spec.cnpgOperator.monitoring.enabled__';
     const result = processResourceReferences(marker, {
+      celPrefix: '',
+      resourceIdStrategy: 'deterministic',
       omitFields: new Set([
         'cnpgOperator',
         'cnpgOperator.monitoring',
@@ -588,7 +599,7 @@ describe('#53 schema-shape-aware proxy', () => {
     // sentinel key. The .length check must be > 0 so the common
     // `if (Object.keys(spec.secrets).length > 0)` pattern fires and
     // the conditional resource is registered.
-    const keys = Object.keys(schema.spec.secrets);
+    const keys = Object.keys(schema.spec.secrets ?? {});
     expect(keys.length).toBeGreaterThan(0);
   });
 
@@ -629,7 +640,6 @@ describe('#53 schema-shape-aware proxy', () => {
     // Even though `nonExistent` isn't in the schema, dot-access returns
     // a ref. This matches the long-standing lazy behavior of the proxy
     // — shape-awareness affects enumeration, not strict-property-lookup.
-    // biome-ignore lint/suspicious/noExplicitAny: intentional undeclared access
     const ref = (schema.spec as any).processing.nonExistent as KubernetesRef<
       unknown
     >;
@@ -642,7 +652,6 @@ describe('#53 schema-shape-aware proxy', () => {
     // behavior (ownKeys returns a sentinel, spread produces only the
     // sentinel). Direct access still works.
     const schema = createSchemaProxy<{ name: string }, { ready: boolean }>();
-    // biome-ignore lint/suspicious/noExplicitAny: intentionally loose typing for compat test
     const ref = (schema.spec as any).name as KubernetesRef<unknown>;
     expect(isKubernetesRef(ref)).toBe(true);
     expect(ref.fieldPath).toBe('spec.name');
@@ -768,10 +777,8 @@ describe('#55 shouldPreserveRgd decision', () => {
 function parseRgd(yamlStr: string) {
   return jsYaml.load(yamlStr) as {
     spec: {
-      // biome-ignore lint/suspicious/noExplicitAny: parsed YAML template shape varies
-      resources: Array<{ id: string; template: any; forEach?: any }>;
-      // biome-ignore lint/suspicious/noExplicitAny: parsed YAML schema shape
-      schema: any;
+      resources: Array<{ id: string; template: unknown; forEach?: unknown }>;
+      schema: unknown;
     };
   };
 }
@@ -866,7 +873,7 @@ describe('Fix #56 — orphaned $item sentinel stripping', () => {
     expect(resource?.forEach).toBeDefined();
 
     // Template should use the forEach variable, not raw schema paths
-    const templateName = resource?.template?.metadata?.name;
+    const templateName = (resource?.template as { metadata?: { name?: string } } | undefined)?.metadata?.name;
     expect(templateName).toContain('worker.label');
   });
 
@@ -989,7 +996,8 @@ describe('Fix #35 additional coverage — nullish default propagation', () => {
     const comp = kubernetesComposition(
       { name: 'leaf-default', kind: 'LeafDefault', spec: Spec, status: Status },
       (spec) => {
-        const dbName = spec.database ?? 'app';
+        const specWithDefaults = spec as typeof spec & { database?: string };
+        const dbName = specWithDefaults.database ?? 'app';
         Deployment({
           name: spec.name,
           image: spec.image,
@@ -1041,7 +1049,8 @@ describe('Fix #35 additional coverage — nullish default propagation', () => {
     const comp = kubernetesComposition(
       { name: 'num-default', kind: 'NumDefault', spec: Spec, status: Status },
       (spec) => {
-        const replicas = spec.replicas ?? 1;
+        const specWithDefaults = spec as typeof spec & { replicas?: number };
+        const replicas = specWithDefaults.replicas ?? 1;
         Deployment({
           name: spec.name,
           image: 'nginx',
@@ -1107,7 +1116,8 @@ describe('Fix #35 additional coverage — addMissingDefaultFields', () => {
         status: Status,
       },
       (spec) => {
-        const db = spec.database ?? 'app';
+        const specWithDefaults = spec as typeof spec & { database?: string };
+        const db = specWithDefaults.database ?? 'app';
         Deployment({
           name: spec.name,
           image: spec.image,
@@ -1140,7 +1150,8 @@ describe('Fix #35 additional coverage — addMissingDefaultFields', () => {
         status: Status,
       },
       (spec) => {
-        const mode = spec.config?.mode ?? 'auto';
+        const specWithDefaults = spec as typeof spec & { config?: { mode?: string } };
+        const mode = specWithDefaults.config?.mode ?? 'auto';
         Deployment({
           name: spec.name,
           image: spec.image,

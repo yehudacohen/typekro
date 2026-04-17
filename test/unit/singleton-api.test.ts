@@ -7,13 +7,14 @@ import type {
   SingletonOwnedHandle,
   SingletonReferenceHandle,
 } from '../../src/core/types/deployment.js';
+import type { KroCompatibleType } from '../../src/core/types/serialization.js';
 
 interface SingletonApi {
-  <TSpec, TStatus>(
+  <TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
     composition: CallableComposition<TSpec, TStatus>,
     input: { id: string; spec: TSpec },
   ): SingletonHandle<TSpec, TStatus>;
-  use<TSpec, TStatus>(
+  use<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
     composition: CallableComposition<TSpec, TStatus>,
     id: string,
   ): SingletonReferenceHandle<TStatus>;
@@ -87,7 +88,7 @@ describe('singleton API', () => {
     const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
     const operator = createOperatorComposition();
 
-    const result = singleton.use(operator, 'platform-operator') as Record<string, unknown>;
+    const result = singleton.use(operator, 'platform-operator') as unknown as Record<string, unknown>;
 
     expect('spec' in result).toBe(false);
   });
@@ -96,7 +97,7 @@ describe('singleton API', () => {
     const { singleton } = await import('../../src/index.js') as typeof import('../../src/index.js') & { singleton: SingletonApi };
     const operator = createOperatorComposition();
 
-    const result = singleton.use(operator, 'platform-operator') as Record<string, unknown>;
+    const result = singleton.use(operator, 'platform-operator') as unknown as Record<string, unknown>;
 
     expect('dependsOn' in result).toBe(false);
   });
@@ -142,7 +143,7 @@ describe('singleton API', () => {
         status: type({ ready: 'boolean' }),
       },
       (spec) => {
-        const nested = operator({ name: `${spec.name}-op`, namespace: 'system' }) as Record<string, unknown>;
+        const nested = operator({ name: `${spec.name}-op`, namespace: 'system' }) as unknown as Record<string, unknown>;
         expect('dependsOn' in nested).toBe(true);
         return { ready: nested.status !== undefined } as { ready: boolean };
       },

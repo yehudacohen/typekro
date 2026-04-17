@@ -195,7 +195,7 @@ export interface ExternalDnsHelmValues {
     effect?: 'NoSchedule' | 'PreferNoSchedule' | 'NoExecute';
     tolerationSeconds?: number;
   }>;
-  affinity?: any;
+  affinity?: unknown;
   priorityClassName?: string;
   terminationGracePeriodSeconds?: number;
 

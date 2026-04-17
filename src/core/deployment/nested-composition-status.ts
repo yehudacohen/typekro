@@ -16,8 +16,6 @@ import type { TypeKroLogger } from '../logging/index.js';
 import { getMetadataField } from '../metadata/index.js';
 import type { Enhanced } from '../types/index.js';
 
-const SYNTHESIZED_READINESS_KEYS = new Set(['ready', 'phase', 'failed']);
-
 function isMarkerString(value: string): boolean {
   return value.includes('__KUBERNETES_REF_');
 }
@@ -55,7 +53,7 @@ function filterConcreteNestedStatusFields(value: unknown): unknown {
   }
 
   const filteredEntries = Object.entries(value)
-    .filter(([key]) => !key.startsWith('__') && !SYNTHESIZED_READINESS_KEYS.has(key))
+    .filter(([key]) => !key.startsWith('__'))
     .map(([key, entryValue]) => [key, filterConcreteNestedStatusFields(entryValue)] as const)
     .filter(([, entryValue]) => entryValue !== undefined);
 
@@ -135,6 +133,9 @@ export function synthesizeNestedCompositionStatus(
 
     const snapshot = resolveNestedSnapshot(parentId, nestedStatusSnapshots);
     const filteredSnapshot = filterConcreteNestedStatusFields(snapshot);
+    const snapshotReady = isPlainObject(filteredSnapshot) ? filteredSnapshot.ready : undefined;
+    const snapshotPhase = isPlainObject(filteredSnapshot) ? filteredSnapshot.phase : undefined;
+    const snapshotFailed = isPlainObject(filteredSnapshot) ? filteredSnapshot.failed : undefined;
 
     if (childCount === 0 && !isPlainObject(filteredSnapshot)) {
       continue;
@@ -144,9 +145,9 @@ export function synthesizeNestedCompositionStatus(
     // children, the parent is ready.
     const synthesizedStatus: Record<string, unknown> = {
       ...(isPlainObject(filteredSnapshot) ? filteredSnapshot : {}),
-      ready: childCount > 0,
-      phase: childCount > 0 ? 'Ready' : 'Installing',
-      failed: false,
+      ready: childCount > 0 ? true : typeof snapshotReady === 'boolean' ? snapshotReady : false,
+      phase: childCount > 0 ? 'Ready' : typeof snapshotPhase === 'string' ? snapshotPhase : 'Installing',
+      failed: childCount > 0 ? false : typeof snapshotFailed === 'boolean' ? snapshotFailed : false,
     };
 
     // Add under the full parent ID

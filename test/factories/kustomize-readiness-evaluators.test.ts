@@ -204,8 +204,8 @@ describe('Kustomize Readiness Evaluators', () => {
       const result = kustomizationReadinessEvaluator(liveResource);
 
       expect(result.ready).toBe(false);
-      expect(result.reason).toBe('EvaluationError');
-      expect(result.message).toContain('Error evaluating Kustomization readiness');
+      expect(result.reason).toBe('StatusMissing');
+      expect(result.message).toContain('status not available');
     });
 
     it('should handle malformed conditions gracefully', () => {

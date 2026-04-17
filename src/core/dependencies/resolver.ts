@@ -83,7 +83,8 @@ export class DependencyResolver {
       for (const resource of resources) {
         const ns = resource.metadata?.namespace;
         if (ns && namespaceResources.has(ns)) {
-          const nsResourceId = namespaceResources.get(ns)!;
+          const nsResourceId = namespaceResources.get(ns);
+          if (!nsResourceId) continue;
           // Don't add self-dependency
           if (nsResourceId !== resource.id) {
             try {
@@ -224,9 +225,13 @@ export class DependencyResolver {
       }
     };
 
-    // Extract env var values from all containers
-    const containers = (resource as any)?.spec?.template?.spec?.containers;
-    if (Array.isArray(containers)) {
+    // Extract env var values from all containers and initContainers
+    const podSpec = (resource as { spec?: { template?: { spec?: Record<string, unknown> } } })?.spec?.template?.spec;
+    const containers = [
+      ...(Array.isArray(podSpec?.containers) ? podSpec.containers : []),
+      ...(Array.isArray(podSpec?.initContainers) ? podSpec.initContainers : []),
+    ];
+    if (containers.length > 0) {
       for (const container of containers) {
         if (Array.isArray(container?.env)) {
           for (const envVar of container.env) {
@@ -265,7 +270,7 @@ export class DependencyResolver {
           for (const [k, value] of Object.entries(obj)) traverse(value, depth + 1, k);
         }
       };
-      const spec = (resource as any)?.spec;
+      const spec = (resource as { spec?: unknown })?.spec;
       if (spec) traverse(spec);
     }
 

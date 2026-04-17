@@ -229,7 +229,7 @@ export class EventFilter {
         kind: r.kind,
         name: r.name,
         namespace: r.namespace,
-        uid: r.manifest.metadata?.uid!, // Safe to use ! since we filtered above
+        uid: r.manifest.metadata?.uid ?? '',
       }));
 
     // Update monitored resources

@@ -1,9 +1,11 @@
 import { SINGLETON_HANDLE_BRAND } from '../constants/brands.js';
 import { getCurrentCompositionContext } from '../composition/context.js';
+import { getSingletonInstanceName } from '../deployment/shared-utilities.js';
 import { externalRef } from '../references/external-refs.js';
 import type {
   CallableComposition,
   NestedCompositionResource,
+  SingletonCompositionHandle,
   SingletonDefinitionRecord,
   SingletonHandle,
   SingletonOwnedHandle,
@@ -23,7 +25,7 @@ interface SingletonCompositionMetadata {
   };
 }
 
-const singletonDefinitionsByComposition = new WeakMap<CallableComposition<any, any>, Map<string, SingletonDefinitionRecord>>();
+const singletonDefinitionsByComposition = new WeakMap<object, Map<string, SingletonDefinitionRecord>>();
 export const DEFAULT_SINGLETON_NAMESPACE = 'typekro-singletons';
 
 function getSingletonRegistryForComposition<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
@@ -53,7 +55,7 @@ function stableSerialize(value: unknown): string {
 }
 
 function getSingletonFactoryIdentity<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
-  composition: CallableComposition<TSpec, TStatus>,
+  composition: CallableComposition<TSpec, TStatus> | SingletonCompositionHandle,
 ): string {
   const compositionRecord = composition as unknown as SingletonCompositionMetadata;
   const rawApiVersion = String(compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1');
@@ -64,7 +66,7 @@ function getSingletonFactoryIdentity<TSpec extends KroCompatibleType, TStatus ex
 }
 
 function getSingletonKey<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
-  composition: CallableComposition<TSpec, TStatus>,
+  composition: CallableComposition<TSpec, TStatus> | SingletonCompositionHandle,
   id: string,
 ): string {
   return `${getSingletonFactoryIdentity(composition)}#${id}`;
@@ -159,7 +161,7 @@ function useSingleton<TSpec extends KroCompatibleType, TStatus extends KroCompat
   const statusRef = externalRef<TSpec, TStatus>({
     apiVersion,
     kind,
-    metadata: { name: id, namespace: registryNamespace },
+    metadata: { name: getSingletonInstanceName(id), namespace: registryNamespace },
     id: getSingletonResourceId(key),
   });
 

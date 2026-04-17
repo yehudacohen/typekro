@@ -38,8 +38,8 @@ export interface ContextValidationRule {
 
   /** Validation function */
   validate: (
-    expression: any,
-    kubernetesRefs: KubernetesRef<any>[],
+    expression: unknown,
+    kubernetesRefs: KubernetesRef<unknown>[],
     context: ExpressionContext,
     config: ContextValidationConfig
   ) => ContextValidationRuleResult;
@@ -67,10 +67,10 @@ export interface ContextValidationRuleResult {
  */
 export interface ContextValidationConfig {
   /** Available resources for validation */
-  availableResources?: Record<string, Enhanced<any, any>>;
+  availableResources?: Record<string, Enhanced<unknown, unknown>>;
 
   /** Schema proxy for schema field validation */
-  schemaProxy?: SchemaProxy<any, any>;
+  schemaProxy?: SchemaProxy<Record<string, unknown>, Record<string, unknown>>;
 
   /** Factory type being used */
   factoryType?: 'direct' | 'kro';
@@ -96,13 +96,13 @@ export interface ContextValidationReport {
   valid: boolean;
 
   /** Expression that was validated */
-  expression: any;
+  expression: unknown;
 
   /** Context that was validated */
   context: ExpressionContext;
 
   /** KubernetesRef objects found */
-  kubernetesRefs: KubernetesRef<any>[];
+  kubernetesRefs: KubernetesRef<unknown>[];
 
   /** Validation results by rule */
   ruleResults: Map<string, ContextValidationRuleResult>;
@@ -161,7 +161,7 @@ export class ContextExpressionValidator {
    * Validate an expression for context appropriateness
    */
   validateExpression(
-    expression: any,
+    expression: unknown,
     context: ExpressionContext,
     config: ContextValidationConfig = {}
   ): ContextValidationReport {
@@ -526,7 +526,7 @@ export class ContextExpressionValidator {
             valid: false,
             message: 'Template literal context but no interpolation found',
             suggestions: [
-              'Use ${expression} syntax for interpolations',
+              'Use $' + '{expression} syntax for interpolations',
               'Ensure template literal has proper structure',
             ],
           };
@@ -541,7 +541,7 @@ export class ContextExpressionValidator {
             valid: false,
             message: 'Unbalanced template literal interpolations',
             suggestions: [
-              'Ensure each ${} interpolation is properly closed',
+              'Ensure each $' + '{} interpolation is properly closed',
               'Check for nested template literals (not supported)',
             ],
           };

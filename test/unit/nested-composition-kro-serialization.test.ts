@@ -1279,7 +1279,7 @@ describe('T13 — nested CelExpression resource refs resolve through nested-id r
       status: type({ ready: 'boolean' }),
     },
     (spec) => {
-      const inner = innerComp({ name: spec.name });
+      const _inner = innerComp({ name: spec.name });
       ConfigMap({
         name: `${spec.name}-consumer`,
         data: {

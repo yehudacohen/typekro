@@ -357,7 +357,7 @@ describe('MagicProxy<T> compile-time types', () => {
       const proxy = phantom<MagicProxy<Obj>>();
 
       // Index signature allows unknown properties
-      const _unknown: MagicAssignable<any> = proxy['arbitrary'];
+      const _unknown: MagicAssignable<any> = proxy.arbitrary;
       void _unknown;
     }
 

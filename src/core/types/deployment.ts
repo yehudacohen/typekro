@@ -7,7 +7,7 @@ import { CALLABLE_COMPOSITION_BRAND, NESTED_COMPOSITION_BRAND, SINGLETON_HANDLE_
 import type { DependencyGraph } from '../dependencies/index.js';
 import type { ASTAnalysisResult } from '../expressions/composition/composition-analyzer-types.js';
 import type { HttpTimeoutConfig } from '../kubernetes/index.js';
-import type { CelExpression, KubernetesRef } from './common.js';
+import type { KubernetesRef } from './common.js';
 import type { Composable } from './composable.js';
 import type { DeployableK8sResource, Enhanced, KubernetesResource } from './kubernetes.js';
 import type { InferType, KroCompatibleType, SchemaProxy, Scope } from './schema.js';
@@ -445,8 +445,8 @@ export interface DeploymentResourceGraph {
 
 // New typed ResourceGraph interface for the factory pattern
 export interface TypedResourceGraph<
-  TSpec extends KroCompatibleType = any,
-  TStatus extends KroCompatibleType = any,
+  TSpec extends KroCompatibleType = KroCompatibleType,
+  TStatus extends KroCompatibleType = KroCompatibleType,
 > {
   name: string;
   resources: KubernetesResource[];
@@ -524,6 +524,15 @@ export type CallableComposition<
   readonly status: InferType<TStatus>;
 } & TypedResourceGraph<TSpec, TStatus>;
 
+export interface SingletonCompositionHandle {
+  readonly [CALLABLE_COMPOSITION_BRAND]: true;
+  readonly status: unknown;
+  factory(
+    mode: 'direct' | 'kro',
+    factoryOptions?: PublicFactoryOptions
+  ): DirectResourceFactory<KroCompatibleType, KroCompatibleType> | KroResourceFactory<KroCompatibleType, KroCompatibleType>;
+}
+
 /**
  * Handle returned by singleton definition/use helpers.
  * A singleton definition may execute as a real nested composition (owned handle)
@@ -538,7 +547,7 @@ export interface SingletonDefinitionRecord {
   readonly key: string;
   readonly specFingerprint: string;
   readonly registryNamespace: string;
-  readonly composition: CallableComposition<any, any>;
+  readonly composition: SingletonCompositionHandle;
   readonly spec: KroCompatibleType;
 }
 
@@ -648,7 +657,7 @@ export interface AlchemyBridge {
   /** Create a deployer wrapping a {@link DirectDeploymentEngine}. */
   createDeployer(engine: unknown): unknown;
   /** Register a resource type in alchemy's global provider registry. */
-  ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): any;
+  ensureResourceTypeRegistered(resource: Enhanced<unknown, unknown>): unknown;
   /** Generate a deterministic alchemy resource ID. */
   createAlchemyResourceId(resource: Enhanced<unknown, unknown>, namespace?: string): string;
 }
@@ -661,12 +670,15 @@ export interface AlchemyBridge {
  */
 export interface InternalFactoryOptions {
   /** Re-execution function for the composition (internal use) */
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition functions preserve author-defined spec/status shapes.
   compositionFn?: (spec: any) => any;
   /** AST control-flow analysis for includeWhen/forEach propagation (internal use) */
   compositionAnalysis?: ASTAnalysisResult | null;
   /** Original composition definition (internal use) */
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition definitions are heterogeneous authored objects.
   compositionDefinition?: any;
   /** Original composition options (internal use) */
+  // biome-ignore lint/suspicious/noExplicitAny: internal composition options are heterogeneous authored objects.
   compositionOptions?: any;
 
   /** Factory type for expression analysis and conversion (internal use) */

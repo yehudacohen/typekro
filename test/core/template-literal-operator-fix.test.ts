@@ -29,7 +29,7 @@ describe('Template Literal || Operator Fix', () => {
           data: {},
         } as unknown as Enhanced<object, object>,
       }),
-      (schema, resources) => ({
+      (schema, _resources) => ({
         endpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:8080`,
       })
     );
@@ -73,7 +73,7 @@ describe('Template Literal || Operator Fix', () => {
           },
         } as unknown as Enhanced<object, object>,
       }),
-      (schema, resources) => ({
+      (schema, _resources) => ({
         url: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc`,
         fullEndpoint: `http://${schema.spec.name}.${schema.spec.namespace || 'default-ns'}.svc:${schema.spec.port || 8080}/metrics`,
       })

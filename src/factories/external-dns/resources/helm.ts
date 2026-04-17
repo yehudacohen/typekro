@@ -185,8 +185,8 @@ export function externalDnsHelmRelease(
  */
 export function mapExternalDnsConfigToHelmValues(
   config: ExternalDnsHelmValues
-): Record<string, any> {
-  const values: Record<string, any> = {};
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
 
   // Provider configuration
   if (config.provider) {
@@ -490,21 +490,26 @@ export function validateExternalDnsHelmValues(values: ExternalDnsHelmValues): {
   }
 
   // Validate resource requirements format
-  const validateResources = (resources: any, component: string) => {
-    if (resources) {
-      if (resources.limits) {
-        if (resources.limits.cpu && typeof resources.limits.cpu !== 'string') {
+  const validateResources = (resources: unknown, component: string) => {
+    const resourceRequirements = resources as {
+      limits?: { cpu?: unknown; memory?: unknown };
+      requests?: { cpu?: unknown; memory?: unknown };
+    } | undefined;
+
+    if (resourceRequirements) {
+      if (resourceRequirements.limits) {
+        if (resourceRequirements.limits.cpu && typeof resourceRequirements.limits.cpu !== 'string') {
           errors.push(`${component}.resources.limits.cpu must be a string`);
         }
-        if (resources.limits.memory && typeof resources.limits.memory !== 'string') {
+        if (resourceRequirements.limits.memory && typeof resourceRequirements.limits.memory !== 'string') {
           errors.push(`${component}.resources.limits.memory must be a string`);
         }
       }
-      if (resources.requests) {
-        if (resources.requests.cpu && typeof resources.requests.cpu !== 'string') {
+      if (resourceRequirements.requests) {
+        if (resourceRequirements.requests.cpu && typeof resourceRequirements.requests.cpu !== 'string') {
           errors.push(`${component}.resources.requests.cpu must be a string`);
         }
-        if (resources.requests.memory && typeof resources.requests.memory !== 'string') {
+        if (resourceRequirements.requests.memory && typeof resourceRequirements.requests.memory !== 'string') {
           errors.push(`${component}.resources.requests.memory must be a string`);
         }
       }

@@ -26,10 +26,10 @@ export type V1SecretData = NonNullable<V1Secret['data']>;
 
 // Secret spec type - Secrets don't have a traditional spec, they have data
 // We use an empty spec type since Secrets don't have a spec field in Kubernetes
-type SecretSpec = {};
+type SecretSpec = Record<string, never>;
 
 // Secret status type - Secrets don't have status
-type SecretStatus = {};
+type SecretStatus = Record<string, never>;
 
 /**
  * Creates a Kubernetes Secret resource that is considered ready immediately upon creation.

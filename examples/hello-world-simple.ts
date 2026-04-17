@@ -118,7 +118,7 @@ async function deploySimpleStack() {
         eventTypes: ['Warning', 'Error', 'Normal'],
         includeChildResources: true,
       },
-      progressCallback: (event: any) => {
+      progressCallback: (event: { message: string }) => {
         console.log(`📡 Webapp: ${event.message}`);
       },
     });

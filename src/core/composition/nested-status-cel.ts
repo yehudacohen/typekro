@@ -220,7 +220,8 @@ export function remapVariableNames(
       if (!lowerResource.endsWith(lower) && !lowerResource.endsWith(normalizedLower)) return false;
       const matchedLength = lowerResource.endsWith(normalizedLower) ? normalizedLower.length : id.length;
       const boundaryIndex = r.length - matchedLength;
-      return boundaryIndex <= 0 || /[A-Z_-]/.test(r[boundaryIndex]!);
+      const boundaryChar = r[boundaryIndex];
+      return boundaryIndex <= 0 || (boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar));
     });
     if (suffixMatches.length === 1) return `${suffixMatches[0]}.${section}.`;
 
@@ -417,8 +418,12 @@ export function recoverGarbledExpression(
     return undefined;
   }
 
-  const [, varName, statusField] = statusMatches[0]!;
-  let targetResource = innerResourceIds[0]!;
+  const firstStatusMatch = statusMatches[0];
+  if (!firstStatusMatch) return exprStr;
+  const [, varName, statusField] = firstStatusMatch;
+  const firstInnerResource = innerResourceIds[0];
+  if (!firstInnerResource) return exprStr;
+  let targetResource = firstInnerResource;
 
   if (varName && innerResourceIds.length > 1) {
     const match = innerResourceIds.find(r =>

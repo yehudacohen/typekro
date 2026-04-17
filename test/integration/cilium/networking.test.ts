@@ -646,7 +646,7 @@ describeOrSkip('Cilium Networking Integration Tests', () => {
         },
       ];
 
-      scenarios.forEach(({ name, config }) => {
+      scenarios.forEach(({ name: _name, config }) => {
         const policy = ciliumNetworkPolicy(config);
         expect(policy).toBeDefined();
         expect(policy.metadata?.name).toBe(config.metadata?.name);

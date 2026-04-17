@@ -3,7 +3,6 @@ import { DEFAULT_FLUX_NAMESPACE } from '../../../core/config/defaults.js';
 import { Cel } from '../../../core/references/cel.js';
 import { namespace } from '../../kubernetes/core/namespace.js';
 import {
-  DEFAULT_INNGEST_REPO_NAME,
   DEFAULT_INNGEST_VERSION,
   inngestHelmRelease,
   inngestHelmRepository,

@@ -30,7 +30,7 @@ export interface HelmReleaseConfig {
     /** @default 'HelmRepository' */
     kind?: 'HelmRepository';
   };
-  values?: Record<string, any>;
+  values?: Record<string, unknown>;
   id?: string;
 }
 
@@ -230,7 +230,7 @@ export function simpleHelmChart(
   name: string,
   repository: string,
   chart: string,
-  values?: Record<string, any>
+  values?: Record<string, unknown>
 ): Enhanced<HelmReleaseSpec, HelmReleaseStatus> {
   getComponentLogger('helm-release').warn(
     "simpleHelmChart() is deprecated. Use simple.HelmChart() instead — import { simple } from 'typekro'"

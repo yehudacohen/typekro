@@ -15,9 +15,9 @@ import type { SecretConfig } from '../types.js';
 
 // Secrets don't have a spec field in Kubernetes - data is at the root level
 // We use an empty spec type to match the base factory
-type SecretSpec = {};
+type SecretSpec = Record<string, never>;
 
-type SecretStatus = {};
+type SecretStatus = Record<string, never>;
 
 /**
  * Creates a simple Secret with sensible defaults

@@ -83,7 +83,7 @@ export const externalDnsBootstrap = kubernetesComposition(
     // NOTE: Helm values must be static - Kro cannot handle CEL expressions inside spec.values
     // because HelmRelease's spec.values is an arbitrary object without a defined schema.
     // We use mapExternalDnsConfigToHelmValues to convert schema references to static values.
-    const helmValuesConfig: Record<string, any> = {
+    const helmValuesConfig: Record<string, unknown> = {
       provider: fullConfig.provider as string,
       policy: fullConfig.policy as 'sync' | 'upsert-only' | 'create-only' | undefined,
       dryRun: fullConfig.dryRun as boolean | undefined,

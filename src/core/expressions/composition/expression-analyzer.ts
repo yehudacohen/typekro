@@ -115,7 +115,10 @@ export class CompositionExpressionAnalyzer {
   } {
     // Detect pattern if not provided
     const detectedPattern = pattern || this.detectCompositionPattern(compositionFn, context);
-    const config = this.patternConfigs.get(detectedPattern)!;
+    const config = this.patternConfigs.get(detectedPattern);
+    if (!config) {
+      throw new Error(`No pattern configuration registered for ${detectedPattern}`);
+    }
 
     // Track side effects if this is an imperative pattern
     let sideEffectsDetected = false;
@@ -172,7 +175,10 @@ export class CompositionExpressionAnalyzer {
     pattern: CompositionPattern,
     factoryType: 'direct' | 'kro' = 'kro'
   ): MagicAssignableShape<TStatus> {
-    const config = this.patternConfigs.get(pattern)!;
+    const config = this.patternConfigs.get(pattern);
+    if (!config) {
+      throw new Error(`No pattern configuration registered for ${pattern}`);
+    }
 
     if (!config.convertToCel) {
       // Pattern doesn't require CEL conversion
@@ -199,7 +205,10 @@ export class CompositionExpressionAnalyzer {
     const recommendations: string[] = [];
     let isCompatible = true;
 
-    const config = this.patternConfigs.get(pattern)!;
+    const config = this.patternConfigs.get(pattern);
+    if (!config) {
+      throw new Error(`No pattern configuration registered for ${pattern}`);
+    }
 
     // Check imperative pattern with direct factory
     if (pattern === 'imperative' && factoryType === 'direct') {
@@ -297,7 +306,8 @@ export class CompositionExpressionAnalyzer {
       // Analyze the status shape for KubernetesRef objects
       const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
         statusShape,
-        analysisContext
+        // biome-ignore lint/suspicious/noExplicitAny: analysis context carries intentionally heterogeneous dynamic references.
+        analysisContext as any
       );
 
       // Extract referenced resources from the composition context if available
@@ -412,7 +422,11 @@ export class CompositionExpressionAnalyzer {
     };
 
     // For Kro factory, convert KubernetesRef-containing expressions to CEL
-    return this.magicAssignableAnalyzer.analyzeMagicAssignableShape(statusShape, analysisContext)
+    return this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
+      statusShape,
+      // biome-ignore lint/suspicious/noExplicitAny: analysis context carries intentionally heterogeneous dynamic references.
+      analysisContext as any
+    )
       .processedShape as MagicAssignableShape<TStatus>;
   }
 
@@ -445,7 +459,8 @@ export class CompositionExpressionAnalyzer {
     // Analyze the status shape for KubernetesRef objects
     const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
       statusShape,
-      analysisContext
+        // biome-ignore lint/suspicious/noExplicitAny: analysis context carries intentionally heterogeneous dynamic references.
+        analysisContext as any
     );
 
     // Track context for dependency analysis
@@ -518,7 +533,8 @@ export class CompositionExpressionAnalyzer {
       // Analyze the status shape
       const analysisResult = this.magicAssignableAnalyzer.analyzeMagicAssignableShape(
         statusShape,
-        analysisContext
+        // biome-ignore lint/suspicious/noExplicitAny: analysis context carries intentionally heterogeneous dynamic references.
+        analysisContext as any
       );
 
       // Validate each KubernetesRef

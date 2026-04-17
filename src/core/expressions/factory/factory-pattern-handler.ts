@@ -93,7 +93,7 @@ export interface FactoryExpressionHandler {
   /**
    * Convert a KubernetesRef to appropriate format for this factory pattern
    */
-  convertKubernetesRef(ref: KubernetesRef<any>, context: AnalysisContext): CelExpression;
+  convertKubernetesRef(ref: KubernetesRef<unknown>, context: AnalysisContext): CelExpression;
 
   /**
    * Get the factory pattern type
@@ -178,7 +178,7 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
     }
   }
 
-  convertKubernetesRef(ref: KubernetesRef<any>, _context: AnalysisContext): CelExpression {
+  convertKubernetesRef(ref: KubernetesRef<unknown>, _context: AnalysisContext): CelExpression {
     // For direct deployment, generate CEL expressions that will be
     // resolved by the direct deployment engine
     if (ref.resourceId === '__schema__') {
@@ -224,7 +224,7 @@ export class DirectFactoryExpressionHandler implements FactoryExpressionHandler 
 
   private handleComplexExpression(
     _expression: unknown,
-    dependencies: KubernetesRef<any>[],
+    dependencies: KubernetesRef<unknown>[],
     _context: AnalysisContext
   ): CelConversionResult {
     // Handle complex expressions containing KubernetesRef objects
@@ -327,7 +327,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
     }
   }
 
-  convertKubernetesRef(ref: KubernetesRef<any>, _context: AnalysisContext): CelExpression {
+  convertKubernetesRef(ref: KubernetesRef<unknown>, _context: AnalysisContext): CelExpression {
     // For Kro deployment, generate CEL expressions that will be
     // evaluated by the Kro controller
     if (ref.resourceId === '__schema__') {
@@ -372,7 +372,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
 
   private handleComplexExpression(
     _expression: unknown,
-    dependencies: KubernetesRef<any>[],
+    dependencies: KubernetesRef<unknown>[],
     _context: AnalysisContext
   ): CelConversionResult {
     // Handle complex expressions containing KubernetesRef objects
@@ -402,6 +402,7 @@ export class KroFactoryExpressionHandler implements FactoryExpressionHandler {
 /**
  * Factory for creating appropriate expression handlers based on factory pattern
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: This module intentionally provides a static factory namespace.
 export class FactoryPatternHandlerFactory {
   /**
    * Create an expression handler for the specified factory pattern

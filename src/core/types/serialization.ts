@@ -366,18 +366,18 @@ export type MagicAssignableShape<T> = T extends object
 
 export type ResourceBuilder<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType> = (
   schema: SchemaProxy<TSpec, TStatus>
-) => Record<string, Enhanced<any, any>>; // Make the return type more specific
+) => Record<string, Enhanced<unknown, unknown>>; // Make the return type more specific
 
 // Type that preserves Enhanced resources exactly as they are
 // Enhanced resources already have the correct MagicProxy types for spec and status
-export type StatusBuilderResources<TResources extends Record<string, Enhanced<any, any>>> =
+export type StatusBuilderResources<TResources extends Record<string, Enhanced<unknown, unknown>>> =
   TResources;
 
 // The StatusBuilder type itself can be simplified, as the key logic will move to the toResourceGraph function.
 export type StatusBuilder<
   TSpec extends KroCompatibleType,
   TStatus extends KroCompatibleType,
-  TResources extends Record<string, Enhanced<any, any>> = Record<string, Enhanced<any, any>>, // Keep any for compatibility
+  TResources extends Record<string, Enhanced<unknown, unknown>> = Record<string, Enhanced<unknown, unknown>>,
 > = (
   schema: SchemaProxy<TSpec, TStatus>,
   resources: TResources // Use that generic here

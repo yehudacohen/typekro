@@ -48,7 +48,7 @@ export class ResourceApplier {
   constructor(
     private k8sApi: k8s.KubernetesObjectApi,
     private referenceResolver: ReferenceResolver,
-    private logger: TypeKroLogger
+    _logger: TypeKroLogger
   ) {}
 
   /**

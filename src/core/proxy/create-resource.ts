@@ -543,7 +543,7 @@ export function createResource<TSpec extends object, TStatus extends object>(
 
   // Add fluent builder method for readiness evaluator
   Object.defineProperty(enhanced, 'withReadinessEvaluator', {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts evaluators typed for any K8s resource
+    // biome-ignore lint/suspicious/noExplicitAny: resources may register evaluators for diverse typed Kubernetes objects.
     value: function (evaluator: ReadinessEvaluator<any>): Enhanced<TSpec, TStatus> {
       // Register in global registry by KIND
       ReadinessEvaluatorRegistry.getInstance().registerForKind(

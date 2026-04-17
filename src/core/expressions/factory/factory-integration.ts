@@ -15,8 +15,6 @@ import type {
   FactoryAnalysisResult,
   FactoryExpressionContext,
 } from '../analysis/types.js';
-import { ContextAwareCelGenerator } from '../context/context-aware-generator.js';
-import { ExpressionContextDetector } from '../context/context-detector.js';
 import {
   type MagicProxyDetectionConfig,
   type MagicProxyDetectionResult,
@@ -71,13 +69,9 @@ export interface FactoryConfigAnalysisResult {
  */
 export class FactoryExpressionAnalyzer {
   private resourceAnalyzer: ResourceAnalyzer;
-  private contextDetector: ExpressionContextDetector;
-  private contextAwareGenerator: ContextAwareCelGenerator;
   private magicProxyDetector: MagicProxyDetector;
   constructor() {
     this.resourceAnalyzer = new ResourceAnalyzer();
-    this.contextDetector = new ExpressionContextDetector();
-    this.contextAwareGenerator = new ContextAwareCelGenerator();
     this.magicProxyDetector = new MagicProxyDetector();
   }
 
@@ -89,7 +83,7 @@ export class FactoryExpressionAnalyzer {
    * @param options - Analysis options
    * @returns Analysis result
    */
-  analyzeFactoryConfig<T extends Record<string, any>>(
+  analyzeFactoryConfig<T extends Record<string, unknown>>(
     config: T,
     context: FactoryExpressionContext,
     options: FactoryAnalysisConfig = {}
@@ -263,7 +257,7 @@ export class FactoryExpressionAnalyzer {
 
       // Analyze the configuration if analysis is enabled
       if (context.analysisEnabled) {
-        const analysis = this.analyzeFactoryConfig(config as Record<string, any>, context, options);
+        const analysis = this.analyzeFactoryConfig(config as Record<string, unknown>, context, options);
 
         // Log analysis results for debugging
         if (analysis.hasKubernetesRefs) {
@@ -306,8 +300,8 @@ export class FactoryExpressionAnalyzer {
           type: 'resource' as const,
           availableReferences: {},
           resourceContext: {
-            resourceId: (value as KubernetesRef<any>).resourceId,
-            fieldPath: (value as KubernetesRef<any>).fieldPath,
+            resourceId: (value as KubernetesRef<unknown>).resourceId,
+            fieldPath: (value as KubernetesRef<unknown>).fieldPath,
           },
           resourceId: 'factory-config',
           resourceConfig: { [key]: value },
@@ -477,7 +471,7 @@ export function withExpressionAnalysis<TConfig, TResource>(
  * @param options - Analysis options
  * @returns Analysis result
  */
-export function analyzeFactoryConfig<T extends Record<string, any>>(
+export function analyzeFactoryConfig<T extends Record<string, unknown>>(
   config: T,
   context: FactoryExpressionContext,
   options?: FactoryAnalysisConfig

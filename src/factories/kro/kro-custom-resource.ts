@@ -27,9 +27,9 @@ export function kroCustomResource<TSpec extends object, TStatus extends object>(
   return createResource<TSpec, WithKroStatusFields<TStatus>>({
     ...resource,
     metadata: resource.metadata ?? { name: 'unnamed-kro-resource' },
-  }).withReadinessEvaluator((liveResource: any): ResourceStatus => {
+  }).withReadinessEvaluator((liveResource: unknown): ResourceStatus => {
     try {
-      const status = liveResource.status as WithKroStatusFields<TStatus>;
+      const status = (liveResource as { status?: WithKroStatusFields<TStatus> } | null | undefined)?.status;
 
       // Check if status object exists at all
       if (!status) {

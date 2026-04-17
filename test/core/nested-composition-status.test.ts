@@ -175,6 +175,34 @@ describe('synthesizeNestedCompositionStatus', () => {
     expect(enriched.get('other')).toEqual({ foo: 'bar' });
   });
 
+  it('preserves snapshot readiness when there are no live child resources', () => {
+    const probeResources = mockResources([]);
+
+    const liveStatusMap = new Map<string, Record<string, unknown>>();
+
+    const enriched = synthesizeNestedCompositionStatus(
+      probeResources,
+      liveStatusMap,
+      logger,
+      new Set(['staticOnlyNested']),
+      new Map([
+        ['staticOnlyNested', {
+          ready: true,
+          phase: 'Ready',
+          failed: false,
+          endpoint: 'http://shared:80',
+        }],
+      ])
+    );
+
+    expect(enriched.get('staticOnlyNested')).toEqual({
+      ready: true,
+      phase: 'Ready',
+      failed: false,
+      endpoint: 'http://shared:80',
+    });
+  });
+
   it('should handle multiple nested compositions', () => {
     const probeResources = mockResources([
       'inngest1HelmRelease',

@@ -13,7 +13,7 @@ import type { KubernetesRef } from '../../types/common.js';
  */
 export interface DependencyInfo {
   /** The KubernetesRef object */
-  reference: KubernetesRef<any>;
+  reference: KubernetesRef<unknown>;
 
   /** The field path where this dependency was found */
   fieldPath: string;
@@ -166,7 +166,7 @@ export class DependencyTracker {
    */
   trackDependencies(
     resourceId: string,
-    dependencies: KubernetesRef<any>[],
+    dependencies: KubernetesRef<unknown>[],
     fieldPaths: string[],
     options: DependencyTrackingOptions = {}
   ): DependencyInfo[] {
@@ -201,7 +201,7 @@ export class DependencyTracker {
    * Create dependency information for a KubernetesRef
    */
   private createDependencyInfo(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     fieldPath: string,
     options: DependencyTrackingOptions
   ): DependencyInfo {
@@ -238,7 +238,7 @@ export class DependencyTracker {
    * Create a skipped dependency info (for disabled tracking)
    */
   private createSkippedDependencyInfo(
-    ref: KubernetesRef<any>,
+    ref: KubernetesRef<unknown>,
     fieldPath: string,
     dependencyType: 'schema' | 'resource' | 'external'
   ): DependencyInfo {
@@ -259,7 +259,7 @@ export class DependencyTracker {
   /**
    * Determine the type of dependency
    */
-  private determineDependencyType(ref: KubernetesRef<any>): 'schema' | 'resource' | 'external' {
+  private determineDependencyType(ref: KubernetesRef<unknown>): 'schema' | 'resource' | 'external' {
     if (ref.resourceId === '__schema__') {
       return 'schema';
     }
@@ -275,7 +275,7 @@ export class DependencyTracker {
   /**
    * Determine if a dependency is required
    */
-  private isDependencyRequired(ref: KubernetesRef<any>, fieldPath: string): boolean {
+  private isDependencyRequired(ref: KubernetesRef<unknown>, fieldPath: string): boolean {
     // Schema dependencies are generally required
     if (ref.resourceId === '__schema__') {
       return true;
@@ -308,7 +308,7 @@ export class DependencyTracker {
   /**
    * Check if a dependency affects resource readiness
    */
-  private affectsReadiness(ref: KubernetesRef<any>, fieldPath: string): boolean {
+  private affectsReadiness(ref: KubernetesRef<unknown>, fieldPath: string): boolean {
     // Status field dependencies typically affect readiness
     if (ref.fieldPath.startsWith('status.')) {
       return true;
@@ -365,7 +365,8 @@ export class DependencyTracker {
         this.dependencyGraph.dependents.set(dependentResourceId, []);
       }
 
-      const dependents = this.dependencyGraph.dependents.get(dependentResourceId)!;
+      const dependents = this.dependencyGraph.dependents.get(dependentResourceId);
+      if (!dependents) return;
       if (!dependents.includes(resourceId)) {
         dependents.push(resourceId);
       }
@@ -461,7 +462,8 @@ export class DependencyTracker {
 
           // Add edge from dependency to dependent
           adjList.get(depResourceId)?.push(resourceId);
-          inDegree.set(resourceId, inDegree.get(resourceId)! + 1);
+          const currentDegree = inDegree.get(resourceId) ?? 0;
+          inDegree.set(resourceId, currentDegree + 1);
         }
       }
     }
@@ -478,13 +480,14 @@ export class DependencyTracker {
     }
 
     while (queue.length > 0) {
-      const current = queue.shift()!;
+      const current = queue.shift();
+      if (!current) continue;
       result.push(current);
 
       // Process all dependents
       const dependents = adjList.get(current) || [];
       for (const dependent of dependents) {
-        const newDegree = inDegree.get(dependent)! - 1;
+        const newDegree = (inDegree.get(dependent) ?? 0) - 1;
         inDegree.set(dependent, newDegree);
 
         if (newDegree === 0) {
@@ -603,9 +606,17 @@ export class DependencyTracker {
 
         if (!index.has(depResourceId)) {
           strongConnect(depResourceId);
-          lowLink.set(resourceId, Math.min(lowLink.get(resourceId)!, lowLink.get(depResourceId)!));
+          const resourceLowLink = lowLink.get(resourceId);
+          const depLowLink = lowLink.get(depResourceId);
+          if (resourceLowLink !== undefined && depLowLink !== undefined) {
+            lowLink.set(resourceId, Math.min(resourceLowLink, depLowLink));
+          }
         } else if (onStack.has(depResourceId)) {
-          lowLink.set(resourceId, Math.min(lowLink.get(resourceId)!, index.get(depResourceId)!));
+          const resourceLowLink = lowLink.get(resourceId);
+          const depIndex = index.get(depResourceId);
+          if (resourceLowLink !== undefined && depIndex !== undefined) {
+            lowLink.set(resourceId, Math.min(resourceLowLink, depIndex));
+          }
         }
       }
 
@@ -614,7 +625,9 @@ export class DependencyTracker {
         const component: string[] = [];
         let w: string;
         do {
-          w = stack.pop()!;
+          const popped = stack.pop();
+          if (!popped) break;
+          w = popped;
           onStack.delete(w);
           component.push(w);
         } while (w !== resourceId);

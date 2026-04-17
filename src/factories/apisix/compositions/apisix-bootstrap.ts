@@ -191,7 +191,7 @@ export const apisixBootstrap = kubernetesComposition(
       fullConfig.gateway?.adminCredentials,
       { allowDefaults }
     );
-    (helmValues.apisix as Record<string, any>).admin = {
+    (helmValues.apisix as Record<string, unknown>).admin = {
       enabled: true,
       type: 'ClusterIP',
       credentials: {
@@ -201,7 +201,7 @@ export const apisixBootstrap = kubernetesComposition(
     };
 
     // Enable SSL in APISix
-    (helmValues.apisix as Record<string, any>).ssl = {
+    (helmValues.apisix as Record<string, unknown>).ssl = {
       enabled: true,
       containerPort: 9443,
     };
@@ -217,7 +217,7 @@ export const apisixBootstrap = kubernetesComposition(
     // is sufficient — it processes standard Ingress objects natively.
     //
     // We explicitly disable the subchart to avoid the ServiceAccount conflict.
-    (helmValues as Record<string, any>)['ingress-controller'] = {
+    (helmValues as Record<string, unknown>)['ingress-controller'] = {
       enabled: false,
     };
 

@@ -47,7 +47,7 @@ function ConfigMap(_opts: Record<string, unknown>) {
 
 describe('analyzeCompositionBody: basic', () => {
   it('returns empty result for function with no factory calls', () => {
-    const fn = (spec: any) => {
+    const fn = (_spec: any) => {
       const x = 1 + 2;
       return { value: x };
     };
@@ -75,7 +75,7 @@ describe('analyzeCompositionBody: basic', () => {
   });
 
   it('handles empty function body', () => {
-    const fn = (spec: any) => {
+    const fn = (_spec: any) => {
       // intentionally empty
     };
     const result = analyzeCompositionBody(fn, new Set());
@@ -149,7 +149,7 @@ describe('analyzeCompositionBody: if-statement includeWhen', () => {
 
   it('skips includeWhen for compile-time literal conditions', () => {
     const alwaysTrue = true;
-    const fn = (spec: any) => {
+    const fn = (_spec: any) => {
       const result: Record<string, any> = {};
       if (alwaysTrue) {
         result.always = Deployment({ id: 'always', name: 'always' });
@@ -381,7 +381,7 @@ describe('analyzeCompositionBody: nested control flow', () => {
 
 describe('analyzeCompositionBody: multiple resources', () => {
   it('tracks multiple distinct factory calls', () => {
-    const fn = (spec: any) => ({
+    const fn = (_spec: any) => ({
       frontend: Deployment({ id: 'frontend', name: 'web' }),
       backend: Deployment({ id: 'backend', name: 'api' }),
       config: ConfigMap({ id: 'config', name: 'app-config' }),
@@ -422,13 +422,15 @@ describe('applyAnalysisToResources', () => {
   ): CompositionAnalysisResult {
     return {
       resources: new Map(),
+      hybridOverrideConditions: new Map(),
+      differentialConditionFields: new Set(),
       unregisteredFactories: [],
       templateOverrides: new Map(),
       _collectionVariables: new Map(),
       statusOverrides: [],
       errors: [],
       ...overrides,
-    };
+    } as CompositionAnalysisResult;
   }
 
   it('attaches forEach via WeakMap metadata', () => {
