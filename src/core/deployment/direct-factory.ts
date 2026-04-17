@@ -1419,6 +1419,47 @@ export class DirectResourceFactoryImpl<
     return generateInstanceName(spec);
   }
 
+  private async ensureTargetNamespace(namespace = this.namespace): Promise<void> {
+    try {
+      const { createBunCompatibleKubernetesObjectApi } = await import(
+        '../kubernetes/bun-api-client.js'
+      );
+      const k8sApi = createBunCompatibleKubernetesObjectApi(this.getClientProvider().getKubeConfig());
+      try {
+        await k8sApi.read({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: { name: namespace },
+        });
+        return;
+      } catch (readError: unknown) {
+        const k8sErr = readError as { statusCode?: number; body?: { code?: number } };
+        const code = k8sErr.statusCode ?? k8sErr.body?.code;
+        if (code !== 404) {
+          throw readError;
+        }
+      }
+
+      await k8sApi.create({
+        apiVersion: 'v1',
+        kind: 'Namespace',
+        metadata: {
+          name: namespace,
+          labels: {
+            'app.kubernetes.io/managed-by': 'typekro',
+          },
+        },
+      });
+    } catch (error: unknown) {
+      throw new ResourceGraphFactoryError(
+        `Failed to ensure target namespace "${namespace}" exists: ${ensureError(error).message}`,
+        this.name,
+        'deployment',
+        ensureError(error)
+      );
+    }
+  }
+
   private async ensureSingletonOwners(spec: TSpec): Promise<void> {
     const discoveredSingletons = new Map<string, SingletonDefinitionRecord>();
 
@@ -1442,6 +1483,8 @@ export class DirectResourceFactoryImpl<
     if (discoveredSingletons.size === 0) return;
 
     for (const definition of discoveredSingletons.values()) {
+      await this.ensureTargetNamespace(definition.registryNamespace);
+
       const singletonFactory = definition.composition.factory('direct', {
         namespace: definition.registryNamespace,
         waitForReady: true,
@@ -1460,12 +1503,7 @@ export class DirectResourceFactoryImpl<
         // Best-effort reuse only; deploy below will create the owner if needed.
       }
 
-      await (singletonFactory as unknown as {
-        deploy(
-          singletonSpec: KroCompatibleType,
-          opts?: { instanceNameOverride?: string }
-        ): Promise<Enhanced<KroCompatibleType, KroCompatibleType>>;
-      }).deploy(definition.spec, { instanceNameOverride: singletonInstanceName });
+      await singletonFactory.deploy(definition.spec, { instanceNameOverride: singletonInstanceName });
     }
   }
 }

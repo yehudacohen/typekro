@@ -257,7 +257,7 @@ export class DependencyResolver {
 
     // For non-Deployment resources (e.g., HelmRelease values, CRD specs),
     // fall back to shallow traversal of spec.* string fields (depth 1-2).
-    if (!containers) {
+    if (containers.length === 0) {
       const MAX_DEPTH = 3;
       const traverse = (obj: unknown, depth = 0, key?: string): void => {
         if (depth > MAX_DEPTH) return;

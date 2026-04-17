@@ -5,7 +5,6 @@ import { externalRef } from '../references/external-refs.js';
 import type {
   CallableComposition,
   NestedCompositionResource,
-  SingletonCompositionHandle,
   SingletonDefinitionRecord,
   SingletonHandle,
   SingletonOwnedHandle,
@@ -30,11 +29,16 @@ export const DEFAULT_SINGLETON_NAMESPACE = 'typekro-singletons';
 
 function getSingletonRegistryForComposition<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   composition: CallableComposition<TSpec, TStatus>,
-): Map<string, SingletonDefinitionRecord> {
-  let registry = singletonDefinitionsByComposition.get(composition);
+): Map<string, SingletonDefinitionRecord<TSpec, TStatus>> {
+  let registry = singletonDefinitionsByComposition.get(composition) as
+    | Map<string, SingletonDefinitionRecord<TSpec, TStatus>>
+    | undefined;
   if (!registry) {
-    registry = new Map<string, SingletonDefinitionRecord>();
-    singletonDefinitionsByComposition.set(composition, registry);
+    registry = new Map<string, SingletonDefinitionRecord<TSpec, TStatus>>();
+    singletonDefinitionsByComposition.set(
+      composition,
+      registry as unknown as Map<string, SingletonDefinitionRecord>
+    );
   }
   return registry;
 }
@@ -55,7 +59,7 @@ function stableSerialize(value: unknown): string {
 }
 
 function getSingletonFactoryIdentity<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
-  composition: CallableComposition<TSpec, TStatus> | SingletonCompositionHandle,
+  composition: CallableComposition<TSpec, TStatus>,
 ): string {
   const compositionRecord = composition as unknown as SingletonCompositionMetadata;
   const rawApiVersion = String(compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1');
@@ -66,7 +70,7 @@ function getSingletonFactoryIdentity<TSpec extends KroCompatibleType, TStatus ex
 }
 
 function getSingletonKey<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
-  composition: CallableComposition<TSpec, TStatus> | SingletonCompositionHandle,
+  composition: CallableComposition<TSpec, TStatus>,
   id: string,
 ): string {
   return `${getSingletonFactoryIdentity(composition)}#${id}`;
@@ -110,7 +114,7 @@ function defineSingleton<TSpec extends KroCompatibleType, TStatus extends KroCom
   const key = getSingletonKey(composition, input.id);
   const specFingerprint = stableSerialize(input.spec);
   const context = getCurrentCompositionContext();
-  const definitionRecord: SingletonDefinitionRecord = {
+  const definitionRecord: SingletonDefinitionRecord<TSpec, TStatus> = {
     id: input.id,
     key,
     specFingerprint,
@@ -127,7 +131,7 @@ function defineSingleton<TSpec extends KroCompatibleType, TStatus extends KroCom
         'A singleton identity must not be defined with multiple specs.',
       );
     }
-    context.singletonDefinitions.set(key, definitionRecord);
+    context.singletonDefinitions.set(key, definitionRecord as SingletonDefinitionRecord);
   }
 
   if (context && !context.isReExecution) {

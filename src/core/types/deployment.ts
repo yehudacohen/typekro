@@ -524,15 +524,6 @@ export type CallableComposition<
   readonly status: InferType<TStatus>;
 } & TypedResourceGraph<TSpec, TStatus>;
 
-export interface SingletonCompositionHandle {
-  readonly [CALLABLE_COMPOSITION_BRAND]: true;
-  readonly status: unknown;
-  factory(
-    mode: 'direct' | 'kro',
-    factoryOptions?: PublicFactoryOptions
-  ): DirectResourceFactory<KroCompatibleType, KroCompatibleType> | KroResourceFactory<KroCompatibleType, KroCompatibleType>;
-}
-
 /**
  * Handle returned by singleton definition/use helpers.
  * A singleton definition may execute as a real nested composition (owned handle)
@@ -542,13 +533,16 @@ export type SingletonHandle<TSpec, TStatus> =
   | SingletonOwnedHandle<TSpec, TStatus>
   | SingletonReferenceHandle<TStatus>;
 
-export interface SingletonDefinitionRecord {
+export interface SingletonDefinitionRecord<
+  TSpec extends KroCompatibleType = KroCompatibleType,
+  TStatus extends KroCompatibleType = KroCompatibleType,
+> {
   readonly id: string;
   readonly key: string;
   readonly specFingerprint: string;
   readonly registryNamespace: string;
-  readonly composition: SingletonCompositionHandle;
-  readonly spec: KroCompatibleType;
+  readonly composition: CallableComposition<TSpec, TStatus>;
+  readonly spec: TSpec;
 }
 
 /**
@@ -722,7 +716,10 @@ export interface ResourceFactory<
   TStatus extends KroCompatibleType,
 > {
   // Core deployment - single method handles all cases
-  deploy(spec: TSpec, opts?: { targetScopes?: string[] }): Promise<Enhanced<TSpec, TStatus>>;
+  deploy(
+    spec: TSpec,
+    opts?: { targetScopes?: string[]; instanceNameOverride?: string }
+  ): Promise<Enhanced<TSpec, TStatus>>;
 
   // Instance management
   getInstances(): Promise<Enhanced<TSpec, TStatus>[]>;

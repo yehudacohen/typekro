@@ -434,12 +434,9 @@ export class KroResourceFactoryImpl<
         registryNamespace: definition.registryNamespace,
       });
 
-      await (singletonFactory as unknown as {
-        deploy(
-          singletonSpec: TSpec,
-          opts?: { instanceNameOverride?: string }
-        ): Promise<Enhanced<TSpec, TStatus>>;
-      }).deploy(definition.spec as TSpec, { instanceNameOverride: singletonInstanceName });
+      await singletonFactory.deploy(definition.spec as TSpec, {
+        instanceNameOverride: singletonInstanceName,
+      });
     }
   }
 
