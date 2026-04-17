@@ -689,20 +689,19 @@ function processCompositionBodyAnalysis(
  */
 function collectOverridableOptionalFields(
   schemaDefinition: { spec: { json?: unknown } },
-  _analysis: ASTAnalysisResult
+  analysis: ASTAnalysisResult
 ): Set<string> {
   const specJson = schemaDefinition.spec.json as
     | { optional?: { key: string }[] }
     | undefined;
   if (!specJson) return new Set();
 
-  // Return ALL optional top-level spec fields, not just those tested in
-  // includeWhen conditions. Optional fields used in spread patterns like
-  // `{ name: 'default', ...spec.optional }` also need the hybrid run to
-  // capture literal defaults — otherwise `maybeWrapWithOmit` emits
-  // `omit()` on required fields (e.g., metadata.name) where the literal
-  // default should be the fallback.
-  return new Set((specJson.optional ?? []).map((p) => p.key));
+  const differentialFields = collectDifferentialOptionalFields(analysis);
+  return new Set(
+    (specJson.optional ?? [])
+      .map((p) => p.key)
+      .filter((field) => differentialFields.has(field))
+  );
 }
 
 function collectDifferentialOptionalFields(analysis: ASTAnalysisResult): Set<string> {

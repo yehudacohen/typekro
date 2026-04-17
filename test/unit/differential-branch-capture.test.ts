@@ -346,6 +346,54 @@ describe('Differential Branch Capture', () => {
       expect(yaml).toContain('enabled');
       expect(yaml).toContain('disabled');
     });
+
+    it('does not let unrelated optional object reads break hybrid capture when only one field drives control flow', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'hybrid-throwing-unrelated-optional-read',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'HybridThrowingUnrelatedOptionalRead',
+          spec: type({
+            name: 'string',
+            image: 'string',
+            'feature?': 'boolean',
+            'secretRef?': { name: 'string' },
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          // If the hybrid run broadly overrides ALL optionals to undefined,
+          // this access throws before the feature-driven branch can be captured.
+          const secretName = spec.secretRef.name;
+
+          if (!spec.feature) {
+            ConfigMap({
+              name: `${spec.name}-fallback`,
+              data: { secret_name: secretName },
+              id: 'fallbackCfg',
+            });
+          }
+
+          Deployment({
+            name: spec.name,
+            image: spec.image,
+            id: 'app',
+            env: {
+              SECRET_NAME: secretName,
+              FEATURE_MODE: spec.feature ? 'enabled' : 'disabled',
+            },
+          });
+
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      expect(yaml).toContain('id: fallbackCfg');
+      expect(yaml).toContain('schema.spec.secretRef.name');
+      expect(yaml).toContain('FEATURE_MODE');
+      expect(yaml.includes('has(schema.spec.feature)') || yaml.includes('schema.spec.feature ?')).toBe(true);
+    });
   });
 
   describe('required-field truthiness checks are NOT wrapped in has()', () => {
