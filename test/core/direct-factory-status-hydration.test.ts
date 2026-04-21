@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import type { DeploymentResult } from '../../src/core/types/deployment.js';
+import { DependencyGraph } from '../../src/core/dependencies/graph.js';
 import { DirectDeploymentStrategy } from '../../src/core/deployment/strategies/direct-strategy.js';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 
@@ -451,6 +452,8 @@ describe('DirectResourceFactory Status Hydration', () => {
       resources: [],
       errors: [],
       deploymentId: 'test',
+      dependencyGraph: new DependencyGraph(),
+      duration: 0,
     });
 
     it('does not perform live status re-execution when waitForReady is false', async () => {
@@ -466,7 +469,13 @@ describe('DirectResourceFactory Status Hydration', () => {
         { waitForReady: false },
         { getKubernetesApi: () => ({}) } as never,
         {
-          createResourceGraphForInstance: () => ({ resources: [], dependencies: new Map(), orderedLevels: [] }),
+          createResourceGraphForInstance: () => ({
+            name: 'test-graph',
+            resources: [],
+            dependencies: new Map(),
+            orderedLevels: [],
+            dependencyGraph: new DependencyGraph(),
+          }),
           reExecuteWithLiveStatus: () => {
             liveReexecCalled = true;
             return null;
@@ -497,7 +506,13 @@ describe('DirectResourceFactory Status Hydration', () => {
         { hydrateStatus: false },
         { getKubernetesApi: () => ({}) } as never,
         {
-          createResourceGraphForInstance: () => ({ resources: [], dependencies: new Map(), orderedLevels: [] }),
+          createResourceGraphForInstance: () => ({
+            name: 'test-graph',
+            resources: [],
+            dependencies: new Map(),
+            orderedLevels: [],
+            dependencyGraph: new DependencyGraph(),
+          }),
           reExecuteWithLiveStatus: () => {
             liveReexecCalled = true;
             return null;
