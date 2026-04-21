@@ -1861,6 +1861,68 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       expect(namespaceResource).toBeDefined();
       expect(ownerBoundary).toBeDefined();
     });
+
+    it('emits distinct singleton owner resources when different compositions reuse the same id', () => {
+      const bootstrapA = kubernetesComposition(
+        {
+          name: 'shared-a',
+          apiVersion: 'platform.typekro.test/v1alpha1',
+          kind: 'SharedBootstrapA',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          Deployment({ name: `${spec.name}-a`, image: 'nginx', id: 'aApp' });
+          return { ready: true };
+        },
+      );
+
+      const bootstrapB = kubernetesComposition(
+        {
+          name: 'shared-b',
+          apiVersion: 'platform.typekro.test/v1alpha1',
+          kind: 'SharedBootstrapB',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          Deployment({ name: `${spec.name}-b`, image: 'nginx', id: 'bApp' });
+          return { ready: true };
+        },
+      );
+
+      const graph = kubernetesComposition(
+        {
+          name: 'singleton-owner-same-id-check',
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonOwnerSameIdCheck',
+          spec: type({ name: 'string', image: 'string' }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const sharedA = singleton(bootstrapA, { id: 'stable-id', spec: { name: `${spec.name}-a` } });
+          const sharedB = singleton(bootstrapB, { id: 'stable-id', spec: { name: `${spec.name}-b` } });
+          Deployment({ name: spec.name, image: spec.image, id: 'app' });
+          return { ready: sharedA.status.ready && sharedB.status.ready };
+        },
+      );
+
+      const parsed = parseRgdYaml(graph.factory('kro').toYaml());
+      const ownerKinds = parsed.spec.resources
+        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.template?.kind))
+        .map((resource) => resource.template?.kind)
+        .sort();
+
+      expect(ownerKinds).toEqual(['SharedBootstrapA', 'SharedBootstrapB']);
+      const extRefs = parsed.spec.resources
+        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind))
+        .map((resource) => `${resource.externalRef?.kind}:${resource.externalRef?.metadata?.name}`)
+        .sort();
+      expect(extRefs).toEqual([
+        'SharedBootstrapA:stable-id',
+        'SharedBootstrapB:stable-id',
+      ]);
+    });
   });
 
   // ===========================================================================

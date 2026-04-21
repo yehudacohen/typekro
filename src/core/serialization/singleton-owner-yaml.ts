@@ -49,7 +49,7 @@ export function materializeSingletonOwnerResourcesForKroYaml(
     );
     const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
     const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'Unknown');
-    const ownerId = `singletonOwner${sanitizeSingletonResourceId(definition.id)}`;
+    const ownerId = `singletonOwner${sanitizeSingletonResourceId(definition.key)}`;
 
     if (!(ownerId in resourcesWithKeys)) {
       resourcesWithKeys[ownerId] = createResource(

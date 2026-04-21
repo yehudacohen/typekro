@@ -117,13 +117,15 @@ export class DependencyResolver {
     // like service(), deployment(), valkey(), cluster(), etc.).
     // Precompile regex patterns once per service name to avoid creating
     // a new RegExp on every (resource × stringValue × serviceName) pair.
-    const servicePatterns = new Map<string, { id: string }>();
+    const servicePatterns = new Map<string, Set<string>>();
     for (const resource of resources) {
       const isDnsAddressable = getMetadataField(resource, 'dnsAddressable');
       if (isDnsAddressable && resource.metadata?.name) {
         const name = String(resource.metadata.name);
         if (name && !name.includes('$')) {
-          servicePatterns.set(name, { id: resource.id });
+          const existing = servicePatterns.get(name) ?? new Set<string>();
+          existing.add(resource.id);
+          servicePatterns.set(name, existing);
         }
       }
     }
@@ -132,21 +134,24 @@ export class DependencyResolver {
       for (const resource of resources) {
         const stringValues = this.collectStringValues(resource);
         for (const value of stringValues) {
-          for (const [svcName, { id: svcResourceId }] of servicePatterns) {
-            if (svcResourceId !== resource.id && this.containsClusterServiceReference(value, svcName)) {
-              try {
-                graph.addEdge(resource.id, svcResourceId);
-                this.logger.debug('Added implicit service-name dependency', {
-                  resource: resource.id,
-                  referencedService: svcName,
-                  serviceResource: svcResourceId,
-                });
-              } catch (err) {
-                this.logger.debug('Failed to add service-name dependency edge', {
-                  resource: resource.id,
-                  target: svcResourceId,
-                  error: err instanceof Error ? err.message : String(err),
-                });
+          for (const [svcName, svcResourceIds] of servicePatterns) {
+            if (this.containsClusterServiceReference(value, svcName)) {
+              for (const svcResourceId of svcResourceIds) {
+                if (svcResourceId === resource.id) continue;
+                try {
+                  graph.addEdge(resource.id, svcResourceId);
+                  this.logger.debug('Added implicit service-name dependency', {
+                    resource: resource.id,
+                    referencedService: svcName,
+                    serviceResource: svcResourceId,
+                  });
+                } catch (err) {
+                  this.logger.debug('Failed to add service-name dependency edge', {
+                    resource: resource.id,
+                    target: svcResourceId,
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                }
               }
             }
           }
@@ -204,8 +209,14 @@ export class DependencyResolver {
       if (host) hosts.add(host.toLowerCase());
     }
 
-    const bareHostMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)*)(?::\d+)?(?=$|[/?\s])/gi);
-    for (const match of bareHostMatches) {
+    const hostWithPortMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)*)(:\d+)(?=$|[/?\s])/gi);
+    for (const match of hostWithPortMatches) {
+      const host = match[2];
+      if (host) hosts.add(host.toLowerCase());
+    }
+
+    const dottedHostMatches = value.matchAll(/(^|[^\w.-])([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?=$|[/?\s])/gi);
+    for (const match of dottedHostMatches) {
       const host = match[2];
       if (host) hosts.add(host.toLowerCase());
     }

@@ -144,6 +144,21 @@ function mockDeploymentWithInitContainerArgs(opts: {
   } as unknown as TestResource;
 }
 
+function mockHelmReleaseWithValues(opts: {
+  id: string;
+  name: string;
+  values: Record<string, unknown>;
+}): TestResource {
+  return {
+    id: opts.id,
+    kind: 'HelmRelease',
+    apiVersion: 'helm.toolkit.fluxcd.io/v2',
+    metadata: { name: opts.name },
+    spec: { values: opts.values },
+    status: {},
+  } as unknown as TestResource;
+}
+
 describe('Implicit dependency detection', () => {
   const resolver = new DependencyResolver();
 
@@ -281,6 +296,41 @@ describe('Implicit dependency detection', () => {
 
       expect(deps).toContain('serviceDb');
       expect(deps).toContain('serviceCache');
+    });
+
+    it('multiple dns-addressable resources sharing one hostname each get dependency edges', () => {
+      const cache = mockResource({ id: 'cacheResource', kind: 'Valkey', name: 'myapp-cache' });
+      markDnsAddressable(cache);
+      const cacheService = mockResource({ id: 'cacheService', kind: 'Service', name: 'myapp-cache' });
+      markDnsAddressable(cacheService);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        env: { CACHE_URL: 'redis://myapp-cache:6379' },
+      });
+
+      const graph = resolver.buildDependencyGraph([cache, cacheService, app]);
+      const deps = graph.getDependencies('deploymentApp');
+
+      expect(deps).toContain('cacheResource');
+      expect(deps).toContain('cacheService');
+    });
+
+    it('non-container resources still use shallow spec traversal for host references', () => {
+      const svc = mockResource({ id: 'serviceBackend', kind: 'Service', name: 'backend-api' });
+      markDnsAddressable(svc);
+
+      const helmRelease = mockHelmReleaseWithValues({
+        id: 'helmReleaseApp',
+        name: 'app-release',
+        values: { upstream: 'http://backend-api:8080/health' },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, helmRelease]);
+      const deps = graph.getDependencies('helmReleaseApp');
+
+      expect(deps).toContain('serviceBackend');
     });
 
     it('service name delimited by dots creates dependency (FQDN pattern)', () => {
@@ -526,6 +576,20 @@ describe('Implicit dependency detection', () => {
       expect(graph.getDependencies('app')).not.toContain('svc');
     });
 
+    it('bare tokens matching a service name do not create false-positive edges', () => {
+      const svc = mockResource({ id: 'serviceCache', kind: 'Service', name: 'cache' });
+      markDnsAddressable(svc);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        env: { CACHE_MODE: 'cache' },
+      });
+
+      const graph = resolver.buildDependencyGraph([svc, app]);
+      expect(graph.getDependencies('deploymentApp')).not.toContain('serviceCache');
+    });
+
     it('overlapping service name prefixes do not cross-contaminate', () => {
       const svc1 = mockResource({ id: 'svc1', kind: 'Service', name: 'cache' });
       markDnsAddressable(svc1);
@@ -632,8 +696,7 @@ describe('Implicit dependency detection', () => {
       expect(graph.getDependencies('deploy')).not.toContain('svc');
     });
 
-    it('matches name that is the entire string', () => {
-      // The regex (?:^|[/:@.])name(?:[/:@.]|$) — ^ matches start, $ matches end.
+    it('does not treat a bare standalone token as a host reference', () => {
       const svc = mockResource({ id: 'svc', kind: 'Service', name: 'standalone' });
       markDnsAddressable(svc);
       const app = mockDeploymentWithEnv({
@@ -643,7 +706,7 @@ describe('Implicit dependency detection', () => {
       });
 
       const graph = resolver.buildDependencyGraph([svc, app]);
-      expect(graph.getDependencies('app')).toContain('svc');
+      expect(graph.getDependencies('app')).not.toContain('svc');
     });
   });
 
