@@ -26,6 +26,7 @@ import { applyAnalysisToResources } from '../expressions/composition/composition
 // instead of dynamic import() from higher layers.
 import { getMetadataField } from '../metadata/index.js';
 import { getResourceId } from '../resources/id.js';
+import { materializeSingletonOwnerResourcesForKroYaml } from '../serialization/singleton-owner-yaml.js';
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
@@ -1129,6 +1130,8 @@ ${Object.entries(spec as Record<string, unknown>)
       this.compositionAnalysisApplied = true;
       applyAnalysisToResources(this.resources as Record<string, unknown>, this.factoryOptions.compositionAnalysis);
     }
+
+    materializeSingletonOwnerResourcesForKroYaml(this.resources, this.singletonDefinitions);
 
     const kroSchema = generateKroSchemaFromArktype(
       this.name,

@@ -14,7 +14,6 @@ import {
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
-import { createResource } from '../proxy/create-resource.js';
 import {
   type ASTAnalysisResult,
   analyzeCompositionBody,
@@ -25,7 +24,6 @@ import { getComponentLogger } from '../logging/index.js';
 import { setResourceId } from '../metadata/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import { getKindInfo, getSemanticCandidateKinds } from '../resources/factory-registry.js';
-import { getSingletonInstanceName } from '../deployment/shared-utilities.js';
 import type {
   DeploymentClosure,
   DirectResourceFactory,
@@ -45,6 +43,7 @@ import { validateResourceGraphDefinition } from '../validation/cel-validator.js'
 import { optimizeStatusMappings } from './cel-optimizer.js';
 import { applyTernaryConditionalsToResources } from './kro-post-processing.js';
 import { generateKroSchemaFromArktype } from './schema.js';
+import { materializeSingletonOwnerResourcesForKroYaml } from './singleton-owner-yaml.js';
 import { runStatusAnalysisPipeline } from './status-analysis-pipeline.js';
 import { serializeResourceGraphToYaml } from './yaml.js';
 
@@ -73,74 +72,6 @@ function separateResourcesAndClosures<
   }
 
   return { resources, closures };
-}
-
-function sanitizeSingletonResourceId(id: string): string {
-  const sanitized = id.replace(/[^a-zA-Z0-9]+(.)?/g, (_match, ch?: string) =>
-    ch ? ch.toUpperCase() : ''
-  );
-  return sanitized.charAt(0).toUpperCase() + sanitized.slice(1);
-}
-
-function materializeSingletonOwnerResourcesForKroYaml(
-  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
-  singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[]
-): void {
-  if (!singletonDefinitions || singletonDefinitions.length === 0) return;
-
-  const emittedNamespaces = new Set<string>();
-  const emittedOwnerKeys = new Set<string>();
-
-  for (const definition of singletonDefinitions) {
-    if (!emittedNamespaces.has(definition.registryNamespace)) {
-      const namespaceId = `singletonNamespace${sanitizeSingletonResourceId(definition.registryNamespace)}`;
-      if (!(namespaceId in resourcesWithKeys)) {
-        resourcesWithKeys[namespaceId] = createResource(
-          {
-            apiVersion: 'v1',
-            kind: 'Namespace',
-            metadata: { name: definition.registryNamespace },
-            spec: {},
-            id: namespaceId,
-          },
-          { scope: 'cluster' }
-        ) as Enhanced<unknown, unknown>;
-      }
-      emittedNamespaces.add(definition.registryNamespace);
-    }
-
-    if (emittedOwnerKeys.has(definition.key)) continue;
-
-    const compositionRecord = definition.composition as unknown as {
-      _definition?: { apiVersion?: string; kind?: string };
-      apiVersion?: string;
-      kind?: string;
-    };
-    const rawApiVersion = String(
-      compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1'
-    );
-    const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
-    const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'Unknown');
-    const ownerId = `singletonOwner${sanitizeSingletonResourceId(definition.id)}`;
-
-    if (!(ownerId in resourcesWithKeys)) {
-      resourcesWithKeys[ownerId] = createResource(
-        {
-          apiVersion,
-          kind,
-          metadata: {
-            name: getSingletonInstanceName(definition.id),
-            namespace: definition.registryNamespace,
-          },
-          spec: definition.spec,
-          id: ownerId,
-        },
-        { scope: 'namespaced' }
-      ) as Enhanced<unknown, unknown>;
-    }
-
-    emittedOwnerKeys.add(definition.key);
-  }
 }
 
 /**
