@@ -551,5 +551,45 @@ describe('Differential Branch Capture', () => {
       expect(yaml).toContain('string(schema.spec.name)');
       expect(yaml).toContain('?');
     });
+
+    it('does not wrap namespace defaults with unrelated optional-field guards', () => {
+      const composition = kubernetesComposition(
+        {
+          name: 'namespace-baseline-diff',
+          apiVersion: 'test.io/v1alpha1',
+          kind: 'NamespaceBaselineDiff',
+          spec: type({
+            name: 'string',
+            'namespace?': 'string',
+            'cache?': { 'enabled?': 'boolean' },
+            'cnpgOperator?': { 'namespace?': 'string' },
+            'valkeyOperator?': { 'namespace?': 'string' },
+          }),
+          status: type({ ready: 'boolean' }),
+        },
+        (spec) => {
+          const ns = spec.namespace ?? 'default';
+
+          ConfigMap({ name: `${spec.name}-cfg`, namespace: ns, data: { k: 'v' }, id: 'cfg' });
+          Deployment({ name: spec.name, namespace: ns, image: 'nginx', id: 'app' });
+
+          if (spec.cache?.enabled !== false) {
+            ConfigMap({ name: `${spec.name}-cache`, namespace: ns, data: { cache: 'on' }, id: 'cacheCfg' });
+          }
+
+          return { ready: true };
+        }
+      );
+
+      const yaml = composition.toYaml();
+      const cfgSection = extractResourceSection(yaml, 'cfg');
+      const appSection = extractResourceSection(yaml, 'app');
+
+      expect(cfgSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"default\\"');
+      expect(appSection).toContain('has(schema.spec.namespace) ? schema.spec.namespace : \\"default\\"');
+      expect(cfgSection).not.toContain('has(schema.spec.cache)');
+      expect(cfgSection).not.toContain('has(schema.spec.cnpgOperator)');
+      expect(cfgSection).not.toContain('has(schema.spec.valkeyOperator)');
+    });
   });
 });

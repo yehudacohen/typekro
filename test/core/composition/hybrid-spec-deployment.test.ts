@@ -68,7 +68,7 @@ describe('Hybrid Spec During Deployment', () => {
     // Create a direct factory (which should provide actual values)
     const factory = testComposition.factory('direct', {
       namespace: 'test',
-      waitForReady: false,
+      waitForReady: true,
     });
 
     // Deploy with actual spec values
@@ -130,7 +130,7 @@ describe('Hybrid Spec During Deployment', () => {
 
     const factory = testComposition.factory('direct', {
       namespace: 'test',
-      waitForReady: false,
+      waitForReady: true,
     });
 
     // Test 'strict' -> 'true'

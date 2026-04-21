@@ -131,6 +131,13 @@ export class DirectDeploymentStrategy<
     // Get the base proxy first
     const baseProxy = await super.createEnhancedProxy(spec, instanceName, deploymentResult);
 
+    if (
+      this.factoryOptions.waitForReady === false ||
+      this.factoryOptions.hydrateStatus === false
+    ) {
+      return baseProxy;
+    }
+
     // Try live status re-execution: re-run the composition function with real
     // status data from the cluster injected into the proxy system. This makes
     // status comparisons like `database.status.readyInstances >= 1` evaluate

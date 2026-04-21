@@ -14,6 +14,7 @@ import {
 import { createDirectResourceFactory } from '../deployment/direct-factory.js';
 import { createKroResourceFactory } from '../deployment/kro-factory.js';
 import { ensureError, ValidationError } from '../errors.js';
+import { createResource } from '../proxy/create-resource.js';
 import {
   type ASTAnalysisResult,
   analyzeCompositionBody,
@@ -24,6 +25,7 @@ import { getComponentLogger } from '../logging/index.js';
 import { setResourceId } from '../metadata/index.js';
 import { createExternalRefWithoutRegistration, createSchemaProxy } from '../references/index.js';
 import { getKindInfo, getSemanticCandidateKinds } from '../resources/factory-registry.js';
+import { getSingletonInstanceName } from '../deployment/shared-utilities.js';
 import type {
   DeploymentClosure,
   DirectResourceFactory,
@@ -71,6 +73,74 @@ function separateResourcesAndClosures<
   }
 
   return { resources, closures };
+}
+
+function sanitizeSingletonResourceId(id: string): string {
+  const sanitized = id.replace(/[^a-zA-Z0-9]+(.)?/g, (_match, ch?: string) =>
+    ch ? ch.toUpperCase() : ''
+  );
+  return sanitized.charAt(0).toUpperCase() + sanitized.slice(1);
+}
+
+function materializeSingletonOwnerResourcesForKroYaml(
+  resourcesWithKeys: Record<string, Enhanced<unknown, unknown>>,
+  singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[]
+): void {
+  if (!singletonDefinitions || singletonDefinitions.length === 0) return;
+
+  const emittedNamespaces = new Set<string>();
+  const emittedOwnerKeys = new Set<string>();
+
+  for (const definition of singletonDefinitions) {
+    if (!emittedNamespaces.has(definition.registryNamespace)) {
+      const namespaceId = `singletonNamespace${sanitizeSingletonResourceId(definition.registryNamespace)}`;
+      if (!(namespaceId in resourcesWithKeys)) {
+        resourcesWithKeys[namespaceId] = createResource(
+          {
+            apiVersion: 'v1',
+            kind: 'Namespace',
+            metadata: { name: definition.registryNamespace },
+            spec: {},
+            id: namespaceId,
+          },
+          { scope: 'cluster' }
+        ) as Enhanced<unknown, unknown>;
+      }
+      emittedNamespaces.add(definition.registryNamespace);
+    }
+
+    if (emittedOwnerKeys.has(definition.key)) continue;
+
+    const compositionRecord = definition.composition as unknown as {
+      _definition?: { apiVersion?: string; kind?: string };
+      apiVersion?: string;
+      kind?: string;
+    };
+    const rawApiVersion = String(
+      compositionRecord._definition?.apiVersion ?? compositionRecord.apiVersion ?? 'v1alpha1'
+    );
+    const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
+    const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'Unknown');
+    const ownerId = `singletonOwner${sanitizeSingletonResourceId(definition.id)}`;
+
+    if (!(ownerId in resourcesWithKeys)) {
+      resourcesWithKeys[ownerId] = createResource(
+        {
+          apiVersion,
+          kind,
+          metadata: {
+            name: getSingletonInstanceName(definition.id),
+            namespace: definition.registryNamespace,
+          },
+          spec: definition.spec,
+          id: ownerId,
+        },
+        { scope: 'namespaced' }
+      ) as Enhanced<unknown, unknown>;
+    }
+
+    emittedOwnerKeys.add(definition.key);
+  }
 }
 
 /**
@@ -599,6 +669,13 @@ function processCompositionBodyAnalysis(
         // so multiple `toYaml()` calls on the resulting TypedResourceGraph
         // all see a consistent final state.
         if (overriddenFields.size > 0) {
+          const baselineResources = Object.fromEntries(
+            Object.entries(resourcesWithKeys).map(([id, resource]) => [
+              id,
+              cloneResourceTree(resource as unknown as Record<string, unknown>),
+            ])
+          ) as Record<string, Record<string, unknown>>;
+
           const differentialFields = collectDifferentialOptionalFields(compositionAnalysis);
           const fieldsToDiff = Array.from(differentialFields).filter((field) => overriddenFields.has(field));
 
@@ -618,10 +695,12 @@ function processCompositionBodyAnalysis(
 
             for (const id of Object.keys(resourcesWithKeys)) {
               const proxyRes = resourcesWithKeys[id] as unknown as Record<string, unknown>;
+              const baselineRes = baselineResources[id];
               const hybridRes = fieldCaptured[id] as unknown as Record<string, unknown> | undefined;
-              if (proxyRes && hybridRes) {
+              if (proxyRes && baselineRes && hybridRes) {
                 applyDifferentialFieldConditionals(
                   proxyRes,
+                  baselineRes,
                   hybridRes,
                   singleFieldSet,
                   fieldConditions
@@ -862,6 +941,37 @@ function captureHybridRunResources(
   }
 }
 
+function cloneResourceTree<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneResourceTree(item)) as T;
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entryValue]) => [key, cloneResourceTree(entryValue)])
+    ) as T;
+  }
+  return value;
+}
+
+function structuralEquals(a: unknown, b: unknown): boolean {
+  if (isLeafValue(a) || isLeafValue(b)) {
+    return leafEquals(a, b);
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => structuralEquals(item, b[index]));
+  }
+  if (isWalkableRecord(a) && isWalkableRecord(b)) {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const key of keys) {
+      if (!structuralEquals((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return a === b;
+}
+
 /**
  * Walk `proxyRes` and `hybridRes` in parallel and replace any leaf value
  * in `proxyRes` that differs from the corresponding leaf in `hybridRes`
@@ -890,81 +1000,90 @@ function captureHybridRunResources(
  *     the conditional.
  */
 function applyDifferentialFieldConditionals(
-  proxyRes: Record<string, unknown>,
+  currentRes: Record<string, unknown>,
+  baselineRes: Record<string, unknown>,
   hybridRes: Record<string, unknown>,
   overriddenFields: Set<string>,
   overrideConditions: Map<string, string>
 ): void {
-  walkAndConditionalize(proxyRes, hybridRes, overriddenFields, overrideConditions);
+  walkAndConditionalize(currentRes, baselineRes, hybridRes, overriddenFields, overrideConditions);
 }
 
 function walkAndConditionalize(
-  proxy: unknown,
+  current: unknown,
+  baseline: unknown,
   hybrid: unknown,
   overriddenFields: Set<string>,
   overrideConditions: Map<string, string>
 ): unknown {
-  if (Array.isArray(proxy) && Array.isArray(hybrid)) {
-    if (proxy.length !== hybrid.length) {
-      return buildCelConditional(proxy, hybrid, overriddenFields, overrideConditions);
+  if (Array.isArray(current) && Array.isArray(baseline) && Array.isArray(hybrid)) {
+    if (baseline.length !== hybrid.length) {
+      return structuralEquals(current, baseline)
+        ? buildCelConditional(baseline, hybrid, overriddenFields, overrideConditions)
+        : current;
     }
 
-    const maxLen = Math.max(proxy.length, hybrid.length);
+    const maxLen = Math.max(current.length, hybrid.length);
     for (let i = 0; i < maxLen; i++) {
-      const p = proxy[i];
+      const c = current[i];
+      const b = baseline[i];
       const h = hybrid[i];
-      if (i >= proxy.length) {
+      if (i >= current.length) {
         // New element added by hybrid run — copy it over.
-        proxy.push(h);
+        current.push(h);
         continue;
       }
       if (i >= hybrid.length) {
         // Element removed in hybrid — leave the proxy value as-is.
         continue;
       }
-      if (isLeafValue(p) && isLeafValue(h)) {
-        if (!leafEquals(p, h)) {
-          proxy[i] = buildCelConditional(p, h, overriddenFields, overrideConditions);
+      if (isLeafValue(b) && isLeafValue(h)) {
+        if (!leafEquals(b, h) && leafEquals(c, b)) {
+          current[i] = buildCelConditional(b, h, overriddenFields, overrideConditions);
         }
       } else {
-        walkAndConditionalize(p, h, overriddenFields, overrideConditions);
+        const conditionalized = walkAndConditionalize(c, b, h, overriddenFields, overrideConditions);
+        if (conditionalized !== c) {
+          current[i] = conditionalized;
+        }
       }
     }
-    return proxy;
+    return current;
   }
 
-  if (isWalkableRecord(proxy) && isWalkableRecord(hybrid)) {
-    const keys = new Set([...Object.keys(proxy), ...Object.keys(hybrid)]);
+  if (isWalkableRecord(current) && isWalkableRecord(baseline) && isWalkableRecord(hybrid)) {
+    const keys = new Set([...Object.keys(current), ...Object.keys(baseline), ...Object.keys(hybrid)]);
     for (const key of keys) {
-      const p = (proxy as Record<string, unknown>)[key];
+      const c = (current as Record<string, unknown>)[key];
+      const b = (baseline as Record<string, unknown>)[key];
       const h = (hybrid as Record<string, unknown>)[key];
       if (!(key in (hybrid as Record<string, unknown>))) {
-        continue; // Proxy has it, hybrid doesn't — keep proxy value
-      }
-      if (!(key in (proxy as Record<string, unknown>))) {
-        (proxy as Record<string, unknown>)[key] = h;
         continue;
       }
-      if (isLeafValue(p) && isLeafValue(h)) {
-        if (!leafEquals(p, h)) {
-          (proxy as Record<string, unknown>)[key] = buildCelConditional(
-            p,
+      if (!(key in (current as Record<string, unknown>))) {
+        (current as Record<string, unknown>)[key] = h;
+        continue;
+      }
+      if (isLeafValue(b) && isLeafValue(h)) {
+        if (!leafEquals(b, h) && leafEquals(c, b)) {
+          (current as Record<string, unknown>)[key] = buildCelConditional(
+            b,
             h,
             overriddenFields,
             overrideConditions
           );
         }
       } else {
-        const conditionalized = walkAndConditionalize(p, h, overriddenFields, overrideConditions);
-        if (conditionalized !== p) {
-          (proxy as Record<string, unknown>)[key] = conditionalized;
+        const conditionalized = walkAndConditionalize(c, b, h, overriddenFields, overrideConditions);
+        if (conditionalized !== c) {
+          (current as Record<string, unknown>)[key] = conditionalized;
         }
       }
     }
-    return proxy;
+    return current;
   }
 
-  return proxy;
+  return current;
 }
 
 function isLeafValue(v: unknown): boolean {
@@ -1675,6 +1794,12 @@ function createTypedResourceGraph<
       const nestedStatusDescriptor = Object.getOwnPropertyDescriptor(statusMappings, '__nestedStatusCel');
       const nestedStatusCel: Record<string, string> =
         (nestedStatusDescriptor?.value as Record<string, string>) ?? {};
+
+      materializeSingletonOwnerResourcesForKroYaml(
+        resourcesWithKeys,
+        (this as { _singletonDefinitions?: import('../types/deployment.js').SingletonDefinitionRecord[] })
+          ._singletonDefinitions
+      );
 
       serializationLogger.debug('Nested status CEL extraction', {
         hasNestedStatusCel: Object.keys(nestedStatusCel).length > 0,

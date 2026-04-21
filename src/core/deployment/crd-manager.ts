@@ -262,12 +262,13 @@ export class CRDManager {
         );
 
         const crdItem = crdStatus as unknown as CustomResourceDefinitionItem;
+        const deletionTimestamp = crdItem?.metadata?.deletionTimestamp;
         const conditions = crdItem?.status?.conditions || [];
         const establishedCondition = conditions.find(
           (c: KubernetesCondition) => c.type === 'Established'
         );
 
-        if (establishedCondition?.status === 'True') {
+        if (establishedCondition?.status === 'True' && !deletionTimestamp) {
           logger.debug('CRD exists and is established', { crdName });
           return;
         }
@@ -275,6 +276,7 @@ export class CRDManager {
         logger.debug('CRD exists but not yet established, waiting...', {
           crdName,
           establishedStatus: establishedCondition?.status || 'unknown',
+          deleting: deletionTimestamp !== undefined,
         });
       } catch (error: unknown) {
         if (
@@ -362,7 +364,7 @@ export class CRDManager {
         const crdList = crds as unknown as CustomResourceDefinitionList;
         const match = crdList?.items?.find((crd: CustomResourceDefinitionItem) => {
           const spec = crd.spec;
-          return spec?.group === group && spec?.names?.kind === kind;
+          return spec?.group === group && spec?.names?.kind === kind && !crd.metadata?.deletionTimestamp;
         });
         if (match?.metadata?.name && match.spec?.names?.plural) {
           crdName = match.metadata.name;

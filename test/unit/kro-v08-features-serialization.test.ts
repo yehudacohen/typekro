@@ -1759,6 +1759,59 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       expect(resourceIds).not.toContain('bootstrapApp');
       expect(parsed.spec.resources.some((resource) => resource.externalRef !== undefined)).toBe(true);
     });
+
+    it('singleton(...) emits a self-contained owner boundary and registry namespace in KRO YAML', () => {
+      const sharedBootstrap = kubernetesComposition(
+        {
+          name: 'shared-bootstrap-owner-boundary',
+          apiVersion: 'platform.typekro.test/v1alpha1',
+          kind: 'SharedBootstrapOwnerBoundary',
+          spec: type({ name: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          Deployment({ name: spec.name, image: 'nginx', id: 'bootstrapApp' });
+          return { ready: true, endpoint: `http://${spec.name}:80` };
+        },
+      );
+
+      const graph = kubernetesComposition(
+        {
+          name: 'singleton-owner-boundary-check',
+          apiVersion: 'v1alpha1',
+          kind: 'SingletonOwnerBoundaryCheck',
+          spec: type({ name: 'string', image: 'string' }),
+          status: type({ ready: 'boolean', endpoint: 'string' }),
+        },
+        (spec) => {
+          const shared = singleton(sharedBootstrap, {
+            id: 'stable-shared-id',
+            spec: { name: `${spec.name}-shared-human-name` },
+          });
+
+          Deployment({ name: spec.name, image: spec.image, id: 'app' });
+          return { ready: shared.status.ready, endpoint: shared.status.endpoint };
+        },
+      );
+
+      const parsed = parseRgdYaml(graph.toYaml());
+      const namespaceResource = parsed.spec.resources.find(
+        (resource) => resource.template?.kind === 'Namespace' && resource.template?.metadata?.name === 'typekro-singletons'
+      );
+      const ownerBoundary = parsed.spec.resources.find(
+        (resource) =>
+          resource.template?.kind === 'SharedBootstrapOwnerBoundary' &&
+          resource.template?.metadata?.name === 'stable-shared-id' &&
+          resource.template?.metadata?.namespace === 'typekro-singletons'
+      );
+      const extRefResource = parsed.spec.resources.find((resource) => resource.externalRef?.kind === 'SharedBootstrapOwnerBoundary');
+
+      expect(namespaceResource).toBeDefined();
+      expect(ownerBoundary).toBeDefined();
+      expect(ownerBoundary?.template?.spec?.name).toContain('shared-human-name');
+      expect(extRefResource?.externalRef?.metadata?.name).toBe('stable-shared-id');
+      expect(extRefResource?.externalRef?.metadata?.namespace).toBe('typekro-singletons');
+    });
   });
 
   // ===========================================================================
