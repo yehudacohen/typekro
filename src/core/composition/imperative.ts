@@ -498,6 +498,17 @@ function executeNestedCompositionWithSpec<
     }
   }
 
+  if (executionContext.singletonDefinitions) {
+    if (!parentContext.singletonDefinitions) {
+      parentContext.singletonDefinitions = new Map();
+    }
+    for (const [key, definition] of executionContext.singletonDefinitions) {
+      if (!parentContext.singletonDefinitions.has(key)) {
+        parentContext.singletonDefinitions.set(key, definition);
+      }
+    }
+  }
+
   // Create a NestedCompositionResource to return.
   // During re-execution (direct-mode deploy), return the REAL status
   // values from the inner composition — not a KubernetesRef proxy.
