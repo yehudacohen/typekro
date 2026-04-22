@@ -1425,13 +1425,41 @@ export class DirectResourceFactoryImpl<
         '../kubernetes/bun-api-client.js'
       );
       const k8sApi = createBunCompatibleKubernetesObjectApi(this.getClientProvider().getKubeConfig());
+      const waitForNamespaceDeletion = async (): Promise<void> => {
+        const start = Date.now();
+        while (Date.now() - start < 120000) {
+          try {
+            const existing = (await k8sApi.read({
+              apiVersion: 'v1',
+              kind: 'Namespace',
+              metadata: { name: namespace },
+            })) as { metadata?: { deletionTimestamp?: string | Date } };
+            if (!existing.metadata?.deletionTimestamp) {
+              return;
+            }
+          } catch (pollError: unknown) {
+            const err = pollError as { statusCode?: number; body?: { code?: number } };
+            const code = err.statusCode ?? err.body?.code;
+            if (code === 404) {
+              return;
+            }
+            throw pollError;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        throw new Error(`Namespace ${namespace} is still terminating after 120000ms`);
+      };
       try {
-        await k8sApi.read({
+        const existing = (await k8sApi.read({
           apiVersion: 'v1',
           kind: 'Namespace',
           metadata: { name: namespace },
-        });
-        return;
+        })) as { metadata?: { deletionTimestamp?: string | Date } };
+        if (existing.metadata?.deletionTimestamp) {
+          await waitForNamespaceDeletion();
+        } else {
+          return;
+        }
       } catch (readError: unknown) {
         const k8sErr = readError as { statusCode?: number; body?: { code?: number } };
         const code = k8sErr.statusCode ?? k8sErr.body?.code;
@@ -1440,16 +1468,43 @@ export class DirectResourceFactoryImpl<
         }
       }
 
-      await k8sApi.create({
-        apiVersion: 'v1',
-        kind: 'Namespace',
-        metadata: {
-          name: namespace,
-          labels: {
-            'app.kubernetes.io/managed-by': 'typekro',
+      try {
+        await k8sApi.create({
+          apiVersion: 'v1',
+          kind: 'Namespace',
+          metadata: {
+            name: namespace,
+            labels: {
+              'app.kubernetes.io/managed-by': 'typekro',
+            },
           },
-        },
-      });
+        });
+      } catch (createError: unknown) {
+        const k8sErr = createError as {
+          statusCode?: number;
+          body?: { code?: number; reason?: string };
+          message?: string;
+        };
+        const code = k8sErr.statusCode ?? k8sErr.body?.code;
+        const isNamespaceTerminating =
+          k8sErr.body?.reason === 'Forbidden' &&
+          k8sErr.message?.includes('NamespaceTerminating') === true;
+        if (isNamespaceTerminating) {
+          await waitForNamespaceDeletion();
+          await k8sApi.create({
+            apiVersion: 'v1',
+            kind: 'Namespace',
+            metadata: {
+              name: namespace,
+              labels: {
+                'app.kubernetes.io/managed-by': 'typekro',
+              },
+            },
+          });
+        } else if (code !== 409) {
+          throw createError;
+        }
+      }
     } catch (error: unknown) {
       throw new ResourceGraphFactoryError(
         `Failed to ensure target namespace "${namespace}" exists: ${ensureError(error).message}`,
