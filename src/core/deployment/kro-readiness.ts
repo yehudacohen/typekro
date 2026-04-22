@@ -219,8 +219,22 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       if (error instanceof CRDInstanceError) {
         throw error;
       }
-      const k8sError = error as { statusCode?: number };
-      if (k8sError.statusCode !== 404) {
+      const k8sError = error as {
+        statusCode?: number;
+        code?: number | string;
+        body?: { code?: number; reason?: string };
+        message?: string;
+      };
+      const errorCode =
+        k8sError.statusCode ??
+        k8sError.body?.code ??
+        (typeof k8sError.code === 'number' ? k8sError.code : undefined);
+      const isNotFound =
+        errorCode === 404 ||
+        k8sError.body?.reason === 'NotFound' ||
+        k8sError.message?.includes(' not found') === true ||
+        k8sError.message?.includes('NotFound') === true;
+      if (!isNotFound) {
         throw error;
       }
       // Instance not found yet, continue waiting

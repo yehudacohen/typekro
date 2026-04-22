@@ -10,6 +10,14 @@ function sanitizeSingletonResourceId(id: string): string {
   return sanitized.charAt(0).toUpperCase() + sanitized.slice(1);
 }
 
+function shortDeterministicSuffix(input: string): string {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 export function materializeSingletonOwnerResourcesForKroYaml(
   resourcesWithKeys: Record<string, KubernetesResource<unknown, unknown>>,
   singletonDefinitions?: SingletonDefinitionRecord[]
@@ -49,7 +57,7 @@ export function materializeSingletonOwnerResourcesForKroYaml(
     );
     const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
     const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'Unknown');
-    const ownerId = `singletonOwner${sanitizeSingletonResourceId(definition.key)}`;
+    const ownerId = `singletonOwner${shortDeterministicSuffix(definition.key)}`;
 
     if (!(ownerId in resourcesWithKeys)) {
       resourcesWithKeys[ownerId] = createResource(

@@ -1109,7 +1109,7 @@ ${Object.entries(spec as Record<string, unknown>)
   .map(([key, value]) => `  ${key}: ${typeof value === 'string' ? `"${value}"` : value}`)
   .join('\n')}`;
     } else {
-      return this.buildRgdYaml();
+      return this.buildRgdYaml({ materializeSingletonOwners: true });
     }
   }
 
@@ -1125,13 +1125,15 @@ ${Object.entries(spec as Record<string, unknown>)
    * `SerializationContext.omitFields`, which `serializeResourceGraphToYaml`
    * populates from `kroSchema.__omitFields` automatically.
    */
-  private buildRgdYaml(): string {
+  private buildRgdYaml(options?: { materializeSingletonOwners?: boolean }): string {
     if (this.factoryOptions.compositionAnalysis && !this.compositionAnalysisApplied) {
       this.compositionAnalysisApplied = true;
       applyAnalysisToResources(this.resources as Record<string, unknown>, this.factoryOptions.compositionAnalysis);
     }
 
-    materializeSingletonOwnerResourcesForKroYaml(this.resources, this.singletonDefinitions);
+    if (options?.materializeSingletonOwners) {
+      materializeSingletonOwnerResourcesForKroYaml(this.resources, this.singletonDefinitions);
+    }
 
     const kroSchema = generateKroSchemaFromArktype(
       this.name,
