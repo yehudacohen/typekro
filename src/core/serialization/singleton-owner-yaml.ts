@@ -18,11 +18,15 @@ function shortDeterministicSuffix(input: string): string {
   for (let i = 0; i < input.length; i++) {
     hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
   }
-  return hash.toString(36);
+  return hash.toString(36).padStart(7, '0').slice(-7);
 }
 
 function buildSingletonYamlResourceId(prefix: string, rawValue: string): string {
-  return `${prefix}${sanitizeSingletonResourceId(rawValue)}${shortDeterministicSuffix(rawValue)}`;
+  const suffix = shortDeterministicSuffix(rawValue);
+  const maxLength = 63;
+  const maxBaseLength = Math.max(1, maxLength - prefix.length - suffix.length);
+  const base = sanitizeSingletonResourceId(rawValue).slice(0, maxBaseLength);
+  return `${prefix}${base}${suffix}`;
 }
 
 export function materializeSingletonOwnerResourcesForKroYaml(

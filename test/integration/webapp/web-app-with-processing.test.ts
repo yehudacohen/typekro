@@ -238,18 +238,16 @@ describe('WebAppWithProcessing KRO Mode', () => {
   });
 
   afterAll(async () => {
-    // The factory's deleteInstance handles the full cleanup graph:
-    // instance → wait for KRO finalizer → RGD → child namespaces
-    if (kroFactory) {
-      try {
-        await kroFactory.deleteInstance('testapp');
-      } catch (e) {
-        console.error('⚠️ KRO deleteInstance failed:', (e as Error).message);
-      }
-    }
-
-    // Clean the factory namespace (the factory manages app namespaces internally)
+    // Full KRO finalizer cleanup can take several minutes and makes this
+    // integration appear hung even after the deploy assertion passed.
+    // For test teardown, issue namespace deletion and let Kubernetes/KRO
+    // finish the graph cleanup asynchronously in the background.
     const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
+    try {
+      await deleteNamespaceIfExists(appNamespace, kubeConfig);
+    } catch (e) {
+      console.error(`⚠️ Namespace ${appNamespace} cleanup failed:`, (e as Error).message);
+    }
     try {
       await deleteNamespaceIfExists(kroNamespace, kubeConfig);
     } catch (e) {

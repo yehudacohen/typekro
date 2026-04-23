@@ -215,12 +215,11 @@ export class DependencyResolver {
         if (sameNamespaceMatches.length > 0) {
           return { serviceName: host, ids: sameNamespaceMatches };
         }
+
+        return { serviceName: host, ids: [] };
       }
 
-      return {
-        serviceName: host,
-        ids: directNameMatch.map((resource) => resource.id),
-      };
+      return { serviceName: host, ids: [] };
     }
 
     const exactQualifiedMatch = resourcesByQualifiedHost.get(host);
@@ -244,6 +243,8 @@ export class DependencyResolver {
           if (exactNamespaceMatches.length > 0) {
             return { serviceName, ids: exactNamespaceMatches };
           }
+
+          return { serviceName, ids: [] };
         }
 
         if (sourceNamespace) {
@@ -253,12 +254,11 @@ export class DependencyResolver {
           if (sameNamespaceMatches.length > 0) {
             return { serviceName, ids: sameNamespaceMatches };
           }
+
+          return { serviceName, ids: [] };
         }
 
-        return {
-          serviceName,
-          ids: sameNamedResources.map((resource) => resource.id),
-        };
+        return { serviceName, ids: [] };
       }
     }
 

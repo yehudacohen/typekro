@@ -27,14 +27,15 @@ function mockResource(opts: {
   id: string;
   kind: string;
   name: string;
-  namespace?: string;
+  namespace?: string | null;
   spec?: Record<string, unknown>;
 }): TestResource {
+  const namespace = opts.namespace === undefined ? 'default' : (opts.namespace ?? undefined);
   return {
     id: opts.id,
     kind: opts.kind,
     apiVersion: opts.kind === 'Service' ? 'v1' : 'apps/v1',
-    metadata: { name: opts.name, ...(opts.namespace ? { namespace: opts.namespace } : {}) },
+    metadata: { name: opts.name, ...(namespace ? { namespace } : {}) },
     spec: opts.spec ?? {},
     status: {},
   } as unknown as TestResource;
@@ -52,9 +53,10 @@ function markDnsAddressable(resource: TestResource): void {
 function mockDeploymentWithEnv(opts: {
   id: string;
   name: string;
-  namespace?: string;
+  namespace?: string | null;
   env: Record<string, string>;
 }): TestResource {
+  const namespace = opts.namespace === undefined ? 'default' : (opts.namespace ?? undefined);
   const envArray = Object.entries(opts.env).map(([k, v]) => ({
     name: k,
     value: v,
@@ -64,7 +66,7 @@ function mockDeploymentWithEnv(opts: {
     id: opts.id,
     kind: 'Deployment',
     apiVersion: 'apps/v1',
-    metadata: { name: opts.name, ...(opts.namespace ? { namespace: opts.namespace } : {}) },
+    metadata: { name: opts.name, ...(namespace ? { namespace } : {}) },
     spec: {
       template: {
         spec: {
@@ -89,13 +91,15 @@ function mockDeploymentWithEnv(opts: {
 function mockDeploymentWithArgs(opts: {
   id: string;
   name: string;
+  namespace?: string | null;
   args: string[];
 }): TestResource {
+  const namespace = opts.namespace === undefined ? 'default' : (opts.namespace ?? undefined);
   return {
     id: opts.id,
     kind: 'Deployment',
     apiVersion: 'apps/v1',
-    metadata: { name: opts.name },
+    metadata: { name: opts.name, ...(namespace ? { namespace } : {}) },
     spec: {
       template: {
         spec: {
@@ -116,13 +120,15 @@ function mockDeploymentWithArgs(opts: {
 function mockDeploymentWithInitContainerArgs(opts: {
   id: string;
   name: string;
+  namespace?: string | null;
   args: string[];
 }): TestResource {
+  const namespace = opts.namespace === undefined ? 'default' : (opts.namespace ?? undefined);
   return {
     id: opts.id,
     kind: 'Deployment',
     apiVersion: 'apps/v1',
-    metadata: { name: opts.name },
+    metadata: { name: opts.name, ...(namespace ? { namespace } : {}) },
     spec: {
       template: {
         spec: {
@@ -149,13 +155,15 @@ function mockDeploymentWithInitContainerArgs(opts: {
 function mockHelmReleaseWithValues(opts: {
   id: string;
   name: string;
+  namespace?: string | null;
   values: Record<string, unknown>;
 }): TestResource {
+  const namespace = opts.namespace === undefined ? 'default' : (opts.namespace ?? undefined);
   return {
     id: opts.id,
     kind: 'HelmRelease',
     apiVersion: 'helm.toolkit.fluxcd.io/v2',
-    metadata: { name: opts.name },
+    metadata: { name: opts.name, ...(namespace ? { namespace } : {}) },
     spec: { values: opts.values },
     status: {},
   } as unknown as TestResource;
@@ -301,14 +309,25 @@ describe('Implicit dependency detection', () => {
     });
 
     it('multiple dns-addressable resources sharing one hostname each get dependency edges', () => {
-      const cache = mockResource({ id: 'cacheResource', kind: 'Valkey', name: 'myapp-cache' });
+      const cache = mockResource({
+        id: 'cacheResource',
+        kind: 'Valkey',
+        name: 'myapp-cache',
+        namespace: 'default',
+      });
       markDnsAddressable(cache);
-      const cacheService = mockResource({ id: 'cacheService', kind: 'Service', name: 'myapp-cache' });
+      const cacheService = mockResource({
+        id: 'cacheService',
+        kind: 'Service',
+        name: 'myapp-cache',
+        namespace: 'default',
+      });
       markDnsAddressable(cacheService);
 
       const app = mockDeploymentWithEnv({
         id: 'deploymentApp',
         name: 'app',
+        namespace: 'default',
         env: { CACHE_URL: 'redis://myapp-cache:6379' },
       });
 
@@ -381,6 +400,99 @@ describe('Implicit dependency detection', () => {
       expect(deps).not.toContain('dbBilling');
     });
 
+    it('short host does not fan out to other namespaces when source namespace has no match', () => {
+      const dbBilling = mockResource({
+        id: 'dbBilling',
+        kind: 'Service',
+        name: 'db',
+        namespace: 'billing',
+      });
+      markDnsAddressable(dbBilling);
+
+      const dbAnalytics = mockResource({
+        id: 'dbAnalytics',
+        kind: 'Service',
+        name: 'db',
+        namespace: 'analytics',
+      });
+      markDnsAddressable(dbAnalytics);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        namespace: 'default',
+        env: { DATABASE_URL: 'postgresql://db:5432/app' },
+      });
+
+      const graph = resolver.buildDependencyGraph([dbBilling, dbAnalytics, app]);
+      const deps = graph.getDependencies('deploymentApp');
+
+      expect(deps).not.toContain('dbBilling');
+      expect(deps).not.toContain('dbAnalytics');
+    });
+
+    it('short host does not infer dependencies when consumer namespace is inherited at deploy time', () => {
+      const dbDefault = mockResource({
+        id: 'dbDefault',
+        kind: 'Service',
+        name: 'db',
+        namespace: 'default',
+      });
+      markDnsAddressable(dbDefault);
+
+      const dbBilling = mockResource({
+        id: 'dbBilling',
+        kind: 'Service',
+        name: 'db',
+        namespace: 'billing',
+      });
+      markDnsAddressable(dbBilling);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        namespace: null,
+        env: { DATABASE_URL: 'postgresql://db:5432/app' },
+      });
+
+      const graph = resolver.buildDependencyGraph([dbDefault, dbBilling, app]);
+      const deps = graph.getDependencies('deploymentApp');
+
+      expect(deps).not.toContain('dbDefault');
+      expect(deps).not.toContain('dbBilling');
+    });
+
+    it('explicit qualified host does not fall back when the referenced namespace has no match', () => {
+      const dbDefault = mockResource({
+        id: 'dbDefault',
+        kind: 'Service',
+        name: 'db',
+        namespace: 'default',
+      });
+      markDnsAddressable(dbDefault);
+
+      const dbAnalytics = mockResource({
+        id: 'dbAnalytics',
+        kind: 'Service',
+        name: 'db',
+        namespace: 'analytics',
+      });
+      markDnsAddressable(dbAnalytics);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        namespace: 'default',
+        env: { DATABASE_URL: 'postgresql://db.billing.svc.cluster.local:5432/app' },
+      });
+
+      const graph = resolver.buildDependencyGraph([dbDefault, dbAnalytics, app]);
+      const deps = graph.getDependencies('deploymentApp');
+
+      expect(deps).not.toContain('dbDefault');
+      expect(deps).not.toContain('dbAnalytics');
+    });
+
     it('non-container resources still use shallow spec traversal for host references', () => {
       const svc = mockResource({ id: 'serviceBackend', kind: 'Service', name: 'backend-api' });
       markDnsAddressable(svc);
@@ -402,6 +514,7 @@ describe('Implicit dependency detection', () => {
         id: 'serviceDb',
         kind: 'Service',
         name: 'my-db',
+        namespace: 'default',
       });
       markDnsAddressable(svc);
 
