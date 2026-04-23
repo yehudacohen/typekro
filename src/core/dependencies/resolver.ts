@@ -17,6 +17,8 @@ import { DependencyGraph } from './graph.js';
 export class DependencyResolver {
   private logger = getComponentLogger('dependency-resolver');
 
+  private static readonly CLUSTER_SERVICE_SUFFIX_PATTERN = /^([a-z0-9-]+)(?:\.([a-z0-9-]+))?(?:\.svc(?:\.cluster\.local)?|\.cluster\.local)$/i;
+
   /**
    * Build a dependency graph from a collection of Kubernetes resources
    */
@@ -117,41 +119,62 @@ export class DependencyResolver {
     // like service(), deployment(), valkey(), cluster(), etc.).
     // Precompile regex patterns once per service name to avoid creating
     // a new RegExp on every (resource × stringValue × serviceName) pair.
-    const servicePatterns = new Map<string, Set<string>>();
+    const dnsAddressableResourcesByName = new Map<string, Array<{ id: string; namespace?: string }>>();
+    const serviceResourceIdsByQualifiedHost = new Map<string, Set<string>>();
     for (const resource of resources) {
       const isDnsAddressable = getMetadataField(resource, 'dnsAddressable');
       if (isDnsAddressable && resource.metadata?.name) {
         const name = String(resource.metadata.name);
         if (name && !name.includes('$')) {
-          const existing = servicePatterns.get(name) ?? new Set<string>();
-          existing.add(resource.id);
-          servicePatterns.set(name, existing);
+          const normalizedName = name.toLowerCase();
+          const namespace = resource.metadata?.namespace?.toLowerCase();
+          const existing = dnsAddressableResourcesByName.get(normalizedName) ?? [];
+          existing.push({ id: resource.id, ...(namespace ? { namespace } : {}) });
+          dnsAddressableResourcesByName.set(normalizedName, existing);
+
+          if (namespace) {
+            const qualifiedHosts = [
+              `${normalizedName}.${namespace}.svc`,
+              `${normalizedName}.${namespace}.svc.cluster.local`,
+            ];
+
+            for (const host of qualifiedHosts) {
+              const qualifiedIds = serviceResourceIdsByQualifiedHost.get(host) ?? new Set<string>();
+              qualifiedIds.add(resource.id);
+              serviceResourceIdsByQualifiedHost.set(host, qualifiedIds);
+            }
+          }
         }
       }
     }
 
-    if (servicePatterns.size > 0) {
+    if (dnsAddressableResourcesByName.size > 0) {
       for (const resource of resources) {
         const stringValues = this.collectStringValues(resource);
         for (const value of stringValues) {
-          for (const [svcName, svcResourceIds] of servicePatterns) {
-            if (this.containsClusterServiceReference(value, svcName)) {
-              for (const svcResourceId of svcResourceIds) {
-                if (svcResourceId === resource.id) continue;
-                try {
-                  graph.addEdge(resource.id, svcResourceId);
-                  this.logger.debug('Added implicit service-name dependency', {
-                    resource: resource.id,
-                    referencedService: svcName,
-                    serviceResource: svcResourceId,
-                  });
-                } catch (err) {
-                  this.logger.debug('Failed to add service-name dependency edge', {
-                    resource: resource.id,
-                    target: svcResourceId,
-                    error: err instanceof Error ? err.message : String(err),
-                  });
-                }
+          for (const host of this.extractHostCandidates(value)) {
+            const matchedServices = this.resolveDnsAddressableServiceIds(
+              host,
+              resource.metadata?.namespace?.toLowerCase(),
+              dnsAddressableResourcesByName,
+              serviceResourceIdsByQualifiedHost
+            );
+            for (const svcResourceId of matchedServices.ids) {
+              if (svcResourceId === resource.id) continue;
+              try {
+                graph.addEdge(resource.id, svcResourceId);
+                this.logger.debug('Added implicit service-name dependency', {
+                  resource: resource.id,
+                  referencedHost: host,
+                  referencedService: matchedServices.serviceName,
+                  serviceResource: svcResourceId,
+                });
+              } catch (err) {
+                this.logger.debug('Failed to add service-name dependency edge', {
+                  resource: resource.id,
+                  target: svcResourceId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
               }
             }
           }
@@ -177,18 +200,69 @@ export class DependencyResolver {
    */
   private static readonly EXCLUDED_KEYS = new Set(['image', 'imagePullPolicy']);
 
-  private containsClusterServiceReference(value: string, serviceName: string): boolean {
-    for (const host of this.extractHostCandidates(value)) {
-      if (host === serviceName) return true;
-      if (host === `${serviceName}.cluster.local`) return true;
-      if (host === `${serviceName}.svc`) return true;
-      if (host === `${serviceName}.svc.cluster.local`) return true;
-      if (new RegExp(`^${serviceName}\.[a-z0-9-]+\.svc(?:\.cluster\.local)?$`, 'i').test(host)) {
-        return true;
+  private resolveDnsAddressableServiceIds(
+    host: string,
+    sourceNamespace: string | undefined,
+    resourcesByName: Map<string, Array<{ id: string; namespace?: string }>>,
+    resourcesByQualifiedHost: Map<string, Set<string>>
+  ): { serviceName: string; ids: string[] } {
+    const directNameMatch = resourcesByName.get(host);
+    if (directNameMatch && directNameMatch.length > 0) {
+      if (sourceNamespace) {
+        const sameNamespaceMatches = directNameMatch
+          .filter((resource) => resource.namespace === sourceNamespace)
+          .map((resource) => resource.id);
+        if (sameNamespaceMatches.length > 0) {
+          return { serviceName: host, ids: sameNamespaceMatches };
+        }
+      }
+
+      return {
+        serviceName: host,
+        ids: directNameMatch.map((resource) => resource.id),
+      };
+    }
+
+    const exactQualifiedMatch = resourcesByQualifiedHost.get(host);
+    if (exactQualifiedMatch && exactQualifiedMatch.size > 0) {
+      return {
+        serviceName: host.split('.')[0] ?? host,
+        ids: Array.from(exactQualifiedMatch),
+      };
+    }
+
+    const clusterSuffixMatch = host.match(DependencyResolver.CLUSTER_SERVICE_SUFFIX_PATTERN);
+    if (clusterSuffixMatch) {
+      const serviceName = clusterSuffixMatch[1]?.toLowerCase();
+      const explicitNamespace = clusterSuffixMatch[2]?.toLowerCase();
+      if (serviceName) {
+        const sameNamedResources = resourcesByName.get(serviceName) ?? [];
+        if (explicitNamespace) {
+          const exactNamespaceMatches = sameNamedResources
+            .filter((resource) => resource.namespace === explicitNamespace)
+            .map((resource) => resource.id);
+          if (exactNamespaceMatches.length > 0) {
+            return { serviceName, ids: exactNamespaceMatches };
+          }
+        }
+
+        if (sourceNamespace) {
+          const sameNamespaceMatches = sameNamedResources
+            .filter((resource) => resource.namespace === sourceNamespace)
+            .map((resource) => resource.id);
+          if (sameNamespaceMatches.length > 0) {
+            return { serviceName, ids: sameNamespaceMatches };
+          }
+        }
+
+        return {
+          serviceName,
+          ids: sameNamedResources.map((resource) => resource.id),
+        };
       }
     }
 
-    return false;
+    return { serviceName: host, ids: [] };
   }
 
   private extractHostCandidates(value: string): string[] {

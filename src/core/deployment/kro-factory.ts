@@ -30,6 +30,7 @@ import { materializeSingletonOwnerResourcesForKroYaml } from '../serialization/s
 import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
+import { logHandleSnapshot } from './handle-tracing.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
   AlchemyBridge,
@@ -392,6 +393,26 @@ export class KroResourceFactoryImpl<
     return this.clientManager.getCustomObjectsApi();
   }
 
+  private getDebugState(): Record<string, unknown> {
+    return {
+      mode: this.mode,
+      rgdName: this.rgdName,
+      namespace: this.namespace,
+      discoveredPlural: this.discoveredPlural,
+      clientManager: this.clientManager.getDebugState(),
+    };
+  }
+
+  async dispose(): Promise<void> {
+    logHandleSnapshot(this.logger, 'kro-factory.dispose.before', {
+      factoryState: this.getDebugState(),
+    });
+    this.clientManager.dispose();
+    logHandleSnapshot(this.logger, 'kro-factory.dispose.after', {
+      factoryState: this.getDebugState(),
+    });
+  }
+
   /**
    * Deploy a new instance by creating a custom resource
    */
@@ -666,31 +687,35 @@ export class KroResourceFactoryImpl<
 
     // Deploy without waiting for readiness - we'll handle that ourselves
     this.logger.info('Deploying Kro instance', { instanceName, rgdName: this.rgdName });
-    await deploymentEngine.deployResource(deployableResource, {
-      mode: 'kro',
-      namespace: this.namespace,
-      waitForReady: false, // We'll handle Kro-specific readiness ourselves
-      timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
-    });
-    this.logger.info('Instance deployed, checking readiness', {
-      instanceName,
-      rgdName: this.rgdName,
-    });
-
-    // Handle Kro-specific readiness checking if requested
-    if (this.factoryOptions.waitForReady ?? true) {
-      await this.waitForKroInstanceReady(
+    try {
+      await deploymentEngine.deployResource(deployableResource, {
+        mode: 'kro',
+        namespace: this.namespace,
+        waitForReady: false, // We'll handle Kro-specific readiness ourselves
+        timeout: this.factoryOptions.timeout || DEFAULT_DEPLOYMENT_TIMEOUT,
+      });
+      this.logger.info('Instance deployed, checking readiness', {
         instanceName,
-        this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
-      ); // 10 minutes
-    }
-    this.logger.info('Instance ready, creating enhanced proxy', {
-      instanceName,
-      rgdName: this.rgdName,
-    });
+        rgdName: this.rgdName,
+      });
 
-    // Create Enhanced proxy for the deployed instance
-    return await this.createEnhancedProxy(spec, instanceName);
+      // Handle Kro-specific readiness checking if requested
+      if (this.factoryOptions.waitForReady ?? true) {
+        await this.waitForKroInstanceReady(
+          instanceName,
+          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
+        ); // 10 minutes
+      }
+      this.logger.info('Instance ready, creating enhanced proxy', {
+        instanceName,
+        rgdName: this.rgdName,
+      });
+
+      // Create Enhanced proxy for the deployed instance
+      return await this.createEnhancedProxy(spec, instanceName);
+    } finally {
+      await deploymentEngine.dispose();
+    }
   }
 
   /**
@@ -720,72 +745,76 @@ export class KroResourceFactoryImpl<
       ? this.alchemyBridge.createDeployer(kroEngine)
       : new (await import('../../alchemy/deployment.js')).KroTypeKroDeployer(kroEngine);
 
-    // 1. Ensure RGD is deployed via alchemy (once per factory)
-    const kroSchema = generateKroSchemaFromArktype(
-      this.name,
-      this.schemaDefinition,
-      this.resources,
-      this.statusMappings,
-      this.getNestedStatusCel()
-    );
-    const rgdManifest = {
-      apiVersion: 'kro.run/v1alpha1',
-      kind: 'ResourceGraphDefinition',
-      metadata: {
-        name: this.rgdName,
+    try {
+      // 1. Ensure RGD is deployed via alchemy (once per factory)
+      const kroSchema = generateKroSchemaFromArktype(
+        this.name,
+        this.schemaDefinition,
+        this.resources,
+        this.statusMappings,
+        this.getNestedStatusCel()
+      );
+      const rgdManifest = {
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: {
+          name: this.rgdName,
+          namespace: this.namespace,
+        },
+        spec: {
+          schema: kroSchema,
+          resources: Object.values(this.resources).map((resource) => ({
+            id: getResourceId(resource),
+            template: resource,
+          })),
+        },
+      };
+
+      // Register RGD type dynamically
+      const rgdFactory =
+        this.rgdProvider ??
+        (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;
+      const rgdEnhanced = rgdFactory(rgdManifest);
+      const bridge = this.alchemyBridge ?? (await import('../../alchemy/deployment.js'));
+      const RGDProvider = bridge.ensureResourceTypeRegistered(rgdEnhanced);
+      const rgdId = bridge.createAlchemyResourceId(rgdEnhanced, this.namespace);
+
+      await RGDProvider(rgdId, {
+        resource: rgdEnhanced,
         namespace: this.namespace,
-      },
-      spec: {
-        schema: kroSchema,
-        resources: Object.values(this.resources).map((resource) => ({
-          id: getResourceId(resource),
-          template: resource,
-        })),
-      },
-    };
+        deployer: deployer,
+        options: {
+          waitForReady: true,
+          timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
+        },
+      });
 
-    // Register RGD type dynamically
-    const rgdFactory =
-      this.rgdProvider ??
-      (await import('../../factories/kro/resource-graph-definition.js')).resourceGraphDefinition;
-    const rgdEnhanced = rgdFactory(rgdManifest);
-    const bridge = this.alchemyBridge ?? (await import('../../alchemy/deployment.js'));
-    const RGDProvider = bridge.ensureResourceTypeRegistered(rgdEnhanced);
-    const rgdId = bridge.createAlchemyResourceId(rgdEnhanced, this.namespace);
+      // 2. Create instance via alchemy (once per deploy call)
+      const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
+      const crdInstanceManifest = this.createCustomResourceInstance(instanceName, spec);
 
-    await RGDProvider(rgdId, {
-      resource: rgdEnhanced,
-      namespace: this.namespace,
-      deployer: deployer,
-      options: {
-        waitForReady: true,
-        timeout: DEFAULT_RGD_TIMEOUT, // RGD should be ready quickly
-      },
-    });
+      // Register CRD instance type dynamically
+      // Cast required: crdInstanceManifest is a plain KubernetesResource, but alchemy functions
+      // expect Enhanced<unknown, unknown>. They only access kind/metadata.name for type inference.
+      const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
+      const CRDInstanceProvider = bridge.ensureResourceTypeRegistered(crdAsEnhanced);
+      const instanceId = bridge.createAlchemyResourceId(crdAsEnhanced, this.namespace);
 
-    // 2. Create instance via alchemy (once per deploy call)
-    const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
-    const crdInstanceManifest = this.createCustomResourceInstance(instanceName, spec);
+      await CRDInstanceProvider(instanceId, {
+        resource: crdAsEnhanced,
+        namespace: this.namespace,
+        deployer: deployer,
+        options: {
+          waitForReady: this.factoryOptions.waitForReady ?? true,
+          timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
+        },
+      });
 
-    // Register CRD instance type dynamically
-    // Cast required: crdInstanceManifest is a plain KubernetesResource, but alchemy functions
-    // expect Enhanced<unknown, unknown>. They only access kind/metadata.name for type inference.
-    const crdAsEnhanced = crdInstanceManifest as unknown as Enhanced<unknown, unknown>;
-    const CRDInstanceProvider = bridge.ensureResourceTypeRegistered(crdAsEnhanced);
-    const instanceId = bridge.createAlchemyResourceId(crdAsEnhanced, this.namespace);
-
-    await CRDInstanceProvider(instanceId, {
-      resource: crdAsEnhanced,
-      namespace: this.namespace,
-      deployer: deployer,
-      options: {
-        waitForReady: this.factoryOptions.waitForReady ?? true,
-        timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
-      },
-    });
-
-    // Create Enhanced proxy for the deployed instance
-    return await this.createEnhancedProxy(spec, instanceName);
+      // Create Enhanced proxy for the deployed instance
+      return await this.createEnhancedProxy(spec, instanceName);
+    } finally {
+      await kroEngine.dispose();
+    }
   }
 
   /**

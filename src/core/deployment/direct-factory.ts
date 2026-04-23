@@ -26,6 +26,7 @@ import {
 import type { KubernetesClientProvider } from '../kubernetes/client-provider.js';
 import { getComponentLogger } from '../logging/index.js';
 import { copyResourceMetadata, getMetadataField, getResourceId, setResourceId } from '../metadata/index.js';
+import { logHandleSnapshot } from './handle-tracing.js';
 import type {
   DeploymentClosure,
   DeploymentError,
@@ -74,7 +75,7 @@ export class DirectResourceFactoryImpl<
   private readonly schemaDefinition: SchemaDefinition<TSpec, TStatus>;
   // biome-ignore lint/suspicious/noExplicitAny: status builders accept composition-specific resource maps that cannot be expressed more tightly here.
   private readonly statusBuilder: StatusBuilder<TSpec, TStatus, any> | undefined;
-  private deploymentEngine?: DirectDeploymentEngine;
+  private deploymentEngine: DirectDeploymentEngine | undefined;
   private readonly alchemyScope: Scope | undefined;
   private readonly factoryOptions: FactoryOptions;
   private readonly singletonDefinitions: SingletonDefinitionRecord[];
@@ -108,6 +109,31 @@ export class DirectResourceFactoryImpl<
    */
   private getClientProvider(): KubernetesClientProvider {
     return this.clientManager.getClientProvider();
+  }
+
+  private getDebugState(): Record<string, unknown> {
+    return {
+      mode: this.mode,
+      namespace: this.namespace,
+      deployedInstances: this.deployedInstances.size,
+      hasDeploymentEngine: !!this.deploymentEngine,
+      clientManager: this.clientManager.getDebugState(),
+      deploymentEngine: this.deploymentEngine?.getDebugState(),
+    };
+  }
+
+  async dispose(): Promise<void> {
+    logHandleSnapshot(this.logger, 'direct-factory.dispose.before', {
+      factoryState: this.getDebugState(),
+    });
+    if (this.deploymentEngine) {
+      await this.deploymentEngine.dispose();
+      this.deploymentEngine = undefined;
+    }
+    this.clientManager.dispose();
+    logHandleSnapshot(this.logger, 'direct-factory.dispose.after', {
+      factoryState: this.getDebugState(),
+    });
   }
 
   /**

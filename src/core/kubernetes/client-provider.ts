@@ -50,6 +50,15 @@ import {
   isBunRuntime,
 } from './bun-api-client.js';
 
+export interface KubernetesClientProviderDebugState {
+  initialized: boolean;
+  hasKubeConfig: boolean;
+  hasKubernetesApi: boolean;
+  clientCacheKeys: string[];
+  currentContext?: string | undefined;
+  server?: string | undefined;
+}
+
 /**
  * Retry configuration options for operations with exponential backoff
  */
@@ -992,6 +1001,32 @@ export class KubernetesClientProvider {
    */
   isInitialized(): boolean {
     return this.initialized && this.kubeConfig !== null && this.k8sApi !== null;
+  }
+
+  getDebugState(): KubernetesClientProviderDebugState {
+    const state: KubernetesClientProviderDebugState = {
+      initialized: this.initialized,
+      hasKubeConfig: this.kubeConfig !== null,
+      hasKubernetesApi: this.k8sApi !== null,
+      clientCacheKeys: [...this.clientCache.keys()],
+    };
+
+    if (this.kubeConfig?.getCurrentContext()) {
+      state.currentContext = this.kubeConfig.getCurrentContext();
+    }
+
+    if (this.kubeConfig?.getCurrentCluster()?.server) {
+      state.server = this.kubeConfig.getCurrentCluster()?.server;
+    }
+
+    return state;
+  }
+
+  dispose(): void {
+    this.logger.debug('Disposing Kubernetes client provider', {
+      providerState: this.getDebugState(),
+    });
+    this.reset();
   }
 
   /**

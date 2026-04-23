@@ -7,6 +7,9 @@ function sanitizeSingletonResourceId(id: string): string {
   const sanitized = id.replace(/[^a-zA-Z0-9]+(.)?/g, (_match, ch?: string) =>
     ch ? ch.toUpperCase() : ''
   );
+  if (!sanitized) {
+    return 'Id';
+  }
   return sanitized.charAt(0).toUpperCase() + sanitized.slice(1);
 }
 
@@ -16,6 +19,10 @@ function shortDeterministicSuffix(input: string): string {
     hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
   }
   return hash.toString(36);
+}
+
+function buildSingletonYamlResourceId(prefix: string, rawValue: string): string {
+  return `${prefix}${sanitizeSingletonResourceId(rawValue)}${shortDeterministicSuffix(rawValue)}`;
 }
 
 export function materializeSingletonOwnerResourcesForKroYaml(
@@ -29,7 +36,10 @@ export function materializeSingletonOwnerResourcesForKroYaml(
 
   for (const definition of singletonDefinitions) {
     if (!emittedNamespaces.has(definition.registryNamespace)) {
-      const namespaceId = `singletonNamespace${sanitizeSingletonResourceId(definition.registryNamespace)}`;
+      const namespaceId = buildSingletonYamlResourceId(
+        'singletonNamespace',
+        definition.registryNamespace
+      );
       if (!(namespaceId in resourcesWithKeys)) {
         resourcesWithKeys[namespaceId] = createResource(
           {
@@ -57,7 +67,7 @@ export function materializeSingletonOwnerResourcesForKroYaml(
     );
     const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
     const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'Unknown');
-    const ownerId = `singletonOwner${shortDeterministicSuffix(definition.key)}`;
+    const ownerId = buildSingletonYamlResourceId('singletonOwner', definition.key);
 
     if (!(ownerId in resourcesWithKeys)) {
       resourcesWithKeys[ownerId] = createResource(

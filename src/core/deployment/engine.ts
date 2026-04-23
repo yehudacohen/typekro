@@ -47,6 +47,7 @@ import { CRDManager } from './crd-manager.js';
 import { createDebugLoggerFromDeploymentOptions, type DebugLogger } from './debug-logger.js';
 import { discoverDeployedResourcesByInstance } from './deployment-state-discovery.js';
 import { createEventMonitor, type EventMonitor } from './event-monitor.js';
+import { logHandleSnapshot } from './handle-tracing.js';
 import { getEffectiveScopes, scopesMatchFilter } from './resource-tagging.js';
 import { ResourceReadinessChecker } from './readiness.js';
 import { ReadinessWaiter } from './readiness-waiter.js';
@@ -80,7 +81,7 @@ export class DirectDeploymentEngine {
   private rollbackManager: ResourceRollbackManager;
   private readinessWaiter: ReadinessWaiter;
   private debugLogger?: DebugLogger;
-  private eventMonitor?: EventMonitor;
+  private eventMonitor: EventMonitor | undefined;
   private deploymentState: Map<string, DeploymentStateRecord> = new Map();
   private crdManager: CRDManager;
   private readyResources: Set<string> = new Set(); // Track resources that are already ready
@@ -242,6 +243,36 @@ export class DirectDeploymentEngine {
    */
   public getKubernetesApi(): k8s.KubernetesObjectApi {
     return this.k8sApi;
+  }
+
+  public getDebugState(): Record<string, unknown> {
+    return {
+      deploymentMode: this.deploymentMode,
+      deploymentStateCount: this.deploymentState.size,
+      readyResourcesCount: this.readyResources.size,
+      activeAbortControllers: this.activeAbortControllers.size,
+      eventMonitor: this.eventMonitor?.getDebugState(),
+    };
+  }
+
+  public async dispose(): Promise<void> {
+    logHandleSnapshot(this.logger, 'deployment-engine.dispose.before', {
+      engineState: this.getDebugState(),
+    });
+
+    this.abortAllOperations();
+
+    if (this.eventMonitor) {
+      await this.eventMonitor.dispose();
+      this.eventMonitor = undefined;
+    }
+
+    this.deploymentState.clear();
+    this.readyResources.clear();
+
+    logHandleSnapshot(this.logger, 'deployment-engine.dispose.after', {
+      engineState: this.getDebugState(),
+    });
   }
 
   /**

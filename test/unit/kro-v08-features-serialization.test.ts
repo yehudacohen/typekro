@@ -23,6 +23,8 @@
 import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
+import { materializeSingletonOwnerResourcesForKroYaml } from '../../src/core/serialization/singleton-owner-yaml.js';
+import type { SingletonDefinitionRecord } from '../../src/core/types/deployment.js';
 import { ConfigMap, Deployment, Ingress, Service } from '../../src/factories/simple/index.js';
 import { Cel, externalRef, kubernetesComposition, singleton } from '../../src/index.js';
 
@@ -1922,6 +1924,59 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         'SharedBootstrapA:stable-id',
         'SharedBootstrapB:stable-id',
       ]);
+    });
+
+    it('emits distinct singleton boundary resource ids when sanitized keys would otherwise collide', () => {
+      const resourcesWithKeys: Record<string, ParsedRgdResource['template']> = {};
+      const singletonDefinitions = [
+        {
+          id: 'stable/id',
+          key: 'platform.typekro.test/v1alpha1|SharedPunctuationA|shared.ns-a|stable/id',
+          specFingerprint: 'fingerprint-a',
+          registryNamespace: 'shared.ns-a',
+          composition: {
+            _definition: {
+              apiVersion: 'platform.typekro.test/v1alpha1',
+              kind: 'SharedPunctuationA',
+            },
+          },
+          spec: { name: 'alpha' },
+        },
+        {
+          id: 'stable-id',
+          key: 'platform.typekro.test/v1alpha1|SharedPunctuationB|shared-ns-a|stable-id',
+          specFingerprint: 'fingerprint-b',
+          registryNamespace: 'shared-ns-a',
+          composition: {
+            _definition: {
+              apiVersion: 'platform.typekro.test/v1alpha1',
+              kind: 'SharedPunctuationB',
+            },
+          },
+          spec: { name: 'beta' },
+        },
+      ] satisfies SingletonDefinitionRecord[];
+
+      materializeSingletonOwnerResourcesForKroYaml(resourcesWithKeys, singletonDefinitions);
+
+      const resourceIds = Object.keys(resourcesWithKeys).sort();
+      const ownerIds = resourceIds.filter((id) => id.startsWith('singletonOwner'));
+      const namespaceIds = resourceIds.filter((id) => id.startsWith('singletonNamespace'));
+
+      expect(ownerIds).toHaveLength(2);
+      expect(new Set(ownerIds).size).toBe(2);
+      expect(namespaceIds).toHaveLength(2);
+      expect(new Set(namespaceIds).size).toBe(2);
+
+      const namespaceNames = namespaceIds
+        .map((id) => resourcesWithKeys[id]?.metadata?.name)
+        .sort();
+      expect(namespaceNames).toEqual(['shared-ns-a', 'shared.ns-a']);
+
+      const ownerKinds = ownerIds
+        .map((id) => resourcesWithKeys[id]?.kind)
+        .sort();
+      expect(ownerKinds).toEqual(['SharedPunctuationA', 'SharedPunctuationB']);
     });
   });
 

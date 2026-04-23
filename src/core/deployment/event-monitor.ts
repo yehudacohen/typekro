@@ -64,6 +64,16 @@ export interface EventMonitoringOptions {
   reconnectJitter?: number;
 }
 
+export interface EventMonitorDebugState {
+  isMonitoring: boolean;
+  watchConnections: number;
+  monitoredResources: number;
+  resourceRelationships: number;
+  childDiscoveryInProgress: number;
+  childDiscoveryTimeouts: number;
+  eventsProcessed: number;
+}
+
 /**
  * Resource identifier for event filtering
  */
@@ -272,6 +282,22 @@ export class EventMonitor {
 
     // Reset counter for next monitoring session
     this.eventsProcessed = 0;
+  }
+
+  getDebugState(): EventMonitorDebugState {
+    return {
+      isMonitoring: this.isMonitoring,
+      watchConnections: this.watchConnections.size,
+      monitoredResources: this.monitoredResources.size,
+      resourceRelationships: this.resourceRelationships.size,
+      childDiscoveryInProgress: this.childDiscoveryInProgress.size,
+      childDiscoveryTimeouts: this.childDiscoveryTimeouts.size,
+      eventsProcessed: this.eventsProcessed,
+    };
+  }
+
+  async dispose(): Promise<void> {
+    await this.stopMonitoring();
   }
 
   /**
