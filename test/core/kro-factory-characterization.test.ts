@@ -864,6 +864,7 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     }
 
     const deployCalls: Array<{ spec: OwnerSpec; opts?: Record<string, unknown> | undefined }> = [];
+    const disposeCalls: string[] = [];
     const fakeComposition = {
       factory(mode: 'direct' | 'kro', options?: Record<string, unknown>) {
         expect(mode).toBe('kro');
@@ -876,6 +877,9 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
           async deploy(spec: OwnerSpec, opts?: Record<string, unknown>) {
             deployCalls.push({ spec, ...(opts ? { opts } : {}) });
             return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+          },
+          async dispose() {
+            disposeCalls.push('disposed');
           },
         };
       },
@@ -906,5 +910,49 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     expect(deployCalls).toHaveLength(1);
     expect(deployCalls[0]?.spec).toEqual({ name: 'user-facing-name' });
     expect(deployCalls[0]?.opts?.instanceNameOverride).toBe('stable-singleton-id');
+    expect(disposeCalls).toEqual(['disposed']);
+  });
+
+  it('fails fast when a reused singleton owner has drifted spec', async () => {
+    const fakeComposition = {
+      factory() {
+        return {
+          async getInstances() {
+            return [
+              {
+                metadata: { name: 'stable-singleton-id' },
+                spec: { name: 'old-name' },
+              },
+            ];
+          },
+          async deploy() {
+            throw new Error('should not deploy drifted singleton');
+          },
+          async dispose() {},
+        };
+      },
+    };
+
+    const factory = makeFactory('singleton-kro-drift', {
+      namespace: 'default',
+      singletonDefinitions: [
+        {
+          id: 'stable-singleton-id',
+          key: 'SingletonBootstrap:stable-singleton-id',
+          specFingerprint: JSON.stringify({ name: 'new-name' }),
+          registryNamespace: 'shared-system',
+          composition: fakeComposition,
+          spec: { name: 'new-name' },
+        },
+      ],
+    });
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: TestSpec
+    ) => Promise<void>;
+
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+
+    await expect(ensureSingletonOwners({ name: 'consumer', replicas: 1 })).rejects.toThrow(/Singleton config drift detected/);
   });
 });

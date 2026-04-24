@@ -52,6 +52,7 @@ import { ResourceReadinessChecker } from './readiness.js';
 import { createRollbackManagerWithKubeConfig } from './rollback-manager.js';
 import { generateInstanceName, getSingletonInstanceName } from './shared-utilities.js';
 import { AlchemyDeploymentStrategy, DirectDeploymentStrategy } from './strategies/index.js';
+import { stableSerialize } from '../singleton/singleton.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
 
 /**
@@ -1566,6 +1567,7 @@ export class DirectResourceFactoryImpl<
     for (const definition of discoveredSingletons.values()) {
       await this.ensureTargetNamespace(definition.registryNamespace);
 
+      const singletonInstanceName = getSingletonInstanceName(definition.id);
       const singletonFactory = definition.composition.factory('direct', {
         namespace: definition.registryNamespace,
         waitForReady: true,
@@ -1574,17 +1576,32 @@ export class DirectResourceFactoryImpl<
         ...(this.factoryOptions.skipTLSVerify !== undefined ? { skipTLSVerify: this.factoryOptions.skipTLSVerify } : {}),
       }) as DirectResourceFactory<KroCompatibleType, KroCompatibleType>;
 
-      const singletonInstanceName = getSingletonInstanceName(definition.id);
       try {
-        const existingInstances = await singletonFactory.getInstances();
-        if (existingInstances.some((instance) => instance.metadata?.name === singletonInstanceName)) {
+        let existingInstance: (Enhanced<unknown, unknown> & { spec?: unknown }) | undefined;
+        try {
+          const existingInstances = await singletonFactory.getInstances();
+          existingInstance = existingInstances.find((instance) => instance.metadata?.name === singletonInstanceName) as
+            | (Enhanced<unknown, unknown> & { spec?: unknown })
+            | undefined;
+        } catch {
+          // Best-effort reuse only; deploy below will create the owner if needed.
+        }
+
+        if (existingInstance) {
+          const existingFingerprint = stableSerialize(existingInstance.spec);
+          if (existingFingerprint !== definition.specFingerprint) {
+            throw new Error(
+              `Singleton config drift detected for ${definition.key}. ` +
+              'An existing singleton owner boundary has a different deployed spec.'
+            );
+          }
           continue;
         }
-      } catch {
-        // Best-effort reuse only; deploy below will create the owner if needed.
-      }
 
-      await singletonFactory.deploy(definition.spec, { instanceNameOverride: singletonInstanceName });
+        await singletonFactory.deploy(definition.spec, { instanceNameOverride: singletonInstanceName });
+      } finally {
+        await singletonFactory.dispose?.();
+      }
     }
   }
 }

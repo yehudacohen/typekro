@@ -141,13 +141,28 @@ export function synthesizeNestedCompositionStatus(
       continue;
     }
 
+    const snapshotIndicatesFailure = snapshotFailed === true || snapshotPhase === 'Failed';
+
     // All resources in liveStatusMap passed waitForReady, so if we found
-    // children, the parent is ready.
+    // children, the parent is ready unless the preserved nested snapshot
+    // already recorded a failure state we must not mask.
     const synthesizedStatus: Record<string, unknown> = {
       ...(isPlainObject(filteredSnapshot) ? filteredSnapshot : {}),
-      ready: childCount > 0 ? true : typeof snapshotReady === 'boolean' ? snapshotReady : false,
-      phase: childCount > 0 ? 'Ready' : typeof snapshotPhase === 'string' ? snapshotPhase : 'Installing',
-      failed: childCount > 0 ? false : typeof snapshotFailed === 'boolean' ? snapshotFailed : false,
+      ready: childCount > 0
+        ? snapshotIndicatesFailure
+          ? (typeof snapshotReady === 'boolean' ? snapshotReady : false)
+          : true
+        : typeof snapshotReady === 'boolean' ? snapshotReady : false,
+      phase: childCount > 0
+        ? snapshotIndicatesFailure
+          ? (typeof snapshotPhase === 'string' ? snapshotPhase : 'Failed')
+          : 'Ready'
+        : typeof snapshotPhase === 'string' ? snapshotPhase : 'Installing',
+      failed: childCount > 0
+        ? snapshotIndicatesFailure
+          ? true
+          : false
+        : typeof snapshotFailed === 'boolean' ? snapshotFailed : false,
     };
 
     // Add under the full parent ID

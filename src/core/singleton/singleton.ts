@@ -43,7 +43,7 @@ function getSingletonRegistryForComposition<TSpec extends KroCompatibleType, TSt
   return registry;
 }
 
-function stableSerialize(value: unknown): string {
+export function stableSerialize(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
   }

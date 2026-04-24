@@ -31,6 +31,7 @@ import { generateKroSchemaFromArktype } from '../serialization/schema.js';
 import { applyTernaryConditionalsToResources } from '../serialization/kro-post-processing.js';
 import { serializeResourceGraphToYaml } from '../serialization/yaml.js';
 import { logHandleSnapshot } from './handle-tracing.js';
+import { stableSerialize } from '../singleton/singleton.js';
 import type { CelExpression, KubernetesRef } from '../types/common.js';
 import type {
   AlchemyBridge,
@@ -476,6 +477,7 @@ export class KroResourceFactoryImpl<
     for (const definition of singletonRecords.values()) {
       await this.ensureTargetNamespace(definition.registryNamespace);
 
+      const singletonInstanceName = getSingletonInstanceName(definition.id);
       const singletonFactory = definition.composition.factory('kro', {
         namespace: definition.registryNamespace,
         waitForReady: true,
@@ -484,10 +486,25 @@ export class KroResourceFactoryImpl<
         ...(this.factoryOptions.skipTLSVerify !== undefined ? { skipTLSVerify: this.factoryOptions.skipTLSVerify } : {}),
       }) as KroResourceFactory<KroCompatibleType, KroCompatibleType>;
 
-      const singletonInstanceName = getSingletonInstanceName(definition.id);
       try {
-        const existingInstances = await singletonFactory.getInstances();
-        if (existingInstances.some((instance: Enhanced<unknown, unknown>) => instance.metadata?.name === singletonInstanceName)) {
+        let existingInstance: (Enhanced<unknown, unknown> & { spec?: unknown }) | undefined;
+        try {
+          const existingInstances = await singletonFactory.getInstances();
+          existingInstance = existingInstances.find((instance: Enhanced<unknown, unknown>) => instance.metadata?.name === singletonInstanceName) as
+            | (Enhanced<unknown, unknown> & { spec?: unknown })
+            | undefined;
+        } catch {
+          // Singleton CRD may not exist yet — deployment below will create it.
+        }
+
+        if (existingInstance) {
+          const existingFingerprint = stableSerialize(existingInstance.spec);
+          if (existingFingerprint !== definition.specFingerprint) {
+            throw new Error(
+              `Singleton config drift detected for ${definition.key}. ` +
+              'An existing singleton owner boundary has a different deployed spec.'
+            );
+          }
           this.logger.info('Reusing existing singleton owner boundary', {
             singletonId: definition.id,
             singletonKey: definition.key,
@@ -495,19 +512,19 @@ export class KroResourceFactoryImpl<
           });
           continue;
         }
-      } catch {
-        // Singleton CRD may not exist yet — deployment below will create it.
+
+        this.logger.info('Ensuring singleton owner boundary', {
+          singletonId: definition.id,
+          singletonKey: definition.key,
+          registryNamespace: definition.registryNamespace,
+        });
+
+        await singletonFactory.deploy(definition.spec as TSpec, {
+          instanceNameOverride: singletonInstanceName,
+        });
+      } finally {
+        await singletonFactory.dispose?.();
       }
-
-      this.logger.info('Ensuring singleton owner boundary', {
-        singletonId: definition.id,
-        singletonKey: definition.key,
-        registryNamespace: definition.registryNamespace,
-      });
-
-      await singletonFactory.deploy(definition.spec as TSpec, {
-        instanceNameOverride: singletonInstanceName,
-      });
     }
   }
 

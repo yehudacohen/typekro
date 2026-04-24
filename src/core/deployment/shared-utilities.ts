@@ -88,7 +88,35 @@ export function generateInstanceName<TSpec>(spec: TSpec, fallbackPrefix = 'insta
  * the singleton spec contains a user-facing `name` field with a different value.
  */
 export function getSingletonInstanceName(id: string): string {
-  return id;
+  if (!id || typeof id !== 'string') {
+    throw new ValidationError(
+      `Invalid singleton id: ${JSON.stringify(id)}. Singleton ids must be non-empty strings.`,
+      'Singleton',
+      String(id),
+      'id',
+      ['Provide a non-empty singleton id']
+    );
+  }
+
+  const normalized = id
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[^a-zA-Z0-9-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+
+  if (!normalized) {
+    throw new ValidationError(
+      `Invalid singleton id: ${JSON.stringify(id)}. Singleton ids must contain at least one alphanumeric character.`,
+      'Singleton',
+      id,
+      'id',
+      ['Use letters or numbers in the singleton id']
+    );
+  }
+
+  return convertToKubernetesName(normalized);
 }
 
 /**

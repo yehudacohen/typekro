@@ -203,6 +203,38 @@ describe('synthesizeNestedCompositionStatus', () => {
     });
   });
 
+  it('does not overwrite a preserved failed snapshot just because live children exist', () => {
+    const probeResources = mockResources([
+      'inner1ChildA',
+    ]);
+
+    const liveStatusMap = new Map<string, Record<string, unknown>>([
+      ['inner1ChildA', { ready: true }],
+    ]);
+
+    const enriched = synthesizeNestedCompositionStatus(
+      probeResources,
+      liveStatusMap,
+      logger,
+      new Set(['inner1']),
+      new Map([
+        ['inner1', {
+          ready: false,
+          phase: 'Failed',
+          failed: true,
+          message: 'inner failed before snapshot recovery',
+        }],
+      ])
+    );
+
+    expect(enriched.get('inner1')).toEqual({
+      ready: false,
+      phase: 'Failed',
+      failed: true,
+      message: 'inner failed before snapshot recovery',
+    });
+  });
+
   it('should handle multiple nested compositions', () => {
     const probeResources = mockResources([
       'inngest1HelmRelease',

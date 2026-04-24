@@ -21,6 +21,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import type { DirectResourceFactoryImpl } from '../../src/core/deployment/direct-factory.js';
 import { createDirectResourceFactory } from '../../src/core/deployment/direct-factory.js';
+import { getSingletonInstanceName } from '../../src/core/deployment/shared-utilities.js';
 import { getResourceId } from '../../src/core/metadata/index.js';
 import { Cel, simple, toResourceGraph } from '../../src/index.js';
 import type { SchemaDefinition, KroCompatibleType } from '../../src/core/types/serialization.js';
@@ -184,6 +185,7 @@ describe('DirectFactory: singleton owner boundaries', () => {
     };
 
     const deployCalls: Array<{ spec: OwnerSpec; opts?: Record<string, unknown> | undefined }> = [];
+    const disposeCalls: string[] = [];
     const fakeComposition = {
       factory(mode: 'direct' | 'kro', options?: Record<string, unknown>) {
         expect(mode).toBe('direct');
@@ -196,6 +198,9 @@ describe('DirectFactory: singleton owner boundaries', () => {
           async deploy(spec: OwnerSpec, opts?: Record<string, unknown>) {
             deployCalls.push({ spec, ...(opts ? { opts } : {}) });
             return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+          },
+          async dispose() {
+            disposeCalls.push('disposed');
           },
         };
       },
@@ -239,6 +244,68 @@ describe('DirectFactory: singleton owner boundaries', () => {
     expect(deployCalls).toHaveLength(1);
     expect(deployCalls[0]?.spec).toEqual({ name: 'user-facing-name' });
     expect(deployCalls[0]?.opts?.instanceNameOverride).toBe('stable-singleton-id');
+    expect(disposeCalls).toEqual(['disposed']);
+  });
+
+  it('sanitizes singleton instance names to valid Kubernetes names', async () => {
+    expect(getSingletonInstanceName('platformOperator')).toBe('platform-operator');
+    expect(getSingletonInstanceName('platform_operator')).toBe('platform-operator');
+  });
+
+  it('fails fast when an in-memory singleton owner has drifted spec', async () => {
+    const fakeComposition = {
+      factory() {
+        return {
+          async getInstances() {
+            return [
+              {
+                metadata: { name: 'stable-singleton-id' },
+                spec: { name: 'old-name' },
+              },
+            ];
+          },
+          async deploy() {
+            throw new Error('should not deploy drifted singleton');
+          },
+          async dispose() {},
+        };
+      },
+    };
+
+    const schema: SchemaDefinition<{ name: string }, { ready: boolean }> = {
+      apiVersion: 'v1alpha1',
+      kind: 'SingletonConsumer',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+    };
+
+    const factory = createDirectResourceFactory(
+      'singleton-consumer',
+      {},
+      schema,
+      undefined,
+      {
+        namespace: 'default',
+        singletonDefinitions: [
+          {
+            id: 'stable-singleton-id',
+            key: 'SingletonBootstrap:stable-singleton-id',
+            specFingerprint: JSON.stringify({ name: 'new-name' }),
+            registryNamespace: 'shared-system',
+            composition: fakeComposition as never,
+            spec: { name: 'new-name' },
+          } satisfies SingletonDefinitionRecord,
+        ],
+      }
+    ) as unknown as DirectResourceFactoryImpl<{ name: string }, { ready: boolean }>;
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: { name: string }
+    ) => Promise<void>;
+
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+
+    await expect(ensureSingletonOwners({ name: 'consumer' })).rejects.toThrow(/Singleton config drift detected/);
   });
 });
 
