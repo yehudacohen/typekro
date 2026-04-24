@@ -370,14 +370,7 @@ export class ResourceRollbackManager {
       if (resource.status === 'failed') continue;
 
       try {
-        await this.k8sApi.delete({
-          apiVersion: resource.manifest.apiVersion || '',
-          kind: resource.kind,
-          metadata: {
-            name: resource.name,
-            namespace: resource.namespace,
-          },
-        } as k8s.KubernetesObject);
+        await this.deleteDeployedResource(resource);
 
         rolledBackResources.push(`${resource.kind}/${resource.name}`);
       } catch (error: unknown) {

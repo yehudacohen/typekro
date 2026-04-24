@@ -181,8 +181,8 @@ export function remapVariableNames(
   innerResourceIds: string[],
   preserveVariables?: ReadonlySet<string>
 ): string {
-  return exprStr.replace(/\b(\w+)\.(metadata|status|spec)\./g, (match, id, section) => {
-    if (innerResourceIds.includes(id) || id === 'schema') return match;
+  const remapResourceId = (id: string): string | undefined => {
+    if (innerResourceIds.includes(id) || id === 'schema') return id;
 
     const lower = id.toLowerCase();
     const normalizedLower = lower.replace(/^_+/, '');
@@ -192,15 +192,15 @@ export function remapVariableNames(
       const candidate = r.toLowerCase();
       return candidate === lower || candidate === normalizedLower;
     });
-    if (exactLower) return `${exactLower}.${section}.`;
+    if (exactLower) return exactLower;
 
-    if (preserveVariables?.has(id)) return match;
+    if (preserveVariables?.has(id)) return undefined;
 
     // 2. Single resource — only treat minified/local shorthand names as
     // unambiguous. Named variables like `inner` or `inngest` may refer to
     // nested composition handles rather than the sole concrete resource.
     if (innerResourceIds.length === 1) {
-      return `${innerResourceIds[0]}.${section}.`;
+      return innerResourceIds[0];
     }
 
     // 3. Prefix match at camelCase boundary — must be unambiguous
@@ -211,7 +211,7 @@ export function remapVariableNames(
         /[A-Z_-]/.test(r[normalizedLower.length] ?? r[lower.length] ?? '')
       )
     );
-    if (prefixMatches.length === 1) return `${prefixMatches[0]}.${section}.`;
+    if (prefixMatches.length === 1) return prefixMatches[0];
 
     // 4. Suffix match at camelCase boundary — useful after nested resources
     // are merged into parent ids like `inngestBootstrap1InngestHelmRelease`.
@@ -223,7 +223,7 @@ export function remapVariableNames(
       const boundaryChar = r[boundaryIndex];
       return boundaryIndex <= 0 || (boundaryChar !== undefined && /[A-Z_-]/.test(boundaryChar));
     });
-    if (suffixMatches.length === 1) return `${suffixMatches[0]}.${section}.`;
+    if (suffixMatches.length === 1) return suffixMatches[0];
 
     // No match or ambiguous
     if (prefixMatches.length > 1 || suffixMatches.length > 1) {
@@ -239,7 +239,17 @@ export function remapVariableNames(
         expression: exprStr.slice(0, 80),
       });
     }
-    return match;
+    return undefined;
+  };
+
+  const dottedRemapped = exprStr.replace(/\b(\w+)\.(metadata|status|spec)\./g, (match, id, section) => {
+    const remapped = remapResourceId(id);
+    return remapped ? `${remapped}.${section}.` : match;
+  });
+
+  return dottedRemapped.replace(/__KUBERNETES_REF_([^_]+)_([a-zA-Z0-9.$]+)__/g, (match, id, fieldPath) => {
+    const remapped = remapResourceId(id);
+    return remapped ? `__KUBERNETES_REF_${remapped}_${fieldPath}__` : match;
   });
 }
 
@@ -298,7 +308,22 @@ export function buildNestedCompositionAliasTargets(
     stemToBaseIds.set(stem, baseIds);
   }
 
-  const factoryMatchIndex = new Map<string, number>();
+  const extractFactoryStem = (calleeExpression: string): string | undefined => {
+    const match = calleeExpression.match(/([a-zA-Z_$][\w$]*)\s*$/);
+    return match?.[1];
+  };
+
+  const factoryCallPositions = new Map<string, number[]>();
+  const callPattern = /((?:[a-zA-Z_$][\w$]*)(?:\s*(?:\?|)\.\s*[a-zA-Z_$][\w$]*)*)\s*\(/g;
+  for (const match of compositionFnSource.matchAll(callPattern)) {
+    const calleeExpression = match[1];
+    if (!calleeExpression) continue;
+    const factoryStem = extractFactoryStem(calleeExpression);
+    if (!factoryStem || !stemToBaseIds.has(factoryStem)) continue;
+    const positions = factoryCallPositions.get(factoryStem) ?? [];
+    positions.push(match.index ?? 0);
+    factoryCallPositions.set(factoryStem, positions);
+  }
 
   // Find variable assignments. Match three forms:
   //  1. `const|let|var <varName> = <factoryName>(`
@@ -310,11 +335,13 @@ export function buildNestedCompositionAliasTargets(
   //
   // Filter `.foo = bar()` shapes by requiring the LHS to be a bare
   // identifier with no preceding `.` or `?.`.
-  const assignPattern = /(?:(?:^|[;{(]|\bconst\b|\blet\b|\bvar\b|,)\s*)([a-zA-Z_$][\w$]*)\s*=\s*([a-zA-Z_$][\w$]*)\s*\(/g;
+  const assignPattern = /(?:(?:^|[;{(]|\bconst\b|\blet\b|\bvar\b|,)\s*)([a-zA-Z_$][\w$]*)\s*=\s*((?:[a-zA-Z_$][\w$]*)(?:\s*(?:\?|)\.\s*[a-zA-Z_$][\w$]*)*)\s*\(/g;
   for (const m of compositionFnSource.matchAll(assignPattern)) {
       const varName = m[1];
       const factoryName = m[2];
       if (!varName || !factoryName) continue;
+      const factoryStem = extractFactoryStem(factoryName);
+      if (!factoryStem) continue;
     // Defensive: skip if the LHS is preceded by a `.` (would mean it's
     // a property assignment like `obj.field = factory()`). The regex
     // above doesn't allow this directly, but the boundary character
@@ -327,14 +354,23 @@ export function buildNestedCompositionAliasTargets(
     // resolution will take precedence and we don't want to shadow it.
     if (nestedCompositionIds.has(varName)) continue;
 
-    const matchingBaseIds = stemToBaseIds.get(factoryName);
+    const matchingBaseIds = stemToBaseIds.get(factoryStem);
     if (!matchingBaseIds || matchingBaseIds.length === 0) continue;
 
-    const nextIndex = factoryMatchIndex.get(factoryName) ?? 0;
-    const baseId = matchingBaseIds[nextIndex] ?? matchingBaseIds.at(-1);
-    if (!baseId) continue;
+    const assignmentOffsetInMatch = m[0].indexOf(factoryName);
+    const callPosition = (m.index ?? 0) + Math.max(0, assignmentOffsetInMatch);
+    const allCallPositions = factoryCallPositions.get(factoryStem) ?? [];
+    const callOrdinal = Math.max(
+      0,
+      allCallPositions.findIndex((position) => position === callPosition),
+    );
 
-    factoryMatchIndex.set(factoryName, nextIndex + 1);
+    const effectiveIndex = allCallPositions.includes(callPosition)
+      ? callOrdinal
+      : allCallPositions.filter((position) => position < callPosition).length;
+
+    const baseId = matchingBaseIds[effectiveIndex] ?? matchingBaseIds.at(-1);
+    if (!baseId) continue;
 
     aliasTargets[varName] = baseId;
   }
@@ -410,7 +446,7 @@ export function recoverGarbledExpression(
     return exprStr; // Not garbled
   }
 
-  const statusMatches = [...exprStr.matchAll(/(\w+)?\.status\.(\w+)/g)];
+  const statusMatches = [...exprStr.matchAll(/(\w+)?\.status\.([a-zA-Z0-9_.]+)/g)];
   if (statusMatches.length === 0 || innerResourceIds.length === 0) {
     logger.warn('Garbled expression with no recoverable status reference', {
       expression: exprStr.slice(0, 100),
@@ -420,7 +456,7 @@ export function recoverGarbledExpression(
 
   const firstStatusMatch = statusMatches[0];
   if (!firstStatusMatch) return exprStr;
-  const [, varName, statusField] = firstStatusMatch;
+  const [, varName, statusFieldPath] = firstStatusMatch;
   const firstInnerResource = innerResourceIds[0];
   if (!firstInnerResource) return exprStr;
   let targetResource = firstInnerResource;
@@ -440,5 +476,5 @@ export function recoverGarbledExpression(
     }
   }
 
-  return `${targetResource}.status.${statusField}`;
+  return `${targetResource}.status.${statusFieldPath}`;
 }

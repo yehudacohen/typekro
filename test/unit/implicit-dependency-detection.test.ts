@@ -338,6 +338,28 @@ describe('Implicit dependency detection', () => {
       expect(deps).toContain('cacheService');
     });
 
+    it('plain bare hostname env values create dependencies', () => {
+      const cacheService = mockResource({
+        id: 'cacheService',
+        kind: 'Service',
+        name: 'myapp-cache',
+        namespace: 'default',
+      });
+      markDnsAddressable(cacheService);
+
+      const app = mockDeploymentWithEnv({
+        id: 'deploymentApp',
+        name: 'app',
+        namespace: 'default',
+        env: { VALKEY_HOST: 'myapp-cache' },
+      });
+
+      const graph = resolver.buildDependencyGraph([cacheService, app]);
+      const deps = graph.getDependencies('deploymentApp');
+
+      expect(deps).toContain('cacheService');
+    });
+
     it('qualified service host resolves only to the matching namespace resource', () => {
       const dbDefault = mockResource({
         id: 'dbDefault',

@@ -87,17 +87,27 @@ export class ResourceApplier {
         originalMetadata: resource.metadata,
       });
       const resolveTimeout = options.timeout || DEFAULT_READINESS_TIMEOUT;
-      const resolvedResource = (await Promise.race([
-        this.referenceResolver.resolveReferences(resource, context),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Reference resolution timeout')), resolveTimeout)
-        ),
-      ])) as KubernetesResource;
-      resourceLogger.debug('References resolved successfully', {
-        resolvedMetadata: resolvedResource.metadata,
-        hasReadinessEvaluator: !!getReadinessEvaluator(resolvedResource),
-      });
-      return resolvedResource;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const resolvedResource = (await Promise.race([
+          this.referenceResolver.resolveReferences(resource, context),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(
+              () => reject(new Error('Reference resolution timeout')),
+              resolveTimeout
+            );
+          }),
+        ])) as KubernetesResource;
+        resourceLogger.debug('References resolved successfully', {
+          resolvedMetadata: resolvedResource.metadata,
+          hasReadinessEvaluator: !!getReadinessEvaluator(resolvedResource),
+        });
+        return resolvedResource;
+      } finally {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+      }
     } catch (error: unknown) {
       // In Alchemy deployments, resourceKeyMapping is often empty because resources are deployed
       // one at a time. This is expected behavior, so we log at debug level instead of warn.

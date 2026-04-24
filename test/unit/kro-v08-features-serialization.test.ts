@@ -24,6 +24,7 @@ import { describe, expect, it } from 'bun:test';
 import { type } from 'arktype';
 import * as yaml from 'js-yaml';
 import { materializeSingletonOwnerResourcesForKroYaml } from '../../src/core/serialization/singleton-owner-yaml.js';
+import { getSingletonResourceId } from '../../src/core/singleton/singleton.js';
 import type { SingletonDefinitionRecord } from '../../src/core/types/deployment.js';
 import { ConfigMap, Deployment, Ingress, Service } from '../../src/factories/simple/index.js';
 import { Cel, externalRef, kubernetesComposition, singleton } from '../../src/index.js';
@@ -1757,9 +1758,15 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
       const parsed = parseRgdYaml(graph.toYaml());
       const resourceIds = parsed.spec.resources.map((resource) => resource.id);
+      const ownerBoundary = parsed.spec.resources.find(
+        (resource) =>
+          resource.template?.kind === 'SharedBootstrapInlineCheck' &&
+          resource.template?.metadata?.name === 'platform-bootstrap' &&
+          resource.template?.metadata?.namespace === 'typekro-singletons'
+      );
 
       expect(resourceIds).not.toContain('bootstrapApp');
-      expect(parsed.spec.resources.some((resource) => resource.externalRef !== undefined)).toBe(true);
+      expect(ownerBoundary?.id).toBeDefined();
     });
 
     it('singleton(...) emits a self-contained owner boundary and registry namespace in KRO YAML', () => {
@@ -1806,13 +1813,16 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           resource.template?.metadata?.name === 'stable-shared-id' &&
           resource.template?.metadata?.namespace === 'typekro-singletons'
       );
-      const extRefResource = parsed.spec.resources.find((resource) => resource.externalRef?.kind === 'SharedBootstrapOwnerBoundary');
+      const expectedOwnerId = getSingletonResourceId(
+        'platform.typekro.test/v1alpha1/SharedBootstrapOwnerBoundary:shared-bootstrap-owner-boundary#stable-shared-id'
+      );
 
       expect(namespaceResource).toBeDefined();
       expect(ownerBoundary).toBeDefined();
+      expect(ownerBoundary?.id).toBe(expectedOwnerId);
       expect(ownerBoundary?.template?.spec?.name).toContain('shared-human-name');
-      expect(extRefResource?.externalRef?.metadata?.name).toBe('stable-shared-id');
-      expect(extRefResource?.externalRef?.metadata?.namespace).toBe('typekro-singletons');
+      expect(ownerBoundary?.template?.metadata?.name).toBe('stable-shared-id');
+      expect(ownerBoundary?.template?.metadata?.namespace).toBe('typekro-singletons');
     });
 
     it('factory(kro).toYaml() also emits the singleton owner boundary and registry namespace', () => {
@@ -1859,9 +1869,13 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
           resource.template?.metadata?.name === 'stable-shared-id' &&
           resource.template?.metadata?.namespace === 'typekro-singletons'
       );
+      const expectedOwnerId = getSingletonResourceId(
+        'platform.typekro.test/v1alpha1/SharedBootstrapFactoryOwnerBoundary:shared-bootstrap-factory-owner-boundary#stable-shared-id'
+      );
 
       expect(namespaceResource).toBeDefined();
       expect(ownerBoundary).toBeDefined();
+      expect(ownerBoundary?.id).toBe(expectedOwnerId);
     });
 
     it('emits distinct singleton owner resources when different compositions reuse the same id', () => {
@@ -1916,11 +1930,11 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
         .sort();
 
       expect(ownerKinds).toEqual(['SharedBootstrapA', 'SharedBootstrapB']);
-      const extRefs = parsed.spec.resources
-        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.externalRef?.kind))
-        .map((resource) => `${resource.externalRef?.kind}:${resource.externalRef?.metadata?.name}`)
+      const ownerRefs = parsed.spec.resources
+        .filter((resource) => ['SharedBootstrapA', 'SharedBootstrapB'].includes(resource.template?.kind))
+        .map((resource) => `${resource.template?.kind}:${resource.template?.metadata?.name}`)
         .sort();
-      expect(extRefs).toEqual([
+      expect(ownerRefs).toEqual([
         'SharedBootstrapA:stable-id',
         'SharedBootstrapB:stable-id',
       ]);
@@ -1960,11 +1974,12 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
       materializeSingletonOwnerResourcesForKroYaml(resourcesWithKeys, singletonDefinitions);
 
       const resourceIds = Object.keys(resourcesWithKeys).sort();
-      const ownerIds = resourceIds.filter((id) => id.startsWith('singletonOwner'));
+      const ownerIds = singletonDefinitions.map((definition) => getSingletonResourceId(definition.key)).sort();
       const namespaceIds = resourceIds.filter((id) => id.startsWith('singletonNamespace'));
 
       expect(ownerIds).toHaveLength(2);
       expect(new Set(ownerIds).size).toBe(2);
+      expect(ownerIds.every((id) => id in resourcesWithKeys)).toBe(true);
       expect(namespaceIds).toHaveLength(2);
       expect(new Set(namespaceIds).size).toBe(2);
 

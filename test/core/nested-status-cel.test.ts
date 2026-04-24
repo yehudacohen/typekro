@@ -138,6 +138,14 @@ describe('recoverGarbledExpression', () => {
     // So it falls through to innerResources[0]
     expect(result).toBe('inngestHelmRelease.status.conditions');
   });
+
+  it('should recover multi-segment nested status paths without truncation', () => {
+    const result = recoverGarbledExpression(
+      '(() => stack.status.components.app.ready)',
+      ['stackResource']
+    );
+    expect(result).toBe('stackResource.status.components.app.ready');
+  });
 });
 
 describe('extractNestedStatusCel', () => {
@@ -316,6 +324,29 @@ describe('buildNestedCompositionAliases', () => {
     expect(varAliases['__nestedStatus:stack:url']).toBe('http://example');
   });
 
+  it('aliases member-expression factory calls by the callee property name', () => {
+    const source = `function f(spec) { const stack = lib.webAppWithProcessing({ name: spec.name }); return stack.status.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+
+    expect(aliases['__nestedStatus:stack:url']).toBe('http://example');
+    expect(aliases['__nestedStatus:stack:ready']).toBe('app.status.readyReplicas >= 1');
+  });
+
+  it('aliases optional-chaining member-expression factory calls by the callee property name', () => {
+    const source = `function f(spec) { const stack = registry?.webAppWithProcessing({ name: spec.name }); return stack.status.ready; }`;
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['webAppWithProcessing1']),
+      baseEntries
+    );
+
+    expect(aliases['__nestedStatus:stack:url']).toBe('http://example');
+  });
+
   it('maps repeated factory calls deterministically by call order', () => {
     // Repeated calls to the same nested composition are assigned in source
     // order to the corresponding baseIds, which are also tracked in creation
@@ -332,6 +363,21 @@ describe('buildNestedCompositionAliases', () => {
     );
     expect(aliases['__nestedStatus:a:url']).toBe('http://a');
     expect(aliases['__nestedStatus:b:url']).toBe('http://b');
+  });
+
+  it('accounts for earlier unassigned same-factory calls when aliasing later assignments', () => {
+    const source = `(spec) => { wap({}); const later = wap({}); return later.status.url; }`;
+    const entries: Record<string, string> = {
+      '__nestedStatus:wap1:url': 'http://first',
+      '__nestedStatus:wap2:url': 'http://second',
+    };
+    const aliases = buildNestedCompositionAliases(
+      source,
+      new Set(['wap1', 'wap2']),
+      entries
+    );
+
+    expect(aliases['__nestedStatus:later:url']).toBe('http://second');
   });
 
   it('skips when the variable name is already a known baseId', () => {

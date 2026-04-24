@@ -76,8 +76,22 @@ function getSingletonKey<TSpec extends KroCompatibleType, TStatus extends KroCom
   return `${getSingletonFactoryIdentity(composition)}#${id}`;
 }
 
-function getSingletonResourceId(key: string): string {
-  return toCamelCase(`singleton-${key.replaceAll(/[^a-zA-Z0-9]+/g, '-')}`);
+function shortDeterministicSuffix(input: string): string {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36).padStart(7, '0').slice(-7);
+}
+
+export function getSingletonResourceId(key: string): string {
+  const prefix = 'singleton-';
+  const suffix = shortDeterministicSuffix(key);
+  const maxLength = 63;
+  const normalized = key.replaceAll(/[^a-zA-Z0-9]+/g, '-');
+  const maxBaseLength = Math.max(1, maxLength - prefix.length - suffix.length - 1);
+  const truncated = normalized.slice(0, maxBaseLength).replace(/-+$/g, '') || 'id';
+  return toCamelCase(`${prefix}${truncated}-${suffix}`);
 }
 
 function attachSingletonIdentity<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(

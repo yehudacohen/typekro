@@ -465,6 +465,11 @@ export class ExpressionCache {
     this.cleanupTimer = setInterval(() => {
       this.cleanup();
     }, this.options.cleanupIntervalMs);
+
+    // Cache maintenance should never keep short-lived CLI processes alive.
+    // The timer is purely opportunistic housekeeping; callers can still invoke
+    // cleanup() explicitly and the cache is process-local anyway.
+    this.cleanupTimer.unref?.();
   }
 }
 

@@ -1,5 +1,6 @@
 import { getSingletonInstanceName } from '../deployment/shared-utilities.js';
 import { createResource } from '../proxy/create-resource.js';
+import { getSingletonResourceId } from '../singleton/singleton.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
 import type { KubernetesResource } from '../types/index.js';
 
@@ -71,9 +72,12 @@ export function materializeSingletonOwnerResourcesForKroYaml(
     );
     const apiVersion = rawApiVersion.includes('/') ? rawApiVersion : `kro.run/${rawApiVersion}`;
     const kind = String(compositionRecord._definition?.kind ?? compositionRecord.kind ?? 'Unknown');
-    const ownerId = buildSingletonYamlResourceId('singletonOwner', definition.key);
+    const ownerId = getSingletonResourceId(definition.key);
+    const existingOwner = resourcesWithKeys[ownerId] as (KubernetesResource<unknown, unknown> & {
+      __externalRef?: boolean;
+    }) | undefined;
 
-    if (!(ownerId in resourcesWithKeys)) {
+    if (!existingOwner || existingOwner.__externalRef === true) {
       resourcesWithKeys[ownerId] = createResource(
         {
           apiVersion,

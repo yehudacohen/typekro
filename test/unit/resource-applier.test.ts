@@ -762,6 +762,56 @@ describe('ResourceApplier', () => {
       // Should fall back to original resource on timeout
       expect(result).toBe(resource);
     });
+
+    it('clears the reference resolution timeout after a successful resolve', async () => {
+      const resolvedResource = createTestResource({
+        metadata: { name: 'resolved-deployment', namespace: 'default' },
+      });
+      const resolver = createMockReferenceResolver(resolvedResource);
+      const localApplier = new ResourceApplier(
+        mockApi as k8s.KubernetesObjectApi,
+        resolver,
+        mockLogger
+      );
+
+      const resource = createTestResource({ id: 'deploy' }) as KubernetesResource & { id: string };
+      const context: ResolutionContext = {
+        deployedResources: [],
+        kubeClient: {} as k8s.KubeConfig,
+        namespace: 'default',
+        resourceKeyMapping: new Map([['deploy', { kind: 'Deployment', name: 'test' }]]),
+      };
+      const options = createTestOptions({ timeout: 12345 });
+
+      const originalSetTimeout = globalThis.setTimeout;
+      const originalClearTimeout = globalThis.clearTimeout;
+      const fakeTimer = { unref: mock() } as unknown as ReturnType<typeof setTimeout>;
+      const clearCalls: Array<ReturnType<typeof setTimeout>> = [];
+
+      globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number, ...args: unknown[]) => {
+        void handler;
+        void args;
+        return fakeTimer;
+      }) as typeof setTimeout;
+      globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
+        clearCalls.push(timer);
+      }) as typeof clearTimeout;
+
+      try {
+        const result = await localApplier.resolveResourceReferences(
+          resource as Parameters<typeof localApplier.resolveResourceReferences>[0],
+          context,
+          options,
+          mockLogger
+        );
+
+        expect(result.metadata.name).toBe('resolved-deployment');
+        expect(clearCalls).toEqual([fakeTimer]);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        globalThis.clearTimeout = originalClearTimeout;
+      }
+    });
   });
 
   // ===========================================================================

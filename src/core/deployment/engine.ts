@@ -512,6 +512,10 @@ export class DirectDeploymentEngine {
       abortController.abort();
     }, timeout);
 
+    // This timeout is only a safety watchdog. It should never keep a
+    // short-lived CLI process alive after the deployment work is done.
+    timeoutId.unref?.();
+
     return { abortController, timeoutId };
   }
 

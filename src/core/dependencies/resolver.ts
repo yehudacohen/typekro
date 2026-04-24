@@ -18,6 +18,7 @@ export class DependencyResolver {
   private logger = getComponentLogger('dependency-resolver');
 
   private static readonly CLUSTER_SERVICE_SUFFIX_PATTERN = /^([a-z0-9-]+)(?:\.([a-z0-9-]+))?(?:\.svc(?:\.cluster\.local)?|\.cluster\.local)$/i;
+  private static readonly BARE_HOST_KEY_PATTERN = /(?:^|_)(?:DB|DATABASE|REDIS|VALKEY|CACHE|SERVICE|UPSTREAM|POSTGRES|PG)_(?:HOST|SERVER)$/i;
 
   /**
    * Build a dependency graph from a collection of Kubernetes resources
@@ -151,8 +152,8 @@ export class DependencyResolver {
     if (dnsAddressableResourcesByName.size > 0) {
       for (const resource of resources) {
         const stringValues = this.collectStringValues(resource);
-        for (const value of stringValues) {
-          for (const host of this.extractHostCandidates(value)) {
+        for (const entry of stringValues) {
+          for (const host of this.extractHostCandidates(entry.value, entry.key)) {
             const matchedServices = this.resolveDnsAddressableServiceIds(
               host,
               resource.metadata?.namespace?.toLowerCase(),
@@ -265,8 +266,9 @@ export class DependencyResolver {
     return { serviceName: host, ids: [] };
   }
 
-  private extractHostCandidates(value: string): string[] {
+  private extractHostCandidates(value: string, key?: string): string[] {
     const hosts = new Set<string>();
+    const trimmedValue = value.trim();
 
     const authorityMatches = value.matchAll(/[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/\s]+)/g);
     for (const match of authorityMatches) {
@@ -295,18 +297,24 @@ export class DependencyResolver {
       if (host) hosts.add(host.toLowerCase());
     }
 
+    // Support env-style host values like `VALKEY_HOST=myapp-cache` without
+    // reopening broad bare-token matching for arbitrary string values.
+    if (key && DependencyResolver.BARE_HOST_KEY_PATTERN.test(key) && /^[a-z0-9-]+$/i.test(trimmedValue)) {
+      hosts.add(trimmedValue.toLowerCase());
+    }
+
     return Array.from(hosts);
   }
 
   private collectStringValues(
     resource: DeployableK8sResource<Enhanced<unknown, unknown>>
-  ): string[] {
-    const values: string[] = [];
+  ): Array<{ value: string; key?: string }> {
+    const values: Array<{ value: string; key?: string }> = [];
     const addString = (v: unknown, key?: string): void => {
       if (typeof v === 'string' && v.length > 0 && v.length < 500) {
         // Skip fields that produce false positives in hostname matching.
         if (key && DependencyResolver.EXCLUDED_KEYS.has(key)) return;
-        values.push(v);
+        values.push({ value: v, ...(key ? { key } : {}) });
       }
     };
 
@@ -348,7 +356,7 @@ export class DependencyResolver {
         if (depth > MAX_DEPTH) return;
         if (typeof obj === 'string' && obj.length > 0 && obj.length < 500) {
           if (key && DependencyResolver.EXCLUDED_KEYS.has(key)) return;
-          values.push(obj);
+          values.push({ value: obj, ...(key ? { key } : {}) });
         } else if (Array.isArray(obj)) {
           for (const item of obj) traverse(item, depth + 1);
         } else if (obj !== null && typeof obj === 'object') {

@@ -27,6 +27,11 @@ import type {
 } from '../../../src/factories/webapp/types.js';
 import { ensureNamespaceExists } from '../shared-kubeconfig.js';
 
+async function cleanupNamespace(namespace: string, kubeConfig: k8s.KubeConfig): Promise<void> {
+  const { deleteNamespaceAndWait } = await import('../shared-kubeconfig.js');
+  await deleteNamespaceAndWait(namespace, kubeConfig, 120000);
+}
+
 // ── Shared test spec ─────────────────────────────────────────────────────
 
 const testSpec = (appNamespace: string): WebAppWithProcessingConfig => ({
@@ -161,10 +166,9 @@ describe('WebAppWithProcessing Direct Mode', () => {
         console.error('⚠️ Direct deleteInstance failed:', (e as Error).message);
       }
     }
-    const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
     for (const ns of [factoryNamespace, appNamespace]) {
       try {
-        await deleteNamespaceIfExists(ns, kubeConfig);
+        await cleanupNamespace(ns, kubeConfig);
       } catch (e) {
         console.error(`⚠️ Namespace ${ns} cleanup failed:`, (e as Error).message);
       }
@@ -242,14 +246,13 @@ describe('WebAppWithProcessing KRO Mode', () => {
     // integration appear hung even after the deploy assertion passed.
     // For test teardown, issue namespace deletion and let Kubernetes/KRO
     // finish the graph cleanup asynchronously in the background.
-    const { deleteNamespaceIfExists } = await import('../shared-kubeconfig.js');
     try {
-      await deleteNamespaceIfExists(appNamespace, kubeConfig);
+      await cleanupNamespace(appNamespace, kubeConfig);
     } catch (e) {
       console.error(`⚠️ Namespace ${appNamespace} cleanup failed:`, (e as Error).message);
     }
     try {
-      await deleteNamespaceIfExists(kroNamespace, kubeConfig);
+      await cleanupNamespace(kroNamespace, kubeConfig);
     } catch (e) {
       console.error(`⚠️ Namespace ${kroNamespace} cleanup failed:`, (e as Error).message);
     }

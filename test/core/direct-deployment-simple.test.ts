@@ -261,6 +261,42 @@ describe('DirectDeploymentEngine Simple', () => {
     });
   });
 
+  describe('deployment timeout watchdog', () => {
+    it('unrefs the deployment watchdog timer so it cannot keep the process alive', () => {
+      const fakeTimer = {
+        unref: mock(),
+      } as unknown as ReturnType<typeof setTimeout>;
+
+      const originalSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number, ...args: unknown[]) => {
+        void handler;
+        void args;
+        return fakeTimer;
+      }) as typeof setTimeout;
+
+      try {
+        const setupDeploymentTimeout = (
+          engine as unknown as {
+            setupDeploymentTimeout: (
+              deploymentId: string,
+              options: DeploymentOptions,
+              deploymentLogger: { debug: (...args: unknown[]) => void }
+            ) => { timeoutId: ReturnType<typeof setTimeout> };
+          }
+        ).setupDeploymentTimeout.bind(engine);
+
+        const { timeoutId } = setupDeploymentTimeout('deployment-test', defaultOptions, {
+          debug: mock(),
+        });
+
+        expect(timeoutId).toBe(fakeTimer);
+        expect((fakeTimer as { unref: ReturnType<typeof mock> }).unref).toHaveBeenCalledTimes(1);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+      }
+    });
+  });
+
   describe('deploy with simple graph', () => {
     it('should deploy a simple resource graph', async () => {
       const graph = createSimpleGraph();
