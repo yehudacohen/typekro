@@ -66,6 +66,8 @@ await factory.deploy({
 | `server` | object | — | Server configuration |
 | `search` | object | — | Search configuration |
 | `redisUrl` | `string` | — | Redis/Valkey URL for rate limiter |
+| `secretKeyRef` | `{ name: string; key: string }` | — | Existing Secret key to use for `SEARXNG_SECRET`; skips the auto-created Secret workflow |
+| `settingsYaml` | `string` | — | Complete `settings.yml` content. In direct mode this overrides generated settings and is useful when KRO array templating limits apply |
 | `env` | `Record<string, string>` | — | Extra environment variables |
 | `resources` | object | — | CPU/memory requests and limits |
 

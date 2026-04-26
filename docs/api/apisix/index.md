@@ -24,11 +24,16 @@ import * as apisix from 'typekro/apisix';
 
 // Bootstrap APISix with Helm
 const bootstrap = apisix.apisixBootstrap({
+  name: 'apisix',
   namespace: 'apisix',
-  config: {
-    gateway: { type: 'LoadBalancer' },
-    dashboard: { enabled: true }
-  }
+  gateway: {
+    type: 'LoadBalancer',
+    adminCredentials: {
+      admin: process.env.APISIX_ADMIN_KEY!,
+      viewer: process.env.APISIX_VIEWER_KEY!,
+    },
+  },
+  ingressController: { enabled: true },
 });
 ```
 
@@ -43,20 +48,37 @@ const bootstrap = apisix.apisixBootstrap({
 
 ```typescript
 interface APISixBootstrapConfig {
+  name: string;
   namespace?: string;
   version?: string;
-  config?: {
-    gateway?: {
-      type?: 'ClusterIP' | 'NodePort' | 'LoadBalancer';
-      replicas?: number;
-    };
-    dashboard?: {
+  installCRDs?: boolean;
+  replicaCount?: number;
+  gateway?: {
+    type?: 'ClusterIP' | 'NodePort' | 'LoadBalancer';
+    http?: {
       enabled?: boolean;
+      servicePort?: number;
+      containerPort?: number;
+    };
+    https?: {
+      enabled?: boolean;
+      servicePort?: number;
+      containerPort?: number;
     };
     ingress?: {
       enabled?: boolean;
-      className?: string;
+      annotations?: Record<string, string>;
+      hosts?: string[];
     };
+    adminCredentials?: {
+      admin?: string;
+      viewer?: string;
+    };
+  };
+  ingressController?: {
+    enabled?: boolean;
+    resources?: object;
+    env?: Array<{ name: string; value?: string }>;
   };
 }
 ```
@@ -69,10 +91,11 @@ import * as apisix from 'typekro/apisix';
 
 const infrastructure = kubernetesComposition(definition, (spec) => {
   apisix.apisixBootstrap({
+    name: 'apisix',
     namespace: 'apisix',
-    config: {
-      gateway: { type: 'LoadBalancer', replicas: spec.replicas }
-    }
+    gateway: { type: 'LoadBalancer' },
+    replicaCount: spec.replicas,
+    ingressController: { enabled: true },
   });
 
   return { ready: true };

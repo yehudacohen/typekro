@@ -467,7 +467,9 @@ export function remapResourceStatusReferences(
 ): string {
   let remapped = conditionExpression;
   for (const [variableName, resourceId] of variableToResourceId) {
-    remapped = remapped.split(`${variableName}.status.`).join(`${resourceId}.status.`);
+    const escapedVariableName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const variableStatusRef = new RegExp(`(^|[^A-Za-z0-9_$])${escapedVariableName}\\.status\\.`, 'g');
+    remapped = remapped.replace(variableStatusRef, `$1${resourceId}.status.`);
   }
   return remapped;
 }

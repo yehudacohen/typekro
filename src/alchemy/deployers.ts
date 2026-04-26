@@ -207,10 +207,12 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
       if (this.deployerOptions.deleteInstance) {
         const shouldSkip = await this.deployerOptions.shouldSkipRgdDelete?.(resource.metadata?.name || 'unnamed') ?? true;
         if (shouldSkip) {
-          logger.debug('Skipping Alchemy RGD delete; KRO instance deletion owns finalizer-safe cleanup', {
+          logger.debug('Deferring Alchemy RGD delete while KRO instances still exist', {
             name: resource.metadata?.name,
           });
-          return;
+          throw new Error(
+            `ResourceGraphDefinition deletion deferred because KRO instances still exist for ${resource.metadata?.name || 'unnamed'}`
+          );
         }
 
         logger.debug('Deleting Alchemy RGD because no KRO instances exist', {

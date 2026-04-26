@@ -1086,6 +1086,10 @@ function walkAndConditionalizeResourceStatus(
             iv[i] as Record<string, unknown>,
             conditionCel
           );
+        } else if (!leafEquals(pv[i], iv[i])) {
+          const proxyRepr = celValueRepr(pv[i]);
+          const invertedRepr = celValueRepr(iv[i]);
+          pv[i] = `\${${conditionCel} ? ${proxyRepr} : ${invertedRepr}}`;
         }
       }
     } else if (Array.isArray(pv) && Array.isArray(iv) && pv.length !== iv.length) {

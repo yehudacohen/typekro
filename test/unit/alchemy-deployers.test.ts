@@ -476,7 +476,7 @@ describe('KroTypeKroDeployer', () => {
     expect(mockEngine.deleteResource).not.toHaveBeenCalled();
   });
 
-  it('does not delete ResourceGraphDefinitions directly during Alchemy teardown', async () => {
+  it('defers ResourceGraphDefinition state deletion while KRO instances still exist', async () => {
     const mockEngine = createMockEngine() as any;
     const deleteInstance = mock(() => Promise.resolve());
     const shouldSkipRgdDelete = mock(() => Promise.resolve(true));
@@ -488,7 +488,9 @@ describe('KroTypeKroDeployer', () => {
       spec: {},
     } as any;
 
-    await deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' });
+    await expect(deployer.delete(rgd, { mode: 'kro', namespace: 'test-ns' })).rejects.toThrow(
+      'ResourceGraphDefinition deletion deferred'
+    );
 
     expect(deleteInstance).not.toHaveBeenCalled();
     expect(shouldSkipRgdDelete).toHaveBeenCalledWith('test-app');

@@ -801,6 +801,23 @@ describe('Phase 2: extractResourceStatusRef edge cases', () => {
     expect(ref!.conditionExpression).toBe('db.status.instances >= 1');
   });
 
+  it('remaps resource status references with identifier boundaries', async () => {
+    const { remapResourceStatusReferences } = await import(
+      '../../src/core/expressions/composition/composition-analyzer-helpers.js'
+    );
+
+    const condition = 'db.status.ready && mydb.status.ready';
+    const remapped = remapResourceStatusReferences(
+      condition,
+      new Map([
+        ['db', 'database'],
+        ['mydb', 'myDatabase'],
+      ])
+    );
+
+    expect(remapped).toBe('database.status.ready && myDatabase.status.ready');
+  });
+
   it('rejects schema as root variable', async () => {
     const { extractResourceStatusRef } = await import(
       '../../src/core/expressions/composition/composition-analyzer-helpers.js'
@@ -986,6 +1003,36 @@ describe('Phase 3: Direct factory ternary edge cases', () => {
     expect(yaml).toContain('appCache.status.ready && database.status.readyReplicas >= 1');
     expect(yaml).not.toContain('cache.status.ready');
     expect(yaml).not.toContain('db.status.readyReplicas');
+  });
+
+  it('conditionalizes same-length primitive arrays in resource-status ternaries', async () => {
+    const { kubernetesComposition } = await import(
+      '../../src/core/composition/imperative.js'
+    );
+    const { simple } = await import('../../src/index.js');
+
+    const Spec = type({ name: 'string', image: 'string' });
+    const Status = type({ ready: 'boolean' });
+
+    const comp = kubernetesComposition(
+      { name: 'primitive-array-ternary', kind: 'PrimitiveArrayTernary', spec: Spec, status: Status },
+      (_spec) => {
+        const cache = simple.Deployment({ name: 'cache', image: 'valkey', id: 'cache' });
+
+        simple.Deployment({
+          name: 'worker',
+          image: 'busybox',
+          id: 'worker',
+          args: cache.status.ready ? ['--redis'] : ['--memory'],
+        });
+
+        return { ready: true };
+      }
+    );
+
+    const yaml = comp.toYaml();
+    expect(yaml).toContain('cache.status.ready ? \\"--redis\\" : \\"--memory\\"');
+    expect(yaml).toContain('--memory');
   });
 
   it('conditionalizes multiple resources that share one resource-status condition', async () => {
