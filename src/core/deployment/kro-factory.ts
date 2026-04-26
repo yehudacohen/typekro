@@ -65,7 +65,10 @@ import {
   pluralizeKind,
   validateSpec,
 } from './shared-utilities.js';
-import { assertNoDeployedSingletonSpecDrift } from './singleton-owner-drift.js';
+import {
+  assertNoDeployedSingletonSpecDrift,
+  singletonSpecFingerprintAnnotationValue,
+} from './singleton-owner-drift.js';
 
 /**
  * Decide whether the RGD/CRD should be preserved after a `deleteInstance`
@@ -460,9 +463,17 @@ export class KroResourceFactoryImpl<
     await this.ensureSingletonOwners(spec);
 
     if (this.isAlchemyManaged) {
-      return this.deployWithAlchemy(spec, opts?.instanceNameOverride);
+      return this.deployWithAlchemy(
+        spec,
+        opts?.instanceNameOverride,
+        opts?.singletonSpecFingerprint,
+      );
     } else {
-      return this.deployDirect(spec, opts?.instanceNameOverride);
+      return this.deployDirect(
+        spec,
+        opts?.instanceNameOverride,
+        opts?.singletonSpecFingerprint,
+      );
     }
   }
 
@@ -526,6 +537,7 @@ export class KroResourceFactoryImpl<
 
         const deployedSingleton = await singletonFactory.deploy(definition.spec as TSpec, {
           instanceNameOverride: singletonInstanceName,
+          singletonSpecFingerprint: singletonSpecFingerprintAnnotationValue(definition.specFingerprint),
         });
         const singletonStatus = (deployedSingleton as { status?: unknown }).status;
         if (singletonStatus && typeof singletonStatus === 'object' && !Array.isArray(singletonStatus)) {
@@ -696,7 +708,11 @@ export class KroResourceFactoryImpl<
   /**
    * Deploy directly to Kubernetes using DirectDeploymentEngine
    */
-  private async deployDirect(spec: TSpec, instanceNameOverride?: string): Promise<Enhanced<TSpec, TStatus>> {
+  private async deployDirect(
+    spec: TSpec,
+    instanceNameOverride?: string,
+    singletonSpecFingerprint?: string,
+  ): Promise<Enhanced<TSpec, TStatus>> {
     // Ensure RGD is deployed first
     await this.ensureRGDDeployed();
 
@@ -717,7 +733,11 @@ export class KroResourceFactoryImpl<
 
     // Create custom resource instance
     const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
-    const customResourceData = this.createCustomResourceInstance(instanceName, spec);
+    const customResourceData = this.createCustomResourceInstance(
+      instanceName,
+      spec,
+      singletonSpecFingerprint,
+    );
 
     // Wrap with kroCustomResource factory to get Enhanced object with readiness evaluation
     const kroCustomResource =
@@ -727,8 +747,7 @@ export class KroResourceFactoryImpl<
       apiVersion: customResourceData.apiVersion,
       kind: customResourceData.kind,
       metadata: {
-        name: customResourceData.metadata.name,
-        namespace: customResourceData.metadata.namespace,
+        ...customResourceData.metadata,
       },
       spec: customResourceData.spec,
     });
@@ -786,7 +805,11 @@ export class KroResourceFactoryImpl<
    *
    * In alchemy mode, the RGD gets one typed alchemy Resource and each instance gets another
    */
-  private async deployWithAlchemy(spec: TSpec, instanceNameOverride?: string): Promise<Enhanced<TSpec, TStatus>> {
+  private async deployWithAlchemy(
+    spec: TSpec,
+    instanceNameOverride?: string,
+    singletonSpecFingerprint?: string,
+  ): Promise<Enhanced<TSpec, TStatus>> {
     if (!this.alchemyScope) {
       throw new ResourceGraphFactoryError(
         'Alchemy scope is required for alchemy deployment',
@@ -837,7 +860,11 @@ export class KroResourceFactoryImpl<
       // 2. Create instance via alchemy (once per deploy call)
       await this.ensureTargetNamespace();
       const instanceName = instanceNameOverride ?? generateInstanceName(spec, this.name);
-      const crdInstanceManifest = this.createCustomResourceInstance(instanceName, spec);
+      const crdInstanceManifest = this.createCustomResourceInstance(
+        instanceName,
+        spec,
+        singletonSpecFingerprint,
+      );
 
       // Register CRD instance type dynamically
       // Cast required: crdInstanceManifest is a plain KubernetesResource, but alchemy functions
@@ -852,10 +879,17 @@ export class KroResourceFactoryImpl<
         deploymentStrategy: 'kro' as const,
         deployer: deployer,
         options: {
-          waitForReady: this.factoryOptions.waitForReady ?? true,
+          waitForReady: false,
           timeout: this.factoryOptions.timeout ?? DEFAULT_DEPLOYMENT_TIMEOUT,
         },
       });
+
+      if (this.factoryOptions.waitForReady ?? true) {
+        await this.waitForKroInstanceReady(
+          instanceName,
+          this.factoryOptions.timeout || DEFAULT_KRO_INSTANCE_TIMEOUT
+        );
+      }
 
       // Create Enhanced proxy for the deployed instance
       return await this.createEnhancedProxy(spec, instanceName);
@@ -868,10 +902,7 @@ export class KroResourceFactoryImpl<
    * Get all deployed instances
    */
   async getInstances(): Promise<Enhanced<TSpec, TStatus>[]> {
-    const kubeConfig = this.getKubeConfig();
-    // Use Bun-compatible API client to ensure proper TLS handling
-    const { createBunCompatibleCustomObjectsApi } = await import('../kubernetes/bun-api-client.js');
-    const customApi = createBunCompatibleCustomObjectsApi(kubeConfig);
+    const customApi = await this.createCustomObjectsApi();
 
     try {
       const version = this.getSchemaVersion();
@@ -901,7 +932,7 @@ export class KroResourceFactoryImpl<
       interface CustomObjectListResponse {
         items?: Array<{
           spec?: TSpec;
-          metadata?: { name?: string };
+          metadata?: { name?: string; annotations?: Record<string, string> };
         }>;
       }
       const listResult = listResponse as CustomObjectListResponse;
@@ -909,10 +940,25 @@ export class KroResourceFactoryImpl<
 
       return await Promise.all(
         instances.map(async (instance) => {
-          return await this.createEnhancedProxy(
+          const enhanced = await this.createEnhancedProxy(
             instance.spec as TSpec,
             instance.metadata?.name || 'unknown'
           );
+          if (instance.metadata?.annotations) {
+            const mutableEnhanced = enhanced as unknown as { metadata?: Record<string, unknown> };
+            const existingMetadata = mutableEnhanced.metadata ?? {};
+            const existingAnnotations = existingMetadata.annotations && typeof existingMetadata.annotations === 'object'
+              ? existingMetadata.annotations as Record<string, string>
+              : {};
+            mutableEnhanced.metadata = {
+              ...existingMetadata,
+              annotations: {
+                ...existingAnnotations,
+                ...instance.metadata.annotations,
+              },
+            };
+          }
+          return enhanced;
         })
       );
     } catch (error: unknown) {
@@ -941,6 +987,13 @@ export class KroResourceFactoryImpl<
         ensureError(error)
       );
     }
+  }
+
+  private async createCustomObjectsApi(): Promise<k8s.CustomObjectsApi> {
+    const kubeConfig = this.getKubeConfig();
+    // Use Bun-compatible API client to ensure proper TLS handling
+    const { createBunCompatibleCustomObjectsApi } = await import('../kubernetes/bun-api-client.js');
+    return createBunCompatibleCustomObjectsApi(kubeConfig);
   }
 
   /**
@@ -1645,7 +1698,11 @@ export class KroResourceFactoryImpl<
   /**
    * Create custom resource instance
    */
-  private createCustomResourceInstance(instanceName: string, spec: TSpec) {
+  private createCustomResourceInstance(
+    instanceName: string,
+    spec: TSpec,
+    singletonSpecFingerprint?: string,
+  ) {
     const apiVersion = this.getInstanceApiVersion();
 
     return {
@@ -1654,6 +1711,11 @@ export class KroResourceFactoryImpl<
       metadata: {
         name: instanceName,
         namespace: this.namespace,
+        ...(singletonSpecFingerprint ? {
+          annotations: {
+            'typekro.io/singleton-spec-fingerprint': singletonSpecFingerprint,
+          },
+        } : {}),
       },
       spec,
     };

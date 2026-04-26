@@ -1608,7 +1608,13 @@ function createTypedResourceGraph<
     analyzedStatusMappings,
     evaluationContext
   );
-  for (const metadataKey of ['__originalCompositionFn', '__nestedCompositionFns', '__nestedCompositionSpecMappings']) {
+  for (const metadataKey of [
+    '__originalCompositionFn',
+    '__nestedCompositionFns',
+    '__nestedCompositionDefinitions',
+    '__nestedCompositionResources',
+    '__nestedCompositionSpecMappings',
+  ]) {
     const descriptor = Object.getOwnPropertyDescriptor(statusMappings, metadataKey);
     if (descriptor) {
       Object.defineProperty(optimizedStatusMappings, metadataKey, descriptor);

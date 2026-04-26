@@ -136,25 +136,43 @@ export class KroTypeKroDeployer implements TypeKroDeployer {
   }
 
   async deploy<T extends Enhanced<any, any>>(resource: T, options: DeploymentOptions): Promise<T> {
+    const resourceId =
+      resource.id ||
+      generateDeterministicResourceId(
+        resource.kind || 'Resource',
+        resource.metadata?.name || 'unnamed',
+        options.namespace
+      );
+    const deployableResource = resource as DeployableK8sResource<Enhanced<unknown, unknown>>;
+    const dependencyGraph = new DependencyGraph();
+    dependencyGraph.addNode(resourceId, deployableResource);
+
     // Convert single resource to ResourceGraph for DirectDeploymentEngine
     const resourceGraph: DeploymentResourceGraph = {
       name: resource.metadata?.name || 'unnamed-resource',
       resources: [
         {
-          id:
-            resource.id ||
-            generateDeterministicResourceId(
-              resource.kind || 'Resource',
-              resource.metadata?.name || 'unnamed',
-              options.namespace
-            ),
-          manifest: resource as DeployableK8sResource<Enhanced<unknown, unknown>>,
+          id: resourceId,
+          manifest: deployableResource,
         },
       ],
-      dependencyGraph: new DependencyGraph(),
+      dependencyGraph,
     };
 
-    await this.engine.deploy(resourceGraph, options);
+    const result = await this.engine.deploy(resourceGraph, options);
+
+    if (result.status === 'failed') {
+      const firstError = result.errors[0]?.error;
+      const deploymentError = new ResourceDeploymentError(
+        resource.metadata?.name || 'unnamed',
+        resource.kind || 'Unknown',
+        firstError || new Error('Unknown deployment error')
+      );
+      if (result.errors.length > 1) {
+        deploymentError.message += ` (and ${result.errors.length - 1} other errors)`;
+      }
+      throw deploymentError;
+    }
 
     // Return the original resource (DirectDeploymentEngine doesn't modify the input)
     return resource;

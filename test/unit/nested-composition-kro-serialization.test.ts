@@ -1137,6 +1137,42 @@ describe('T9 — outer RGD never references inner-only schema fields (I4)', () =
     expect(processing.mode).toBe('string | default="nginx:direct"');
     expect(parsed.spec.schema.spec).not.toHaveProperty('mode');
   });
+
+  it('maps nested defaults resolved from imported constants', () => {
+    const DEFAULT_WORKER_IMAGE = 'nginx:constant';
+    const innerConstantDefault = kubernetesComposition(
+      {
+        name: 't9-inner-constant-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9InnerConstantDefault',
+        spec: type({ enabled: 'boolean', 'image?': 'string' }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        Deployment({ name: 'constant-default', image: spec.image ?? DEFAULT_WORKER_IMAGE, id: 'constantDefaultDeploy' });
+        return { ready: spec.enabled };
+      }
+    );
+
+    const outerConstantDefault = kubernetesComposition(
+      {
+        name: 't9-outer-constant-default',
+        apiVersion: 'test.example.com/v1alpha1',
+        kind: 'T9OuterConstantDefault',
+        spec: type({ processing: { enabled: 'boolean' } }),
+        status: type({ ready: 'boolean' }),
+      },
+      (spec) => {
+        const inner = innerConstantDefault(spec.processing);
+        return { ready: inner.status.ready };
+      }
+    );
+
+    const parsed = parseRgd(outerConstantDefault.toYaml());
+    const processing = parsed.spec.schema.spec.processing as Record<string, unknown>;
+    expect(processing.image).toBe('string | default="nginx:constant"');
+    expect(parsed.spec.schema.spec).not.toHaveProperty('image');
+  });
 });
 
 // =============================================================================

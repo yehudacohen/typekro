@@ -158,9 +158,9 @@ function extractExpressionString(
 function isLikelyCelString(value: string): boolean {
   if (value.includes('__KUBERNETES_REF_') || value.includes('${')) return true;
   if (/^(?:true|false|null)$/.test(value)) return true;
+  if (/^schema\.spec\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(value)) return true;
   if (/^[A-Za-z_$][\w$]*\.(?:metadata|status|spec)\./.test(value)) return true;
   if (/\.(?:exists|all|exists_one|map|filter)\s*\(/.test(value)) return true;
-  if (/\s(?:==|!=|>=|<=|>|<|&&|\|\||\+|-|\*|\/|\?|:)\s/.test(value)) return true;
   if (/^(?:has|size|string|int|double|bool)\(.+\)$/.test(value)) return true;
   return false;
 }

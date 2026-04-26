@@ -6,6 +6,7 @@ import type { DeployedResource } from '../types/deployment.js';
 interface DeployedSingletonInstance {
   readonly metadata?: {
     readonly name?: unknown;
+    readonly annotations?: Record<string, unknown> | undefined;
   };
   readonly spec?: unknown;
 }
@@ -17,6 +18,19 @@ export function assertNoDeployedSingletonSpecDrift(
 ): void {
   const existing = instances.find((instance) => instance.metadata?.name === singletonInstanceName);
   if (!existing) return;
+
+  const expectedAnnotation = singletonSpecFingerprintAnnotationValue(definition.specFingerprint);
+  const actualAnnotationValue = existing.metadata?.annotations?.[SINGLETON_SPEC_FINGERPRINT_ANNOTATION];
+  const actualAnnotation = typeof actualAnnotationValue === 'string' ? actualAnnotationValue : undefined;
+  if (actualAnnotation === expectedAnnotation) return;
+  if (actualAnnotation) {
+    throw new Error(
+      `Singleton config drift detected for ${definition.key}. ` +
+        `An existing singleton owner named ${singletonInstanceName} cannot be verified: ` +
+        `fingerprint ${actualAnnotation} does not match ${expectedAnnotation}. ` +
+        'A singleton identity must not be deployed with multiple specs.'
+    );
+  }
 
   const existingFingerprint = stableSerialize(existing.spec);
   if (existingFingerprint === definition.specFingerprint) return;

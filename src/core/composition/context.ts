@@ -14,6 +14,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { DeploymentClosure } from '../types/deployment.js';
 import type { SingletonDefinitionRecord } from '../types/deployment.js';
+import type { KubernetesResource } from '../types/kubernetes.js';
+import type { KroCompatibleType, ResourceGraphDefinition } from '../types/serialization.js';
 import type { Enhanced } from '../types.js';
 
 // =============================================================================
@@ -79,6 +81,10 @@ export interface CompositionContext {
    */
   // biome-ignore lint/suspicious/noExplicitAny: composition fns have arbitrary spec/status types
   nestedCompositionFns?: Map<string, (...args: any[]) => unknown>;
+  /** Map of nested composition baseId -> nested composition schema definition. */
+  nestedCompositionDefinitions?: Map<string, ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>>;
+  /** Map of nested composition baseId -> resources emitted during its proxy execution. */
+  nestedCompositionResources?: Map<string, Record<string, KubernetesResource>>;
   /** Map of nested composition baseId -> inner spec path prefix to parent spec path prefix. */
   nestedCompositionSpecMappings?: Map<string, Record<string, string>>;
   /** Map of nested composition baseId -> returned status snapshot. */

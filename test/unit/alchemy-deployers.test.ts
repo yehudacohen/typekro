@@ -5,7 +5,7 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { DirectTypeKroDeployer } from '../../src/alchemy/deployers.js';
+import { DirectTypeKroDeployer, KroTypeKroDeployer } from '../../src/alchemy/deployers.js';
 import { ReadinessEvaluatorRegistry } from '../../src/core/readiness/registry.js';
 import { service } from '../../src/factories/kubernetes/networking/service.js';
 import { deployment } from '../../src/factories/kubernetes/workloads/deployment.js';
@@ -384,5 +384,77 @@ describe('DirectTypeKroDeployer', () => {
       expect(result.kind).toBe('Service');
       expect(getReadinessEvaluator(result)).toBeDefined();
     });
+  });
+});
+
+describe('KroTypeKroDeployer', () => {
+  const createMockEngine = () => ({
+    deploy: mock(() =>
+      Promise.resolve({
+        status: 'success',
+        deployedResources: [],
+        duration: 100,
+        errors: [],
+      })
+    ),
+    deleteResource: mock(() => Promise.resolve()),
+    dispose: mock(() => Promise.resolve()),
+  }) as unknown as import('../../src/core/deployment/engine.js').DirectDeploymentEngine;
+
+  it('throws when the deployment engine reports failure', async () => {
+    const mockEngine = createMockEngine() as any;
+    mockEngine.deploy.mockImplementation(() =>
+      Promise.resolve({
+        status: 'failed',
+        errors: [{ error: new Error('KRO instance apply failed') }],
+        deployedResources: [],
+        duration: 100,
+      })
+    );
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const testDeployment = deployment({
+      metadata: { name: 'kro-error-test', namespace: 'default' },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: 'kro-error-test' } },
+        template: {
+          metadata: { labels: { app: 'kro-error-test' } },
+          spec: { containers: [{ name: 'app', image: 'nginx:alpine' }] },
+        },
+      },
+    });
+
+    await expect(
+      deployer.deploy(testDeployment, {
+        mode: 'kro',
+        namespace: 'default',
+      })
+    ).rejects.toThrow('KRO instance apply failed');
+  });
+
+  it('adds the resource to the dependency graph passed to the engine', async () => {
+    const mockEngine = createMockEngine() as any;
+    const deployer = new KroTypeKroDeployer(mockEngine);
+    const testDeployment = deployment({
+      metadata: { name: 'kro-graph-test', namespace: 'default' },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: 'kro-graph-test' } },
+        template: {
+          metadata: { labels: { app: 'kro-graph-test' } },
+          spec: { containers: [{ name: 'app', image: 'nginx:alpine' }] },
+        },
+      },
+    });
+
+    await deployer.deploy(testDeployment, {
+      mode: 'kro',
+      namespace: 'default',
+    });
+
+    const graph = mockEngine.deploy.mock.calls[0]?.[0];
+    expect(graph.resources).toHaveLength(1);
+    expect(graph.dependencyGraph.getNodes().size).toBe(1);
+    expect(graph.dependencyGraph.hasNode(graph.resources[0].id)).toBe(true);
   });
 });

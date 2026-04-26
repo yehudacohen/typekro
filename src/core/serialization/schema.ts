@@ -924,6 +924,12 @@ export function arktypeToKroSchema(
   const nestedSpecMappingsRaw = statusMappings
     ? Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionSpecMappings')?.value
     : undefined;
+  const nestedDefinitionsRaw = statusMappings
+    ? Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionDefinitions')?.value
+    : undefined;
+  const nestedResourcesRaw = statusMappings
+    ? Object.getOwnPropertyDescriptor(statusMappings, '__nestedCompositionResources')?.value
+    : undefined;
   if (nestedFnsRaw instanceof Map) {
     for (const [baseId, fn] of nestedFnsRaw) {
       if (typeof fn !== 'function') continue;
@@ -931,8 +937,22 @@ export function arktypeToKroSchema(
         ? nestedSpecMappingsRaw.get(baseId)
         : undefined;
       if (!specMappings || typeof specMappings !== 'object') continue;
+      const extractedDefaults = extractNullishDefaults(fn.toString());
+      const nestedDefinition = nestedDefinitionsRaw instanceof Map
+        ? nestedDefinitionsRaw.get(baseId)
+        : undefined;
+      const nestedResources = nestedResourcesRaw instanceof Map
+        ? nestedResourcesRaw.get(baseId)
+        : undefined;
+      const reExecutionDefaults = nestedDefinition && nestedResources
+        ? resolveDefaultsByReExecution(
+            fn as (...args: unknown[]) => unknown,
+            nestedDefinition.spec,
+            nestedResources,
+          )?.defaults ?? {}
+        : {};
       const innerDefaults = remapNullishDefaults(
-        extractNullishDefaults(fn.toString()),
+        { ...extractedDefaults, ...reExecutionDefaults },
         specMappings as Record<string, string>
       );
       // Non-destructive: don't overwrite existing outer defaults.

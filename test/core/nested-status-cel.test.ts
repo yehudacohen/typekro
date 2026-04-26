@@ -219,6 +219,24 @@ describe('extractNestedStatusCel', () => {
     expect(mappings['__nestedStatus:inner1:phase']).toBe('"Ready.OK"');
   });
 
+  it('quotes spaced operator text instead of treating it as CEL', () => {
+    const mappings: Record<string, string> = {};
+    extractNestedStatusCel(
+      {
+        equation: 'a - b',
+        label: 'foo + bar',
+      },
+      {
+        baseId: 'inner1',
+        innerResourceIds: ['deployment'],
+        registerMapping: (k, v) => { mappings[k] = v; },
+      }
+    );
+
+    expect(mappings['__nestedStatus:inner1:equation']).toBe('"a - b"');
+    expect(mappings['__nestedStatus:inner1:label']).toBe('"foo + bar"');
+  });
+
   it('should skip internal fields', () => {
     const mappings: Record<string, string> = {};
     extractNestedStatusCel(

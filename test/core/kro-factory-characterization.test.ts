@@ -13,6 +13,7 @@ import { type } from 'arktype';
 import * as yaml from 'js-yaml';
 import { DirectDeploymentEngine } from '../../src/core/deployment/engine.js';
 import { createKroResourceFactory } from '../../src/core/deployment/kro-factory.js';
+import { singletonSpecFingerprintAnnotationValue } from '../../src/core/deployment/singleton-owner-drift.js';
 import { getCurrentCompositionContext } from '../../src/core/composition/context.js';
 import { ValidationError } from '../../src/core/errors.js';
 import type { KroResourceFactory } from '../../src/core/types/deployment.js';
@@ -139,7 +140,7 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
         id: 'platformConfig',
       }) as unknown as KubernetesResource,
     };
-    const providerCalls: Array<{ id: string; input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string } }> = [];
+    const providerCalls: Array<{ id: string; input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string; options?: Record<string, unknown> } }> = [];
 
     const factory = createKroResourceFactory('alchemyExternalRef', resources, makeSchema(), {}, {
       alchemyScope: {},
@@ -150,7 +151,7 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
           return engine;
         },
         ensureResourceTypeRegistered() {
-          return async (id: string, input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string }) => {
+          return async (id: string, input: { resource: Record<string, unknown>; deployer?: unknown; deploymentStrategy?: string; options?: Record<string, unknown> }) => {
             providerCalls.push({ id, input });
           };
         },
@@ -163,8 +164,15 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
       getCurrentCluster: () => ({ server: 'https://example.invalid' }),
     });
     let ensuredTargetNamespace = false;
+    const readinessCalls: Array<{ instanceName: string; timeout: number }> = [];
     (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {
       ensuredTargetNamespace = true;
+    };
+    (factory as unknown as Record<string, unknown>).waitForKroInstanceReady = async (
+      instanceName: string,
+      timeout: number,
+    ) => {
+      readinessCalls.push({ instanceName, timeout });
     };
 
     const deployWithAlchemy = getPrivateMethod(factory, 'deployWithAlchemy') as (
@@ -191,6 +199,8 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
     expect(instanceCall?.input.deploymentStrategy).toBe('kro');
     expect(rgdCall?.input.deployer).toBeDefined();
     expect(instanceCall?.input.deployer).toBeDefined();
+    expect(instanceCall?.input.options?.waitForReady).toBe(false);
+    expect(readinessCalls).toEqual([{ instanceName: 'demo', timeout: 600000 }]);
   });
 
   it('disposes the RGD deployment engine after successful deployment', async () => {
@@ -570,6 +580,38 @@ describe('KroResourceFactory: createCustomResourceInstance via toYaml', () => {
 
     const lookupCRDPlural = getPrivateMethod(factory, 'lookupCRDPlural') as () => Promise<string | undefined>;
     await expect(lookupCRDPlural()).resolves.toBe('customtests');
+  });
+
+  it('preserves live instance annotations when listing instances', async () => {
+    const factory = makeFactory('myApp');
+    const factoryRecord = factory as unknown as Record<string, unknown>;
+    factoryRecord.discoveredPlural = 'testapps';
+    factoryRecord.createCustomObjectsApi = async () => ({
+      listNamespacedCustomObject: async () => ({
+        items: [
+          {
+            spec: { name: 'demo', replicas: 1 },
+            metadata: {
+              name: 'demo-instance',
+              annotations: {
+                'typekro.io/singleton-spec-fingerprint': 'fnv64:livefingerprint',
+              },
+            },
+          },
+        ],
+      }),
+    });
+    factoryRecord.createEnhancedProxy = async (spec: TestSpec, instanceName: string) => ({
+      metadata: { name: instanceName },
+      spec,
+      status: { ready: true, url: 'http://demo' },
+    });
+
+    const instances = await factory.getInstances();
+
+    expect(instances[0]?.metadata?.annotations?.['typekro.io/singleton-spec-fingerprint']).toBe(
+      'fnv64:livefingerprint'
+    );
   });
 
   it('uses kind from schema definition', () => {
@@ -1371,7 +1413,87 @@ describe('KroResourceFactory: singleton owner boundaries', () => {
     expect(deployCalls).toHaveLength(1);
     expect(deployCalls[0]?.spec).toEqual({ name: 'user-facing-name' });
     expect(deployCalls[0]?.opts?.instanceNameOverride).toBe('stable-singleton-id');
+    expect(deployCalls[0]?.opts?.singletonSpecFingerprint).toBe(
+      singletonSpecFingerprintAnnotationValue('fp')
+    );
     expect(disposeCalls).toEqual(['disposed']);
+  });
+
+  it('adds singleton fingerprints to KRO custom resource instances', () => {
+    const factory = makeFactory('singleton-fingerprint', { namespace: 'shared-system' });
+    const createCustomResourceInstance = getPrivateMethod(
+      factory,
+      'createCustomResourceInstance'
+    ) as (instanceName: string, spec: TestSpec, singletonSpecFingerprint?: string) => {
+      metadata: { annotations?: Record<string, string> };
+    };
+
+    const manifest = createCustomResourceInstance(
+      'stable-singleton-id',
+      { name: 'owner', replicas: 1 },
+      'fnv64:testfingerprint',
+    );
+
+    expect(manifest.metadata.annotations?.['typekro.io/singleton-spec-fingerprint']).toBe(
+      'fnv64:testfingerprint'
+    );
+  });
+
+  it('accepts existing KRO singleton owners when fingerprint annotation matches', async () => {
+    interface OwnerSpec {
+      name: string;
+    }
+
+    const deployCalls: Array<{ spec: OwnerSpec; opts?: Record<string, unknown> | undefined }> = [];
+    const expectedFingerprint = singletonSpecFingerprintAnnotationValue('fp');
+    const fakeComposition = {
+      factory() {
+        return {
+          async getInstances() {
+            return [
+              {
+                metadata: {
+                  name: 'stable-singleton-id',
+                  annotations: {
+                    'typekro.io/singleton-spec-fingerprint': expectedFingerprint,
+                  },
+                },
+                spec: { name: 'mutated-by-cluster' },
+              },
+            ];
+          },
+          async deploy(spec: OwnerSpec, opts?: Record<string, unknown>) {
+            deployCalls.push({ spec, ...(opts ? { opts } : {}) });
+            return { metadata: { name: String(opts?.instanceNameOverride ?? spec.name) } };
+          },
+          async dispose() {},
+        };
+      },
+    };
+
+    const factory = makeFactory('singleton-kro-fingerprint', {
+      namespace: 'default',
+      singletonDefinitions: [
+        {
+          id: 'stable-singleton-id',
+          key: 'SingletonBootstrap:stable-singleton-id',
+          specFingerprint: 'fp',
+          registryNamespace: 'shared-system',
+          composition: fakeComposition,
+          spec: { name: 'user-facing-name' },
+        },
+      ],
+    });
+    (factory as unknown as Record<string, unknown>).ensureTargetNamespace = async () => {};
+
+    const ensureSingletonOwners = getPrivateMethod(factory, 'ensureSingletonOwners') as (
+      spec: TestSpec
+    ) => Promise<void>;
+
+    await ensureSingletonOwners({ name: 'consumer', replicas: 1 });
+
+    expect(deployCalls).toHaveLength(1);
+    expect(deployCalls[0]?.opts?.singletonSpecFingerprint).toBe(expectedFingerprint);
   });
 
   it('deploys singleton owners when getInstances fails because the CRD is not installed yet', async () => {

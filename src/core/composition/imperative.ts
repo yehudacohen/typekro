@@ -42,6 +42,7 @@ import type {
   SchemaProxy,
   SerializationOptions,
 } from '../types/serialization.js';
+import type { KubernetesResource } from '../types/kubernetes.js';
 import type { CelExpression, Enhanced } from '../types.js';
 import {
   containsCelExpressions,
@@ -455,6 +456,22 @@ function executeNestedCompositionWithSpec<
   }
   parentContext.nestedCompositionFns.set(baseId, compositionFn);
 
+  if (!parentContext.nestedCompositionDefinitions) {
+    parentContext.nestedCompositionDefinitions = new Map();
+  }
+  parentContext.nestedCompositionDefinitions.set(
+    baseId,
+    definition as ResourceGraphDefinition<KroCompatibleType, KroCompatibleType>,
+  );
+
+  if (!parentContext.nestedCompositionResources) {
+    parentContext.nestedCompositionResources = new Map();
+  }
+  parentContext.nestedCompositionResources.set(
+    baseId,
+    executionContext.resources as Record<string, KubernetesResource>,
+  );
+
   const nestedSpecMappings = collectNestedSpecMappings(spec);
   if (Object.keys(nestedSpecMappings).length > 0) {
     if (!parentContext.nestedCompositionSpecMappings) {
@@ -598,6 +615,28 @@ function executeNestedCompositionWithSpec<
     for (const [innerBaseId, innerFn] of executionContext.nestedCompositionFns) {
       if (!parentContext.nestedCompositionFns?.has(innerBaseId)) {
         parentContext.nestedCompositionFns?.set(innerBaseId, innerFn);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionDefinitions) {
+    if (!parentContext.nestedCompositionDefinitions) {
+      parentContext.nestedCompositionDefinitions = new Map();
+    }
+    for (const [innerBaseId, innerDefinition] of executionContext.nestedCompositionDefinitions) {
+      if (!parentContext.nestedCompositionDefinitions.has(innerBaseId)) {
+        parentContext.nestedCompositionDefinitions.set(innerBaseId, innerDefinition);
+      }
+    }
+  }
+
+  if (executionContext.nestedCompositionResources) {
+    if (!parentContext.nestedCompositionResources) {
+      parentContext.nestedCompositionResources = new Map();
+    }
+    for (const [innerBaseId, innerResources] of executionContext.nestedCompositionResources) {
+      if (!parentContext.nestedCompositionResources.has(innerBaseId)) {
+        parentContext.nestedCompositionResources.set(innerBaseId, innerResources);
       }
     }
   }
@@ -1059,6 +1098,14 @@ function executeCompositionCore<TSpec extends KroCompatibleType, TStatus extends
           // full rationale.
           if (context.nestedCompositionFns && context.nestedCompositionFns.size > 0) {
             Reflect.set(capturedStatus, '__nestedCompositionFns', context.nestedCompositionFns);
+          }
+
+          if (context.nestedCompositionDefinitions && context.nestedCompositionDefinitions.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionDefinitions', context.nestedCompositionDefinitions);
+          }
+
+          if (context.nestedCompositionResources && context.nestedCompositionResources.size > 0) {
+            Reflect.set(capturedStatus, '__nestedCompositionResources', context.nestedCompositionResources);
           }
 
           if (context.nestedCompositionSpecMappings && context.nestedCompositionSpecMappings.size > 0) {
