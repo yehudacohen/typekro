@@ -114,6 +114,7 @@ instance.status.components.inngest   // Inngest ready
 | `app.port` | No | Container port (default: 3000) |
 | `app.replicas` | No | Replica count (default: 1) |
 | `app.env` | No | Extra env vars (merged with auto-wired ones) |
+| `app.envFrom` | No | Additional Secret/ConfigMap envFrom sources. TypeKro prepends the generated Inngest credentials Secret, so later entries can override only by defining the same env keys in a later source according to Kubernetes envFrom behavior |
 | `database.storageSize` | Yes | PG storage (e.g., '50Gi') |
 | `database.instances` | No | PG replicas (default: 1) |
 | `database.storageClass` | No | Storage class |
@@ -128,21 +129,21 @@ instance.status.components.inngest   // Inngest ready
 
 ### Prerequisites
 
-The following operators must be installed before deploying:
+Install the TypeKro runtime first so Flux and KRO are available. The webapp
+composition bootstraps CloudNativePG and Valkey operators itself as shared
+singleton dependencies.
 
-- **CloudNativePG** operator — `cnpgBootstrap` from `typekro/cnpg`
-- **Valkey** operator — `valkeyBootstrap` from `typekro/valkey`
-- **Flux CD** — for Inngest HelmRelease
+- **TypeKro runtime** — Flux CD plus KRO controller
+- **CloudNativePG** operator — bootstrapped by this composition
+- **Valkey** operator — bootstrapped by this composition
 
 ```typescript
-import { cnpgBootstrap } from 'typekro/cnpg';
-import { valkeyBootstrap } from 'typekro/valkey';
+import { typeKroRuntimeBootstrap } from 'typekro/kro';
 
-// Install operators first
-await cnpgBootstrap.factory('direct', { ... }).deploy({ ... });
-await valkeyBootstrap.factory('direct', { ... }).deploy({ ... });
+// Install runtime first
+await typeKroRuntimeBootstrap().factory('direct', { ... }).deploy({ ... });
 
-// Then deploy the full stack
+// Then deploy the full stack; CNPG and Valkey operator singletons are included
 await webAppWithProcessing.factory('kro', { ... }).deploy({ ... });
 ```
 

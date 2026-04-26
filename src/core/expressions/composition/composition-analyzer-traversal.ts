@@ -271,6 +271,21 @@ export function walkStatement(
       break;
     }
 
+    case 'TryStatement': {
+      const tryStmt = node as ASTNode & {
+        block: ASTNode & { body?: ASTNode[] };
+        finalizer?: ASTNode & { body?: ASTNode[] } | null;
+      };
+
+      if (tryStmt.block.body) {
+        walkBody(tryStmt.block.body, fullSource, specParamName, ctx, result);
+      }
+      if (tryStmt.finalizer?.body) {
+        walkBody(tryStmt.finalizer.body, fullSource, specParamName, ctx, result);
+      }
+      break;
+    }
+
     case 'ReturnStatement': {
       // Analyze return statement for ternary expressions in status values
       analyzeReturnStatementTernaries(node, fullSource, specParamName, result);

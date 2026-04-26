@@ -35,7 +35,7 @@ The bootstrap deploys:
 1. **Flux CD** - GitOps toolkit (source-controller, helm-controller, etc.)
 2. **Kro Controller** - ResourceGraphDefinition controller
 3. **Required RBAC** - ClusterRoleBindings for controllers
-4. **Namespaces** - `flux-system` and `kro`
+4. **Namespaces** - `flux-system` and `kro-system`
 
 ## Configuration
 

@@ -17,7 +17,7 @@
  * @see src/core/deployment/direct-factory.ts
  */
 
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { type } from 'arktype';
 import type { DirectResourceFactoryImpl } from '../../src/core/deployment/direct-factory.js';
 import { createDirectResourceFactory } from '../../src/core/deployment/direct-factory.js';
@@ -112,6 +112,48 @@ describe('DirectResourceFactory: deployed instance tracking', () => {
     ).rejects.toThrow('Invalid spec');
 
     expect(singletonDiscoveryCalls).toBe(0);
+  });
+
+  it('throws and preserves tracking when deleteInstance rollback is partial', async () => {
+    const factory = createDirectResourceFactory(
+      'partial-cleanup-test',
+      {},
+      {
+        apiVersion: 'test.typekro.io/v1alpha1',
+        kind: 'PartialCleanupTest',
+        spec: TestSpecSchema,
+        status: TestStatusSchema,
+      },
+      undefined,
+      { hydrateStatus: false }
+    );
+    const deployedInstances = (factory as unknown as { deployedInstances: Map<string, unknown> }).deployedInstances;
+    deployedInstances.set('my-app', {
+      metadata: {
+        name: 'my-app',
+        annotations: { 'typekro.io/deployment-id': 'deploy-1' },
+      },
+    });
+    (factory as unknown as Record<string, unknown>).getDeploymentEngine = () => ({
+      rollback: mock(() => Promise.resolve({
+        deploymentId: 'deploy-1',
+        rolledBackResources: ['ConfigMap/app-config'],
+        duration: 10,
+        status: 'partial',
+        errors: [
+          {
+            resourceId: 'app',
+            phase: 'rollback',
+            error: new Error('delete failed'),
+            timestamp: new Date(),
+          },
+        ],
+      })),
+      getKubernetesApi: mock(() => ({})),
+    });
+
+    await expect(factory.deleteInstance('my-app')).rejects.toThrow('Cleanup incomplete');
+    expect(deployedInstances.has('my-app')).toBe(true);
   });
 });
 

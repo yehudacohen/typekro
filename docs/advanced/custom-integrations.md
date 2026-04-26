@@ -153,7 +153,7 @@ function Certificate(config: CertificateConfig): Enhanced<CertificateSpec, Certi
 ```typescript
 type ReadinessEvaluator<T extends KubernetesResource = KubernetesResource> = (
   resource: T
-) => ResourceStatus | Promise<ResourceStatus>;
+) => ResourceStatus;
 
 interface ResourceStatus {
   ready: boolean;
@@ -184,18 +184,9 @@ const replicaReadiness: ReadinessEvaluator = (resource) => {
   return { ready: ready >= desired, message: `${ready}/${desired} replicas ready` };
 };
 
-// Async readiness (for external checks)
-const asyncReadiness: ReadinessEvaluator = async (resource) => {
-  const endpoint = resource.status?.endpoint;
-  if (!endpoint) return { ready: false, message: 'No endpoint yet' };
-  
-  try {
-    const response = await fetch(`${endpoint}/health`);
-    return { ready: response.ok, message: response.ok ? 'Healthy' : 'Unhealthy' };
-  } catch {
-    return { ready: false, message: 'Health check failed' };
-  }
-};
+// Readiness evaluators are synchronous and should only inspect the live
+// Kubernetes resource passed to them. Perform external health checks in a
+// controller, sidecar, or status-updating job, then expose the result on status.
 ```
 
 ## Resource Dependencies

@@ -93,6 +93,13 @@ export function isFactoryCall(node: ASTNode): node is CallExpression {
     const name = (callee as Identifier).name;
     return isKnownFactory(name) || KNOWN_FACTORY_NAMES.has(name);
   }
+  if (callee.type === 'MemberExpression' && !callee.computed) {
+    const property = callee.property as ASTNode | undefined;
+    if (property?.type === 'Identifier') {
+      const name = (property as Identifier).name;
+      return isKnownFactory(name) || KNOWN_FACTORY_NAMES.has(name);
+    }
+  }
   return false;
 }
 
@@ -100,6 +107,12 @@ export function isFactoryCall(node: ASTNode): node is CallExpression {
 export function extractFactoryName(call: CallExpression): string {
   if (call.callee.type === 'Identifier') {
     return (call.callee as Identifier).name;
+  }
+  if (call.callee.type === 'MemberExpression' && !call.callee.computed) {
+    const property = call.callee.property as ASTNode | undefined;
+    if (property?.type === 'Identifier') {
+      return (property as Identifier).name;
+    }
   }
   return 'Unknown';
 }
@@ -243,6 +256,15 @@ export function conditionToCel(
       (match, leading, negation, path, topLevelField) => {
         if (optionalFieldNames.has(topLevelField)) {
           return `${leading}${negation}has(${path})`;
+        }
+        return match;
+      }
+    );
+    source = source.replace(
+      /(&&|\|\|)(\s+)(!?)(schema\.spec\.([\w]+)(?:\.[\w]+)*)(?=\s*(?:&&|\|\||\)|$))/g,
+      (match, operator, spacing, negation, path, topLevelField) => {
+        if (optionalFieldNames.has(topLevelField)) {
+          return `${operator}${spacing}${negation}has(${path})`;
         }
         return match;
       }

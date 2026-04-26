@@ -15,6 +15,7 @@ import {
   analyzeCompositionBody,
   applyAnalysisToResources,
 } from '../../src/core/expressions/composition/composition-analyzer.js';
+import { conditionToCel } from '../../src/core/expressions/composition/composition-analyzer-helpers.js';
 import type { ASTAnalysisResult as CompositionAnalysisResult } from '../../src/core/expressions/composition/composition-analyzer-types.js';
 import {
   getForEach,
@@ -39,6 +40,7 @@ function Deployment(_opts: Record<string, unknown>) {
 function ConfigMap(_opts: Record<string, unknown>) {
   return {};
 }
+const simple = { Deployment, ConfigMap };
 /* eslint-enable @typescript-eslint/no-unused-vars */
 
 // ===========================================================================
@@ -184,6 +186,35 @@ describe('analyzeCompositionBody: ternary includeWhen', () => {
     // Both should have includeWhen conditions
     expect(redisFlow).toBeDefined();
     expect(memcachedFlow).toBeDefined();
+  });
+
+  it('detects ternary resource creation with member factory calls', () => {
+    const fn = (spec: any) => spec.enabled
+      ? simple.Deployment({ id: 'app', name: 'app' })
+      : undefined;
+
+    const analysisResult = analyzeCompositionBody(fn, new Set(['app']));
+    const appFlow = analysisResult.resources.get('app');
+
+    expect(appFlow).toBeDefined();
+    expect(appFlow?.includeWhen[0]?.expression).toBe('${schema.spec.enabled}');
+  });
+});
+
+describe('conditionToCel optional field guards', () => {
+  it('wraps optional bare RHS operands in compound conditions', () => {
+    const source = '(spec) => spec.required && spec.optional';
+    const conditionStart = source.indexOf('spec.required');
+    const conditionEnd = source.length;
+
+    const cel = conditionToCel(
+      { type: 'Identifier', range: [conditionStart, conditionEnd] },
+      source,
+      'spec',
+      new Set(['optional'])
+    );
+
+    expect(cel).toBe('${schema.spec.required && has(schema.spec.optional)}');
   });
 });
 

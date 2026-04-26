@@ -362,7 +362,7 @@ const deploy = Deployment({ id: 'app', name: 'app', image: 'nginx' })
 Runtime type checking functions:
 
 ```typescript
-import { isKubernetesRef, isCelExpression } from 'typekro';
+import { isKubernetesRef, isCelExpression } from 'typekro/advanced';
 
 function processValue(value: RefOrValue<string>): string {
   if (isKubernetesRef(value)) {

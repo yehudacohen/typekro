@@ -364,6 +364,15 @@ export class DirectResourceFactoryImpl<
         });
       }
 
+      if (rollbackResult.status !== 'success' || rollbackResult.errors.length > 0) {
+        const errorSummary = rollbackResult.errors
+          .map((error) => `${error.resourceId}: ${ensureError(error.error).message}`)
+          .join('; ');
+        throw new Error(
+          `Cleanup incomplete for instance ${name}: rollback ${rollbackResult.status}${errorSummary ? ` (${errorSummary})` : ''}`
+        );
+      }
+
       // Wait for any namespaces to be fully deleted before returning.
       // Namespace deletion is asynchronous (enters "Terminating" phase) and can
       // cause race conditions if the caller immediately re-creates resources.
