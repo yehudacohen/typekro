@@ -176,9 +176,7 @@ export function synthesizeNestedCompositionStatus(
           : 'Ready'
         : typeof snapshotPhase === 'string' ? snapshotPhase : 'Installing',
       failed: allExpectedChildrenVisible
-        ? snapshotIndicatesFailure
-          ? true
-          : false
+        ? !!snapshotIndicatesFailure
         : typeof snapshotFailed === 'boolean' ? snapshotFailed : false,
     };
 

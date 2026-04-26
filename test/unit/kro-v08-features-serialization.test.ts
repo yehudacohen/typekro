@@ -2408,8 +2408,10 @@ describe('Kro RGD Feature Serialization (requires KRO 0.9+ at runtime)', () => {
 
       const graphYaml = parseRgdYaml(graph.toYaml());
       const factoryYaml = parseRgdYaml(graph.factory('kro').toYaml());
+      const graphSchemaGroup = graphYaml.spec.schema.group;
+      expect(graphSchemaGroup).toBeDefined();
       expect(factoryYaml.spec.schema.group).toBe('platform.example.com');
-      expect(factoryYaml.spec.schema.group).toBe(graphYaml.spec.schema.group);
+      expect(factoryYaml.spec.schema.group).toBe(graphSchemaGroup as string);
     });
 
     it('slashful apiVersion emits matching schema group in graph and factory RGD YAML', () => {

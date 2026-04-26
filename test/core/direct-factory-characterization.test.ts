@@ -365,7 +365,7 @@ describe('DirectFactory: singleton owner boundaries', () => {
         const shared = singleton(fakeOwnerComposition as never, {
           id: 'platform-bootstrap',
           spec: { name: `${spec.name}-shared` },
-        });
+        }) as { status: { ready: boolean; endpoint: string } };
         const worker = simple.Deployment({
           name: `${spec.name}-worker`,
           image: 'nginx',
@@ -626,7 +626,7 @@ describe('DirectFactory: singleton owner boundaries', () => {
           name: 'singleton-bootstrap',
         },
         _compositionFn: () => ({
-          ready: getCurrentCompositionContext().liveStatusMap?.get('legacy-resource')?.ready === true,
+          ready: (getCurrentCompositionContext()?.liveStatusMap?.get('legacy-resource') as { ready?: boolean } | undefined)?.ready === true,
         }),
         factory() {
           return {
@@ -725,7 +725,7 @@ describe('DirectFactory: singleton owner boundaries', () => {
           name: 'singleton-bootstrap',
         },
         _compositionFn: () => ({
-          ready: getCurrentCompositionContext().liveStatusMap?.get('legacy-resource')?.ready === true,
+          ready: (getCurrentCompositionContext()?.liveStatusMap?.get('legacy-resource') as { ready?: boolean } | undefined)?.ready === true,
         }),
         factory() {
           return {
@@ -756,7 +756,7 @@ describe('DirectFactory: singleton owner boundaries', () => {
         const shared = singleton(fakeComposition as never, {
           id: 'stable-singleton-id',
           spec: { name: `${spec.name}-shared` },
-        });
+        }) as { status: { ready: boolean } };
         return { ready: shared.status.ready };
       }
     );
@@ -815,7 +815,7 @@ describe('DirectFactory: singleton owner boundaries', () => {
         _compositionFn: () => {
           simple.ConfigMap({ name: 'legacy-resource', data: {}, id: 'localDb' });
           return {
-            ready: getCurrentCompositionContext().liveStatusMap?.get('localDb')?.ready === true,
+            ready: (getCurrentCompositionContext()?.liveStatusMap?.get('localDb') as { ready?: boolean } | undefined)?.ready === true,
           };
         },
         factory() {
@@ -847,7 +847,7 @@ describe('DirectFactory: singleton owner boundaries', () => {
         const shared = singleton(fakeComposition as never, {
           id: 'stable-singleton-id',
           spec: { name: `${spec.name}-shared` },
-        });
+        }) as { status: { ready: boolean } };
         return { ready: shared.status.ready };
       }
     );

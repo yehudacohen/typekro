@@ -272,7 +272,7 @@ describe('DirectDeploymentEngine Simple', () => {
         void handler;
         void args;
         return fakeTimer;
-      }) as typeof setTimeout;
+      }) as unknown as typeof setTimeout;
 
       try {
         const setupDeploymentTimeout = (
@@ -290,7 +290,7 @@ describe('DirectDeploymentEngine Simple', () => {
         });
 
         expect(timeoutId).toBe(fakeTimer);
-        expect((fakeTimer as { unref: ReturnType<typeof mock> }).unref).toHaveBeenCalledTimes(1);
+        expect((fakeTimer as unknown as { unref: ReturnType<typeof mock> }).unref).toHaveBeenCalledTimes(1);
       } finally {
         globalThis.setTimeout = originalSetTimeout;
       }

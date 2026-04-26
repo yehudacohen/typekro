@@ -190,7 +190,7 @@ describe('KroResourceFactory: Alchemy RGD serialization', () => {
 
   it('validates injected Alchemy scope before provider execution', async () => {
     const factory = createKroResourceFactory('alchemyInvalidScope', {}, makeSchema(), {}, {
-      alchemyScope: {},
+      alchemyScope: {} as any,
       hydrateStatus: false,
     });
 
@@ -828,7 +828,7 @@ describe('KroResourceFactory: toYaml() singleton owner isolation', () => {
           kind: 'SingletonBootstrap',
           name: 'singleton-bootstrap',
         },
-      },
+      } as unknown as SingletonDefinitionRecord['composition'],
       spec: { name: 'shared-platform' },
     } satisfies SingletonDefinitionRecord;
 
@@ -1281,7 +1281,7 @@ describe('KroResourceFactory: mixed status hydration', () => {
         status: type({ ready: 'boolean' }),
       },
       (_spec: NestedSpec): NestedStatus => ({
-        ready: !!getCurrentCompositionContext().isReExecution,
+        ready: !!getCurrentCompositionContext()?.isReExecution,
       })
     );
 
@@ -1294,7 +1294,7 @@ describe('KroResourceFactory: mixed status hydration', () => {
         spec: type({ name: 'string' }),
         status: type({ nestedReady: 'boolean' }),
       },
-      undefined,
+      {},
       {
         namespace: 'default',
         compositionFn: (spec: ParentSpec) => {
@@ -1351,7 +1351,7 @@ describe('KroResourceFactory: mixed status hydration', () => {
         status: type({ ready: 'boolean' }),
       },
       (_spec: NestedSpec): NestedStatus => ({
-        ready: !!getCurrentCompositionContext().isReExecution,
+        ready: !!getCurrentCompositionContext()?.isReExecution,
       })
     );
 
@@ -1364,7 +1364,7 @@ describe('KroResourceFactory: mixed status hydration', () => {
         spec: type({ name: 'string' }),
         status: type({ ready: 'boolean' }),
       },
-      undefined,
+      {},
       {
         namespace: 'default',
         compositionFn: (spec: ParentSpec) => {
@@ -1428,14 +1428,14 @@ describe('KroResourceFactory: mixed status hydration', () => {
         spec: type({ name: 'string' }),
         status: type({ ready: 'boolean', endpoint: 'string' }),
       },
-      undefined,
+      {},
       {
         namespace: 'default',
         compositionFn: (spec: ParentSpec) => {
           const shared = singleton(fakeOwnerComposition as never, {
             id: 'platform-bootstrap',
             spec: { name: `${spec.name}-shared` },
-          });
+          }) as { status: { ready: boolean; endpoint: string } };
           return {
             ready: shared.status.ready,
             endpoint: shared.status.endpoint,

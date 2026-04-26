@@ -182,7 +182,7 @@ export async function waitForKroInstanceReady(options: KroReadinessOptions): Pro
       const hasReadyField = typeof statusReadyField === 'boolean';
       const hasExpectedCustomStatus =
         expectedStatusKeys.length === 0 ||
-        expectedStatusKeys.every((key) => Object.prototype.hasOwnProperty.call(status, key));
+        expectedStatusKeys.every((key) => Object.hasOwn(status, key));
       const isReady =
         isActive &&
         isSynced &&

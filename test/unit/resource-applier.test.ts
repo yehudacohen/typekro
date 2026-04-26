@@ -786,13 +786,13 @@ describe('ResourceApplier', () => {
       const originalSetTimeout = globalThis.setTimeout;
       const originalClearTimeout = globalThis.clearTimeout;
       const fakeTimer = { unref: mock() } as unknown as ReturnType<typeof setTimeout>;
-      const clearCalls: Array<ReturnType<typeof setTimeout>> = [];
+      const clearCalls: ReturnType<typeof setTimeout>[] = [];
 
       globalThis.setTimeout = ((handler: TimerHandler, _timeout?: number, ...args: unknown[]) => {
         void handler;
         void args;
         return fakeTimer;
-      }) as typeof setTimeout;
+      }) as unknown as typeof setTimeout;
       globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => {
         clearCalls.push(timer);
       }) as typeof clearTimeout;

@@ -14,7 +14,7 @@ interface DeployedSingletonInstance {
 export function assertNoDeployedSingletonSpecDrift(
   definition: SingletonDefinitionRecord,
   singletonInstanceName: string,
-  instances: ReadonlyArray<DeployedSingletonInstance>
+  instances: readonly DeployedSingletonInstance[]
 ): void {
   const existing = instances.find((instance) => instance.metadata?.name === singletonInstanceName);
   if (!existing) return;
@@ -55,7 +55,7 @@ export function singletonSpecFingerprintAnnotationValue(specFingerprint: string)
 export function assertNoDiscoveredSingletonSpecDrift(
   definition: SingletonDefinitionRecord,
   singletonInstanceName: string,
-  resources: ReadonlyArray<DeployedResource>
+  resources: readonly DeployedResource[]
 ): { hasLegacyUnfingerprintedResources: boolean } {
   if (resources.length === 0) return { hasLegacyUnfingerprintedResources: false };
 

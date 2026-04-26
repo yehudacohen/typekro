@@ -304,7 +304,7 @@ describe('analyzeCompositionBody: templateOverrides', () => {
 
   it('preserves full resource status collection calls in ternary conditions', () => {
     function fn(spec: any) {
-      const db = Deployment({ id: 'db', name: 'db' });
+      const db = Deployment({ id: 'db', name: 'db' }) as any;
       return {
         app: ConfigMap({
           id: 'app',

@@ -493,7 +493,7 @@ describe('Nested Composition Direct Mode', () => {
           status: type({ ready: 'boolean' }),
         },
         () => ({
-          ready: !!getCurrentCompositionContext().isReExecution,
+          ready: !!getCurrentCompositionContext()?.isReExecution,
         }),
       );
 

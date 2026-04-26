@@ -1055,7 +1055,7 @@ describe('T9 — outer RGD never references inner-only schema fields (I4)', () =
       (spec) => {
         const inner = innerWithMappedDefault({
           innerName: spec.name,
-          settings: spec.processing,
+          settings: spec.processing as { mode?: string },
         });
         return { ready: inner.status.ready };
       }
